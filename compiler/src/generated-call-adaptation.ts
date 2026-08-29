@@ -162,6 +162,8 @@ function transformValue(
   adapters: ReadonlyMap<number, {
     readonly declaration: ValidatedGeneratedCallAdapter;
     readonly localName: string;
+    readonly identifierOffset: number;
+    readonly callOffset: number;
   }>,
 ): unknown {
   if (Array.isArray(value)) return value.map((item) => transformValue(item, adapters));
@@ -183,11 +185,11 @@ function transformValue(
     callee: {
       kind: "identifier",
       name: plan.localName,
-      location: argument.location,
+      location: { ...argument.location, offset: plan.identifierOffset },
     },
     arguments: [argument],
     argumentLabels: [null],
-    location: argument.location,
+    location: { ...argument.location, offset: plan.callOffset },
   };
   const arguments_ = [...call.arguments];
   arguments_[plan.declaration.argument] = adapterCall;
@@ -212,14 +214,17 @@ export function applyGeneratedCallAdaptersToProgram(
   const plans = new Map<number, {
     readonly declaration: ValidatedGeneratedCallAdapter;
     readonly localName: string;
+    readonly identifierOffset: number;
+    readonly callOffset: number;
   }>();
   const imports = [...program.imports];
   for (const [index, declaration] of adapters.entries()) {
     let localName = `__z_generated_call_adapter_${index}`;
     while (names.has(localName)) localName += "_";
     names.add(localName);
+    const syntheticOffset = sourceLength + index * 3 + 1;
     const location: SourceLocation = {
-      offset: sourceLength + index + 1,
+      offset: syntheticOffset,
       line: 1,
       column: 1,
       fileName: declaration.sourcePath,
@@ -235,7 +240,12 @@ export function applyGeneratedCallAdaptersToProgram(
       header: declaration.adapterModule,
       location,
     });
-    plans.set(declaration.offset, { declaration, localName });
+    plans.set(declaration.offset, {
+      declaration,
+      localName,
+      identifierOffset: syntheticOffset + 1,
+      callOffset: syntheticOffset + 2,
+    });
   }
   const transformed = transformValue(program, plans) as Program;
   return { ...transformed, imports };

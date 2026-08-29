@@ -8938,9 +8938,10 @@ test("compiles a multi-module Z application through the standalone native driver
   ].join("\n"));
   const generatedSource = [
     'import { Builder } from "framework";',
+    "function answer(): i32 { return 41; }",
     "function main(): i32 {",
     "  let builder = Builder({ result: 0 });",
-    '  builder.register("answer", 41);',
+    '  builder.register("answer", answer());',
     "  return builder.result - 42;",
     "}",
     "",

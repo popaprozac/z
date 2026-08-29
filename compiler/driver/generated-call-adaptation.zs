@@ -69,7 +69,9 @@ function adaptExpression(
   offset: usize,
   argument: usize,
   in replacementMethod: String,
-  in adapterName: String
+  in adapterName: String,
+  adapterIdentifierOffset: usize,
+  adapterCallOffset: usize
 ): boolean throws String {
   let tree = match (in syntax.tree) {
     some(tree) => copy tree;
@@ -108,7 +110,7 @@ function adaptExpression(
         statements: Array<usize>(),
         labels: Array<String>(),
         typeReferences: Array<TypeReference>(),
-        offset: argumentOffset,
+        offset: adapterIdentifierOffset,
         line: argumentLine,
         column: argumentColumn,
       }));
@@ -126,7 +128,7 @@ function adaptExpression(
         statements: Array<usize>(),
         labels: adapterLabels,
         typeReferences: Array<TypeReference>(),
-        offset: argumentOffset,
+        offset: adapterCallOffset,
         line: argumentLine,
         column: argumentColumn,
       }));
@@ -159,7 +161,9 @@ function adaptOptionalExpression(
   offset: usize,
   argument: usize,
   in replacementMethod: String,
-  in adapterName: String
+  in adapterName: String,
+  adapterIdentifierOffset: usize,
+  adapterCallOffset: usize
 ): boolean throws String {
   const present = match (in value) {
     some(expression) => expressionContainsCall(expression, offset);
@@ -175,7 +179,9 @@ function adaptOptionalExpression(
     offset,
     argument,
     replacementMethod,
-    adapterName
+    adapterName,
+    adapterIdentifierOffset,
+    adapterCallOffset
   );
   value = Option.some(expression);
   return changed;
@@ -186,7 +192,9 @@ function adaptStatements(
   offset: usize,
   argument: usize,
   in replacementMethod: String,
-  in adapterName: String
+  in adapterName: String,
+  adapterIdentifierOffset: usize,
+  adapterCallOffset: usize
 ): usize throws String {
   let found: usize = 0;
   let index: usize = 0;
@@ -198,7 +206,9 @@ function adaptStatements(
       offset,
       argument,
       replacementMethod,
-      adapterName
+      adapterName,
+      adapterIdentifierOffset,
+      adapterCallOffset
     );
     if (changed) found = found + 1;
     statement.expression = expression;
@@ -208,7 +218,9 @@ function adaptStatements(
       offset,
       argument,
       replacementMethod,
-      adapterName
+      adapterName,
+      adapterIdentifierOffset,
+      adapterCallOffset
     );
     if (secondChanged) found = found + 1;
     statement.secondExpression = secondExpression;
@@ -223,7 +235,9 @@ function adaptProgramCall(
   offset: usize,
   argument: usize,
   in replacementMethod: String,
-  in adapterName: String
+  in adapterName: String,
+  adapterIdentifierOffset: usize,
+  adapterCallOffset: usize
 ): usize throws String {
   let found: usize = 0;
   let constantIndex: usize = 0;
@@ -235,7 +249,9 @@ function adaptProgramCall(
         offset,
         argument,
         replacementMethod,
-        adapterName
+        adapterName,
+        adapterIdentifierOffset,
+        adapterCallOffset
       );
       if (changed) found = found + 1;
       program.constants[constantIndex].initializer = initializer;
@@ -250,7 +266,9 @@ function adaptProgramCall(
       offset,
       argument,
       replacementMethod,
-      adapterName
+      adapterName,
+      adapterIdentifierOffset,
+      adapterCallOffset
     );
     found = found + functionFound;
     program.functions[functionIndex].body = body;
@@ -267,7 +285,9 @@ function adaptProgramCall(
         offset,
         argument,
         replacementMethod,
-        adapterName
+        adapterName,
+        adapterIdentifierOffset,
+        adapterCallOffset
       );
       if (defaultFound) found = found + 1;
       aggregate.fields[fieldIndex].defaultValue = defaultValue;
@@ -277,7 +297,9 @@ function adaptProgramCall(
         offset,
         argument,
         replacementMethod,
-        adapterName
+        adapterName,
+        adapterIdentifierOffset,
+        adapterCallOffset
       );
       found = found + fieldFound;
       aggregate.fields[fieldIndex].defaultStatements = defaultStatements;
@@ -293,7 +315,9 @@ function adaptProgramCall(
           offset,
           argument,
           replacementMethod,
-          adapterName
+          adapterName,
+          adapterIdentifierOffset,
+          adapterCallOffset
         );
         found = found + initializerFound;
         copied.body = body;
@@ -313,7 +337,9 @@ function adaptProgramCall(
         offset,
         argument,
         replacementMethod,
-        adapterName
+        adapterName,
+        adapterIdentifierOffset,
+        adapterCallOffset
       );
       found = found + methodFound;
       aggregate.methods[methodIndex].body = body;
@@ -329,7 +355,9 @@ function adaptProgramCall(
           offset,
           argument,
           replacementMethod,
-          adapterName
+          adapterName,
+          adapterIdentifierOffset,
+          adapterCallOffset
         );
         found = found + deinitFound;
         copied.body = body;
@@ -387,13 +415,12 @@ function moduleIndexForPath(
 
 function appendAdapterImport(
   inout program: Program,
-  sourceLength: usize,
+  offset: usize,
   index: usize,
   in moduleName: String,
   in exportName: String,
   in localName: String
 ): void {
-  const offset = sourceLength + index + 1;
   let bindings = Array<ImportBinding>();
   bindings.push(ImportBinding({
     importedName: copy exportName,
@@ -520,12 +547,15 @@ export function applyGeneratedCallAdapters(
     const replacementMethod = qualifiedMember(adapter.replacement);
     const localName = generatedAdapterName(graph, moduleIndex, adapterIndex);
     let program = copy modules[moduleIndex].program;
+    const syntheticOffset = source.byteLength + adapterIndex * 3 + 1;
     const foundExpressions = try adaptProgramCall(
       inout program,
       adapter.offset,
       adapter.argument,
       replacementMethod,
-      localName
+      localName,
+      syntheticOffset + 1,
+      syntheticOffset + 2
     );
     if (foundExpressions != 1) {
       const expressionError = foundExpressions == 0
@@ -540,7 +570,7 @@ export function applyGeneratedCallAdapters(
     }
     appendAdapterImport(
       inout program,
-      source.byteLength,
+      syntheticOffset,
       adapterIndex,
       adapter.adapterModule,
       adapter.adapterExport,

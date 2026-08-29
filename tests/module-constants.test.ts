@@ -148,9 +148,11 @@ test("checks and lowers source-hashed generated call adaptations", () => {
     const source = `
       import { Builder } from "framework";
 
+      function answer(): i32 { return 41; }
+
       function main(): i32 {
         let builder = Builder({ result: 0 });
-        builder.register("answer", 41);
+        builder.register("answer", answer());
         return builder.result - 42;
       }
     `;
