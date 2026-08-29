@@ -114,6 +114,17 @@ const sourceKeywordTokens = [
   "using", "weak", "while", "yield", "raw",
 ] as const;
 
+// Declaration keywords keep their TextMate storage/entity scopes so themes can
+// distinguish `function` from control-flow keywords. Visibility words are
+// semantic modifiers because their meaning survives formatting and nesting.
+const sourceDeclarationKeywordTokens = [
+  "function", "struct", "class", "enum", "trait", "constructor",
+] as const;
+
+const sourceModifierTokens = [
+  "public", "internal", "private", "readonly", "static",
+] as const;
+
 const primitiveTypeTokens = [
   "void", "boolean", "String", "cstring", "Slice", "Array", "Option", "Result", "Task", "Weak",
   "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "usize", "isize",
@@ -296,6 +307,7 @@ export const semanticTokenTypes = [
   "interface",
   "enumMember",
   "keyword",
+  "modifier",
 ] as const;
 
 export const semanticTokenModifiers = ["declaration", "readonly", "defaultLibrary"] as const;
@@ -413,9 +425,19 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       continue;
     }
     const keywordMember = previous?.kind === "dot" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(token.text);
+    const reservedModifier = token.kind !== "identifier"
+      && sourceModifierTokens.some((modifier) => modifier === token.text);
+    if (reservedModifier) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("modifier"),
+        modifiers: 0,
+      });
+      continue;
+    }
     const reservedKeyword = token.kind !== "identifier"
       && sourceKeywordTokens.some((keyword) => keyword === token.text);
     if (reservedKeyword) {
+      if (sourceDeclarationKeywordTokens.some((keyword) => keyword === token.text)) continue;
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("keyword"),
         modifiers: 0,
@@ -735,6 +757,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (word.text === "unsafe") {
     return markdownHover(
       "unsafe { ... }  // local unverified native assertions remain in Z syntax and types; prefer reusable checked .zd contracts",
+      source,
+      word.start,
+      word.end,
+    );
+  }
+  if (word.text === "internal") {
+    return markdownHover(
+      "internal  // visible only inside the exact manifest package; omitted from downstream imports, completion, and callable metadata",
       source,
       word.start,
       word.end,

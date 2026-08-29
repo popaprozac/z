@@ -490,8 +490,17 @@
         "name": "keyword.control.z",
         "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|on|scope|deinit|constructor|unsafe|raw|in|out|inout|view|weak|new|as|implements|module|type)\\b"
       }, {
-        "name": "storage.modifier.z",
-        "match": "\\b(?:const|let|mut|weak|readonly|static|private|internal|public)\\b"
+        "name": "storage.modifier.visibility.z",
+        "match": "\\b(?:private|internal|public)\\b"
+      }, {
+        "name": "storage.modifier.declaration.z",
+        "match": "\\b(?:readonly|static)\\b"
+      }, {
+        "name": "storage.modifier.binding.z",
+        "match": "\\b(?:const|let|mut)\\b"
+      }, {
+        "name": "storage.modifier.ownership.z",
+        "match": "\\bweak\\b"
       }]
     },
     "types": {

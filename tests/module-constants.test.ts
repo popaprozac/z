@@ -29,7 +29,7 @@ import {
   prepareProject,
 } from "../compiler/src/project.ts";
 
-test("highlights internal visibility through syntax and semantic tokens", () => {
+test("keeps visibility modifiers distinct from declaration keywords", () => {
   const source = `
     internal function packageAnswer(): i32 { return 42; }
     class Session {
@@ -46,7 +46,7 @@ test("highlights internal visibility through syntax and semantic tokens", () => 
       package: { name: "highlighting", version: "0.1.0" },
       target: { name: "highlighting", entry: "main.zs" },
     }));
-    const keyword = semanticTokenTypes.indexOf("keyword");
+    const modifier = semanticTokenTypes.indexOf("modifier");
     const tokens = decodeSemanticTokens(semanticTokens(source, file).data);
     const lines = source.split("\n");
     const internalOffsets = lines.flatMap((line, lineIndex) => {
@@ -64,18 +64,55 @@ test("highlights internal visibility through syntax and semantic tokens", () => 
         token.line === offset.line
         && token.character === offset.character
         && token.length === "internal".length
-        && token.type === keyword
+        && token.type === modifier
       )));
     }
+    const functionOffsets = lines.flatMap((line, lineIndex) => {
+      const offsets: Array<{ line: number; character: number }> = [];
+      let character = line.indexOf("function");
+      while (character >= 0) {
+        offsets.push({ line: lineIndex, character });
+        character = line.indexOf("function", character + 1);
+      }
+      return offsets;
+    });
+    assert.equal(functionOffsets.length, 2);
+    for (const offset of functionOffsets) {
+      assert.equal(tokens.some((token) => (
+        token.line === offset.line
+        && token.character === offset.character
+        && token.length === "function".length
+      )), false, "TextMate owns declaration-keyword coloring");
+    }
+    const internalOffset = source.indexOf("internal");
+    assert.match(
+      hover(source, file, internalOffset + 1)?.contents.value ?? "",
+      /visible only inside the exact manifest package/,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 
-  const grammar = readFileSync(
+  const grammarSource = readFileSync(
     resolve(import.meta.dir, "../editors/vscode/syntaxes/z.tmLanguage.json"),
     "utf8",
   );
-  assert.match(grammar, /private\|internal\|public/);
+  const grammar = JSON.parse(grammarSource) as {
+    repository: {
+      declarations: { patterns: Array<{ match?: string; captures?: Record<string, { name: string }> }> };
+      keywords: { patterns: Array<{ name?: string; match?: string }> };
+    };
+  };
+  const visibility = grammar.repository.keywords.patterns.find((pattern) => (
+    pattern.name === "storage.modifier.visibility.z"
+  ));
+  assert.match(visibility?.match ?? "", /private\|internal\|public/);
+  const functionDeclaration = grammar.repository.declarations.patterns.find((pattern) => (
+    pattern.captures?.["1"]?.name === "storage.type.function.z"
+  ));
+  assert.equal(functionDeclaration?.captures?.["1"]?.name, "storage.type.function.z");
+  assert.equal(functionDeclaration?.captures?.["2"]?.name, "entity.name.function.z");
+  assert.match("internal function read", new RegExp(functionDeclaration?.match ?? "a^"));
 });
 
 test("resolves generated modules without editing authored source", () => {
