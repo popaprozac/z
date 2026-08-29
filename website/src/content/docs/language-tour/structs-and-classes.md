@@ -130,6 +130,27 @@ readonly class Configuration {
 Prefixing the aggregate applies `readonly` to all stored fields. This is shallow
 field immutability, not automatic recursive freezing of every referenced value.
 
+Constructors can use the same visibility boundary:
+
+```zs
+export readonly class Window {
+  readonly id: String;
+  internal readonly manager: Weak<WindowManager>;
+
+  internal constructor(id: String, manager: Weak<WindowManager>) {
+    this.id = move id;
+    this.manager = manager;
+  }
+}
+```
+
+An unmarked or `public constructor` is public. `internal constructor` limits
+construction to the owning manifest-defined package, while `private
+constructor` limits it to the class and its static factories. The class remains
+usable as a public parameter, field, or result type. External metadata and
+editor call surfaces do not publish an inaccessible constructor signature.
+Structs continue to use value construction and do not declare constructors.
+
 A collection can independently carry readonly semantics:
 
 ```z

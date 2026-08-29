@@ -766,13 +766,13 @@ export function resolveWithNativeFrontendLibrary(
             name: string;
             typeName: string;
             executorAffinity: string | null;
-            visibility: "public" | "private";
+            visibility: "public" | "internal" | "private";
             readonlyField: boolean;
           }[];
           methods: {
             name: string;
             staticMethod: boolean;
-            visibility: "public" | "private";
+            visibility: "public" | "internal" | "private";
             receiverMode: "in" | "inout" | "move";
             signature: NativeFrontendFunctionSignatureStructure;
           }[];
@@ -782,6 +782,7 @@ export function resolveWithNativeFrontendLibrary(
           }[];
           constructorSignature: NativeFrontendFunctionSignatureStructure | null;
           customConstructor: boolean;
+          constructorVisibility: "public" | "internal" | "private";
         };
         readonly typeParameterCount: number;
         readonly constraintCount: number;
@@ -880,13 +881,13 @@ export function resolveWithNativeFrontendLibrary(
             name: string;
             typeName: string;
             executorAffinity: string | null;
-            visibility: "public" | "private";
+            visibility: "public" | "internal" | "private";
             readonlyField: boolean;
           }>(fieldCount),
           methods: new Array<{
             name: string;
             staticMethod: boolean;
-            visibility: "public" | "private";
+            visibility: "public" | "internal" | "private";
             receiverMode: "in" | "inout" | "move";
             signature: NativeFrontendFunctionSignatureStructure;
           }>(methodCount),
@@ -896,6 +897,7 @@ export function resolveWithNativeFrontendLibrary(
           }>(variantCount),
           customDeinit: customDeinit === 1,
           customConstructor: customConstructor === 1,
+          constructorVisibility: "public" as const,
           constructorSignature: null,
         };
         (symbol as {
@@ -1179,11 +1181,12 @@ export function resolveWithNativeFrontendLibrary(
             || typeExpectation.signature.constructorSignature !== null
             || name.length !== 0
             || staticMethod !== 0
-            || visibility.length !== 0
+            || !isNativeVisibility(visibility)
             || receiverMode.length !== 0
           ) {
             throw new Error("the native frontend returned an invalid constructor signature");
           }
+          typeExpectation.signature.constructorVisibility = visibility;
           typeExpectation.signature.constructorSignature = signature;
         } else if (memberKind === 1) {
           if (

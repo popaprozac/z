@@ -975,10 +975,12 @@ export function programTypeSignature(
         none => {}
       }
       let customConstructor = false;
+      let constructorVisibility = "public";
       let constructorSignature = Option<ModuleFunctionSignature>.none;
       match (in aggregate.constructorDeclaration) {
         some(initializer) => {
           customConstructor = true;
+          constructorVisibility = visibilityName(initializer.visibility);
           constructorSignature = Option.some(constructorDeclarationSignature(
             aggregate.name,
             initializer
@@ -1000,6 +1002,7 @@ export function programTypeSignature(
         variants: Array<ModuleVariantSignature>(),
         customDeinit,
         customConstructor,
+        constructorVisibility,
         constructorSignature,
         foreignKind: "",
         foreignLayout: "",

@@ -201,6 +201,8 @@ export function createNativeSemanticBridge(
       || native.kind !== source.declaration.kind
       || !native.typeSignature
       || native.typeSignature.customConstructor !== Boolean(source.declaration.constructor)
+      || native.typeSignature.constructorVisibility
+        !== (source.declaration.constructor?.visibility ?? "public")
       || native.typeSignature.customDeinit !== Boolean(source.declaration.deinitializer)
     ) {
       throw new Error(

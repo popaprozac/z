@@ -671,6 +671,15 @@ fieldwise initialization through `new Type({ ... })`. A declared constructor
 changes the call shape to `new Type(arguments...)` and is the only construction
 path for that class.
 
+Constructors use the same visibility vocabulary as fields and methods. An
+unmarked or `public constructor` is callable wherever the class is visible;
+an `internal constructor` is callable only from modules with the class's exact
+manifest-defined package identity; and a `private constructor` is callable only
+inside the declaring class, including its static factories. This lets a package
+export a nominal class type and public behavior without publishing arbitrary
+construction. Inaccessible constructor signatures are omitted from public
+metadata and editor call surfaces, while the class remains nameable as a type.
+
 Field visibility is independent of value or reference semantics: struct and
 class fields default to `public`, and `private` fields are visible only within
 their declaring aggregate. A class with private state requires an explicit
@@ -1686,7 +1695,7 @@ internal struct WindowRecord {
 
 `internal` is implemented as compiler-enforced visibility to the declaration's
 owning package. Internal
-declarations and members must be absent from public package metadata,
+declarations, members, and constructor signatures must be absent from public package metadata,
 documentation, and application completion, and an external call must be a
 compile error. `private` continues to mean the declaring aggregate only;
 unexported declarations continue to mean the declaring source module only.

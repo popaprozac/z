@@ -1220,6 +1220,14 @@ export function parse(tokens: Token[], fileName: string): Program {
     let constructor = null;
     let deinitializer = null;
     while (!at("rightBrace") && !at("eof")) {
+      const visibilityToken = match("public")
+        ? "public"
+        : match("internal")
+        ? "internal"
+        : match("private")
+        ? "private"
+        : null;
+      const visibility = visibilityToken ?? "public";
       if (match("constructor")) {
         const constructorToken = previous();
         if (constructor) {
@@ -1232,6 +1240,7 @@ export function parse(tokens: Token[], fileName: string): Program {
         const block = parseRequiredBlock("a `constructor` body");
         constructor = {
           kind: "constructor" as const,
+          visibility,
           parameters,
           errorType,
           body: block.statements,
@@ -1241,6 +1250,9 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       if (match("deinit")) {
         const deinitToken = previous();
+        if (visibilityToken) {
+          throw new DiagnosticError(fileName, deinitToken.location, `\`${visibilityToken}\` cannot modify a deinit block`);
+        }
         if (deinitializer) {
           throw new DiagnosticError(fileName, deinitToken.location, `${kind} ${JSON.stringify(name)} cannot declare more than one deinit block`);
         }
@@ -1248,14 +1260,6 @@ export function parse(tokens: Token[], fileName: string): Program {
         deinitializer = { kind: "deinit" as const, body: block.statements, location: deinitToken.location };
         continue;
       }
-      const visibilityToken = match("public")
-        ? "public"
-        : match("internal")
-        ? "internal"
-        : match("private")
-        ? "private"
-        : null;
-      const visibility = visibilityToken ?? "public";
       const fieldReadonly = Boolean(match("readonly"));
       const isStatic = match("static");
       const isAsync = match("async");

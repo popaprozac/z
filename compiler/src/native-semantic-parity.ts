@@ -189,6 +189,7 @@ function stage0ModuleSymbols(
       variants: [],
       customDeinit: Boolean(declaration.deinitializer),
       customConstructor: Boolean(declaration.constructor),
+      constructorVisibility: declaration.constructor?.visibility ?? "public",
       constructorSignature: stage0ConstructorSignature(declaration),
     } : declaration.kind === "trait" ? {
       nativeCName: "",
@@ -213,6 +214,7 @@ function stage0ModuleSymbols(
       variants: [],
       customDeinit: false,
       customConstructor: false,
+      constructorVisibility: "public",
       constructorSignature: null,
     } : declaration.kind === "enum" ? {
       nativeCName: declaration.nativeLayout?.language === "c" ? declaration.nativeLayout.name : "",
@@ -231,6 +233,7 @@ function stage0ModuleSymbols(
       })),
       customDeinit: false,
       customConstructor: false,
+      constructorVisibility: "public",
       constructorSignature: null,
     } : null,
     location: {
@@ -379,6 +382,7 @@ function sameModuleTypeSignature(
     && left.nativeCName === right.nativeCName
     && left.nativeCUnderlyingType === right.nativeCUnderlyingType
     && left.customConstructor === right.customConstructor
+    && left.constructorVisibility === right.constructorVisibility
     && left.executorAffinity === right.executorAffinity
     && sameModuleFunctionSignature(left.constructorSignature, right.constructorSignature)
     && left.typeParameters.length === right.typeParameters.length

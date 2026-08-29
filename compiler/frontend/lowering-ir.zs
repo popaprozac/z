@@ -7,6 +7,7 @@
 
 import {
   ArrayBindingKind,
+  ConstructorDeclaration,
   DeclarationKind,
   ExpressionKind,
   ExpressionSyntax,
@@ -128,6 +129,7 @@ export struct LoweredStruct {
   threadShareable: boolean;
   workerDestructible: boolean;
   needsDeinit: boolean;
+  initializer: Option<LoweredFunction>;
   deinitializer: Option<LoweredFunction>;
 }
 
@@ -9031,6 +9033,66 @@ function lowerExpressionContextual(
     }
     if (classType.kind != LoweredTypeKind.classType) {
       throw `native new lowering requires a class, found ${tree.nodes[index].value}`;
+    }
+    if (resolvedCallKind(evidence, tree, index) == "constructor") {
+      const parameterModes = resolvedCallParameterModes(
+        program,
+        evidence,
+        tree,
+        index
+      );
+      const parameterTypes = resolvedCallParameterTypes(
+        program,
+        evidence,
+        tree,
+        index
+      );
+      if (
+        parameterModes.length != tree.nodes[index].children.length
+        || parameterTypes.length != tree.nodes[index].children.length
+      ) {
+        throw `native constructor lowering lost the callable shape for ${tree.nodes[index].value}`;
+      }
+      let children = Array<usize>();
+      let labels = Array<String>();
+      labels.push("constructor");
+      let argument: usize = 0;
+      while (argument < tree.nodes[index].children.length) {
+        const argumentInput = tree.nodes[index].children[argument];
+        let value = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput,
+          parameterTypes[argument],
+          inout output
+        );
+        if (parameterModes[argument] == "value") {
+          value = try wrapOwnedStorage(
+            program,
+            importedTypes,
+            tree,
+            argumentInput,
+            parameterTypes[argument],
+            value,
+            inout output
+          );
+        }
+        children.push(value);
+        labels.push(parameterModes[argument].copyBytes(
+          0,
+          parameterModes[argument].byteLength
+        ));
+        argument = argument + 1;
+      }
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.classValue,
+        className,
+        children,
+        labels
+      );
     }
     if (tree.nodes[index].children.length != 1) {
       throw "native class construction requires one object initializer";
@@ -18783,12 +18845,21 @@ function loweredExpressionDirectlyConsumesChild(
     expressions[parent].kind == LoweredExpressionKind.structValue
     || expressions[parent].kind
       == LoweredExpressionKind.moveStructSpreadValue
-    || expressions[parent].kind == LoweredExpressionKind.classValue
     || expressions[parent].kind == LoweredExpressionKind.enumPayloadValue
     || expressions[parent].kind == LoweredExpressionKind.fixedArrayValue
     || expressions[parent].kind == LoweredExpressionKind.mutexValue
     || expressions[parent].kind == LoweredExpressionKind.onceInitialize
   ) return true;
+  if (expressions[parent].kind == LoweredExpressionKind.classValue) {
+    if (
+      expressions[parent].labels.length > 0
+      && expressions[parent].labels[0] == "constructor"
+    ) {
+      return expressions[parent].labels.length > childPosition + 1
+        && expressions[parent].labels[childPosition + 1] == "value";
+    }
+    return true;
+  }
   if (
     expressions[parent].kind == LoweredExpressionKind.directCall
     && childPosition > 0
@@ -22704,6 +22775,152 @@ function lowerDeinitializer(
   });
 }
 
+function lowerConstructor(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in sourcePath: String,
+  in sourceOwnerName: String,
+  in emittedOwnerName: String,
+  in declaration: ConstructorDeclaration
+): LoweredFunction throws String {
+  let parameters = Array<LoweredParameter>();
+  let ownedParameters = Array<LoweredCleanup>();
+  let liveFlags = Array<LoweredLiveFlag>();
+  for (const parameter of declaration.parameters) {
+    const parameterType = try lowerModuleType(
+      program,
+      importedTypes,
+      parameter.type
+    );
+    parameters.push(LoweredParameter({
+      name: parameter.name.copyBytes(0, parameter.name.byteLength),
+      type: move parameterType,
+      mode: lowerParameterMode(parameter.mode),
+    }));
+  }
+
+  const ownerName = `${sourceOwnerName}.constructor`;
+  let expressions = Array<LoweredExpression>();
+  let statements = Array<LoweredStatement>();
+  let sourceRoots = Array<usize>();
+  let roots = Array<usize>();
+  for (const root of declaration.body.roots) {
+    sourceRoots.push(root);
+    const loweredRoot = try lowerStatement(
+      program,
+      importedTypes,
+      evidence,
+      declaration.body,
+      ownerName,
+      root,
+      inout expressions,
+      inout statements
+    );
+    roots.push(loweredRoot);
+  }
+
+  const moveIndex = cleanupMoveIndex(
+    program,
+    evidence,
+    declaration.body,
+    expressions
+  );
+  let parameterIndex: usize = 0;
+  while (parameterIndex < declaration.parameters.length) {
+    const parameter = view declaration.parameters[parameterIndex];
+    const parameterType = view parameters[parameterIndex].type;
+    if (
+      parameter.mode == ParameterMode.value
+      && moduleTypeNeedsCleanup(program, importedTypes, parameterType)
+    ) {
+      const moved = cleanupIndexMovesBinding(
+        moveIndex,
+        parameter.name,
+        parameter.offset
+      );
+      let guard = "";
+      if (moved && moveIndex.hasControlFlow) {
+        guard = ownerLiveFlag(parameter.name);
+        liveFlags.push(LoweredLiveFlag({
+          owner: parameter.name.copyBytes(0, parameter.name.byteLength),
+          name: guard.copyBytes(0, guard.byteLength),
+          parameter: true,
+        }));
+      }
+      if (!moved || guard.byteLength > 0) {
+        ownedParameters.push(LoweredCleanup({
+          name: parameter.name.copyBytes(0, parameter.name.byteLength),
+          type: LoweredType({
+            kind: parameterType.kind,
+            name: parameterType.name.copyBytes(
+              0,
+              parameterType.name.byteLength
+            ),
+          }),
+          guard: move guard,
+        }));
+      }
+    }
+    parameterIndex = parameterIndex + 1;
+  }
+
+  const loopCleanups = Array<LoweredCleanup>();
+  const introduced = try planCleanupSequence(
+    program,
+    importedTypes,
+    evidence,
+    declaration.body,
+    ownerName,
+    sourceRoots,
+    roots,
+    ownedParameters,
+    expressions,
+    moveIndex,
+    inout statements,
+    inout liveFlags,
+    false,
+    false,
+    loopCleanups
+  );
+  let fallthroughCleanups = Array<LoweredCleanup>();
+  appendCleanupCopies(inout fallthroughCleanups, ownedParameters);
+  appendCleanupCopies(inout fallthroughCleanups, introduced);
+  attachMoveLiveFlags(inout expressions, liveFlags);
+  rewriteParameterValues(parameters, inout expressions);
+
+  return LoweredFunction({
+    name: `Z_${emittedOwnerName}___constructor`,
+    testName: "",
+    sourcePath: sourcePath.copyBytes(0, sourcePath.byteLength),
+    nativeCExportName: "",
+    compilerIntrinsic: "classConstructor",
+    compilerIntrinsicType: Option<LoweredType>.none,
+    asynchronous: false,
+    asyncSuspension: "",
+    mainDelaySegments: Array<LoweredMainDelaySegment>(),
+    mainDelayIfs: Array<LoweredMainDelayIf>(),
+    mainDelayMatches: Array<LoweredMainDelayMatch>(),
+    mainDelayLoops: Array<LoweredMainDelayLoop>(),
+    receiverType: Option.some(LoweredType({
+      kind: LoweredTypeKind.classType,
+      name: emittedOwnerName.copyBytes(0, emittedOwnerName.byteLength),
+    })),
+    receiverMode: LoweredParameterMode.inputOutput,
+    parameters,
+    returnType: LoweredType({
+      kind: LoweredTypeKind.voidType,
+      name: "",
+    }),
+    fallthroughExpression: Option<usize>.none,
+    expressions,
+    statements,
+    roots,
+    fallthroughCleanups,
+    liveFlags,
+  });
+}
+
 function lowerGenericFieldDefault(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -23809,6 +24026,7 @@ function appendConcreteGenericStructs(
         threadShareable,
         workerDestructible,
         needsDeinit,
+        initializer: Option<LoweredFunction>.none,
         deinitializer: Option<LoweredFunction>.none,
       }));
     }
@@ -25440,10 +25658,6 @@ function appendLoweredProgram(
     ) {
       throw "native lowering only supports structs and classes yet";
     }
-    match (in aggregate.constructorDeclaration) {
-      some(_) => throw `native lowering does not support constructor on ${aggregate.name} yet`;
-      none => {}
-    }
     let fields = Array<LoweredField>();
     for (const field of aggregate.fields) {
       const fieldType = try lowerModuleType(
@@ -25463,6 +25677,24 @@ function appendLoweredProgram(
         borrowedView: stringStartsWith(field.type.name, "view "),
         defaultTarget,
       }));
+    }
+    let initializer = Option<LoweredFunction>.none;
+    if (aggregate.kind == DeclarationKind.classDeclaration) {
+      match (in aggregate.constructorDeclaration) {
+        some(source) => {
+          const loweredInitializer = try lowerConstructor(
+            program,
+            importedTypes,
+            evidence,
+            sourcePath,
+            aggregate.name,
+            emittedName,
+            source
+          );
+          initializer = Option.some(move loweredInitializer);
+        }
+        none => {}
+      }
     }
     let deinitializer = Option<LoweredFunction>.none;
     match (in aggregate.deinitializer) {
@@ -25527,6 +25759,7 @@ function appendLoweredProgram(
       threadShareable,
       workerDestructible,
       needsDeinit,
+      initializer,
       deinitializer,
     }));
   }

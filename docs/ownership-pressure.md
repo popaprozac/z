@@ -4299,14 +4299,16 @@ class before that helper was declared. The native emitter now forward-declares
 every class weak cleanup helper, and a differential fixture compiles and runs
 the later-target shape under both compiler paths.
 
-Three fixed-point composition limits remain visible in the framework source:
-custom class constructors are not executable there yet, an inline `weak this`
-argument currently needs a named local for reliable native type evidence, and
-imported callable aliases sometimes need explicit local annotations before
-aggregate construction. Zapp uses double-underscore implementation fields and
-small typed locals rather than weakening its public ownership behavior. These
-are bootstrap gaps to remove before treating the window module's internal
-layout as final.
+The same pressure test then closed the custom-constructor boundary. Zapp's
+public `Window` and `WindowManager` types now use package-visible constructors
+and fields rather than public implementation state or double-underscore names.
+The fixed-point compiler executes non-generic, nonthrowing class constructors,
+including owned `String` transfer and copied `Weak<T>` handles, while generic,
+throwing, and value-struct constructors remain explicit staged boundaries. An
+inline `weak this` argument still needs a named local for reliable native type
+evidence, and imported callable aliases sometimes need explicit local
+annotations before aggregate construction; those are smaller composition gaps
+than exposing framework construction internals.
 
 ## Zapp multi-window Objective-C storage
 

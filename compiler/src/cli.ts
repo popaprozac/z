@@ -1454,7 +1454,7 @@ function stage0TypeShapes(program: Program, fileName: string): readonly Stage1Ty
           return `${visibility}${readonly}${field.name}: ${canonicalTypeName(field.type.name)};`;
         }),
         ...(declaration.constructor ? [
-          `constructor(${canonicalParameters(declaration.constructor.parameters)})${
+          `${declaration.constructor.visibility} constructor(${canonicalParameters(declaration.constructor.parameters)})${
             declaration.constructor.errorType ? ` throws ${canonicalTypeName(declaration.constructor.errorType.name)}` : ""
           };`,
         ] : []),
@@ -3224,8 +3224,12 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_records(
           .name_data = 0,
           .name_length = 0,
           .static_method = 0,
-          .visibility_data = 0,
-          .visibility_length = 0,
+          .visibility_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .typeSignature.data.some.constructorVisibility.data,
+          .visibility_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .typeSignature.data.some.constructorVisibility.length,
           .receiver_mode_data = 0,
           .receiver_mode_length = 0,
           .asynchronous = response->result.graph.resolved.modules.data[module_index]

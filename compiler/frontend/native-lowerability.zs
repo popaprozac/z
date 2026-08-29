@@ -2326,14 +2326,49 @@ function validateNativeAggregate(
     return;
   }
   match (in aggregate.constructorDeclaration) {
-    some(initializer) => throw loweringBoundary(
-      path,
-      "Z1000",
-      `constructor for "${aggregate.name}" is not executable in the native compiler yet`,
-      initializer.line,
-      initializer.column,
-      11
-    );
+    some(initializer) => {
+      if (aggregate.kind != DeclarationKind.classDeclaration) {
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          `constructor for struct "${aggregate.name}" is not executable in the native compiler yet`,
+          initializer.line,
+          initializer.column,
+          11
+        );
+      }
+      match (in initializer.errorType) {
+        some(_) => throw loweringBoundary(
+          path,
+          "Z1000",
+          `throwing constructor for class "${aggregate.name}" is not executable in the native compiler yet`,
+          initializer.line,
+          initializer.column,
+          11
+        );
+        none => {}
+      }
+      for (const statement of initializer.body.nodes) {
+        if (statement.kind != StatementKind.returnStatement) continue;
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          `explicit return from constructor for class "${aggregate.name}" is not executable in the first native constructor tier`,
+          statement.line,
+          statement.column,
+          6
+        );
+      }
+      try validateNativeBody(
+        path,
+        moduleIndex,
+        modules,
+        graph,
+        initializer.body,
+        false,
+        false
+      );
+    }
     none => {}
   }
   for (const field of aggregate.fields) {

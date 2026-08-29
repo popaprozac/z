@@ -108,6 +108,7 @@ export type FieldDeclaration = {
 
 export type ConstructorDeclaration = {
   readonly kind: "constructor";
+  readonly visibility: "public" | "internal" | "private";
   readonly parameters: Parameter[];
   readonly errorType: TypeReference | null;
   readonly body: Statement[];

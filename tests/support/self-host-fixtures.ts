@@ -24,6 +24,7 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-fixed-array-modules/main.zs" },
   { entry: "tests/fixtures/self-host-emit-generic-struct.zs" },
   { entry: "tests/fixtures/self-host-emit-generic-struct-modules/main.zs" },
+  { entry: "tests/fixtures/self-host-emit-class-constructor.zs" },
   {
     entry: "tests/fixtures/self-host-emit-generic-class.zs",
     expectedStdout: "drop 2\ndrop 1\n",
@@ -136,6 +137,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
 > = {
   "self-host-emit-borrowed-task-control-cancel.zs": focusedPositive,
   "self-host-emit-class-field-order.zs": differential,
+  "self-host-emit-class-constructor.zs": differential,
   "self-host-emit-fixed-array.zs": differential,
   "self-host-emit-fixed-array-owned.zs": differential,
   "self-host-emit-generic-struct.zs": differential,

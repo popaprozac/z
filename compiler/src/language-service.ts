@@ -413,6 +413,15 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       continue;
     }
     const keywordMember = previous?.kind === "dot" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(token.text);
+    const reservedKeyword = token.kind !== "identifier"
+      && sourceKeywordTokens.some((keyword) => keyword === token.text);
+    if (reservedKeyword) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("keyword"),
+        modifiers: 0,
+      });
+      continue;
+    }
     if (token.kind !== "identifier" && !keywordMember) continue;
     if (token.text === "_" && arrayDiscardOffsets.has(token.location.offset)) {
       classifications.set(token.location.offset, {

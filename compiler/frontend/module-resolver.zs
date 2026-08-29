@@ -5092,7 +5092,12 @@ function inferExpressionNodeType(
       }
       return value.copyBytes(0, value.byteLength);
     }
-    match (typeSymbolLocation(modules, moduleIndex, value)) {
+    const constructionType = transparentTypeName(
+      modules,
+      moduleIndex,
+      value
+    );
+    match (typeSymbolLocation(modules, moduleIndex, constructionType)) {
       some(location) => {
         if (
           modules[location.moduleIndex].symbols[location.symbolIndex].kind
@@ -5109,7 +5114,7 @@ function inferExpressionNodeType(
         const constructionAffinity = typeHasMainExecutorLifecycle(
           modules,
           moduleIndex,
-          value
+          constructionType
         ) ? "thread.main" : "";
         try requireMainExecutorContext(
           module,
@@ -5125,6 +5130,45 @@ function inferExpressionNodeType(
           some(typeSignature) => {
             match (in typeSignature.constructorSignature) {
               some(signature) => {
+                if (typeSignature.constructorVisibility == "private") {
+                  const activeOwner = valueBindingType(
+                    bindings,
+                    "__z_native_owner_type"
+                  );
+                  if (
+                    activeOwner.byteLength == 0
+                    || !equivalentTypes(
+                      modules,
+                      moduleIndex,
+                      activeOwner,
+                      value
+                    )
+                  ) {
+                    throw resolutionError(
+                      ModuleResolveErrorKind.unknownMember,
+                      module.path,
+                      `constructor for class "${value}" is private`,
+                      node.line,
+                      node.column
+                    );
+                  }
+                }
+                if (
+                  typeSignature.constructorVisibility == "internal"
+                  && (
+                    modules[moduleIndex].packageIdentity.byteLength == 0
+                    || modules[moduleIndex].packageIdentity
+                      != modules[location.moduleIndex].packageIdentity
+                  )
+                ) {
+                  throw resolutionError(
+                    ModuleResolveErrorKind.unknownMember,
+                    module.path,
+                    `constructor for class "${value}" is internal to its package`,
+                    node.line,
+                    node.column
+                  );
+                }
                 let substitutions = Array<NativeValueBinding>();
                 let callableSignature = rebaseModuleFunctionSignature(
                   modules,

@@ -746,6 +746,57 @@ function requireMemberVisibility(
   });
 }
 
+function requireConstructorVisibility(
+  declaration: StructDeclaration,
+  useLocation: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const constructor = declaration.constructor;
+  if (!constructor || constructor.visibility === "public") return;
+  const className = displayAssignableType(declaration.name, state);
+  if (constructor.visibility === "private") {
+    if (state.activeReceiver === declaration.name) return;
+    throw new DiagnosticError(
+      fileName,
+      useLocation,
+      `constructor for class ${JSON.stringify(className)} is private`,
+      {
+        code: "Z0605",
+        labels: [{
+          location: constructor.location,
+          message: "private constructor declared here",
+          length: "constructor".length,
+        }],
+        helps: ["use a public factory provided by the class"],
+      },
+    );
+  }
+  const declaringFile = constructor.location.fileName ?? declaration.location.fileName;
+  const usingFile = useLocation.fileName ?? fileName;
+  const declaringPackage = declaringFile
+    ? state.packageIdsByFile.get(declaringFile)
+    : undefined;
+  const usingPackage = usingFile
+    ? state.packageIdsByFile.get(usingFile)
+    : undefined;
+  if (declaringPackage && declaringPackage === usingPackage) return;
+  throw new DiagnosticError(
+    fileName,
+    useLocation,
+    `constructor for class ${JSON.stringify(className)} is internal to its package`,
+    {
+      code: "Z0605",
+      labels: [{
+        location: constructor.location,
+        message: "internal constructor declared here",
+        length: "constructor".length,
+      }],
+      helps: ["use a public factory provided by the package"],
+    },
+  );
+}
+
 function requireDestructuredFieldVisibility(
   field: FieldDeclaration,
   declaration: StructDeclaration,
@@ -9240,6 +9291,7 @@ function inferExpressionInner(
       );
       rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
       if (declaration.constructor) {
+        requireConstructorVisibility(declaration, expression.location, fileName, state);
         const target = constructorFunction(declaration);
         const resolution = { location: expression.location, aggregate: declaration, declaration: target };
         const callable = state.observer?.resolveConstructorCall?.(resolution) ?? target;

@@ -3,6 +3,7 @@ import {
   cli,
   compileToC,
   completions,
+  decodeSemanticTokens,
   diagnostics,
   hover,
   mkdirSync,
@@ -12,10 +13,13 @@ import {
   resolve,
   rmSync,
   spawnSync,
+  semanticTokens,
+  semanticTokenTypes,
   test,
   writeFileSync,
 } from "./support/bootstrap.ts";
 import { createHash } from "node:crypto";
+import type { ZProgramMetadata } from "../compiler/src/program-metadata.ts";
 import { lex } from "../compiler/src/lexer.ts";
 import { linkSourceModules } from "../compiler/src/modules.ts";
 import { parse } from "../compiler/src/parser.ts";
@@ -24,6 +28,55 @@ import {
   applyGeneratedBuildOverlay,
   prepareProject,
 } from "../compiler/src/project.ts";
+
+test("highlights internal visibility through syntax and semantic tokens", () => {
+  const source = `
+    internal function packageAnswer(): i32 { return 42; }
+    class Session {
+      internal readonly value: i32;
+      internal constructor(value: i32) { this.value = value; }
+      internal function read(): i32 { return this.value; }
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-internal-highlighting-");
+  try {
+    const file = resolve(directory, "main.zs");
+    writeFileSync(file, source);
+    writeFileSync(resolve(directory, "z.json"), JSON.stringify({
+      package: { name: "highlighting", version: "0.1.0" },
+      target: { name: "highlighting", entry: "main.zs" },
+    }));
+    const keyword = semanticTokenTypes.indexOf("keyword");
+    const tokens = decodeSemanticTokens(semanticTokens(source, file).data);
+    const lines = source.split("\n");
+    const internalOffsets = lines.flatMap((line, lineIndex) => {
+      const offsets: Array<{ line: number; character: number }> = [];
+      let character = line.indexOf("internal");
+      while (character >= 0) {
+        offsets.push({ line: lineIndex, character });
+        character = line.indexOf("internal", character + 1);
+      }
+      return offsets;
+    });
+    assert.equal(internalOffsets.length, 4);
+    for (const offset of internalOffsets) {
+      assert.ok(tokens.some((token) => (
+        token.line === offset.line
+        && token.character === offset.character
+        && token.length === "internal".length
+        && token.type === keyword
+      )));
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+
+  const grammar = readFileSync(
+    resolve(import.meta.dir, "../editors/vscode/syntaxes/z.tmLanguage.json"),
+    "utf8",
+  );
+  assert.match(grammar, /private\|internal\|public/);
+});
 
 test("resolves generated modules without editing authored source", () => {
   const directory = mkdtempSync("/tmp/z-generated-build-");
@@ -437,13 +490,56 @@ test("enforces manifest-scoped internal declarations and members", () => {
           return this.value;
         }
       }
+
+      export class PackageSession {
+        internal readonly value: i32;
+
+        internal constructor(value: i32) {
+          this.value = value;
+        }
+
+        function read(): i32 {
+          return this.value;
+        }
+      }
+
+      export class PrivateSession {
+        private readonly value: i32;
+
+        private constructor(value: i32) {
+          this.value = value;
+        }
+
+        static function create(value: i32): PrivateSession {
+          return new PrivateSession(value);
+        }
+
+        function read(): i32 {
+          return this.value;
+        }
+      }
     `);
     writeFileSync(apiFile, `
-      import { packageAnswer, PackageCounter } from "./internals.zs";
+      import {
+        packageAnswer,
+        PackageCounter,
+        PackageSession,
+        PrivateSession,
+      } from "./internals.zs";
+
+      export type PackageSessionHandle = PackageSession;
+      export type PrivateSessionHandle = PrivateSession;
 
       export function answer(): i32 {
         const counter = PackageCounter();
-        return packageAnswer() + counter.secret() - counter.publicValue();
+        const packageSession = new PackageSession(21);
+        const privateSession = PrivateSession.create(21);
+        return packageAnswer()
+          + counter.secret()
+          - counter.publicValue()
+          + packageSession.read()
+          + privateSession.read()
+          - 42;
       }
     `);
     writeFileSync(resolve(packageDirectory, "z.json"), JSON.stringify({
@@ -475,6 +571,20 @@ test("enforces manifest-scoped internal declarations and members", () => {
     assert.equal(metadata.status, 0, metadata.stderr);
     assert.doesNotMatch(metadata.stdout, /packageAnswer|secret|\"name\":\"value\"/);
     assert.match(metadata.stdout, /publicValue/);
+    const metadataDocument = JSON.parse(metadata.stdout) as ZProgramMetadata;
+    const frameworkMetadata = metadataDocument.modules.find((module) => (
+      module.path === realpathSync(internalsFile)
+    ));
+    const packageSessionMetadata = frameworkMetadata?.symbols.find((symbol) => (
+      symbol.name === "PackageSession"
+    ));
+    const privateSessionMetadata = frameworkMetadata?.symbols.find((symbol) => (
+      symbol.name === "PrivateSession"
+    ));
+    assert.equal(packageSessionMetadata?.typeSignature?.constructorVisibility, "internal");
+    assert.equal(packageSessionMetadata?.typeSignature?.constructorSignature, null);
+    assert.equal(privateSessionMetadata?.typeSignature?.constructorVisibility, "private");
+    assert.equal(privateSessionMetadata?.typeSignature?.constructorSignature, null);
 
     const siblingCompletionSource = `
       import { pack } from "./internals.zs";
@@ -552,6 +662,55 @@ test("enforces manifest-scoped internal declarations and members", () => {
       () => compileToC(readFileSync(mainFile, "utf8"), mainFile),
       /field "value" is internal to its package/,
     );
+
+    writeFileSync(mainFile, `
+      import { PackageSessionHandle } from "framework";
+      function main(): i32 {
+        const session = new PackageSessionHandle(42);
+        return session.read();
+      }
+    `);
+    assert.throws(
+      () => compileToC(readFileSync(mainFile, "utf8"), mainFile),
+      /constructor for class "PackageSession" is internal to its package/,
+    );
+    const nativeInternal = spawnSync(
+      process.execPath,
+      [cli, "check", mainFile, "--native-frontend"],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    assert.notEqual(nativeInternal.status, 0);
+    assert.match(
+      nativeInternal.stderr,
+      /constructor for class "PackageSession" is internal to its package/,
+    );
+
+    writeFileSync(mainFile, `
+      import { PrivateSessionHandle } from "framework";
+      function main(): i32 {
+        const session = new PrivateSessionHandle(42);
+        return session.read();
+      }
+    `);
+    assert.throws(
+      () => compileToC(readFileSync(mainFile, "utf8"), mainFile),
+      /constructor for class "PrivateSession" is private/,
+    );
+
+    writeFileSync(mainFile, `
+      import { PrivateSessionHandle } from "framework";
+      function main(): i32 {
+        const session = PrivateSessionHandle.create(42);
+        return session.read() - 42;
+      }
+    `);
+    assert.doesNotThrow(() => compileToC(readFileSync(mainFile, "utf8"), mainFile));
+    const nativeFactory = spawnSync(
+      process.execPath,
+      [cli, "check", mainFile, "--native-frontend"],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    assert.equal(nativeFactory.status, 0, nativeFactory.stderr);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

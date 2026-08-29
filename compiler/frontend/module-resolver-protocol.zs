@@ -367,6 +367,8 @@ function appendConstructorSignature(
           output.appendAscii(9);
           appendHexUsize(inout output, symbolIndex);
           output.appendAscii(9);
+          appendHexText(inout output, typeSignature.constructorVisibility);
+          output.appendAscii(9);
           if (signature.asynchronous) output.appendAscii(49);
           else output.appendAscii(48);
           output.appendAscii(9);

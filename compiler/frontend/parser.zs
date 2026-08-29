@@ -255,6 +255,7 @@ export struct FieldDeclaration {
 }
 
 export struct ConstructorDeclaration {
+  visibility: Visibility;
   parameters: Array<Parameter>;
   errorType: Option<TypeReference>;
   body: StatementArena;
@@ -3363,7 +3364,8 @@ function parseTestDeclaration(
 function parseConstructor(
   in tokens: Array<Token>,
   inout current: usize,
-  in ownerName: String
+  in ownerName: String,
+  visibility: Visibility
 ): ConstructorDeclaration throws ParserError {
   let pendingGreater: usize = 0;
   const start = try expect(tokens, inout current, TokenKind.constructorKeyword, "a constructor declaration");
@@ -3384,6 +3386,7 @@ function parseConstructor(
   );
   const body = StatementArena({ nodes: bodyNodes, roots: bodyRoots });
   return ConstructorDeclaration({
+    visibility,
     parameters,
     errorType,
     body,
@@ -3430,14 +3433,35 @@ function parseAggregateDeclaration(
   let hasConstructor = false;
   let hasDeinitializer = false;
   while (tokens[current].kind != TokenKind.rightBrace && tokens[current].kind != TokenKind.eof) {
+    let visibility = Visibility.publicVisibility;
+    let visibilitySpecified = false;
+    let visibilityText = "";
+    if (takeIf(tokens, inout current, TokenKind.publicKeyword)) {
+      visibility = Visibility.publicVisibility;
+      visibilitySpecified = true;
+      visibilityText = "public";
+    }
+    else if (takeIf(tokens, inout current, TokenKind.internalKeyword)) {
+      visibility = Visibility.internalVisibility;
+      visibilitySpecified = true;
+      visibilityText = "internal";
+    }
+    else if (takeIf(tokens, inout current, TokenKind.privateKeyword)) {
+      visibility = Visibility.privateVisibility;
+      visibilitySpecified = true;
+      visibilityText = "private";
+    }
     if (tokens[current].kind == TokenKind.constructorKeyword) {
       if (hasConstructor) throw fail(tokens[current], `${name.text} cannot declare more than one constructor`);
-      const parsed = try parseConstructor(tokens, inout current, name.text);
+      const parsed = try parseConstructor(tokens, inout current, name.text, visibility);
       initializer = Option.some(parsed);
       hasConstructor = true;
       continue;
     }
     if (tokens[current].kind == TokenKind.deinitKeyword) {
+      if (visibilitySpecified) {
+        throw fail(tokens[current], `\`${visibilityText}\` cannot modify a deinit block`);
+      }
       if (hasDeinitializer) throw fail(tokens[current], `${name.text} cannot declare more than one deinit block`);
       const cleanupToken = try expect(tokens, inout current, TokenKind.deinitKeyword, "a deinit declaration");
       let bodyNodes = Array<Statement>();
@@ -3458,10 +3482,6 @@ function parseAggregateDeclaration(
       continue;
     }
 
-    let visibility = Visibility.publicVisibility;
-    if (takeIf(tokens, inout current, TokenKind.publicKeyword)) visibility = Visibility.publicVisibility;
-    else if (takeIf(tokens, inout current, TokenKind.internalKeyword)) visibility = Visibility.internalVisibility;
-    else if (takeIf(tokens, inout current, TokenKind.privateKeyword)) visibility = Visibility.privateVisibility;
     const fieldReadonly = takeIf(tokens, inout current, TokenKind.readonlyKeyword);
     const isStatic = takeIf(tokens, inout current, TokenKind.staticKeyword);
     const asynchronous = takeIf(tokens, inout current, TokenKind.asyncKeyword);
@@ -4387,7 +4407,9 @@ export function aggregateShapeText(in declaration: AggregateDeclaration): String
   }
   match (in declaration.constructorDeclaration) {
     some(initializer) => {
-      output.append(" constructor(");
+      output.append(" ");
+      output.append(visibilityName(initializer.visibility));
+      output.append("constructor(");
       let firstParameter = true;
       for (const parameter of initializer.parameters) {
         if (!firstParameter) output.append(", ");

@@ -2943,6 +2943,9 @@ function appendClassAndOnceRuntime(
   // valid C regardless of aggregate ordering.
   for (const aggregate of program.structs) {
     if (!aggregate.referenceType) continue;
+    output.append("static inline __attribute__((unused)) Z_Weak Z_");
+    output.append(aggregate.name);
+    output.append("_weak_retain(Z_Weak value);\n");
     output.append("static inline __attribute__((unused)) void Z_");
     output.append(aggregate.name);
     output.append("_weak_deinit(const Z_Weak *value);\n");
@@ -2955,33 +2958,92 @@ function appendClassAndOnceRuntime(
     output.append(" *Z_");
     output.append(aggregate.name);
     output.append("_new(");
-    let field: usize = 0;
-    while (field < aggregate.fields.length) {
-      if (field > 0) output.append(", ");
-      const fieldType = try cType(aggregate.fields[field].type);
-      output.append(fieldType);
-      output.append(" ");
-      appendCBindingName(inout output, aggregate.fields[field].name);
-      field = field + 1;
+    let customConstructor = false;
+    match (in aggregate.initializer) {
+      some(initializer) => {
+        customConstructor = true;
+        let parameter: usize = 0;
+        while (parameter < initializer.parameters.length) {
+          if (parameter > 0) output.append(", ");
+          const parameterType = try cType(
+            initializer.parameters[parameter].type
+          );
+          if (
+            initializer.parameters[parameter].mode
+              == LoweredParameterMode.input
+            && initializer.parameters[parameter].type.kind
+              != LoweredTypeKind.classType
+          ) output.append("const ");
+          output.append(parameterType);
+          if (
+            initializer.parameters[parameter].mode
+              == LoweredParameterMode.input
+            && initializer.parameters[parameter].type.kind
+              == LoweredTypeKind.classType
+          ) output.append(" const *");
+          else if (
+            initializer.parameters[parameter].mode
+              != LoweredParameterMode.value
+          ) output.append(" *");
+          else output.append(" ");
+          appendCBindingName(
+            inout output,
+            initializer.parameters[parameter].name
+          );
+          parameter = parameter + 1;
+        }
+        if (initializer.parameters.length == 0) output.append("void");
+      }
+      none => {
+        let field: usize = 0;
+        while (field < aggregate.fields.length) {
+          if (field > 0) output.append(", ");
+          const fieldType = try cType(aggregate.fields[field].type);
+          output.append(fieldType);
+          output.append(" ");
+          appendCBindingName(inout output, aggregate.fields[field].name);
+          field = field + 1;
+        }
+        if (aggregate.fields.length == 0) output.append("void");
+      }
     }
-    if (aggregate.fields.length == 0) output.append("void");
     output.append(") {\n  Z_");
     output.append(aggregate.name);
-    output.append(" *_z_stage1_instance = (Z_");
+    output.append(" *self = (Z_");
     output.append(aggregate.name);
     output.append(" *)calloc(1, sizeof(Z_");
     output.append(aggregate.name);
-    output.append("));\n  if (_z_stage1_instance == NULL) abort();\n");
-    output.append("  _z_stage1_instance->_z_refcount = 1;\n");
-    output.append("  _z_stage1_instance->_z_weak = NULL;\n");
-    for (const item of aggregate.fields) {
-      output.append("  _z_stage1_instance->");
-      output.append(item.name);
-      output.append(" = ");
-      appendCBindingName(inout output, item.name);
-      output.append(";\n");
+    output.append("));\n  if (self == NULL) abort();\n");
+    output.append("  self->_z_refcount = 1;\n");
+    output.append("  self->_z_weak = NULL;\n");
+    if (customConstructor) {
+      match (in aggregate.initializer) {
+        some(initializer) => {
+          for (const parameter of initializer.parameters) {
+            output.append("  (void)");
+            appendCBindingName(inout output, parameter.name);
+            output.append(";\n");
+          }
+          for (const flag of initializer.liveFlags) {
+            if (!flag.parameter) continue;
+            output.append("  bool ");
+            appendCBindingName(inout output, flag.name);
+            output.append(" = true;\n");
+          }
+          try appendFunctionTail(inout output, initializer);
+        }
+        none => {}
+      }
+    } else {
+      for (const item of aggregate.fields) {
+        output.append("  self->");
+        output.append(item.name);
+        output.append(" = ");
+        appendCBindingName(inout output, item.name);
+        output.append(";\n");
+      }
     }
-    output.append("  return _z_stage1_instance;\n}\n\n");
+    output.append("  return self;\n}\n\n");
     output.append("static inline __attribute__((unused)) Z_");
     output.append(aggregate.name);
     output.append(" *Z_");
@@ -4811,12 +4873,23 @@ function appendExpression(
     let field: usize = 0;
     while (field < declaration.expressions[index].children.length) {
       if (field > 0) output.append(", ");
+      const constructorArgument = declaration.expressions[index].labels.length
+          > field + 1
+        && declaration.expressions[index].labels[0] == "constructor";
+      const borrowed = constructorArgument
+        && (
+          declaration.expressions[index].labels[field + 1] == "in"
+          || declaration.expressions[index].labels[field + 1] == "inout"
+          || declaration.expressions[index].labels[field + 1] == "out"
+        );
+      if (borrowed) output.append("&(");
       const value = declaration.expressions[index].children[field];
       try appendExpression(
         inout output,
         declaration,
         value
       );
+      if (borrowed) output.append(")");
       field = field + 1;
     }
     output.append(")");
@@ -19266,6 +19339,18 @@ function emitLoweredC(
     output.append("Tag_failure, .payload.failure = status };\n}\n\n");
   }
   appendSystemStandardRuntime(inout output, program);
+  // Custom class constructors execute before ordinary function definitions
+  // in the generated translation unit. Make every Z callable visible first
+  // so constructor bodies can use the same direct calls as ordinary code.
+  for (const declaration of program.functions) {
+    try appendFunctionSignature(
+      inout output,
+      declaration,
+      usesProcessArguments
+    );
+    output.append(";\n");
+  }
+  if (program.functions.length > 0) output.append("\n");
   try appendClassAndOnceRuntime(inout output, program);
   for (const declaration of program.slices) {
     const elementType = try cType(declaration.elementType);
@@ -19452,15 +19537,6 @@ function emitLoweredC(
     output.append("  self->length += 1;\n");
     output.append("}\n\n");
   }
-  for (const declaration of program.functions) {
-    try appendFunctionSignature(
-      inout output,
-      declaration,
-      usesProcessArguments
-    );
-    output.append(";\n");
-  }
-  if (program.functions.length > 0) output.append("\n");
   try appendMapRuntime(inout output, program);
   try appendSetRuntime(inout output, program);
   appendAsyncCallableRuntime(inout output, program);

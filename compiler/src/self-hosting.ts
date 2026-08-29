@@ -186,6 +186,7 @@ export type Stage1ModuleTypeSignature = {
   readonly variants: readonly Stage1ModuleVariantSignature[];
   readonly customDeinit: boolean;
   readonly customConstructor: boolean;
+  readonly constructorVisibility: "public" | "internal" | "private";
   readonly constructorSignature: Stage1ModuleFunctionSignature | null;
 };
 
@@ -290,6 +291,7 @@ function copyStage1ModuleTypeSignature(
     variants: signature.variants.map((variant) => ({ ...variant })),
     customDeinit: signature.customDeinit,
     customConstructor: signature.customConstructor,
+    constructorVisibility: signature.constructorVisibility,
     constructorSignature: signature.constructorSignature
       ? copyStage1ModuleFunctionSignature(signature.constructorSignature)
       : null,
@@ -707,12 +709,13 @@ export function decodeStage1ModuleGraphStream(
         variants: decodedVariants,
         customDeinit: customDeinit === "1",
         customConstructor: customConstructor === "1",
+        constructorVisibility: "public",
         constructorSignature: null,
       };
       continue;
     }
     if (fields[0] === "constructorSignature") {
-      if (fields.length < 8) throw new Error(`malformed stage-1 constructor signature line: ${line}`);
+      if (fields.length < 9) throw new Error(`malformed stage-1 constructor signature line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "constructor signature module");
       const symbolIndex = parseProtocolHexInteger(fields[2], "constructor signature symbol");
       const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
@@ -723,18 +726,26 @@ export function decodeStage1ModuleGraphStream(
       ) {
         throw new Error("stage-1 constructor signature does not identify an unsigned constructor type");
       }
-      if (fields[3] !== "0") {
-        throw new Error(`malformed stage-1 constructor async state: ${fields[3]}`);
+      const constructorVisibility = Buffer.from(fields[3], "hex").toString("utf8");
+      if (
+        constructorVisibility !== "public"
+        && constructorVisibility !== "internal"
+        && constructorVisibility !== "private"
+      ) {
+        throw new Error(`malformed stage-1 constructor visibility: ${line}`);
       }
-      if (!/^(?:[0-9a-f]{2})*$/.test(fields[4]) || !/^(?:[0-9a-f]{2})*$/.test(fields[5])) {
+      if (fields[4] !== "0") {
+        throw new Error(`malformed stage-1 constructor async state: ${fields[4]}`);
+      }
+      if (!/^(?:[0-9a-f]{2})*$/.test(fields[5]) || !/^(?:[0-9a-f]{2})*$/.test(fields[6])) {
         throw new Error(`malformed stage-1 constructor signature text: ${line}`);
       }
-      const typeParameterCount = parseProtocolHexInteger(fields[6], "constructor type parameter count");
-      const parameterCount = parseProtocolHexInteger(fields[7], "constructor parameter count");
-      if (fields.length !== 8 + typeParameterCount + (parameterCount * 2)) {
+      const typeParameterCount = parseProtocolHexInteger(fields[7], "constructor type parameter count");
+      const parameterCount = parseProtocolHexInteger(fields[8], "constructor parameter count");
+      if (fields.length !== 9 + typeParameterCount + (parameterCount * 2)) {
         throw new Error(`malformed stage-1 constructor signature arity: ${line}`);
       }
-      const encodedTypes = fields.slice(8);
+      const encodedTypes = fields.slice(9);
       if (encodedTypes.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))) {
         throw new Error(`malformed stage-1 constructor signature type: ${line}`);
       }
@@ -744,12 +755,15 @@ export function decodeStage1ModuleGraphStream(
       if (!parameterModes.every(isStage1ParameterMode)) {
         throw new Error(`malformed stage-1 constructor parameter mode: ${line}`);
       }
+      (symbol.typeSignature as {
+        constructorVisibility: "public" | "internal" | "private";
+      }).constructorVisibility = constructorVisibility;
       (symbol.typeSignature as { constructorSignature: Stage1ModuleFunctionSignature | null }).constructorSignature = {
         asynchronous: false,
         executorAffinity: null,
         threadContract: null,
-        returnType: Buffer.from(fields[4], "hex").toString("utf8"),
-        errorType: fields[5].length === 0 ? null : Buffer.from(fields[5], "hex").toString("utf8"),
+        returnType: Buffer.from(fields[5], "hex").toString("utf8"),
+        errorType: fields[6].length === 0 ? null : Buffer.from(fields[6], "hex").toString("utf8"),
         typeParameters: encodedTypes.slice(0, typeParameterCount)
           .map((field) => Buffer.from(field, "hex").toString("utf8")),
         typeParameterConstraints: [],

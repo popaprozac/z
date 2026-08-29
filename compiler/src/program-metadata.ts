@@ -101,6 +101,9 @@ function publicSymbolMetadata(symbol: Stage1ModuleSymbol): Stage1ModuleSymbol {
       ...copy.typeSignature,
       fields: copy.typeSignature.fields.filter((field) => field.visibility === "public"),
       methods: copy.typeSignature.methods.filter((method) => method.visibility === "public"),
+      constructorSignature: copy.typeSignature.constructorVisibility === "public"
+        ? copy.typeSignature.constructorSignature
+        : null,
     },
   };
 }
@@ -110,6 +113,9 @@ function resolutionIsPublicMember(
   kind: Stage1ModuleCallResolution["kind"],
   targetName: string,
 ): boolean {
+  if (kind === "constructor") {
+    return symbol.typeSignature?.constructorVisibility === "public";
+  }
   if (kind !== "method" && kind !== "staticMethod") return true;
   const methodName = targetName.split(".").at(-1) ?? targetName;
   const method = symbol.typeSignature?.methods.find((candidate) => candidate.name === methodName);

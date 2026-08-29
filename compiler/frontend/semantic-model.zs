@@ -310,6 +310,7 @@ export struct ModuleTypeSignature {
   variants: Array<ModuleVariantSignature>;
   customDeinit: boolean;
   customConstructor: boolean;
+  constructorVisibility: String = "public";
   constructorSignature: Option<ModuleFunctionSignature>;
   foreignKind: String;
   foreignLayout: String;

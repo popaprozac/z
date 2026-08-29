@@ -218,13 +218,19 @@ function appendTypeSignature(
   appendBoolean(inout output, signature.customDeinit);
   output.append(",\"customConstructor\":");
   appendBoolean(inout output, signature.customConstructor);
+  output.append(",\"constructorVisibility\":");
+  appendQuoted(inout output, signature.constructorVisibility);
   output.append(",\"constructorSignature\":");
-  match (in signature.constructorSignature) {
-    some(constructorSignature) => appendFunctionSignature(
-      inout output,
-      constructorSignature
-    );
-    none => output.append("null");
+  if (signature.constructorVisibility != "public") {
+    output.append("null");
+  } else {
+    match (in signature.constructorSignature) {
+      some(constructorSignature) => appendFunctionSignature(
+        inout output,
+        constructorSignature
+      );
+      none => output.append("null");
+    }
   }
   output.append("}");
 }
@@ -256,6 +262,12 @@ function resolutionTargetsPublicMember(
   in symbol: ModuleSymbol,
   in resolution: ModuleCallResolution
 ): boolean {
+  if (resolution.kind == "constructor") {
+    return match (in symbol.typeSignature) {
+      some(signature) => signature.constructorVisibility == "public";
+      none => false;
+    };
+  }
   if (resolution.kind != "method" && resolution.kind != "staticMethod") {
     return true;
   }

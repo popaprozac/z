@@ -46,6 +46,11 @@ completion and public metadata. The owning `z.json` must declare
 `package.name`; directory proximity or presence in one linked graph does not
 grant access. `internal` and `export` are mutually exclusive.
 
+The same boundary applies to `internal constructor`: dependent packages may
+name and receive the class, but only the owning package may construct it. The
+inaccessible constructor signature is omitted from public metadata and editor
+call surfaces.
+
 `internal` is a Z package boundary, not a C visibility annotation or a
 native-code security boundary. An internal function cannot also be `export c`;
 only explicit `export c function` declarations become supported C entry points

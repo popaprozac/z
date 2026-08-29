@@ -2194,6 +2194,51 @@ test("materializes demand-driven generic ARC classes natively", () => {
   }
 }, 240_000);
 
+test("executes non-throwing class constructors in fixed-point output", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-class-constructor.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z_Manager \*Z_Manager_new\(int32_t value\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_Window \*Z_Window_new\(Z_String title, Z_Weak manager\)/,
+  );
+  assert.match(emission.stdout, /self->title = _z_stage1_assignment_/);
+  assert.match(emission.stdout, /self->manager = _z_stage1_assignment_/);
+
+  const directory = mkdtempSync("/tmp/z-native-class-constructor-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("zeroes and upgrades ARC weak references in fixed-point output", () => {
   const input = resolve(
     projectRoot,
@@ -7802,7 +7847,11 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     assert.match(objcEmission, /\[owner setWritableBase: owner\]/);
     assert.match(
       objcEmission,
-      /Z_NativeRoot \*_z_stage1_instance = \(Z_NativeRoot \*\)calloc\(1, sizeof\(Z_NativeRoot\)\)/,
+      /Z_NativeRoot \*self = \(Z_NativeRoot \*\)calloc\(1, sizeof\(Z_NativeRoot\)\)/,
+    );
+    assert.match(
+      objcEmission,
+      /Z_NativeRoot \* const root[^=]*= Z_NativeRoot_new\(owner\)/,
     );
     assert.match(
       objcEmission,
@@ -14718,6 +14767,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
             variants: [],
             customDeinit: true,
             customConstructor: true,
+            constructorVisibility: "public",
             constructorSignature: {
               asynchronous: false,
               executorAffinity: "thread.main",
@@ -14752,6 +14802,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
             ],
             customDeinit: false,
             customConstructor: false,
+            constructorVisibility: "public",
             constructorSignature: null,
           },
           offset: 40,
@@ -14880,6 +14931,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
       variants: [],
       customDeinit: true,
       customConstructor: true,
+      constructorVisibility: "public",
       constructorSignature: {
         asynchronous: false,
         executorAffinity: "thread.main",
@@ -14982,7 +15034,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tclass\t536563726574\t1\t0\t-\t536563726574\t0000000000000000\t0000000000000001\t0000000000000001\n"
       + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t1\t\t\t\n"
-      + "constructorSignature\t0000000000000000\t0000000000000000\t0\t536563726574\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
+      + "constructorSignature\t0000000000000000\t0000000000000000\t7075626c6963\t0\t536563726574\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 constructor parameter mode/,

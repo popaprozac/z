@@ -175,7 +175,9 @@ cannot be imported by a dependent package. Internal fields and methods follow
 the same rule. The owning `z.json` must declare `package.name`; directory
 proximity alone never grants access. `internal` and `export` are mutually
 exclusive, and package-internal names are omitted from public metadata and
-external completion. An internal module constant requires an explicit type for
+external completion. Internal constructor signatures are omitted by the same
+boundary even though their class remains usable as a public type. An internal
+module constant requires an explicit type for
 the same cross-module stability reason as an exported constant.
 
 `internal` governs Z package visibility; it has no direct C spelling and is not
@@ -881,8 +883,32 @@ const same = session;
 Field visibility is separate from storage and ownership: struct and class fields
 are public unless marked `internal` or `private`. `internal` grants the owning
 manifest-defined package access; `private` grants only the declaring aggregate.
-A user class constructor may establish
-invariants and may throw. `trait` is a nominal behavior contract; a struct or
+A user class constructor may establish invariants and may throw. Constructors
+use the same visibility words:
+
+```zs
+export class Session {
+  private readonly id: u64;
+
+  internal constructor(id: u64) {
+    this.id = id;
+  }
+
+  static function createForTests(id: u64): Session {
+    return new Session(id);
+  }
+}
+```
+
+An omitted or `public constructor` is callable wherever the class is visible.
+An `internal constructor` is callable only from the exact manifest-defined
+package. A `private constructor` is callable only inside its declaring class,
+including a static factory. The class can still cross a public API as a named
+type; public metadata and external editor call surfaces omit an inaccessible
+constructor signature. Constructors remain class-only; value structs continue
+to use `Type(...)` construction.
+
+`trait` is a nominal behavior contract; a struct or
 class opts in with `implements`. Traits do not imply inheritance or storage.
 
 Imported Objective-C protocols use the same nominal `implements` list. A
