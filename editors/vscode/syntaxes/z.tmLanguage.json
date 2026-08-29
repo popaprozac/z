@@ -520,10 +520,10 @@
         "name": "storage.type.primitive.z",
         "match": "\\b(?:void|boolean|cstring|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|usize|isize)\\b"
       }, {
-        "name": "support.type.intrinsic.z",
+        "name": "entity.name.type.z",
         "match": "\\b(?:String|Slice|Array|Option|Result|Task|Weak)\\b"
       }, {
-        "name": "entity.name.type.parameter.z",
+        "name": "entity.name.type.z",
         "match": "\\b[A-Z](?=\\s*(?:[,>:&=)]|\\b(?:extends|implements)\\b))"
       }, {
         "name": "entity.name.type.z",

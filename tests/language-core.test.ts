@@ -4647,7 +4647,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
     && new RegExp(pattern.match).test("ServiceLifecycle")
   )));
   assert.ok(grammar.repository.types.patterns.some((pattern: { name: string; match: string }) => (
-    pattern.name === "entity.name.type.parameter.z"
+    pattern.name === "entity.name.type.z"
     && new RegExp(pattern.match).test("T: Service")
   )));
   assert.doesNotMatch("bool", new RegExp(typePattern));
