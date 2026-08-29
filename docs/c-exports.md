@@ -48,6 +48,20 @@ Two C exports with the same symbol are an error across the complete linked
 module graph. They are not silently module-mangled because their names are an
 external ABI contract.
 
+Z package visibility and native ABI visibility are separate contracts.
+`internal` has no C equivalent, and `internal c function` is rejected: a C
+entry point must be declared explicitly with `export c function`. Generated
+consumer headers omit internal functions, constants, constructors, and
+members. An exported C wrapper may call internal Z code, so a library can keep
+its implementation package-private while publishing a narrow checked ABI.
+
+This boundary is encapsulation rather than a security sandbox. Shared-library
+builds hide compiler-owned implementation symbols by default, and all symbols
+outside the generated header are unsupported and unstable. A non-exported
+`c struct` or `c enum` that occurs in a public C signature is necessarily
+emitted into the header because the consumer must be able to express that ABI;
+doing so does not make the declaration part of the public Z package surface.
+
 `export c function` is preferred over:
 
 - treating every Z module export as a native symbol;

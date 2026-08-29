@@ -178,6 +178,17 @@ exclusive, and package-internal names are omitted from public metadata and
 external completion. An internal module constant requires an explicit type for
 the same cross-module stability reason as an exported constant.
 
+`internal` governs Z package visibility; it has no direct C spelling and is not
+a native-code security boundary. A function cannot be both `internal` and
+`export c`: only an explicit `export c function` becomes a supported C entry
+point or appears in the generated consumer header. Public C wrappers may call
+internal Z operations, which keeps implementation details behind the checked
+ABI boundary. If a non-exported C-layout type is reachable through a public C
+signature, its representation must still appear in the header so C can express
+that ABI; this does not make the declaration importable by dependent Z
+packages. Any non-header compiler-owned symbols are private, unstable
+implementation details.
+
 Invocation-scoped generated modules may be assigned an existing package in a
 `.zbuild.json` overlay. That identity permits the generated module to import
 the package's `internal` declarations. A checked call adapter may additionally

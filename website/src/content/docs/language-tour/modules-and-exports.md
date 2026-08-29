@@ -46,6 +46,14 @@ completion and public metadata. The owning `z.json` must declare
 `package.name`; directory proximity or presence in one linked graph does not
 grant access. `internal` and `export` are mutually exclusive.
 
+`internal` is a Z package boundary, not a C visibility annotation or a
+native-code security boundary. An internal function cannot also be `export c`;
+only explicit `export c function` declarations become supported C entry points
+and appear in generated consumer headers. Public C wrappers may call internal Z
+operations, preserving a narrow external ABI. A C-layout type that appears in
+that ABI must still be described in the header even when dependent Z packages
+cannot import its source declaration.
+
 Generated framework code follows the same package boundary. A versioned
 `.zbuild.json` overlay may assign a generated module an existing package
 identity, allowing that generated module to use the package's `internal` API.
