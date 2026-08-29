@@ -61,6 +61,51 @@
             "type": "string",
             "pattern": "\\.zs$"
           }
+        },
+        "native": {
+          "description": "Native compilation and link requirements carried transitively by this library.",
+          "type": "object",
+          "properties": {
+            "includeDirectories": {
+              "description": "Header search directories resolved relative to this package manifest.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "link": {
+              "type": "object",
+              "properties": {
+                "directories": {
+                  "description": "Native library search directories resolved relative to this package manifest.",
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "libraries": {
+                  "description": "Native library names required by consumers, without platform linker prefixes.",
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]*$"
+                  }
+                },
+                "frameworks": {
+                  "description": "Apple framework names required by consumers.",
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

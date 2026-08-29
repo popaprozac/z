@@ -137,6 +137,32 @@ exact exported subpaths are public. Local path dependencies work transitively
 in Stage 0 and the native driver; registry versions, downloads, and lockfiles
 remain future layers.
 
+Systems packages can own their native implementation requirements alongside
+their public source surface:
+
+```json
+{
+  "package": { "name": "desktop", "version": "0.1.0" },
+  "library": {
+    "entry": "src/desktop.zs",
+    "native": {
+      "includeDirectories": ["include"],
+      "link": {
+        "directories": ["lib"],
+        "libraries": ["desktop_native"],
+        "frameworks": ["AppKit"]
+      }
+    }
+  }
+}
+```
+
+Those paths resolve from the package's own manifest and compose transitively
+with the consumer target. Applications select deployment policy; they do not
+repeat a dependency's headers, native libraries, or frameworks. Package-native
+requirements are unconditional in the first tier; platform clauses follow the
+language's target/comptime design later.
+
 A native import does not introduce an automatic wrapper call. See
 [Native interop](/interop/) for header and `.zd` behavior.
 
@@ -149,8 +175,9 @@ not execute JavaScript-style module initialization, and accepted source graphs
 remain statically resolvable.
 
 Project entry points, artifact kinds, native include paths, libraries,
-frameworks, and target settings belong in `z.json`; source modules stay focused
-on declarations and imports.
+frameworks, and target settings belong in `z.json`. Application-specific facts
+live under `target`; reusable implementation requirements live under
+`library.native`. Source modules stay focused on declarations and imports.
 
 :::note[Cost model]
 Source imports and aliases are compile-time graph relationships. They do not

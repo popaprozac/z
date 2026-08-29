@@ -24,6 +24,10 @@ export struct NativeProjectConfig {
   libraryConfigured: boolean;
   libraryEntry: Option<String>;
   libraryExports: Array<NativeSourceImport>;
+  libraryIncludeDirectories: Array<String>;
+  libraryLinkDirectories: Array<String>;
+  libraryLinkLibraries: Array<String>;
+  libraryLinkFrameworks: Array<String>;
   dependencies: Array<NativePathDependency>;
   targetConfigured: boolean;
   targetKind: String;
@@ -56,6 +60,10 @@ function emptyProjectConfig(): NativeProjectConfig {
     libraryConfigured: false,
     libraryEntry: Option<String>.none,
     libraryExports: Array<NativeSourceImport>(),
+    libraryIncludeDirectories: Array<String>(),
+    libraryLinkDirectories: Array<String>(),
+    libraryLinkLibraries: Array<String>(),
+    libraryLinkFrameworks: Array<String>(),
     dependencies: Array<NativePathDependency>(),
     targetConfigured: false,
     targetKind: "executable",
@@ -143,6 +151,98 @@ function parseLibraryExports(
   }
 }
 
+function parseLibraryNativeLink(
+  inout cursor: JsonCursor,
+  inout config: NativeProjectConfig
+): void throws String {
+  try expectByte(inout cursor, 123, "an object for library.native.link");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+    return;
+  }
+  while (true) {
+    const key = try parseJsonString(inout cursor);
+    try expectByte(inout cursor, 58, "\":\"");
+    if (key == "directories") {
+      config.libraryLinkDirectories = try parseStringArray(
+        inout cursor,
+        "library.native.link.directories"
+      );
+    } else if (key == "libraries") {
+      config.libraryLinkLibraries = try parseStringArray(
+        inout cursor,
+        "library.native.link.libraries"
+      );
+    } else if (key == "frameworks") {
+      config.libraryLinkFrameworks = try parseStringArray(
+        inout cursor,
+        "library.native.link.frameworks"
+      );
+    } else {
+      throw jsonError(
+        cursor,
+        `z.json library.native.link contains unknown field "${key}"`
+      );
+    }
+    skipWhitespace(inout cursor);
+    if (
+      cursor.offset < cursor.source.byteLength
+      && cursor.source.byteAt(cursor.offset) == 44
+    ) {
+      cursor.offset = cursor.offset + 1;
+      continue;
+    }
+    try expectByte(inout cursor, 125, "\"}\"");
+    return;
+  }
+}
+
+function parseLibraryNative(
+  inout cursor: JsonCursor,
+  inout config: NativeProjectConfig
+): void throws String {
+  try expectByte(inout cursor, 123, "an object for library.native");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+    return;
+  }
+  while (true) {
+    const key = try parseJsonString(inout cursor);
+    try expectByte(inout cursor, 58, "\":\"");
+    if (key == "includeDirectories") {
+      config.libraryIncludeDirectories = try parseStringArray(
+        inout cursor,
+        "library.native.includeDirectories"
+      );
+    } else if (key == "link") {
+      try parseLibraryNativeLink(inout cursor, inout config);
+    } else {
+      throw jsonError(
+        cursor,
+        `z.json library.native contains unknown field "${key}"`
+      );
+    }
+    skipWhitespace(inout cursor);
+    if (
+      cursor.offset < cursor.source.byteLength
+      && cursor.source.byteAt(cursor.offset) == 44
+    ) {
+      cursor.offset = cursor.offset + 1;
+      continue;
+    }
+    try expectByte(inout cursor, 125, "\"}\"");
+    return;
+  }
+}
+
 function parseLibrary(
   inout cursor: JsonCursor,
   inout config: NativeProjectConfig
@@ -165,6 +265,8 @@ function parseLibrary(
       config.libraryEntry = Option.some(entry);
     } else if (key == "exports") {
       try parseLibraryExports(inout cursor, inout config);
+    } else if (key == "native") {
+      try parseLibraryNative(inout cursor, inout config);
     } else {
       throw jsonError(cursor, `z.json library contains unknown field "${key}"`);
     }
@@ -784,6 +886,15 @@ function containsString(
   return false;
 }
 
+function appendUniqueStrings(
+  inout target: Array<String>,
+  in values: Array<String>
+): void {
+  for (const value of values) {
+    if (!containsString(target, value)) target.push(copy value);
+  }
+}
+
 function resolveDirectories(
   in values: Array<String>,
   in directory: String,
@@ -1088,6 +1199,38 @@ function validateProjectConfigRecursive(
     manifestPath,
     "target.link.directories"
   );
+  config.libraryIncludeDirectories = try resolveDirectories(
+    config.libraryIncludeDirectories,
+    config.directory,
+    manifestPath,
+    "library.native.includeDirectories"
+  );
+  config.libraryLinkDirectories = try resolveDirectories(
+    config.libraryLinkDirectories,
+    config.directory,
+    manifestPath,
+    "library.native.link.directories"
+  );
+  let libraryLibraries = Array<String>();
+  for (const library of config.libraryLinkLibraries) {
+    if (!validLibraryName(library)) {
+      throw `${manifestPath}:1:1: error: z.json library.native.link.libraries must contain native library names such as "sqlite3"`;
+    }
+    if (!containsString(libraryLibraries, library)) {
+      libraryLibraries.push(copy library);
+    }
+  }
+  config.libraryLinkLibraries = move libraryLibraries;
+  let libraryFrameworks = Array<String>();
+  for (const framework of config.libraryLinkFrameworks) {
+    if (!validZIdentifier(framework)) {
+      throw `${manifestPath}:1:1: error: z.json library.native.link.frameworks must contain Apple framework names such as "AppKit"`;
+    }
+    if (!containsString(libraryFrameworks, framework)) {
+      libraryFrameworks.push(copy framework);
+    }
+  }
+  config.libraryLinkFrameworks = move libraryFrameworks;
   let sourceImports = Array<NativeSourceImport>();
   for (const sourceImport of config.sourceImports) {
     if (!validSourceImportSpecifier(sourceImport.specifier)) {
@@ -1227,9 +1370,25 @@ function validateProjectConfigRecursive(
         manifestPath
       );
     }
+    const dependencyIncludes = copy dependencyConfig.libraryIncludeDirectories;
+    appendUniqueStrings(inout config.libraryIncludeDirectories, dependencyIncludes);
+    const dependencyLinkDirectories = copy dependencyConfig.libraryLinkDirectories;
+    appendUniqueStrings(inout config.libraryLinkDirectories, dependencyLinkDirectories);
+    const dependencyLibraries = copy dependencyConfig.libraryLinkLibraries;
+    appendUniqueStrings(inout config.libraryLinkLibraries, dependencyLibraries);
+    const dependencyFrameworks = copy dependencyConfig.libraryLinkFrameworks;
+    appendUniqueStrings(inout config.libraryLinkFrameworks, dependencyFrameworks);
   }
 
-  if (!config.targetConfigured) return;
+  const allLibraryIncludes = copy config.libraryIncludeDirectories;
+  appendUniqueStrings(inout config.includeDirectories, allLibraryIncludes);
+  const allLibraryLinkDirectories = copy config.libraryLinkDirectories;
+  appendUniqueStrings(inout config.linkDirectories, allLibraryLinkDirectories);
+  const allLibraryLibraries = copy config.libraryLinkLibraries;
+  appendUniqueStrings(inout config.linkLibraries, allLibraryLibraries);
+  const allLibraryFrameworks = copy config.libraryLinkFrameworks;
+  appendUniqueStrings(inout config.linkFrameworks, allLibraryFrameworks);
+
   let libraries = Array<String>();
   for (const library of config.linkLibraries) {
     if (!validLibraryName(library)) {
@@ -1248,6 +1407,7 @@ function validateProjectConfigRecursive(
     }
   }
   config.linkFrameworks = move frameworks;
+  if (!config.targetConfigured) return;
   if (
     config.targetKind != "executable"
     && config.targetKind != "static-library"

@@ -4333,6 +4333,30 @@ until application teardown. Packaged and Vite smoke tests dynamically create
 two windows, isolate their injection profiles and pending-request namespaces,
 close the last window, and complete deterministic cleanup without a crash.
 
+## Package-owned native requirements
+
+Turning Zapp's Z implementation into a real local package exposed a build
+authority leak after source imports were already clean. Applications could
+write `import { Application } from "zapp"`, but every consumer still had to
+repeat Zapp's private header search paths and AppKit/WebKit/CoreFoundation
+framework list in its own target. Directly checking the package failed because
+the package itself did not carry enough context to import its headers.
+
+`library.native` now lets the exporting library own that implementation
+contract. Stage 0 and the native driver resolve its include and link directories
+relative to the package manifest, merge transitive package requirements with
+the selected target, and deduplicate paths, libraries, and frameworks. A
+fixture imports a static-inline C header reachable only through a transitive
+package's native metadata; both direct library checking and the consuming
+application succeed. Zapp now checks directly while Z Notes declares only its
+`zapp` path dependency and application deployment target.
+
+The deliberately unresolved pressure is platform selection. The first package
+native tier is unconditional, which is honest for Zapp's current macOS-only
+implementation. Windows/Linux requirements should arrive through the shared Z
+target/comptime model rather than a second condition language invented only for
+manifests.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

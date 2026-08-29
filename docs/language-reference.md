@@ -61,7 +61,10 @@ import in the compiler and editor. The library entry implicitly owns the root
 specifier; `"./window"` becomes `"zapp/window"`. Resolution is exact and
 fail-closed, package paths are relative to the manifest that declares them,
 and transitive path dependencies are resolved in both Stage 0 and the native
-driver. Registry installation and lockfiles remain future work.
+driver. A library may also carry native include and link requirements through
+`library.native`; those requirements compose transitively so consumers do not
+repeat a package's implementation details. Registry installation and lockfiles
+remain future work.
 
 Modules may publish named compile-time values:
 
@@ -3332,6 +3335,34 @@ supplies link-time implementations.
 Apple targets may additionally list framework names in
 `target.link.frameworks`; each becomes one checked `-framework <name>` pair.
 This native-link contract is independent of `target.swift.frameworks`.
+
+A reusable systems package owns the native requirements needed by its exported
+source surface:
+
+```json
+{
+  "package": { "name": "desktop", "version": "0.1.0" },
+  "library": {
+    "entry": "src/desktop.zs",
+    "native": {
+      "includeDirectories": ["include"],
+      "link": {
+        "directories": ["lib"],
+        "libraries": ["desktop_native"],
+        "frameworks": ["AppKit"]
+      }
+    }
+  }
+}
+```
+
+`library.native` uses the same checked vocabulary as a target, but travels with
+the library whenever it is consumed. Paths resolve relative to the package's
+own `z.json`; transitive include directories, library search directories,
+library names, and frameworks are merged and deduplicated with the consuming
+target. The first tier is unconditional. Platform-specific package clauses
+will follow Z's target/comptime design rather than introducing a separate
+manifest-only condition language.
 
 Every manifest target also supplies a portable `target.name` and a `.zs`
 `target.entry`. Omitting `target.kind` selects an executable; `static-library`

@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   resolve,
   rmSync,
   spawnSync,
@@ -17,6 +18,7 @@ import {
 import { lex } from "../compiler/src/lexer.ts";
 import { linkSourceModules } from "../compiler/src/modules.ts";
 import { parse } from "../compiler/src/parser.ts";
+import { prepareProject } from "../compiler/src/project.ts";
 
 test("links bundled source-backed standard modules as ordinary Z source", () => {
   const directory = mkdtempSync("/tmp/z-source-stdlib-");
@@ -56,18 +58,28 @@ test("resolves local package roots, subpath exports, and transitive dependencies
   const rootModule = resolve(zappDirectory, "src/zapp.zs");
   const windowModule = resolve(zappDirectory, "src/window.zs");
   const utilityModule = resolve(utilityDirectory, "src/utility.zs");
+  const utilityIncludeDirectory = resolve(utilityDirectory, "include");
   const decoyModule = resolve(applicationDirectory, "zapp.zs");
   const mainFile = resolve(applicationDirectory, "main.zs");
   try {
     mkdirSync(resolve(zappDirectory, "src"), { recursive: true });
     mkdirSync(resolve(utilityDirectory, "src"), { recursive: true });
+    mkdirSync(utilityIncludeDirectory, { recursive: true });
     mkdirSync(applicationDirectory, { recursive: true });
+    writeFileSync(resolve(utilityIncludeDirectory, "utility-native.h"), `
+      #include <stdint.h>
+      static inline int32_t utility_native_answer(void) { return 40; }
+    `);
     writeFileSync(utilityModule, `
-      export function baseAnswer(): i32 { return 40; }
+      import native from "utility-native.h";
+      export function baseAnswer(): i32 { return native.utility_native_answer(); }
     `);
     writeFileSync(resolve(utilityDirectory, "z.json"), JSON.stringify({
       package: { name: "utility", version: "0.1.0" },
-      library: { entry: "src/utility.zs" },
+      library: {
+        entry: "src/utility.zs",
+        native: { includeDirectories: ["include"] },
+      },
     }));
     writeFileSync(rootModule, `
       import { baseAnswer } from "utility";
@@ -107,6 +119,9 @@ test("resolves local package roots, subpath exports, and transitive dependencies
     const generated = compileToC(readFileSync(mainFile, "utf8"), mainFile);
     assert.match(generated, /frameworkAnswer/);
     assert.match(generated, /windowAnswer/);
+    assert.deepEqual(prepareProject(mainFile).includeDirectories, [
+      realpathSync(utilityIncludeDirectory),
+    ]);
     const editorSource = readFileSync(mainFile, "utf8");
     const usageOffset = editorSource.lastIndexOf("frameworkAnswer") + 1;
     assert.match(
@@ -148,6 +163,85 @@ test("resolves local package roots, subpath exports, and transitive dependencies
       timeout: 30_000,
     });
     assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("composes and deduplicates package-owned native link requirements", () => {
+  const directory = mkdtempSync("/tmp/z-package-native-");
+  const applicationDirectory = resolve(directory, "application");
+  const packageDirectory = resolve(directory, "library");
+  const includeDirectory = resolve(packageDirectory, "include");
+  const linkDirectory = resolve(packageDirectory, "lib");
+  const mainFile = resolve(applicationDirectory, "main.zs");
+  try {
+    mkdirSync(applicationDirectory, { recursive: true });
+    mkdirSync(resolve(packageDirectory, "src"), { recursive: true });
+    mkdirSync(includeDirectory, { recursive: true });
+    mkdirSync(linkDirectory, { recursive: true });
+    writeFileSync(resolve(packageDirectory, "src/library.zs"),
+      "export function answer(): i32 { return 42; }");
+    writeFileSync(resolve(packageDirectory, "z.json"), JSON.stringify({
+      package: { name: "native_sample", version: "0.1.0" },
+      library: {
+        entry: "src/library.zs",
+        native: {
+          includeDirectories: ["include"],
+          link: {
+            directories: ["lib"],
+            libraries: ["sample_native", "sample_native"],
+            frameworks: ["AppKit", "AppKit"],
+          },
+        },
+      },
+    }));
+    writeFileSync(mainFile, `
+      import { answer } from "native_sample";
+      function main(): i32 { return answer() - 42; }
+    `);
+    writeFileSync(resolve(applicationDirectory, "z.json"), JSON.stringify({
+      dependencies: { native_sample: { path: "../library" } },
+      target: {
+        name: "native-consumer",
+        entry: "main.zs",
+        includeDirectories: ["../library/include"],
+        link: {
+          directories: ["../library/lib"],
+          libraries: ["sample_native"],
+          frameworks: ["AppKit"],
+        },
+      },
+    }));
+
+    const build = prepareProject(mainFile);
+    assert.deepEqual(build.includeDirectories, [realpathSync(includeDirectory)]);
+    assert.deepEqual(build.nativeLinkerArguments, [
+      `-L${realpathSync(linkDirectory)}`,
+      "-lsample_native",
+    ]);
+    assert.deepEqual(build.frameworks, ["AppKit"]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects a missing package-owned native include directory", () => {
+  const directory = mkdtempSync("/tmp/z-package-native-missing-");
+  const mainFile = resolve(directory, "main.zs");
+  try {
+    writeFileSync(mainFile, "export function answer(): i32 { return 42; }");
+    writeFileSync(resolve(directory, "z.json"), JSON.stringify({
+      package: { name: "broken_native", version: "0.1.0" },
+      library: {
+        entry: "main.zs",
+        native: { includeDirectories: ["missing"] },
+      },
+    }));
+    assert.throws(
+      () => prepareProject(mainFile),
+      /library\.native\.includeDirectories directory .* does not exist/,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

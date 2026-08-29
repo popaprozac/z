@@ -11514,6 +11514,7 @@ function main(): i32 {
   mkdirSync(packageImportProject, { recursive: true });
   mkdirSync(resolve(packageRoot, "src"), { recursive: true });
   mkdirSync(resolve(packageUtility, "src"), { recursive: true });
+  mkdirSync(resolve(packageUtility, "include"), { recursive: true });
   writeFileSync(
     resolve(packageImportProject, "main.zs"),
     [
@@ -11543,7 +11544,10 @@ function main(): i32 {
     resolve(packageUtility, "z.json"),
     `${JSON.stringify({
       package: { name: "utility", version: "0.1.0" },
-      library: { entry: "src/utility.zs" },
+      library: {
+        entry: "src/utility.zs",
+        native: { includeDirectories: ["include"] },
+      },
     }, null, 2)}\n`,
   );
   writeFileSync(

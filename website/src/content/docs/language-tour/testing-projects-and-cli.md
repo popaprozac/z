@@ -123,6 +123,11 @@ Relative paths resolve from the manifest directory. The editor schema completes
 and validates manifest fields; the compiler remains authoritative for path,
 platform, availability, and ABI checks.
 
+For a reusable package, put the same `includeDirectories` and `link` object
+under `library.native`. Every consumer receives those requirements transitively
+and deduplicates them with its target; only application-specific native
+artifacts remain in the consumer manifest.
+
 ## One command surface
 
 | Command | Purpose |

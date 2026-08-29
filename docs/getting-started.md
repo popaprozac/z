@@ -158,6 +158,29 @@ package identities, and expose only the library root and exact declared
 subpaths. Registry versions, downloads, and lockfiles remain a future package
 layer over this implemented local graph.
 
+If a source package requires native headers or libraries, it owns those facts
+under `library.native` instead of making every application repeat them:
+
+```json
+{
+  "package": { "name": "native_math", "version": "0.1.0" },
+  "library": {
+    "entry": "src/native-math.zs",
+    "native": {
+      "includeDirectories": ["include"],
+      "link": {
+        "directories": ["lib"],
+        "libraries": ["native_math"]
+      }
+    }
+  }
+}
+```
+
+These requirements resolve from the package manifest and compose transitively.
+The consumer still owns its deployment target and any app-specific native
+artifacts.
+
 With the native `z` executable on `PATH`, project mode makes the current
 manifest authoritative:
 
@@ -409,7 +432,9 @@ the two concerns remain explicit and independent.
 On Apple targets, `target.link.frameworks` supplies deduplicated framework
 names such as `AppKit` without admitting arbitrary linker flags. It is the
 framework counterpart to `target.link.libraries` and does not require a Swift
-subtarget.
+subtarget. Reusable libraries declare the corresponding requirements under
+`library.native.includeDirectories` and `library.native.link`; consumers gain
+them automatically through the checked dependency graph.
 
 Run the macOS probe in project mode:
 

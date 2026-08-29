@@ -34,6 +34,14 @@ type ProjectManifest = {
   readonly library?: {
     readonly entry?: string;
     readonly exports?: Readonly<Record<string, string>>;
+    readonly native?: {
+      readonly includeDirectories?: readonly string[];
+      readonly link?: {
+        readonly directories?: readonly string[];
+        readonly libraries?: readonly string[];
+        readonly frameworks?: readonly string[];
+      };
+    };
   };
   readonly dependencies?: Readonly<Record<string, { readonly path?: string }>>;
   readonly target?: {
@@ -162,7 +170,7 @@ function validateProjectManifestShape(value: unknown, fileName: string): void {
       throw projectDiagnostic(fileName, "z.json library requires package metadata");
     }
     const library = projectObject(manifest.library, "library", fileName);
-    rejectUnknownProjectFields(library, ["entry", "exports"], "library", fileName);
+    rejectUnknownProjectFields(library, ["entry", "exports", "native"], "library", fileName);
     if (typeof library.entry !== "string" || !library.entry.endsWith(".zs")) {
       throw projectDiagnostic(fileName, "z.json library.entry must be a Z source path ending in .zs");
     }
@@ -189,6 +197,24 @@ function validateProjectManifestShape(value: unknown, fileName: string): void {
             `z.json library.exports.${specifier} must be a Z source path ending in .zs`,
           );
         }
+      }
+    }
+    if (library.native !== undefined) {
+      const native = projectObject(library.native, "library.native", fileName);
+      rejectUnknownProjectFields(
+        native,
+        ["includeDirectories", "link"],
+        "library.native",
+        fileName,
+      );
+      if (native.link !== undefined) {
+        const link = projectObject(native.link, "library.native.link", fileName);
+        rejectUnknownProjectFields(
+          link,
+          ["directories", "libraries", "frameworks"],
+          "library.native.link",
+          fileName,
+        );
       }
     }
   }
@@ -326,10 +352,69 @@ function addLibraryExports(
   }
 }
 
+type MutableNativeRequirements = {
+  readonly includeDirectories: string[];
+  readonly linkDirectories: string[];
+  readonly linkLibraries: string[];
+  readonly frameworks: string[];
+};
+
+function appendUnique(target: string[], values: readonly string[]): void {
+  for (const value of values) {
+    if (!target.includes(value)) target.push(value);
+  }
+}
+
+function addLibraryNativeRequirements(
+  manifest: ProjectManifest,
+  manifestPath: string,
+  requirements: MutableNativeRequirements,
+  diagnosticFileName: string,
+): void {
+  const native = manifest.library?.native;
+  if (native === undefined) return;
+  const directory = dirname(manifestPath);
+  appendUnique(
+    requirements.includeDirectories,
+    parseProjectDirectories(
+      native.includeDirectories,
+      "library.native.includeDirectories",
+      directory,
+      diagnosticFileName,
+    ),
+  );
+  appendUnique(
+    requirements.linkDirectories,
+    parseProjectDirectories(
+      native.link?.directories,
+      "library.native.link.directories",
+      directory,
+      diagnosticFileName,
+    ),
+  );
+  appendUnique(
+    requirements.linkLibraries,
+    parseLinkedLibraries(
+      native.link?.libraries,
+      "library.native.link.libraries",
+      diagnosticFileName,
+    ),
+  );
+  appendUnique(
+    requirements.frameworks,
+    parseLinkedFrameworks(
+      native.link?.frameworks,
+      "library.native.link.frameworks",
+      diagnosticFileName,
+    ),
+  );
+}
+
 function addPathDependencies(
   manifest: ProjectManifest,
   manifestPath: string,
   sourceImports: Record<string, string>,
+  nativeRequirements: MutableNativeRequirements,
   diagnosticFileName: string,
 ): void {
   const packages = new Map<string, string>();
@@ -385,6 +470,12 @@ function addPathDependencies(
       sourceImports,
       diagnosticFileName,
     );
+    addLibraryNativeRequirements(
+      dependencyManifest,
+      canonicalManifestPath,
+      nativeRequirements,
+      diagnosticFileName,
+    );
     for (const [name, declaration] of Object.entries(dependencyManifest.dependencies ?? {})) {
       visit(name, declaration.path!, canonicalManifestPath);
     }
@@ -416,7 +507,20 @@ export function prepareProject(fileName: string): ProjectBuild {
   if (manifest.package !== undefined && manifest.library !== undefined) {
     addLibraryExports(manifest, manifestPath, sourceImports, fileName);
   }
-  addPathDependencies(manifest, manifestPath, sourceImports, fileName);
+  const nativeRequirements: MutableNativeRequirements = {
+    includeDirectories: [],
+    linkDirectories: [],
+    linkLibraries: [],
+    frameworks: [],
+  };
+  addLibraryNativeRequirements(manifest, manifestPath, nativeRequirements, fileName);
+  addPathDependencies(
+    manifest,
+    manifestPath,
+    sourceImports,
+    nativeRequirements,
+    fileName,
+  );
 
   const swift = manifest.target?.swift;
   const targetKind = manifest.target?.kind ?? "executable";
@@ -480,20 +584,44 @@ export function prepareProject(fileName: string): ProjectBuild {
   const deploymentTarget = manifest.target === undefined
     ? null
     : parseDeploymentTarget(manifest.target, fileName);
-  const includeDirectories = parseProjectDirectories(
+  const targetIncludeDirectories = parseProjectDirectories(
     manifest.target?.includeDirectories,
     "target.includeDirectories",
     directory,
     fileName,
   );
-  const linkedDirectories = parseProjectDirectories(
+  const targetLinkedDirectories = parseProjectDirectories(
     manifest.target?.link?.directories,
     "target.link.directories",
     directory,
     fileName,
   );
-  const linkedLibraries = parseLinkedLibraries(manifest.target?.link?.libraries, fileName);
-  const linkedFrameworks = parseLinkedFrameworks(manifest.target?.link?.frameworks, fileName);
+  const targetLinkedLibraries = parseLinkedLibraries(
+    manifest.target?.link?.libraries,
+    "target.link.libraries",
+    fileName,
+  );
+  const targetLinkedFrameworks = parseLinkedFrameworks(
+    manifest.target?.link?.frameworks,
+    "target.link.frameworks",
+    fileName,
+  );
+  const includeDirectories = [...new Set([
+    ...targetIncludeDirectories,
+    ...nativeRequirements.includeDirectories,
+  ])];
+  const linkedDirectories = [...new Set([
+    ...targetLinkedDirectories,
+    ...nativeRequirements.linkDirectories,
+  ])];
+  const linkedLibraries = [...new Set([
+    ...targetLinkedLibraries,
+    ...nativeRequirements.linkLibraries,
+  ])];
+  const linkedFrameworks = [...new Set([
+    ...targetLinkedFrameworks,
+    ...nativeRequirements.frameworks,
+  ])];
   const baseBuild: ProjectBuild = {
     ...emptyBuild,
     manifestPath,
@@ -639,10 +767,14 @@ function parseProjectDirectories(
       throw projectDiagnostic(fileName, `z.json ${field} path ${JSON.stringify(directory)} is not a directory`);
     }
   }
-  return resolvedDirectories;
+  return [...new Set(resolvedDirectories.map((directory) => realpathSync(directory)))];
 }
 
-function parseLinkedLibraries(libraries: readonly string[] | undefined, fileName: string): string[] {
+function parseLinkedLibraries(
+  libraries: readonly string[] | undefined,
+  field: string,
+  fileName: string,
+): string[] {
   if (libraries === undefined) return [];
   if (
     !Array.isArray(libraries)
@@ -651,12 +783,16 @@ function parseLinkedLibraries(libraries: readonly string[] | undefined, fileName
       || !/^[A-Za-z0-9][A-Za-z0-9_.+-]*$/.test(library)
     ))
   ) {
-    throw projectDiagnostic(fileName, "z.json target.link.libraries must contain native library names such as \"sqlite3\"");
+    throw projectDiagnostic(fileName, `z.json ${field} must contain native library names such as "sqlite3"`);
   }
   return [...new Set(libraries)];
 }
 
-function parseLinkedFrameworks(frameworks: readonly string[] | undefined, fileName: string): string[] {
+function parseLinkedFrameworks(
+  frameworks: readonly string[] | undefined,
+  field: string,
+  fileName: string,
+): string[] {
   if (frameworks === undefined) return [];
   if (
     !Array.isArray(frameworks)
@@ -665,7 +801,7 @@ function parseLinkedFrameworks(frameworks: readonly string[] | undefined, fileNa
       || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(framework)
     ))
   ) {
-    throw projectDiagnostic(fileName, "z.json target.link.frameworks must contain Apple framework names such as \"AppKit\"");
+    throw projectDiagnostic(fileName, `z.json ${field} must contain Apple framework names such as "AppKit"`);
   }
   return [...new Set(frameworks)];
 }

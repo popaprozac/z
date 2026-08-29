@@ -66,7 +66,10 @@ Once the bootstrapped `z` binary is on `PATH`, project commands become simply
 Native dependencies belong in `z.json`. Portable libraries use
 `target.link.libraries`; Apple executables can use
 `target.link.frameworks` for checked names such as `AppKit` and `WebKit`
-without adding a Swift subtarget or raw linker flags.
+without adding a Swift subtarget or raw linker flags. Reusable source packages
+carry their required header paths, libraries, and frameworks transitively under
+`library.native`, so applications do not duplicate package implementation
+details.
 
 ## Editor support
 
