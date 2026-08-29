@@ -8922,7 +8922,7 @@ test("compiles a multi-module Z application through the standalone native driver
     "export struct Builder {",
     "  result: i32;",
     "  function register(inout this, name: String, value: i32): void {}",
-    "  function install(inout this, name: String, value: i32): void {",
+    "  internal function install(inout this, name: String, value: i32): void {",
     "    this.result = value;",
     "  }",
     "}",
@@ -8981,6 +8981,24 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(generatedRun.status, 0, generatedRun.stderr);
+  writeFileSync(generatedCallOverlay, JSON.stringify({
+    ...generatedCallOverlayValue,
+    modules: {
+      "framework/generated/services": {
+        source: "adapters.zs",
+      },
+    },
+  }));
+  const unownedGeneratedCheck = spawnSync(
+    driver,
+    ["check", generatedApplication, "--generated", generatedCallOverlay],
+    { encoding: "utf8" },
+  );
+  assert.equal(unownedGeneratedCheck.status, 1);
+  assert.match(
+    unownedGeneratedCheck.stderr,
+    /method "install" is internal to its package/,
+  );
   writeFileSync(generatedCallOverlay, JSON.stringify({
     ...generatedCallOverlayValue,
     callAdapters: [{

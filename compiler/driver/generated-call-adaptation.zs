@@ -71,7 +71,8 @@ function adaptExpression(
   in replacementMethod: String,
   in adapterName: String,
   adapterIdentifierOffset: usize,
-  adapterCallOffset: usize
+  adapterCallOffset: usize,
+  in replacementPackageIdentity: String
 ): boolean throws String {
   let tree = match (in syntax.tree) {
     some(tree) => copy tree;
@@ -100,6 +101,7 @@ function adaptExpression(
       const argumentLine = tree.nodes[argumentIndex].line;
       const argumentColumn = tree.nodes[argumentIndex].column;
       tree.nodes[memberIndex].value = copy replacementMethod;
+      tree.nodes[memberIndex].syntheticPackageIdentity = copy replacementPackageIdentity;
 
       const adapterIdentifier = tree.nodes.length;
       tree.nodes.push(ExpressionNode({
@@ -163,7 +165,8 @@ function adaptOptionalExpression(
   in replacementMethod: String,
   in adapterName: String,
   adapterIdentifierOffset: usize,
-  adapterCallOffset: usize
+  adapterCallOffset: usize,
+  in replacementPackageIdentity: String
 ): boolean throws String {
   const present = match (in value) {
     some(expression) => expressionContainsCall(expression, offset);
@@ -181,7 +184,8 @@ function adaptOptionalExpression(
     replacementMethod,
     adapterName,
     adapterIdentifierOffset,
-    adapterCallOffset
+    adapterCallOffset,
+    replacementPackageIdentity
   );
   value = Option.some(expression);
   return changed;
@@ -194,7 +198,8 @@ function adaptStatements(
   in replacementMethod: String,
   in adapterName: String,
   adapterIdentifierOffset: usize,
-  adapterCallOffset: usize
+  adapterCallOffset: usize,
+  in replacementPackageIdentity: String
 ): usize throws String {
   let found: usize = 0;
   let index: usize = 0;
@@ -208,7 +213,8 @@ function adaptStatements(
       replacementMethod,
       adapterName,
       adapterIdentifierOffset,
-      adapterCallOffset
+      adapterCallOffset,
+      replacementPackageIdentity
     );
     if (changed) found = found + 1;
     statement.expression = expression;
@@ -220,7 +226,8 @@ function adaptStatements(
       replacementMethod,
       adapterName,
       adapterIdentifierOffset,
-      adapterCallOffset
+      adapterCallOffset,
+      replacementPackageIdentity
     );
     if (secondChanged) found = found + 1;
     statement.secondExpression = secondExpression;
@@ -237,7 +244,8 @@ function adaptProgramCall(
   in replacementMethod: String,
   in adapterName: String,
   adapterIdentifierOffset: usize,
-  adapterCallOffset: usize
+  adapterCallOffset: usize,
+  in replacementPackageIdentity: String
 ): usize throws String {
   let found: usize = 0;
   let constantIndex: usize = 0;
@@ -251,7 +259,8 @@ function adaptProgramCall(
         replacementMethod,
         adapterName,
         adapterIdentifierOffset,
-        adapterCallOffset
+        adapterCallOffset,
+        replacementPackageIdentity
       );
       if (changed) found = found + 1;
       program.constants[constantIndex].initializer = initializer;
@@ -268,7 +277,8 @@ function adaptProgramCall(
       replacementMethod,
       adapterName,
       adapterIdentifierOffset,
-      adapterCallOffset
+      adapterCallOffset,
+      replacementPackageIdentity
     );
     found = found + functionFound;
     program.functions[functionIndex].body = body;
@@ -287,7 +297,8 @@ function adaptProgramCall(
         replacementMethod,
         adapterName,
         adapterIdentifierOffset,
-        adapterCallOffset
+        adapterCallOffset,
+        replacementPackageIdentity
       );
       if (defaultFound) found = found + 1;
       aggregate.fields[fieldIndex].defaultValue = defaultValue;
@@ -299,7 +310,8 @@ function adaptProgramCall(
         replacementMethod,
         adapterName,
         adapterIdentifierOffset,
-        adapterCallOffset
+        adapterCallOffset,
+        replacementPackageIdentity
       );
       found = found + fieldFound;
       aggregate.fields[fieldIndex].defaultStatements = defaultStatements;
@@ -317,7 +329,8 @@ function adaptProgramCall(
           replacementMethod,
           adapterName,
           adapterIdentifierOffset,
-          adapterCallOffset
+          adapterCallOffset,
+          replacementPackageIdentity
         );
         found = found + initializerFound;
         copied.body = body;
@@ -339,7 +352,8 @@ function adaptProgramCall(
         replacementMethod,
         adapterName,
         adapterIdentifierOffset,
-        adapterCallOffset
+        adapterCallOffset,
+        replacementPackageIdentity
       );
       found = found + methodFound;
       aggregate.methods[methodIndex].body = body;
@@ -357,7 +371,8 @@ function adaptProgramCall(
           replacementMethod,
           adapterName,
           adapterIdentifierOffset,
-          adapterCallOffset
+          adapterCallOffset,
+          replacementPackageIdentity
         );
         found = found + deinitFound;
         copied.body = body;
@@ -460,6 +475,20 @@ function adapterModulePath(
   return Option<String>.none;
 }
 
+function adapterModulePackageIdentity(
+  in config: NativeProjectConfig,
+  in specifier: String
+): String {
+  const path = match (adapterModulePath(config, specifier)) {
+    some(path) => path;
+    none => return "";
+  };
+  for (const generated of config.generatedModulePackages) {
+    if (generated.path == path) return copy generated.packageIdentity;
+  }
+  return "";
+}
+
 export function applyGeneratedCallAdapters(
   inout modules: Array<ParsedModule>,
   in graph: ModuleGraph,
@@ -545,6 +574,10 @@ export function applyGeneratedCallAdapters(
       );
     }
     const replacementMethod = qualifiedMember(adapter.replacement);
+    const replacementPackageIdentity = adapterModulePackageIdentity(
+      config,
+      adapter.adapterModule
+    );
     const localName = generatedAdapterName(graph, moduleIndex, adapterIndex);
     let program = copy modules[moduleIndex].program;
     const syntheticOffset = source.byteLength + adapterIndex * 3 + 1;
@@ -555,7 +588,8 @@ export function applyGeneratedCallAdapters(
       replacementMethod,
       localName,
       syntheticOffset + 1,
-      syntheticOffset + 2
+      syntheticOffset + 2,
+      replacementPackageIdentity
     );
     if (foundExpressions != 1) {
       const expressionError = foundExpressions == 0

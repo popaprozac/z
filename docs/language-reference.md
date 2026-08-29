@@ -90,7 +90,7 @@ z build . --release --generated .zapp/generated/services.zbuild.json
     "sourceHash": "<lowercase SHA-256>",
     "offset": 144,
     "target": "ApplicationServicesBuilder.register",
-    "replacement": "ApplicationServicesBuilder.__registerGenerated",
+    "replacement": "ApplicationServicesBuilder.registerGenerated",
     "argument": 1,
     "adapter": {
       "module": "zapp/generated/services",
@@ -112,9 +112,15 @@ parser's call-expression offset and `argument` is zero-based. Before adapting,
 the compiler checks the source digest and proves that the call resolves to
 `target`. The replacement must be a method on that same receiver type. The
 selected argument is passed through the named generated function, then the
-whole transformed AST is linked and checked normally in both compiler drivers. Stale evidence, a
-missing export, and an incompatible adapter or replacement all fail closed at
-the authored call. The optional Stage-0 `--native-frontend` hybrid validation
+whole transformed AST is linked and checked normally in both compiler drivers.
+When the adapter module is assigned an existing package, that package identity
+may authorize an `internal` replacement method owned by the same package. The
+grant applies only to the compiler-generated replacement access: it does not
+make the member public, authorize authored calls, expose it through metadata or
+completion, or bypass `private`. An adapter module without that package identity
+remains an external caller and cannot select the internal method. Stale evidence,
+a missing export, and an incompatible or unauthorized adapter or replacement
+all fail closed at the authored call. The optional Stage-0 `--native-frontend` hybrid validation
 mode still reports an explicit boundary because its in-process source-batch
 protocol does not carry invocation overlays; the standalone fixed-point `z`
 does execute the overlay itself. Generated overlays are build products, not
@@ -171,6 +177,14 @@ proximity alone never grants access. `internal` and `export` are mutually
 exclusive, and package-internal names are omitted from public metadata and
 external completion. An internal module constant requires an explicit type for
 the same cross-module stability reason as an exported constant.
+
+Invocation-scoped generated modules may be assigned an existing package in a
+`.zbuild.json` overlay. That identity permits the generated module to import
+the package's `internal` declarations. A checked call adapter may additionally
+use the same identity for its one synthetic replacement-member access, allowing
+framework generators to target an internal runtime operation without exposing
+it to application source. This is a compiler-owned build capability, not syntax
+that authored Z code can request.
 
 ### Explicit application-lifetime roots
 

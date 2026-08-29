@@ -736,7 +736,8 @@ function requireMemberVisibility(
   const declaringFile = memberLocation.fileName ?? declaration.location.fileName;
   const usingFile = useLocation.fileName ?? fileName;
   const declaringPackage = declaringFile ? state.packageIdsByFile.get(declaringFile) : undefined;
-  const usingPackage = usingFile ? state.packageIdsByFile.get(usingFile) : undefined;
+  const usingPackage = useLocation.syntheticPackageId
+    ?? (usingFile ? state.packageIdsByFile.get(usingFile) : undefined);
   if (declaringPackage && declaringPackage === usingPackage) return;
   throw new DiagnosticError(fileName, useLocation, `${memberKind} ${JSON.stringify(memberName)} is internal to its package`, {
     code: "Z0605",

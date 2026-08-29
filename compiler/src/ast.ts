@@ -3,6 +3,8 @@ export type SourceLocation = {
   readonly line: number;
   readonly column: number;
   readonly fileName?: string;
+  /** Compiler-generated package authority; never produced by source parsing. */
+  readonly syntheticPackageId?: string;
 };
 
 export type Program = {

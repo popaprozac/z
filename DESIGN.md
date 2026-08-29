@@ -1963,8 +1963,8 @@ target, an argument position, and an exported adapter in a generated module.
 The compiler must re-resolve and type-check every named symbol before lowering;
 it never executes the generator during compilation and never edits authored
 source. This is deliberately narrower than macros and is suitable for RPC,
-serialization, service registration, and dependency-injection tooling. The
-Both compiler drivers now execute this first call-adaptation tier: they check the
+serialization, service registration, and dependency-injection tooling. Both
+compiler drivers now execute this first call-adaptation tier: they check the
 source hash and exact call offset, prove the original resolved method, permit
 replacement only by another method on that same receiver type, import the
 named generated adapter synthetically, and re-run ordinary semantic analysis
@@ -1973,6 +1973,14 @@ export, or ill-typed replacement is therefore a source-located error rather
 than a generated-source failure. The fixed-point driver owns its SHA-256 proof,
 native expression-tree transformation, generated-module loading, and second
 semantic pass rather than trusting evidence prepared by Stage 0.
+
+If the named adapter module is assigned an existing package identity, the one
+synthetic replacement-member access may use that identity to select an
+`internal` method owned by the same package. This authority does not attach to
+the authored module, does not authorize other expressions, does not bypass
+`private`, and is absent when the generated module has no package assignment.
+This lets a framework retain a clean public marker while keeping its generated
+runtime operations out of consumer metadata and editor surfaces.
 
 Package implementation is intentionally queued behind native-compiler
 verification. The intended sequence is local path packages and a deterministic

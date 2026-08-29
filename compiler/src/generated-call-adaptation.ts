@@ -7,6 +7,7 @@ import type { SemanticInfo } from "./sema.ts";
 
 export type ValidatedGeneratedCallAdapter = GeneratedCallAdapter & {
   readonly replacementMethod: string;
+  readonly replacementPackageId: string | null;
 };
 
 function diagnostic(
@@ -53,6 +54,7 @@ export function validateGeneratedCallAdapters(
   sourceBatch: SourceModuleBatch,
   semanticInfo: SemanticInfo,
   typeDisplayNames: ReadonlyMap<string, string>,
+  generatedModulePackageIds: ReadonlyMap<string, string>,
 ): readonly ValidatedGeneratedCallAdapter[] {
   const seen = new Set<string>();
   return adapters.map((adapter) => {
@@ -140,6 +142,7 @@ export function validateGeneratedCallAdapters(
     return {
       ...adapter,
       replacementMethod: adapter.replacement.slice(adapter.replacement.lastIndexOf(".") + 1),
+      replacementPackageId: generatedModulePackageIds.get(adapter.adapterModule) ?? null,
     };
   });
 }
@@ -198,6 +201,10 @@ function transformValue(
     callee: {
       ...call.callee,
       property: plan.declaration.replacementMethod,
+      location: {
+        ...call.callee.location,
+        syntheticPackageId: plan.declaration.replacementPackageId ?? undefined,
+      },
     },
     arguments: arguments_,
   } satisfies CallExpression;

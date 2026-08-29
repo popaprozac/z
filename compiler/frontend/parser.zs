@@ -178,6 +178,7 @@ export struct ExpressionNode {
   offset: usize;
   line: usize;
   column: usize;
+  syntheticPackageIdentity: String = "";
 }
 
 export struct ExpressionTree {

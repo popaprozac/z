@@ -46,6 +46,14 @@ completion and public metadata. The owning `z.json` must declare
 `package.name`; directory proximity or presence in one linked graph does not
 grant access. `internal` and `export` are mutually exclusive.
 
+Generated framework code follows the same package boundary. A versioned
+`.zbuild.json` overlay may assign a generated module an existing package
+identity, allowing that generated module to use the package's `internal` API.
+A checked call adapter may carry the identity only to its synthetic replacement
+member access. It does not make the member public, grant access to authored
+application code, expose it through completion or metadata, or bypass
+`private`; omitting the package identity makes the generated access external.
+
 ## Namespace imports
 
 A namespace import keeps the source module visible at use sites:

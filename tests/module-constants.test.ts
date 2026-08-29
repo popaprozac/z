@@ -133,7 +133,7 @@ test("checks and lowers source-hashed generated call adaptations", () => {
 
         function register(inout this, name: String, value: i32): void {}
 
-        function install(inout this, name: String, value: i32): void {
+        internal function install(inout this, name: String, value: i32): void {
           this.result = value;
         }
       }
@@ -197,6 +197,37 @@ test("checks and lowers source-hashed generated call adaptations", () => {
       overlayFile,
     ], { encoding: "utf8", timeout: 30_000 });
     assert.equal(ran.status, 0, ran.stderr);
+
+    const directInternalCall = source.replace(
+      'builder.register("answer", answer());',
+      'builder.install("answer", answer());',
+    );
+    assert.throws(
+      () => compileToNative(directInternalCall, entryFile, {
+        projectBuild: prepareProject(entryFile),
+      }),
+      /method "install" is internal to its package/,
+    );
+
+    writeFileSync(overlayFile, JSON.stringify({
+      ...overlay,
+      modules: {
+        "framework/generated/services": {
+          source: "service-adapters.zs",
+        },
+      },
+    }));
+    const unownedGeneratedModule = applyGeneratedBuildOverlay(
+      prepareProject(entryFile),
+      overlayFile,
+    );
+    assert.throws(
+      () => compileToNative(source, entryFile, {
+        projectBuild: unownedGeneratedModule,
+      }),
+      /method "install" is internal to its package/,
+    );
+    writeFileSync(overlayFile, JSON.stringify(overlay));
 
     const nativeChecked = spawnSync(process.execPath, [
       cli,

@@ -9319,9 +9319,19 @@ function inferExpressionNodeType(
             if (
               method.visibility == "internal"
               && (
-                modules[moduleIndex].packageIdentity.byteLength == 0
-                || modules[moduleIndex].packageIdentity
-                  != modules[method.ownerModuleIndex].packageIdentity
+                (
+                  tree.nodes[calleeIndex].syntheticPackageIdentity.byteLength > 0
+                  && tree.nodes[calleeIndex].syntheticPackageIdentity
+                    != modules[method.ownerModuleIndex].packageIdentity
+                )
+                || (
+                  tree.nodes[calleeIndex].syntheticPackageIdentity.byteLength == 0
+                  && (
+                    modules[moduleIndex].packageIdentity.byteLength == 0
+                    || modules[moduleIndex].packageIdentity
+                      != modules[method.ownerModuleIndex].packageIdentity
+                  )
+                )
               )
             ) {
               throw resolutionError(

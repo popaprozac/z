@@ -280,6 +280,10 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
       base.sourceModuleBatch,
       base.semanticInfo,
       base.typeDisplayNames,
+      new Map(generatedBuild.modules.flatMap((module) => {
+        const owner = projectBuild.generatedModulePackages[module.sourcePath];
+        return owner ? [[module.specifier, owner.id] as const] : [];
+      })),
     );
     return analyzeSource(source, fileName, {
       ...options,

@@ -121,7 +121,10 @@ production or compatibility-sensitive use.
   project invocation in Stage 0 and the fixed-point native driver without
   mutating authored source or `z.json`. Both drivers additionally execute
   source-hashed, exact-target checked call adaptation without rewriting authored
-  files; the fixed-point driver owns the SHA-256 and native AST transformation.
+  files. A packaged generated module may authorize its one synthetic replacement
+  access to a same-package `internal` method without exposing that method to
+  authored consumers; the fixed-point driver owns the SHA-256 and native AST
+  transformation.
 - A standalone native compiler capable of rebuilding its own constrained source
   graph to a fixed point
 - Compiler API 2 and `z metadata`, exposing versioned checked public symbols and
