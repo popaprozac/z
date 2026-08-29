@@ -1654,6 +1654,65 @@ import geometry from "./geometry.zs";
 import { total as sum } from "./geometry.zs";
 ```
 
+### Package-internal visibility (follow-up)
+
+Real framework composition has established a need for one visibility tier
+between module-private and public API. Zapp's public `Window` handle, for
+example, delegates through application-owned manager and platform-lifecycle
+operations. Those operations must be callable across cooperating framework
+types and source modules, but must not become callable application API merely
+because `private` is correctly limited to the declaring aggregate.
+
+The proposed spelling is `internal`:
+
+```z
+export readonly class WindowManager on thread.main {
+  function create(
+    inout this,
+    options: WindowOptions
+  ): Window throws WindowError on thread.main;
+
+  internal function showWindow(
+    inout this,
+    in id: String
+  ): void on thread.main;
+}
+
+internal struct WindowRecord {
+  id: String;
+  nativeId: usize;
+}
+```
+
+`internal` is a deferred design, not implemented syntax. Its intended contract
+is compiler-enforced visibility to the declaration's owning package. Internal
+declarations and members must be absent from public package metadata,
+documentation, and application completion, and an external call must be a
+compile error. `private` continues to mean the declaring aggregate only;
+unexported declarations continue to mean the declaring source module only.
+At module scope, `internal` is a package-only export: sibling modules in the
+same package use ordinary import syntax, while external consumers cannot name
+it. `internal` and `export` are mutually exclusive, and a top-level internal
+declaration is legal only when its source belongs to a manifest with an
+established package identity.
+
+TypeScript libraries often approximate this boundary with non-exported
+implementation classes and narrower exported interfaces. Z should continue to
+use that architecture where it produces a better public contract, but it is not
+a complete substitute here: TypeScript has no enforced package-internal access
+tier, and its consumers can ultimately escape erased interfaces. Z's internal
+operations can preserve ownership, executor, native-lifetime, and registry
+invariants, so the boundary cannot be a double-underscore naming convention or
+declaration-emission hint.
+
+The feature must wait for a deterministic package identity. Directory ancestry
+alone is insufficient, and “part of the current linked graph” would grant every
+dependency access. Local path packages and eventual resolved packages must use
+the same identity rule before `internal` is accepted. Until then, frameworks may
+use conspicuously named public plumbing as temporary scaffolding, but those
+names are not stable public API and should be hidden from generated user-facing
+surfaces where tooling can distinguish them.
+
 Module-level `const` declarations provide immutable named compile-time values:
 
 ```z
