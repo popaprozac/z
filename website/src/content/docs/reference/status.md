@@ -119,9 +119,9 @@ production or compatibility-sensitive use.
   separate future tooling
 - Versioned `.zbuild.json` overlays resolve tool-generated modules for one
   project invocation in Stage 0 and the fixed-point native driver without
-  mutating authored source or `z.json`. Stage 0 additionally executes
+  mutating authored source or `z.json`. Both drivers additionally execute
   source-hashed, exact-target checked call adaptation without rewriting authored
-  files; native-driver adaptation remains the next parity slice.
+  files; the fixed-point driver owns the SHA-256 and native AST transformation.
 - A standalone native compiler capable of rebuilding its own constrained source
   graph to a fixed point
 - Compiler API 2 and `z metadata`, exposing versioned checked public symbols and

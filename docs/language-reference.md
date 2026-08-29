@@ -112,10 +112,12 @@ parser's call-expression offset and `argument` is zero-based. Before adapting,
 the compiler checks the source digest and proves that the call resolves to
 `target`. The replacement must be a method on that same receiver type. The
 selected argument is passed through the named generated function, then the
-whole transformed AST is linked and checked normally. Stale evidence, a
+whole transformed AST is linked and checked normally in both compiler drivers. Stale evidence, a
 missing export, and an incompatible adapter or replacement all fail closed at
-the authored call. The fixed-point driver does not execute this tier yet and
-reports that boundary explicitly. Generated overlays are build products, not
+the authored call. The optional Stage-0 `--native-frontend` hybrid validation
+mode still reports an explicit boundary because its in-process source-batch
+protocol does not carry invocation overlays; the standalone fixed-point `z`
+does execute the overlay itself. Generated overlays are build products, not
 portable package configuration, and should normally live under a tool cache
 such as `.zapp/`.
 

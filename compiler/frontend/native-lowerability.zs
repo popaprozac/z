@@ -114,7 +114,10 @@ function nativeExplicitCopyTypeSupported(
   ) return true;
   match (genericTypeShape(name)) {
     some(generic) => {
-      if (generic.base != "Array" || generic.arguments.length != 1) {
+      if (
+        (generic.base != "Array" && generic.base != "Option")
+        || generic.arguments.length != 1
+      ) {
         return false;
       }
       return nativeExplicitCopyTypeSupported(

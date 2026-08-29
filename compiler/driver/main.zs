@@ -57,6 +57,7 @@ import {
   loadForeignModuleContract,
 } from "./foreign-project.zs";
 import { sha256 } from "./content-hash.zs";
+import { applyGeneratedCallAdapters } from "./generated-call-adaptation.zs";
 
 struct NativeProject {
   entryPath: String;
@@ -347,12 +348,12 @@ function loadProject(
     inout foreignModules
   );
 
-  const graphOutcome = attempt resolveParsedModulesWithForeignContracts(
+  const baseGraphOutcome = attempt resolveParsedModulesWithForeignContracts(
     modules,
     canonicalEntry,
     foreignModules
   );
-  const graph = match (graphOutcome) {
+  let graph = match (baseGraphOutcome) {
     success(graph) => graph;
     failure(error) => {
       const sourceOutcome = attempt fs.readText(error.path);
@@ -363,6 +364,40 @@ function loadProject(
       throw message;
     }
   };
+  if (config.generatedCallAdapters.length > 0) {
+    const generatedPaths = try applyGeneratedCallAdapters(
+      inout modules,
+      graph,
+      config
+    );
+    for (const adapterModulePath of generatedPaths) {
+      try loadModule(
+        adapterModulePath,
+        config,
+        inout loaded,
+        inout loadedForeign,
+        inout modules,
+        inout foreignModules
+      );
+    }
+    const adaptedGraphOutcome = attempt resolveParsedModulesWithForeignContracts(
+      modules,
+      canonicalEntry,
+      foreignModules
+    );
+    const adaptedGraph = match (adaptedGraphOutcome) {
+      success(adapted) => adapted;
+      failure(error) => {
+        const sourceOutcome = attempt fs.readText(error.path);
+        const message = match (sourceOutcome) {
+          success(source) => diagnosticMessage(error, source);
+          failure(_) => `${error.path}:${error.line}:${error.column}: error: ${error.message}`;
+        };
+        throw message;
+      }
+    };
+    graph = adaptedGraph;
+  }
   const lowerabilityOutcome = attempt validateNativeLowerability(modules, graph);
   match (lowerabilityOutcome) {
     success => {}

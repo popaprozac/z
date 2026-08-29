@@ -26,6 +26,17 @@ export struct NativeGeneratedModulePackage {
   packageIdentity: String;
 }
 
+export struct NativeGeneratedCallAdapter {
+  sourcePath: String;
+  sourceHash: String;
+  offset: usize;
+  target: String;
+  replacement: String;
+  argument: usize;
+  adapterModule: String;
+  adapterExport: String;
+}
+
 export struct NativeProjectConfig {
   manifestPath: Option<String>;
   directory: String;
@@ -42,6 +53,8 @@ export struct NativeProjectConfig {
   dependencies: Array<NativePathDependency>;
   packageIdentities: Array<NativePackageIdentity>;
   generatedModulePackages: Array<NativeGeneratedModulePackage>;
+  generatedModules: Array<NativeSourceImport>;
+  generatedCallAdapters: Array<NativeGeneratedCallAdapter>;
   targetConfigured: boolean;
   targetKind: String;
   targetName: Option<String>;
@@ -80,6 +93,8 @@ function emptyProjectConfig(): NativeProjectConfig {
     dependencies: Array<NativePathDependency>(),
     packageIdentities: Array<NativePackageIdentity>(),
     generatedModulePackages: Array<NativeGeneratedModulePackage>(),
+    generatedModules: Array<NativeSourceImport>(),
+    generatedCallAdapters: Array<NativeGeneratedCallAdapter>(),
     targetConfigured: false,
     targetKind: "executable",
     targetName: Option<String>.none,
@@ -1604,6 +1619,10 @@ function parseGeneratedModuleDeclaration(
     specifier: copy specifier,
     path: copy canonical,
   }));
+  config.generatedModules.push(NativeSourceImport({
+    specifier: copy specifier,
+    path: copy canonical,
+  }));
   if (packageName.byteLength == 0) return;
   let packageIdentity = "";
   for (const identity of config.packageIdentities) {
@@ -1657,7 +1676,182 @@ function parseGeneratedModules(
   }
 }
 
-function parseGeneratedCallAdapters(inout cursor: JsonCursor): void throws String {
+function parseGeneratedUsize(inout cursor: JsonCursor): usize throws String {
+  skipWhitespace(inout cursor);
+  const start = cursor.offset;
+  let value: usize = 0;
+  while (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) >= 48
+    && cursor.source.byteAt(cursor.offset) <= 57
+  ) {
+    value = value * 10 + usize(cursor.source.byteAt(cursor.offset) - 48);
+    cursor.offset = cursor.offset + 1;
+  }
+  if (cursor.offset == start) throw jsonError(cursor, "expected a non-negative integer");
+  return value;
+}
+
+function validGeneratedHash(in value: String): boolean {
+  if (value.byteLength != 64) return false;
+  let index: usize = 0;
+  while (index < value.byteLength) {
+    const byte = value.byteAt(index);
+    if (!((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102))) {
+      return false;
+    }
+    index = index + 1;
+  }
+  return true;
+}
+
+function validQualifiedZSymbol(in value: String): boolean {
+  let segmentStart: usize = 0;
+  let segments: usize = 0;
+  let index: usize = 0;
+  while (index <= value.byteLength) {
+    if (index == value.byteLength || value.byteAt(index) == 46) {
+      const segment = value.copyBytes(segmentStart, index);
+      if (!validZIdentifier(segment)) return false;
+      segments = segments + 1;
+      segmentStart = index + 1;
+    }
+    index = index + 1;
+  }
+  return segments >= 2;
+}
+
+function parseGeneratedAdapterReference(
+  inout cursor: JsonCursor
+): NativeSourceImport throws String {
+  let moduleName = "";
+  let exportName = "";
+  try expectByte(inout cursor, 123, "an object for a generated adapter");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+  } else {
+    while (true) {
+      const key = try parseJsonString(inout cursor);
+      try expectByte(inout cursor, 58, "\":\"");
+      if (key == "module") moduleName = try parseJsonString(inout cursor);
+      else if (key == "export") exportName = try parseJsonString(inout cursor);
+      else throw jsonError(cursor, `generated adapter contains unknown field "${key}"`);
+      skipWhitespace(inout cursor);
+      if (
+        cursor.offset < cursor.source.byteLength
+        && cursor.source.byteAt(cursor.offset) == 44
+      ) {
+        cursor.offset = cursor.offset + 1;
+        continue;
+      }
+      try expectByte(inout cursor, 125, "\"}\"");
+      break;
+    }
+  }
+  if (!validSourceImportSpecifier(moduleName)) {
+    throw jsonError(cursor, "generated adapter.module must be a bare non-std Z module specifier");
+  }
+  if (!validZIdentifier(exportName)) {
+    throw jsonError(cursor, "generated adapter.export must be a Z identifier");
+  }
+  return NativeSourceImport({ specifier: moduleName, path: exportName });
+}
+
+function parseGeneratedCallAdapter(
+  inout cursor: JsonCursor,
+  in directory: String
+): NativeGeneratedCallAdapter throws String {
+  let source = "";
+  let sourceHash = "";
+  let offset: usize = 0;
+  let target = "";
+  let replacement = "";
+  let argument: usize = 0;
+  let adapterModule = "";
+  let adapterExport = "";
+  let foundOffset = false;
+  let foundArgument = false;
+  let foundAdapter = false;
+  try expectByte(inout cursor, 123, "an object for a call adapter");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+  } else {
+    while (true) {
+      const key = try parseJsonString(inout cursor);
+      try expectByte(inout cursor, 58, "\":\"");
+      if (key == "source") source = try parseJsonString(inout cursor);
+      else if (key == "sourceHash") sourceHash = try parseJsonString(inout cursor);
+      else if (key == "offset") {
+        offset = try parseGeneratedUsize(inout cursor);
+        foundOffset = true;
+      } else if (key == "target") target = try parseJsonString(inout cursor);
+      else if (key == "replacement") replacement = try parseJsonString(inout cursor);
+      else if (key == "argument") {
+        argument = try parseGeneratedUsize(inout cursor);
+        foundArgument = true;
+      } else if (key == "adapter") {
+        const adapter = try parseGeneratedAdapterReference(inout cursor);
+        adapterModule = copy adapter.specifier;
+        adapterExport = copy adapter.path;
+        foundAdapter = true;
+      } else throw jsonError(cursor, `call adapter contains unknown field "${key}"`);
+      skipWhitespace(inout cursor);
+      if (
+        cursor.offset < cursor.source.byteLength
+        && cursor.source.byteAt(cursor.offset) == 44
+      ) {
+        cursor.offset = cursor.offset + 1;
+        continue;
+      }
+      try expectByte(inout cursor, 125, "\"}\"");
+      break;
+    }
+  }
+  if (!hasZSourceExtension(source)) {
+    throw jsonError(cursor, "call adapter source must be a .zs source path");
+  }
+  const candidate = configuredPath(directory, source);
+  if (!fs.exists(candidate) || fs.isDirectory(candidate)) {
+    throw jsonError(cursor, `call adapter source "${candidate}" does not exist`);
+  }
+  if (!validGeneratedHash(sourceHash)) {
+    throw jsonError(cursor, "call adapter sourceHash must be a lowercase SHA-256 digest");
+  }
+  if (!foundOffset) throw jsonError(cursor, "call adapter offset is required");
+  if (!validQualifiedZSymbol(target)) {
+    throw jsonError(cursor, "call adapter target must be a qualified Z symbol such as Type.method");
+  }
+  if (!validQualifiedZSymbol(replacement)) {
+    throw jsonError(cursor, "call adapter replacement must be a qualified Z symbol such as Type.method");
+  }
+  if (!foundArgument) throw jsonError(cursor, "call adapter argument is required");
+  if (!foundAdapter) throw jsonError(cursor, "call adapter adapter is required");
+  const canonicalSource = try fs.realPath(candidate);
+  return NativeGeneratedCallAdapter({
+    sourcePath: canonicalSource,
+    sourceHash,
+    offset,
+    target,
+    replacement,
+    argument,
+    adapterModule,
+    adapterExport,
+  });
+}
+
+function parseGeneratedCallAdapters(
+  inout cursor: JsonCursor,
+  in directory: String,
+  inout config: NativeProjectConfig
+): void throws String {
   try expectByte(inout cursor, 91, "an array for callAdapters");
   skipWhitespace(inout cursor);
   if (
@@ -1667,10 +1861,23 @@ function parseGeneratedCallAdapters(inout cursor: JsonCursor): void throws Strin
     cursor.offset = cursor.offset + 1;
     return;
   }
-  throw jsonError(
-    cursor,
-    "generated call adaptations are declared but are not executable in this compiler tier yet"
-  );
+  while (true) {
+    const adapter = try parseGeneratedCallAdapter(
+      inout cursor,
+      directory
+    );
+    config.generatedCallAdapters.push(adapter);
+    skipWhitespace(inout cursor);
+    if (
+      cursor.offset < cursor.source.byteLength
+      && cursor.source.byteAt(cursor.offset) == 44
+    ) {
+      cursor.offset = cursor.offset + 1;
+      continue;
+    }
+    try expectByte(inout cursor, 93, "\"]\"");
+    return;
+  }
 }
 
 export function applyGeneratedBuildOverlay(
@@ -1719,7 +1926,11 @@ export function applyGeneratedBuildOverlay(
         );
         foundModules = true;
       } else if (key == "callAdapters") {
-        try parseGeneratedCallAdapters(inout cursor);
+        try parseGeneratedCallAdapters(
+          inout cursor,
+          overlayDirectory,
+          inout config
+        );
       } else {
         throw jsonError(
           cursor,
@@ -1747,6 +1958,18 @@ export function applyGeneratedBuildOverlay(
   }
   if (!foundModules) {
     throw jsonError(cursor, "generated build overlay modules must be an object");
+  }
+  for (const adapter of config.generatedCallAdapters) {
+    let foundModule = false;
+    for (const generated of config.generatedModules) {
+      if (generated.specifier == adapter.adapterModule) foundModule = true;
+    }
+    if (!foundModule) {
+      throw jsonError(
+        cursor,
+        `call adapter module "${adapter.adapterModule}" is not declared by this overlay`
+      );
+    }
   }
 }
 

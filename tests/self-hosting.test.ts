@@ -55,6 +55,7 @@ import type {
   ImportDeclaration,
 } from "./support/bootstrap.ts";
 import { selfHostExecutableDifferentialCorpus } from "./support/self-host-fixtures.ts";
+import { createHash } from "node:crypto";
 
 hostToolchainTest("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
   const application = resolve(projectRoot, "examples/applications/source-inspector/main.zs");
@@ -8909,6 +8910,91 @@ test("compiles a multi-module Z application through the standalone native driver
     /packageAnswer.*internal to its package/,
   );
 
+  const generatedProject = resolve(directory, "generated-project");
+  const generatedFramework = resolve(generatedProject, "framework");
+  const generatedApplication = resolve(generatedProject, "application");
+  const generatedOutput = resolve(generatedProject, "generated");
+  mkdirSync(generatedProject);
+  mkdirSync(generatedFramework);
+  mkdirSync(generatedApplication);
+  mkdirSync(generatedOutput);
+  writeFileSync(resolve(generatedFramework, "framework.zs"), [
+    "export struct Builder {",
+    "  result: i32;",
+    "  function register(inout this, name: String, value: i32): void {}",
+    "  function install(inout this, name: String, value: i32): void {",
+    "    this.result = value;",
+    "  }",
+    "}",
+    "",
+  ].join("\n"));
+  writeFileSync(resolve(generatedFramework, "z.json"), JSON.stringify({
+    package: { name: "framework", version: "0.1.0" },
+    library: { entry: "framework.zs" },
+  }));
+  writeFileSync(resolve(generatedOutput, "adapters.zs"), [
+    "export function adapt(value: i32): i32 { return value + 1; }",
+    "",
+  ].join("\n"));
+  const generatedSource = [
+    'import { Builder } from "framework";',
+    "function main(): i32 {",
+    "  let builder = Builder({ result: 0 });",
+    '  builder.register("answer", 41);',
+    "  return builder.result - 42;",
+    "}",
+    "",
+  ].join("\n");
+  const generatedEntry = resolve(generatedApplication, "main.zs");
+  writeFileSync(generatedEntry, generatedSource);
+  writeFileSync(resolve(generatedApplication, "z.json"), JSON.stringify({
+    dependencies: { framework: { path: "../framework" } },
+    target: { name: "generated-application", entry: "main.zs" },
+  }));
+  const generatedCallOverlay = resolve(generatedOutput, "services.zbuild.json");
+  const generatedCallOverlayValue = {
+    schemaVersion: 1,
+    modules: {
+      "framework/generated/services": {
+        source: "adapters.zs",
+        package: "framework",
+      },
+    },
+    callAdapters: [{
+      source: "../application/main.zs",
+      sourceHash: createHash("sha256").update(generatedSource).digest("hex"),
+      offset: generatedSource.indexOf("(\"answer\""),
+      target: "Builder.register",
+      replacement: "Builder.install",
+      argument: 1,
+      adapter: {
+        module: "framework/generated/services",
+        export: "adapt",
+      },
+    }],
+  };
+  writeFileSync(generatedCallOverlay, JSON.stringify(generatedCallOverlayValue));
+  const generatedRun = spawnSync(
+    driver,
+    ["run", generatedApplication, "--generated", generatedCallOverlay],
+    { encoding: "utf8" },
+  );
+  assert.equal(generatedRun.status, 0, generatedRun.stderr);
+  writeFileSync(generatedCallOverlay, JSON.stringify({
+    ...generatedCallOverlayValue,
+    callAdapters: [{
+      ...generatedCallOverlayValue.callAdapters[0],
+      sourceHash: "0".repeat(64),
+    }],
+  }));
+  const staleGeneratedCheck = spawnSync(
+    driver,
+    ["check", generatedApplication, "--generated", generatedCallOverlay],
+    { encoding: "utf8" },
+  );
+  assert.equal(staleGeneratedCheck.status, 1);
+  assert.match(staleGeneratedCheck.stderr, /source hash is stale/);
+
   const foreignAdapterSource = resolve(directory, "foreign-adapter-input.zs");
   const foreignAdapterHeader = resolve(
     projectRoot,
@@ -9103,7 +9189,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
-  assert.match(recursiveCompilation.stdout, /compiled 40 Z modules/);
+  assert.match(recursiveCompilation.stdout, /compiled 41 Z modules/);
   assert.equal(
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,

@@ -1964,14 +1964,15 @@ The compiler must re-resolve and type-check every named symbol before lowering;
 it never executes the generator during compilation and never edits authored
 source. This is deliberately narrower than macros and is suitable for RPC,
 serialization, service registration, and dependency-injection tooling. The
-Stage-0 compiler now executes this first call-adaptation tier: it checks the
-source hash and exact call offset, proves the original resolved method, permits
-replacement only by another method on that same receiver type, imports the
-named generated adapter synthetically, and re-runs ordinary semantic analysis
+Both compiler drivers now execute this first call-adaptation tier: they check the
+source hash and exact call offset, prove the original resolved method, permit
+replacement only by another method on that same receiver type, import the
+named generated adapter synthetically, and re-run ordinary semantic analysis
 over the transformed AST. A stale target, wrong argument position, unavailable
 export, or ill-typed replacement is therefore a source-located error rather
-than a generated-source failure. The fixed-point driver still rejects nonempty
-call adaptations until it owns the same AST transformation and SHA-256 proof.
+than a generated-source failure. The fixed-point driver owns its SHA-256 proof,
+native expression-tree transformation, generated-module loading, and second
+semantic pass rather than trusting evidence prepared by Stage 0.
 
 Package implementation is intentionally queued behind native-compiler
 verification. The intended sequence is local path packages and a deterministic
