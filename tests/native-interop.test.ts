@@ -1886,7 +1886,7 @@ test("selectively imports C types and constants with the same aliases used by fu
   const translateUse = source.lastIndexOf("translate(") + 2;
   const translateDefinition = definition(source, `file://${example}`, translateUse);
   assert.match(translateDefinition?.uri ?? "", /tests\/fixtures\/geometry\.h$/);
-  assert.equal(translateDefinition?.range.start.line, 31);
+  assert.equal(translateDefinition?.range.start.line, 32);
 });
 
 test("imports typed object-like integer macros without textual substitution", () => {
@@ -4088,12 +4088,12 @@ test("preserves native declaration locations for FIIR and editor definitions", (
   const geometry = context.foreignModules.get("geometry")!;
   const translated = geometry.functions.get("z_translate")!;
   assert.match(translated.overloads[0].metadata.source?.fileName ?? "", /tests\/fixtures\/geometry\.h$/);
-  assert.equal(translated.overloads[0].metadata.source?.line, 32);
+  assert.equal(translated.overloads[0].metadata.source?.line, 33);
 
   const functionUse = source.indexOf("z_translate") + 2;
   const functionDefinition = definition(source, `file://${example}`, functionUse);
   assert.match(functionDefinition?.uri ?? "", /tests\/fixtures\/geometry\.h$/);
-  assert.equal(functionDefinition?.range.start.line, 31);
+  assert.equal(functionDefinition?.range.start.line, 32);
 
   const typeUse = source.indexOf("geometry.ZPoint") + "geometry.".length + 2;
   const typeDefinition = definition(source, `file://${example}`, typeUse);
@@ -4290,8 +4290,8 @@ test("uses project header and library search directories across analysis and nat
   const functionOffset = source.indexOf("z_project_answer") + 1;
   assert.match(hover(source, sourceFile, functionOffset)?.contents.value ?? "", /z_project_answer\(\): i32/);
   const artifact = compileToNative(source, sourceFile);
-  assert.deepEqual(artifact.includeDirectories, [includeDirectory]);
-  assert.deepEqual(artifact.nativeLinkerArguments, [`-L${libraryDirectory}`]);
+  assert.deepEqual(artifact.includeDirectories, [realpathSync(includeDirectory)]);
+  assert.deepEqual(artifact.nativeLinkerArguments, [`-L${realpathSync(libraryDirectory)}`]);
   assert.match(artifact.source, /z_project_answer\(\)/);
 
   writeFileSync(manifest, JSON.stringify({

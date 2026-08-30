@@ -458,7 +458,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     const keywordMember = previous?.kind === "dot" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(token.text);
     const reservedModifier = token.kind !== "identifier"
       && sourceModifierTokens.some((modifier) => modifier === token.text);
-    if (reservedModifier) {
+    if (reservedModifier && !keywordMember) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("modifier"),
         modifiers: 0,
@@ -467,7 +467,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     }
     const reservedKeyword = token.kind !== "identifier"
       && sourceKeywordTokens.some((keyword) => keyword === token.text);
-    if (reservedKeyword) {
+    if (reservedKeyword && !keywordMember) {
       if (sourceDeclarationKeywordTokens.some((keyword) => keyword === token.text)) continue;
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("keyword"),
@@ -878,9 +878,6 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (typeParameter) return markdownHover(typeParameter, source, word.start, word.end);
   const callableParameter = sourceCallableAliasParameterHover(context, source, word.text, word.start);
   if (callableParameter) return markdownHover(callableParameter, source, word.start, word.end);
-  if (primitiveTypeTokens.some((primitive) => primitive === word.text)) {
-    return markdownHover(primitiveTypeHover(word.text), source, word.start, word.end);
-  }
   if (word.text === "instanceof") {
     return markdownHover(
       "value instanceof NativeClass  // runtime Objective-C class check; the true branch narrows the value to NativeClass",
@@ -932,6 +929,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     : undefined;
   if (integerConversion) {
     return markdownHover(integerConversionHover(integerConversion), source, word.start, word.end);
+  }
+  if (primitiveTypeTokens.some((primitive) => primitive === word.text)) {
+    return markdownHover(primitiveTypeHover(word.text), source, word.start, word.end);
   }
   const directWordType = context.semanticInfo.bindingTypes.get(word.start)
     ?? context.semanticInfo.numericLiteralTypes.get(word.start)

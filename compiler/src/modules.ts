@@ -209,7 +209,18 @@ export function loadSourceModuleBatch(
           },
         );
       }
-      if (!dependencyPath || !existsSync(dependencyPath)) continue;
+      if (!dependencyPath) continue;
+      if (!existsSync(dependencyPath)) {
+        if (isLocalSourceModuleSpecifier(declaration.header)) {
+          throw new DiagnosticError(
+            declaration.location.fileName ?? canonical,
+            declaration.location,
+            `could not find Z module ${JSON.stringify(declaration.header)}`,
+            { code: "Z0602", helps: ["use a relative path ending in `.zs`"] },
+          );
+        }
+        continue;
+      }
       const dependency = load(dependencyPath, null, null, [...stack, canonical], declaration);
       if (packageDependencyPath) dependency.packageSpecifiers.add(declaration.header);
       dependencies.set(declaration.location.offset, dependency.fileName);

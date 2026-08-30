@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from "node:fs";
 import { generateC, generateCHeader } from "./codegen-c.ts";
 import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
@@ -167,9 +168,14 @@ function embeddedRuntimeInitializer(
 } | null {
   const configured = projectBuild.runtimeInitializer;
   if (configured === null) return null;
+  const entryPath = projectBuild.entryPath ?? fileName;
+  const sameSourceFile = (candidatePath: string): boolean => (
+    (existsSync(candidatePath) ? realpathSync(candidatePath) : candidatePath)
+      === (existsSync(entryPath) ? realpathSync(entryPath) : entryPath)
+  );
   const declaration = program.functions.find((candidate) => (
     candidate.name === configured
-    && (candidate.location.fileName ?? fileName) === (projectBuild.entryPath ?? fileName)
+    && sameSourceFile(candidate.location.fileName ?? fileName)
   ));
   const reject = (summary: string, help?: string): never => {
     throw new DiagnosticError(

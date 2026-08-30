@@ -14498,8 +14498,16 @@ function parameterViewSourceIndices(
         && expression.callee.name === retainedAggregate.name
       ) expression.arguments.forEach(record);
       else if (expression.kind === "call") {
-        if (expression.callee.kind === "member") record(expression.callee.object);
-        else expression.arguments.forEach(record);
+        if (expression.callee.kind === "member") {
+          const receiver = storageRoot(expression.callee.object);
+          const receiverIsInput = receiver
+            ? declaration.parameters.some((parameter) => (
+                parameter.name === receiver.name && parameter.mode === "in"
+              ))
+            : false;
+          if (receiverIsInput) record(expression.callee.object);
+          else expression.arguments.forEach(record);
+        } else expression.arguments.forEach(record);
       } else if (
         expression.kind === "try"
         || expression.kind === "attempt"
@@ -14510,9 +14518,21 @@ function parameterViewSourceIndices(
     if (expression.kind === "call") {
       if (
         expression.callee.kind === "member"
-        && expression.callee.property === "some"
+        && (
+          expression.callee.property === "some"
+          || expression.callee.property === "fromNullable"
+        )
       ) expression.arguments.forEach(record);
-      else if (expression.callee.kind === "member") record(expression.callee.object);
+      else if (expression.callee.kind === "member") {
+        const receiver = storageRoot(expression.callee.object);
+        const receiverIsInput = receiver
+          ? declaration.parameters.some((parameter) => (
+              parameter.name === receiver.name && parameter.mode === "in"
+            ))
+          : false;
+        if (receiverIsInput) record(expression.callee.object);
+        else expression.arguments.forEach(record);
+      }
       else expression.arguments.forEach(record);
     } else if (expression.kind === "variantExpression") {
       record(expression.payload);

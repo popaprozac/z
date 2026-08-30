@@ -591,7 +591,10 @@ hostToolchainTest("builds the interactive Z Notes AppKit and sqlite3 application
   rmSync(backgroundDatabase, { force: true });
 
   const selectionUse = source.indexOf("selectNote(0)") + 1;
-  assert.match(hover(source, application, selectionUse)?.contents.value ?? "", /selectNote\(index: usize\): boolean/);
+  assert.match(
+    hover(source, application, selectionUse)?.contents.value ?? "",
+    /public function selectNote\(inout this, index: usize\): boolean/,
+  );
   const bindingTypeOffset = source.indexOf("objc.Binding") + "objc.".length + 1;
   assert.match(
     hover(source, application, bindingTypeOffset)?.contents.value ?? "",
@@ -910,12 +913,13 @@ test("keeps ownership boundary alternatives explicit across async suspension", (
     "const before = inspect(() => item.value);",
     "const before = consume(move () => item.value);",
   );
-  assert.throws(() => compileToC(ownedInsideAsync, "async-owned-inline-closure.zs"), (error: unknown) => {
-    assert.ok(error instanceof DiagnosticError);
-    assert.equal(error.code, "Z0700");
-    assert.match(error.message, /owned or escaping inline closure is not executable/);
-    return true;
-  });
+  const ownedGenerated = compileToC(ownedInsideAsync, "async-owned-inline-closure.zs");
+  assert.match(ownedGenerated, /Z_ClosureEnv_/);
+
+  const ownedFile = resolve(closureDirectory, "owned.zs");
+  writeFileSync(ownedFile, ownedInsideAsync);
+  const ownedResult = spawnSync(process.execPath, [cli, "run", ownedFile], { encoding: "utf8" });
+  assert.equal(ownedResult.status, 0, ownedResult.stderr);
 });
 
 test("keeps receiver-tied views read-only, local, and value-struct-owned", () => {
