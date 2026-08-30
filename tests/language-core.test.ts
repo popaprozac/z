@@ -1166,6 +1166,70 @@ test("requires an explicit function type for cleanup-bearing move captures", () 
   );
 });
 
+hostToolchainTest("lowers captured closures passed directly to generic constructors", () => {
+  const source = `
+    type Cleanup = () => void;
+
+    class Subscription {
+      cleanup: Cleanup;
+
+      constructor(cleanup: Cleanup) {
+        this.cleanup = cleanup;
+      }
+
+      function unsubscribe(inout this): void {
+        this.cleanup();
+      }
+    }
+
+    class Event<T> {
+      nextId: u64;
+
+      function remove(inout this, id: u64): void {
+        this.nextId = this.nextId + id;
+      }
+
+      function subscribe(
+        inout this,
+        handler: (in value: T) => void
+      ): Subscription {
+        const id = this.nextId;
+        this.nextId = this.nextId + 1;
+        const owner = this;
+        return new Subscription(move (): void => {
+          let current = owner;
+          current.remove(id);
+        });
+      }
+    }
+
+    function main(): i32 {
+      let numbers = new Event<i32>({ nextId: 1 });
+      const numberHandler: (in value: i32) => void =
+        (in value: i32): void => {};
+      let numberSubscription = numbers.subscribe(numberHandler);
+      numberSubscription.unsubscribe();
+
+      let words = new Event<String>({ nextId: 1 });
+      const wordHandler: (in value: String) => void =
+        (in value: String): void => {};
+      let wordSubscription = words.subscribe(wordHandler);
+      wordSubscription.unsubscribe();
+
+      return numbers.nextId == 3 && words.nextId == 3 ? 0 : 1;
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-generic-captured-closure-");
+  try {
+    const fileName = resolve(directory, "main.zs");
+    writeFileSync(fileName, source);
+    const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("returns, copies, shares, and deterministically destroys owned closure environments", () => {
   const example = resolve(projectRoot, "examples/language/ownership/owned-closures.zs");
   const source = readFileSync(example, "utf8");

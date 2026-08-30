@@ -1,4 +1,4 @@
-import type { EnumDeclaration, Expression, FunctionDeclaration, Program, StructDeclaration, TraitDeclaration } from "./ast.ts";
+import type { EnumDeclaration, Expression, FunctionDeclaration, Program, SourceLocation, StructDeclaration, TraitDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import {
   dynamicArrayTypeName,
@@ -51,6 +51,33 @@ export function materializeGenerics(
     readonly DeferredGenericMethodDemand[]
   > = new Map(),
 ): Program {
+  const maxSourceOffset = (value: unknown): number => {
+    if (Array.isArray(value)) {
+      return value.reduce((maximum, item) => Math.max(maximum, maxSourceOffset(item)), 0);
+    }
+    if (!value || typeof value !== "object") return 0;
+    const record = value as Record<string, unknown>;
+    const own = typeof record.offset === "number" ? record.offset : 0;
+    return Object.values(record).reduce(
+      (maximum, child) => Math.max(maximum, maxSourceOffset(child)),
+      own,
+    );
+  };
+  let nextSyntheticOffset = maxSourceOffset(program) + 1;
+  type LocationRemapper = (location: SourceLocation) => SourceLocation;
+  const specializationLocationRemapper = (): LocationRemapper => {
+    const offsets = new Map<string, number>();
+    return (location) => {
+      const key = `${location.fileName ?? ""}\0${location.offset}`;
+      let offset = offsets.get(key);
+      if (offset === undefined) {
+        offset = nextSyntheticOffset;
+        nextSyntheticOffset += 1;
+        offsets.set(key, offset);
+      }
+      return { ...location, offset };
+    };
+  };
   const structTemplates = new Map(program.structs.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const functionTemplates = new Map(program.functions.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const traitTemplates = new Map(
@@ -316,14 +343,24 @@ export function materializeGenerics(
     return instantiateStruct(generic.base, args);
   };
 
-  const transform = (value: any, substitutions: Map<string, string>): any => {
-    if (Array.isArray(value)) return value.map((item) => transform(item, substitutions));
+  const transform = (
+    value: any,
+    substitutions: Map<string, string>,
+    remapLocation: LocationRemapper | null = null,
+  ): any => {
+    if (Array.isArray(value)) return value.map((item) => transform(item, substitutions, remapLocation));
     if (!value || typeof value !== "object") return value;
+    if (
+      remapLocation
+      && typeof value.offset === "number"
+      && typeof value.line === "number"
+      && typeof value.column === "number"
+    ) return remapLocation(value as SourceLocation);
     if (value.kind === "member") {
       const genericMethod = parseGenericType(value.property);
       if (genericMethod) {
         return {
-          ...transformObject(value, substitutions),
+          ...transformObject(value, substitutions, remapLocation),
           property: monomorphizedName(
             genericMethod.base,
             genericMethod.arguments.map((argument) => substituteName(argument, substitutions)),
@@ -343,8 +380,8 @@ export function materializeGenerics(
         return {
           kind: "dynamicArrayExpression",
           elementType: substituteName(generic.arguments[0], substitutions),
-          elements: value.arguments.map((argument: Expression) => transform(argument, substitutions)),
-          location: value.location,
+          elements: value.arguments.map((argument: Expression) => transform(argument, substitutions, remapLocation)),
+          location: transform(value.location, substitutions, remapLocation),
         };
       }
       if (generic?.base === "Map") {
@@ -352,9 +389,10 @@ export function materializeGenerics(
           throw new DiagnosticError(fileName, value.location, "Map<K, V>() expects two type arguments and no values");
         }
         const name = instantiateMap(generic.arguments.map((argument) => substituteName(argument, substitutions)));
+        const transformed = transformObject(value, substitutions, remapLocation);
         return {
-          ...value,
-          callee: { ...value.callee, name },
+          ...transformed,
+          callee: { ...transformed.callee, name },
           arguments: [],
         };
       }
@@ -363,9 +401,10 @@ export function materializeGenerics(
           throw new DiagnosticError(fileName, value.location, "Set<T>() expects one type argument and no values");
         }
         const name = instantiateSet(generic.arguments.map((argument) => substituteName(argument, substitutions)));
+        const transformed = transformObject(value, substitutions, remapLocation);
         return {
-          ...value,
-          callee: { ...value.callee, name },
+          ...transformed,
+          callee: { ...transformed.callee, name },
           arguments: [],
         };
       }
@@ -373,10 +412,11 @@ export function materializeGenerics(
         if (generic.arguments.length !== 1 || value.arguments.length !== 0) {
           throw new DiagnosticError(fileName, value.location, "Once<T>() expects one type argument and no values");
         }
+        const transformed = transformObject(value, substitutions, remapLocation);
         return {
-          ...value,
+          ...transformed,
           callee: {
-            ...value.callee,
+            ...transformed.callee,
             name: onceTypeName(substituteName(generic.arguments[0], substitutions)),
           },
           arguments: [],
@@ -386,73 +426,87 @@ export function materializeGenerics(
         if (generic.arguments.length !== 1 || value.arguments.length !== 1) {
           throw new DiagnosticError(fileName, value.location, "Mutex<T>(value) expects one type argument and one value");
         }
+        const transformed = transformObject(value, substitutions, remapLocation);
         return {
-          ...value,
+          ...transformed,
           callee: {
-            ...value.callee,
+            ...transformed.callee,
             name: mutexTypeName(substituteName(generic.arguments[0], substitutions)),
           },
-          arguments: transform(value.arguments, substitutions),
+          arguments: transform(value.arguments, substitutions, remapLocation),
         };
       }
       if (generic && structTemplates.has(generic.base)) {
         const name = instantiateStruct(generic.base, generic.arguments.map((argument) => substituteName(argument, substitutions)));
+        const transformed = transformObject(value, substitutions, remapLocation);
         return {
-          ...value,
-          callee: { ...value.callee, name },
-          arguments: transform(value.arguments, substitutions),
+          ...transformed,
+          callee: { ...transformed.callee, name },
+          arguments: transform(value.arguments, substitutions, remapLocation),
         };
       }
+      const transformedCallee = transform(value.callee, substitutions, remapLocation);
       const callee = generic
         ? {
-            ...value.callee,
+            ...transformedCallee,
             name: instantiateFunction(
               generic.base,
               generic.arguments.map((arg) => substituteName(arg, substitutions)),
               value.location,
             ),
           }
-        : transform(value.callee, substitutions);
-      return { ...value, callee, arguments: transform(value.arguments, substitutions) };
+        : transformedCallee;
+      const transformed = transformObject(value, substitutions, remapLocation);
+      return { ...transformed, callee };
     }
     if (value.kind === "member" && value.object?.kind === "identifier") {
       const generic = parseGenericType(value.object.name);
       if (generic?.base === "Option") {
+        const transformed = transformObject(value, substitutions, remapLocation);
         return {
-          ...transformObject(value, substitutions),
+          ...transformed,
           object: {
-            ...value.object,
+            ...transformed.object,
             name: instantiateStruct("Option", generic.arguments.map((argument) => substituteName(argument, substitutions))),
           },
         };
       }
       if (generic && structTemplates.has(generic.base)) {
+        const transformed = transformObject(value, substitutions, remapLocation);
         return {
-          ...transformObject(value, substitutions),
+          ...transformed,
           object: {
-            ...value.object,
+            ...transformed.object,
             name: instantiateStruct(generic.base, generic.arguments.map((argument) => substituteName(argument, substitutions))),
           },
         };
       }
     }
     if (value.kind === "structExpression") {
-      return { ...transformObject(value, substitutions), typeName: substituteName(value.typeName, substitutions) };
+      return { ...transformObject(value, substitutions, remapLocation), typeName: substituteName(value.typeName, substitutions) };
     }
     if (value.kind === "new") {
       return {
-        ...transformObject(value, substitutions),
+        ...transformObject(value, substitutions, remapLocation),
         typeName: substituteName(value.typeName, substitutions),
       };
     }
     const keys = Object.keys(value);
     if (!value.kind && keys.length === 2 && keys.includes("name") && keys.includes("location")) {
-      return { ...value, name: substituteName(value.name, substitutions) };
+      return {
+        ...value,
+        name: substituteName(value.name, substitutions),
+        location: transform(value.location, substitutions, remapLocation),
+      };
     }
-    return transformObject(value, substitutions);
+    return transformObject(value, substitutions, remapLocation);
   };
-  const transformObject = (value: any, substitutions: Map<string, string>): any => Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [key, transform(child, substitutions)]),
+  const transformObject = (
+    value: any,
+    substitutions: Map<string, string>,
+    remapLocation: LocationRemapper | null,
+  ): any => Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [key, transform(child, substitutions, remapLocation)]),
   );
 
   function instantiateStruct(base: string, args: string[]): string {
@@ -506,9 +560,10 @@ export function materializeGenerics(
     });
     typeDisplayNames.set(name, `${base}<${args.map(displayName).join(", ")}>`);
     const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
+    const remapLocation = specializationLocationRemapper();
     const concrete = {
-      ...transform({ ...template, name, typeParameters: [], typeParameterConstraints: [], methods: [] }, substitutions),
-      methods: materializeMethods(template, substitutions, name),
+      ...transform({ ...template, name, typeParameters: [], typeParameterConstraints: [], methods: [] }, substitutions, remapLocation),
+      methods: materializeMethods(template, substitutions, name, remapLocation),
     } as StructDeclaration;
     materializedStructIndexes.set(name, structs.length);
     structs.push(concrete);
@@ -561,7 +616,7 @@ export function materializeGenerics(
       name,
       typeParameters: [],
       typeParameterConstraints: [],
-    }, substitutions) as TraitDeclaration);
+    }, substitutions, specializationLocationRemapper()) as TraitDeclaration);
     return name;
   }
 
@@ -709,7 +764,7 @@ export function materializeGenerics(
             requestLocation: requestLocation ?? template.compilerIntrinsic.requestLocation,
           }
         : undefined,
-    }, substitutions) as FunctionDeclaration;
+    }, substitutions, specializationLocationRemapper()) as FunctionDeclaration;
     functions.push(attachGeneratorError(concrete));
     return name;
   }
@@ -780,7 +835,7 @@ export function materializeGenerics(
       name: monomorphizedName(demand.template.name, [...demand.arguments]),
       typeParameters: [],
       typeParameterConstraints: [],
-    }, substitutions) as FunctionDeclaration;
+    }, substitutions, specializationLocationRemapper()) as FunctionDeclaration;
   }
 
   function appendConcreteMethod(demand: ConcreteMethodDemand): void {
@@ -849,6 +904,7 @@ export function materializeGenerics(
     declaration: StructDeclaration,
     ownerSubstitutions: Map<string, string>,
     materializedOwnerName: string,
+    remapLocation: LocationRemapper | null,
   ): FunctionDeclaration[] {
     const templates = new Map(
       declaration.methods
@@ -857,7 +913,7 @@ export function materializeGenerics(
     );
     const methods = declaration.methods
       .filter((method) => !method.typeParameters?.length)
-      .map((method) => transform(method, ownerSubstitutions) as FunctionDeclaration);
+      .map((method) => transform(method, ownerSubstitutions, remapLocation) as FunctionDeclaration);
     for (const request of declaration.methods) {
       const generic = parseGenericType(request.name);
       if (!generic) continue;
@@ -881,7 +937,7 @@ export function materializeGenerics(
         name: monomorphizedName(template.name, args),
         typeParameters: [],
         typeParameterConstraints: [],
-      }, substitutions) as FunctionDeclaration);
+      }, substitutions, remapLocation) as FunctionDeclaration);
     }
     while (pendingMethodDemands.has(materializedOwnerName)) {
       const pending = pendingMethodDemands.get(materializedOwnerName)!;
@@ -920,7 +976,7 @@ export function materializeGenerics(
   for (const declaration of program.structs.filter((item) => !item.typeParameters?.length)) {
     const concrete = {
       ...transform({ ...declaration, methods: [] }, new Map()),
-      methods: materializeMethods(declaration, new Map(), declaration.name),
+      methods: materializeMethods(declaration, new Map(), declaration.name, null),
     } as StructDeclaration;
     materializedStructIndexes.set(declaration.name, structs.length);
     structs.push(concrete);

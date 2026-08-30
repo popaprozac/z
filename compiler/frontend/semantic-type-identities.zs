@@ -575,6 +575,49 @@ export function semanticTypeIdentity(
     }
     none => {}
   }
+  match (nativeFunctionSignature(name)) {
+    some(signature) => {
+      let output = TextBuffer();
+      output.append("@function:");
+      if (signature.asynchronous) output.append("async:");
+      output.append("(");
+      let index: usize = 0;
+      while (index < signature.parameterTypes.length) {
+        if (index > 0) output.append(",");
+        output.append(signature.parameterModes[index]);
+        output.append(":");
+        const parameter = semanticTypeIdentity(
+          modules,
+          moduleIndex,
+          signature.parameterTypes[index]
+        );
+        output.append(parameter);
+        index = index + 1;
+      }
+      output.append(")=>");
+      const returned = semanticTypeIdentity(
+        modules,
+        moduleIndex,
+        signature.returnType
+      );
+      output.append(returned);
+      if (signature.errorType.byteLength > 0) {
+        output.append(":throws:");
+        const error = semanticTypeIdentity(
+          modules,
+          moduleIndex,
+          signature.errorType
+        );
+        output.append(error);
+      }
+      if (signature.threadContract.byteLength > 0) {
+        output.append(":on:");
+        output.append(signature.threadContract);
+      }
+      return output.finish();
+    }
+    none => {}
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       let base = generic.base.copyBytes(0, generic.base.byteLength);

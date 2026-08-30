@@ -7218,6 +7218,7 @@ function generateLoweredCompositeValue(
 
 function requiresStatementValue(expression: Expression, context: GenerationContext): boolean {
   if (context.expressionOverrides.has(expression.location.offset)) return false;
+  if (expression.kind === "closure") return true;
   if (context.semanticInfo.optionalChains.has(expression.location.offset)) return true;
   if (["template", "try", "matchExpression", "ifExpression", "unsafeExpression", "whileExpression", "forExpression"].includes(expression.kind)) return true;
   if (expression.kind === "dynamicArrayExpression") return expression.elements.length > 0;
@@ -7738,7 +7739,7 @@ function generateLoweredCall(
 }
 
 function generateLoweredAggregate(
-  expression: Extract<Expression, { kind: "structExpression" | "objectExpression" | "arrayExpression" | "variantExpression" }>,
+  expression: Extract<Expression, { kind: "new" | "structExpression" | "objectExpression" | "arrayExpression" | "variantExpression" }>,
   values: readonly Expression[],
   context: GenerationContext,
   consumeValue: (value: string, context: GenerationContext) => string,
