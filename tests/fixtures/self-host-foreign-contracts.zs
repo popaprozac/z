@@ -59,7 +59,7 @@ function inspectObjC(
   if (protocol.methods[0].parameters[1].typeName != "i32") return 88;
   const interface_ = view normalized.objectiveCInterfaces[1];
   if (interface_.name != "ZRegistrationOwner") return 89;
-  if (interface_.methods.length != 3) return 90;
+  if (interface_.methods.length != 5) return 90;
   if (interface_.methods[0].selector != "addHandler:name:") return 91;
   if (interface_.methods[0].parameters[0].typeName != "id") return 92;
   if (interface_.methods[0].parameters[0].protocols.length != 1) return 93;
@@ -140,6 +140,20 @@ function inspectObjC(
     return 0;
   }
   if (emittedPath.byteLength > 0) {
+    if (graph.modules[0].semanticEvidence.callResolutions.length == 3) {
+      const firstMaybe = view graph.modules[0]
+        .semanticEvidence.callResolutions[0];
+      const secondMaybe = view graph.modules[0]
+        .semanticEvidence.callResolutions[1];
+      const comparison = view graph.modules[0]
+        .semanticEvidence.callResolutions[2];
+      if (firstMaybe.objectiveCSelector != "maybeOwner") return 131;
+      if (secondMaybe.objectiveCSelector != "maybeOwner") return 132;
+      if (comparison.objectiveCSelector != "compareOwner:") return 133;
+      const emitted = try emitModulesC(modules, graph);
+      try fs.writeText(emittedPath, emitted);
+      return 0;
+    }
     if (graph.modules[0].semanticEvidence.callResolutions.length != 2) {
       return 111;
     }
@@ -182,7 +196,7 @@ function inspectObjC(
   match (in graph.modules[0].symbols[ownerIndex].typeSignature) {
     some(ownerType) => {
       if (ownerType.foreignKind != "objcInterface") return 99;
-      if (ownerType.methods.length != 3) return 100;
+      if (ownerType.methods.length != 5) return 100;
       if (ownerType.methods[0].objectiveCSelector != "addHandler:name:") {
         return 101;
       }

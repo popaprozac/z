@@ -8366,6 +8366,9 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
 
   const objcFixture = resolve(directory, "objc-registration-wire.h");
   writeFileSync(objcFixture, `
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wnullability-completeness"
+
     @protocol ZBaseHandler
     @end
 
@@ -8376,13 +8379,17 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     @interface ZRegistrationOwner
     - (void)addHandler:(id<ZRegistrationHandler>)handler name:(const char *)name;
     - (void)removeHandlerForName:(const char *)name;
+    - (int)compareOwner:(ZRegistrationOwner *)other;
     + (ZRegistrationOwner *)sharedOwner;
+    + (ZRegistrationOwner * _Nullable)maybeOwner;
     @end
 
     @interface ZPropertyOwner
     @property(nonatomic, readonly, getter=answer) int value;
     @property(nonatomic, weak) id<ZRegistrationHandler> handler;
     @end
+
+    #pragma clang diagnostic pop
   `);
   const objcImport: ImportDeclaration = {
     kind: "import",
@@ -8606,6 +8613,71 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     objcDirectCompilation.status,
     0,
     objcDirectCompilation.stderr,
+  );
+  const objcNullableGuardSourcePath = resolve(
+    directory,
+    "objc-nullable-guard-input.zs",
+  );
+  writeFileSync(
+    objcNullableGuardSourcePath,
+    [
+      'import native from "objc-registration-wire.h";',
+      "",
+      "function main(): i32 on thread.main {",
+      "  const first: native.ZRegistrationOwner | null = native.ZRegistrationOwner.maybeOwner();",
+      "  const second: native.ZRegistrationOwner | null = native.ZRegistrationOwner.maybeOwner();",
+      "  if (first == null || second == null) return 0;",
+      "  return first.compareOwner(second);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const objcNullableGuardEmissionPath = resolve(
+    directory,
+    "objc-nullable-guard.m",
+  );
+  const objcNullableGuardExecution = spawnSync(
+    contractExecutable,
+    [
+      objcPath,
+      objcContractPath,
+      objcNullableGuardSourcePath,
+      "objc-direct",
+      objcNullableGuardEmissionPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    objcNullableGuardExecution.status,
+    0,
+    objcNullableGuardExecution.stderr,
+  );
+  const objcNullableGuardEmission = readFileSync(
+    objcNullableGuardEmissionPath,
+    "utf8",
+  );
+  assert.match(
+    objcNullableGuardEmission,
+    /\[first compareOwner: second\]/,
+  );
+  const objcNullableGuardCompilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "objective-c",
+      "-fobjc-arc",
+      "-fsyntax-only",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      objcNullableGuardEmissionPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    objcNullableGuardCompilation.status,
+    0,
+    objcNullableGuardCompilation.stderr,
   );
   const objcProtocolNegativePath = resolve(
     directory,

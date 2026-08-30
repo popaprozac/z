@@ -12471,12 +12471,13 @@ function lowerExpressionContextual(
       && tree.nodes[calleeInput].children.length == 1
     ) {
       const enumInput = tree.nodes[calleeInput].children[0];
-      if (tree.nodes[enumInput].kind == ExpressionKind.identifierExpression) {
+      const enumName = typeExpressionName(tree, enumInput);
+      if (enumName.byteLength > 0) {
         const intrinsicName = contextualIntrinsicTypeName(
           evidence,
           tree,
           index,
-          tree.nodes[enumInput].value
+          enumName
         );
         const intrinsic = try intrinsicOptionDeclaration(
           program,
@@ -12490,7 +12491,7 @@ function lowerExpressionContextual(
                 match (in variant.payload) {
                   some(_) => {
                     if (tree.nodes[index].children.length != 2) {
-                      throw `native enum payload construction for ${tree.nodes[enumInput].value}.${variant.name} requires one value`;
+                      throw `native enum payload construction for ${enumName}.${variant.name} requires one value`;
                     }
                     const payloadInput = tree.nodes[index].children[1];
                     let payload = try lowerExpression(
@@ -12535,14 +12536,14 @@ function lowerExpressionContextual(
           }
           none => {}
         }
-        match (enumIndex(program, tree.nodes[enumInput].value)) {
+        match (enumIndex(program, enumName)) {
           some(declarationIndex) => {
             for (const variant of program.enums[declarationIndex].variants) {
               if (variant.name == tree.nodes[calleeInput].value) {
                 match (in variant.payload) {
                   some(_) => {
                     if (tree.nodes[index].children.length != 2) {
-                      throw `native enum payload construction for ${tree.nodes[enumInput].value}.${variant.name} requires one value`;
+                      throw `native enum payload construction for ${enumName}.${variant.name} requires one value`;
                     }
                     const payloadInput = tree.nodes[index].children[1];
                     let payload = try lowerExpression(
@@ -12566,7 +12567,7 @@ function lowerExpressionContextual(
                     const enumType = try lowerModuleTypeName(
                       program,
                       importedTypes,
-                      tree.nodes[enumInput].value
+                      enumName
                     );
                     return pushExpression(
                       inout output,
@@ -12585,7 +12586,7 @@ function lowerExpressionContextual(
         }
         match (importedEnumDeclaration(
           importedTypes,
-          tree.nodes[enumInput].value
+          enumName
         )) {
           some(declaration) => {
             for (const variant of declaration.variants) {
@@ -12593,7 +12594,7 @@ function lowerExpressionContextual(
               match (in variant.payload) {
                 some(_) => {
                   if (tree.nodes[index].children.length != 2) {
-                    throw `native enum payload construction for ${tree.nodes[enumInput].value}.${variant.name} requires one value`;
+                    throw `native enum payload construction for ${enumName}.${variant.name} requires one value`;
                   }
                   const payloadInput = tree.nodes[index].children[1];
                   let payload = try lowerExpression(

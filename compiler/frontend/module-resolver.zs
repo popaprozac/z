@@ -11311,40 +11311,18 @@ function inferStatement(
       some(condition) => match (in condition.tree) {
         some(tree) => {
           const root = tree.root;
-          if (
-            tree.nodes[root].kind == ExpressionKind.binaryExpression
-            && tree.nodes[root].children.length == 2
-            && (
-              tree.nodes[root].value == "=="
-              || tree.nodes[root].value == "!="
-            )
-          ) {
-            const left = tree.nodes[root].children[0];
-            const right = tree.nodes[root].children[1];
-            let bindingNode = tree.nodes.length;
-            if (
-              tree.nodes[left].kind == ExpressionKind.identifierExpression
-              && tree.nodes[right].kind == ExpressionKind.nullExpression
-            ) bindingNode = left;
-            else if (
-              tree.nodes[right].kind == ExpressionKind.identifierExpression
-              && tree.nodes[left].kind == ExpressionKind.nullExpression
-            ) bindingNode = right;
-            if (bindingNode < tree.nodes.length) {
-              const bindingName = identifierLookupName(
-                tree.nodes[bindingNode].value
-              );
-              const currentType = valueBindingType(bindings, bindingName);
-              const target = nullableTargetType(currentType);
-              if (target.byteLength > 0) {
-                if (tree.nodes[root].value == "==") {
-                  setValueBindingType(inout elseBindings, bindingName, target);
-                } else {
-                  setValueBindingType(inout thenBindings, bindingName, target);
-                }
-              }
-            }
-          }
+          applyNullConditionNarrowing(
+            tree,
+            root,
+            true,
+            inout thenBindings
+          );
+          applyNullConditionNarrowing(
+            tree,
+            root,
+            false,
+            inout elseBindings
+          );
           if (
             tree.nodes[root].kind == ExpressionKind.binaryExpression
             && tree.nodes[root].children.length == 2
