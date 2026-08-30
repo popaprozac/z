@@ -61,8 +61,13 @@ import {
 } from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
 import { Map, Set } from "std/collections";
+import fs from "std/fs";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
+import {
+  directoryName,
+  normalizedModulePath,
+} from "./module-paths.zs";
 
 export enum LoweredTypeKind {
   voidType,
@@ -83,6 +88,7 @@ export enum LoweredTypeKind {
   arenaType,
   hasherType,
   stringType,
+  staticBytesType,
   cstringType,
   fixedArrayType,
   arrayType,
@@ -258,6 +264,7 @@ export enum LoweredExpressionKind {
   taskControlCancel,
   mutexValue,
   mutexWithLock,
+  objectiveCAutoreleasePool,
   arenaNew,
   arenaCreate,
   arenaReset,
@@ -282,6 +289,8 @@ export enum LoweredExpressionKind {
   arrayRequireLength,
   arrayLength,
   fixedArrayLength,
+  staticBytesIndex,
+  staticBytesSlice,
   arrayIndex,
   arrayMutableIndex,
   arraySlice,
@@ -496,6 +505,13 @@ export struct LoweredConstant {
   type: LoweredType;
   initializerKind: LoweredExpressionKind;
   value: String;
+  embeddedLength: usize = 0;
+}
+
+export struct LoweredEmbeddedBytes {
+  name: String;
+  sourcePath: String;
+  bytes: Array<u8>;
 }
 
 export struct LoweredProgram {
@@ -504,6 +520,7 @@ export struct LoweredProgram {
   foreignResources: Array<LoweredForeignResource>;
   objectiveCProtocolAdapters: Array<LoweredObjCProtocolAdapter>;
   objectiveCRegistrations: Array<LoweredObjCRegistration>;
+  embeddedBytes: Array<LoweredEmbeddedBytes>;
   constants: Array<LoweredConstant>;
   fixedArrays: Array<LoweredFixedArray>;
   arrays: Array<LoweredArray>;
@@ -2773,6 +2790,12 @@ function lowerTypeName(
     return LoweredType({
       kind: LoweredTypeKind.stringType,
       name: "String",
+    });
+  }
+  if (name == "embed.StaticBytes") {
+    return LoweredType({
+      kind: LoweredTypeKind.staticBytesType,
+      name: "StaticBytes",
     });
   }
   if (name == "cstring") {
@@ -6899,6 +6922,76 @@ function collectMutexClosureCaptures(
   return captures;
 }
 
+function collectObjCPoolClosureCaptures(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in ownerName: String,
+  in expressions: Array<LoweredExpression>,
+  start: usize,
+  useOffset: usize
+): Array<LoweredClosureCapture> throws String {
+  let captures = Array<LoweredClosureCapture>();
+  let index = start;
+  while (index < expressions.length) {
+    if (expressions[index].kind == LoweredExpressionKind.receiverValue) {
+      throw "native objc.pool closures cannot capture `this` yet";
+    }
+    if (expressions[index].kind != LoweredExpressionKind.localValue) {
+      index = index + 1;
+      continue;
+    }
+    let directCallee = false;
+    let parent = start;
+    while (parent < expressions.length) {
+      if (
+        expressions[parent].kind == LoweredExpressionKind.directCall
+        && expressions[parent].children.length > 0
+        && expressions[parent].children[0] == index
+      ) directCallee = true;
+      parent = parent + 1;
+    }
+    if (directCallee) {
+      index = index + 1;
+      continue;
+    }
+    const captureName = expressions[index].value.copyBytes(
+      0,
+      expressions[index].value.byteLength
+    );
+    let exists = false;
+    for (const capture of captures) {
+      if (capture.name == captureName) exists = true;
+    }
+    if (exists) {
+      index = index + 1;
+      continue;
+    }
+    const typeName = match (namedValueTypeName(
+      program,
+      evidence,
+      ownerName,
+      captureName,
+      useOffset
+    )) {
+      some(name) => name;
+      none => throw `native objc.pool cannot resolve capture ${captureName}`;
+    };
+    const type = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      typeName
+    );
+    captures.push(LoweredClosureCapture({
+      name: move captureName,
+      type,
+      owned: false,
+    }));
+    index = index + 1;
+  }
+  return captures;
+}
+
 function collectThreadClosureCaptures(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -7886,6 +7979,19 @@ function staticallyResolvedExpressionTypeName(
       ) return Option.some(move name);
     }
     none => {}
+  }
+  if (tree.nodes[index].kind == ExpressionKind.callExpression) {
+    for (const resolution of evidence.callResolutions) {
+      if (
+        resolution.offset == tree.nodes[index].offset
+        && resolution.line == tree.nodes[index].line
+        && resolution.column == tree.nodes[index].column
+        && resolution.returnType.byteLength > 0
+      ) return Option.some(resolution.returnType.copyBytes(
+        0,
+        resolution.returnType.byteLength
+      ));
+    }
   }
   if (tree.nodes[index].kind == ExpressionKind.newExpression) {
     return Option.some(tree.nodes[index].value.copyBytes(
@@ -10286,6 +10392,80 @@ function lowerExpressionContextual(
       throw "native lowering received a malformed call expression";
     }
     const calleeInput = tree.nodes[index].children[0];
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[calleeInput].value == "pool"
+      && tree.nodes[index].children.length == 2
+    ) {
+      const namespace = tree.nodes[calleeInput].children[0];
+      if (
+        tree.nodes[namespace].kind == ExpressionKind.identifierExpression
+        && isImportedStandardNamespace(
+          program,
+          "std/objc",
+          tree.nodes[namespace].value
+        )
+      ) {
+        const operationInput = tree.nodes[index].children[1];
+        if (
+          tree.nodes[operationInput].kind != ExpressionKind.closureExpression
+          || tree.nodes[operationInput].labels.length < 4
+          || tree.nodes[operationInput].labels[2] != "block"
+          || tree.nodes[operationInput].labels[3].byteLength > 0
+        ) throw "native objc.pool requires one synchronous block closure";
+        let parameterCount: usize = 0;
+        for (const child of tree.nodes[operationInput].children) {
+          if (
+            tree.nodes[child].kind
+              == ExpressionKind.closureParameterExpression
+          ) parameterCount = parameterCount + 1;
+        }
+        if (parameterCount != 0) {
+          throw "native objc.pool requires a zero-argument closure";
+        }
+        const returnType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          tree.nodes[operationInput].labels[0]
+        );
+        const errorName = tree.nodes[operationInput].labels[1].copyBytes(
+          0,
+          tree.nodes[operationInput].labels[1].byteLength
+        );
+        let resultType = LoweredType({
+          kind: returnType.kind,
+          name: returnType.name.copyBytes(0, returnType.name.byteLength),
+        });
+        if (errorName.byteLength > 0) {
+          const errorType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            errorName
+          );
+          resultType = LoweredType({
+            kind: LoweredTypeKind.enumType,
+            name: intrinsicResultName(returnType, errorType),
+          });
+        }
+        let labels = Array<String>();
+        labels.push(loweredTypeIdentity(resultType));
+        labels.push(loweredTypeIdentity(returnType));
+        labels.push(move errorName);
+        labels.push("block");
+        const pooled = pushExpression(
+          inout output,
+          LoweredExpressionKind.objectiveCAutoreleasePool,
+          `${tree.nodes[operationInput].offset}`,
+          Array<usize>(),
+          labels
+        );
+        for (const statement of tree.nodes[operationInput].statements) {
+          output[pooled].statements.push(statement);
+        }
+        return pooled;
+      }
+    }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
@@ -13616,6 +13796,25 @@ function lowerExpressionContextual(
                     }
                     none => {}
                   }
+                  if (
+                    actualStorageTypeName == "embed.StaticBytes"
+                    && expected.arguments[0] == "u8"
+                  ) {
+                    const sliceType = try lowerModuleTypeName(
+                      program,
+                      importedTypes,
+                      expectedTypeName
+                    );
+                    let sliceChildren = Array<usize>();
+                    sliceChildren.push(value);
+                    value = pushExpression(
+                      inout output,
+                      LoweredExpressionKind.staticBytesSlice,
+                      sliceType.name,
+                      move sliceChildren,
+                      Array<String>()
+                    );
+                  }
                   match (fixedArrayShape(actualStorageTypeName)) {
                     some(actual) => {
                       const actualElement = try lowerModuleTypeName(
@@ -14027,6 +14226,7 @@ function lowerExpressionContextual(
       receiverType.kind != LoweredTypeKind.arrayType
       && receiverType.kind != LoweredTypeKind.sliceType
       && receiverType.kind != LoweredTypeKind.fixedArrayType
+      && receiverType.kind != LoweredTypeKind.staticBytesType
     ) {
       throw `native lowering does not support indexing ${receiverTypeName} yet`;
     }
@@ -14054,7 +14254,9 @@ function lowerExpressionContextual(
     if (receiverView) labels.push("view");
     return pushExpression(
       inout output,
-      LoweredExpressionKind.arrayIndex,
+      receiverType.kind == LoweredTypeKind.staticBytesType
+        ? LoweredExpressionKind.staticBytesIndex
+        : LoweredExpressionKind.arrayIndex,
       receiverType.name,
       children,
       labels
@@ -14302,6 +14504,7 @@ function lowerExpressionContextual(
           if (
             receiverType.kind == LoweredTypeKind.arrayType
             || receiverType.kind == LoweredTypeKind.sliceType
+            || receiverType.kind == LoweredTypeKind.staticBytesType
           ) {
             const receiver = try lowerExpression(
               program,
@@ -15723,6 +15926,32 @@ function directThrowingCallResult(
   const intrinsicCallee = tree.nodes[index].children[0];
   if (
     tree.nodes[intrinsicCallee].kind == ExpressionKind.memberExpression
+    && tree.nodes[intrinsicCallee].value == "pool"
+    && tree.nodes[intrinsicCallee].children.length == 1
+    && tree.nodes[index].children.length == 2
+  ) {
+    const namespace = tree.nodes[intrinsicCallee].children[0];
+    const operation = tree.nodes[index].children[1];
+    if (
+      tree.nodes[namespace].kind == ExpressionKind.identifierExpression
+      && isImportedStandardNamespace(
+        program,
+        "std/objc",
+        tree.nodes[namespace].value
+      )
+      && tree.nodes[operation].kind == ExpressionKind.closureExpression
+      && tree.nodes[operation].labels.length >= 2
+      && tree.nodes[operation].labels[1].byteLength > 0
+    ) {
+      return try intrinsicResultDeclaration(
+        program,
+        importedTypes,
+        `Result<${tree.nodes[operation].labels[0]}, ${tree.nodes[operation].labels[1]}>`
+      );
+    }
+  }
+  if (
+    tree.nodes[intrinsicCallee].kind == ExpressionKind.memberExpression
     && tree.nodes[intrinsicCallee].value == "upgrade"
     && tree.nodes[intrinsicCallee].children.length == 1
     && tree.nodes[index].children.length == 1
@@ -17023,6 +17252,21 @@ function isImportedStandardBinding(
   return false;
 }
 
+function isImportedStandardNamespace(
+  in program: Program,
+  in header: String,
+  in localName: String
+): boolean {
+  for (const declaration of program.imports) {
+    if (
+      declaration.header == header
+      && !declaration.selective
+      && declaration.moduleName == localName
+    ) return true;
+  }
+  return false;
+}
+
 function testBorrowInput(in tree: ExpressionTree, index: usize): usize {
   if (
     tree.nodes[index].kind == ExpressionKind.argumentReferenceExpression
@@ -17150,6 +17394,84 @@ function resolveThreadCaptureBindingOffsets(
     );
     expressions[expressionIndex].captureBindingOffsets.push(bindingOffset);
     captureLabel = captureLabel + 2;
+  }
+}
+
+function rewriteObjCPoolReturns(
+  in resultType: LoweredType,
+  in returnType: LoweredType,
+  throwing: boolean,
+  start: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): void {
+  let statementIndex = start;
+  while (statementIndex < statements.length) {
+    if (
+      statements[statementIndex].kind
+        != LoweredStatementKind.returnStatement
+    ) {
+      statementIndex = statementIndex + 1;
+      continue;
+    }
+    statements[statementIndex].type = Option.some(LoweredType({
+      kind: resultType.kind,
+      name: resultType.name.copyBytes(0, resultType.name.byteLength),
+    }));
+    const currentExpression = statements[statementIndex].expression;
+    match (currentExpression) {
+      some(existing) => {
+        if (
+          throwing
+          && expressions[existing].kind
+            == LoweredExpressionKind.enumPayloadValue
+          && expressions[existing].value == resultType.name
+        ) {
+          statementIndex = statementIndex + 1;
+          continue;
+        }
+        let payload = existing;
+        if (
+          expressions[existing].kind
+            == LoweredExpressionKind.enumPayloadValue
+          && expressions[existing].children.length == 1
+          && expressions[existing].value != returnType.name
+        ) payload = expressions[existing].children[0];
+        if (throwing) {
+          let children = Array<usize>();
+          children.push(payload);
+          let labels = Array<String>();
+          labels.push(
+            statements[statementIndex].labels.length > 0
+              && statements[statementIndex].labels[0] == "throw"
+              ? "failure"
+              : "success"
+          );
+          const wrapped = pushExpression(
+            inout expressions,
+            LoweredExpressionKind.enumPayloadValue,
+            resultType.name,
+            move children,
+            move labels
+          );
+          statements[statementIndex].expression = Option.some(wrapped);
+        } else statements[statementIndex].expression = Option.some(payload);
+      }
+      none => if (throwing) {
+        let labels = Array<String>();
+        labels.push("success");
+        labels.push("tagged");
+        const wrapped = pushExpression(
+          inout expressions,
+          LoweredExpressionKind.enumValue,
+          resultType.name,
+          Array<usize>(),
+          move labels
+        );
+        statements[statementIndex].expression = Option.some(wrapped);
+      }
+    }
+    statementIndex = statementIndex + 1;
   }
 }
 
@@ -17536,6 +17858,133 @@ function completeNativeClosureBlocks(
       );
       expressions[expressionIndex].statements = move loweredStatements;
       expressions[expressionIndex].labels[0] = "lowered-block";
+      expressionIndex = expressionIndex + 1;
+      continue;
+    }
+    if (
+      expressions[expressionIndex].kind
+        == LoweredExpressionKind.objectiveCAutoreleasePool
+      && expressions[expressionIndex].labels.length >= 4
+      && expressions[expressionIndex].labels[3] == "block"
+    ) {
+      let sourceStatements = Array<usize>();
+      for (const source of expressions[expressionIndex].statements) {
+        sourceStatements.push(source);
+      }
+      let loweredStatements = Array<usize>();
+      const bodyExpressionStart = expressions.length;
+      const bodyStatementStart = statements.length;
+      for (const source of sourceStatements) {
+        const lowered = try lowerStatement(
+          program,
+          importedTypes,
+          evidence,
+          arena,
+          ownerName,
+          source,
+          inout expressions,
+          inout statements
+        );
+        loweredStatements.push(lowered);
+      }
+      const throwing = expressions[expressionIndex].labels[2].byteLength > 0;
+      let resultType = LoweredType({
+        kind: LoweredTypeKind.enumType,
+        name: expressions[expressionIndex].labels[0].copyBytes(
+          0,
+          expressions[expressionIndex].labels[0].byteLength
+        ),
+      });
+      if (!throwing) {
+        resultType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          expressions[expressionIndex].labels[1]
+        );
+      }
+      const returnType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        expressions[expressionIndex].labels[1]
+      );
+      rewriteObjCPoolReturns(
+        resultType,
+        returnType,
+        throwing,
+        bodyStatementStart,
+        inout expressions,
+        inout statements
+      );
+      const bodyExpressionEnd = expressions.length;
+      let useOffset: usize = 0;
+      if (sourceStatements.length > 0) {
+        useOffset = arena.nodes[sourceStatements[0]].offset;
+      }
+      const captures = try collectObjCPoolClosureCaptures(
+        program,
+        importedTypes,
+        evidence,
+        ownerName,
+        expressions,
+        bodyExpressionStart,
+        useOffset
+      );
+      for (const capture of captures) {
+        rewriteClosureParameterValues(
+          inout expressions,
+          bodyExpressionStart,
+          capture.name
+        );
+        expressions[expressionIndex].labels.push(capture.name.copyBytes(
+          0,
+          capture.name.byteLength
+        ));
+        expressions[expressionIndex].labels.push(
+          loweredTypeIdentity(capture.type)
+        );
+        const captureValue = pushExpression(
+          inout expressions,
+          LoweredExpressionKind.localValue,
+          capture.name,
+          Array<usize>(),
+          Array<String>()
+        );
+        expressions[expressionIndex].children.push(captureValue);
+      }
+      let poolLiveFlags = Array<LoweredLiveFlag>();
+      const inherited = Array<LoweredCleanup>();
+      const loopCleanups = Array<LoweredCleanup>();
+      const poolMoveIndex = cleanupMoveIndex(
+        program,
+        evidence,
+        arena,
+        expressions
+      );
+      const introduced = try planCleanupSequence(
+        program,
+        importedTypes,
+        evidence,
+        arena,
+        ownerName,
+        sourceStatements,
+        loweredStatements,
+        inherited,
+        expressions,
+        poolMoveIndex,
+        inout statements,
+        inout poolLiveFlags,
+        false,
+        false,
+        loopCleanups
+      );
+      attachMoveLiveFlagsRange(
+        inout expressions,
+        poolLiveFlags,
+        bodyExpressionStart,
+        bodyExpressionEnd
+      );
+      expressions[expressionIndex].statements = move loweredStatements;
+      expressions[expressionIndex].labels[3] = "lowered-block";
       expressionIndex = expressionIndex + 1;
       continue;
     }
@@ -25655,11 +26104,69 @@ function lowerModuleConstant(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in declaration: ModuleConstantDeclaration,
-  moduleIndex: usize
+  moduleIndex: usize,
+  in sourcePath: String,
+  inout embeddedBytes: Array<LoweredEmbeddedBytes>
 ): LoweredConstant throws String {
   match (in declaration.initializer.tree) {
     some(tree) => {
       const root = view tree.nodes[tree.root];
+      if (
+        root.kind == ExpressionKind.callExpression
+        && root.children.length == 2
+        && tree.nodes[root.children[0]].kind
+          == ExpressionKind.memberExpression
+        && tree.nodes[root.children[0]].value == "bytes"
+        && tree.nodes[root.children[0]].children.length == 1
+      ) {
+        const namespace = tree.nodes[root.children[0]].children[0];
+        const path = view tree.nodes[root.children[1]];
+        if (
+          tree.nodes[namespace].kind == ExpressionKind.identifierExpression
+          && isImportedStandardNamespace(
+            program,
+            "std/embed",
+            tree.nodes[namespace].value
+          )
+        ) {
+          if (path.kind != ExpressionKind.stringExpression) {
+            throw "embed.bytes expects one compile-time string literal path";
+          }
+          const sourceDirectory = directoryName(sourcePath);
+          const requestedPath = `${sourceDirectory}/${path.value}`;
+          const requested = normalizedModulePath(requestedPath);
+          const canonical = try fs.realPath(requested);
+          if (fs.isDirectory(canonical)) {
+            throw `could not embed file ${path.value}: path is a directory`;
+          }
+          const bytes = try fs.readBytes(canonical);
+          const storageName = `z_stage1_embedded_bytes_${moduleIndex}_${root.offset}`;
+          const embeddedLength = bytes.length;
+          embeddedBytes.push(LoweredEmbeddedBytes({
+            name: storageName.copyBytes(0, storageName.byteLength),
+            sourcePath: canonical.copyBytes(0, canonical.byteLength),
+            bytes: move bytes,
+          }));
+          const type = match (in declaration.typeAnnotation) {
+            some(annotation) => try lowerModuleType(
+              program,
+              importedTypes,
+              annotation
+            );
+            none => LoweredType({
+              kind: LoweredTypeKind.staticBytesType,
+              name: "StaticBytes",
+            });
+          };
+          return LoweredConstant({
+            name: `__z_module_${moduleIndex}_${declaration.name}`,
+            type,
+            initializerKind: LoweredExpressionKind.emptyValue,
+            value: move storageName,
+            embeddedLength,
+          });
+        }
+      }
       if (
         root.kind == ExpressionKind.callExpression
         && root.children.length == 1
@@ -26056,6 +26563,7 @@ function appendLoweredProgram(
   moduleIndex: usize,
   entryIndex: usize,
   includeTests: boolean,
+  inout embeddedBytes: Array<LoweredEmbeddedBytes>,
   inout constants: Array<LoweredConstant>,
   inout fixedArrays: Array<LoweredFixedArray>,
   inout arrays: Array<LoweredArray>,
@@ -26072,7 +26580,9 @@ function appendLoweredProgram(
       program,
       importedTypes,
       declaration,
-      moduleIndex
+      moduleIndex,
+      sourcePath,
+      inout embeddedBytes
     );
     constants.push(move loweredConstant);
   }
@@ -27370,6 +27880,7 @@ function lowerProgramUnchecked(
   let foreignResources = Array<LoweredForeignResource>();
   let objectiveCProtocolAdapters = Array<LoweredObjCProtocolAdapter>();
   let objectiveCRegistrations = Array<LoweredObjCRegistration>();
+  let embeddedBytes = Array<LoweredEmbeddedBytes>();
   let importedTypes = Array<LoweredImportedType>();
   const privateCollisionNames = Array<String>();
   const privateTypeCollisionNames = Array<String>();
@@ -27389,6 +27900,7 @@ function lowerProgramUnchecked(
     0,
     0,
     false,
+    inout embeddedBytes,
     inout constants,
     inout fixedArrays,
     inout arrays,
@@ -27407,6 +27919,7 @@ function lowerProgramUnchecked(
     foreignResources,
     objectiveCProtocolAdapters,
     objectiveCRegistrations,
+    embeddedBytes,
     constants,
     fixedArrays,
     arrays,
@@ -27492,6 +28005,7 @@ function lowerModulesIncludingTests(
   let foreignResources = Array<LoweredForeignResource>();
   let objectiveCProtocolAdapters = Array<LoweredObjCProtocolAdapter>();
   let objectiveCRegistrations = Array<LoweredObjCRegistration>();
+  let embeddedBytes = Array<LoweredEmbeddedBytes>();
   const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(
     parsed,
     includeTests
@@ -27554,6 +28068,7 @@ function lowerModulesIncludingTests(
       moduleIndex,
       entryIndex,
       includeTests,
+      inout embeddedBytes,
       inout constants,
       inout fixedArrays,
       inout arrays,
@@ -27698,6 +28213,7 @@ function lowerModulesIncludingTests(
     foreignResources,
     objectiveCProtocolAdapters,
     objectiveCRegistrations,
+    embeddedBytes,
     constants,
     fixedArrays,
     arrays,

@@ -4234,6 +4234,108 @@ test("emits cleanup-free module constants through the native frontend", () => {
   }
 }, 30_000);
 
+test("embeds static bytes through the fixed-point native frontend", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-embed-");
+  const input = resolve(
+    projectRoot,
+    "examples/language/modules/embedded-assets.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /typedef struct Z_StaticBytes/);
+    assert.match(
+      emission.stdout,
+      /static const uint8_t z_stage1_embedded_bytes_\d+_\d+\[\d+\] = \{ 90, 32, 101, 109, 98, 101, 100, 115/,
+    );
+    assert.match(
+      emission.stdout,
+      /static __attribute__\(\(unused\)\) const Z_StaticBytes __z_module_\d+_MESSAGE = \{ \.data = z_stage1_embedded_bytes_\d+_\d+, \.length = \d+ \};/,
+    );
+
+    const executable = resolve(directory, "embedded-assets");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 60_000);
+
+hostToolchainTest("lowers lexical Objective-C pools without closure allocation natively", () => {
+  if (process.platform !== "darwin") return;
+  const directory = mkdtempSync("/tmp/z-self-host-objc-pool-");
+  const input = resolve(
+    projectRoot,
+    "examples/interop/objc/autorelease-pool.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /z_stage1_objc_pool_pooledValue_\d+\(const bool \*shouldFail\) \{\n  @autoreleasepool \{/,
+    );
+    assert.match(
+      emission.stdout,
+      /return z_stage1_objc_pool_pooledValue_\d+\(&\(shouldFail\)\);/,
+    );
+    assert.doesNotMatch(emission.stdout, /malloc\(sizeof\([^\n]*objc_pool/);
+    assert.doesNotMatch(emission.stdout, /_Block_copy|Z_ObjCClosureBox/);
+
+    const executable = resolve(directory, "objc-pool");
+    const compilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "objective-c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-",
+        "-framework",
+        "Foundation",
+        "-o",
+        executable,
+      ],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("emits module-owned Once class lifetimes through the native frontend", () => {
   const directory = mkdtempSync("/tmp/z-self-host-once-");
   const input = resolve(

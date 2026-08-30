@@ -4200,6 +4200,13 @@ function inferSignatureCallType(
       parameterIndex = parameterIndex + 1;
       continue;
     }
+    if (
+      requiredExpected == "Slice<u8>"
+      && argumentTypes[parameterIndex] == "embed.StaticBytes"
+    ) {
+      parameterIndex = parameterIndex + 1;
+      continue;
+    }
     try requireExpressionType(
       module,
       modules,
@@ -5582,6 +5589,20 @@ function inferExpressionNodeType(
         }
       }
       none => {}
+    }
+    if (
+      receiverValueType == "embed.StaticBytes"
+      && memberName == "length"
+    ) {
+      recordExpressionResolution(
+        modules,
+        moduleIndex,
+        tree,
+        index,
+        "usize",
+        inout evidence
+      );
+      return "usize";
     }
     if (receiverValueType == "String") {
       if (memberName == "byteLength") {
@@ -8137,6 +8158,63 @@ function inferExpressionNodeType(
           );
           copyBindingFlowStates(inout bindings, connectionBindings);
           return "";
+        }
+        if (
+          memberName == "pool"
+          && importedStandardNamespace(
+            module,
+            namespaceName,
+            "std/objc"
+          )
+        ) {
+          const argumentNodes = callArgumentNodes(children);
+          if (argumentNodes.length != 1) {
+            throw genericCallError(
+              module,
+              tree,
+              calleeIndex,
+              `objc.pool expects 1 argument, received ${argumentNodes.length}`
+            );
+          }
+          const operation = argumentNodes[0];
+          const operationType = try inferExpressionNodeType(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            operation,
+            inout bindings,
+            inout evidence
+          );
+          const signature = match (nativeFunctionSignature(operationType)) {
+            some(signature) => signature;
+            none => throw genericCallError(
+              module,
+              tree,
+              operation,
+              "objc.pool expects one synchronous zero-argument closure"
+            );
+          };
+          if (
+            signature.asynchronous
+            || signature.parameterTypes.length != 0
+          ) throw genericCallError(
+            module,
+            tree,
+            operation,
+            "objc.pool expects one synchronous zero-argument closure"
+          );
+          if (signature.errorType.byteLength > 0) {
+            return pendingThrowingCallType(
+              signature.returnType,
+              signature.errorType
+            );
+          }
+          return signature.returnType.copyBytes(
+            0,
+            signature.returnType.byteLength
+          );
         }
         match (nativeStandardCall(
           module.program,

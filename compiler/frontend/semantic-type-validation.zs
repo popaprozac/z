@@ -1284,6 +1284,37 @@ function onceInitializerType(
   return "";
 }
 
+function embedBytesInitializer(
+  in module: ParsedModule,
+  in tree: ExpressionTree
+): boolean {
+  const root = view tree.nodes[tree.root];
+  if (
+    root.kind != ExpressionKind.callExpression
+    || root.children.length != 2
+  ) return false;
+  const callee = root.children[0];
+  if (
+    tree.nodes[callee].kind != ExpressionKind.memberExpression
+    || tree.nodes[callee].value != "bytes"
+    || tree.nodes[callee].children.length != 1
+  ) return false;
+  const owner = tree.nodes[callee].children[0];
+  if (tree.nodes[owner].kind != ExpressionKind.identifierExpression) {
+    return false;
+  }
+  let imported = false;
+  for (const declaration of module.program.imports) {
+    if (
+      declaration.header == "std/embed"
+      && !declaration.selective
+      && declaration.moduleName == tree.nodes[owner].value
+    ) imported = true;
+  }
+  return imported
+    && tree.nodes[root.children[1]].kind == ExpressionKind.stringExpression;
+}
+
 function nativeTypeHasMainLifecycle(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -1442,6 +1473,7 @@ function validateModuleConstantTypes(
       some(tree) => {
         const root = view tree.nodes[tree.root];
         const onceType = onceInitializerType(tree);
+        const embeddedBytes = embedBytesInitializer(module, tree);
         const numberLiteral = root.kind == ExpressionKind.numberExpression
           || (
             root.kind == ExpressionKind.unaryExpression
@@ -1453,7 +1485,8 @@ function validateModuleConstantTypes(
         const supported = root.kind == ExpressionKind.stringExpression
           || root.kind == ExpressionKind.booleanExpression
           || numberLiteral
-          || onceType.byteLength > 0;
+          || onceType.byteLength > 0
+          || embeddedBytes;
         if (!supported) throw validationError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
@@ -1487,6 +1520,19 @@ function validateModuleConstantTypes(
             ModuleResolveErrorKind.typeMismatch,
             module.path,
             `module constant ${declaration.name} cannot initialize ${expected} from ${onceType}`,
+            declaration.line,
+            declaration.column
+          );
+          continue;
+        }
+        if (embeddedBytes) {
+          if (
+            expected.byteLength > 0
+            && expected != "embed.StaticBytes"
+          ) throw validationError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `module constant ${declaration.name} cannot initialize ${expected} from embed.StaticBytes`,
             declaration.line,
             declaration.column
           );

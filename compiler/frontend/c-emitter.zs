@@ -78,6 +78,7 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.arenaType) return "Z_Arena";
   if (type.kind == LoweredTypeKind.hasherType) return "Z_Hasher";
   if (type.kind == LoweredTypeKind.stringType) return "Z_String";
+  if (type.kind == LoweredTypeKind.staticBytesType) return "Z_StaticBytes";
   if (type.kind == LoweredTypeKind.cstringType) return "const char *";
   if (type.kind == LoweredTypeKind.fixedArrayType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
@@ -232,6 +233,17 @@ function appendMutexWithLockHelperName(
   expressionIndex: usize
 ): void {
   output.append("z_stage1_mutex_with_lock_");
+  appendCBindingName(inout output, declaration.name);
+  output.append("_");
+  output.append(`${expressionIndex}`);
+}
+
+function appendObjCAutoreleasePoolHelperName(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void {
+  output.append("z_stage1_objc_pool_");
   appendCBindingName(inout output, declaration.name);
   output.append("_");
   output.append(`${expressionIndex}`);
@@ -2513,6 +2525,12 @@ function loweredTypeForIdentity(
   if (identity == "f32") return LoweredType({ kind: LoweredTypeKind.f32Type, name: "" });
   if (identity == "f64") return LoweredType({ kind: LoweredTypeKind.f64Type, name: "" });
   if (identity == "String") return LoweredType({ kind: LoweredTypeKind.stringType, name: "String" });
+  if (identity == "StaticBytes" || identity == "embed.StaticBytes") {
+    return LoweredType({
+      kind: LoweredTypeKind.staticBytesType,
+      name: "StaticBytes",
+    });
+  }
   if (identity == "Arena") return LoweredType({ kind: LoweredTypeKind.arenaType, name: "Arena" });
   if (identity == "TaskScope") return LoweredType({ kind: LoweredTypeKind.taskScopeType, name: "TaskScope" });
   if (identity == "TaskControl") return LoweredType({ kind: LoweredTypeKind.taskControlType, name: "TaskControl" });
@@ -2797,6 +2815,16 @@ function appendModuleConstants(
       output.append(";\n");
       continue;
     }
+    if (declaration.type.kind == LoweredTypeKind.staticBytesType) {
+      output.append("static __attribute__((unused)) const Z_StaticBytes ");
+      appendCBindingName(inout output, declaration.name);
+      output.append(" = { .data = ");
+      output.append(declaration.value);
+      output.append(", .length = ");
+      output.append(`${declaration.embeddedLength}`);
+      output.append(" };\n");
+      continue;
+    }
     if (declaration.type.kind == LoweredTypeKind.onceType) {
       output.append("#if defined(_WIN32)\nstatic __attribute__((unused)) Z_");
       output.append(declaration.type.name);
@@ -2819,6 +2847,33 @@ function appendModuleConstants(
     output.append(";\n");
   }
   if (program.constants.length > 0) output.append("\n");
+}
+
+function appendEmbeddedBytesDefinitions(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void {
+  for (const declaration of program.embeddedBytes) {
+    const physicalLength = declaration.bytes.length == 0
+      ? usize(1)
+      : declaration.bytes.length;
+    output.append("static const uint8_t ");
+    output.append(declaration.name);
+    output.append("[");
+    output.append(`${physicalLength}`);
+    output.append("] = { ");
+    if (declaration.bytes.length == 0) output.append("0");
+    else {
+      let index: usize = 0;
+      while (index < declaration.bytes.length) {
+        if (index > 0) output.append(", ");
+        output.append(`${declaration.bytes[index]}`);
+        index = index + 1;
+      }
+    }
+    output.append(" };\n");
+  }
+  if (program.embeddedBytes.length > 0) output.append("\n");
 }
 
 function appendWeakRuntime(inout output: TextBuffer): void {
@@ -3639,6 +3694,55 @@ function appendExpression(
     output.append("), (size_t)");
     output.append(declaration.expressions[index].value);
     output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.staticBytesIndex
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received a malformed StaticBytes index";
+    }
+    const receiver = declaration.expressions[index].children[0];
+    const offset = declaration.expressions[index].children[1];
+    output.append("z_stage1_static_bytes_at(");
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
+    );
+    output.append(", ");
+    try appendExpression(
+      inout output,
+      declaration,
+      offset
+    );
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.staticBytesSlice
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed StaticBytes Slice projection";
+    }
+    const receiver = declaration.expressions[index].children[0];
+    output.append("((Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("){ .data = (void *)(");
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
+    );
+    output.append(").data, .length = (");
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
+    );
+    output.append(").length })");
     return;
   }
   if (
@@ -5048,6 +5152,32 @@ function appendExpression(
       declaration,
       value
     );
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.objectiveCAutoreleasePool
+  ) {
+    if (
+      declaration.expressions[index].labels.length < 4
+      || declaration.expressions[index].labels[3] != "lowered-block"
+    ) throw "native C emission received malformed objc.pool evidence";
+    appendObjCAutoreleasePoolHelperName(
+      inout output,
+      declaration,
+      index
+    );
+    output.append("(");
+    let capture: usize = 0;
+    while (capture < declaration.expressions[index].children.length) {
+      if (capture > 0) output.append(", ");
+      output.append("&(");
+      const value = declaration.expressions[index].children[capture];
+      try appendExpression(inout output, declaration, value);
+      output.append(")");
+      capture = capture + 1;
+    }
     output.append(")");
     return;
   }
@@ -14991,6 +15121,68 @@ function appendMutexWithLockHelpers(
   }
 }
 
+function appendObjCAutoreleasePoolHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const declaration of program.functions) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < declaration.expressions.length) {
+      const expression = view declaration.expressions[expressionIndex];
+      if (
+        expression.kind != LoweredExpressionKind.objectiveCAutoreleasePool
+      ) {
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      if (
+        expression.labels.length < 4
+        || expression.labels[3] != "lowered-block"
+        || (expression.labels.length - 4) % 2 != 0
+        || expression.children.length != (expression.labels.length - 4) / 2
+      ) throw "native C emission received malformed objc.pool evidence";
+      const resultType = try loweredTypeForIdentity(
+        program,
+        expression.labels[0]
+      );
+      const nativeResultType = try cType(resultType);
+      output.append("static __attribute__((unused)) ");
+      output.append(nativeResultType);
+      output.append(" ");
+      appendObjCAutoreleasePoolHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("(");
+      let captureLabel: usize = 4;
+      while (captureLabel + 1 < expression.labels.length) {
+        if (captureLabel > 4) output.append(", ");
+        const captureType = try loweredTypeForIdentity(
+          program,
+          expression.labels[captureLabel + 1]
+        );
+        const nativeCaptureType = try cType(captureType);
+        output.append("const ");
+        output.append(nativeCaptureType);
+        output.append(" *");
+        appendCBindingName(inout output, expression.labels[captureLabel]);
+        captureLabel = captureLabel + 2;
+      }
+      if (captureLabel == 4) output.append("void");
+      output.append(") {\n  @autoreleasepool {\n");
+      for (const root of expression.statements) {
+        try appendStatement(inout output, declaration, root, 2);
+      }
+      if (resultType.kind != LoweredTypeKind.voidType) {
+        output.append("    abort();\n");
+      }
+      output.append("  }\n}\n\n");
+      expressionIndex = expressionIndex + 1;
+    }
+  }
+}
+
 function appendTestRunner(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -18981,6 +19173,16 @@ function emitLoweredC(
   output.append("  size_t length;\n");
   output.append("  size_t capacity;\n");
   output.append("} Z_String;\n\n");
+  if (program.embeddedBytes.length > 0) {
+    output.append("typedef struct Z_StaticBytes {\n");
+    output.append("  const uint8_t *data;\n");
+    output.append("  size_t length;\n");
+    output.append("} Z_StaticBytes;\n\n");
+    output.append("static inline __attribute__((unused)) uint8_t z_stage1_static_bytes_at(Z_StaticBytes value, size_t index) {\n");
+    output.append("  if (index >= value.length) abort();\n");
+    output.append("  return value.data[index];\n");
+    output.append("}\n\n");
+  }
   output.append("static inline __attribute__((unused)) const char *z_stage1_string_cstring(Z_String value) {\n");
   output.append("  return value.data != NULL ? value.data : \"\";\n");
   output.append("}\n\n");
@@ -19335,6 +19537,7 @@ function emitLoweredC(
   }
   output.append("\n");
   try appendThreadTaskRuntime(inout output, program);
+  appendEmbeddedBytesDefinitions(inout output, program);
   try appendModuleConstants(inout output, program);
   for (const foreign of program.foreignFunctions) {
     const errorType = try cType(foreign.errorType);
@@ -19652,6 +19855,7 @@ function emitLoweredC(
   if (usesArena) try appendArenaCreateHelpers(inout output, program);
   try appendThreadMainCallHelpers(inout output, program);
   try appendThreadSpawnHelpers(inout output, program);
+  try appendObjCAutoreleasePoolHelpers(inout output, program);
   try appendMutexWithLockHelpers(inout output, program);
   for (const declaration of program.fixedArrays) {
     if (!loweredTypeNeedsDeinit(program, declaration.elementType)) continue;

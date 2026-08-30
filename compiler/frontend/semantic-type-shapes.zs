@@ -139,6 +139,7 @@ export function arrayElementType(in name: String): String {
     const target = name.copyBytes(5, name.byteLength);
     return arrayElementType(target);
   }
+  if (name == "embed.StaticBytes") return "u8";
   if (stringStartsWith(name, "Array<") || stringStartsWith(name, "Slice<")) {
     if (name.byteLength > 7 && name.byteAt(name.byteLength - 1) == 62) {
       const start: usize = 6;

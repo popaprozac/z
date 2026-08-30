@@ -4456,7 +4456,12 @@ synchronous non-escaping closure, returns independently owned values, drains on
 typed failure, and lowers to a lexical `@autoreleasepool` without allocating a
 pool object. A native fixture observes one autoreleased Objective-C instance
 inside the closure and zero immediately afterward on both normal and throwing
-paths. Fixed-point lowering of `embed.bytes` and `objc.pool` remains staged.
+paths. Both mechanisms now survive fixed-point lowering. `embed.bytes` is read
+while the native frontend resolves module constants and emitted as immutable
+static byte storage with checked indexing and zero-copy Slice projection.
+`objc.pool` becomes a direct `@autoreleasepool` helper whose captures are
+borrowed from the calling frame; typed success and failure values leave only
+after the lexical pool has drained, without allocating a closure environment.
 
 Splitting Zapp's macOS runtime into application, window-backend, native-event,
 and shared-runtime modules exposed one more fixed-point parity gap. A consumer

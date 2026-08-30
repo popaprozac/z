@@ -241,6 +241,28 @@ function consoleCall(
   }));
 }
 
+function embedCall(
+  in memberName: String,
+  argumentCount: usize
+): Option<NativeStandardCallShape> {
+  if (memberName != "bytes" || argumentCount != 1) {
+    return Option<NativeStandardCallShape>.none;
+  }
+  let parameterModes = Array<String>();
+  let parameterTypes = Array<String>();
+  parameterModes.push("value");
+  parameterTypes.push("String");
+  return Option.some(NativeStandardCallShape({
+    name: "embed.bytes",
+    signature: standardSignature(
+      move parameterModes,
+      move parameterTypes,
+      "embed.StaticBytes",
+      ""
+    ),
+  }));
+}
+
 export function nativeStandardCall(
   in program: Program,
   in namespaceName: String,
@@ -250,6 +272,7 @@ export function nativeStandardCall(
   const header = namespaceHeader(program, namespaceName);
   if (header == "std/fs") return fsCall(memberName);
   if (header == "std/process") return processCall(memberName);
+  if (header == "std/embed") return embedCall(memberName, argumentCount);
   if (
     header == "std/console"
     && argumentCount == 1
