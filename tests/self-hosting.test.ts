@@ -11586,6 +11586,30 @@ function main(): i32 {
   );
   assert.match(
     emittedApplicationSource,
+    /z_stage1_checked_convert_i64_to_i32\(wideSigned\)/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_checked_divide_i64\(z_stage1_checked_subtract_i64\(wideMaximum,/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_checked_add_i64\(z_stage1_checked_multiply_i64\(wideSigned,/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_checked_negate_i64\(wideMaximum\)/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_checked_subtract_i64\(wideMinimum,/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /const int32_t minimum = INT32_MIN/,
+  );
+  assert.match(
+    emittedApplicationSource,
     /z_stage1_checked_convert_usize_to_u8\(native\)/,
   );
   assert.match(

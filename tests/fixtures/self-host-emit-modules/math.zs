@@ -23,6 +23,17 @@ export function integerParity(value: u8): i32 {
   const signed = i32(widened);
   const wideSigned = i64(signed);
   if (wideSigned != 2) return 1;
+  let wideMaximum: i64 = 9223372036854775807;
+  const wideReduced = (wideMaximum - i64(9)) / i64(10);
+  if (wideReduced != 922337203685477579) return 1;
+  const wideProduct = wideSigned * i64(10) + i64(9);
+  if (wideProduct != 29) return 1;
+  let wideMinimum = -wideMaximum;
+  wideMinimum = wideMinimum - i64(1);
+  if (wideMinimum >= 0) return 1;
+  const narrowedWide = i32(wideSigned);
+  const minimum: i32 = -2147483648;
+  if (minimum >= 0) return 1;
   const native = usize(signed);
   const narrowed = u8(native);
   const maximum: u8 = 255;
@@ -33,7 +44,8 @@ export function integerParity(value: u8): i32 {
     + i32(wrappedSubtract)
     + i32(wrappedMultiply)
     + i32(narrowed)
-    - 511;
+    + narrowedWide
+    - 513;
 }
 
 export function makePoint(x: i32, y: i32): Point {

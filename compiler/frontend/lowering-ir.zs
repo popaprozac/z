@@ -7101,10 +7101,12 @@ function annotatedLocalBindingTypeName(
 
 function loweredIntegerSourceType(
   in importedTypes: Array<LoweredImportedType>,
-  in sourceType: String
+  in sourceType: String,
+  in targetType: String
 ): Option<String> {
   if (
     sourceType == "i32"
+    || (sourceType == "i64" && targetType == "i32")
     || sourceType == "u8"
     || sourceType == "u32"
     || sourceType == "u64"
@@ -7165,6 +7167,7 @@ function checkedIntegerTypeName(
         || name == "u64"
         || name == "usize"
         || name == "i32"
+        || name == "i64"
       ) return name;
     }
     none => {}
@@ -7173,6 +7176,7 @@ function checkedIntegerTypeName(
   for (const child of tree.nodes[index].children) {
     match (resolvedExpressionTypeName(evidence, tree, child)) {
       some(name) => {
+        if (name == "i64") return name;
         if (name == "u64") return name;
         if (name == "usize") candidate = "usize";
         if (name == "u32" && candidate != "usize") candidate = "u32";
@@ -7194,6 +7198,7 @@ function checkedIntegerTypeName(
         childOffset
       )) {
         some(name) => {
+          if (name == "i64") return name;
           if (name == "u64") return name;
           if (name == "usize") candidate = "usize";
           if (name == "u32" && candidate != "usize") candidate = "u32";
@@ -11198,7 +11203,7 @@ function lowerExpressionContextual(
         tree.nodes[calleeInput].value.byteLength
       );
       const conversionSourceType = match (
-        loweredIntegerSourceType(importedTypes, sourceType)
+        loweredIntegerSourceType(importedTypes, sourceType, targetType)
       ) {
         some(typeName) => typeName;
         none => throw `native integer conversion does not support source type ${sourceType} yet`;

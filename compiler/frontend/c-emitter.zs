@@ -3947,6 +3947,36 @@ function appendExpression(
       throw "native C emission received a malformed checked negate expression";
     }
     const operand = declaration.expressions[index].children[0];
+    if (
+      declaration.expressions[operand].kind
+        == LoweredExpressionKind.integerValue
+      && (
+        (
+          declaration.expressions[index].value == "i8"
+          && declaration.expressions[operand].value == "128"
+        )
+        || (
+          declaration.expressions[index].value == "i16"
+          && declaration.expressions[operand].value == "32768"
+        )
+        || (
+          declaration.expressions[index].value == "i32"
+          && declaration.expressions[operand].value == "2147483648"
+        )
+        || (
+          declaration.expressions[index].value == "i64"
+          && declaration.expressions[operand].value == "9223372036854775808"
+        )
+      )
+    ) {
+      output.append("INT");
+      if (declaration.expressions[index].value == "i8") output.append("8");
+      else if (declaration.expressions[index].value == "i16") output.append("16");
+      else if (declaration.expressions[index].value == "i32") output.append("32");
+      else output.append("64");
+      output.append("_MIN");
+      return;
+    }
     output.append("z_stage1_checked_negate_");
     output.append(declaration.expressions[index].value);
     output.append("(");
@@ -18905,6 +18935,10 @@ function emitLoweredC(
   output.append("}\n\n");
   output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_convert_usize_to_i32(size_t value) {\n");
   output.append("  if (value > INT32_MAX) abort();\n");
+  output.append("  return (int32_t)value;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_convert_i64_to_i32(int64_t value) {\n");
+  output.append("  if (value < INT32_MIN || value > INT32_MAX) abort();\n");
   output.append("  return (int32_t)value;\n");
   output.append("}\n\n");
   output.append("static inline __attribute__((unused)) size_t z_stage1_checked_convert_i32_to_usize(int32_t value) {\n");
