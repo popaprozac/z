@@ -2260,12 +2260,6 @@ function validateNativeFunction(
   );
 }
 
-function aggregateKindName(in aggregate: AggregateDeclaration): String {
-  return aggregate.kind == DeclarationKind.classDeclaration
-    ? "class"
-    : "struct";
-}
-
 function validateNativeAggregate(
   in path: String,
   moduleIndex: usize,
@@ -2273,58 +2267,6 @@ function validateNativeAggregate(
   in graph: ModuleGraph,
   in aggregate: AggregateDeclaration
 ): void throws ModuleResolveError {
-  if (aggregate.typeParameters.length > 0) {
-    const kind = aggregateKindName(aggregate);
-    match (in aggregate.constructorDeclaration) {
-      some(initializer) => throw loweringBoundary(
-        path,
-        "Z1000",
-        `constructor for generic ${kind} "${aggregate.name}" is not executable in the native compiler yet`,
-        initializer.line,
-        initializer.column,
-        11
-      );
-      none => {}
-    }
-    match (in aggregate.deinitializer) {
-      some(deinitializer) => try validateNativeBody(
-        path,
-        moduleIndex,
-        modules,
-        graph,
-        deinitializer.body,
-        false,
-        false
-      );
-      none => {}
-    }
-    for (const field of aggregate.fields) {
-      match (in field.defaultValue) {
-        some(expression) => try validateNativeExpression(
-          path,
-          moduleIndex,
-          modules,
-          graph,
-          expression,
-          true,
-          false
-        );
-        none => {}
-      }
-      try validateNativeType(path, field.type);
-    }
-    for (const method of aggregate.methods) {
-      try validateNativeFunction(
-        path,
-        moduleIndex,
-        modules,
-        graph,
-        method,
-        aggregate.name
-      );
-    }
-    return;
-  }
   match (in aggregate.constructorDeclaration) {
     some(initializer) => {
       if (aggregate.kind != DeclarationKind.classDeclaration) {

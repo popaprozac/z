@@ -54,6 +54,7 @@ import {
 } from "./semantic-flow-state.zs";
 import { substituteGenericType } from "./semantic-type-ownership.zs";
 import {
+  collectTypeIdentities,
   rebaseTypeName,
   semanticTypeIdentity,
   typeSymbolLocation,
@@ -318,6 +319,8 @@ export struct LoweredExpression {
   captureTypes: Array<LoweredType> = Array<LoweredType>();
   moveSpreadOverrides: Array<LoweredField> = Array<LoweredField>();
   threadSafe: boolean = false;
+  closureBlockBody: boolean = false;
+  closureParameterCount: usize = 0;
 }
 
 export struct LoweredMainDelaySegment {
@@ -1445,6 +1448,79 @@ function collectGenericStructUses(in graph: ModuleGraph): Array<LoweredGenericSt
         "",
         inout uses
       );
+    }
+    // A generic owner can reach a consumer through an imported aggregate
+    // field without the consumer naming the generic class itself. Method-call
+    // evidence still carries the concrete owner substitutions, so preserve
+    // that transitive demand instead of requiring a redundant type import.
+    for (const resolution of evidence.callResolutions) {
+      if (
+        resolution.kind != "method"
+        && resolution.kind != "staticMethod"
+      ) continue;
+      if (
+        resolution.targetModuleIndex >= graph.modules.length
+        || resolution.targetSymbolIndex >= graph.modules[
+          resolution.targetModuleIndex
+        ].symbols.length
+      ) continue;
+      const symbol = view graph.modules[resolution.targetModuleIndex]
+        .symbols[resolution.targetSymbolIndex];
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          if (
+            signature.typeParameters.length == 0
+            || resolution.typeArguments.length
+              < resolution.callableTypeParameterCount
+          ) continue;
+          const ownerArgumentCount = resolution.typeArguments.length
+            - resolution.callableTypeParameterCount;
+          if (ownerArgumentCount != signature.typeParameters.length) {
+            continue;
+          }
+          let ownerArguments = Array<String>();
+          let identities = Array<ModuleTypeIdentity>();
+          identities.push(ModuleTypeIdentity({
+            path: "",
+            targetModuleIndex: resolution.targetModuleIndex,
+            targetSymbolIndex: resolution.targetSymbolIndex,
+          }));
+          let argumentIndex: usize = 0;
+          while (argumentIndex < ownerArgumentCount) {
+            const argument = resolution.typeArguments[argumentIndex]
+              .copyBytes(
+                0,
+                resolution.typeArguments[argumentIndex].byteLength
+              );
+            const childPath = genericTypeIdentityPath(
+              "",
+              `${argumentIndex}`
+            );
+            collectTypeIdentities(
+              graph.modules,
+              moduleIndex,
+              argument,
+              childPath,
+              inout identities
+            );
+            ownerArguments.push(move argument);
+            argumentIndex = argumentIndex + 1;
+          }
+          const ownerType = concreteGenericTypeName(
+            symbol.name,
+            ownerArguments
+          );
+          collectGenericStructUseFromType(
+            graph,
+            moduleIndex,
+            ownerType,
+            identities,
+            "",
+            inout uses
+          );
+        }
+        none => {}
+      }
     }
     moduleIndex = moduleIndex + 1;
   }
@@ -6960,6 +7036,119 @@ function collectThreadClosureCaptures(
   return captures;
 }
 
+function collectCallableBlockCaptures(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in ownerName: String,
+  in expressions: Array<LoweredExpression>,
+  start: usize,
+  in statements: Array<LoweredStatement>,
+  statementStart: usize,
+  useOffset: usize
+): Array<LoweredClosureCapture> throws String {
+  let captures = Array<LoweredClosureCapture>();
+  let index = start;
+  while (index < expressions.length) {
+    if (expressions[index].kind == LoweredExpressionKind.receiverValue) {
+      throw "native block callable closures cannot capture `this` yet";
+    }
+    if (expressions[index].kind != LoweredExpressionKind.localValue) {
+      index = index + 1;
+      continue;
+    }
+    let directCallee = false;
+    let parentExpression = start;
+    while (parentExpression < expressions.length) {
+      if (
+        expressions[parentExpression].kind
+          == LoweredExpressionKind.directCall
+        && expressions[parentExpression].children.length > 0
+        && expressions[parentExpression].children[0] == index
+      ) directCallee = true;
+      parentExpression = parentExpression + 1;
+    }
+    if (directCallee) {
+      index = index + 1;
+      continue;
+    }
+    const captureName = expressions[index].value.copyBytes(
+      0,
+      expressions[index].value.byteLength
+    );
+    let declaredInside = false;
+    let scanStatement = statementStart;
+    while (scanStatement < statements.length) {
+      if (
+        statements[scanStatement].kind == LoweredStatementKind.localStatement
+        && statements[scanStatement].name == captureName
+      ) declaredInside = true;
+      scanStatement = scanStatement + 1;
+    }
+    if (declaredInside) {
+      index = index + 1;
+      continue;
+    }
+    let exists = false;
+    for (const capture of captures) {
+      if (capture.name == captureName) exists = true;
+    }
+    if (exists) {
+      index = index + 1;
+      continue;
+    }
+    let resolvedType = Option<LoweredType>.none;
+    let priorStatement: usize = 0;
+    while (priorStatement < statementStart) {
+      if (
+        statements[priorStatement].kind == LoweredStatementKind.localStatement
+        && statements[priorStatement].name == captureName
+      ) {
+        match (in statements[priorStatement].type) {
+          some(type) => resolvedType = Option.some(LoweredType({
+            kind: type.kind,
+            name: type.name.copyBytes(0, type.name.byteLength),
+          }));
+          none => {}
+        }
+      }
+      priorStatement = priorStatement + 1;
+    }
+    match (resolvedType) {
+      some(type) => captures.push(LoweredClosureCapture({
+        name: move captureName,
+        owned: moduleTypeNeedsCleanup(program, importedTypes, type),
+        type,
+      }));
+      none => match (namedValueTypeName(
+        program,
+        evidence,
+        ownerName,
+        captureName,
+        useOffset
+      )) {
+        some(typeName) => {
+          const type = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            typeName
+          );
+          captures.push(LoweredClosureCapture({
+            name: move captureName,
+            owned: moduleTypeNeedsCleanup(program, importedTypes, type),
+            type,
+          }));
+        }
+        // Imported namespaces and direct compiler/runtime helpers are not
+        // lexical captures even when they lower through a local C spelling.
+        none => {}
+      }
+    }
+    index = index + 1;
+  }
+  return captures;
+}
+
 function resolvedExpressionResolutionIndex(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
@@ -7383,6 +7572,18 @@ function namedValueTypeName(
     }
     let methodType = "";
     for (const aggregate of program.aggregates) {
+      if (ownerName == `${aggregate.name}.constructor`) {
+        match (in aggregate.constructorDeclaration) {
+          some(initializer) => for (const parameter of initializer.parameters) {
+            if (parameter.name != name) continue;
+            return Option.some(parameter.type.name.copyBytes(
+              0,
+              parameter.type.name.byteLength
+            ));
+          }
+          none => {}
+        }
+      }
       for (const method of aggregate.methods) {
         if (!semanticMethodOwnerMatches(
           ownerName,
@@ -7428,6 +7629,30 @@ function namedValueTypeName(
       }
     }
     for (const aggregate of program.aggregates) {
+      match (in aggregate.constructorDeclaration) {
+        some(initializer) => {
+          if (
+            initializer.offset <= useOffset
+            && (
+              !scopedOwnerFound
+              || initializer.offset >= scopedOwnerOffset
+            )
+          ) {
+            scopedOwnerFound = true;
+            scopedOwnerOffset = initializer.offset;
+            scopedParameterType = "";
+            for (const parameter of initializer.parameters) {
+              if (parameter.name == name) {
+                scopedParameterType = parameter.type.name.copyBytes(
+                  0,
+                  parameter.type.name.byteLength
+                );
+              }
+            }
+          }
+        }
+        none => {}
+      }
       for (const method of aggregate.methods) {
         if (
           method.offset > useOffset
@@ -12837,8 +13062,50 @@ function lowerExpressionContextual(
         labels
       );
     }
+    let inferredNominalMethod = false;
     if (
-      callKind == "method"
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+    ) {
+      const inferredReceiverInput = tree.nodes[calleeInput].children[0];
+      match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        inferredReceiverInput
+      )) {
+        some(inferredReceiverName) => {
+          const inferredReceiver = attempt lowerModuleTypeName(
+            program,
+            importedTypes,
+            inferredReceiverName
+          );
+          match (inferredReceiver) {
+            success(type) => {
+              if (
+                type.kind == LoweredTypeKind.structType
+                || type.kind == LoweredTypeKind.classType
+              ) {
+                match (fieldTypeNameForOwner(
+                  program,
+                  importedTypes,
+                  inferredReceiverName,
+                  tree.nodes[calleeInput].value
+                )) {
+                  some(_) => {}
+                  none => inferredNominalMethod = true;
+                }
+              }
+            }
+            failure(_) => {}
+          }
+        }
+        none => {}
+      }
+    }
+    if (
+      (callKind == "method" || inferredNominalMethod)
       && tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
     ) {
@@ -12913,7 +13180,21 @@ function lowerExpressionContextual(
       let argument: usize = 1;
       while (argument < tree.nodes[index].children.length) {
         const argumentInput = tree.nodes[index].children[argument];
-        let value = try lowerExpression(
+        let value: usize = 0;
+        if (
+          parameterTypes.length >= argument
+          && tree.nodes[argumentInput].kind
+            == ExpressionKind.closureExpression
+        ) value = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput,
+          parameterTypes[argument - 1],
+          inout output
+        );
+        else value = try lowerExpression(
           program,
           importedTypes,
           evidence,
@@ -13202,6 +13483,34 @@ function lowerExpressionContextual(
         parameterTypes[argument - 1],
         inout output
       );
+      else if (
+        tree.nodes[argumentInput].kind
+          == ExpressionKind.closureExpression
+      ) match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput
+      )) {
+        some(expectedType) => value = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput,
+          expectedType,
+          inout output
+        );
+        none => value = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput,
+          inout output
+        );
+      }
       else value = try lowerExpression(
         program,
         importedTypes,
@@ -14508,14 +14817,21 @@ function lowerExpressionExpected(
       if (tree.nodes[index].kind == ExpressionKind.closureExpression) {
         if (
           tree.nodes[index].labels.length < 4
-          || tree.nodes[index].labels[2] != "expression"
+          || (
+            tree.nodes[index].labels[2] != "expression"
+            && tree.nodes[index].labels[2] != "block"
+          )
           || (
             tree.nodes[index].labels[3].byteLength > 0
             && tree.nodes[index].labels[3] != "async"
           )
         ) {
-          throw "native first-class callable lowering currently supports expression closures";
+          throw "native first-class callable lowering received an unsupported closure shape";
         }
+        const bodyKind = tree.nodes[index].labels[2].copyBytes(
+          0,
+          tree.nodes[index].labels[2].byteLength
+        );
         const closureAsynchronous = tree.nodes[index].labels[3] == "async";
         if (closureAsynchronous != signature.asynchronous) {
           throw "native callable closure lost its asynchronous function-type identity";
@@ -14532,10 +14848,52 @@ function lowerExpressionExpected(
           ));
           else bodyInput = child;
         }
-        if (
-          bodyInput >= tree.nodes.length
-          || parameterNames.length != signature.parameterTypes.length
-        ) throw "native callable closure lost its parameter or body shape";
+        if (parameterNames.length != signature.parameterTypes.length) {
+          throw "native callable closure lost its parameter shape";
+        }
+        if (bodyKind == "block") {
+          if (
+            closureAsynchronous
+            || signature.returnType != "void"
+            || signature.errorType.byteLength > 0
+          ) {
+            throw "native block callable closures currently require a synchronous, nonthrowing void signature";
+          }
+          let labels = Array<String>();
+          labels.push(functionType.name.copyBytes(
+            0,
+            functionType.name.byteLength
+          ));
+          labels.push(tree.nodes[index].value.copyBytes(
+            0,
+            tree.nodes[index].value.byteLength
+          ));
+          labels.push("plain");
+          for (const parameterName of parameterNames) {
+            labels.push(parameterName.copyBytes(
+              0,
+              parameterName.byteLength
+            ));
+          }
+          const closure = pushExpression(
+            inout output,
+            LoweredExpressionKind.closureValue,
+            "",
+            Array<usize>(),
+            labels
+          );
+          for (const statement of tree.nodes[index].statements) {
+            output[closure].statements.push(statement);
+          }
+          output[closure].closureBlockBody = true;
+          output[closure].closureParameterCount = parameterNames.length;
+          output[closure].threadSafe = signature.threadContract
+            == "thread.any";
+          return closure;
+        }
+        if (bodyInput >= tree.nodes.length) {
+          throw "native callable closure lost its expression body";
+        }
         let asyncSuspension = "";
         if (closureAsynchronous) {
           if (signature.errorType.byteLength > 0) {
@@ -16809,6 +17167,125 @@ function completeNativeClosureBlocks(
   const closureUseOffset = arena.nodes[sourceStatementIndex].offset;
   let expressionIndex = start;
   while (expressionIndex < expressions.length) {
+    if (
+      expressions[expressionIndex].kind
+        == LoweredExpressionKind.closureValue
+      && expressions[expressionIndex].closureBlockBody
+    ) {
+      let sourceStatements = Array<usize>();
+      for (const source of expressions[expressionIndex].statements) {
+        sourceStatements.push(source);
+      }
+      let loweredStatements = Array<usize>();
+      const bodyExpressionStart = expressions.length;
+      const bodyStatementStart = statements.length;
+      for (const source of sourceStatements) {
+        const lowered = try lowerStatement(
+          program,
+          importedTypes,
+          evidence,
+          arena,
+          ownerName,
+          source,
+          inout expressions,
+          inout statements
+        );
+        loweredStatements.push(lowered);
+      }
+      let parameter: usize = 0;
+      while (parameter < expressions[expressionIndex].closureParameterCount) {
+        const parameterName = expressions[expressionIndex].labels[
+          3 + parameter
+        ].copyBytes(
+          0,
+          expressions[expressionIndex].labels[3 + parameter].byteLength
+        );
+        rewriteClosureParameterValues(
+          inout expressions,
+          bodyExpressionStart,
+          parameterName
+        );
+        parameter = parameter + 1;
+      }
+      const captures = try collectCallableBlockCaptures(
+        program,
+        importedTypes,
+        evidence,
+        ownerName,
+        expressions,
+        bodyExpressionStart,
+        statements,
+        bodyStatementStart,
+        closureUseOffset
+      );
+      for (const capture of captures) {
+        if (
+          capture.owned
+          && expressions[expressionIndex].labels[1] != "move"
+        ) {
+          throw `native escaping callable requires a move closure to capture ${capture.name}`;
+        }
+        const local = pushExpression(
+          inout expressions,
+          LoweredExpressionKind.localValue,
+          capture.name,
+          Array<usize>(),
+          Array<String>()
+        );
+        let stored = local;
+        if (
+          expressions[expressionIndex].labels[1] == "move"
+          && moduleTypeRetainsCapturedIdentity(capture.type)
+        ) {
+          let retainedChildren = Array<usize>();
+          retainedChildren.push(local);
+          stored = pushExpression(
+            inout expressions,
+            LoweredExpressionKind.retainValue,
+            capture.type.name,
+            retainedChildren,
+            Array<String>()
+          );
+        } else if (
+          expressions[expressionIndex].labels[1] == "move"
+          && capture.owned
+        ) {
+          let movedChildren = Array<usize>();
+          movedChildren.push(local);
+          stored = pushExpression(
+            inout expressions,
+            LoweredExpressionKind.moveValue,
+            "",
+            movedChildren,
+            Array<String>()
+          );
+        }
+        expressions[expressionIndex].children.push(stored);
+        expressions[expressionIndex].labels.push(capture.name.copyBytes(
+          0,
+          capture.name.byteLength
+        ));
+        expressions[expressionIndex].captureTypes.push(LoweredType({
+          kind: capture.type.kind,
+          name: capture.type.name.copyBytes(0, capture.type.name.byteLength),
+        }));
+      }
+      let statementIndex = bodyStatementStart;
+      while (statementIndex < statements.length) {
+        match (in statements[statementIndex].type) {
+          some(type) => {
+            if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+              throw "native block callable closures do not support cleanup-bearing local values yet";
+            }
+          }
+          none => {}
+        }
+        statementIndex = statementIndex + 1;
+      }
+      expressions[expressionIndex].statements = move loweredStatements;
+      expressionIndex = expressionIndex + 1;
+      continue;
+    }
     if (
       expressions[expressionIndex].kind
         == LoweredExpressionKind.threadSpawn
@@ -23803,6 +24280,37 @@ function collectFunctionIntrinsicTypes(
   );
 }
 
+function programGenericTypeParameterNames(
+  in program: Program
+): Array<String> {
+  let parameters = Array<String>();
+  for (const aggregate of program.aggregates) {
+    for (const parameter of aggregate.typeParameters) {
+      parameters.push(parameter.name.copyBytes(
+        0,
+        parameter.name.byteLength
+      ));
+    }
+    for (const method of aggregate.methods) {
+      for (const parameter of method.typeParameters) {
+        parameters.push(parameter.name.copyBytes(
+          0,
+          parameter.name.byteLength
+        ));
+      }
+    }
+  }
+  for (const declaration of program.functions) {
+    for (const parameter of declaration.typeParameters) {
+      parameters.push(parameter.name.copyBytes(
+        0,
+        parameter.name.byteLength
+      ));
+    }
+  }
+  return parameters;
+}
+
 function collectIntrinsicEnums(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -23815,7 +24323,12 @@ function collectIntrinsicEnums(
   inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
+  const unsettledTypeParameters = programGenericTypeParameterNames(program);
   for (const binding of evidence.bindingResolutions) {
+    if (typeContainsGenericParameter(
+      binding.typeName,
+      unsettledTypeParameters
+    )) continue;
     try collectIntrinsicTypeName(
       program,
       importedTypes,
@@ -23829,6 +24342,10 @@ function collectIntrinsicEnums(
     );
   }
   for (const expression of evidence.expressionResolutions) {
+    if (typeContainsGenericParameter(
+      expression.typeName,
+      unsettledTypeParameters
+    )) continue;
     try collectIntrinsicTypeName(
       program,
       importedTypes,
@@ -23844,6 +24361,10 @@ function collectIntrinsicEnums(
   for (const call of evidence.callResolutions) {
     if (call.errorType.byteLength == 0) continue;
     const resultName = `Result<${call.returnType}, ${call.errorType}>`;
+    if (typeContainsGenericParameter(
+      resultName,
+      unsettledTypeParameters
+    )) continue;
     try collectIntrinsicTypeName(
       program,
       importedTypes,
@@ -23857,6 +24378,11 @@ function collectIntrinsicEnums(
     );
   }
   for (const aggregate of program.aggregates) {
+    // Generic aggregate storage and bodies are collected after each concrete
+    // demand substitutes its type parameters. Attempting to materialize an
+    // intrinsic such as Map<K, T> from the unspecialized declaration leaks T
+    // into native lowering and duplicates the concrete collection below.
+    if (aggregate.typeParameters.length > 0) continue;
     for (const field of aggregate.fields) {
       try collectIntrinsicTypeName(
         program,
@@ -24132,9 +24658,15 @@ function genericMethodImportedTypes(
   );
   for (const imported of importedTypes) {
     if (
-      imported.kind == LoweredTypeKind.structType
+      (
+        imported.kind == LoweredTypeKind.structType
+        || imported.kind == LoweredTypeKind.classType
+      )
       && imported.targetName == use.emittedName
-    ) types.push(copyImportedTypeAlias(imported, templateName));
+    ) {
+      types.push(copyImportedTypeAlias(imported, templateName));
+      types.push(copyImportedTypeAlias(imported, use.ownerName));
+    }
   }
   let index: usize = 0;
   while (
@@ -25379,6 +25911,7 @@ function collectProgramFunctionTypes(
   in evidence: ModuleSemanticEvidence,
   inout functionTypes: Array<LoweredFunctionType>
 ): void throws String {
+  const unsettledTypeParameters = programGenericTypeParameterNames(program);
   let importsTaskScope = false;
   for (const declaration of program.imports) {
     if (declaration.header != "std/async") continue;
@@ -25417,6 +25950,10 @@ function collectProgramFunctionTypes(
     );
   }
   for (const binding of evidence.bindingResolutions) {
+    if (typeContainsGenericParameter(
+      binding.typeName,
+      unsettledTypeParameters
+    )) continue;
     try collectProgramFunctionTypeName(
       program,
       importedTypes,
@@ -25426,6 +25963,10 @@ function collectProgramFunctionTypes(
     );
   }
   for (const expression of evidence.expressionResolutions) {
+    if (typeContainsGenericParameter(
+      expression.typeName,
+      unsettledTypeParameters
+    )) continue;
     try collectProgramFunctionTypeName(
       program,
       importedTypes,
@@ -25435,6 +25976,23 @@ function collectProgramFunctionTypes(
     );
   }
   for (const call of evidence.callResolutions) {
+    let unsettled = typeContainsGenericParameter(
+      call.returnType,
+      unsettledTypeParameters
+    ) || (
+      call.errorType.byteLength > 0
+      && typeContainsGenericParameter(
+        call.errorType,
+        unsettledTypeParameters
+      )
+    );
+    for (const parameterType of call.parameterTypes) {
+      if (typeContainsGenericParameter(
+        parameterType,
+        unsettledTypeParameters
+      )) unsettled = true;
+    }
+    if (unsettled) continue;
     try collectProgramAsyncCallFunctionType(
       program,
       importedTypes,
@@ -25452,6 +26010,7 @@ function collectProgramFunctionTypes(
     }
   }
   for (const declaration of program.functions) {
+    if (declaration.typeParameters.length > 0) continue;
     try collectFunctionDeclarationTypes(
       program,
       importedTypes,
@@ -25461,6 +26020,7 @@ function collectProgramFunctionTypes(
     );
   }
   for (const aggregate of program.aggregates) {
+    if (aggregate.typeParameters.length > 0) continue;
     for (const field of aggregate.fields) {
       try collectProgramFunctionTypeName(
         program,
@@ -25471,6 +26031,7 @@ function collectProgramFunctionTypes(
       );
     }
     for (const method of aggregate.methods) {
+      if (method.typeParameters.length > 0) continue;
       try collectFunctionDeclarationTypes(
         program,
         importedTypes,
@@ -25924,16 +26485,108 @@ function appendLoweredProgram(
       some(_) => hasDeinitializer = true;
       none => {}
     }
+    let hasInitializer = false;
+    match (in aggregate.constructorDeclaration) {
+      some(_) => hasInitializer = true;
+      none => {}
+    }
     if (
       aggregate.methods.length == 0
       && !hasDefaults
       && !hasDeinitializer
+      && !hasInitializer
     ) continue;
     const methodImportedTypes = try genericMethodImportedTypes(
       program,
       importedTypes,
       use
     );
+    const callableAliasTargets = collectModuleCallableAliasTargets(
+      program,
+      methodImportedTypes
+    );
+    match (in aggregate.constructorDeclaration) {
+      some(source) => for (const parameter of source.parameters) {
+        try collectProgramFunctionTypeName(
+          program,
+          methodImportedTypes,
+          callableAliasTargets,
+          parameter.type.name,
+          inout functionTypes
+        );
+      }
+      none => {}
+    }
+    for (const method of aggregate.methods) {
+      if (method.typeParameters.length > 0) continue;
+      try collectFunctionDeclarationTypes(
+        program,
+        methodImportedTypes,
+        callableAliasTargets,
+        method,
+        inout functionTypes
+      );
+    }
+    match (in aggregate.constructorDeclaration) {
+      some(source) => {
+        for (const parameter of source.parameters) {
+          try collectIntrinsicTypeName(
+            program,
+            methodImportedTypes,
+            parameter.type.name,
+            inout fixedArrays,
+            inout arrays,
+            inout slices,
+            inout maps,
+            inout sets,
+            inout enums
+          );
+        }
+        try collectArenaIntrinsicEnums(
+          program,
+          methodImportedTypes,
+          source.body,
+          inout fixedArrays,
+          inout arrays,
+          inout slices,
+          inout maps,
+          inout sets,
+          inout enums
+        );
+        let loweredInitializer = try lowerConstructor(
+          program,
+          methodImportedTypes,
+          evidence,
+          sourcePath,
+          aggregate.name,
+          use.emittedName,
+          source
+        );
+        rewritePrivateCallTargets(
+          program,
+          privateFunctionCollisionNames,
+          moduleIndex,
+          entryIndex,
+          inout loweredInitializer
+        );
+        let structIndex: usize = 0;
+        let installed = false;
+        while (structIndex < structs.length) {
+          if (structs[structIndex].name == use.emittedName) {
+            structs[structIndex].initializer = Option.some(
+              move loweredInitializer
+            );
+            installed = true;
+            break;
+          }
+          structIndex = structIndex + 1;
+        }
+        if (!installed) {
+          throw `native generic constructor lowering lost ${use.sourceName}`;
+        }
+      }
+      none => {}
+    }
     match (in aggregate.deinitializer) {
       some(source) => {
         try collectArenaIntrinsicEnums(

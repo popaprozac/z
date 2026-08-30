@@ -2128,6 +2128,14 @@ test("materializes demand-driven generic ARC classes natively", () => {
       expectedStdout: "private drop 7\nmodule drop 3\n",
       specializationCount: 2,
     },
+    {
+      input: resolve(
+        projectRoot,
+        "tests/fixtures/self-host-emit-generic-class-transitive/main.zs",
+      ),
+      expectedStdout: "event 42\nconstructed callback\n",
+      specializationCount: 1,
+    },
   ];
   const directory = mkdtempSync("/tmp/z-native-generic-class-");
   try {
@@ -2163,10 +2171,12 @@ test("materializes demand-driven generic ARC classes natively", () => {
         )].length,
         testCase.specializationCount,
       );
-      assert.match(
-        emission.stdout,
-        /const shared(?:Number|Words)? = Z___z_mono_[A-Za-z0-9_]+_retain\(/,
-      );
+      if (index < 2) {
+        assert.match(
+          emission.stdout,
+          /const shared(?:Number|Words)? = Z___z_mono_[A-Za-z0-9_]+_retain\(/,
+        );
+      }
       if (index === 0) {
         assert.match(
           emission.stdout,
@@ -2222,6 +2232,10 @@ test("executes non-throwing class constructors in fixed-point output", () => {
   );
   assert.match(emission.stdout, /self->title = _z_stage1_assignment_/);
   assert.match(emission.stdout, /self->manager = _z_stage1_assignment_/);
+  assert.match(
+    emission.stdout,
+    /Z_Window \* const __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.success;/,
+  );
 
   const directory = mkdtempSync("/tmp/z-native-class-constructor-");
   try {
@@ -9634,22 +9648,6 @@ test("compiles a multi-module Z application through the standalone native driver
       marker: "^^^^^",
       code: "Z0700",
       summary: 'suspending async function "invoke" is not executable in the native compiler yet',
-    },
-    {
-      name: "generic-class-custom-constructor",
-      source: [
-        "class Box<T> {",
-        "  value: T;",
-        "  constructor(value: T) { this.value = value; }",
-        "}",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      line: 3,
-      column: 3,
-      marker: "^^^^^^^^^^^",
-      code: "Z1000",
-      summary: 'constructor for generic class "Box" is not executable in the native compiler yet',
     },
     {
       name: "generator",

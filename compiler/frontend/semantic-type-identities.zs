@@ -209,7 +209,10 @@ export function inferredTypeSymbolLocation(
     return inferredTypeSymbolLocation(modules, moduleIndex, transparent);
   }
   match (typeSymbolLocation(modules, moduleIndex, sourceType)) {
-    some(location) => return Option.some(location);
+    some(location) => return Option.some(transparentTypeLocation(
+      modules,
+      location
+    ));
     none => {}
   }
   let typeName = sourceType.copyBytes(0, sourceType.byteLength);
@@ -294,11 +297,14 @@ export function collectTypeIdentities(
   match (genericTypeShape(typeName)) {
     some(generic) => {
       match (typeSymbolLocation(modules, moduleIndex, generic.base)) {
-        some(location) => identities.push(ModuleTypeIdentity({
-          path: path.copyBytes(0, path.byteLength),
-          targetModuleIndex: location.moduleIndex,
-          targetSymbolIndex: location.symbolIndex,
-        }));
+        some(location) => {
+          const target = transparentTypeLocation(modules, location);
+          identities.push(ModuleTypeIdentity({
+            path: path.copyBytes(0, path.byteLength),
+            targetModuleIndex: target.moduleIndex,
+            targetSymbolIndex: target.symbolIndex,
+          }));
+        }
         none => {}
       }
       let index: usize = 0;
@@ -376,11 +382,14 @@ export function collectTypeIdentities(
     none => {}
   }
   match (typeSymbolLocation(modules, moduleIndex, typeName)) {
-    some(location) => identities.push(ModuleTypeIdentity({
-      path: path.copyBytes(0, path.byteLength),
-      targetModuleIndex: location.moduleIndex,
-      targetSymbolIndex: location.symbolIndex,
-    }));
+    some(location) => {
+      const target = transparentTypeLocation(modules, location);
+      identities.push(ModuleTypeIdentity({
+        path: path.copyBytes(0, path.byteLength),
+        targetModuleIndex: target.moduleIndex,
+        targetSymbolIndex: target.symbolIndex,
+      }));
+    }
     none => {}
   }
 }

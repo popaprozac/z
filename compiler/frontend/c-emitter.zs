@@ -3384,9 +3384,15 @@ function appendExpression(
       && declaration.expressions[index].captureTypes.length > 0
     ) {
       output.append("_make(");
-      let capture: usize = 1;
+      let capture: usize = declaration.expressions[index].closureBlockBody
+        ? usize(0)
+        : usize(1);
       while (capture < declaration.expressions[index].children.length) {
-        if (capture > 1) output.append(", ");
+        if (
+          capture > (declaration.expressions[index].closureBlockBody
+            ? usize(0)
+            : usize(1))
+        ) output.append(", ");
         const value = declaration.expressions[index].children[capture];
         try appendExpression(inout output, declaration, value);
         capture = capture + 1;
@@ -6649,14 +6655,23 @@ function appendStatement(
           appendIndent(inout output, depth + 2);
           const loadViewValue = nicheViewOption
             && viewPayloadLoadsAsValue(type);
+          const transferredClassPayload = declaration.statements[index]
+            .matchConsumesSubject
+            && !declaration.statements[arm].matchBindingNeedsCleanup
+            && (
+              type.kind == LoweredTypeKind.classType
+              || type.kind == LoweredTypeKind.foreignObjCType
+            );
           if (
             !declaration.statements[arm].matchBindingNeedsCleanup
             && !nicheViewOption
+            && !transferredClassPayload
           ) {
             output.append("const ");
           }
           const payloadType = try cType(type);
           output.append(payloadType);
+          if (transferredClassPayload) output.append(" const");
           if (
             nicheViewOption
             && !loadViewValue
@@ -9814,7 +9829,17 @@ function appendCallableHelpers(
           capture = capture + 1;
         }
       }
-      output.append("  return ");
+      if (
+        expression.kind == LoweredExpressionKind.closureValue
+        && expression.closureBlockBody
+      ) {
+        for (const statement of expression.statements) {
+          try appendStatement(inout output, owner, statement, 1);
+        }
+        output.append("  return;\n");
+      } else {
+        output.append("  return ");
+      }
       if (expression.kind == LoweredExpressionKind.directFunctionValue) {
         appendCBindingName(inout output, expression.value);
         output.append("(");
@@ -9828,7 +9853,7 @@ function appendCallableHelpers(
           parameter = parameter + 1;
         }
         output.append(")");
-      } else {
+      } else if (!expression.closureBlockBody) {
         if (expression.children.length == 0) {
           throw "native closure helper lost its body";
         }
@@ -9843,7 +9868,8 @@ function appendCallableHelpers(
         try appendExpression(inout output, owner, body);
         if (expression.labels[2] == "throwing") output.append(" }");
       }
-      output.append(";\n}\n\n");
+      if (!expression.closureBlockBody) output.append(";\n");
+      output.append("}\n\n");
       appendCallableCaptureLiveMacroUndefs(
         inout output,
         program,

@@ -121,7 +121,12 @@ export class NativeSemanticIndex {
           identityPaths.add(identity.path);
           const target = graph.modules[identity.targetModule]?.symbols[identity.targetSymbol];
           if (!target || (target.kind !== "struct" && target.kind !== "class" && target.kind !== "enum")) {
-            throw new Error(`native frontend returned an invalid expression type identity at offset ${resolution.offset} in ${module.path}`);
+            const targetDescription = target
+              ? `${target.kind} ${JSON.stringify(target.name)} in ${graph.modules[identity.targetModule]?.path ?? `module ${identity.targetModule}`}`
+              : `missing symbol ${identity.targetSymbol} in module ${identity.targetModule}`;
+            throw new Error(
+              `native frontend returned an invalid expression type identity ${JSON.stringify(identity.path)} targeting ${targetDescription} at offset ${resolution.offset} in ${module.path}`,
+            );
           }
         }
         resolutions.set(resolution.offset, resolution);

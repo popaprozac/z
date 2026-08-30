@@ -20,10 +20,23 @@ class Window {
   }
 }
 
+enum WindowResult {
+  success Window,
+  failure i32,
+}
+
+function createWindow(title: String, manager: Weak<Manager>): WindowResult {
+  return WindowResult.success(new Window(move title, manager));
+}
+
 function main(): i32 {
   const manager = Manager.create(42);
   const observer = weak manager;
-  const window = new Window("Native constructor", observer);
+  const created = createWindow("Native constructor", observer);
+  const window = match (created) {
+    success(value) => value;
+    failure(_) => return 1;
+  };
   const current = attempt window.manager.upgrade();
   const value = match (current) {
     success(owner) => owner.value;
