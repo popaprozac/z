@@ -4474,6 +4474,28 @@ it into a local, mutates it, and compiles the emitted C with the retain visible.
 Zapp can therefore modularize without source-only imports or ownership
 workarounds.
 
+The first policy extraction from Zapp's handwritten Objective-C host moved
+WebKit message-handler registration plus window show, hide, close, and title
+mutation into Z. `objc.register` now owns the handler and its deterministic
+removal directly; the Objective-C registration-owner class and four forwarding
+functions disappeared. The packaged two-window Z Notes smoke test exercises
+service errors, success, cancellation, window teardown, and service shutdown
+through that Z-owned path.
+
+That extraction also exposed three fixed-point composition boundaries that the
+source accepted. Loop binding destructuring remains non-executable, so the
+runtime currently names the Map entry before reading `entry.value`. Directly
+constructing and returning `Option<NSWindow>` fell back to a tagged C union
+containing a strong Objective-C reference, which Clang rejects as non-trivial;
+the nullable-import/`Option.fromNullable` niche path remains supported, but the
+ordinary `Option.some` path needs representation unification. Finally, an
+Objective-C `NSString` argument captured by `objc.register` missed the normal
+contextual `String` conversion, requiring an explicitly typed local before the
+registration plan. These are compiler pressure targets, not intended Zapp API
+patterns. A small `NSRect` constructor shim also remains until Z deliberately
+settles floating-point conversion semantics rather than silently inheriting C
+casts.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
