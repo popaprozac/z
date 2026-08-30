@@ -2677,8 +2677,29 @@ Foundation byte data has one explicit safe copying bridge:
 fixed byte arrays and `Array<u8>` values use the ordinary non-escaping Slice
 projection. Lowering evaluates the source once and calls
 `initWithBytes:length:`; `NSData` owns an independent ARC-managed copy and
-never retains the Z storage. A future no-copy form must separately consume
-owned storage and prove its matching native deallocator.
+never retains the Z storage.
+
+Compile-time assets use a separate immutable storage identity:
+
+```zs
+import embed from "std/embed";
+
+export const INDEX_HTML: embed.StaticBytes =
+  embed.bytes("./assets/index.html");
+```
+
+`embed.bytes` accepts one string literal resolved relative to its declaring
+module. The compiler reads that file, emits its bytes as native static storage,
+and records its canonical path in the native artifact's `embeddedFiles` list.
+The nominal `embed.StaticBytes` value is process-lifetime, cleanup-free,
+copyable, and thread-shareable; users cannot construct it from runtime storage.
+It exposes checked indexing and `.length`, and may borrow implicitly as an
+immutable `Slice<u8>` for a synchronous call. `Foundation.NSData.borrow(asset)`
+therefore uses `initWithBytesNoCopy:length:freeWhenDone:NO` without a byte copy:
+the binary's static storage necessarily outlives the ARC `NSData`. Ordinary
+arrays and slices remain ineligible for `borrow` and use `NSData.copy`.
+A future no-copy form for runtime-owned storage must separately consume the
+owner and prove its matching native deallocator.
 
 Weak protocol properties require an explicit lifetime token. The first bridge
 is `objc.bind(object, { dataSource: controller, delegate: controller })`. Field

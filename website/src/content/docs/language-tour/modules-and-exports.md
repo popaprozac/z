@@ -127,6 +127,23 @@ The current executable constant tier accepts cleanup-free literals and owned
 literal `String` values. General constant evaluation and ownership-bearing
 runtime globals remain separate future work.
 
+## Embedded files
+
+Use `std/embed` when immutable file bytes should ship inside the native binary:
+
+```z
+import embed from "std/embed";
+
+export const INDEX_HTML: embed.StaticBytes =
+  embed.bytes("./assets/index.html");
+```
+
+The path must be a string literal and is resolved relative to its declaring
+module. Missing files and directories are compile errors. `embed.StaticBytes`
+is immutable process-lifetime storage with `.length`, checked indexing, and
+implicit immutable `Slice<u8>` borrowing. It is cleanup-free, copyable, and
+thread-shareable; runtime Arrays and Slices cannot be converted into it.
+
 ## One import surface, different producers
 
 The same source shape names three kinds of module:

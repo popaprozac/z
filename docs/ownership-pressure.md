@@ -4445,8 +4445,12 @@ projects an Array without allocating a second temporary buffer, and invokes
 `initWithBytes:length:` exactly once. The resulting ARC object owns an
 independent native copy while Z retains and later destroys its original
 storage. A no-copy consuming transfer remains deliberately separate because it
-must prove the native deallocator. Embedded assets and explicit autorelease
-pool scopes remain the next migration blockers.
+must prove the native deallocator. Compile-time assets now close the safe
+zero-copy case: `embed.bytes("./asset")` emits immutable process-lifetime native
+storage and `Foundation.NSData.borrow(asset)` wraps it with `freeWhenDone:NO`.
+Ordinary runtime storage is rejected by that bridge, keeping the lifetime proof
+visible. Fixed-point lowering of the compile-time intrinsic and explicit
+autorelease-pool scopes remain the next migration blockers.
 
 ## Not tested yet
 

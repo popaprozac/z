@@ -61,6 +61,8 @@ export type NativeArtifact = {
   readonly nativeLinkerArguments: readonly string[];
   readonly deploymentTarget: ProjectBuild["deploymentTarget"];
   readonly warnings: readonly DiagnosticError[];
+  /** Non-Z files whose contents were compiled into this artifact. */
+  readonly embeddedFiles: readonly string[];
 };
 
 export type NativeTestArtifact = NativeArtifact & {
@@ -702,6 +704,7 @@ export function compileToNative(
     ])],
     deploymentTarget: projectBuild.deploymentTarget,
     warnings: semanticInfo.warnings,
+    embeddedFiles: [...new Set([...semanticInfo.embeddedBytes.values()].map((embedded) => embedded.fileName))],
   };
 }
 
@@ -783,6 +786,7 @@ export function compileTestsToNative(
     ])],
     deploymentTarget: projectBuild.deploymentTarget,
     warnings: semanticInfo.warnings,
+    embeddedFiles: [...new Set([...semanticInfo.embeddedBytes.values()].map((embedded) => embedded.fileName))],
     testNames: tests.map((declaration) => declaration.testName!),
   };
 }

@@ -159,6 +159,20 @@ const data = Foundation.NSData.copy(bytes);
 one native byte copy into ARC-managed `NSData`. The source remains owned by Z;
 no source lifetime escapes into Foundation.
 
+An embedded asset has a stronger, process-lifetime proof and can use the
+zero-copy bridge:
+
+```z
+import embed from "std/embed";
+
+const icon = embed.bytes("./assets/icon.png");
+const data = Foundation.NSData.borrow(icon);
+```
+
+`NSData.borrow` accepts only nominal `embed.StaticBytes`. Foundation does not
+copy or free the binary's immutable static storage. Ordinary Arrays and Slices
+must use `NSData.copy`.
+
 ```z
 const controller = new TableController({});
 const binding = objc.bind(tableView, {

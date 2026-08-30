@@ -1,0 +1,1 @@
+Z keeps embedded asset bytes alive for the entire process.

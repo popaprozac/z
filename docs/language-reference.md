@@ -3594,6 +3594,38 @@ byte array, or existing Slice. It allocates one ARC-managed `NSData` and copies
 the exact byte range once. It does not retain or consume the source. Hover and
 completion expose that cost. No no-copy ownership transfer is inferred.
 
+Files that belong in the executable itself use the `std/embed` compile-time
+API instead:
+
+```zs
+import embed from "std/embed";
+import Foundation from "Foundation/Foundation.h";
+
+export const INDEX_HTML: embed.StaticBytes =
+  embed.bytes("./assets/index.html");
+
+const data = Foundation.NSData.borrow(INDEX_HTML);
+```
+
+`embed.bytes` requires a string literal and resolves it relative to the module
+containing the declaration. A missing path or a directory is a compile error.
+The bytes are emitted directly into the native binary, and the compiler records
+the canonical source path in `NativeArtifact.embeddedFiles` for build tooling.
+
+`embed.StaticBytes` is nominal immutable process-lifetime storage. It is
+cleanup-free, copyable, thread-shareable, and cannot be constructed from a
+runtime `Array` or `Slice`. It supports `.length`, checked indexing, and an
+implicit immutable `Slice<u8>` borrow for synchronous calls.
+
+`NSData.borrow(asset)` is a zero-byte-copy bridge that uses the asset's static
+lifetime and asks Foundation not to free the storage. It accepts only
+`embed.StaticBytes`. Runtime storage must use `NSData.copy(bytes)`, preserving
+the distinction between a statically proven lifetime and an ordinary scoped
+borrow. A future consuming runtime transfer remains a separate operation. This
+compile-time embedding intrinsic is currently implemented by Stage 0; the
+fixed-point native frontend reports its existing first-tier module-constant
+boundary rather than silently changing the asset contract.
+
 An owned opaque C handle with a complete `.zd` release contract is nameable
 through its import namespace:
 

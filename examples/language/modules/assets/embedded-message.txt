@@ -1,0 +1,1 @@
+Z embeds immutable files directly into native binaries.

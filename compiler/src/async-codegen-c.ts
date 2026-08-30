@@ -7239,6 +7239,10 @@ function emitFrameExpressionInner(
         }
         return `${signature.cName}(${emitSyncCallArguments(expression, plan, fileName, signature).join(", ")})`;
       }
+      const embedded = plan.types.semanticInfo.embeddedBytes.get(expression.location.offset);
+      if (embedded) {
+        return `(Z_StaticBytes){ .data = z_embedded_bytes_${expression.location.offset}, .length = ${embedded.bytes.length} }`;
+      }
       if (
         expression.callee.kind === "identifier"
         && plan.types.semanticInfo.standardTypeBindings.get(expression.callee.name) === "TextBuffer"
@@ -7274,6 +7278,9 @@ function emitFrameExpressionInner(
         }
         if (objcCall.bridge === "dataCopy") {
           return `z_nsdata_copy_bytes(${emitSyncCallArguments(expression, plan, fileName)[0]})`;
+        }
+        if (objcCall.bridge === "dataBorrow") {
+          return `z_nsdata_borrow_static_bytes(${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
         }
         const receiver = objcCall.instance
           ? emitFrameExpression(expression.callee.object, plan, fileName)

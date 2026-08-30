@@ -924,6 +924,22 @@ ARC. The source remains independently owned by Z. A zero-copy transfer is not
 an overload of this operation: it requires a later `take(move bytes)` contract
 with an exact native cleanup handoff.
 
+Compile-time assets have a stronger lifetime proof and therefore a distinct
+zero-copy bridge:
+
+```zs
+import embed from "std/embed";
+
+const icon = embed.bytes("./assets/icon.png");
+const data = Foundation.NSData.borrow(icon);
+```
+
+`embed.bytes` emits immutable native static storage. Its nominal
+`embed.StaticBytes` result is valid for the process lifetime, so
+`NSData.borrow` may call `initWithBytesNoCopy:length:freeWhenDone:NO` without
+escaping a Z allocation or inferring ownership transfer. The bridge rejects
+ordinary Arrays and Slices; those continue to use `NSData.copy`.
+
 Protocol properties such as `NSTableView.dataSource` and `.delegate` are
 zeroing `weak`. `objc.bind(object, { property: controller })` installs generated
 adapters and returns an owned `objc.Binding` token that keeps the native object,

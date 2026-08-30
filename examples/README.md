@@ -120,6 +120,11 @@ support or producing language-server diagnostics from hypothetical imports.
   program using `std/fs`, owned program arguments, typed OS failures, and direct
   child-process execution. Its [`README.md`](applications/source-stager/README.md)
   explains the self-hosting boundary.
+- [`embedded-assets.zs`](language/modules/embedded-assets.zs): embeds a
+  module-relative file as immutable process-lifetime `embed.StaticBytes`, then
+  reads its length and borrows it as `Slice<u8>` without runtime allocation.
+- [`embedded-data.zs`](interop/objc/embedded-data.zs): wraps static embedded
+  storage in Foundation `NSData` without copying or transferring cleanup.
 - [`source-inspector`](applications/source-inspector): a multi-module source tool
   that tokenizes real Z code with checked UTF-8 byte offsets, owned token copies,
   exact parser-facing kinds, template interpolation, decimal/exponent numbers,

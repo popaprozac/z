@@ -62,6 +62,7 @@ import {
   standardModuleMemberNames,
   type StandardFunctionName,
 } from "./standard-library.ts";
+import { isStaticBytesType } from "./static-bytes.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -692,9 +693,10 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       const owner = context.semanticInfo.standardModuleBindings.get(tokens[index - 2]?.text ?? "");
       const objcType = owner === "objc" && (token.text === "Connection" || token.text === "Binding");
       const standardType = owner === "fs" && token.text === "Lock";
+      const embeddedType = owner === "embed" && token.text === "StaticBytes";
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf(
-          standardType
+          standardType || embeddedType
             ? "type"
             : objcType
               ? "class"
@@ -1343,15 +1345,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
 
   const chainedCall = objectiveCCallAt(context, word.start);
   if (chainedCall) {
-    if (chainedCall.bridge === "dataCopy") {
+    if (chainedCall.bridge === "dataCopy" || chainedCall.bridge === "dataBorrow") {
       const declaration = [...context.semanticInfo.foreignInterfaces.values()]
         .find((candidate) => candidate.className === "NSData");
-      return objCDataCopyHover(
-        declaration?.typeName ?? "Foundation.NSData",
-        source,
-        word.start,
-        word.end,
-      );
+      const typeName = declaration?.typeName ?? "Foundation.NSData";
+      return chainedCall.bridge === "dataCopy"
+        ? objCDataCopyHover(typeName, source, word.start, word.end)
+        : objCDataBorrowHover(typeName, source, word.start, word.end);
     }
     const declaration = [...context.semanticInfo.foreignInterfaces.values()]
       .find((candidate) => candidate.className === chainedCall.className);
@@ -1421,6 +1421,22 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (standardOwner === "fs" && word.text === "Lock") {
       return markdownHover(
         "fs.Lock  // move-only exclusive interprocess filesystem lock; released on scope exit",
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (standardOwner === "embed" && word.text === "bytes") {
+      return markdownHover(
+        "bytes(path: compile-time String): embed.StaticBytes  // embeds immutable process-lifetime file bytes",
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (standardOwner === "embed" && word.text === "StaticBytes") {
+      return markdownHover(
+        "embed.StaticBytes  // immutable process-lifetime byte storage; cleanup-free and thread-shareable",
         source,
         word.start,
         word.end,
@@ -1529,8 +1545,10 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       if (item) return markdownHover(item, source, word.start, word.end);
     }
     if (resolved?.kind === "objc") {
-      if (!resolved.instance && resolved.declaration.className === "NSData" && word.text === "copy") {
-        return objCDataCopyHover(resolved.declaration.typeName, source, word.start, word.end);
+      if (!resolved.instance && resolved.declaration.className === "NSData" && (word.text === "copy" || word.text === "borrow")) {
+        return word.text === "copy"
+          ? objCDataCopyHover(resolved.declaration.typeName, source, word.start, word.end)
+          : objCDataBorrowHover(resolved.declaration.typeName, source, word.start, word.end);
       }
       const mainIsolated = foreignObjCRequiresMain(resolved.declaration, context);
       const property = collectObjCProperties(resolved.declaration, resolved.instance, context).find((item) => item.name === word.text);
@@ -4861,6 +4879,22 @@ function memberCompletions(
           insertText: member,
         };
       }
+      if (standardModule === "embed" && member === "StaticBytes") {
+        return {
+          label: member,
+          kind: completionKinds.struct,
+          detail: "immutable process-lifetime byte storage",
+          insertText: member,
+        };
+      }
+      if (standardModule === "embed" && member === "bytes") {
+        return {
+          label: member,
+          kind: completionKinds.method,
+          detail: "bytes(path: compile-time String): embed.StaticBytes",
+          insertText: "bytes()",
+        };
+      }
       if (standardModule === "thread" && member === "main") {
         return {
           label: member,
@@ -5915,7 +5949,7 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (generator) return { kind: "generator", ...generator };
   const asyncGenerator = parseAsyncGeneratorType(receiverType);
   if (asyncGenerator) return { kind: "asyncGenerator", ...asyncGenerator };
-  if (parseFixedArrayType(receiverType) || parseSliceType(receiverType) || parseDynamicArrayType(receiverType)) return { kind: "array", type: receiverType };
+  if (parseFixedArrayType(receiverType) || parseSliceType(receiverType) || parseDynamicArrayType(receiverType) || isStaticBytesType(receiverType)) return { kind: "array", type: receiverType };
   const weak = parseWeakType(receiverType);
   if (weak) return { kind: "weak", target: weak.target };
   const task = parseTaskType(receiverType);
@@ -6198,6 +6232,13 @@ function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, c
       insertText: "copy(${1:bytes})",
       insertTextFormat: 2,
     });
+    items.push({
+      label: "borrow",
+      kind: completionKinds.method,
+      detail: `borrow(bytes: embed.StaticBytes): ${declaration.typeName}  // zero-copy process-lifetime NSData view`,
+      insertText: "borrow(${1:bytes})",
+      insertTextFormat: 2,
+    });
   }
   for (const method of collectObjCMethods(declaration, instance, context)) {
     if (accessors.has(method.selector)) continue;
@@ -6221,6 +6262,21 @@ function objCDataCopyHover(
   return structuredMarkdownHover(
     `copy(bytes: Slice<u8>): ${typeName}`,
     ["Copies the borrowed byte range into independently owned ARC-managed `NSData`; the source storage is not retained."],
+    source,
+    start,
+    end,
+  );
+}
+
+function objCDataBorrowHover(
+  typeName: string,
+  source: string,
+  start: number,
+  end: number,
+): Hover {
+  return structuredMarkdownHover(
+    `borrow(bytes: embed.StaticBytes): ${typeName}`,
+    ["Creates an ARC-managed zero-copy `NSData` view over immutable process-lifetime bytes; `NSData` does not free the storage."],
     source,
     start,
     end,

@@ -8,6 +8,7 @@ import {
   hover,
   mkdirSync,
   mkdtempSync,
+  projectRoot,
   readFileSync,
   realpathSync,
   resolve,
@@ -28,6 +29,35 @@ import {
   applyGeneratedBuildOverlay,
   prepareProject,
 } from "../compiler/src/project.ts";
+
+test("embeds immutable file bytes as a cleanup-free module constant", () => {
+  const example = resolve(projectRoot, "examples/language/modules/embedded-assets.zs");
+  const asset = resolve(projectRoot, "examples/language/modules/assets/embedded-message.txt");
+  const artifact = compileToNative(readFileSync(example, "utf8"), example);
+  assert.deepEqual(artifact.embeddedFiles, [realpathSync(asset)]);
+  assert.match(artifact.source, /typedef struct Z_StaticBytes/);
+  assert.match(artifact.source, /static const uint8_t z_embedded_bytes_[0-9]+\[[0-9]+\]/);
+  assert.match(artifact.source, /const Z_StaticBytes MESSAGE = \(Z_StaticBytes\)\{ \.data = z_embedded_bytes_[0-9]+, \.length = [0-9]+ \}/);
+  assert.match(artifact.source, /firstByte\(\(Z_Slice_[A-Za-z0-9_]+\)\{ \.data = \(void \*\)\(MESSAGE\)\.data, \.length = \(MESSAGE\)\.length \}\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const source = readFileSync(example, "utf8");
+  const bytesOffset = source.indexOf("embed.bytes") + "embed.".length + 1;
+  assert.match(hover(source, example, bytesOffset)?.contents.value ?? "", /embed\.StaticBytes/);
+  const typeOffset = source.indexOf("embed.StaticBytes") + "embed.".length + 1;
+  assert.match(hover(source, example, typeOffset)?.contents.value ?? "", /process-lifetime byte storage/);
+
+  const incomplete = source.replace("embed.bytes", "embed.by");
+  const completionOffset = incomplete.indexOf("embed.by") + "embed.by".length;
+  assert.equal(completions(incomplete, example, completionOffset).some((item) => item.label === "bytes"), true);
+
+  const dynamicPath = source.replace('embed.bytes("./assets/embedded-message.txt")', "embed.bytes(path)");
+  assert.match(diagnostics(dynamicPath, example)[0]?.message ?? "", /compile-time string literal path/);
+  const missingPath = source.replace("embedded-message.txt", "missing.txt");
+  assert.match(diagnostics(missingPath, example)[0]?.message ?? "", /could not embed file/);
+});
 
 test("keeps visibility modifiers distinct from declaration keywords", () => {
   const source = `

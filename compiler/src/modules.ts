@@ -606,6 +606,8 @@ function buildScope(node: ModuleNode): ModuleScope {
         standardModules.set(declaration.moduleName, "process");
       } else if (declaration.header === "std/objc") {
         standardModules.set(declaration.moduleName, "objc");
+      } else if (declaration.header === "std/embed") {
+        standardModules.set(declaration.moduleName, "embed");
       }
       bind(declaration.moduleName, linkedImportName(node, declaration.moduleName), declaration.location);
     } else {

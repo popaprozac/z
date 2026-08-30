@@ -12,6 +12,8 @@ import type {
   TraitDeclaration,
   TypeReference,
 } from "./ast.ts";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { DiagnosticError, type DiagnosticLabel } from "./diagnostics.ts";
 import {
   compareTargetVersions,
@@ -116,12 +118,13 @@ import {
   parseUnsafeNativeType,
   unsafeNativeTypeName,
 } from "./unsafe-types.ts";
+import { isStaticBytesType, staticBytesTypeName } from "./static-bytes.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
   readonly instance: boolean;
   readonly className: string;
-  readonly bridge: "dataCopy" | null;
+  readonly bridge: "dataCopy" | "dataBorrow" | null;
   readonly async: {
     readonly callbackParameter: number;
     readonly resultType: string;
@@ -485,12 +488,18 @@ export type SemanticInfo = {
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
   readonly standardTypeBindings: ReadonlyMap<string, StandardTypeName>;
+  readonly embeddedBytes: ReadonlyMap<number, EmbeddedBytesInfo>;
   readonly iteratorElementTypes: ReadonlyMap<string, string>;
   readonly hasherAddTypes: ReadonlyMap<number, string>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
   readonly frameworks: readonly string[];
+};
+
+export type EmbeddedBytesInfo = {
+  readonly fileName: string;
+  readonly bytes: readonly number[];
 };
 
 export type ExecutorAffinityInfo = {
@@ -648,6 +657,7 @@ type AnalysisState = {
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
   readonly standardTypeBindings: Map<string, StandardTypeName>;
+  readonly embeddedBytes: Map<number, EmbeddedBytesInfo>;
   readonly iteratorElementTypes: Map<string, string>;
   readonly hasherAddTypes: Map<number, string>;
   readonly inferredOutBindingLocations: Map<string, SourceLocation>;
@@ -887,6 +897,7 @@ const primitiveTypes = new Set([
   "String",
   "TextBuffer",
   "Arena",
+  staticBytesTypeName,
   "Hasher",
   "TaskScope",
   "TaskControl",
@@ -942,6 +953,7 @@ export function analyze(
     ...typeDisplayNames,
     [nativeConnectionTypeName, "native.Connection"],
     [fsLockTypeName, "fs.Lock"],
+    [staticBytesTypeName, "embed.StaticBytes"],
   ]);
   const foreignTypes = new Map<string, ForeignPointerType>();
   const foreignNamedTypes = new Map<string, ForeignNamedType>();
@@ -1178,6 +1190,7 @@ export function analyze(
     standardFunctionBindings: new Map(),
     standardModuleBindings: new Map(),
     standardTypeBindings: new Map(),
+    embeddedBytes: new Map(),
     iteratorElementTypes: new Map(),
     hasherAddTypes: new Map(),
     inferredOutBindingLocations: new Map(),
@@ -1488,10 +1501,17 @@ export function analyze(
         }
         continue;
       }
-      if (declaration.header === "std/fs" || declaration.header === "std/process" || declaration.header === "std/objc") {
+      if (
+        declaration.header === "std/fs"
+        || declaration.header === "std/process"
+        || declaration.header === "std/objc"
+        || declaration.header === "std/embed"
+      ) {
         const module: StandardModuleName = declaration.header === "std/fs"
           ? "fs"
-          : declaration.header === "std/process" ? "process" : "objc";
+          : declaration.header === "std/process"
+            ? "process"
+            : declaration.header === "std/objc" ? "objc" : "embed";
         if (declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, `${declaration.header} is a default module import`, {
             code: "Z0501",
@@ -1505,7 +1525,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/test`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/sync`, `std/thread`, `std/async`, `std/fs`, `std/process`, and `std/objc`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/test`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/sync`, `std/thread`, `std/async`, `std/fs`, `std/process`, `std/objc`, and `std/embed`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -9826,7 +9846,8 @@ function inferExpressionInner(
       const array = parseFixedArrayType(ownerValueType);
       const slice = parseSliceType(ownerValueType);
       const dynamic = parseDynamicArrayType(ownerValueType);
-      if (!array && !slice && !dynamic) {
+      const staticBytes = isStaticBytesType(ownerValueType);
+      if (!array && !slice && !dynamic && !staticBytes) {
         throw new DiagnosticError(fileName, expression.object.location, `indexing requires an array or Slice, found ${ownerType}`);
       }
       if (hasOwnershipType(ownerType, structs, enums, state) && !isNamedStorageExpression(expression.object)) {
@@ -9846,7 +9867,7 @@ function inferExpressionInner(
           );
         }
       }
-      const elementType = (array ?? slice ?? dynamic)!.elementType;
+      const elementType = staticBytes ? "u8" : (array ?? slice ?? dynamic)!.elementType;
       if (containsStoredViewType(elementType, structs, enums)) {
         const origin = storedViewOriginForExpression(expression.object, state);
         if (origin) state.viewCallOrigins.set(expression.location.offset, origin);
@@ -10164,6 +10185,14 @@ function inferExpressionInner(
         });
       }
       const receiverValueType = receiverView?.target ?? String(receiverType);
+      if (isStaticBytesType(receiverValueType)) {
+        if (expression.property === "length") return "usize";
+        throw new DiagnosticError(
+          fileName,
+          expression.location,
+          `embed.StaticBytes has no property ${JSON.stringify(expression.property)}`,
+        );
+      }
       if (
         receiverValueType === fsLockTypeName
         || receiverValueType === "fs.Lock"
@@ -11132,6 +11161,31 @@ function inferExpressionInner(
               );
               const taskType = taskTypeName(returnType, errorType);
               return taskType;
+            }
+            if (owner.module === "embed" && expression.callee.property === "bytes") {
+              rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+              if (expression.arguments.length !== 1 || expression.arguments[0]?.kind !== "string") {
+                throw new DiagnosticError(fileName, expression.location, "embed.bytes expects one compile-time string literal path", {
+                  code: "Z0501",
+                  helps: ['use `embed.bytes("./relative/path")`'],
+                });
+              }
+              const literal = expression.arguments[0];
+              const sourceFile = literal.location.fileName ?? fileName;
+              const requested = resolve(dirname(sourceFile), literal.value);
+              if (!existsSync(requested) || !statSync(requested).isFile()) {
+                throw new DiagnosticError(sourceFile, literal.location, `could not embed file ${JSON.stringify(literal.value)}`, {
+                  code: "Z0602",
+                  notes: [`resolved path: ${requested}`],
+                  helps: ["use a file path relative to the Z source module containing this call"],
+                });
+              }
+              const embeddedFile = realpathSync(requested);
+              state.embeddedBytes.set(expression.location.offset, {
+                fileName: embeddedFile,
+                bytes: [...readFileSync(embeddedFile)],
+              });
+              return staticBytesTypeName;
             }
             const name = standardModuleFunction(owner.module, expression.callee.property);
             if (!name) {
@@ -12495,18 +12549,37 @@ function inferExpressionInner(
           if (
             !objcReceiverType.instance
             && objcReceiverType.declaration.className === "NSData"
-            && expression.callee.property === "copy"
+            && (expression.callee.property === "copy" || expression.callee.property === "borrow")
           ) {
             rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+            const operation = expression.callee.property;
             if (expression.arguments.length !== 1) {
               throw new DiagnosticError(
                 fileName,
                 expression.location,
-                `NSData.copy expects 1 argument, received ${expression.arguments.length}`,
+                `NSData.${operation} expects 1 argument, received ${expression.arguments.length}`,
               );
             }
             const bytes = expression.arguments[0];
             const actual = String(inferExpression(bytes, locals, globals, structs, enums, fileName, state));
+            if (operation === "borrow") {
+              if (!isStaticBytesType(actual)) {
+                throw new DiagnosticError(fileName, bytes.location, `NSData.borrow expects embed.StaticBytes, found ${displayAssignableType(actual, state)}`, {
+                  code: "Z0801",
+                  notes: ["zero-copy NSData requires byte storage proven to remain live for the entire process"],
+                  helps: ["use embed.bytes for static assets, or NSData.copy for ordinary Array<u8> and Slice<u8> storage"],
+                });
+              }
+              state.objcCalls.set(expression.location.offset, {
+                selector: "borrow",
+                instance: false,
+                className: "NSData",
+                bridge: "dataBorrow",
+                async: null,
+              });
+              state.foreignCallTypes.set(expression.location.offset, objcReceiverType.declaration.typeName);
+              return objcReceiverType.declaration.typeName;
+            }
             const fixed = parseFixedArrayType(actual);
             const dynamic = parseDynamicArrayType(actual);
             const slice = parseSliceType(actual);
@@ -13544,7 +13617,15 @@ function checkArguments(
       ) {
         throw new DiagnosticError(fileName, argument.location, "a cleanup-bearing borrowed temporary must be bound before the call");
       }
-      requireAssignable(parameter.type.name, borrowedActual, argument, fileName, structs, enums, state);
+      const expectedSlice = parseSliceType(parameter.type.name);
+      if (expectedSlice?.elementType === "u8" && isStaticBytesType(String(borrowedActual))) {
+        state.sliceConversions.set(argument.location.offset, {
+          sourceType: staticBytesTypeName,
+          targetType: parameter.type.name,
+        });
+      } else {
+        requireAssignable(parameter.type.name, borrowedActual, argument, fileName, structs, enums, state);
+      }
       state.nativeArgumentAccesses.set(argument.location.offset, "in");
       if (capabilityPath) {
         state.expressionTypes.set(argument.location.offset, String(actual));
@@ -13584,6 +13665,11 @@ function checkArguments(
           throw new DiagnosticError(fileName, argument.location, "an array-to-Slice borrow requires stored array storage");
         }
         state.sliceConversions.set(argument.location.offset, { sourceType: String(actual), targetType: parameter.type.name });
+      } else if (expectedSlice.elementType === "u8" && isStaticBytesType(String(actual))) {
+        state.sliceConversions.set(argument.location.offset, {
+          sourceType: staticBytesTypeName,
+          targetType: parameter.type.name,
+        });
       } else {
         requireAssignable(parameter.type.name, actual, argument, fileName, structs, enums, state);
       }
@@ -16409,7 +16495,7 @@ function shareableTypeIssue(
   path = String(underlyingType(type)),
 ): ShareabilityIssue | null {
   const actual = String(underlyingType(type));
-  if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual) || actual === "String" || actual === "TaskScope" || actual === "TaskControl") {
+  if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual) || actual === "String" || isStaticBytesType(actual) || actual === "TaskScope" || actual === "TaskControl") {
     return null;
   }
   const callable = parseFunctionType(actual);
@@ -16566,7 +16652,7 @@ function initialThreadTransferKind(
   visiting: Set<string> = new Set(),
 ): ThreadTransferKind | null {
   const actual = String(underlyingType(type));
-  if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual)) return "copy";
+  if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual) || isStaticBytesType(actual)) return "copy";
   if (state.aggregateExecutorAffinities.has(actual)) return null;
   if (actual === "TaskScope" || actual === "TaskControl") return "share";
   const callable = parseFunctionType(actual);
@@ -18224,6 +18310,11 @@ function checkForeignCall(
       if ((fixed ?? dynamic)?.elementType === bufferProjection.elementType) {
         state.sliceConversions.set(argument.location.offset, {
           sourceType: actualName,
+          targetType: expectedSlice,
+        });
+      } else if (bufferProjection.elementType === "u8" && isStaticBytesType(actualName)) {
+        state.sliceConversions.set(argument.location.offset, {
+          sourceType: staticBytesTypeName,
           targetType: expectedSlice,
         });
       } else if (slice?.elementType === bufferProjection.elementType) {
@@ -19935,6 +20026,13 @@ function moduleConstantInitializerSupported(expression: Expression): boolean {
   }
   if (
     expression.kind === "call"
+    && expression.callee.kind === "member"
+    && expression.callee.property === "bytes"
+  ) {
+    return true;
+  }
+  if (
+    expression.kind === "call"
     && expression.callee.kind === "identifier"
     && parseOnceType(expression.callee.name)
     && expression.arguments.length === 0
@@ -19951,5 +20049,6 @@ function moduleConstantTypeSupported(type: string): boolean {
     || type === "String"
     || type === "cstring"
     || isNumericType(type)
+    || isStaticBytesType(type)
     || Boolean(parseOnceType(type));
 }

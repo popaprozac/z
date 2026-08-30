@@ -12,7 +12,7 @@ export function sourceStandardModuleRelativePath(specifier: string): string | nu
   return `${specifier.slice("std/".length)}.zs`;
 }
 
-export type StandardModuleName = "fs" | "process" | "thread" | "scheduler" | "objc";
+export type StandardModuleName = "fs" | "process" | "thread" | "scheduler" | "objc" | "embed";
 
 export const objcConnectionTypeName = "__z_std_objc_Connection";
 export const objcBindingTypeName = "__z_std_objc_Binding";
@@ -170,6 +170,7 @@ const standardModuleMembers: Record<StandardModuleName, Readonly<Record<string, 
     executablePath: "process.executablePath",
     run: "process.run",
   },
+  embed: {},
   thread: {},
   scheduler: {
     yield: "scheduler.yield",
@@ -189,6 +190,7 @@ export function standardModuleFunctions(module: StandardModuleName): readonly St
 }
 
 export function standardModuleMemberNames(module: StandardModuleName): readonly string[] {
+  if (module === "embed") return ["bytes", "StaticBytes"];
   if (module === "thread") return ["spawn", "main", "any"];
   if (module === "objc") return [
     "connect",

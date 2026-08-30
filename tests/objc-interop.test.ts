@@ -2424,6 +2424,34 @@ test("copies borrowed Z byte storage into ARC-managed NSData", () => {
   assert.match(diagnostics(temporary, example)[0]?.message ?? "", /requires stored byte-array storage/);
 });
 
+test("borrows embedded process-lifetime bytes into NSData without copying", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/interop/objc/embedded-data.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.match(artifact.source, /static NSData \*z_nsdata_borrow_static_bytes\(Z_StaticBytes bytes\)/);
+  assert.match(artifact.source, /initWithBytesNoCopy:source length:\(NSUInteger\)bytes\.length freeWhenDone:NO/);
+  assert.match(artifact.source, /NSData \* const data = z_nsdata_borrow_static_bytes\(PAYLOAD\)/);
+  assert.doesNotMatch(artifact.source, /z_nsdata_copy_bytes/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const borrowOffset = source.indexOf("NSData.borrow") + "NSData.".length + 1;
+  const borrowHover = hover(source, example, borrowOffset)?.contents.value ?? "";
+  assert.match(borrowHover, /borrow\(bytes: embed\.StaticBytes\): Foundation\.NSData/);
+  assert.match(borrowHover, /zero-copy/);
+
+  const incomplete = source.replace("NSData.borrow", "NSData.bo");
+  const completionOffset = incomplete.indexOf("NSData.bo") + "NSData.bo".length;
+  const completion = completions(incomplete, example, completionOffset)
+    .find((item) => item.label === "borrow");
+  assert.match(completion?.detail ?? "", /zero-copy process-lifetime NSData view/);
+
+  const ordinaryArray = source.replace("PAYLOAD);", "Array<u8>(1, 2));");
+  assert.match(diagnostics(ordinaryArray, example)[0]?.message ?? "", /expects embed\.StaticBytes/);
+});
+
 hostToolchainTest("copies owned Z strings across NSString boundaries without losing embedded nulls", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "tests/fixtures/objc-strings.zs");
