@@ -1042,26 +1042,37 @@ export function copyBindingFlowStates(
       index = index + 1;
       continue;
     }
-    const bindingName = target[index].name.copyBytes(
-      0,
-      target[index].name.byteLength
-    );
-    replaceBindingType(inout target, index, source[index].typeName);
-    setValueBindingClassAlias(
-      inout target,
-      bindingName,
-      source[index].classAliasIdentity
-    );
-    setValueBindingClassAliasContained(
-      inout target,
-      bindingName,
-      source[index].classAliasContained
-    );
-    replaceBindingViewOwner(inout target, index, source[index].viewOwner);
-    replaceBindingViewPath(inout target, index, source[index].viewPath);
-    replaceBindingViewLive(inout target, index, source[index].viewLive);
-    replaceBindingInitialization(inout target, index, source[index].initialization);
-    replaceBindingOwnership(inout target, index, source[index].ownership);
+    // Preserve the target's lexical binding metadata while copying the
+    // source's flow-sensitive fields. Reconstructing the binding once avoids
+    // repeatedly copying every owned String for each individual field update.
+    target[index] = NativeValueBinding({
+      name: target[index].name.copyBytes(0, target[index].name.byteLength),
+      typeName: source[index].typeName.copyBytes(
+        0,
+        source[index].typeName.byteLength
+      ),
+      mutableBinding: target[index].mutableBinding,
+      borrowedBinding: target[index].borrowedBinding,
+      matchBorrowedBinding: target[index].matchBorrowedBinding,
+      classAliasIdentity: source[index].classAliasIdentity,
+      classAliasContained: source[index].classAliasContained,
+      viewOwner: source[index].viewOwner.copyBytes(
+        0,
+        source[index].viewOwner.byteLength
+      ),
+      viewPath: source[index].viewPath.copyBytes(
+        0,
+        source[index].viewPath.byteLength
+      ),
+      viewLive: source[index].viewLive,
+      suspensionBorrowRoot: target[index].suspensionBorrowRoot.copyBytes(
+        0,
+        target[index].suspensionBorrowRoot.byteLength
+      ),
+      initialization: source[index].initialization,
+      ownership: source[index].ownership,
+      outputParameter: target[index].outputParameter,
+    });
     index = index + 1;
   }
 }
