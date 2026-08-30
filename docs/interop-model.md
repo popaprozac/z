@@ -875,6 +875,23 @@ lowered into a generated `NSObject<Protocol>` adapter. The Z class itself
 remains a Z ARC allocation; it is not silently changed into an Objective-C
 class.
 
+When a protocol requirement receives `id<AnotherProtocol>`, Z preserves that
+nominal capability instead of erasing it to `id`:
+
+```zs
+function start(
+  in webView: WebKit.WKWebView,
+  in task: WebKit.WKURLSchemeTask
+): void as "webView:startURLSchemeTask:" {
+  task.didFinish();
+}
+```
+
+The editor scaffolds the qualified parameter and completes only methods from
+the imported protocol. This first tier is a synchronous non-escaping borrow;
+storing or returning `task`, or carrying it across suspension, is rejected.
+The generated Objective-C receives the original object reference directly.
+
 Protocol properties such as `NSTableView.dataSource` and `.delegate` are
 zeroing `weak`. `objc.bind(object, { property: controller })` installs generated
 adapters and returns an owned `objc.Binding` token that keeps the native object,

@@ -19,7 +19,12 @@ import {
 import type { ForeignModule } from "./foreign.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
-import { isNullableObjCTypeName, nullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
+import {
+  isNullableObjCTypeName,
+  nullableObjCTypeName,
+  objcProtocolTypeName,
+  publicObjCTypeName,
+} from "./objc-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 
@@ -34,6 +39,12 @@ export function collectForeignHandleTypeAliases(
   const canonicalBySourceName = new Map<string, string>();
   const displayByCanonicalName = new Map<string, string>();
   for (const module of modules.values()) {
+    for (const protocol of module.protocols.values()) {
+      const sourceName = `${module.declaration.moduleName}.${protocol.exportName}`;
+      const canonical = objcProtocolTypeName(protocol.typeName);
+      canonicalBySourceName.set(sourceName, canonical);
+      displayByCanonicalName.set(canonical, sourceName);
+    }
     const byIdentity = new Map<string, {
       ownedNullable: string | null;
       ownedNonnull: string | null;

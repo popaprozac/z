@@ -4414,6 +4414,25 @@ page containing exact JSON for the collection. Neither boundary should be
 hidden by a shim: both are concrete pressure targets for the importer and
 generated-code layers.
 
+## Zapp native-authority migration
+
+Comparing Zapp's Objective-C host with its Z macOS runtime exposed an
+architectural duplication rather than a missing framework feature: both sides
+owned window registries, lifecycle state, injection policy, URL routing, and
+serialization. The migration rule is now to freeze the Objective-C host and
+close upstream Z gaps before adding more native policy there. Z should become
+the sole authority; Objective-C should remain generated adapter code or tiny
+ABI glue.
+
+The first closed gap is protocol-existential callback dispatch. WebKit passes
+custom-scheme tasks as `id<WKURLSchemeTask>`. Z now preserves that as the
+nominal borrowed type `WebKit.WKURLSchemeTask`, provides checked method
+dispatch plus hover/completion, emits the original object reference directly,
+and rejects storage or suspension. This removes one concrete reason for custom
+scheme policy to remain in handwritten Objective-C. Received block parameters,
+owned byte projection into `NSData`, embedded assets, and explicit autorelease
+pool scopes remain the next migration blockers.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

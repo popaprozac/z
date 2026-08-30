@@ -2657,6 +2657,14 @@ the complete parameter capabilities/types and result against the imported SDK
 declaration. Code generation emits an `NSObject<Protocol>` adapter that retains
 the Z owner and forwards only explicitly implemented selectors.
 
+Protocol-qualified callback parameters remain nominal in Z. For example, an
+Objective-C `id<WKURLSchemeTask>` parameter is written
+`in task: WebKit.WKURLSchemeTask`, and the callback may call the imported
+protocol methods directly. The first tier treats these values as synchronous,
+borrowed callback capabilities: they cannot be returned, stored, captured
+across suspension, or passed with `inout`, `out`, or `move`. They lower to the
+native Objective-C object reference without an adapter or wrapper allocation.
+
 Weak protocol properties require an explicit lifetime token. The first bridge
 is `objc.bind(object, { dataSource: controller, delegate: controller })`. Field
 names must resolve to imported writable non-owning protocol properties and each

@@ -73,6 +73,7 @@ import {
 import { parseMutexType } from "./mutex-types.ts";
 import { parseReadonlyType, readonlyTypeName, writableTypeName } from "./readonly-types.ts";
 import { DiagnosticError } from "./diagnostics.ts";
+import { parseObjCProtocolType } from "./objc-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -2816,9 +2817,9 @@ export function generateFunctionTypeParameters(
       return `${type}${name}`;
     }
     const aggregate = structs.get(parameter.type);
-    if (foreignNamedTypes.get(parameter.type)?.kind === "object") {
+    if (foreignNamedTypes.get(parameter.type)?.kind === "object" || parseObjCProtocolType(parameter.type)) {
       if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
-      return `${type}${name}`;
+      return `${type}${type.endsWith("*") ? "" : " "}${name}`;
     }
     if (aggregate?.kind === "class") {
       if (parameter.mode === "in") return `const ${structName(aggregate.name)} *${name}`;
@@ -4508,8 +4509,9 @@ function generateClassConstructorSignature(
         if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${cBindingName(parameter.name)}`;
         return `${type}${cBindingName(parameter.name)}`;
       }
-      if (foreignNamedTypes.get(parameter.type.name)?.kind === "object") {
+      if (foreignNamedTypes.get(parameter.type.name)?.kind === "object" || parseObjCProtocolType(parameter.type.name)) {
         if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${cBindingName(parameter.name)}`;
+        return `${type}${type.endsWith("*") ? "" : " "}${cBindingName(parameter.name)}`;
       } else if (aggregate?.kind === "class") {
         if (parameter.mode === "in") return `const ${structName(aggregate.name)} *${cBindingName(parameter.name)}`;
         if (parameter.mode === "inout" || parameter.mode === "out") return `${structName(aggregate.name)} **${cBindingName(parameter.name)}`;
@@ -5815,9 +5817,9 @@ function generateFunctionSignature(
       return `${type}${name}`;
     }
     const aggregate = structs.get(parameter.type.name);
-    if (foreignNamedTypes.get(parameter.type.name)?.kind === "object") {
+    if (foreignNamedTypes.get(parameter.type.name)?.kind === "object" || parseObjCProtocolType(parameter.type.name)) {
       if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
-      return `${type}${name}`;
+      return `${type}${type.endsWith("*") ? "" : " "}${name}`;
     }
     if (aggregate?.kind === "class") {
       if (parameter.mode === "in") return `const ${structName(aggregate.name)} *${name}`;
@@ -8076,6 +8078,7 @@ function generateStoredValue(name: string, context: GenerationContext): string {
     && parsePointerTypeName(declaredParameter.type.name)
   ) return emittedName;
   if (type && parseSliceType(type)) return emittedName;
+  if (type && parseObjCProtocolType(type) && context.parameterModes.get(name) === "in") return emittedName;
   if (type && storedPointerType(type) && context.parameterModes.get(name) === "in") return emittedName;
   if (type && context.structs.get(type)?.kind === "class" && context.parameterModes.get(name) === "in") return emittedName;
   const mode = context.parameterModes.get(name);
@@ -10298,7 +10301,8 @@ function closureCaptureHasReferenceIdentity(
   return type === "TaskScope"
     || type === "TaskControl"
     || structs.get(type)?.kind === "class"
-    || foreignNamedTypes.get(type)?.kind === "object";
+    || foreignNamedTypes.get(type)?.kind === "object"
+    || Boolean(parseObjCProtocolType(type));
 }
 
 function inParameterUsesStoredValue(
@@ -10309,6 +10313,7 @@ function inParameterUsesStoredValue(
     || type === "TaskControl"
     || storedPointerType(type) !== null
     || type.startsWith("__z_objc:")
+    || Boolean(parseObjCProtocolType(type))
     || closureCaptureHasReferenceIdentity(
       type,
       context.structs,
@@ -11830,6 +11835,7 @@ function mapType(
   if (foreignNamed) return foreignNamed.cName;
   const unsafeNative = parseUnsafeNativeType(name);
   if (unsafeNative) return unsafeNative;
+  if (parseObjCProtocolType(name)) return "id";
   if (name.startsWith("__z_ffi:")) return name.split(":").slice(3).join(":");
   if (name.startsWith("__z_objc:")) {
     const baseName = name.replace(/^__z_objc:(?:nullable|nonnull):/, "");

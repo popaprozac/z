@@ -45,7 +45,7 @@ import { parseReadonlyType } from "./readonly-types.ts";
 import { parseAsyncGeneratorType, parseGeneratorType } from "./generator-types.ts";
 import { parseOnceLifetimeType, parseOnceType } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
-import { publicObjCTypeName } from "./objc-types.ts";
+import { parseObjCProtocolType, publicObjCTypeName } from "./objc-types.ts";
 import { displayUnsafeNativeType } from "./unsafe-types.ts";
 import type { ExecutorAffinityInfo, ExplicitCopyPlan, IntegerConversion, ObjCCallInfo } from "./sema.ts";
 import { collectForeignHandleTypeAliases } from "./foreign-handle-types.ts";
@@ -1345,15 +1345,24 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (chainedCall) {
     const declaration = [...context.semanticInfo.foreignInterfaces.values()]
       .find((candidate) => candidate.className === chainedCall.className);
+    const protocol = [...context.semanticInfo.foreignProtocols.values()]
+      .find((candidate) => `id<${candidate.protocolName}>` === chainedCall.className);
+    const protocolMethod = protocol
+      ? uniqueObjCProtocolRequirements([protocol], context.semanticInfo.foreignProtocols)
+        .find((candidate) => candidate.selector === chainedCall.selector)
+      : null;
     const method = chainedCall.async?.method
       ?? declaration?.methods.find((candidate) => (
         candidate.selector === chainedCall.selector
         && candidate.instance === chainedCall.instance
-      ));
+      ))
+      ?? protocolMethod;
     if (method) {
       return objCMethodHover(
         method,
-        declaration ? foreignObjCRequiresMain(declaration, context) : false,
+        declaration
+          ? foreignObjCRequiresMain(declaration, context)
+          : protocol?.metadata.executorAffinity === "main",
         source,
         word.start,
         word.end,
@@ -2769,12 +2778,19 @@ function objcProtocolMethodCompletions(
   const prefix = source.slice(0, offset).match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1] ?? "";
   const start = offset - prefix.length;
   const sanitized = source.slice(0, start) + source.slice(offset);
-  const context = safeAnalysis(sanitized, fileName);
+  const context = safeAnalysis(sanitized, fileName) ?? importAnalysis(sanitized, fileName);
   if (!context) return null;
-  const owner = enclosingAggregateAt(sanitized, fileName, start, context.sourceProgram);
+  let sourceProgram: Program;
+  try {
+    sourceProgram = parse(lex(sanitized, fileName), fileName);
+  } catch {
+    return null;
+  }
+  const owner = enclosingAggregateAt(sanitized, fileName, start, sourceProgram);
   if (!owner || owner.kind !== "class" || owner.implements.length === 0) return null;
   const protocols = owner.implements.flatMap((reference) => {
-    const protocol = context.semanticInfo.foreignProtocols.get(reference.name);
+    const protocolName = parseObjCProtocolType(reference.name)?.protocol ?? reference.name;
+    const protocol = context.semanticInfo.foreignProtocols.get(protocolName);
     return protocol ? [protocol] : [];
   });
   if (protocols.length === 0) return null;
@@ -2789,8 +2805,8 @@ function objcProtocolMethodCompletions(
     return {
       label: localName,
       kind: completionKinds.method,
-      detail: `${method.required ? "required" : "optional"} ${objCProtocolMethodDetail(method)}`,
-      insertText: objcProtocolMethodScaffold(method, localName, indentation),
+      detail: `${method.required ? "required" : "optional"} ${objCProtocolMethodDetail(method, context.semanticInfo.foreignProtocols)}`,
+      insertText: objcProtocolMethodScaffold(method, localName, indentation, context.semanticInfo.foreignProtocols),
       insertTextFormat: 2,
       sortText: `${method.required ? "0" : "1"}-${localName}`,
     };
@@ -2859,7 +2875,7 @@ function uniqueObjCProtocolRequirements(
 function objcProtocolLocalMethodName(method: ForeignObjCProtocolMethod): string {
   const labels = selectorParts(method.selector);
   if (labels.length < 2) return method.baseName;
-  if (/^(?:tableView|outlineView|collectionView|control)$/.test(labels[0])) {
+  if (/^(?:tableView|outlineView|collectionView|control|webView)$/.test(labels[0])) {
     let name = labels[1];
     name = name.replace(/For(?:TableColumn|Item|IndexPath)$/, "");
     if (labels.includes("row") && !/Row$/.test(name)) name += "Row";
@@ -2869,9 +2885,12 @@ function objcProtocolLocalMethodName(method: ForeignObjCProtocolMethod): string 
   return method.baseName;
 }
 
-function objCProtocolMethodDetail(method: ForeignObjCProtocolMethod): string {
+function objCProtocolMethodDetail(
+  method: ForeignObjCProtocolMethod,
+  protocols: ReadonlyMap<string, ForeignObjCProtocol>,
+): string {
   const parameters = method.parameters.map((parameter, index) => (
-    `${parameter.type.kind === "object" ? "in " : ""}${parameter.name ?? `argument${index + 1}`}: ${foreignProtocolTypeName(parameter.type)}`
+    `${parameter.type.kind === "object" ? "in " : ""}${parameter.name ?? `argument${index + 1}`}: ${foreignProtocolParameterTypeName(parameter, protocols)}`
   ));
   return `${method.selector} — (${parameters.join(", ")}): ${foreignProtocolTypeName(method.returnType)}`;
 }
@@ -2880,9 +2899,10 @@ function objcProtocolMethodScaffold(
   method: ForeignObjCProtocolMethod,
   localName: string,
   indentation: string,
+  protocols: ReadonlyMap<string, ForeignObjCProtocol>,
 ): string {
   const parameters = method.parameters.map((parameter, index) => (
-    `${parameter.type.kind === "object" ? "in " : ""}${parameter.name ?? `argument${index + 1}`}: ${foreignProtocolTypeName(parameter.type)}`
+    `${parameter.type.kind === "object" ? "in " : ""}${parameter.name ?? `argument${index + 1}`}: ${foreignProtocolParameterTypeName(parameter, protocols)}`
   ));
   const parameterBlock = parameters.length === 0
     ? "()"
@@ -2890,6 +2910,19 @@ function objcProtocolMethodScaffold(
   const result = foreignProtocolTypeName(method.returnType);
   const placeholder = result === "void" ? "" : `\n${indentation}  \${1:// TODO: return ${result}}`;
   return `function ${localName}${parameterBlock}: ${result} as ${JSON.stringify(method.selector)} {${placeholder}\n${indentation}}`;
+}
+
+function foreignProtocolParameterTypeName(
+  parameter: ForeignObjCMethod["parameters"][number],
+  protocols: ReadonlyMap<string, ForeignObjCProtocol>,
+): string {
+  if (parameter.type.kind !== "object" || parameter.type.nullable || parameter.protocols.length !== 1) {
+    return foreignProtocolTypeName(parameter.type);
+  }
+  const matches = [...protocols.values()].filter((protocol) => (
+    protocol.protocolName === parameter.protocols[0]
+  ));
+  return matches.length === 1 ? matches[0].typeName : foreignProtocolTypeName(parameter.type);
 }
 
 function foreignProtocolTypeName(type: ForeignType): string {
@@ -5088,6 +5121,13 @@ function memberCompletions(
         ) methodProbes.add(method.name);
       }
     }
+    for (const protocol of importContext.semanticInfo.foreignProtocols.values()) {
+      for (const method of uniqueObjCProtocolRequirements([protocol], importContext.semanticInfo.foreignProtocols)) {
+        if (method.baseName.startsWith(prefix) && method.parameters.length === 0) {
+          methodProbes.add(method.baseName);
+        }
+      }
+    }
     for (const candidate of [...methodProbes].sort((left, right) => left.length - right.length || left.localeCompare(right))) {
       const probeSource = source.slice(0, completionStart) + `${candidate}()` + source.slice(tailOffset);
       context = safeAnalysis(probeSource, fileName);
@@ -5871,6 +5911,25 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   const interfaceName = receiverType.replace(/^__z_objc:(?:nullable|nonnull):/, "");
   const objc = context.semanticInfo.foreignInterfaces.get(interfaceName);
   if (objc) return { kind: "objc", declaration: objc, instance: true };
+  const protocolType = parseObjCProtocolType(receiverType);
+  const protocol = protocolType
+    ? context.semanticInfo.foreignProtocols.get(protocolType.protocol)
+    : null;
+  if (protocol) {
+    return {
+      kind: "objc",
+      instance: true,
+      declaration: {
+        exportName: protocol.exportName,
+        typeName: protocol.typeName,
+        className: `id<${protocol.protocolName}>`,
+        superName: null,
+        methods: uniqueObjCProtocolRequirements([protocol], context.semanticInfo.foreignProtocols),
+        properties: [],
+        metadata: protocol.metadata,
+      },
+    };
+  }
   const declaration = context.program.structs.find((item) => item.name === receiverType);
   if (declaration) {
     const sourceType = context.typeDisplayNames.get(receiverType) ?? receiverType;

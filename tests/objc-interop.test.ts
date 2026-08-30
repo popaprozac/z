@@ -2105,6 +2105,71 @@ test("generates safe Objective-C protocol adapters with protocol-aware editor sc
   assert.match(unsafeDiagnostic.message, /assign/);
 }, 15_000);
 
+test("dispatches through borrowed Objective-C protocol existential callback values", () => {
+  if (process.platform !== "darwin") return;
+  const fileName = resolve(projectRoot, "examples/interop/objc/protocol-existential.zs");
+  const source = `
+    import WebKit from "WebKit/WebKit.h";
+    import { thread } from "std/thread";
+
+    class SchemeHandler on thread.main implements WebKit.WKURLSchemeHandler {
+      function start(
+        in webView: WebKit.WKWebView,
+        in urlSchemeTask: WebKit.WKURLSchemeTask
+      ): void as "webView:startURLSchemeTask:" {
+        urlSchemeTask.didFinish();
+      }
+
+      function stop(
+        in webView: WebKit.WKWebView,
+        in urlSchemeTask: WebKit.WKURLSchemeTask
+      ): void as "webView:stopURLSchemeTask:" {}
+    }
+
+    function main(): i32 { return 0; }
+  `;
+  const artifact = compileToNative(source, fileName);
+  assert.match(artifact.source, /- \(void\)webView:\(WKWebView \*\)webView startURLSchemeTask:\(id\)urlSchemeTask/);
+  assert.match(artifact.source, /\[urlSchemeTask didFinish\]/);
+
+  const compilation = spawnSync("clang", [
+    "-x", "objective-c",
+    "-fobjc-arc",
+    "-Wall", "-Wextra", "-Werror",
+    "-fsyntax-only", "-",
+  ], { input: artifact.source, encoding: "utf8" });
+  assert.equal(compilation.status, 0, compilation.stderr);
+
+  const completionSource = `
+    import WebKit from "WebKit/WebKit.h";
+    import { thread } from "std/thread";
+    class SchemeHandler on thread.main implements WebKit.WKURLSchemeHandler {
+      sta
+    }
+    function main(): i32 { return 0; }
+  `;
+  const completionOffset = completionSource.indexOf("sta") + "sta".length;
+  const scaffold = completions(completionSource, fileName, completionOffset)
+    .find((item) => item.label === "startURLSchemeTask");
+  assert.match(scaffold?.insertText ?? "", /in urlSchemeTask: WebKit\.WKURLSchemeTask/);
+
+  const existentialOffset = source.indexOf("WKURLSchemeTask") + 2;
+  assert.match(hover(source, fileName, existentialOffset)?.contents.value ?? "", /WKURLSchemeTask/);
+  const methodOffset = source.indexOf("didFinish") + 2;
+  assert.match(hover(source, fileName, methodOffset)?.contents.value ?? "", /didFinish/);
+  const memberCompletionSource = source.replace("urlSchemeTask.didFinish();", "urlSchemeTask.did");
+  const memberCompletionOffset = memberCompletionSource.lastIndexOf("did") + "did".length;
+  const memberItems = completions(memberCompletionSource, fileName, memberCompletionOffset);
+  assert.ok(memberItems.some((item) => item.label === "didFinish"));
+  assert.ok(memberItems.some((item) => item.label === "didReceiveData"));
+
+  const stored = source.replace(
+    "class SchemeHandler on thread.main implements WebKit.WKURLSchemeHandler {",
+    "struct Stored { task: WebKit.WKURLSchemeTask; }\nclass SchemeHandler on thread.main implements WebKit.WKURLSchemeHandler {",
+  );
+  assert.match(diagnostics(stored, fileName)[0]?.message ?? "", /borrowed callback capabilities/);
+}, 20_000);
+
 test("owns method-based Objective-C protocol registrations through explicit guards", () => {
   if (process.platform !== "darwin") return;
   const fixture = resolve(projectRoot, "tests/fixtures/objc-registration.zs");

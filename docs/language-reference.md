@@ -932,6 +932,21 @@ synchronous and non-throwing in the first tier. The editor offers
 unimplemented selectors as complete method scaffolds and identifies required
 versus optional requirements.
 
+An Objective-C protocol-qualified callback parameter uses the imported
+protocol as its Z type:
+
+```zs
+function start(
+  in webView: WebKit.WKWebView,
+  in task: WebKit.WKURLSchemeTask
+): void as "webView:startURLSchemeTask:" {
+  task.didFinish();
+}
+```
+
+It is a borrowed synchronous capability in the current tier. It must use `in`
+and cannot be stored, returned, or carried across `await`.
+
 A field marked `readonly` is initialized during construction and cannot be
 assigned or mutated afterward:
 

@@ -81,6 +81,8 @@ import { collectPlacementCaptures } from "./placement-captures.ts";
 import {
   isNullableObjCTypeName,
   nullableObjCTypeName,
+  objcProtocolTypeName,
+  parseObjCProtocolType,
   publicObjCTypeName,
 } from "./objc-types.ts";
 import { optionTypeName, parseOptionType } from "./option-types.ts";
@@ -2530,6 +2532,13 @@ function analyzeStructDeclaration(
     }
     members.add(field.name);
     validateType(field.type, structs, enums, foreignNamedTypes, fileName, false, state);
+    if (parseObjCProtocolType(field.type.name)) {
+      throw new DiagnosticError(fileName, field.type.location, "Objective-C protocol existential values are borrowed callback capabilities in the first tier", {
+        code: "Z0810",
+        notes: ["their native lifetime is currently proven only for the duration of a protocol callback"],
+        helps: ["store a concrete Objective-C class reference or an owned Z value instead"],
+      });
+    }
     if (parseOnceType(field.type.name)) {
       throw new DiagnosticError(fileName, field.type.location, `${displayAssignableType(field.type.name, state)} cannot be stored in a field`, {
         code: "Z0604",
@@ -2730,7 +2739,8 @@ function validateTraitConformance(
       throw new DiagnosticError(fileName, reference.location, `${declaration.kind} ${JSON.stringify(declaration.name)} repeats interface ${JSON.stringify(reference.name)}`);
     }
     implemented.add(reference.name);
-    const protocol = foreignProtocols.get(reference.name);
+    const protocolName = parseObjCProtocolType(reference.name)?.protocol ?? reference.name;
+    const protocol = foreignProtocols.get(protocolName);
     if (protocol) {
       if (declaration.kind !== "class") {
         throw new DiagnosticError(fileName, reference.location, `Objective-C protocol ${JSON.stringify(reference.name)} can only be implemented by a Z class`, {
@@ -2890,7 +2900,7 @@ function validateObjCProtocolMethodSignature(
     );
   }
   method.parameters.forEach((parameter, index) => {
-    const expected = String(foreignValueType(requirement.parameters[index].type));
+    const expected = String(objCProtocolParameterValueType(requirement.parameters[index], state));
     if (parameter.type.name !== expected) {
       throw new DiagnosticError(
         fileName,
@@ -2915,6 +2925,24 @@ function validateObjCProtocolMethodSignature(
       );
     }
   });
+}
+
+function objCProtocolParameterValueType(
+  parameter: ForeignObjCMethod["parameters"][number],
+  state: AnalysisState,
+): ValueType {
+  if (parameter.type.kind !== "object" || parameter.type.nullable || parameter.protocols.length === 0) {
+    return foreignValueType(parameter.type);
+  }
+  if (parameter.protocols.length > 1) {
+    return foreignValueType(parameter.type);
+  }
+  const matches = [...state.foreignProtocols.values()].filter((protocol) => (
+    protocol.protocolName === parameter.protocols[0]
+  ));
+  return matches.length === 1
+    ? objcProtocolTypeName(matches[0].typeName)
+    : foreignValueType(parameter.type);
 }
 
 function sameMethodSignature(actual: FunctionDeclaration, required: FunctionDeclaration, ownerType?: string): boolean {
@@ -2992,6 +3020,13 @@ function validateFunctionSignature(
   state: AnalysisState,
 ): void {
   validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true, state);
+  if (parseObjCProtocolType(declaration.returnType.name)) {
+    throw new DiagnosticError(fileName, declaration.returnType.location, "Objective-C protocol existential values cannot be returned in the first tier", {
+      code: "Z0810",
+      notes: ["their native lifetime is currently proven only for the duration of a protocol callback"],
+      helps: ["perform the native operation inside the callback or return an owned Z value"],
+    });
+  }
   if (parseOnceType(declaration.returnType.name)) {
     throw new DiagnosticError(fileName, declaration.returnType.location, `${displayAssignableType(declaration.returnType.name, state)} cannot be returned by value`, {
       code: "Z0604",
@@ -3155,6 +3190,22 @@ function validateFunctionSignature(
     }
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false, state);
+    if (parseObjCProtocolType(parameter.type.name)) {
+      if (parameter.mode !== "in") {
+        throw new DiagnosticError(fileName, parameter.location, `Objective-C protocol existential parameter ${JSON.stringify(parameter.name)} must use in`, {
+          code: "Z0810",
+          notes: ["the callback borrows the native protocol value without taking ownership"],
+          helps: [`write \`in ${parameter.name}: ${displayAssignableType(parameter.type.name, state)}\``],
+        });
+      }
+      if (declaration.async) {
+        throw new DiagnosticError(fileName, parameter.location, `Objective-C protocol existential parameter ${JSON.stringify(parameter.name)} cannot cross async suspension`, {
+          code: "Z0810",
+          notes: ["its native lifetime is currently proven only for the synchronous callback invocation"],
+          helps: ["copy the required data into an owned Z value before starting asynchronous work"],
+        });
+      }
+    }
     if (parseOnceType(parameter.type.name)) {
       throw new DiagnosticError(fileName, parameter.type.location, `${displayAssignableType(parameter.type.name, state)} cannot be passed as a function parameter`, {
         code: "Z0604",
@@ -10166,7 +10217,8 @@ function inferExpressionInner(
         }
         return "usize";
       }
-      const objcReceiverType = objcReceiver(receiverType, state);
+      const objcReceiverType = objcReceiver(receiverType, state)
+        ?? objcProtocolReceiver(receiverType, state);
       rejectNullableObjCReceiver(receiverType, expression.object.location, fileName, state);
       if (objcReceiverType) {
         const property = findObjCProperty(objcReceiverType, expression.property, state);
@@ -12428,7 +12480,8 @@ function inferExpressionInner(
           }
           return weakResultTypeName(weak.target);
         }
-        const objcReceiverType = objcReceiver(receiverValueType, state);
+        const objcReceiverType = objcReceiver(receiverValueType, state)
+          ?? objcProtocolReceiver(receiverValueType, state);
         rejectNullableObjCReceiver(receiverType, expression.callee.object.location, fileName, state);
         if (objcReceiverType) {
           const selection = findObjCMethod(
@@ -16663,6 +16716,29 @@ function objcReceiver(
   return declaration ? { declaration, instance: true } : null;
 }
 
+function objcProtocolReceiver(
+  type: ValueType,
+  state: AnalysisState,
+): { readonly declaration: ForeignObjCInterface; readonly instance: true } | null {
+  if (type === "unknown" || type === "never") return null;
+  const parsed = parseObjCProtocolType(String(underlyingType(type)));
+  if (!parsed) return null;
+  const protocol = state.foreignProtocols.get(parsed.protocol);
+  if (!protocol) return null;
+  return {
+    instance: true,
+    declaration: {
+      exportName: protocol.exportName,
+      typeName: protocol.typeName,
+      className: `id<${protocol.protocolName}>`,
+      superName: null,
+      methods: objcProtocolRequirements(protocol, state.foreignProtocols),
+      properties: [],
+      metadata: protocol.metadata,
+    },
+  };
+}
+
 function rejectNullableObjCReceiver(
   type: ValueType,
   location: SourceLocation,
@@ -18868,6 +18944,15 @@ function validateType(
         `${JSON.stringify(`${publicObjCTypeName(type.name)} | null`)} currently requires an imported Objective-C reference type`,
         { helps: [`use Option<${publicObjCTypeName(type.name)}> for an optional Z value`] },
       );
+    }
+    return;
+  }
+  const objcProtocol = parseObjCProtocolType(type.name);
+  if (objcProtocol) {
+    if (!state.foreignProtocols.has(objcProtocol.protocol)) {
+      throw new DiagnosticError(fileName, type.location, `unknown imported Objective-C protocol ${JSON.stringify(displayAssignableType(type.name, state))}`, {
+        code: "Z0810",
+      });
     }
     return;
   }

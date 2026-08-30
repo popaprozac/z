@@ -118,6 +118,21 @@ The `as "selector:"` clause is checked against the imported protocol
 requirement. `objc.bind` installs generated adapters into weak delegate or data
 source properties and owns their lifetime:
 
+Protocol-qualified callback values keep their native protocol surface:
+
+```z
+function start(
+  in webView: WebKit.WKWebView,
+  in task: WebKit.WKURLSchemeTask
+): void as "webView:startURLSchemeTask:" {
+  task.didFinish();
+}
+```
+
+The first tier borrows `task` only for the synchronous callback. Z rejects
+storing, returning, or suspending with it, while hover and autocomplete expose
+the imported `WKURLSchemeTask` methods.
+
 ```z
 const controller = new TableController({});
 const binding = objc.bind(tableView, {
