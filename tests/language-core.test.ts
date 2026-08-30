@@ -2311,8 +2311,8 @@ test("initializes private class state through safe user constructors", () => {
   assert.equal(result.status, 0, result.stderr);
 
   const generated = compileToC(source, example);
-  assert.match(generated, /Z_Session \*Z_Session_new\(int32_t id, Z_String name\)/);
-  assert.match(generated, /self->id = id;/);
+  assert.match(generated, /Z_Session \*Z_Session_new\(int32_t z_id, Z_String name\)/);
+  assert.match(generated, /self->id = z_id;/);
   assert.match(generated, /self->name = \(_z_live_name_\d+ = false, name\);/);
   assert.match(generated, /Z_Result_CheckedSession_InvalidSession Z_CheckedSession_new/);
   assert.match(generated, /if \(_z_live_field_name_\d+ && \(self->name\)\.capacity > 0\)[\s\S]*free\(self\);[\s\S]*Z_Result_CheckedSession_InvalidSession_failure/);
@@ -2400,9 +2400,9 @@ test("runs visible type-scoped static methods on structs, classes, and generic i
 
   const generated = compileToC(source, example);
   assert.match(generated, /static Z_Bounds Z_Bounds_normalized\(int32_t left, int32_t right\)/);
-  assert.match(generated, /static Z_Session \*\s*Z_Session_create\(int32_t id\)/);
-  assert.match(generated, /Z_Session_normalizedId\(id\)/);
-  assert.match(generated, /Z_Result_Session_InvalidSession Z_Session_checked\(int32_t id\)/);
+  assert.match(generated, /static Z_Session \*\s*Z_Session_create\(int32_t z_id\)/);
+  assert.match(generated, /Z_Session_normalizedId\(z_id\)/);
+  assert.match(generated, /Z_Result_Session_InvalidSession Z_Session_checked\(int32_t z_id\)/);
 
   const generic = `
     struct Container<T> {

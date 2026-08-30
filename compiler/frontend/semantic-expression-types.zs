@@ -195,6 +195,21 @@ function nativeObjectiveCReferenceAssignable(
   const actualTarget = nullableTargetType(actualType);
   if (actualTarget.byteLength > 0) actual = move actualTarget;
 
+  if (expected == "id") {
+    return match (typeSymbolLocation(modules, moduleIndex, actual)) {
+      some(location) => match (
+        in modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].typeSignature
+      ) {
+        some(signature) => signature.foreignKind == "objcInterface"
+          || signature.foreignKind == "objcProtocol";
+        none => false;
+      }
+      none => false;
+    };
+  }
+
   match (typeSymbolLocation(modules, moduleIndex, expected)) {
     some(location) => match (
       in modules[location.moduleIndex].symbols[

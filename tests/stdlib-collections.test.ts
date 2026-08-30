@@ -3235,7 +3235,7 @@ test("preserves optional parameter-view provenance through match and precise las
   assert.match(generated, /typedef const Z_Document \*Z_Option___z_view_3a_Document;/);
   assert.match(
     generated,
-    /findDocument\(int32_t id, const Z_Workspace \*active, const Z_Workspace \*archive\)/,
+    /findDocument\(int32_t z_id, const Z_Workspace \*active, const Z_Workspace \*archive\)/,
   );
   assert.match(generated, /return &\([^;]*active[^;]*documents[^;]*data/);
   assert.match(generated, /return &\([^;]*archive[^;]*documents[^;]*data/);

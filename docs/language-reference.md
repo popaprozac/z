@@ -3714,6 +3714,11 @@ storage retains the adapter. There is no second wrapper or dispatch layer.
 Passing an adapter for a different protocol is a compile error even though both
 native values erase to Objective-C object references.
 
+Protocol existential values may widen to an ordinary Objective-C `id`
+parameter without allocation or a source-level cast. The reverse direction is
+not implicit: narrowing untyped `id` to a specific class still uses
+`instanceof`, and a specific protocol requires checked protocol provenance.
+
 This first tier is conservatively `thread.main`-bound for construction, use,
 and destruction. It is intended for stored handler properties such as
 `WKWebViewConfiguration.setURLSchemeHandler`. Use `objc.bind` for zeroing weak

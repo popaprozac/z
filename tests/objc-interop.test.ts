@@ -812,10 +812,10 @@ test("compares scoped document borrows with independently owned snapshots", () =
   const generated = compileToC(source, example);
   assert.match(
     generated,
-    /DocumentStore_withDocument\(const Z_[A-Za-z0-9_]*DocumentStore \*self, int32_t id, const Z_Function_[A-Za-z0-9_]+ \*visit\)/,
+    /DocumentStore_withDocument\(const Z_[A-Za-z0-9_]*DocumentStore \*self, int32_t z_id, const Z_Function_[A-Za-z0-9_]+ \*visit\)/,
   );
   assert.match(generated, /const Z_[A-Za-z0-9_]*Document \*document = &/);
-  assert.match(generated, /DocumentStore_documentSnapshot\(const Z_[A-Za-z0-9_]*DocumentStore \*self, int32_t id\)/);
+  assert.match(generated, /DocumentStore_documentSnapshot\(const Z_[A-Za-z0-9_]*DocumentStore \*self, int32_t z_id\)/);
   assert.match(generated, /const Z_[A-Za-z0-9_]*Document \*\s*Z_[A-Za-z0-9_]*DocumentStore_documentAt\(const Z_[A-Za-z0-9_]*DocumentStore \*self, uintptr_t index\)/);
   assert.match(generated, /return &\(\(\(self->documents\)\.data\[/);
   assert.match(generated, /Z_String _z_string_[0-9]+ = z_string_new\(\);/);
@@ -1841,7 +1841,7 @@ test("returns zero-overhead optional receiver-tied views through Option and matc
   assert.deepEqual(diagnostics(source, "optional-view.zs"), []);
   const generated = compileToC(source, "optional-view.zs");
   assert.match(generated, /typedef const Z_Item \*Z_Option___z_view_3a_Item;/);
-  assert.match(generated, /Z_Option___z_view_3a_Item Z_Store_find\(const Z_Store \*self, int32_t id\)/);
+  assert.match(generated, /Z_Option___z_view_3a_Item Z_Store_find\(const Z_Store \*self, int32_t z_id\)/);
   assert.match(generated, /return &\(\(\(self->items\)\.data\[/);
   assert.match(generated, /return NULL;/);
   assert.doesNotMatch(generated, /struct Z___z_Option___z_view/);
@@ -2164,6 +2164,7 @@ test("owns standalone Objective-C protocol adapters as storable ARC values", () 
         in webView: WebKit.WKWebView,
         in task: WebKit.WKURLSchemeTask
       ): void as "webView:startURLSchemeTask:" {
+        WebKit.NSArray.arrayWithObject(task);
         task.didFinish();
       }
 
@@ -2174,13 +2175,14 @@ test("owns standalone Objective-C protocol adapters as storable ARC values", () 
     }
 
     class AdapterOwner on thread.main {
+      readonly id: i32;
       readonly adapter: objc.Adapter<WebKit.WKURLSchemeHandler>;
     }
 
     function main(): i32 {
       const controller = new SchemeHandler({});
       const adapter = objc.adapt<WebKit.WKURLSchemeHandler>(controller);
-      const owner = new AdapterOwner({ adapter });
+      const owner = new AdapterOwner({ id: 1, adapter });
       const configuration = WebKit.WKWebViewConfiguration.alloc().init();
       configuration.setURLSchemeHandler(owner.adapter, forURLScheme: "zapp");
       return 0;
@@ -2190,6 +2192,8 @@ test("owns standalone Objective-C protocol adapters as storable ARC values", () 
   assert.match(artifact.source, /__strong id<WKURLSchemeHandler> adapter;/);
   assert.match(artifact.source, /\[\[ZObjCProtocolAdapter_SchemeHandler alloc\] initWithOwner:controller\]/);
   assert.match(artifact.source, /\[configuration setURLSchemeHandler:.*adapter.* forURLScheme:@"zapp"\]/);
+  assert.match(artifact.source, /\[NSArray arrayWithObject:\s*task\]/);
+  assert.match(artifact.source, /int32_t z_id, id<WKURLSchemeHandler> adapter/);
   const compilation = spawnSync("clang", [
     "-x", "objective-c",
     "-fobjc-arc", "-fblocks",

@@ -3889,7 +3889,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const ownedLocalDefinition = ownedEnumEmission.stdout.slice(
     ownedLocalStart,
     ownedEnumEmission.stdout.indexOf(
-      "Z_ResourceState makeState(int32_t id)",
+      "Z_ResourceState makeState(int32_t z_id)",
       ownedLocalStart,
     ),
   );
@@ -7618,6 +7618,14 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     assert.match(
       protocolSource,
       /id<WKURLSchemeTask> task/,
+    );
+    assert.match(
+      protocolSource,
+      /\[NSArray arrayWithObject:\s*task\]/,
+    );
+    assert.match(
+      protocolSource,
+      /int32_t z_id, id<WKURLSchemeHandler> adapter/,
     );
     assert.match(
       protocolSource,

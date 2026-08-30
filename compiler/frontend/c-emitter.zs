@@ -169,7 +169,10 @@ function nativeCIntegerType(in name: String): String throws String {
 }
 
 function isCReservedWord(in name: String): boolean {
-  return name == "alignas"
+  return name == "Class"
+    || name == "SEL"
+    || name == "id"
+    || name == "alignas"
     || name == "alignof"
     || name == "auto"
     || name == "bool"

@@ -201,6 +201,13 @@ an ARC class field. Its native representation is exactly
 controller, and normal ARC retains that adapter. Passing an adapter for a
 different protocol is a compile error.
 
+Imported protocol values also widen safely from `id<P>` to an Objective-C
+method parameter typed as ordinary `id`. This is a zero-cost native widening,
+not a wrapper or unchecked cast. Free C functions whose signatures directly
+contain Objective-C objects or `id<Protocol>` remain outside the checked
+header-only function tier for now; prefer an imported Objective-C method or a
+reviewed declaration at that boundary.
+
 This first tier is conservatively `thread.main`-bound. It is distinct from
 `objc.bind`, which owns adapters installed in zeroing weak properties, and from
 `objc.register`, which owns a checked add/remove lifetime.

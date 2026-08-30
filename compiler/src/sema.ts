@@ -17749,6 +17749,8 @@ function requireObjCAssignable(
       return;
     }
   }
+  const actualProtocol = parseObjCProtocolType(String(underlyingType(actual)));
+  if (!expected.className && actualProtocol) return;
   const actualObject = state.foreignObjectTypes.get(String(underlyingType(actual)));
   if (!actualObject || (expected.className && !isObjCSubclass(actualObject, expected, state))) {
     throw new DiagnosticError(fileName, expression.location, `${subject} expects ${expected.cName}, found ${describeValueType(actual, state)}`);
@@ -19844,6 +19846,10 @@ function requireAssignable(
   const actualObject = actual === "unknown" || actual === "never"
     ? null
     : state.foreignObjectTypes.get(String(underlyingType(actual)));
+  const actualProtocol = actual === "unknown" || actual === "never"
+    ? null
+    : parseObjCProtocolType(String(underlyingType(actual)));
+  if (expectedObject && !expectedObject.className && actualProtocol) return;
   if (
     expectedObject
     && actualObject

@@ -4527,7 +4527,12 @@ loop destructuring still limits some migrations; generic `Option.some` storage
 of strong Objective-C references still needs niche-representation unification;
 captured `NSString` contextual conversion in `objc.register`, canonical
 Objective-C identity across independent metadata producers, and direct `NSRect`
-floating-point construction remain open seams.
+floating-point construction remain open seams. Imported Objective-C protocol
+existentials now widen safely to ordinary Objective-C `id` parameters. Free C
+functions whose signatures themselves carry Objective-C object or
+`id<Protocol>` parameters remain outside the checked header-only function tier;
+use an imported Objective-C method or an explicit reviewed contract until that
+metadata path preserves ObjC identity.
 
 ## Not tested yet
 

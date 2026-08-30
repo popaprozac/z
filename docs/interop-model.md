@@ -1004,6 +1004,14 @@ gap without guessing whether an arbitrary native API keeps its argument. The
 first tier is conservatively main-executor-bound and allocates one generated
 `NSObject` adapter, with no additional Z wrapper allocation.
 
+An imported protocol existential such as `WebKit.WKURLSchemeTask` also widens
+safely to an Objective-C method parameter typed as ordinary `id`; this is the
+native `id<P>` to `id` conversion and emits no cast or wrapper. Free C functions
+whose signatures contain Objective-C objects or `id<Protocol>` are not yet in
+the checked header-only function tier. Prefer an imported Objective-C method,
+or describe the boundary with a reviewed declaration instead of erasing the
+type through `unsafe`.
+
 | Native surface | Ordinary header import | `std/objc` bridge |
 | --- | --- | --- |
 | `NSApplication.sharedApplication`, `NSWindow.alloc()`, methods/properties | Yes | No |

@@ -4725,7 +4725,7 @@ function generateClassConstructorSignature(
       return `${type} ${cBindingName(parameter.name)}`;
     })
     : declaration.fields.map((field) => (
-      `${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name}`
+      `${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${cBindingName(field.name)}`
     ));
   const result = declaration.constructor?.errorType
     ? mapType(resultTypeName(declaration.name, declaration.constructor.errorType.name), structs, enums, foreignNamedTypes)
@@ -4752,7 +4752,7 @@ function generateClassLifecycle(
   if (self == NULL) abort();
   self->_z_refcount = 1;
   self->_z_weak = NULL;
-${declaration.fields.map((field) => `  self->${field.name} = ${field.name};`).join("\n")}
+${declaration.fields.map((field) => `  self->${field.name} = ${cBindingName(field.name)};`).join("\n")}
   return self;
 }`;
   const retain = atomicArc
@@ -12327,6 +12327,7 @@ const cReservedWords = new Set(`
   static_cast struct switch synchronized template this thread_local throw true try typedef typeid typename union
   unsigned using virtual void volatile wchar_t while xor xor_eq _Alignas _Alignof _Atomic _Bool _Complex
   _Generic _Imaginary _Noreturn _Static_assert _Thread_local
+  Class SEL id
 `.trim().split(/\s+/));
 
 export function cBindingName(name: string): string {
