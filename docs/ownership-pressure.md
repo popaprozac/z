@@ -4449,12 +4449,25 @@ must prove the native deallocator. Compile-time assets now close the safe
 zero-copy case: `embed.bytes("./asset")` emits immutable process-lifetime native
 storage and `Foundation.NSData.borrow(asset)` wraps it with `freeWhenDone:NO`.
 Ordinary runtime storage is rejected by that bridge, keeping the lifetime proof
-visible. The explicit pool blocker is now closed in Stage 0. `objc.pool` accepts one
+visible.
+
+The explicit pool blocker is now closed in Stage 0. `objc.pool` accepts one
 synchronous non-escaping closure, returns independently owned values, drains on
 typed failure, and lowers to a lexical `@autoreleasepool` without allocating a
 pool object. A native fixture observes one autoreleased Objective-C instance
 inside the closure and zero immediately afterward on both normal and throwing
 paths. Fixed-point lowering of `embed.bytes` and `objc.pool` remains staged.
+
+Splitting Zapp's macOS runtime into application, window-backend, native-event,
+and shared-runtime modules exposed one more fixed-point parity gap. A consumer
+that inferred an ARC class from a field of an imported aggregate was required
+to import that field type redundantly; otherwise native ownership analysis
+mistook the class reference for move-only aggregate storage. Native ownership
+and alias analysis now resolve uniquely inferred transitive type identities,
+matching Stage 0. A two-module fixture reads the inferred class field, retains
+it into a local, mutates it, and compiles the emitted C with the retain visible.
+Zapp can therefore modularize without source-only imports or ownership
+workarounds.
 
 ## Not tested yet
 

@@ -166,6 +166,7 @@ import {
   semanticTypeIdentity,
   transparentTypeName,
   typeSatisfiesTrait,
+  inferredTypeSymbolLocation,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import {
@@ -281,7 +282,7 @@ function typeIsClassReference(
       && aggregate.name == typeName
     ) return true;
   }
-  const location = typeSymbolLocation(modules, moduleIndex, typeName);
+  const location = inferredTypeSymbolLocation(modules, moduleIndex, typeName);
   return match (in location) {
     some(location) => modules[location.moduleIndex].symbols[location.symbolIndex].kind
       == ModuleSymbolKind.classSymbol;

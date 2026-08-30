@@ -422,7 +422,7 @@ export function typeMovesOnOwnedUse(
     stringStartsWith(managedType, "Weak<")
     || stringStartsWith(managedType, "__z_native_function:")
   ) return false;
-  match (typeSymbolLocation(modules, moduleIndex, managedType)) {
+  match (inferredTypeSymbolLocation(modules, moduleIndex, managedType)) {
     some(location) => {
       if (
         modules[location.moduleIndex].symbols[location.symbolIndex].kind

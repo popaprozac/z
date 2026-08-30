@@ -15222,6 +15222,47 @@ test("tracks one canonical ARC identity through a transparent Once accessor nati
   assert.equal(validResult.status, 0, validResult.stderr);
 });
 
+test("retains inferred ARC class fields without redundant imports natively", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-transitive-class-field/main.zs",
+  );
+  const stage0 = spawnSync(process.execPath, [cli, "check", input], {
+    encoding: "utf8",
+  });
+  assert.equal(stage0.status, 0, stage0.stderr);
+
+  const native = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(native.status, 0, native.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /Z_Counter_retain\(config->counter\)/);
+
+  const directory = mkdtempSync("/tmp/z-transitive-class-field-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("tracks ARC identities through direct fields and audited struct returns natively", () => {
   const input = resolve(
     projectRoot,
