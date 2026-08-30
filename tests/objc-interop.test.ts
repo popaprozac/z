@@ -2386,6 +2386,44 @@ test("registers persistent Objective-C event callbacks with explicit token clean
   );
 }, 10_000);
 
+test("copies borrowed Z byte storage into ARC-managed NSData", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/interop/objc/data-copy.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.match(artifact.source, /static NSData \*z_nsdata_copy_bytes\(Z_Slice_[A-Za-z0-9_]+ bytes\)/);
+  assert.match(artifact.source, /\[\[NSData alloc\] initWithBytes:source length:\(NSUInteger\)bytes\.length\]/);
+  assert.match(artifact.source, /NSData \* const data = z_nsdata_copy_bytes\(bytes\)/);
+  assert.match(artifact.source, /copiedLength\(\(Z_Slice_[A-Za-z0-9_]+\)\{ \.data = \(bytes\)\.data, \.length = \(bytes\)\.length \}\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const copyOffset = source.indexOf("NSData.copy") + "NSData.".length + 1;
+  const copyHover = hover(source, example, copyOffset)?.contents.value ?? "";
+  assert.match(copyHover, /copy\(bytes: Slice<u8>\): Foundation\.NSData/);
+  assert.match(copyHover, /Copies the borrowed byte range/);
+
+  const incomplete = source.replace("NSData.copy", "NSData.co");
+  const completionOffset = incomplete.indexOf("NSData.co") + "NSData.co".length;
+  const completion = completions(incomplete, example, completionOffset)
+    .find((item) => item.label === "copy");
+  assert.match(completion?.detail ?? "", /copies borrowed bytes into ARC-managed NSData/);
+
+  const wrongElement = `
+    import Foundation from "Foundation/Foundation.h";
+    function main(): i32 {
+      const values = Array<i32>(1, 2);
+      const data = Foundation.NSData.copy(values);
+      return data.length == 2 ? 0 : 1;
+    }
+  `;
+  assert.match(diagnostics(wrongElement, example)[0]?.message ?? "", /expects Slice<u8>-compatible storage/);
+
+  const temporary = source.replace("Foundation.NSData.copy(bytes)", "Foundation.NSData.copy(Array<u8>(1, 2))");
+  assert.match(diagnostics(temporary, example)[0]?.message ?? "", /requires stored byte-array storage/);
+});
+
 hostToolchainTest("copies owned Z strings across NSString boundaries without losing embedded nulls", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "tests/fixtures/objc-strings.zs");

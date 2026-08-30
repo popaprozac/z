@@ -4437,9 +4437,16 @@ the native block and participates in the normal function-value retain/release
 path, so a callback can invoke it synchronously or deliberately preserve it
 without dangling. A native runtime fixture returns from the Objective-C
 callback before invoking the Z-stored function, proving the owned escape rather
-than only compiling the bridge. Owned byte projection into `NSData`, embedded
-assets, and explicit autorelease pool scopes remain the next migration
-blockers.
+than only compiling the bridge.
+
+The copying byte-data boundary is closed as well.
+`Foundation.NSData.copy(bytes)` accepts `Slice<u8>`-compatible stored bytes,
+projects an Array without allocating a second temporary buffer, and invokes
+`initWithBytes:length:` exactly once. The resulting ARC object owns an
+independent native copy while Z retains and later destroys its original
+storage. A no-copy consuming transfer remains deliberately separate because it
+must prove the native deallocator. Embedded assets and explicit autorelease
+pool scopes remain the next migration blockers.
 
 ## Not tested yet
 

@@ -148,6 +148,17 @@ function decide(
 `in` expresses the callback-time borrow. If the function value is copied into
 owned Z storage, its ARC bridge retains the native block safely.
 
+Z byte storage can become independently owned Foundation data explicitly:
+
+```z
+const bytes = Array<u8>(90, 32, 68, 97, 116, 97);
+const data = Foundation.NSData.copy(bytes);
+```
+
+`copy` accepts `Slice<u8>`-compatible storage, evaluates it once, and performs
+one native byte copy into ARC-managed `NSData`. The source remains owned by Z;
+no source lifetime escapes into Foundation.
+
 ```z
 const controller = new TableController({});
 const binding = objc.bind(tableView, {

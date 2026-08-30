@@ -1343,6 +1343,16 @@ export function hover(source: string, fileName: string, offset: number): Hover |
 
   const chainedCall = objectiveCCallAt(context, word.start);
   if (chainedCall) {
+    if (chainedCall.bridge === "dataCopy") {
+      const declaration = [...context.semanticInfo.foreignInterfaces.values()]
+        .find((candidate) => candidate.className === "NSData");
+      return objCDataCopyHover(
+        declaration?.typeName ?? "Foundation.NSData",
+        source,
+        word.start,
+        word.end,
+      );
+    }
     const declaration = [...context.semanticInfo.foreignInterfaces.values()]
       .find((candidate) => candidate.className === chainedCall.className);
     const protocol = [...context.semanticInfo.foreignProtocols.values()]
@@ -1519,6 +1529,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       if (item) return markdownHover(item, source, word.start, word.end);
     }
     if (resolved?.kind === "objc") {
+      if (!resolved.instance && resolved.declaration.className === "NSData" && word.text === "copy") {
+        return objCDataCopyHover(resolved.declaration.typeName, source, word.start, word.end);
+      }
       const mainIsolated = foreignObjCRequiresMain(resolved.declaration, context);
       const property = collectObjCProperties(resolved.declaration, resolved.instance, context).find((item) => item.name === word.text);
       if (property) {
@@ -6177,6 +6190,15 @@ function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, c
     kind: completionKinds.property,
     detail: objcPropertyDetail(property, mainIsolated),
   }));
+  if (!instance && declaration.className === "NSData") {
+    items.push({
+      label: "copy",
+      kind: completionKinds.method,
+      detail: `copy(bytes: Slice<u8>): ${declaration.typeName}  // copies borrowed bytes into ARC-managed NSData`,
+      insertText: "copy(${1:bytes})",
+      insertTextFormat: 2,
+    });
+  }
   for (const method of collectObjCMethods(declaration, instance, context)) {
     if (accessors.has(method.selector)) continue;
     items.push({
@@ -6188,6 +6210,21 @@ function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, c
     });
   }
   return uniqueCompletions(items);
+}
+
+function objCDataCopyHover(
+  typeName: string,
+  source: string,
+  start: number,
+  end: number,
+): Hover {
+  return structuredMarkdownHover(
+    `copy(bytes: Slice<u8>): ${typeName}`,
+    ["Copies the borrowed byte range into independently owned ARC-managed `NSData`; the source storage is not retained."],
+    source,
+    start,
+    end,
+  );
 }
 
 function structCompletions(

@@ -121,6 +121,7 @@ export type ObjCCallInfo = {
   readonly selector: string;
   readonly instance: boolean;
   readonly className: string;
+  readonly bridge: "dataCopy" | null;
   readonly async: {
     readonly callbackParameter: number;
     readonly resultType: string;
@@ -12491,6 +12492,52 @@ function inferExpressionInner(
           ?? objcProtocolReceiver(receiverValueType, state);
         rejectNullableObjCReceiver(receiverType, expression.callee.object.location, fileName, state);
         if (objcReceiverType) {
+          if (
+            !objcReceiverType.instance
+            && objcReceiverType.declaration.className === "NSData"
+            && expression.callee.property === "copy"
+          ) {
+            rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+            if (expression.arguments.length !== 1) {
+              throw new DiagnosticError(
+                fileName,
+                expression.location,
+                `NSData.copy expects 1 argument, received ${expression.arguments.length}`,
+              );
+            }
+            const bytes = expression.arguments[0];
+            const actual = String(inferExpression(bytes, locals, globals, structs, enums, fileName, state));
+            const fixed = parseFixedArrayType(actual);
+            const dynamic = parseDynamicArrayType(actual);
+            const slice = parseSliceType(actual);
+            if ((fixed ?? dynamic)?.elementType === "u8") {
+              if (!isNamedStorageExpression(bytes)) {
+                throw new DiagnosticError(fileName, bytes.location, "NSData.copy requires stored byte-array storage", {
+                  code: "Z0801",
+                  notes: ["the native copy borrows the array only for the duration of the initializer"],
+                  helps: ["bind the Array<u8> or fixed u8 array before copying it"],
+                });
+              }
+              state.sliceConversions.set(bytes.location.offset, {
+                sourceType: actual,
+                targetType: sliceTypeName("u8"),
+              });
+            } else if (slice?.elementType !== "u8") {
+              throw new DiagnosticError(fileName, bytes.location, `NSData.copy expects Slice<u8>-compatible storage, found ${displayAssignableType(actual, state)}`, {
+                code: "Z0801",
+                helps: ["pass a stored Array<u8>, fixed u8 array, or Slice<u8>"],
+              });
+            }
+            state.objcCalls.set(expression.location.offset, {
+              selector: "copy",
+              instance: false,
+              className: "NSData",
+              bridge: "dataCopy",
+              async: null,
+            });
+            state.foreignCallTypes.set(expression.location.offset, objcReceiverType.declaration.typeName);
+            return objcReceiverType.declaration.typeName;
+          }
           const selection = findObjCMethod(
             objcReceiverType,
             expression.callee.property,
@@ -12575,6 +12622,7 @@ function inferExpressionInner(
             selector: method.selector,
             instance: method.instance,
             className: objcReceiverType.declaration.className,
+            bridge: null,
             async: asyncProjection,
           });
           if (selection.projected) {

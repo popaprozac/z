@@ -7272,6 +7272,9 @@ function emitFrameExpressionInner(
         if (expression.arguments.some((argument) => plan.types.semanticInfo.objcBlockArguments.has(argument.location.offset))) {
           unsupported(fileName, expression.location, "an Objective-C block call requires statement-position async lowering");
         }
+        if (objcCall.bridge === "dataCopy") {
+          return `z_nsdata_copy_bytes(${emitSyncCallArguments(expression, plan, fileName)[0]})`;
+        }
         const receiver = objcCall.instance
           ? emitFrameExpression(expression.callee.object, plan, fileName)
           : objcCall.className;

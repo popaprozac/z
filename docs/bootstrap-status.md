@@ -234,7 +234,9 @@ The Stage 0 Objective-C slice also preserves protocol-qualified callback
 receivers as non-escaping borrowed values and presents received native blocks
 as typed `in` callables. Copying one of those callables into owned Z storage
 retains its ARC block bridge, so it remains valid after the native callback
-returns.
+returns. `Foundation.NSData.copy(bytes)` accepts stored `Slice<u8>`-compatible
+storage and performs one explicit copy into an independently ARC-owned native
+object; a no-copy consuming transfer remains staged.
 
 Current interop gaps that block a richer desktop application include
 broader Objective-C block shapes, inherited/generic protocol edge cases,

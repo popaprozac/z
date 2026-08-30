@@ -2672,6 +2672,14 @@ outlive the callback; code that only invokes it synchronously creates no Z
 closure environment. Native cardinality and executor facts remain contract
 metadata rather than being guessed from a block typedef.
 
+Foundation byte data has one explicit safe copying bridge:
+`Foundation.NSData.copy(bytes)`. Its source contract is `Slice<u8>`, so stored
+fixed byte arrays and `Array<u8>` values use the ordinary non-escaping Slice
+projection. Lowering evaluates the source once and calls
+`initWithBytes:length:`; `NSData` owns an independent ARC-managed copy and
+never retains the Z storage. A future no-copy form must separately consume
+owned storage and prove its matching native deallocator.
+
 Weak protocol properties require an explicit lifetime token. The first bridge
 is `objc.bind(object, { dataSource: controller, delegate: controller })`. Field
 names must resolve to imported writable non-owning protocol properties and each

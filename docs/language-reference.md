@@ -3581,6 +3581,19 @@ The adapter preserves the native block under ARC. Synchronous invocation uses
 the borrowed callable directly; an ordinary managed function-value copy may
 retain it beyond the callback.
 
+Imported Foundation `NSData` exposes an explicit Z safety bridge for byte
+storage:
+
+```zs
+const bytes = Array<u8>(1, 2, 3, 4);
+const data = Foundation.NSData.copy(bytes);
+```
+
+`copy(bytes: Slice<u8>): Foundation.NSData` accepts a stored `Array<u8>`, fixed
+byte array, or existing Slice. It allocates one ARC-managed `NSData` and copies
+the exact byte range once. It does not retain or consume the source. Hover and
+completion expose that cost. No no-copy ownership transfer is inferred.
+
 An owned opaque C handle with a complete `.zd` release contract is nameable
 through its import namespace:
 

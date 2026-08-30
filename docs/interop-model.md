@@ -910,6 +910,20 @@ owned storage, its existing function-value retain/release path keeps that box
 and the copied native block alive; otherwise both are released when the native
 callback returns.
 
+Byte storage crosses into Foundation with explicit copy semantics:
+
+```zs
+const bytes = Array<u8>(90, 32, 68, 97, 116, 97);
+const data = Foundation.NSData.copy(bytes);
+```
+
+The parameter is `Slice<u8>`-compatible and call-scoped. The generated bridge
+passes the existing pointer and exact length to `initWithBytes:length:` once;
+Foundation performs the only byte copy and owns the resulting `NSData` under
+ARC. The source remains independently owned by Z. A zero-copy transfer is not
+an overload of this operation: it requires a later `take(move bytes)` contract
+with an exact native cleanup handoff.
+
 Protocol properties such as `NSTableView.dataSource` and `.delegate` are
 zeroing `weak`. `objc.bind(object, { property: controller })` installs generated
 adapters and returns an owned `objc.Binding` token that keeps the native object,
