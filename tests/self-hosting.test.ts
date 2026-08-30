@@ -7595,6 +7595,36 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   assert.equal(checking.status, 0, checking.stderr);
   assert.match(checking.stdout, /checked 1 Z modules/);
 
+  if (process.platform === "darwin") {
+    const protocolAdapter = resolve(
+      projectRoot,
+      "examples/interop/objc/protocol-adapter.zs",
+    );
+    const protocolChecking = spawnSync(
+      executable,
+      ["check", protocolAdapter],
+      { encoding: "utf8" },
+    );
+    assert.equal(protocolChecking.status, 0, protocolChecking.stderr);
+    const protocolOutput = resolve(directory, "protocol-adapter.m");
+    const protocolEmission = spawnSync(
+      executable,
+      ["emit", protocolAdapter, protocolOutput],
+      { encoding: "utf8" },
+    );
+    assert.equal(protocolEmission.status, 0, protocolEmission.stderr);
+    const protocolSource = readFileSync(protocolOutput, "utf8");
+    assert.match(protocolSource, /__strong id<WKURLSchemeHandler> adapter;/);
+    assert.match(
+      protocolSource,
+      /id<WKURLSchemeTask> task/,
+    );
+    assert.match(
+      protocolSource,
+      /z_stage1_objc_adapt_[0-9_]+\(handler\)/,
+    );
+  }
+
   const contextualOptionChecking = spawnSync(
     executable,
     ["check", resolve(projectRoot, "tests/fixtures/self-host-emit-option.zs")],

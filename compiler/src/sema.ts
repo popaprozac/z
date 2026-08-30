@@ -393,6 +393,12 @@ export type ObjCRegistrationPlan = {
   readonly removeArgumentSources: readonly number[];
 };
 
+export type ObjCAdapterPlan = {
+  readonly ownerType: string;
+  readonly ownerExpression: Expression;
+  readonly protocolType: string;
+};
+
 export type ThreadTransferKind = "copy" | "move" | "share" | "executorBound";
 
 export type ForeignUnionMatchPlan = {
@@ -465,6 +471,7 @@ export type SemanticInfo = {
   readonly objcProtocolConformances: ReadonlyMap<string, ObjCProtocolConformance>;
   readonly objcBindingCalls: ReadonlyMap<number, ObjCBindingPlan>;
   readonly objcRegistrationCalls: ReadonlyMap<number, ObjCRegistrationPlan>;
+  readonly objcAdapterCalls: ReadonlyMap<number, ObjCAdapterPlan>;
   readonly objcClassNames: ReadonlyMap<number, string>;
   readonly objcInstanceOf: ReadonlyMap<number, {
     readonly className: string;
@@ -634,6 +641,7 @@ type AnalysisState = {
   readonly objcProtocolConformances: Map<string, ObjCProtocolConformance>;
   readonly objcBindingCalls: Map<number, ObjCBindingPlan>;
   readonly objcRegistrationCalls: Map<number, ObjCRegistrationPlan>;
+  readonly objcAdapterCalls: Map<number, ObjCAdapterPlan>;
   readonly objcClassNames: Map<number, string>;
   readonly objcInstanceOf: Map<number, {
     readonly className: string;
@@ -944,6 +952,94 @@ function collectRawNativeLanguages(program: Program): ReadonlySet<"c" | "cpp" | 
   return languages;
 }
 
+function registerObjCAdapterType(
+  typeName: string,
+  location: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+): string | null {
+  const generic = parseGenericType(typeName);
+  if (!generic) return null;
+  const separator = generic.base.lastIndexOf(".");
+  if (separator < 0) return null;
+  const namespace = generic.base.slice(0, separator);
+  const member = generic.base.slice(separator + 1);
+  if (member !== "Adapter" || state.standardModuleBindings.get(namespace) !== "objc") return null;
+  if (generic.arguments.length !== 1) {
+    throw new DiagnosticError(fileName, location, "objc.Adapter expects exactly one Objective-C protocol type", {
+      code: "Z0810",
+      helps: [`use \`${namespace}.Adapter<Native.Protocol>\``],
+    });
+  }
+  const protocolType = parseObjCProtocolType(generic.arguments[0])?.protocol ?? generic.arguments[0];
+  const protocol = state.foreignProtocols.get(protocolType);
+  if (!protocol) {
+    throw new DiagnosticError(fileName, location, `objc.Adapter requires an imported Objective-C protocol, found ${JSON.stringify(protocolType)}`, {
+      code: "Z0810",
+    });
+  }
+  const namedTypes = state.foreignNamedTypes as Map<string, ForeignNamedType>;
+  const objectTypes = state.foreignObjectTypes as Map<string, ForeignObjectType>;
+  if (!namedTypes.has(typeName)) {
+    namedTypes.set(typeName, {
+      kind: "object",
+      exportName: "Adapter",
+      namespacePath: [namespace],
+      qualifiedName: typeName,
+      typeName,
+      cName: `id<${protocol.protocolName}>`,
+      className: "NSObject",
+      metadata: { ...protocol.metadata, executorAffinity: "main" },
+    });
+    objectTypes.set(typeName, {
+      kind: "object",
+      typeName,
+      cName: `id<${protocol.protocolName}>`,
+      className: null,
+      nullable: false,
+    });
+    (state.typeDisplayNames as Map<string, string>).set(typeName, `${namespace}.Adapter<${protocolType}>`);
+  }
+  return typeName;
+}
+
+function objCAdapterProtocolType(typeName: string, state: AnalysisState): string | null {
+  const generic = parseGenericType(typeName);
+  if (!generic || generic.arguments.length !== 1) return null;
+  const separator = generic.base.lastIndexOf(".");
+  if (separator < 0) return null;
+  const namespace = generic.base.slice(0, separator);
+  return generic.base.slice(separator + 1) === "Adapter"
+    && state.standardModuleBindings.get(namespace) === "objc"
+    ? parseObjCProtocolType(generic.arguments[0])?.protocol ?? generic.arguments[0]
+    : null;
+}
+
+function registerObjCAdapterTypesInProgram(
+  program: Program,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record.name === "string"
+      && record.location
+      && typeof record.location === "object"
+      && parseGenericType(record.name)?.base.endsWith(".Adapter")
+    ) {
+      registerObjCAdapterType(record.name, record.location as SourceLocation, fileName, state);
+    }
+    for (const nested of Object.values(record)) visit(nested);
+  };
+  visit(program);
+}
+
 export function analyze(
   program: Program,
   fileName: string,
@@ -1174,6 +1270,7 @@ export function analyze(
     objcProtocolConformances: new Map(),
     objcBindingCalls: new Map(),
     objcRegistrationCalls: new Map(),
+    objcAdapterCalls: new Map(),
     objcClassNames: new Map(),
     objcInstanceOf: new Map(),
     objcProperties: new Map(),
@@ -1594,6 +1691,8 @@ export function analyze(
       );
     }
   }
+
+  registerObjCAdapterTypesInProgram(program, fileName, state);
 
   for (const declaration of program.structs) {
     declareGlobal(globals, declaration.name, { kind: "struct", declaration }, declaration.location, fileName);
@@ -10850,6 +10949,64 @@ function inferExpressionInner(
           const owner = globals.get(localModuleName);
           if (owner?.kind === "standardModule") {
             if (owner.module === "objc") {
+              const adapterCall = parseGenericType(expression.callee.property);
+              if (adapterCall?.base === "adapt") {
+                rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+                if (adapterCall.arguments.length !== 1 || expression.arguments.length !== 1) {
+                  throw new DiagnosticError(fileName, expression.location, "objc.adapt expects one Objective-C protocol type and one stored Z class", {
+                    code: "Z0810",
+                    helps: [`use \`${localModuleName}.adapt<Native.Protocol>(controller)\``],
+                  });
+                }
+                const protocolType = parseObjCProtocolType(adapterCall.arguments[0])?.protocol ?? adapterCall.arguments[0];
+                const protocol = state.foreignProtocols.get(protocolType);
+                if (!protocol) {
+                  throw new DiagnosticError(fileName, expression.callee.location, `objc.adapt requires an imported Objective-C protocol, found ${JSON.stringify(protocolType)}`, {
+                    code: "Z0810",
+                  });
+                }
+                const ownerExpression = expression.arguments[0];
+                if (ownerExpression.kind !== "identifier") {
+                  throw new DiagnosticError(fileName, ownerExpression.location, "objc.adapt protocol owners must be stored Z class bindings", {
+                    code: "Z0810",
+                    notes: ["the returned adapter retains the controller for the adapter lifetime"],
+                    helps: ["bind the class instance to const or let before calling objc.adapt"],
+                  });
+                }
+                const ownerValueType = inferExpression(ownerExpression, locals, globals, structs, enums, fileName, state);
+                const ownerType = String(underlyingType(ownerValueType));
+                const ownerClass = structs.get(ownerType);
+                const conformance = ownerClass?.kind === "class"
+                  ? state.objcProtocolConformances.get(ownerClass.name)
+                  : null;
+                if (!ownerClass || ownerClass.kind !== "class" || !conformance) {
+                  throw new DiagnosticError(fileName, ownerExpression.location, `objc.adapt requires a Z class implementing ${protocol.protocolName}`, {
+                    code: "Z0810",
+                  });
+                }
+                if (!conformance.protocols.some((candidate) => candidate.typeName === protocol.typeName)) {
+                  throw new DiagnosticError(fileName, ownerExpression.location, `${ownerClass.name} does not implement Objective-C protocol ${protocol.protocolName}`, {
+                    code: "Z0810",
+                    helps: [`add \`${protocol.typeName}\` to the class implements list`],
+                  });
+                }
+                requireMainExecutorContext(
+                  true,
+                  expression.location,
+                  `objc.adapt<${protocolType}>`,
+                  fileName,
+                  state,
+                );
+                const resultType = genericTypeName(`${localModuleName}.Adapter`, [adapterCall.arguments[0]]);
+                registerObjCAdapterType(resultType, expression.location, fileName, state);
+                state.objcAdapterCalls.set(expression.location.offset, {
+                  ownerType,
+                  ownerExpression,
+                  protocolType,
+                });
+                state.expressionTypes.set(expression.location.offset, resultType);
+                return resultType;
+              }
               if (expression.callee.property === "pool") {
                 rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
                 if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "closure") {
@@ -11032,7 +11189,7 @@ function inferExpressionInner(
               }
               if (expression.callee.property !== "connect") {
                 throw new DiagnosticError(fileName, expression.callee.location, `objc has no method ${JSON.stringify(expression.callee.property)}`, {
-                  helps: [`use ${localModuleName}.pool(() => operation()), ${localModuleName}.connect(control, move () => operation()), ${localModuleName}.bind(object, { delegate: controller }), or ${localModuleName}.register({ add: ..., remove: ... })`],
+                  helps: [`use ${localModuleName}.pool(() => operation()), ${localModuleName}.connect(control, move () => operation()), ${localModuleName}.bind(object, { delegate: controller }), ${localModuleName}.register({ add: ..., remove: ... }), or ${localModuleName}.adapt<Protocol>(controller)`],
                 });
               }
               rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -19678,6 +19835,11 @@ function requireAssignable(
   if (actual === "null" && isNullableForeignTypeName(String(underlyingType(expected)))) {
     return;
   }
+  const expectedProtocol = parseObjCProtocolType(String(underlyingType(expected)))?.protocol ?? null;
+  const actualAdapterProtocol = actual === "unknown" || actual === "never"
+    ? null
+    : objCAdapterProtocolType(String(underlyingType(actual)), state);
+  if (expectedProtocol && actualAdapterProtocol === expectedProtocol) return;
   const expectedObject = state.foreignObjectTypes.get(String(underlyingType(expected)));
   const actualObject = actual === "unknown" || actual === "never"
     ? null

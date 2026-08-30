@@ -181,6 +181,30 @@ const binding = objc.bind(tableView, {
 });
 ```
 
+Some APIs retain or store an `id<Protocol>` argument directly rather than
+exposing a weak property. Use `objc.adapt` to create an owned protocol carrier:
+
+```z
+const handler = new SchemeHandler({});
+const adapter = objc.adapt<WebKit.WKURLSchemeHandler>(handler);
+
+configuration.setURLSchemeHandler(
+  adapter,
+  forURLScheme: "zapp"
+);
+```
+
+The handler must be a stored Z class implementing the exact imported protocol.
+The result is `objc.Adapter<WebKit.WKURLSchemeHandler>`, which can be stored in
+an ARC class field. Its native representation is exactly
+`id<WKURLSchemeHandler>`: one generated `NSObject` adapter retains the Z
+controller, and normal ARC retains that adapter. Passing an adapter for a
+different protocol is a compile error.
+
+This first tier is conservatively `thread.main`-bound. It is distinct from
+`objc.bind`, which owns adapters installed in zeroing weak properties, and from
+`objc.register`, which owns a checked add/remove lifetime.
+
 For retained protocol registrations that use separate add/remove methods,
 `objc.register` makes teardown deterministic:
 
@@ -209,6 +233,7 @@ policy when Z is intended to remain the sole owner; AppKit windows use
 | Lexically bounded temporary Objective-C work | `objc.pool` |
 | Weak target plus selector | `objc.connect` |
 | Protocol adapter stored by weak properties | `objc.bind` |
+| Retained or stored `id<Protocol>` argument | `objc.adapt<P>` |
 | Retained handler with paired add/remove calls | `objc.register` |
 
 `std/objc` models runtime conventions missing from ordinary declarations. It is
@@ -229,7 +254,7 @@ rejects borrowed/view results or async closure bodies.
 Ordinary calls lower to direct Objective-C message sends under ARC. Runtime
 class narrowing adds one class-test message. `objc.pool` adds only the native
 pool push/pop implied by `@autoreleasepool`; it allocates no Z wrapper.
-`objc.connect`, `bind`, and `register` allocate or retain the explicit
+`objc.connect`, `bind`, `adapt`, and `register` allocate or retain the explicit
 adapter/lifetime state required to make the native convention safe.
 :::
 

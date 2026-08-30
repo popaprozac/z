@@ -70,6 +70,13 @@ construct and own its window, WebView, configuration, content controller,
 protocol adapter, and teardown guard in a main-executor Z object while a
 foreign run-loop host keeps only weak access to the UI identities.
 
+Protocol storage conventions stay explicit. `objc.bind` owns adapters placed
+in zeroing weak properties, `objc.register` owns paired add/remove lifetimes,
+and `objc.adapt<P>` produces a storable ARC value with direct `id<P>` native
+representation for methods that retain or store a protocol argument. The
+compiler checks the exact imported protocol rather than treating every adapter
+as an untyped Objective-C object.
+
 Clang-proven C-record aliases compose as one native type within a header
 contract while retaining their familiar source names. A frame returned as
 AppKit `NSRect`, for example, can be passed directly where WebKit expects

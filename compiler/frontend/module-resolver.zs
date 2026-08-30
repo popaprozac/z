@@ -214,6 +214,7 @@ import {
   ModuleForeignUnionMatchVariant,
   ModuleGraph,
   ModuleObjCProtocolMethodResolution,
+  ModuleObjCAdapterResolution,
   ModuleObjCRegistrationResolution,
   ModuleResolveError,
   ModuleResolveErrorKind,
@@ -2783,6 +2784,23 @@ function objcRegistrationError(
   );
 }
 
+function objcAdapterError(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in message: String
+): ModuleResolveError {
+  return codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    "Z0817",
+    module.path,
+    message,
+    tree.nodes[index].line,
+    tree.nodes[index].column,
+    1
+  );
+}
+
 function objcRegistrationCall(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -3022,6 +3040,53 @@ function recordResolvedObjCCallFacts(
     method.objectiveCParameterNativeTypes,
     inout evidence
   );
+}
+
+function requireResolvedObjCAdapterProtocols(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  in argumentNodes: Array<usize>,
+  in method: NativeMethodCallShape,
+  in evidence: ModuleSemanticEvidence
+): void throws ModuleResolveError {
+  for (const protocol of method.objectiveCParameterProtocols) {
+    if (protocol.parameterIndex >= argumentNodes.length) continue;
+    const argumentNode = argumentNodes[protocol.parameterIndex];
+    const found = evidence.expressionResolutionIndices.get(
+      tree.nodes[argumentNode].offset
+    );
+    let resolutionIndex = evidence.expressionResolutions.length;
+    match (in found) {
+      some(index) => resolutionIndex = index;
+      none => {}
+    }
+    if (resolutionIndex >= evidence.expressionResolutions.length) continue;
+    const actualType = view evidence.expressionResolutions[
+      resolutionIndex
+    ].typeName;
+    match (genericTypeShape(actualType)) {
+      some(generic) => {
+        if (
+          qualifiedTypeMember(generic.base) != "Adapter"
+          || generic.arguments.length != 1
+        ) continue;
+        if (!equivalentTypes(
+          modules,
+          moduleIndex,
+          protocol.protocolName,
+          generic.arguments[0]
+        )) throw objcAdapterError(
+          module,
+          tree,
+          argumentNode,
+          `Objective-C method ${method.ownerName}.${method.name} requires ${protocol.protocolName}, found ${actualType}`
+        );
+      }
+      none => {}
+    }
+  }
 }
 
 function inferObjCRegistration(
@@ -3321,12 +3386,15 @@ function inferObjCRegistration(
             }
             none => {}
           }
-          if (targetName.byteLength == 0) throw objcRegistrationError(
-            module,
-            tree,
-            handlerNode,
-            `${handlerType} does not provide Objective-C protocol method ${requirement.name}`
-          );
+          if (targetName.byteLength == 0) {
+            if (requirement.objectiveCRequired) throw objcRegistrationError(
+              module,
+              tree,
+              handlerNode,
+              `${handlerType} does not provide Objective-C protocol method ${requirement.name}`
+            );
+            continue;
+          }
           let nativeParameterTypes = Array<String>();
           for (const nativeType of requirement.objectiveCParameterNativeTypes) {
             nativeParameterTypes.push(nativeType.copyBytes(
@@ -3400,6 +3468,251 @@ function inferObjCRegistration(
     removeArgumentSources,
   }));
   return `${namespaceName}.Registration`;
+}
+
+function inferObjCAdapter(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  callIndex: usize,
+  calleeIndex: usize,
+  in namespaceName: String,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): String throws ModuleResolveError {
+  const explicit = match (explicitCallTypeArguments(tree, calleeIndex)) {
+    some(arguments) => arguments;
+    none => throw objcAdapterError(
+      module,
+      tree,
+      calleeIndex,
+      "objc.adapt requires one explicit Objective-C protocol type"
+    );
+  };
+  if (explicit.arguments.length != 1) throw objcAdapterError(
+    module,
+    tree,
+    calleeIndex,
+    `objc.adapt expects one protocol type argument, received ${explicit.arguments.length}`
+  );
+  const arguments = callArgumentNodes(tree.nodes[callIndex].children);
+  if (arguments.length != 1) throw objcAdapterError(
+    module,
+    tree,
+    callIndex,
+    `objc.adapt expects one stored Z class controller, received ${arguments.length}`
+  );
+  const ownerNode = arguments[0];
+  if (tree.nodes[ownerNode].kind != ExpressionKind.identifierExpression) {
+    throw objcAdapterError(
+      module,
+      tree,
+      ownerNode,
+      "objc.adapt requires a stored Z class binding so the adapter can retain its controller"
+    );
+  }
+  const ownerName = identifierLookupName(tree.nodes[ownerNode].value);
+  try requireInitializedBinding(
+    module,
+    tree,
+    ownerNode,
+    bindings,
+    ownerName
+  );
+  const ownerType = try inferExpressionNodeType(
+    module,
+    modules,
+    moduleIndex,
+    arena,
+    tree,
+    ownerNode,
+    inout bindings,
+    inout evidence
+  );
+  try requireSettledExpressionType(module, tree, ownerNode, ownerType);
+  recordExpressionResolution(
+    modules,
+    moduleIndex,
+    tree,
+    ownerNode,
+    ownerType,
+    inout evidence
+  );
+  const ownerLocation = match (typeSymbolLocation(
+    modules,
+    moduleIndex,
+    ownerType
+  )) {
+    some(location) => location;
+    none => throw objcAdapterError(
+      module,
+      tree,
+      ownerNode,
+      "objc.adapt controller must have a known Z class type"
+    );
+  };
+  if (
+    modules[ownerLocation.moduleIndex].symbols[ownerLocation.symbolIndex].kind
+      != ModuleSymbolKind.classSymbol
+  ) throw objcAdapterError(
+    module,
+    tree,
+    ownerNode,
+    "objc.adapt controller must be a Z class"
+  );
+
+  const protocolType = explicit.arguments[0].copyBytes(
+    0,
+    explicit.arguments[0].byteLength
+  );
+  const protocolLocation = match (typeSymbolLocation(
+    modules,
+    moduleIndex,
+    protocolType
+  )) {
+    some(location) => location;
+    none => throw objcAdapterError(
+      module,
+      tree,
+      calleeIndex,
+      `objc.adapt cannot resolve Objective-C protocol ${protocolType}`
+    );
+  };
+  const protocolSymbol = view modules[protocolLocation.moduleIndex].symbols[
+    protocolLocation.symbolIndex
+  ];
+  if (!typeSatisfiesTrait(
+    modules,
+    moduleIndex,
+    ownerType,
+    protocolType
+  )) throw objcAdapterError(
+    module,
+    tree,
+    ownerNode,
+    `${ownerType} does not implement Objective-C protocol ${protocolType}`
+  );
+
+  const requiredAffinity = "thread.main";
+  let protocolNativeName = protocolSymbol.importedName.copyBytes(
+    0,
+    protocolSymbol.importedName.byteLength
+  );
+  let protocolMetadataPresent = false;
+  let protocolMetadataValid = false;
+  let protocolMethods = Array<ModuleObjCProtocolMethodResolution>();
+  match (in protocolSymbol.typeSignature) {
+    some(protocolSignature) => {
+      protocolMetadataPresent = true;
+      protocolMetadataValid = protocolSignature.foreignKind == "objcProtocol";
+      if (protocolSignature.foreignNativeName.byteLength > 0) {
+        protocolNativeName = protocolSignature.foreignNativeName.copyBytes(
+          0,
+          protocolSignature.foreignNativeName.byteLength
+        );
+      }
+      for (const requirement of protocolSignature.methods) {
+        if (
+          requirement.staticMethod
+          || requirement.objectiveCSelector.byteLength == 0
+        ) continue;
+        let targetName = "";
+        match (in modules[ownerLocation.moduleIndex].symbols[
+          ownerLocation.symbolIndex
+        ].typeSignature) {
+          some(ownerSignature) => {
+            for (const method of ownerSignature.methods) {
+              if (
+                !method.staticMethod
+                && (
+                  method.objectiveCImplementationSelector
+                    == requirement.objectiveCSelector
+                  || (
+                    method.objectiveCImplementationSelector.byteLength == 0
+                    && method.name == requirement.name
+                  )
+                )
+              ) targetName = method.name.copyBytes(0, method.name.byteLength);
+            }
+          }
+          none => {}
+        }
+        if (targetName.byteLength == 0) {
+          if (requirement.objectiveCRequired) throw objcAdapterError(
+            module,
+            tree,
+            ownerNode,
+            `${ownerType} does not provide Objective-C protocol method ${requirement.name}`
+          );
+          continue;
+        }
+        let nativeParameterTypes = Array<String>();
+        for (const nativeType of requirement.objectiveCParameterNativeTypes) {
+          nativeParameterTypes.push(nativeType.copyBytes(
+            0,
+            nativeType.byteLength
+          ));
+        }
+        protocolMethods.push(ModuleObjCProtocolMethodResolution({
+          protocolNativeName: protocolNativeName.copyBytes(
+            0,
+            protocolNativeName.byteLength
+          ),
+          targetName,
+          selector: requirement.objectiveCSelector.copyBytes(
+            0,
+            requirement.objectiveCSelector.byteLength
+          ),
+          nativeReturnType: requirement.objectiveCNativeReturnType.copyBytes(
+            0,
+            requirement.objectiveCNativeReturnType.byteLength
+          ),
+          nativeParameterTypes,
+        }));
+      }
+    }
+    none => {}
+  }
+  if (!protocolMetadataPresent) throw objcAdapterError(
+    module,
+    tree,
+    calleeIndex,
+    `objc.adapt lost Objective-C protocol metadata for ${protocolType}`
+  );
+  if (!protocolMetadataValid) throw objcAdapterError(
+    module,
+    tree,
+    calleeIndex,
+    `objc.adapt requires an imported Objective-C protocol, found ${protocolType}`
+  );
+  try requireMainExecutorContext(
+    module,
+    tree,
+    callIndex,
+    bindings,
+    requiredAffinity,
+    `Objective-C protocol adapter for ${protocolType}`
+  );
+  let protocolNativeNames = Array<String>();
+  protocolNativeNames.push(protocolNativeName.copyBytes(
+    0,
+    protocolNativeName.byteLength
+  ));
+  evidence.objectiveCAdapters.push(ModuleObjCAdapterResolution({
+    moduleIndex,
+    offset: tree.nodes[callIndex].offset,
+    line: tree.nodes[callIndex].line,
+    column: tree.nodes[callIndex].column,
+    ownerType: ownerType.copyBytes(0, ownerType.byteLength),
+    ownerModuleIndex: ownerLocation.moduleIndex,
+    ownerSymbolIndex: ownerLocation.symbolIndex,
+    protocolType: protocolType.copyBytes(0, protocolType.byteLength),
+    protocolNativeNames,
+    protocolMethods,
+  }));
+  return `${namespaceName}.Adapter<${protocolType}>`;
 }
 
 function hasNativeObjCRegistrationMetadata(
@@ -8108,6 +8421,25 @@ function inferExpressionNodeType(
           return "";
         }
         if (
+          memberName == "adapt"
+          && importedStandardNamespace(
+            module,
+            namespaceName,
+            "std/objc"
+          )
+        ) return try inferObjCAdapter(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          index,
+          calleeIndex,
+          namespaceName,
+          inout bindings,
+          inout evidence
+        );
+        if (
           memberName == "register"
           && importedStandardNamespace(
             module,
@@ -9599,6 +9931,15 @@ function inferExpressionNodeType(
               method.ownerSymbolIndex,
               callKind,
               inout evidence
+            );
+            try requireResolvedObjCAdapterProtocols(
+              module,
+              modules,
+              moduleIndex,
+              tree,
+              argumentNodes,
+              method,
+              evidence
             );
             if (method.objectiveCSelector.byteLength > 0) {
               recordResolvedObjCCallFacts(

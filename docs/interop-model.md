@@ -245,6 +245,7 @@ boundary**, not a claim that every bridge operation is free:
 | `objc.pool` lexical temporary scope | Native autorelease-pool push/pop only; no Z wrapper or heap allocation |
 | Z-defined Objective-C protocol conformance | One ARC adapter allocation per distinct bound Z controller; selector dispatch forwards directly to generated Z method functions |
 | `objc.bind` weak protocol properties | One ARC binding token plus adapter array; retains the native object, adapters, and Z controllers for the token lifetime |
+| `objc.adapt<P>` retained/stored protocol slot | One generated ARC adapter; its native value is direct `id<P>` and it retains the Z controller |
 | `objc.register` method registration | One ARC registration token plus one protocol adapter; retains the receiver and Z controller, calls the native add method once, and calls its checked remove method once during cleanup |
 | Plain C++/Swift-C++ value or method | Native construction, copy, destruction, and member-call rules; no Z wrapper dispatch |
 | Non-capturing call-only callback | Function pointer or small adapter indirection; no environment allocation |
@@ -986,6 +987,23 @@ requires remove arguments to reuse stable add-time names or literals, so
 teardown never re-evaluates user code. Method-parameter `id<Protocol>` evidence
 selects and verifies the adapter; no cast or selector string is inferred.
 
+When a native method accepts and stores `id<Protocol>` but exposes no weak
+property or paired teardown call, use an owned standalone adapter:
+
+```zs
+const handler = new SchemeHandler({});
+const adapter = objc.adapt<WebKit.WKURLSchemeHandler>(handler);
+configuration.setURLSchemeHandler(adapter, forURLScheme: "zapp");
+```
+
+`objc.Adapter<P>` is a nominal ARC identity whose native representation is
+exactly `id<P>`. The generated adapter retains the Z controller and may be
+stored in a Z ARC field; direct imported Objective-C methods accept it only for
+the exact protocol they declare. This closes the retained/stored protocol-slot
+gap without guessing whether an arbitrary native API keeps its argument. The
+first tier is conservatively main-executor-bound and allocates one generated
+`NSObject` adapter, with no additional Z wrapper allocation.
+
 | Native surface | Ordinary header import | `std/objc` bridge |
 | --- | --- | --- |
 | `NSApplication.sharedApplication`, `NSWindow.alloc()`, methods/properties | Yes | No |
@@ -994,6 +1012,7 @@ selects and verifies the adapter; no cast or selector string is inferred.
 | Target object plus selector pair | Header exposes the raw convention | `objc.connect` owns the control and closure, installs target/action, and returns an explicit lifetime token |
 | Protocol/delegate synthesis | Protocol and weak property declarations remain visible | `implements`, `as "selector:"`, and `objc.bind` generate and own the native adapter |
 | Retained protocol add/remove methods | Header exposes both calls and the `id<Protocol>` parameter | `objc.register` checks the pair, owns the receiver/adapter/controller, and unregisters during deterministic cleanup |
+| Retained or stored `id<Protocol>` argument without paired teardown | Header exposes the exact protocol parameter | `objc.adapt<P>` returns a storable `objc.Adapter<P>` with direct `id<P>` representation and controller ownership |
 
 This module is not a prerequisite for Objective-C interop and is not a generic
 escape hatch for message sending. If Clang can import a declaration with enough

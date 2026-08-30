@@ -16,6 +16,7 @@ import {
   ModuleForeignArgument,
   ModuleFunctionSignature,
   ModuleObjCRegistrationResolution,
+  ModuleObjCAdapterResolution,
   ModuleSemanticEvidence,
   ModuleSymbol,
   ModuleSymbolKind,
@@ -31,6 +32,7 @@ export function emptySemanticEvidence(): ModuleSemanticEvidence {
     expressionResolutions: Array<ModuleExpressionResolution>(),
     foreignUnionMatches: Array<ModuleForeignUnionMatch>(),
     objectiveCRegistrations: Array<ModuleObjCRegistrationResolution>(),
+    objectiveCAdapters: Array<ModuleObjCAdapterResolution>(),
   });
 }
 

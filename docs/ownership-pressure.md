@@ -4496,6 +4496,39 @@ patterns. A small `NSRect` constructor shim also remains until Z deliberately
 settles floating-point conversion semantics rather than silently inheriting C
 casts.
 
+## Zapp retained protocol-slot pressure
+
+Moving Zapp's WebKit scheme handler out of Objective-C exposed a distinct
+interop lifetime that neither weak-property binding nor add/remove registration
+described. `WKWebViewConfiguration.setURLSchemeHandler` accepts
+`id<WKURLSchemeHandler>` and retains it internally. Passing a Z controller
+directly would hide the generated adapter lifetime; keeping that adapter in a
+native global would move ownership back out of Z.
+
+The resulting `objc.adapt<P>` slice keeps the choice explicit and compiler
+checked. It accepts one stored Z class implementing imported protocol `P`,
+allocates one generated Objective-C adapter that retains the controller, and
+returns a storable ARC `objc.Adapter<P>` with direct `id<P>` representation.
+Both Stage 0 and the fixed-point frontend prove exact protocol compatibility,
+including method arguments, and fixed-point lowering emits protocol-qualified
+callback values as `id<P>` rather than invalid `P *` spellings. Optional
+Objective-C protocol requirements are emitted only when the Z class implements
+them.
+
+The conservative first tier keeps adapter construction, use, storage, and
+destruction on `thread.main`. This closes the Zapp handler-ownership gap without
+claiming arbitrary protocol objects are sendable. It also preserves the four
+separate convention-specific tools: `objc.connect` for target/action,
+`objc.bind` for zeroing weak properties, `objc.register` for paired add/remove
+lifetimes, and `objc.adapt` for retained or stored protocol arguments.
+
+Adjacent pressure remains visible rather than being papered over: fixed-point
+loop destructuring still limits some migrations; generic `Option.some` storage
+of strong Objective-C references still needs niche-representation unification;
+captured `NSString` contextual conversion in `objc.register`, canonical
+Objective-C identity across independent metadata producers, and direct `NSRect`
+floating-point construction remain open seams.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

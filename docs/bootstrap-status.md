@@ -230,6 +230,13 @@ release it deterministically.
 | Swift value via C++ | Implemented probes | Native static construction, associated-value enum case factories, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
 | Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, protocols, errors, async, packages; Swift 6.2 currently withholds noncopyable values and async functions from its generated C++ interface |
 
+The Objective-C slice also includes owned standalone protocol adaptation in
+both frontends: `objc.adapt<P>` verifies a stored Z controller, emits one
+generated adapter, and exposes a storable `objc.Adapter<P>` with direct `id<P>`
+ABI. Protocol-qualified callback parameters lower as `id<P>`, and fixed-point
+method calls reject an adapter for the wrong imported protocol. The first tier
+remains conservatively main-executor-bound.
+
 The Stage 0 Objective-C slice also preserves protocol-qualified callback
 receivers as non-escaping borrowed values and presents received native blocks
 as typed `in` callables. Copying one of those callables into owned Z storage

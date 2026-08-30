@@ -283,6 +283,13 @@ adapter and guard; wrong protocol or teardown pairs are rejected before
 emission, and final guard release sends the verified remove message exactly
 once.
 
+`objc.adapt<P>` records the smaller standalone plan: Z controller identity,
+exact imported protocol identity, selected implementation methods, and the
+call-site factory location. Lowering reuses the same generated protocol adapter
+but returns it directly as a nominal ARC `objc.Adapter<P>` whose ABI spelling is
+`id<P>`. Objective-C method evidence then checks that exact protocol before
+emission; object-pointer erasure cannot make an unrelated adapter assignable.
+
 Opaque pointer ownership is represented separately from record layout. A
 nullable inferred result may declare `deinit release;`, and a nullable `out`
 parameter may carry the same block fact. The normalizer proves the producer is

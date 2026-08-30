@@ -109,6 +109,7 @@ bun run z run examples/language/control-flow/result.zs
 | AppKit window | [`nswindow.zs`](../examples/interop/objc/nswindow.zs) | Direct Objective-C ARC calls |
 | Objective-C nullability | [`objc-nullability.zs`](../examples/interop/objc/objc-nullability.zs) | `T | null`, narrowing, and `Option.fromNullable` |
 | Objective-C protocols | [`protocol-conformance.zs`](../examples/interop/objc/protocol-conformance.zs) | Z class conformance, checked selectors, generated adapter, and `objc.bind` lifetime |
+| Objective-C stored protocol adapter | [`protocol-adapter.zs`](../examples/interop/objc/protocol-adapter.zs) | Explicit `objc.adapt<P>`, storable ARC ownership, exact `id<P>` method compatibility, and fixed-point lowering |
 | Objective-C received blocks | [`navigation-policy.zs`](../examples/interop/objc/navigation-policy.zs) | WebKit delegate block received as a typed `in` Z callable |
 | Objective-C byte data | [`data-copy.zs`](../examples/interop/objc/data-copy.zs) | Explicit one-copy `Slice<u8>`-compatible storage into independently owned ARC `NSData` |
 | Objective-C retained protocol registration | [`protocol-registration.zs`](../examples/interop/objc/protocol-registration.zs) | Checked `id<Protocol>` add/remove methods, generated adapter, and one owned `objc.Registration` teardown lifetime |

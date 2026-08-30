@@ -90,6 +90,8 @@ export struct ModuleSemanticEvidence {
     Array<ModuleForeignUnionMatch>();
   objectiveCRegistrations: Array<ModuleObjCRegistrationResolution> =
     Array<ModuleObjCRegistrationResolution>();
+  objectiveCAdapters: Array<ModuleObjCAdapterResolution> =
+    Array<ModuleObjCAdapterResolution>();
 }
 
 export struct ModuleObjCProtocolMethodResolution {
@@ -118,6 +120,19 @@ export struct ModuleObjCRegistrationResolution {
   removeSelector: String;
   removeParameterNativeTypes: Array<String>;
   removeArgumentSources: Array<usize>;
+}
+
+export struct ModuleObjCAdapterResolution {
+  moduleIndex: usize;
+  offset: usize;
+  line: usize;
+  column: usize;
+  ownerType: String;
+  ownerModuleIndex: usize;
+  ownerSymbolIndex: usize;
+  protocolType: String;
+  protocolNativeNames: Array<String>;
+  protocolMethods: Array<ModuleObjCProtocolMethodResolution>;
 }
 
 export struct ModuleExpressionResolution {

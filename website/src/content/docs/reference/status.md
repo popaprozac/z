@@ -18,7 +18,7 @@ production or compatibility-sensitive use.
   selected C++ values, methods, namespaces, RAII, and move-only resources
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
-  protocol handler,
+  protocol handler and owned `objc.adapt<P>` carrier with direct `id<P>` ABI,
   dynamic `id` class narrowing, typed JSON routing, frozen synchronous and
   suspending Z service dispatch, generated TypeScript binding, application
   `TaskScope`, and registration lifetime are implemented in Z. A foreign

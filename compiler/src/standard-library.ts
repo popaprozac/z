@@ -197,9 +197,11 @@ export function standardModuleMemberNames(module: StandardModuleName): readonly 
     "connect",
     "bind",
     "register",
+    "adapt",
     "Connection",
     "Binding",
     "Registration",
+    "Adapter",
   ];
   if (module === "fs") return [...Object.keys(standardModuleMembers[module]), "Lock"];
   return Object.keys(standardModuleMembers[module]);

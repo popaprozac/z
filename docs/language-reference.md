@@ -3695,6 +3695,31 @@ The current adapter rejects `assign` and `unsafe_unretained` properties:
 releasing their adapter would otherwise leave a dangling native pointer because
 those storage conventions do not zero themselves.
 
+An imported method may instead accept and retain an `id<Protocol>` directly,
+without a weak property or a paired remove call. `objc.adapt` creates the owned,
+storable protocol carrier for that shape:
+
+```zs
+const controller = new SchemeHandler({});
+const adapter = objc.adapt<WebKit.WKURLSchemeHandler>(controller);
+configuration.setURLSchemeHandler(adapter, forURLScheme: "zapp");
+```
+
+The controller must be a stored Z class implementing the exact imported
+protocol. The result has the nominal type
+`objc.Adapter<WebKit.WKURLSchemeHandler>` and may be kept in an ARC class field.
+Its native representation is the direct `id<WKURLSchemeHandler>` reference:
+the generated `NSObject` adapter retains the Z controller, and normal ARC
+storage retains the adapter. There is no second wrapper or dispatch layer.
+Passing an adapter for a different protocol is a compile error even though both
+native values erase to Objective-C object references.
+
+This first tier is conservatively `thread.main`-bound for construction, use,
+and destruction. It is intended for stored handler properties such as
+`WKWebViewConfiguration.setURLSchemeHandler`. Use `objc.bind` for zeroing weak
+protocol properties, `objc.register` when add/remove calls define the lifetime,
+and `objc.connect` for target/action.
+
 Retained method-based protocol registrations use `objc.register`:
 
 ```zs

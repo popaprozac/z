@@ -36,6 +36,7 @@ import {
   ModuleForeignUnionMatch,
   ModuleFieldSignature,
   ModuleFunctionSignature,
+  ModuleObjCProtocolMethodResolution,
   ModuleSemanticEvidence,
   ModuleSymbolKind,
   ModuleTypeIdentity,
@@ -252,6 +253,7 @@ export enum LoweredExpressionKind {
   objectiveCInstanceOf,
   objectiveCStringFromZ,
   objectiveCStringToZ,
+  objectiveCProtocolAdapter,
   objectiveCRegistration,
   fieldValue,
   structValue,
@@ -486,6 +488,13 @@ export struct LoweredObjCProtocolAdapter {
   methods: Array<LoweredObjCProtocolMethod>;
 }
 
+export struct LoweredObjCAdapterFactory {
+  helperName: String;
+  adapterName: String;
+  ownerType: String;
+  protocolNativeName: String;
+}
+
 export struct LoweredObjCRegistration {
   offset: usize;
   helperName: String;
@@ -519,6 +528,7 @@ export struct LoweredProgram {
   foreignFunctions: Array<LoweredForeignFunction>;
   foreignResources: Array<LoweredForeignResource>;
   objectiveCProtocolAdapters: Array<LoweredObjCProtocolAdapter>;
+  objectiveCAdapterFactories: Array<LoweredObjCAdapterFactory>;
   objectiveCRegistrations: Array<LoweredObjCRegistration>;
   embeddedBytes: Array<LoweredEmbeddedBytes>;
   constants: Array<LoweredConstant>;
@@ -576,12 +586,80 @@ function objectiveCRegistrationHelperName(
   return `z_stage1_objc_register_${moduleIndex}_${offset}`;
 }
 
+function objectiveCAdapterHelperName(
+  moduleIndex: usize,
+  offset: usize
+): String {
+  return `z_stage1_objc_adapt_${moduleIndex}_${offset}`;
+}
+
+function collectObjectiveCProtocolAdapter(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in privateTypeCollisionNames: Array<String>,
+  ownerModuleIndex: usize,
+  ownerSymbolIndex: usize,
+  in protocolNativeNames: Array<String>,
+  in protocolMethods: Array<ModuleObjCProtocolMethodResolution>,
+  inout adapters: Array<LoweredObjCProtocolAdapter>
+): String throws String {
+  if (
+    ownerModuleIndex >= parsed.length
+    || ownerSymbolIndex >= graph.modules[ownerModuleIndex].symbols.length
+  ) throw "native Objective-C adaptation lost its Z protocol owner";
+  const ownerSourceName = view graph.modules[ownerModuleIndex].symbols[
+    ownerSymbolIndex
+  ].name;
+  const ownerEmittedName = privateTypeNeedsMangle(
+    parsed[ownerModuleIndex].program,
+    privateTypeCollisionNames,
+    ownerSourceName
+  )
+    ? emittedPrivateTypeName(ownerModuleIndex, ownerSourceName)
+    : ownerSourceName.copyBytes(0, ownerSourceName.byteLength);
+  const adapterName = `ZObjCProtocolAdapter_${ownerEmittedName}`;
+  for (const existing of adapters) {
+    if (existing.name == adapterName) return adapterName;
+  }
+  let protocols = Array<String>();
+  for (const protocol of protocolNativeNames) {
+    protocols.push(protocol.copyBytes(0, protocol.byteLength));
+  }
+  let methods = Array<LoweredObjCProtocolMethod>();
+  for (const method of protocolMethods) {
+    let parameterTypes = Array<String>();
+    for (const parameterType of method.nativeParameterTypes) {
+      parameterTypes.push(parameterType.copyBytes(
+        0,
+        parameterType.byteLength
+      ));
+    }
+    methods.push(LoweredObjCProtocolMethod({
+      selector: method.selector.copyBytes(0, method.selector.byteLength),
+      nativeReturnType: method.nativeReturnType.copyBytes(
+        0,
+        method.nativeReturnType.byteLength
+      ),
+      nativeParameterTypes: parameterTypes,
+      targetName: `Z_${ownerEmittedName}_${method.targetName}`,
+    }));
+  }
+  adapters.push(LoweredObjCProtocolAdapter({
+    name: adapterName.copyBytes(0, adapterName.byteLength),
+    ownerType: ownerEmittedName.copyBytes(0, ownerEmittedName.byteLength),
+    protocolNativeNames: protocols,
+    methods,
+  }));
+  return adapterName;
+}
+
 function collectObjectiveCRegistrations(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph,
   in privateTypeCollisionNames: Array<String>,
   moduleIndex: usize,
   inout adapters: Array<LoweredObjCProtocolAdapter>,
+  inout adapterFactories: Array<LoweredObjCAdapterFactory>,
   inout registrations: Array<LoweredObjCRegistration>
 ): void throws String {
   for (const plan of graph.modules[moduleIndex].semanticEvidence
@@ -601,45 +679,16 @@ function collectObjectiveCRegistrations(
     )
       ? emittedPrivateTypeName(plan.ownerModuleIndex, ownerSourceName)
       : ownerSourceName.copyBytes(0, ownerSourceName.byteLength);
-    const adapterName = `ZObjCProtocolAdapter_${ownerEmittedName}`;
-    let hasAdapter = false;
-    for (const existing of adapters) {
-      if (existing.name == adapterName) hasAdapter = true;
-    }
-    if (!hasAdapter) {
-      let protocols = Array<String>();
-      for (const protocol of plan.protocolNativeNames) {
-        protocols.push(protocol.copyBytes(0, protocol.byteLength));
-      }
-      let methods = Array<LoweredObjCProtocolMethod>();
-      for (const method of plan.protocolMethods) {
-        let parameterTypes = Array<String>();
-        for (const parameterType of method.nativeParameterTypes) {
-          parameterTypes.push(parameterType.copyBytes(
-            0,
-            parameterType.byteLength
-          ));
-        }
-        methods.push(LoweredObjCProtocolMethod({
-          selector: method.selector.copyBytes(0, method.selector.byteLength),
-          nativeReturnType: method.nativeReturnType.copyBytes(
-            0,
-            method.nativeReturnType.byteLength
-          ),
-          nativeParameterTypes: parameterTypes,
-          targetName: `Z_${ownerEmittedName}_${method.targetName}`,
-        }));
-      }
-      adapters.push(LoweredObjCProtocolAdapter({
-        name: adapterName.copyBytes(0, adapterName.byteLength),
-        ownerType: ownerEmittedName.copyBytes(
-          0,
-          ownerEmittedName.byteLength
-        ),
-        protocolNativeNames: protocols,
-        methods,
-      }));
-    }
+    const adapterName = try collectObjectiveCProtocolAdapter(
+      parsed,
+      graph,
+      privateTypeCollisionNames,
+      plan.ownerModuleIndex,
+      plan.ownerSymbolIndex,
+      plan.protocolNativeNames,
+      plan.protocolMethods,
+      inout adapters
+    );
     let addParameterTypes = Array<String>();
     for (const parameterType of plan.addParameterNativeTypes) {
       addParameterTypes.push(parameterType.copyBytes(
@@ -682,6 +731,41 @@ function collectObjectiveCRegistrations(
       ),
       removeParameterNativeTypes: removeParameterTypes,
       removeArgumentSources: removeSources,
+    }));
+  }
+  for (const plan of graph.modules[moduleIndex].semanticEvidence
+    .objectiveCAdapters) {
+    const adapterName = try collectObjectiveCProtocolAdapter(
+      parsed,
+      graph,
+      privateTypeCollisionNames,
+      plan.ownerModuleIndex,
+      plan.ownerSymbolIndex,
+      plan.protocolNativeNames,
+      plan.protocolMethods,
+      inout adapters
+    );
+    const ownerSourceName = view graph.modules[plan.ownerModuleIndex].symbols[
+      plan.ownerSymbolIndex
+    ].name;
+    const ownerEmittedName = privateTypeNeedsMangle(
+      parsed[plan.ownerModuleIndex].program,
+      privateTypeCollisionNames,
+      ownerSourceName
+    )
+      ? emittedPrivateTypeName(plan.ownerModuleIndex, ownerSourceName)
+      : ownerSourceName.copyBytes(0, ownerSourceName.byteLength);
+    if (plan.protocolNativeNames.length != 1) {
+      throw "native Objective-C adapter factory requires exactly one protocol";
+    }
+    adapterFactories.push(LoweredObjCAdapterFactory({
+      helperName: objectiveCAdapterHelperName(plan.moduleIndex, plan.offset),
+      adapterName,
+      ownerType: ownerEmittedName,
+      protocolNativeName: plan.protocolNativeNames[0].copyBytes(
+        0,
+        plan.protocolNativeNames[0].byteLength
+      ),
     }));
   }
 }
@@ -3149,6 +3233,25 @@ function lowerModuleTypeName(
   }
   match (genericTypeShape(name)) {
     some(generic) => {
+      if (
+        qualifiedTypeMember(generic.base) == "Adapter"
+        && generic.arguments.length == 1
+      ) {
+        const protocol = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        if (protocol.kind != LoweredTypeKind.foreignObjCType) {
+          throw `native objc.Adapter<P> lowering expected an imported Objective-C protocol, found ${generic.arguments[0]}`;
+        }
+        return LoweredType({
+          kind: LoweredTypeKind.foreignObjCType,
+          name: stringStartsWith(protocol.name, "id<")
+            ? protocol.name.copyBytes(0, protocol.name.byteLength)
+            : `id<${protocol.name}>`,
+        });
+      }
       if (generic.base == "Option" && generic.arguments.length == 1) {
         const payload = try lowerModuleTypeName(
           program,
@@ -3871,6 +3974,10 @@ function moduleTypeHasExecutorAffinity(
 ): boolean {
   match (genericTypeShape(name)) {
     some(generic) => {
+      if (
+        qualifiedTypeMember(generic.base) == "Adapter"
+        && generic.arguments.length == 1
+      ) return true;
       if (
         (
           generic.base == "Option"
@@ -6078,6 +6185,24 @@ function objectiveCRegistrationResolutionIndex(
     planIndex = planIndex + 1;
   }
   return evidence.objectiveCRegistrations.length;
+}
+
+function objectiveCAdapterResolutionIndex(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): usize {
+  let planIndex: usize = 0;
+  while (planIndex < evidence.objectiveCAdapters.length) {
+    if (
+      evidence.objectiveCAdapters[planIndex].offset == tree.nodes[index].offset
+      && evidence.objectiveCAdapters[planIndex].line == tree.nodes[index].line
+      && evidence.objectiveCAdapters[planIndex].column
+        == tree.nodes[index].column
+    ) return planIndex;
+    planIndex = planIndex + 1;
+  }
+  return evidence.objectiveCAdapters.length;
 }
 
 function wrapImplicitOwnedTransfer(
@@ -10579,6 +10704,39 @@ function lowerExpressionContextual(
     }
     if (resolvedCallIsAsynchronous(evidence, tree, index)) {
       throw "native lowering requires an explicit supported placement for async function calls";
+    }
+    const adapterPlanIndex = objectiveCAdapterResolutionIndex(
+      evidence,
+      tree,
+      index
+    );
+    if (adapterPlanIndex < evidence.objectiveCAdapters.length) {
+      if (tree.nodes[index].children.length != 2) {
+        throw "native Objective-C adapter lowering lost its controller";
+      }
+      const plan = view evidence.objectiveCAdapters[adapterPlanIndex];
+      const ownerInput = tree.nodes[index].children[1];
+      const owner = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        ownerInput,
+        inout output
+      );
+      let children = Array<usize>();
+      children.push(owner);
+      const helperName = objectiveCAdapterHelperName(
+        plan.moduleIndex,
+        plan.offset
+      );
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.objectiveCProtocolAdapter,
+        helperName,
+        children,
+        Array<String>()
+      );
     }
     const registrationPlanIndex = objectiveCRegistrationResolutionIndex(
       evidence,
@@ -25409,24 +25567,32 @@ function importedTypesForModule(
   for (const symbol of graph.modules[moduleIndex].symbols) {
     if (
       symbol.kind != ModuleSymbolKind.classSymbol
+      && symbol.kind != ModuleSymbolKind.traitSymbol
       || symbol.foreignHeader.byteLength == 0
     ) continue;
     match (in symbol.typeSignature) {
       some(signature) => {
+        const objcInterface = signature.foreignKind == "objcInterface"
+          && symbol.kind == ModuleSymbolKind.classSymbol;
+        const objcProtocol = signature.foreignKind == "objcProtocol"
+          && symbol.kind == ModuleSymbolKind.traitSymbol;
         if (
-          signature.foreignKind != "objcInterface"
+          (!objcInterface && !objcProtocol)
           || signature.foreignNativeName.byteLength == 0
         ) continue;
+        const loweredNativeName = objcProtocol
+          ? `id<${signature.foreignNativeName}>`
+          : signature.foreignNativeName.copyBytes(
+              0,
+              signature.foreignNativeName.byteLength
+            );
         types.push(LoweredImportedType({
           localName: symbol.name.copyBytes(0, symbol.name.byteLength),
-          targetName: signature.foreignNativeName.copyBytes(
+          targetName: loweredNativeName.copyBytes(
             0,
-            signature.foreignNativeName.byteLength
+            loweredNativeName.byteLength
           ),
-          nativeTypeName: signature.foreignNativeName.copyBytes(
-            0,
-            signature.foreignNativeName.byteLength
-          ),
+          nativeTypeName: loweredNativeName,
           kind: LoweredTypeKind.foreignObjCType,
           executorBound: signature.executorAffinity.byteLength > 0,
           threadShareable: false,
@@ -27879,6 +28045,7 @@ function lowerProgramUnchecked(
   let foreignFunctions = Array<LoweredForeignFunction>();
   let foreignResources = Array<LoweredForeignResource>();
   let objectiveCProtocolAdapters = Array<LoweredObjCProtocolAdapter>();
+  let objectiveCAdapterFactories = Array<LoweredObjCAdapterFactory>();
   let objectiveCRegistrations = Array<LoweredObjCRegistration>();
   let embeddedBytes = Array<LoweredEmbeddedBytes>();
   let importedTypes = Array<LoweredImportedType>();
@@ -27918,6 +28085,7 @@ function lowerProgramUnchecked(
     foreignFunctions,
     foreignResources,
     objectiveCProtocolAdapters,
+    objectiveCAdapterFactories,
     objectiveCRegistrations,
     embeddedBytes,
     constants,
@@ -28004,6 +28172,7 @@ function lowerModulesIncludingTests(
   let foreignFunctions = Array<LoweredForeignFunction>();
   let foreignResources = Array<LoweredForeignResource>();
   let objectiveCProtocolAdapters = Array<LoweredObjCProtocolAdapter>();
+  let objectiveCAdapterFactories = Array<LoweredObjCAdapterFactory>();
   let objectiveCRegistrations = Array<LoweredObjCRegistration>();
   let embeddedBytes = Array<LoweredEmbeddedBytes>();
   const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(
@@ -28087,6 +28256,7 @@ function lowerModulesIncludingTests(
         privateTypeCollisionNames,
         moduleIndex,
         inout objectiveCProtocolAdapters,
+        inout objectiveCAdapterFactories,
         inout objectiveCRegistrations
       );
       failure(message) => {
@@ -28212,6 +28382,7 @@ function lowerModulesIncludingTests(
     foreignFunctions,
     foreignResources,
     objectiveCProtocolAdapters,
+    objectiveCAdapterFactories,
     objectiveCRegistrations,
     embeddedBytes,
     constants,

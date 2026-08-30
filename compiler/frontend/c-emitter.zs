@@ -7,6 +7,7 @@ import {
   LoweredEnum,
   LoweredFunction,
   LoweredFunctionType,
+  LoweredObjCAdapterFactory,
   LoweredObjCProtocolAdapter,
   LoweredObjCRegistration,
   LoweredCleanup,
@@ -96,7 +97,9 @@ function cType(in type: LoweredType): String throws String {
     return type.name.copyBytes(0, type.name.byteLength);
   }
   if (type.kind == LoweredTypeKind.foreignObjCType) {
-    if (type.name == "id") return "id";
+    if (type.name == "id" || stringStartsWith(type.name, "id<")) {
+      return type.name.copyBytes(0, type.name.byteLength);
+    }
     return `${type.name} *`;
   }
   if (type.kind == LoweredTypeKind.classType) return `Z_${type.name} *`;
@@ -4644,6 +4647,24 @@ function appendExpression(
       if (borrowed) output.append(")");
       argument = argument + 1;
     }
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.objectiveCProtocolAdapter
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native Objective-C adapter emission received a malformed controller";
+    }
+    output.append(declaration.expressions[index].value);
+    output.append("(");
+    const controller = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      controller
+    );
     output.append(")");
     return;
   }
@@ -18679,6 +18700,21 @@ function appendObjCProtocolAdapter(
   output.append("_release(_z_owner);\n}\n@end\n\n");
 }
 
+function appendObjCAdapterFactory(
+  inout output: TextBuffer,
+  in factory: LoweredObjCAdapterFactory
+): void {
+  output.append("static id<");
+  output.append(factory.protocolNativeName);
+  output.append("> ");
+  output.append(factory.helperName);
+  output.append("(Z_");
+  output.append(factory.ownerType);
+  output.append(" *owner) {\n  return [[");
+  output.append(factory.adapterName);
+  output.append(" alloc] initWithOwner:owner];\n}\n\n");
+}
+
 function containsUsize(in values: Array<usize>, candidate: usize): boolean {
   for (const value of values) {
     if (value == candidate) return true;
@@ -19822,11 +19858,16 @@ function emitLoweredC(
   try appendAsyncCallableAwaitHelpers(inout output, program);
   try appendAsyncMethodAwaitHelpers(inout output, program);
   try appendPersistentAsyncParentHelpers(inout output, program);
-  if (program.objectiveCRegistrations.length > 0) {
-    output.append("@interface ZObjCRegistration : NSObject\n@end\n\n@implementation ZObjCRegistration\n@end\n\n");
+  if (program.objectiveCProtocolAdapters.length > 0) {
     for (const adapter of program.objectiveCProtocolAdapters) {
       try appendObjCProtocolAdapter(inout output, adapter);
     }
+    for (const factory of program.objectiveCAdapterFactories) {
+      appendObjCAdapterFactory(inout output, factory);
+    }
+  }
+  if (program.objectiveCRegistrations.length > 0) {
+    output.append("@interface ZObjCRegistration : NSObject\n@end\n\n@implementation ZObjCRegistration\n@end\n\n");
     for (const registration of program.objectiveCRegistrations) {
       try appendObjCRegistration(inout output, registration);
     }

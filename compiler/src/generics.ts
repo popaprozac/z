@@ -8,7 +8,7 @@ import {
   parseSliceType,
   sliceTypeName,
 } from "./array-types.ts";
-import { monomorphizedName, parseGenericType } from "./generic-types.ts";
+import { genericTypeName, monomorphizedName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { mapEntryTypeName, mapTypeName } from "./map-types.ts";
 import { setTypeName } from "./set-types.ts";
@@ -82,6 +82,11 @@ export function materializeGenerics(
   const functionTemplates = new Map(program.functions.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const traitTemplates = new Map(
     program.traits.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]),
+  );
+  const objcNamespaces = new Set(
+    program.imports
+      .filter((declaration) => declaration.header === "std/objc" && declaration.bindings === null)
+      .map((declaration) => declaration.moduleName),
   );
   const traits = new Map(program.traits.map((item) => [item.name, item]));
   const typeAliasTargets = new Map(
@@ -336,6 +341,17 @@ export function materializeGenerics(
       typeDisplayNames.set(name, `Mutex<${displayName(args[0])}>`);
       return name;
     }
+    const genericSeparator = generic.base.lastIndexOf(".");
+    if (
+      genericSeparator > 0
+      && generic.base.slice(genericSeparator + 1) === "Adapter"
+      && objcNamespaces.has(generic.base.slice(0, genericSeparator))
+    ) {
+      if (args.length !== 1) {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `objc.Adapter expects 1 type argument, received ${args.length}`);
+      }
+      return genericTypeName(generic.base, args);
+    }
     if (generic.base === "Map") return instantiateMap(args);
     if (generic.base === "Set") return instantiateSet(args);
     if (generic.base === "Result") return instantiateResult(args);
@@ -359,6 +375,19 @@ export function materializeGenerics(
     if (value.kind === "member") {
       const genericMethod = parseGenericType(value.property);
       if (genericMethod) {
+        if (
+          value.object?.kind === "identifier"
+          && objcNamespaces.has(value.object.name)
+          && genericMethod.base === "adapt"
+        ) {
+          return {
+            ...transformObject(value, substitutions, remapLocation),
+            property: genericTypeName(
+              genericMethod.base,
+              genericMethod.arguments.map((argument) => substituteName(argument, substitutions)),
+            ),
+          };
+        }
         return {
           ...transformObject(value, substitutions, remapLocation),
           property: monomorphizedName(

@@ -1474,6 +1474,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         word.end,
       );
     }
+    if (standardOwner === "objc" && word.text === "adapt") {
+      return markdownHover(
+        "adapt<P>(controller: ZClass implements P): objc.Adapter<P>  // creates one owned, storable Objective-C protocol adapter",
+        source,
+        word.start,
+        word.end,
+      );
+    }
     if (standardOwner === "objc" && word.text === "Connection") {
       return markdownHover(
         "objc.Connection  // owned Objective-C target/action lifetime",
@@ -1493,6 +1501,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (standardOwner === "objc" && word.text === "Registration") {
       return markdownHover(
         "objc.Registration  // owned add/remove Objective-C protocol registration lifetime",
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (standardOwner === "objc" && word.text === "Adapter") {
+      return markdownHover(
+        "objc.Adapter<P>  // ARC-owned protocol carrier that retains its Z controller",
         source,
         word.start,
         word.end,
@@ -4919,7 +4935,9 @@ function memberCompletions(
       }
       return {
         label: member,
-        kind: completionKinds.method,
+        kind: standardModule === "objc" && member === "Adapter"
+          ? completionKinds.class
+          : completionKinds.method,
         detail: standardModule === "thread" && member === "spawn"
           ? "spawn<T, E?>(operation: () => T throws E?): Task<T, E?>  // starts one native thread; sync or worker-affine async closure"
           : standardModule === "objc" && member === "pool"
@@ -4930,8 +4948,16 @@ function memberCompletions(
               ? "bind(object: Objective-C object, protocols: { property: ZController }): objc.Binding"
               : standardModule === "objc" && member === "register"
                 ? "register({ add: protocol registration call, remove: teardown call }): objc.Registration"
+                : standardModule === "objc" && member === "adapt"
+                  ? "adapt<P>(controller: ZClass implements P): objc.Adapter<P>"
+                  : standardModule === "objc" && member === "Adapter"
+                    ? "objc.Adapter<P>  // owned Objective-C protocol carrier"
                 : standardFunctionDetail(member, name!),
-        insertText: `${member}()`,
+        insertText: standardModule === "objc" && member === "adapt"
+          ? "adapt<>()"
+          : standardModule === "objc" && member === "Adapter"
+            ? "Adapter<>"
+            : `${member}()`,
       };
     }), prefix, 100);
   }

@@ -10136,6 +10136,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (context.semanticInfo.objcConnectionCalls.has(expression.location.offset)) {
         return `z_objc_connect(${generateExpression(expression.arguments[0], context)}, ${generateExpression(expression.arguments[1], context)})`;
       }
+      const objcAdapter = context.semanticInfo.objcAdapterCalls.get(expression.location.offset);
+      if (objcAdapter) {
+        return `[[${objcProtocolAdapterName(objcAdapter.ownerType)} alloc] initWithOwner:${generateExpression(objcAdapter.ownerExpression, context)}]`;
+      }
       const objcBinding = context.semanticInfo.objcBindingCalls.get(expression.location.offset);
       if (objcBinding) {
         const owners = new Map<string, Expression>();

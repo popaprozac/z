@@ -246,6 +246,21 @@ function nativeObjectiveCReferenceAssignable(
   return false;
 }
 
+function nativeObjectiveCAdapterAssignable(
+  in expectedType: String,
+  in actualType: String
+): boolean {
+  let expected = expectedType.copyBytes(0, expectedType.byteLength);
+  const expectedTarget = nullableTargetType(expectedType);
+  if (expectedTarget.byteLength > 0) expected = move expectedTarget;
+  if (expected != "id") return false;
+  return match (genericTypeShape(actualType)) {
+    some(adapter) => qualifiedTypeMember(adapter.base) == "Adapter"
+      && adapter.arguments.length == 1;
+    none => false;
+  };
+}
+
 export function requireExpressionType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -275,6 +290,7 @@ export function requireExpressionType(
     expected,
     actual
   )) return;
+  if (nativeObjectiveCAdapterAssignable(expected, actual)) return;
   if (
     expected == "String"
     && isNativeObjectiveCStringType(modules, moduleIndex, actual)

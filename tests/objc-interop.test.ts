@@ -2151,6 +2151,69 @@ test("generates safe Objective-C protocol adapters with protocol-aware editor sc
   assert.match(unsafeDiagnostic.message, /assign/);
 }, 15_000);
 
+test("owns standalone Objective-C protocol adapters as storable ARC values", () => {
+  if (process.platform !== "darwin") return;
+  const fileName = resolve(projectRoot, "examples/interop/objc/protocol-adapter.zs");
+  const source = `
+    import WebKit from "WebKit/WebKit.h";
+    import objc from "std/objc";
+    import { thread } from "std/thread";
+
+    class SchemeHandler on thread.main implements WebKit.WKURLSchemeHandler {
+      function start(
+        in webView: WebKit.WKWebView,
+        in task: WebKit.WKURLSchemeTask
+      ): void as "webView:startURLSchemeTask:" {
+        task.didFinish();
+      }
+
+      function stop(
+        in webView: WebKit.WKWebView,
+        in task: WebKit.WKURLSchemeTask
+      ): void as "webView:stopURLSchemeTask:" {}
+    }
+
+    class AdapterOwner on thread.main {
+      readonly adapter: objc.Adapter<WebKit.WKURLSchemeHandler>;
+    }
+
+    function main(): i32 {
+      const controller = new SchemeHandler({});
+      const adapter = objc.adapt<WebKit.WKURLSchemeHandler>(controller);
+      const owner = new AdapterOwner({ adapter });
+      const configuration = WebKit.WKWebViewConfiguration.alloc().init();
+      configuration.setURLSchemeHandler(owner.adapter, forURLScheme: "zapp");
+      return 0;
+    }
+  `;
+  const artifact = compileToNative(source, fileName);
+  assert.match(artifact.source, /__strong id<WKURLSchemeHandler> adapter;/);
+  assert.match(artifact.source, /\[\[ZObjCProtocolAdapter_SchemeHandler alloc\] initWithOwner:controller\]/);
+  assert.match(artifact.source, /\[configuration setURLSchemeHandler:.*adapter.* forURLScheme:@"zapp"\]/);
+  const compilation = spawnSync("clang", [
+    "-x", "objective-c",
+    "-fobjc-arc", "-fblocks",
+    "-Wall", "-Wextra", "-Werror",
+    "-fsyntax-only", "-",
+  ], { input: artifact.source, encoding: "utf8" });
+  assert.equal(compilation.status, 0, compilation.stderr);
+
+  const adaptOffset = source.indexOf("objc.adapt") + "objc.".length + 2;
+  assert.match(hover(source, fileName, adaptOffset)?.contents.value ?? "", /owned, storable Objective-C protocol adapter/);
+  const incomplete = source.replace("objc.adapt", "objc.ada");
+  const completionOffset = incomplete.indexOf("objc.ada") + "objc.ada".length;
+  assert.equal(
+    completions(incomplete, fileName, completionOffset).find((item) => item.label === "adapt")?.detail,
+    "adapt<P>(controller: ZClass implements P): objc.Adapter<P>",
+  );
+
+  const wrongProtocol = source.replace(
+    "objc.adapt<WebKit.WKURLSchemeHandler>(controller)",
+    "objc.adapt<WebKit.WKNavigationDelegate>(controller)",
+  );
+  assert.match(diagnostics(wrongProtocol, fileName)[0]?.message ?? "", /does not implement Objective-C protocol WKNavigationDelegate/);
+}, 30_000);
+
 test("dispatches through borrowed Objective-C protocol existential callback values", () => {
   if (process.platform !== "darwin") return;
   const fileName = resolve(projectRoot, "examples/interop/objc/protocol-existential.zs");

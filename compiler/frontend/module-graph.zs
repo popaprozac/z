@@ -23,6 +23,7 @@ import {
   ModuleCallResolution,
   ModuleExpressionResolution,
   ModuleForeignUnionMatch,
+  ModuleObjCAdapterResolution,
   ModuleObjCRegistrationResolution,
   ModuleResolveError,
   ModuleResolveErrorKind,
@@ -197,6 +198,7 @@ export function buildResolvedModules(
         expressionResolutions: Array<ModuleExpressionResolution>(),
         foreignUnionMatches: Array<ModuleForeignUnionMatch>(),
         objectiveCRegistrations: Array<ModuleObjCRegistrationResolution>(),
+        objectiveCAdapters: Array<ModuleObjCAdapterResolution>(),
       }),
     }));
     index = index + 1;
