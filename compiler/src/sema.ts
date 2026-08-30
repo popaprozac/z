@@ -2901,7 +2901,11 @@ function validateObjCProtocolMethodSignature(
   }
   method.parameters.forEach((parameter, index) => {
     const expected = String(objCProtocolParameterValueType(requirement.parameters[index], state));
-    if (parameter.type.name !== expected) {
+    const expectedFunction = parseFunctionType(expected);
+    const actualFunction = parseFunctionType(parameter.type.name);
+    const compatible = parameter.type.name === expected
+      || Boolean(expectedFunction && actualFunction && functionTypesCompatible(expectedFunction, actualFunction));
+    if (!compatible) {
       throw new DiagnosticError(
         fileName,
         parameter.location,
@@ -2909,8 +2913,9 @@ function validateObjCProtocolMethodSignature(
         { code: "Z0810" },
       );
     }
-    const object = requirement.parameters[index].type.kind === "object";
-    const expectedMode = object ? "in" : "value";
+    const nativeType = requirement.parameters[index].type;
+    const borrowed = nativeType.kind === "object" || nativeType.kind === "block";
+    const expectedMode = borrowed ? "in" : "value";
     if (parameter.mode !== expectedMode) {
       throw new DiagnosticError(
         fileName,
@@ -2918,8 +2923,10 @@ function validateObjCProtocolMethodSignature(
         `Objective-C selector ${JSON.stringify(requirement.selector)} parameter ${JSON.stringify(parameter.name)} must use ${expectedMode === "in" ? "`in`" : "value"} passing`,
         {
           code: "Z0810",
-          notes: [object
-            ? "Objective-C references are borrowed for the duration of the callback"
+          notes: [borrowed
+            ? nativeType.kind === "block"
+              ? "Objective-C blocks are borrowed for the duration of the synchronous callback"
+              : "Objective-C references are borrowed for the duration of the callback"
             : "Objective-C scalar arguments are passed by value"],
         },
       );

@@ -2890,7 +2890,7 @@ function objCProtocolMethodDetail(
   protocols: ReadonlyMap<string, ForeignObjCProtocol>,
 ): string {
   const parameters = method.parameters.map((parameter, index) => (
-    `${parameter.type.kind === "object" ? "in " : ""}${parameter.name ?? `argument${index + 1}`}: ${foreignProtocolParameterTypeName(parameter, protocols)}`
+    `${parameter.type.kind === "object" || parameter.type.kind === "block" ? "in " : ""}${parameter.name ?? `argument${index + 1}`}: ${foreignProtocolParameterTypeName(parameter, protocols)}`
   ));
   return `${method.selector} — (${parameters.join(", ")}): ${foreignProtocolTypeName(method.returnType)}`;
 }
@@ -2902,7 +2902,7 @@ function objcProtocolMethodScaffold(
   protocols: ReadonlyMap<string, ForeignObjCProtocol>,
 ): string {
   const parameters = method.parameters.map((parameter, index) => (
-    `${parameter.type.kind === "object" ? "in " : ""}${parameter.name ?? `argument${index + 1}`}: ${foreignProtocolParameterTypeName(parameter, protocols)}`
+    `${parameter.type.kind === "object" || parameter.type.kind === "block" ? "in " : ""}${parameter.name ?? `argument${index + 1}`}: ${foreignProtocolParameterTypeName(parameter, protocols)}`
   ));
   const parameterBlock = parameters.length === 0
     ? "()"

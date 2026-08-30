@@ -4,9 +4,20 @@
 #import <dispatch/dispatch.h>
 #import <Foundation/Foundation.h>
 
+@class ZObjCBlockFixture;
+
+@protocol ZObjCReceivedBlockDelegate <NSObject>
+- (void)fixture:(ZObjCBlockFixture * _Nonnull)fixture
+        complete:(void (^ _Nonnull)(int32_t value))completion;
+@end
+
 @interface ZObjCBlockFixture : NSObject
+@property(nonatomic, weak, nullable) id<ZObjCReceivedBlockDelegate> delegate;
+@property(nonatomic) int32_t observed;
 + (void)invoke:(void (^ _Nonnull)(int32_t value))handler;
 + (void)invokeOnWorker:(void (^ _Nonnull)(int32_t value))handler;
+- (int32_t)invokeDelegate;
+- (void)prepareDelegate;
 @end
 
 @implementation ZObjCBlockFixture
@@ -23,6 +34,21 @@
     dispatch_semaphore_signal(completion);
   });
   dispatch_semaphore_wait(completion, DISPATCH_TIME_FOREVER);
+}
+
+- (int32_t)invokeDelegate {
+  __block int32_t observed = 0;
+  [self.delegate fixture:self complete:^(int32_t value) {
+    observed = value;
+  }];
+  return observed;
+}
+
+- (void)prepareDelegate {
+  __weak ZObjCBlockFixture *weakSelf = self;
+  [self.delegate fixture:self complete:^(int32_t value) {
+    weakSelf.observed = value;
+  }];
 }
 @end
 

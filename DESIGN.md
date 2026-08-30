@@ -2665,6 +2665,13 @@ borrowed callback capabilities: they cannot be returned, stored, captured
 across suspension, or passed with `inout`, `out`, or `move`. They lower to the
 native Objective-C object reference without an adapter or wrapper allocation.
 
+Objective-C blocks received as protocol parameters use ordinary Z function
+types and an immutable `in` capability. Calling the value forwards to the
+native block. The adapter keeps a small ARC box so a managed Z copy can safely
+outlive the callback; code that only invokes it synchronously creates no Z
+closure environment. Native cardinality and executor facts remain contract
+metadata rather than being guessed from a block typedef.
+
 Weak protocol properties require an explicit lifetime token. The first bridge
 is `objc.bind(object, { dataSource: controller, delegate: controller })`. Field
 names must resolve to imported writable non-owning protocol properties and each

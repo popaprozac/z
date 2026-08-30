@@ -2170,6 +2170,51 @@ test("dispatches through borrowed Objective-C protocol existential callback valu
   assert.match(diagnostics(stored, fileName)[0]?.message ?? "", /borrowed callback capabilities/);
 }, 20_000);
 
+test("invokes received Objective-C protocol blocks through borrowed Z callables", () => {
+  if (process.platform !== "darwin") return;
+  const fileName = resolve(projectRoot, "examples/interop/objc/navigation-policy.zs");
+  const source = readFileSync(fileName, "utf8");
+  const artifact = compileToNative(source, fileName);
+  assert.match(artifact.source, /z_objc_received_block_NavigationHandler_decidePolicyForNavigationAction_3/);
+  assert.match(artifact.source, /\(\(void \(\^\)\(WKNavigationActionPolicy\)\)\(\(__bridge ZObjCReceivedBlockBox \*\)context\)->_z_block\)/);
+  assert.match(artifact.source, /Z_Function_[0-9a-f]+ _z_received_block_3 = \{ \.call = z_objc_received_block_.* \.retain = z_objc_received_block_/);
+  assert.match(artifact.source, /Z_NavigationHandler_decidePolicyForNavigationAction\(_z_owner, webView, navigationAction, &_z_received_block_3\)/);
+
+  const compilation = spawnSync("clang", [
+    "-x", "objective-c",
+    "-fobjc-arc", "-fblocks",
+    "-Wall", "-Wextra", "-Werror",
+    "-fsyntax-only", "-",
+  ], { input: artifact.source, encoding: "utf8" });
+  assert.equal(compilation.status, 0, compilation.stderr);
+
+  const completionSource = `
+    import WebKit from "WebKit/WebKit.h";
+    import { thread } from "std/thread";
+    class NavigationHandler on thread.main implements WebKit.WKNavigationDelegate {
+      dec
+    }
+    function main(): i32 { return 0; }
+  `;
+  const completionOffset = completionSource.lastIndexOf("dec") + "dec".length;
+  const scaffold = completions(completionSource, fileName, completionOffset)
+    .find((item) => item.label === "decidePolicyForNavigationAction");
+  assert.match(scaffold?.insertText ?? "", /in decisionHandler: \(argument1: WebKit\.WKNavigationActionPolicy\) => void/);
+
+  const unborrowed = source.replace(
+    "in decisionHandler: (policy: WebKit.WKNavigationActionPolicy) => void",
+    "decisionHandler: (policy: WebKit.WKNavigationActionPolicy) => void",
+  );
+  assert.match(diagnostics(unborrowed, fileName)[0]?.message ?? "", /decisionHandler.*must use `in`/);
+
+  const runtimeFixture = resolve(projectRoot, "tests/fixtures/objc-received-block.zs");
+  const runtimeSource = readFileSync(runtimeFixture, "utf8");
+  const runtimeArtifact = compileToNative(runtimeSource, runtimeFixture);
+  assert.match(runtimeArtifact.source, /z_objc_received_block_ReceivedBlockHandler_complete_2/);
+  const result = spawnSync(process.execPath, [cli, "run", runtimeFixture], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+}, 20_000);
+
 test("owns method-based Objective-C protocol registrations through explicit guards", () => {
   if (process.platform !== "darwin") return;
   const fixture = resolve(projectRoot, "tests/fixtures/objc-registration.zs");

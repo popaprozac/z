@@ -133,6 +133,21 @@ The first tier borrows `task` only for the synchronous callback. Z rejects
 storing, returning, or suspending with it, while hover and autocomplete expose
 the imported `WKURLSchemeTask` methods.
 
+Received Objective-C blocks are typed Z callables:
+
+```z
+function decide(
+  in webView: WebKit.WKWebView,
+  in action: WebKit.WKNavigationAction,
+  in decisionHandler: (policy: WebKit.WKNavigationActionPolicy) => void
+): void as "webView:decidePolicyForNavigationAction:decisionHandler:" {
+  decisionHandler(WebKit.WKNavigationActionPolicyAllow);
+}
+```
+
+`in` expresses the callback-time borrow. If the function value is copied into
+owned Z storage, its ARC bridge retains the native block safely.
+
 ```z
 const controller = new TableController({});
 const binding = objc.bind(tableView, {

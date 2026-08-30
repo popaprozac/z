@@ -892,6 +892,24 @@ the imported protocol. This first tier is a synchronous non-escaping borrow;
 storing or returning `task`, or carrying it across suspension, is rejected.
 The generated Objective-C receives the original object reference directly.
 
+Received Objective-C blocks likewise preserve a callable surface:
+
+```zs
+function decidePolicyForNavigationAction(
+  in webView: WebKit.WKWebView,
+  in action: WebKit.WKNavigationAction,
+  in decisionHandler: (policy: WebKit.WKNavigationActionPolicy) => void
+): void as "webView:decidePolicyForNavigationAction:decisionHandler:" {
+  decisionHandler(WebKit.WKNavigationActionPolicyAllow);
+}
+```
+
+The block parameter must use `in`. The generated adapter invokes it through a
+typed stack callable and owns one ARC block box. If Z copies the callable into
+owned storage, its existing function-value retain/release path keeps that box
+and the copied native block alive; otherwise both are released when the native
+callback returns.
+
 Protocol properties such as `NSTableView.dataSource` and `.delegate` are
 zeroing `weak`. `objc.bind(object, { property: controller })` installs generated
 adapters and returns an owned `objc.Binding` token that keeps the native object,

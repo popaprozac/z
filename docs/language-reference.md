@@ -3564,6 +3564,23 @@ when the destination is explicitly `String`; nullable values must be narrowed
 first. Console formatting can inspect a non-null `NSString` directly without
 creating that owned copy.
 
+An Objective-C protocol callback may also receive a block. It is written as an
+ordinary function type with `in`:
+
+```zs
+function decide(
+  in webView: WebKit.WKWebView,
+  in action: WebKit.WKNavigationAction,
+  in decisionHandler: (policy: WebKit.WKNavigationActionPolicy) => void
+): void as "webView:decidePolicyForNavigationAction:decisionHandler:" {
+  decisionHandler(WebKit.WKNavigationActionPolicyAllow);
+}
+```
+
+The adapter preserves the native block under ARC. Synchronous invocation uses
+the borrowed callable directly; an ordinary managed function-value copy may
+retain it beyond the callback.
+
 An owned opaque C handle with a complete `.zd` release contract is nameable
 through its import namespace:
 

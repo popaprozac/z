@@ -4429,9 +4429,17 @@ custom-scheme tasks as `id<WKURLSchemeTask>`. Z now preserves that as the
 nominal borrowed type `WebKit.WKURLSchemeTask`, provides checked method
 dispatch plus hover/completion, emits the original object reference directly,
 and rejects storage or suspension. This removes one concrete reason for custom
-scheme policy to remain in handwritten Objective-C. Received block parameters,
-owned byte projection into `NSData`, embedded assets, and explicit autorelease
-pool scopes remain the next migration blockers.
+scheme policy to remain in handwritten Objective-C.
+
+The next gap closed immediately afterward: protocol callbacks may receive
+Objective-C blocks as typed `in` Z function values. A generated ARC box copies
+the native block and participates in the normal function-value retain/release
+path, so a callback can invoke it synchronously or deliberately preserve it
+without dangling. A native runtime fixture returns from the Objective-C
+callback before invoking the Z-stored function, proving the owned escape rather
+than only compiling the bridge. Owned byte projection into `NSData`, embedded
+assets, and explicit autorelease pool scopes remain the next migration
+blockers.
 
 ## Not tested yet
 

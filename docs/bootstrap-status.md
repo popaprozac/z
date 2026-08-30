@@ -230,6 +230,12 @@ release it deterministically.
 | Swift value via C++ | Implemented probes | Native static construction, associated-value enum case factories, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
 | Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, protocols, errors, async, packages; Swift 6.2 currently withholds noncopyable values and async functions from its generated C++ interface |
 
+The Stage 0 Objective-C slice also preserves protocol-qualified callback
+receivers as non-escaping borrowed values and presents received native blocks
+as typed `in` callables. Copying one of those callables into owned Z storage
+retains its ARC block bridge, so it remains valid after the native callback
+returns.
+
 Current interop gaps that block a richer desktop application include
 broader Objective-C block shapes, inherited/generic protocol edge cases,
 runtime availability guards, cross-compilation, and API notes at SDK scale.
