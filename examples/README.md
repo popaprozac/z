@@ -125,6 +125,9 @@ support or producing language-server diagnostics from hypothetical imports.
   reads its length and borrows it as `Slice<u8>` without runtime allocation.
 - [`embedded-data.zs`](interop/objc/embedded-data.zs): wraps static embedded
   storage in Foundation `NSData` without copying or transferring cleanup.
+- [`autorelease-pool.zs`](interop/objc/autorelease-pool.zs): returns an owned
+  value and propagates a typed failure through a synchronous lexical
+  `objc.pool`, which drains before either outcome leaves.
 - [`source-inspector`](applications/source-inspector): a multi-module source tool
   that tokenizes real Z code with checked UTF-8 byte offsets, owned token copies,
   exact parser-facing kinds, template interpolation, decimal/exponent numbers,

@@ -206,6 +206,7 @@ policy when Z is intended to remain the sole owner; AppKit windows use
 | Native shape | Preferred Z surface |
 | --- | --- |
 | Normal class, property, method, constant, nullable reference, or typed block | Direct header import |
+| Lexically bounded temporary Objective-C work | `objc.pool` |
 | Weak target plus selector | `objc.connect` |
 | Protocol adapter stored by weak properties | `objc.bind` |
 | Retained handler with paired add/remove calls | `objc.register` |
@@ -214,11 +215,22 @@ policy when Z is intended to remain the sole owner; AppKit windows use
 not a generic message-send wrapper and should not sit between Z and APIs Clang
 already describes safely.
 
+```z
+const result = try objc.pool((): WorkResult throws WorkError => {
+  return try performObjectiveCWork();
+});
+```
+
+`objc.pool` is synchronous and non-escaping. It lowers directly to
+`@autoreleasepool`, drains before returning or propagating a typed error, and
+rejects borrowed/view results or async closure bodies.
+
 :::note[Cost model]
 Ordinary calls lower to direct Objective-C message sends under ARC. Runtime
-class narrowing adds one class-test message. `objc.connect`, `bind`, and
-`register` allocate or retain the explicit adapter/lifetime state required to
-make the native convention safe.
+class narrowing adds one class-test message. `objc.pool` adds only the native
+pool push/pop implied by `@autoreleasepool`; it allocates no Z wrapper.
+`objc.connect`, `bind`, and `register` allocate or retain the explicit
+adapter/lifetime state required to make the native convention safe.
 :::
 
 Runnable examples:

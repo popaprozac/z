@@ -4449,8 +4449,12 @@ must prove the native deallocator. Compile-time assets now close the safe
 zero-copy case: `embed.bytes("./asset")` emits immutable process-lifetime native
 storage and `Foundation.NSData.borrow(asset)` wraps it with `freeWhenDone:NO`.
 Ordinary runtime storage is rejected by that bridge, keeping the lifetime proof
-visible. Fixed-point lowering of the compile-time intrinsic and explicit
-autorelease-pool scopes remain the next migration blockers.
+visible. The explicit pool blocker is now closed in Stage 0. `objc.pool` accepts one
+synchronous non-escaping closure, returns independently owned values, drains on
+typed failure, and lowers to a lexical `@autoreleasepool` without allocating a
+pool object. A native fixture observes one autoreleased Objective-C instance
+inside the closure and zero immediately afterward on both normal and throwing
+paths. Fixed-point lowering of `embed.bytes` and `objc.pool` remains staged.
 
 ## Not tested yet
 

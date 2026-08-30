@@ -2627,6 +2627,24 @@ window.initWithContentRect(
 );
 ```
 
+Long-running loops and bounded units of native work may drain temporary objects
+earlier through the explicit standard-library scope:
+
+```zs
+import objc from "std/objc";
+
+const value = try objc.pool((): ResultValue throws NativeError => {
+  return try performNativeWork();
+});
+```
+
+`objc.pool` is a synchronous, non-escaping closure call lowered directly to a
+lexical `@autoreleasepool`. It adds no pool object or heap allocation. Normal
+results leave only when independently owned or cleanup-free; views and Slices
+cannot escape. Typed failures propagate only after the pool drains. Async
+closures are rejected because a lexical autorelease pool cannot remain live
+across suspension.
+
 The first selector component remains the TypeScript-style method name. Labeled
 calls resolve exact selector components and remove ambiguity. For now labels are
 reserved for imported Objective-C methods so the bootstrap does not prematurely

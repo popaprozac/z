@@ -1911,6 +1911,52 @@ hostToolchainTest("retains owned Z closure environments across Objective-C block
   );
 }, 30_000);
 
+hostToolchainTest("drains explicit lexical Objective-C autorelease pools", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/interop/objc/autorelease-pool.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+
+  assert.equal(artifact.language, "objective-c");
+  assert.match(artifact.source, /static Z_Result_String_PoolError z_objc_autorelease_pool_[0-9]+/);
+  assert.match(artifact.source, /@autoreleasepool \{\n    return callback\.call\(callback\.context\);\n  \}/);
+  assert.doesNotMatch(artifact.source, /NSAutoreleasePool/);
+
+  const exampleResult = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(exampleResult.status, 0, exampleResult.stderr);
+
+  const lifetimeFixture = resolve(projectRoot, "tests/fixtures/objc-autorelease-pool.zs");
+  const lifetimeResult = spawnSync(process.execPath, [cli, "run", lifetimeFixture], { encoding: "utf8" });
+  assert.equal(lifetimeResult.status, 0, lifetimeResult.stderr);
+
+  const asyncFixture = resolve(projectRoot, "tests/fixtures/objc-autorelease-pool-async.zs");
+  const asyncArtifact = compileToNative(readFileSync(asyncFixture, "utf8"), asyncFixture);
+  assert.match(asyncArtifact.source, /z_objc_autorelease_pool_[0-9]+\(/);
+  const asyncResult = spawnSync(process.execPath, [cli, "run", asyncFixture], { encoding: "utf8" });
+  assert.equal(asyncResult.status, 0, asyncResult.stderr);
+
+  const poolOffset = source.indexOf("objc.pool") + "objc.".length + 1;
+  assert.match(hover(source, example, poolOffset)?.contents.value ?? "", /lexical Objective-C autorelease pool/);
+  const incomplete = source.replace("objc.pool", "objc.po");
+  const completionOffset = incomplete.indexOf("objc.po") + "objc.po".length;
+  assert.ok(completions(incomplete, example, completionOffset).some((item) => item.label === "pool"));
+
+  const unhandled = source.replace("return try objc.pool", "return objc.pool");
+  assert.match(diagnostics(unhandled, example)[0]?.message ?? "", /throwing objc\.pool requires `attempt` or `try`/);
+  const suspending = source.replace("(): String throws PoolError", "async (): String throws PoolError");
+  assert.match(diagnostics(suspending, example)[0]?.message ?? "", /objc\.pool requires a synchronous closure/);
+
+  const escapingView = `
+    import objc from "std/objc";
+    struct Value { id: i32; }
+    function inspect(in value: Value): i32 {
+      const escaped = objc.pool((): view Value => value);
+      return escaped.id;
+    }
+  `;
+  assert.match(diagnostics(escapingView, "objc-pool-view.zs")[0]?.message ?? "", /closures cannot return receiver-tied views|borrowed value cannot escape objc\.pool/);
+}, 20_000);
+
 hostToolchainTest("enters the captured Z runtime for arbitrary-thread Objective-C blocks", () => {
   if (process.platform !== "darwin") return;
   const fixture = resolve(projectRoot, "tests/fixtures/objc-block-runtime-entry.zs");

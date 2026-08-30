@@ -23,6 +23,7 @@ import type {
   IntegerConversion,
   IntegerOperation,
   MutexWithLockCallInfo,
+  ObjCAutoreleasePoolCallInfo,
   ObjCBindingPlan,
   ObjCRegistrationPlan,
   ObjCProtocolConformance,
@@ -759,6 +760,9 @@ export function generateC(
   for (const [offset, call] of semanticInfo.mutexWithLockCalls) {
     lines.push(`${generateMutexWithLockSignature(offset, call, structs, enums, semanticInfo)};`);
   }
+  for (const [offset, call] of semanticInfo.objcAutoreleasePoolCalls) {
+    lines.push(`${generateObjCAutoreleasePoolSignature(offset, call, structs, enums, semanticInfo)};`);
+  }
   for (const declaration of program.functions) {
     lines.push(`${generateFunctionSignature(declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
   }
@@ -789,6 +793,9 @@ export function generateC(
   }
   for (const [offset, call] of semanticInfo.mutexWithLockCalls) {
     lines.push(generateMutexWithLockHelper(offset, call, structs, enums, semanticInfo), "");
+  }
+  for (const [offset, call] of semanticInfo.objcAutoreleasePoolCalls) {
+    lines.push(generateObjCAutoreleasePoolHelper(offset, call, structs, enums, semanticInfo), "");
   }
 
   for (const adapter of foreignCallbackAdapters) {
@@ -1178,6 +1185,41 @@ function generateMutexWithLockHelper(
   if (pthread_mutex_unlock(&mutex.storage->native) != 0) abort();
 #endif
   ${returned}
+}`;
+}
+
+function generateObjCAutoreleasePoolSignature(
+  offset: number,
+  call: ObjCAutoreleasePoolCallInfo,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const effectiveReturn = call.errorType
+    ? resultTypeName(call.returnType, call.errorType)
+    : call.returnType;
+  return `static ${mapType(effectiveReturn, structs, enums, semanticInfo.foreignNamedTypes)} ${objcAutoreleasePoolName(offset)}(${mapType(call.functionType, structs, enums, semanticInfo.foreignNamedTypes)} callback)`;
+}
+
+function generateObjCAutoreleasePoolHelper(
+  offset: number,
+  call: ObjCAutoreleasePoolCallInfo,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const effectiveReturn = call.errorType
+    ? resultTypeName(call.returnType, call.errorType)
+    : call.returnType;
+  const invoke = "callback.call(callback.context)";
+  const body = effectiveReturn === "void"
+    ? `${invoke};\n    return;`
+    : `return ${invoke};`;
+  return `${generateObjCAutoreleasePoolSignature(offset, call, structs, enums, semanticInfo)} {
+  if (callback.call == NULL) abort();
+  @autoreleasepool {
+    ${body}
+  }
 }`;
 }
 
@@ -8671,6 +8713,10 @@ function throwingCallResultType(expression: Expression, context: GenerationConte
     if (mutexWithLock?.errorType) {
       return resultTypeName(mutexWithLock.returnType, mutexWithLock.errorType);
     }
+    const autoreleasePool = context.semanticInfo.objcAutoreleasePoolCalls.get(expression.location.offset);
+    if (autoreleasePool?.errorType) {
+      return resultTypeName(autoreleasePool.returnType, autoreleasePool.errorType);
+    }
     const standard = context.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
     if (standard) {
       const signature = standardFunctionSignature(standard);
@@ -10063,6 +10109,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const mutexWithLock = context.semanticInfo.mutexWithLockCalls.get(expression.location.offset);
       if (mutexWithLock && expression.callee.kind === "member") {
         return `${mutexWithLockName(expression.location.offset)}(${generateExpression(expression.callee.object, context)}, ${generateCallArgument(expression.arguments[0], context)})`;
+      }
+      const autoreleasePool = context.semanticInfo.objcAutoreleasePoolCalls.get(expression.location.offset);
+      if (autoreleasePool) {
+        return `${objcAutoreleasePoolName(expression.location.offset)}(${generateCallArgument(expression.arguments[0], context)})`;
       }
       const onceInitialize = context.semanticInfo.onceInitializeCalls.get(expression.location.offset);
       if (onceInitialize && expression.callee.kind === "member") {
@@ -12171,6 +12221,10 @@ function mutexDeinitName(valueType: string): string {
 
 function mutexWithLockName(offset: number): string {
   return `z_mutex_with_lock_${offset}`;
+}
+
+function objcAutoreleasePoolName(offset: number): string {
+  return `z_objc_autorelease_pool_${offset}`;
 }
 
 function arrayName(name: string): string {

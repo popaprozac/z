@@ -193,6 +193,7 @@ export function standardModuleMemberNames(module: StandardModuleName): readonly 
   if (module === "embed") return ["bytes", "StaticBytes"];
   if (module === "thread") return ["spawn", "main", "any"];
   if (module === "objc") return [
+    "pool",
     "connect",
     "bind",
     "register",

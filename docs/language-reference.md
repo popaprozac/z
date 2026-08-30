@@ -3648,7 +3648,15 @@ released.
 Runtime conventions that cannot be represented as an ordinary imported call
 use explicit standard-library adapters. `import objc from "std/objc";` is not
 needed for normal classes, methods, properties, constants, nullability, or
-blocks. Its first adapter, `objc.connect(control, move () => { ... })`, owns the
+blocks.
+
+`objc.pool(() => { ... })` runs one synchronous inline closure inside a lexical
+Objective-C autorelease pool. It returns independently owned or cleanup-free
+values and preserves typed failures, draining before either leaves. Borrowed
+views and Slices cannot escape, and the closure cannot be async. Lowering emits
+`@autoreleasepool` directly without allocating a pool object.
+
+`objc.connect(control, move () => { ... })` owns the
 native target/action control and Z closure, installs the target plus selector,
 and returns an `objc.Connection`. The connection must remain bound while the
 callback is desired; its precise scope lifetime and teardown prevent a weak

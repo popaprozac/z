@@ -180,6 +180,13 @@ export type MutexWithLockCallInfo = {
   readonly errorType: string | null;
 };
 
+export type ObjCAutoreleasePoolCallInfo = {
+  readonly closureOffset: number;
+  readonly functionType: string;
+  readonly returnType: string;
+  readonly errorType: string | null;
+};
+
 export type SemanticFunctionCallResolution = {
   readonly location: SourceLocation;
   readonly declaration: FunctionDeclaration;
@@ -473,6 +480,7 @@ export type SemanticInfo = {
   readonly cstringConversions: ReadonlySet<number>;
   readonly optionFromNullable: ReadonlySet<number>;
   readonly objcConnectionCalls: ReadonlySet<number>;
+  readonly objcAutoreleasePoolCalls: ReadonlyMap<number, ObjCAutoreleasePoolCallInfo>;
   readonly expressionTypes: ReadonlyMap<number, string>;
   readonly bindingTypes: ReadonlyMap<number, string>;
   readonly borrowedMatches: ReadonlySet<number>;
@@ -641,6 +649,7 @@ type AnalysisState = {
   readonly cstringConversions: Set<number>;
   readonly optionFromNullable: Set<number>;
   readonly objcConnectionCalls: Set<number>;
+  readonly objcAutoreleasePoolCalls: Map<number, ObjCAutoreleasePoolCallInfo>;
   readonly expressionTypes: Map<number, string>;
   readonly bindingTypes: Map<number, string>;
   readonly resolvedFields: Map<number, StructDeclaration["fields"][number]>;
@@ -965,6 +974,9 @@ export function analyze(
   let cPlusPlus = false;
   const rawLanguages = collectRawNativeLanguages(program);
   if (rawLanguages.has("objc")) objectiveC = true;
+  if (program.imports.some((declaration) => declaration.header === "std/objc")) {
+    objectiveC = true;
+  }
   if (rawLanguages.has("cpp")) cPlusPlus = true;
   for (const module of foreignModules.values()) {
     for (const [name, type] of module.types) foreignTypes.set(name, type);
@@ -1174,6 +1186,7 @@ export function analyze(
     cstringConversions: new Set(),
     optionFromNullable: new Set(),
     objcConnectionCalls: new Set(),
+    objcAutoreleasePoolCalls: new Map(),
     expressionTypes: new Map(),
     bindingTypes: new Map(),
     resolvedFields: new Map(),
@@ -10837,6 +10850,86 @@ function inferExpressionInner(
           const owner = globals.get(localModuleName);
           if (owner?.kind === "standardModule") {
             if (owner.module === "objc") {
+              if (expression.callee.property === "pool") {
+                rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+                if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "closure") {
+                  throw new DiagnosticError(fileName, expression.location, "objc.pool expects one inline synchronous closure", {
+                    code: "Z0813",
+                    helps: [`pass an inline closure to ${localModuleName}.pool, and use try or attempt when that closure throws`],
+                  });
+                }
+                const operation = expression.arguments[0];
+                if (operation.async) {
+                  throw new DiagnosticError(fileName, operation.location, "objc.pool requires a synchronous closure that cannot suspend", {
+                    code: "Z0813",
+                    notes: ["the autorelease pool is drained when the closure returns or throws"],
+                    helps: ["finish Objective-C temporary work before awaiting, or create a separate pool around each synchronous segment"],
+                  });
+                }
+                if (operation.parameters.length !== 0) {
+                  throw new DiagnosticError(fileName, operation.location, `objc.pool expects a zero-parameter closure, found ${operation.parameters.length}`, {
+                    code: "Z0813",
+                  });
+                }
+                inferClosureExpression(
+                  operation,
+                  locals,
+                  globals,
+                  structs,
+                  enums,
+                  fileName,
+                  state,
+                  {
+                    transientBorrow: true,
+                    executionContext: "inherit",
+                  },
+                );
+                const closure = state.closures.get(operation.location.offset)!;
+                const functionType = closureFunctionType(closure);
+                if (
+                  containsStoredViewType(functionType.returnType, structs, enums)
+                  || containsSliceType(functionType.returnType)
+                ) {
+                  throw new DiagnosticError(fileName, operation.returnType?.location ?? operation.location, "a borrowed value cannot escape objc.pool", {
+                    code: "Z0206",
+                    notes: ["the autorelease pool and its synchronous temporary borrows end before objc.pool returns"],
+                    helps: ["return an independently owned copy or a cleanup-free value"],
+                  });
+                }
+                const callableType = functionTypeName(
+                  functionType.parameters,
+                  functionType.returnType,
+                  functionType.errorType,
+                );
+                finalizeClosureFunctionValue(
+                  operation,
+                  functionType,
+                  callableType,
+                  locals,
+                  structs,
+                  enums,
+                  fileName,
+                  state,
+                  true,
+                );
+                if (functionType.errorType && !allowThrowingCall) {
+                  throw new DiagnosticError(fileName, expression.location, "throwing objc.pool requires `attempt` or `try`", {
+                    code: "Z0301",
+                    notes: ["the autorelease pool is drained before the typed error propagates"],
+                  });
+                }
+                state.objcAutoreleasePoolCalls.set(expression.location.offset, {
+                  closureOffset: operation.location.offset,
+                  functionType: callableType,
+                  returnType: functionType.returnType,
+                  errorType: functionType.errorType,
+                });
+                const result = functionType.errorType
+                  ? resultTypeName(functionType.returnType, functionType.errorType)
+                  : functionType.returnType;
+                state.expressionTypes.set(expression.location.offset, result);
+                return result;
+              }
               if (expression.callee.property === "register") {
                 rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
                 if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "objectExpression") {
@@ -10939,7 +11032,7 @@ function inferExpressionInner(
               }
               if (expression.callee.property !== "connect") {
                 throw new DiagnosticError(fileName, expression.callee.location, `objc has no method ${JSON.stringify(expression.callee.property)}`, {
-                  helps: [`use ${localModuleName}.connect(control, move () => operation()), ${localModuleName}.bind(object, { delegate: controller }), or ${localModuleName}.register({ add: ..., remove: ... })`],
+                  helps: [`use ${localModuleName}.pool(() => operation()), ${localModuleName}.connect(control, move () => operation()), ${localModuleName}.bind(object, { delegate: controller }), or ${localModuleName}.register({ add: ..., remove: ... })`],
                 });
               }
               rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);

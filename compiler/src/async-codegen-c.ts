@@ -7161,6 +7161,10 @@ function emitFrameExpressionInner(
       if (mutexWithLock && expression.callee.kind === "member") {
         return `${asyncMutexWithLockName(expression.location.offset)}(${emitFrameExpression(expression.callee.object, plan, fileName)}, ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
       }
+      const autoreleasePool = plan.types.semanticInfo.objcAutoreleasePoolCalls.get(expression.location.offset);
+      if (autoreleasePool) {
+        return `${asyncObjCAutoreleasePoolName(expression.location.offset)}(${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+      }
       const onceInitialize = plan.types.semanticInfo.onceInitializeCalls.get(expression.location.offset);
       if (onceInitialize && expression.callee.kind === "member") {
         return `${asyncOnceInitializeName(onceInitialize)}(&(${emitFrameExpression(expression.callee.object, plan, fileName)}), ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
@@ -7686,6 +7690,10 @@ function asyncMutexDeinitName(valueType: string): string {
 
 function asyncMutexWithLockName(offset: number): string {
   return `z_mutex_with_lock_${offset}`;
+}
+
+function asyncObjCAutoreleasePoolName(offset: number): string {
+  return `z_objc_autorelease_pool_${offset}`;
 }
 
 function asyncGeneratorCName(type: string): string {

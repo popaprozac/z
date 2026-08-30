@@ -1442,6 +1442,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         word.end,
       );
     }
+    if (standardOwner === "objc" && word.text === "pool") {
+      return markdownHover(
+        "pool<T, E?>(operation: () => T throws E?): T throws E?  // runs synchronously inside a lexical Objective-C autorelease pool",
+        source,
+        word.start,
+        word.end,
+      );
+    }
     if (standardOwner === "objc" && word.text === "connect") {
       return markdownHover(
         "connect(control: Objective-C target/action object, operation: move () => void): objc.Connection  // owns the control and callback lifetime",
@@ -4914,6 +4922,8 @@ function memberCompletions(
         kind: completionKinds.method,
         detail: standardModule === "thread" && member === "spawn"
           ? "spawn<T, E?>(operation: () => T throws E?): Task<T, E?>  // starts one native thread; sync or worker-affine async closure"
+          : standardModule === "objc" && member === "pool"
+            ? "pool<T, E?>(operation: () => T throws E?): T throws E?  // synchronous lexical autorelease pool"
           : standardModule === "objc" && member === "connect"
             ? "connect(control: Objective-C target/action object, operation: move () => void): objc.Connection"
             : standardModule === "objc" && member === "bind"

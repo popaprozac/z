@@ -242,6 +242,7 @@ boundary**, not a claim that every bridge operation is free:
 | C record by value or scoped borrow | Native layout and calling convention; no wrapper allocation |
 | Objective-C method or property | Ordinary `objc_msgSend`-family dispatch under Clang ARC |
 | `objc.connect` target/action bridge | One ARC connection allocation, indirect closure call, and an owned environment allocation only when the closure captures; the connection retains the native control |
+| `objc.pool` lexical temporary scope | Native autorelease-pool push/pop only; no Z wrapper or heap allocation |
 | Z-defined Objective-C protocol conformance | One ARC adapter allocation per distinct bound Z controller; selector dispatch forwards directly to generated Z method functions |
 | `objc.bind` weak protocol properties | One ARC binding token plus adapter array; retains the native object, adapters, and Z controllers for the token lifetime |
 | `objc.register` method registration | One ARC registration token plus one protocol adapter; retains the receiver and Z controller, calls the native add method once, and calls its checked remove method once during cleanup |
@@ -841,9 +842,26 @@ gives the true branch the concrete imported class surface. Protocol conformance
 tests and general Z-class reflection are separate future capabilities.
 
 `std/objc` is the explicit bridge layer for runtime conventions that a header
-cannot express as an ordinary typed call. The first such convention is
-target/action: AppKit exposes a weak target object plus a `SEL`, while Z source
-wants an owned closure with a clear lifetime.
+cannot express as an ordinary typed call. Explicit temporary-object lifetime is
+one such convention:
+
+```zs
+import objc from "std/objc";
+
+const result = try objc.pool((): WorkResult throws WorkError => {
+  return try performObjectiveCWork();
+});
+```
+
+The closure is synchronous and non-escaping. Lowering emits one lexical
+`@autoreleasepool`, with no pool object or heap allocation. Independently owned
+and cleanup-free results may leave; borrowed views and Slices may not. If the
+closure throws, the generated pool drains before its typed error propagates.
+An async closure is rejected rather than holding native temporary lifetime
+across suspension.
+
+Another such convention is target/action: AppKit exposes a weak target object
+plus a `SEL`, while Z source wants an owned closure with a clear lifetime.
 
 ```z
 import objc from "std/objc";
