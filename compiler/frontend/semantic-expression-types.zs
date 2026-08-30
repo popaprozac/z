@@ -310,10 +310,18 @@ export function requireExpressionType(
     expected == "String"
     && isNativeObjectiveCStringType(modules, moduleIndex, actual)
   ) return;
-  if (
-    actual == "String"
-    && isNativeObjectiveCStringType(modules, moduleIndex, expected)
-  ) return;
+  if (actual == "String") {
+    let objectiveCExpected = expected.copyBytes(0, expected.byteLength);
+    const nullableTarget = nullableTargetType(expected);
+    if (nullableTarget.byteLength > 0) {
+      objectiveCExpected = move nullableTarget;
+    }
+    if (isNativeObjectiveCStringType(
+      modules,
+      moduleIndex,
+      objectiveCExpected
+    )) return;
+  }
   if (
     isNumericTypeName(expected)
     && isNumericTypeName(actual)

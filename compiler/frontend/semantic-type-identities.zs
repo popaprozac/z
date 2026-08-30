@@ -546,6 +546,22 @@ function symbolTypeIdentity(
           location.symbolIndex
         ].foreignHeader.byteLength > 0
       ) {
+        if (
+          signature.foreignKind == "objcInterface"
+          || signature.foreignKind == "objcProtocol"
+        ) {
+          let objectiveCName = signature.foreignNativeName.copyBytes(
+            0,
+            signature.foreignNativeName.byteLength
+          );
+          if (signature.foreignCanonicalNativeName.byteLength > 0) {
+            objectiveCName = signature.foreignCanonicalNativeName.copyBytes(
+              0,
+              signature.foreignCanonicalNativeName.byteLength
+            );
+          }
+          return `@objc:${signature.foreignKind}:${objectiveCName}`;
+        }
         if (signature.foreignCanonicalNativeName.byteLength > 0) {
           return `@foreign:${modules[location.moduleIndex].symbols[location.symbolIndex].foreignHeader}:${signature.foreignCanonicalNativeName}`;
         }

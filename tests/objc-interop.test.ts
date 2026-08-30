@@ -2578,5 +2578,8 @@ hostToolchainTest("copies owned Z strings across NSString boundaries without los
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "round trip=answer=42\nembedded=a\0b\n");
+  assert.equal(
+    result.stdout,
+    "round trip=answer=42\nnullable=answer=42\nnarrowed=yes\nembedded=a\0b\n",
+  );
 }, 10_000);

@@ -164,15 +164,18 @@ separate follow-ups.
 
 ## Pressure 4: owned strings across Objective-C
 
-Resolved for non-null `NSString` boundaries. Computed Z strings can populate
-Objective-C properties and arguments. Z passes `data + length` into an ARC
-`NSString`, so embedded NUL bytes are preserved. In the reverse direction, an
-explicit `String` destination copies a non-null `NSString` into fresh owned Z
-storage using its exact UTF-8 byte length.
+Resolved for both non-null and nullable `NSString` inputs. A non-null computed
+Z string can populate either Objective-C shape; Z passes `data + length` into
+an ARC `NSString`, so embedded NUL bytes are preserved without making `null`
+part of Z's ordinary String model. In the reverse direction, an explicit
+`String` destination copies a non-null `NSString` into fresh owned Z storage
+using its exact UTF-8 byte length.
 
 The copy is intentional: a Z `String` never borrows storage returned by
 `UTF8String`, whose lifetime belongs to the Objective-C object. Nullable
-`NSString` cannot convert until it is narrowed. Other encodings, zero-copy
+`NSString` cannot convert or receive member calls until it is narrowed. Native
+flow evidence now carries that proof through short-circuit conditions such as
+`value != null && value.isEqualToString(...)`. Other encodings, zero-copy
 views, mutable strings, and explicit conversion APIs remain later pressure
 tests.
 
@@ -4522,14 +4525,28 @@ separate convention-specific tools: `objc.connect` for target/action,
 `objc.bind` for zeroing weak properties, `objc.register` for paired add/remove
 lifetimes, and `objc.adapt` for retained or stored protocol arguments.
 
+With the handler identity Z-owned, the next extraction moved the complete
+embedded-asset request policy into the Z protocol implementation: origin and
+path validation, SPA fallback, asset selection, MIME and encoding choice,
+`NSURLResponse` construction, and WebKit delivery. Handwritten Objective-C now
+only exposes immutable generated asset-table entries, decompresses Brotli
+bytes into ARC `NSData`, and constructs the native `NSError` used by WebKit.
+The packaged two-window Z Notes smoke test exercises this path end to end.
+
+That migration also closed two native-frontend seams. Objective-C class and
+protocol identity is now canonical by Clang runtime name, so `NSString` or
+`id<P>` surfaced by independent imported headers remains one nominal native
+identity. Null narrowing now flows into the right side of short-circuit
+conditions, preserving Objective-C selector evidence rather than accepting a
+call that later degrades into invalid C member syntax.
+
 Adjacent pressure remains visible rather than being papered over: fixed-point
 loop destructuring still limits some migrations; generic `Option.some` storage
 of strong Objective-C references still needs niche-representation unification;
-captured `NSString` contextual conversion in `objc.register`, canonical
-Objective-C identity across independent metadata producers, and direct `NSRect`
-floating-point construction remain open seams. Imported Objective-C protocol
-existentials now widen safely to ordinary Objective-C `id` parameters. Free C
-functions whose signatures themselves carry Objective-C object or
+captured `NSString` contextual conversion in `objc.register` and direct
+`NSRect` floating-point construction remain open seams. Imported Objective-C
+protocol existentials now widen safely to ordinary Objective-C `id` parameters.
+Free C functions whose signatures themselves carry Objective-C object or
 `id<Protocol>` parameters remain outside the checked header-only function tier;
 use an imported Objective-C method or an explicit reviewed contract until that
 metadata path preserves ObjC identity.

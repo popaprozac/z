@@ -4,9 +4,25 @@ import Native from "objc-strings.h";
 
 function main(): i32 {
   const computed = `answer=${40 + 2}`;
-  const nativeComputed = Native.ZObjCStringFixture.echo(computed);
+  const nativeComputed = Native.ZObjCStringFixture.echo(copy computed);
   const roundTrip: String = nativeComputed;
   console.log(`round trip=${roundTrip}`);
+
+  // Objective-C class identities are global even when independent imported
+  // headers surface the same NSString declaration under different namespaces.
+  const nativeNullable: Foundation.NSString =
+    Native.ZObjCStringFixture.echoNullable(copy computed);
+  const nullableRoundTrip: String = nativeNullable;
+  console.log(`nullable=${nullableRoundTrip}`);
+
+  const maybe: Foundation.NSString | null =
+    Native.ZObjCStringFixture.maybe(computed);
+  if (maybe == null || !maybe.isEqualToString("answer=42")) return 2;
+  const maybeAnd: Foundation.NSString | null =
+    Native.ZObjCStringFixture.maybe("answer=42");
+  if (maybeAnd != null && maybeAnd.isEqualToString("answer=42")) {
+    console.log("narrowed=yes");
+  }
 
   const embedded: String = Native.ZObjCStringFixture.embeddedNull();
   const nativeEmbedded = Native.ZObjCStringFixture.echo(embedded);

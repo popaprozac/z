@@ -5,11 +5,21 @@
 
 @interface ZObjCStringFixture : NSObject
 + (NSString * _Nonnull)echo:(NSString * _Nonnull)value;
++ (NSString * _Nonnull)echoNullable:(NSString * _Nullable)value;
++ (NSString * _Nullable)maybe:(NSString * _Nullable)value;
 + (NSString * _Nonnull)embeddedNull;
 @end
 
 @implementation ZObjCStringFixture
 + (NSString * _Nonnull)echo:(NSString * _Nonnull)value {
+  return value;
+}
+
++ (NSString * _Nonnull)echoNullable:(NSString * _Nullable)value {
+  return value ?: @"";
+}
+
++ (NSString * _Nullable)maybe:(NSString * _Nullable)value {
   return value;
 }
 

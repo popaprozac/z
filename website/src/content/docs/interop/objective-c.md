@@ -29,12 +29,29 @@ app.run();
 Classes, methods, properties, constants, inheritance, nullability, and ARC
 identity come from Clang. `std/objc` is not required for ordinary message sends.
 
+Objective-C identity follows the Clang runtime name rather than the header or Z
+namespace that surfaced it. If Foundation and a vendor header both mention
+`NSString`, they describe the same nominal native class—no wrapper or cast is
+introduced. A non-null Z `String` can satisfy either a non-null or nullable
+`NSString` argument while remaining non-null itself.
+
 ## ARC identity remains explicit
 
 Imported Objective-C objects behave as shared reference identities. Assigning
 or storing one applies the imported ownership convention and generated ARC
 retains/releases. Nullable native references remain `T | null` and must be
 narrowed before use.
+
+Short-circuit guards preserve that proof for the expression to their right:
+
+```z
+const title: Foundation.NSString | null = window.title;
+
+if (title != null && title.isEqualToString("Ready")) {
+  const owned: String = title;
+  publish(move owned);
+}
+```
 
 Dynamic `id` does not become a Z `any`. Narrow with a native class test:
 

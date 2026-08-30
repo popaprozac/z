@@ -3848,6 +3848,66 @@ function inferExpressionNodeTypeExpected(
   return inferred;
 }
 
+function applyNullConditionNarrowing(
+  in tree: ExpressionTree,
+  index: usize,
+  conditionIsTrue: boolean,
+  inout bindings: Array<NativeValueBinding>
+): void {
+  const node = view tree.nodes[index];
+  const children = copyIndices(node.children);
+  if (
+    node.kind == ExpressionKind.unaryExpression
+    && node.value == "!"
+    && children.length == 1
+  ) {
+    applyNullConditionNarrowing(
+      tree,
+      children[0],
+      !conditionIsTrue,
+      inout bindings
+    );
+    return;
+  }
+  if (
+    node.kind != ExpressionKind.binaryExpression
+    || children.length != 2
+  ) return;
+  if (node.value == "&&" && conditionIsTrue) {
+    applyNullConditionNarrowing(tree, children[0], true, inout bindings);
+    applyNullConditionNarrowing(tree, children[1], true, inout bindings);
+    return;
+  }
+  if (node.value == "||" && !conditionIsTrue) {
+    applyNullConditionNarrowing(tree, children[0], false, inout bindings);
+    applyNullConditionNarrowing(tree, children[1], false, inout bindings);
+    return;
+  }
+  if (node.value != "==" && node.value != "!=") return;
+  const left = children[0];
+  const right = children[1];
+  let bindingNode = tree.nodes.length;
+  if (
+    tree.nodes[left].kind == ExpressionKind.identifierExpression
+    && tree.nodes[right].kind == ExpressionKind.nullExpression
+  ) bindingNode = left;
+  else if (
+    tree.nodes[right].kind == ExpressionKind.identifierExpression
+    && tree.nodes[left].kind == ExpressionKind.nullExpression
+  ) bindingNode = right;
+  if (bindingNode >= tree.nodes.length) return;
+  const provesNonNull = node.value == "!="
+    ? conditionIsTrue
+    : !conditionIsTrue;
+  if (!provesNonNull) return;
+  const bindingName = identifierLookupName(tree.nodes[bindingNode].value);
+  const currentType = valueBindingType(bindings, bindingName);
+  const target = nullableTargetType(currentType);
+  if (target.byteLength > 0) {
+    setValueBindingType(inout bindings, bindingName, target);
+  }
+}
+
 function recordInferredOutBinding(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -6237,6 +6297,12 @@ function inferExpressionNodeType(
     if (value == "&&" || value == "||") {
       const beforeRight = copyValueBindings(bindings);
       let rightBindings = copyValueBindings(bindings);
+      applyNullConditionNarrowing(
+        tree,
+        children[0],
+        value == "&&",
+        inout rightBindings
+      );
       const right = try inferExpressionNodeType(
         module,
         modules,

@@ -826,6 +826,23 @@ const window = AppKit.NSWindow.alloc().initWithContentRect(
 window.title = "Z Notes";
 ```
 
+Objective-C nominal identity follows the Clang runtime name, not the particular
+header or Z namespace that surfaced it. If a vendor header and Foundation both
+mention `NSString`, those declarations describe the same imported class and
+cross the boundary without a wrapper or cast. A non-null Z `String` may satisfy
+either `NSString * _Nonnull` or `NSString * _Nullable`; the latter accepts the
+value but does not make the Z string nullable. In the reverse direction, a
+nullable Objective-C result must be proven non-null before member access or
+conversion to owned `String`, including through short-circuit guards:
+
+```zs
+const title: Foundation.NSString | null = window.title;
+if (title != null && title.isEqualToString("Ready")) {
+  const owned: String = title;
+  publish(move owned);
+}
+```
+
 Dynamic Objective-C `id` results stay typed as Objective-C identity rather than
 becoming a Z `any`. Use `instanceof` when a native API requires runtime class
 inspection:

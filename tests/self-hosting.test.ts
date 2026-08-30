@@ -7631,6 +7631,41 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       protocolSource,
       /z_stage1_objc_adapt_[0-9_]+\(handler\)/,
     );
+
+    const objectiveCStringFixture = resolve(
+      projectRoot,
+      "tests/fixtures/objc-strings.zs",
+    );
+    const objectiveCStringRun = spawnSync(
+      executable,
+      ["run", objectiveCStringFixture],
+      { encoding: "utf8" },
+    );
+    assert.equal(objectiveCStringRun.status, 0, objectiveCStringRun.stderr);
+    assert.equal(
+      objectiveCStringRun.stdout.split("\n").slice(1).join("\n"),
+      "round trip=answer=42\n"
+        + "nullable=answer=42\n"
+        + "narrowed=yes\n"
+        + "embedded=a\0b\n",
+    );
+    const objectiveCStringOutput = resolve(directory, "objc-strings.m");
+    const objectiveCStringEmission = spawnSync(
+      executable,
+      ["emit", objectiveCStringFixture, objectiveCStringOutput],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      objectiveCStringEmission.status,
+      0,
+      objectiveCStringEmission.stderr,
+    );
+    const objectiveCStringSource = readFileSync(
+      objectiveCStringOutput,
+      "utf8",
+    );
+    assert.match(objectiveCStringSource, /isEqualToString:/);
+    assert.doesNotMatch(objectiveCStringSource, /\.isEqualToString\(/);
   }
 
   const contextualOptionChecking = spawnSync(

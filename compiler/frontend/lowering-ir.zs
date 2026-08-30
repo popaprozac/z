@@ -11732,6 +11732,7 @@ function lowerExpressionContextual(
         || tree.nodes[calleeInput].value == "i16"
         || tree.nodes[calleeInput].value == "i32"
         || tree.nodes[calleeInput].value == "i64"
+        || tree.nodes[calleeInput].value == "isize"
         || tree.nodes[calleeInput].value == "u8"
         || tree.nodes[calleeInput].value == "u16"
         || tree.nodes[calleeInput].value == "u32"
@@ -15036,6 +15037,45 @@ function moduleCallableAliasIndex(
   }
 }
 
+function expressionProducesZString(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (
+    tree.nodes[index].kind == ExpressionKind.stringExpression
+    || tree.nodes[index].kind == ExpressionKind.templateExpression
+  ) return true;
+  match (evidenceResolvedExpressionTypeName(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    index
+  )) {
+    some(actualTypeName) => {
+      if (actualTypeName == "String") return true;
+    }
+    none => {}
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.unaryExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const child = tree.nodes[index].children[0];
+    return expressionProducesZString(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      child
+    );
+  }
+  return false;
+}
+
 function lowerExpressionExpected(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -15047,25 +15087,31 @@ function lowerExpressionExpected(
 ): usize throws String {
   let expectedIsObjectiveCString = false;
   if (expectedTypeName.byteLength > 0) {
+    let expectedObjectiveCTypeName = expectedTypeName.copyBytes(
+      0,
+      expectedTypeName.byteLength
+    );
+    const nullableTarget = nullableTargetType(expectedTypeName);
+    if (nullableTarget.byteLength > 0) {
+      expectedObjectiveCTypeName = move nullableTarget;
+    }
     const expectedType = try lowerModuleTypeName(
       program,
       importedTypes,
-      expectedTypeName
+      expectedObjectiveCTypeName
     );
     expectedIsObjectiveCString = expectedType.kind
       == LoweredTypeKind.foreignObjCType
       && expectedType.name == "NSString";
   }
   if (expectedIsObjectiveCString) {
-    let sourceIsString = tree.nodes[index].kind
-      == ExpressionKind.stringExpression
-      || tree.nodes[index].kind == ExpressionKind.templateExpression;
-    match (resolvedExpressionTypeName(evidence, tree, index)) {
-      some(actualTypeName) => {
-        if (actualTypeName == "String") sourceIsString = true;
-      }
-      none => {}
-    }
+    const sourceIsString = expressionProducesZString(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      index
+    );
     if (sourceIsString) {
       const value = try lowerExpression(
         program,

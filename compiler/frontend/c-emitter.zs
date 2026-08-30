@@ -19194,6 +19194,10 @@ function emitLoweredC(
   output.append("  if (value > INT32_MAX) abort();\n");
   output.append("  return (int32_t)value;\n");
   output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) intptr_t z_stage1_checked_convert_usize_to_isize(size_t value) {\n");
+  output.append("  if (value > (size_t)INTPTR_MAX) abort();\n");
+  output.append("  return (intptr_t)value;\n");
+  output.append("}\n\n");
   output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_convert_i64_to_i32(int64_t value) {\n");
   output.append("  if (value < INT32_MIN || value > INT32_MAX) abort();\n");
   output.append("  return (int32_t)value;\n");

@@ -9302,13 +9302,24 @@ function inferExpressionInner(
         });
         return "boolean";
       }
+      const shortCircuit = expression.operator === "&&" || expression.operator === "||";
+      const beforeRight = shortCircuit ? new Map(locals) : null;
+      const rightLocals = shortCircuit
+        ? narrowedConditionLocals(
+          locals,
+          expression.left,
+          expression.operator === "&&",
+          state,
+        )
+        : locals;
       const right = implicitlyLoadCopyableView(
-        inferExpression(expression.right, locals, globals, structs, enums, fileName, state),
+        inferExpression(expression.right, rightLocals, globals, structs, enums, fileName, state),
         expression.right,
         structs,
         enums,
         state,
       );
+      if (beforeRight) mergeOwnershipStates(locals, [beforeRight, rightLocals], state);
       let canonicalLeft = canonicalType(left, state.foreignNamedTypes);
       let canonicalRight = canonicalType(right, state.foreignNamedTypes);
       if (expression.right.kind === "number" && isNumericType(canonicalLeft)) {
@@ -15743,14 +15754,22 @@ function narrowedConditionLocals(
   truthy: boolean,
   state: AnalysisState,
 ): Map<string, ValueType> {
+  if (condition.kind === "unary" && condition.operator === "!") {
+    return narrowedConditionLocals(locals, condition.operand, !truthy, state);
+  }
+  if (condition.kind === "binary" && condition.operator === "&&" && truthy) {
+    const afterLeft = narrowedConditionLocals(locals, condition.left, true, state);
+    return narrowedConditionLocals(afterLeft, condition.right, true, state);
+  }
+  if (condition.kind === "binary" && condition.operator === "||" && !truthy) {
+    const afterLeft = narrowedConditionLocals(locals, condition.left, false, state);
+    return narrowedConditionLocals(afterLeft, condition.right, false, state);
+  }
   const narrowed = new Map(locals);
   let name: string | null = null;
   let nonnull = truthy;
   if (condition.kind === "identifier") {
     name = condition.name;
-  } else if (condition.kind === "unary" && condition.operator === "!" && condition.operand.kind === "identifier") {
-    name = condition.operand.name;
-    nonnull = !truthy;
   } else if (condition.kind === "binary" && ["==", "!="].includes(condition.operator)) {
     const identifier = condition.left.kind === "identifier" && condition.right.kind === "null"
       ? condition.left

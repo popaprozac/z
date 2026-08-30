@@ -3559,10 +3559,15 @@ keeps that token and explicitly unregisters it according to the API contract.
 Weak capture can keep the persistent block from strongly cycling back to its Z
 application state. A computed Z `String` converts
 contextually to `NSString` for Objective-C arguments and properties using its
-explicit byte length. A non-null `NSString` converts to a fresh owned Z copy
-when the destination is explicitly `String`; nullable values must be narrowed
-first. Console formatting can inspect a non-null `NSString` directly without
-creating that owned copy.
+explicit byte length. The non-null Z value may satisfy either a non-null or
+nullable `NSString` parameter; this does not introduce null into `String`.
+Objective-C class and protocol identity follows the imported runtime name, so
+the same `NSString` surfaced through independent headers remains one nominal
+type. A non-null `NSString` converts to a fresh owned Z copy when the
+destination is explicitly `String`; nullable values must be narrowed first.
+Null proofs flow through short-circuit `&&`, `||`, and `!` conditions. Console
+formatting can inspect a non-null `NSString` directly without creating that
+owned copy.
 
 An Objective-C protocol callback may also receive a block. It is written as an
 ordinary function type with `in`:
