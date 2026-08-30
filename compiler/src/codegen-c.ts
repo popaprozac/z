@@ -5420,7 +5420,7 @@ function derivedJsonDecodeField(
   owner: StructDeclaration,
   field: StructDeclaration["fields"][number],
 ): string[] {
-  const destination = `value.${cBindingName(field.name)}`;
+  const destination = `value.${field.name}`;
   const failure = [
     "      if (key_live && key.capacity > 0) free((void *)key.data);",
     "      key_live = false;",
@@ -5625,7 +5625,7 @@ ${cleanup}
 function derivedJsonEncodeField(
   field: StructDeclaration["fields"][number],
 ): string {
-  const value = `(*value).${cBindingName(field.name)}`;
+  const value = `(*value).${field.name}`;
   if (field.type.name === "String") return `  z_json_derived_append_string(&output, ${value});`;
   const dynamicArray = parseDynamicArrayType(field.type.name);
   if (dynamicArray?.elementType === "String") {
