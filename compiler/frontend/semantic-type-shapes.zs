@@ -166,6 +166,57 @@ function trimmedTypeSlice(in name: String, start: usize, end: usize): String {
   return name.copyBytes(first, last);
 }
 
+// Validate a generic spelling and return only its base. Symbol lookup does not
+// need to allocate every argument merely to resolve the declaration owner.
+export function genericTypeBaseName(in name: String): Option<String> {
+  let open = name.byteLength;
+  let index: usize = 0;
+  while (index < name.byteLength) {
+    if (name.byteAt(index) == 60) {
+      open = index;
+      break;
+    }
+    index = index + 1;
+  }
+  if (open == name.byteLength || name.byteAt(name.byteLength - 1) != 62) {
+    return Option<String>.none;
+  }
+  let angleDepth: usize = 1;
+  let parenthesisDepth: usize = 0;
+  let bracketDepth: usize = 0;
+  let argumentStart = open + 1;
+  index = argumentStart;
+  while (index < name.byteLength) {
+    const byte = name.byteAt(index);
+    if (byte == 40) parenthesisDepth = parenthesisDepth + 1;
+    else if (byte == 41 && parenthesisDepth > 0) {
+      parenthesisDepth = parenthesisDepth - 1;
+    } else if (byte == 91) bracketDepth = bracketDepth + 1;
+    else if (byte == 93 && bracketDepth > 0) {
+      bracketDepth = bracketDepth - 1;
+    } else if (byte == 60) angleDepth = angleDepth + 1;
+    else if (byte == 62 && (index == 0 || name.byteAt(index - 1) != 61)) {
+      angleDepth = angleDepth - 1;
+      if (angleDepth == 0) {
+        if (index != name.byteLength - 1 || index == argumentStart) {
+          return Option<String>.none;
+        }
+        return Option.some(trimmedTypeSlice(name, 0, open));
+      }
+    } else if (
+      byte == 44
+      && angleDepth == 1
+      && parenthesisDepth == 0
+      && bracketDepth == 0
+    ) {
+      if (index == argumentStart) return Option<String>.none;
+      argumentStart = index + 1;
+    }
+    index = index + 1;
+  }
+  return Option<String>.none;
+}
+
 export function genericTypeShape(in name: String): Option<NativeGenericTypeShape> {
   let open = name.byteLength;
   let index: usize = 0;

@@ -2,6 +2,7 @@ import { TextBuffer } from "std/text";
 import { moduleSymbolIndex } from "./module-symbols.zs";
 import {
   fixedArrayShape,
+  genericTypeBaseName,
   genericTypeShape,
   isTypeSymbolKind,
   nativeFunctionSignature,
@@ -136,60 +137,23 @@ function transparentTypeLocation(
   }
 }
 
-export function typeSymbolLocation(
+function unqualifiedTypeSymbolLocation(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
-  in sourceType: String
+  in typeName: String
 ): Option<ModuleSymbolLocation> {
-  let typeName = sourceType.copyBytes(0, sourceType.byteLength);
-  match (genericTypeShape(sourceType)) {
-    some(generic) => typeName = generic.base.copyBytes(0, generic.base.byteLength);
-    none => {}
-  }
-  const base = qualifiedTypeBase(typeName);
-  const member = qualifiedTypeMember(typeName);
-  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], base);
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], typeName);
   if (symbolIndex < modules[moduleIndex].symbols.length) {
-    if (member.byteLength > 0) {
-      if (modules[moduleIndex].symbols[symbolIndex].kind != ModuleSymbolKind.namespaceSymbol) {
-        return Option<ModuleSymbolLocation>.none;
-      }
-      return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
-        some(target) => visibleTypeLocation(
-          modules,
-          target,
-          moduleIndex,
-          member
-        );
-        none => {
-          const exact = moduleSymbolIndex(modules[moduleIndex], typeName);
-          if (
-            exact < modules[moduleIndex].symbols.length
-            && isTypeSymbolKind(modules[moduleIndex].symbols[exact].kind)
-          ) {
-            return Option.some(ModuleSymbolLocation({
-              moduleIndex,
-              symbolIndex: exact,
-            }));
-          }
-          return Option<ModuleSymbolLocation>.none;
-        }
-      };
-    }
     if (isTypeSymbolKind(modules[moduleIndex].symbols[symbolIndex].kind)) {
       return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
     }
     if (modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.importedSymbol) {
-      const importedName = modules[moduleIndex].symbols[symbolIndex].importedName.copyBytes(
-        0,
-        modules[moduleIndex].symbols[symbolIndex].importedName.byteLength
-      );
       return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
         some(target) => visibleTypeLocation(
           modules,
           target,
           moduleIndex,
-          importedName
+          modules[moduleIndex].symbols[symbolIndex].importedName
         );
         none => Option<ModuleSymbolLocation>.none;
       };
@@ -199,30 +163,61 @@ export function typeSymbolLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
-export function inferredTypeSymbolLocation(
+function typeSymbolLocationForName(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): Option<ModuleSymbolLocation> {
+  const member = qualifiedTypeMember(typeName);
+  if (member.byteLength == 0) {
+    return unqualifiedTypeSymbolLocation(modules, moduleIndex, typeName);
+  }
+  const base = qualifiedTypeBase(typeName);
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], base);
+  if (symbolIndex >= modules[moduleIndex].symbols.length) {
+    return Option<ModuleSymbolLocation>.none;
+  }
+  if (
+    modules[moduleIndex].symbols[symbolIndex].kind
+    != ModuleSymbolKind.namespaceSymbol
+  ) return Option<ModuleSymbolLocation>.none;
+  return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
+    some(target) => visibleTypeLocation(
+      modules,
+      target,
+      moduleIndex,
+      member
+    );
+    none => {
+      const exact = moduleSymbolIndex(modules[moduleIndex], typeName);
+      if (
+        exact < modules[moduleIndex].symbols.length
+        && isTypeSymbolKind(modules[moduleIndex].symbols[exact].kind)
+      ) return Option.some(ModuleSymbolLocation({
+        moduleIndex,
+        symbolIndex: exact,
+      }));
+      return Option<ModuleSymbolLocation>.none;
+    }
+  };
+}
+
+export function typeSymbolLocation(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
   in sourceType: String
 ): Option<ModuleSymbolLocation> {
-  const transparent = transparentTypeName(modules, moduleIndex, sourceType);
-  if (transparent != sourceType) {
-    return inferredTypeSymbolLocation(modules, moduleIndex, transparent);
-  }
-  match (typeSymbolLocation(modules, moduleIndex, sourceType)) {
-    some(location) => return Option.some(transparentTypeLocation(
-      modules,
-      location
-    ));
-    none => {}
-  }
-  let typeName = sourceType.copyBytes(0, sourceType.byteLength);
-  match (genericTypeShape(sourceType)) {
-    some(generic) => typeName = generic.base.copyBytes(
-      0,
-      generic.base.byteLength
-    );
-    none => {}
-  }
+  return match (genericTypeBaseName(sourceType)) {
+    some(base) => typeSymbolLocationForName(modules, moduleIndex, base);
+    none => typeSymbolLocationForName(modules, moduleIndex, sourceType);
+  };
+}
+
+function inferredTypeSymbolLocationForName(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): Option<ModuleSymbolLocation> {
   const qualifiedMember = qualifiedTypeMember(typeName);
   if (qualifiedMember.byteLength > 0) {
     return Option<ModuleSymbolLocation>.none;
@@ -269,6 +264,36 @@ export function inferredTypeSymbolLocation(
     candidateModuleIndex = candidateModuleIndex + 1;
   }
   return found;
+}
+
+export function inferredTypeSymbolLocation(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in sourceType: String
+): Option<ModuleSymbolLocation> {
+  const transparent = transparentTypeName(modules, moduleIndex, sourceType);
+  if (transparent != sourceType) {
+    return inferredTypeSymbolLocation(modules, moduleIndex, transparent);
+  }
+  match (typeSymbolLocation(modules, moduleIndex, sourceType)) {
+    some(location) => return Option.some(transparentTypeLocation(
+      modules,
+      location
+    ));
+    none => {}
+  }
+  return match (genericTypeBaseName(sourceType)) {
+    some(base) => inferredTypeSymbolLocationForName(
+      modules,
+      moduleIndex,
+      base
+    );
+    none => inferredTypeSymbolLocationForName(
+      modules,
+      moduleIndex,
+      sourceType
+    );
+  };
 }
 
 function childTypeIdentityPath(in path: String, in segment: String): String {
