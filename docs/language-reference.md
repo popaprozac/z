@@ -645,16 +645,28 @@ selectors, and C macro names remain native-shaped even when the surrounding Z
 API is camel-cased. The distinction keeps ordinary Z code consistent without
 obscuring or silently renaming the ABI being called.
 
-Integer construction performs an explicit value conversion:
+Numeric construction performs an explicit value conversion:
 
 ```z
 const widened = i32(byte);
 const narrowed = u8(count); // traps if count is outside the u8 range
 const nativeKind = u32(events.SDL_EVENT_QUIT);
+const nativeWidth = f64(width);
 ```
 
-Conversions whose complete source range fits the destination lower to a direct
-cast. Narrowing conversions perform a runtime range check. A nominal imported
+Conversions whose complete source range and precision fit the destination lower
+to a direct cast. Other conversions perform a runtime representability check.
+A float-to-integer constructor accepts only finite, integral, in-range values;
+an integer-to-float constructor traps rather than silently round. Round first
+when changing the value is intentional:
+
+```zs
+import math from "std/math";
+
+const pixels = u32(math.trunc(measuredWidth));
+```
+
+A nominal imported
 C enum may convert outward through its ABI integer representation; ordinary
 assignment remains nominal, and an arbitrary integer cannot be constructed
 back into the enum.
@@ -1765,23 +1777,26 @@ tier is synchronous.
 Integer arithmetic is checked. Intentional overflow uses explicit wrapping or
 saturating operations.
 
-Non-literal integer widths never convert implicitly. Calling the target integer
-type constructs a value with the same mathematical value:
+Non-literal numeric types never convert implicitly. Calling the target numeric
+type constructs the same mathematical value:
 
 ```z
 const byte: u8 = 42;
 const widened = i32(byte);
 const nativeCount = isize(values.length);
 const narrowed = u8(widened);
+const nativeWidth = f64(narrowed);
 ```
 
-When the source type's complete range fits the target, this lowers to a direct
-native cast. Otherwise Z emits a range check and traps if the runtime value is
-not representable. Integer literals remain contextually typed and receive a
-compile-time diagnostic when they do not fit. Boolean conversion, implicit
-widening, intentional truncation, and integer/floating-point conversion are not
-part of this first tier; floating-point conversion remains deferred until its
-rounding, precision-loss, infinity, and NaN policy is explicit.
+When the source type's complete range and precision fit the target, this lowers
+to a direct native cast. Otherwise Z emits a representability check and traps if
+the value would change. Float-to-integer construction rejects fractional,
+infinite, NaN, and out-of-range values. Integer-to-float construction rejects
+precision loss. Integer literals remain contextually typed and receive a
+compile-time diagnostic when they do not fit. `math.trunc` from `std/math`
+rounds an `f32` or `f64` toward zero while preserving its floating type; it can
+be composed with checked construction when deliberate rounding is desired.
+Boolean conversion and implicit widening remain unavailable.
 
 ## Collections and views
 

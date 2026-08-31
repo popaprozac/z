@@ -7617,6 +7617,24 @@ function loweredIntegerSourceType(
   in sourceType: String,
   in targetType: String
 ): Option<String> {
+  if (sourceType == "f32" || sourceType == "f64") {
+    return Option.some(sourceType.copyBytes(0, sourceType.byteLength));
+  }
+  if (
+    (targetType == "f32" || targetType == "f64")
+    && (
+      sourceType == "i8"
+      || sourceType == "i16"
+      || sourceType == "i32"
+      || sourceType == "i64"
+      || sourceType == "isize"
+      || sourceType == "u8"
+      || sourceType == "u16"
+      || sourceType == "u32"
+      || sourceType == "u64"
+      || sourceType == "usize"
+    )
+  ) return Option.some(sourceType.copyBytes(0, sourceType.byteLength));
   if (
     sourceType == "i32"
     || (sourceType == "i64" && targetType == "i32")
@@ -11894,6 +11912,8 @@ function lowerExpressionContextual(
         || tree.nodes[calleeInput].value == "u32"
         || tree.nodes[calleeInput].value == "u64"
         || tree.nodes[calleeInput].value == "usize"
+        || tree.nodes[calleeInput].value == "f32"
+        || tree.nodes[calleeInput].value == "f64"
       )
     ) {
       const argumentInput = tree.nodes[index].children[1];
@@ -13857,6 +13877,8 @@ function lowerExpressionContextual(
           || target == "process.args"
           || target == "process.executablePath"
           || target == "process.run"
+          || target == "math.trunc.f32"
+          || target == "math.trunc.f64"
           || target == "console.log"
           || target == "console.write"
           || target == "console.error"

@@ -47,7 +47,7 @@ import { parseOnceLifetimeType, parseOnceType } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
 import { parseObjCProtocolType, publicObjCTypeName } from "./objc-types.ts";
 import { displayUnsafeNativeType } from "./unsafe-types.ts";
-import type { ExecutorAffinityInfo, ExplicitCopyPlan, IntegerConversion, ObjCCallInfo } from "./sema.ts";
+import type { ExecutorAffinityInfo, ExplicitCopyPlan, NumericConversion, ObjCCallInfo } from "./sema.ts";
 import { collectForeignHandleTypeAliases } from "./foreign-handle-types.ts";
 import {
   parseForeignDeclarationContracts,
@@ -1138,11 +1138,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover("yield value  // suspends the current Generator and transfers one yielded value to its consumer", source, word.start, word.end);
   }
   const conversionSuffix = source.slice(word.end).match(/^\s*\(/)?.[0];
-  const integerConversion = conversionSuffix
-    ? context.semanticInfo.integerConversions.get(word.end + conversionSuffix.lastIndexOf("("))
+  const numericConversion = conversionSuffix
+    ? context.semanticInfo.numericConversions.get(word.end + conversionSuffix.lastIndexOf("("))
     : undefined;
-  if (integerConversion) {
-    return markdownHover(integerConversionHover(integerConversion), source, word.start, word.end);
+  if (numericConversion) {
+    return markdownHover(numericConversionHover(numericConversion), source, word.start, word.end);
   }
   if (primitiveTypeTokens.some((primitive) => primitive === word.text)) {
     return markdownHover(primitiveTypeHover(word.text), source, word.start, word.end);
@@ -1721,6 +1721,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (standardOwner === "objc" && word.text === "Adapter") {
       return markdownHover(
         "objc.Adapter<P>  // ARC-owned protocol carrier that retains its Z controller",
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (standardOwner === "math" && word.text === "trunc") {
+      return markdownHover(
+        "trunc(value: f32): f32\ntrunc(value: f64): f64\n// rounds toward zero; numeric construction remains separately checked",
         source,
         word.start,
         word.end,
@@ -5131,6 +5139,14 @@ function memberCompletions(
           insertText: "bytes()",
         };
       }
+      if (standardModule === "math" && member === "trunc") {
+        return {
+          label: member,
+          kind: completionKinds.method,
+          detail: "trunc(value: f32): f32 | trunc(value: f64): f64  // rounds toward zero",
+          insertText: "trunc()",
+        };
+      }
       if (standardModule === "thread" && member === "main") {
         return {
           label: member,
@@ -7860,14 +7876,14 @@ function explicitMoveHover(typeName: string, context: AnalyzedSource): string {
   return `move ${type} -> ${type}\n// transfers unique ownership; a named source becomes unavailable\n// cost: ${cost}`;
 }
 
-function integerConversionHover(conversion: IntegerConversion): string {
+function numericConversionHover(conversion: NumericConversion): string {
   const behavior = conversion.checked
-    ? "runtime range check; traps if the source value is not representable"
+    ? "runtime representability check; traps rather than changing the value"
     : "source range is fully representable; lowers to a direct value-preserving cast";
   const representation = conversion.sourceDisplayType
     ? `\n// native enum representation: ${conversion.sourceType}`
     : "";
-  return `${conversion.targetType}(value: ${conversion.sourceDisplayType ?? conversion.sourceType}): ${conversion.targetType}\n// explicit integer conversion${representation}\n// ${behavior}`;
+  return `${conversion.targetType}(value: ${conversion.sourceDisplayType ?? conversion.sourceType}): ${conversion.targetType}\n// explicit value-preserving numeric conversion${representation}\n// ${behavior}`;
 }
 
 function aggregateCopyMayAllocate(

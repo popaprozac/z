@@ -12,7 +12,7 @@ export function sourceStandardModuleRelativePath(specifier: string): string | nu
   return `${specifier.slice("std/".length)}.zs`;
 }
 
-export type StandardModuleName = "fs" | "process" | "thread" | "scheduler" | "objc" | "embed";
+export type StandardModuleName = "fs" | "process" | "thread" | "scheduler" | "objc" | "embed" | "math";
 
 export const objcConnectionTypeName = "__z_std_objc_Connection";
 export const objcBindingTypeName = "__z_std_objc_Binding";
@@ -25,6 +25,8 @@ export type StandardFunctionName =
   | "sleep"
   | "delay"
   | "scheduler.yield"
+  | "math.trunc.f32"
+  | "math.trunc.f64"
   | "fs.lock"
   | "fs.readBytes"
   | "fs.readText"
@@ -68,6 +70,16 @@ const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature>
     parameters: [],
     returnType: "void",
     async: true,
+  },
+  "math.trunc.f32": {
+    cName: "__builtin_truncf",
+    parameters: [{ name: "value", mode: "value", type: "f32" }],
+    returnType: "f32",
+  },
+  "math.trunc.f64": {
+    cName: "__builtin_trunc",
+    parameters: [{ name: "value", mode: "value", type: "f64" }],
+    returnType: "f64",
   },
   "fs.lock": {
     cName: "z_fs_lock",
@@ -171,6 +183,7 @@ const standardModuleMembers: Record<StandardModuleName, Readonly<Record<string, 
     run: "process.run",
   },
   embed: {},
+  math: {},
   thread: {},
   scheduler: {
     yield: "scheduler.yield",
@@ -190,6 +203,7 @@ export function standardModuleFunctions(module: StandardModuleName): readonly St
 }
 
 export function standardModuleMemberNames(module: StandardModuleName): readonly string[] {
+  if (module === "math") return ["trunc"];
   if (module === "embed") return ["bytes", "StaticBytes"];
   if (module === "thread") return ["spawn", "main", "any"];
   if (module === "objc") return [

@@ -287,7 +287,7 @@ export type IntegerOperation = {
   readonly type: string;
 };
 
-export type IntegerConversion = {
+export type NumericConversion = {
   readonly sourceType: string;
   readonly sourceDisplayType?: string;
   readonly targetType: string;
@@ -438,7 +438,7 @@ export type SemanticInfo = {
   readonly foreignExpressionTypes: ReadonlyMap<number, string>;
   readonly numericLiteralTypes: ReadonlyMap<number, string>;
   readonly integerOperations: ReadonlyMap<number, IntegerOperation>;
-  readonly integerConversions: ReadonlyMap<number, IntegerConversion>;
+  readonly numericConversions: ReadonlyMap<number, NumericConversion>;
   readonly dynamicArrayPushTypes: ReadonlySet<string>;
   readonly arenaCreateCalls: ReadonlyMap<number, string>;
   readonly arenaResetCalls: ReadonlySet<number>;
@@ -603,7 +603,7 @@ type AnalysisState = {
   readonly foreignExpressionTypes: Map<number, string>;
   readonly numericLiteralTypes: Map<number, string>;
   readonly integerOperations: Map<number, IntegerOperation>;
-  readonly integerConversions: Map<number, IntegerConversion>;
+  readonly numericConversions: Map<number, NumericConversion>;
   readonly dynamicArrayPushTypes: Set<string>;
   readonly unboundStoredViewContainerInitializers: Set<number>;
   readonly arenaCreateCalls: Map<number, string>;
@@ -1246,7 +1246,7 @@ export function analyze(
     foreignExpressionTypes: new Map(),
     numericLiteralTypes: new Map(),
     integerOperations: new Map(),
-    integerConversions: new Map(),
+    numericConversions: new Map(),
     dynamicArrayPushTypes: new Set(),
     unboundStoredViewContainerInitializers: new Set(),
     arenaCreateCalls: new Map(),
@@ -1630,12 +1630,15 @@ export function analyze(
         || declaration.header === "std/process"
         || declaration.header === "std/objc"
         || declaration.header === "std/embed"
+        || declaration.header === "std/math"
       ) {
         const module: StandardModuleName = declaration.header === "std/fs"
           ? "fs"
           : declaration.header === "std/process"
             ? "process"
-            : declaration.header === "std/objc" ? "objc" : "embed";
+            : declaration.header === "std/objc"
+              ? "objc"
+              : declaration.header === "std/embed" ? "embed" : "math";
         if (declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, `${declaration.header} is a default module import`, {
             code: "Z0501",
@@ -1650,7 +1653,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/test`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/sync`, `std/thread`, `std/async`, `std/fs`, `std/process`, `std/objc`, and `std/embed`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/test`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/sync`, `std/thread`, `std/async`, `std/fs`, `std/process`, `std/objc`, `std/embed`, and `std/math`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -10563,13 +10566,13 @@ function inferExpressionInner(
       );
       if (testFailure) return testFailure;
       if (expression.callee.kind === "identifier") {
-        if (integerTypes.has(expression.callee.name)) {
+        if (integerTypes.has(expression.callee.name) || floatTypes.has(expression.callee.name)) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           if (expression.arguments.length !== 1) {
             throw new DiagnosticError(
               fileName,
               expression.location,
-              `${expression.callee.name} numeric construction expects exactly one integer value, received ${expression.arguments.length}`,
+              `${expression.callee.name} numeric construction expects exactly one numeric value, received ${expression.arguments.length}`,
               {
                 code: "Z0104",
                 helps: [`use ${expression.callee.name}(value)`],
@@ -10578,17 +10581,11 @@ function inferExpressionInner(
           }
           const targetType = expression.callee.name;
           const argument = expression.arguments[0];
-          if (requireContextualSignedLiteral(argument, targetType, fileName, state.numericLiteralTypes)) {
-            state.integerConversions.set(expression.location.offset, {
-              sourceType: targetType,
-              targetType,
-              checked: false,
-            });
-            return targetType;
-          }
-          if (argument.kind === "number") {
-            requireNumericLiteralFits(argument, targetType, fileName, state.numericLiteralTypes);
-            state.integerConversions.set(expression.location.offset, {
+          if (
+            argument.kind === "number"
+            && requireNumericConversionLiteral(argument, targetType, fileName, state.numericLiteralTypes)
+          ) {
+            state.numericConversions.set(expression.location.offset, {
               sourceType: targetType,
               targetType,
               checked: false,
@@ -10601,20 +10598,23 @@ function inferExpressionInner(
           const sourceType = nativeEnum?.kind === "enum"
             ? nativeEnum.underlying
             : canonicalType(actual, state.foreignNamedTypes);
-          if (!isIntegerType(sourceType)) {
+          if (!isNumericType(sourceType)) {
             throw new DiagnosticError(
               fileName,
               argument.location,
-              `${targetType} numeric construction requires an integer value, found ${displayAssignableType(actual, state)}`,
+              `${targetType} numeric construction requires a numeric value, found ${displayAssignableType(actual, state)}`,
               {
                 code: "Z0104",
-                notes: ["integer-to-floating and floating-to-integer conversion require a separate rounding and precision policy"],
+                notes: ["numeric constructors preserve the same mathematical value and trap when it is not representable"],
+                helps: isIntegerType(targetType) && isFloatType(sourceType)
+                  ? ['round deliberately first, for example `u32(math.trunc(value))`']
+                  : undefined,
               },
             );
           }
           const constant = constantIntegerValue(argument);
-          const bounds = integerBounds(targetType)!;
-          if (constant !== null && (constant < bounds.minimum || constant > bounds.maximum)) {
+          const bounds = integerBounds(targetType);
+          if (bounds && constant !== null && (constant < bounds.minimum || constant > bounds.maximum)) {
             throw new DiagnosticError(
               fileName,
               argument.location,
@@ -10626,24 +10626,13 @@ function inferExpressionInner(
               },
             );
           }
-          state.integerConversions.set(expression.location.offset, {
+          state.numericConversions.set(expression.location.offset, {
             sourceType,
             ...(nativeEnum?.kind === "enum" ? { sourceDisplayType: actualType } : {}),
             targetType,
-            checked: !integerRangeContains(targetType, sourceType),
+            checked: numericConversionRequiresCheck(targetType, sourceType),
           });
           return targetType;
-        }
-        if (floatTypes.has(expression.callee.name)) {
-          throw new DiagnosticError(
-            fileName,
-            expression.location,
-            `${expression.callee.name}(value) numeric conversion is not available in the integer-only conversion tier`,
-            {
-              code: "Z0104",
-              notes: ["floating-point conversion needs explicit rounding, precision-loss, infinity, and NaN rules"],
-            },
-          );
         }
         const mutex = parseMutexType(expression.callee.name);
         if (mutex) {
@@ -11475,6 +11464,32 @@ function inferExpressionInner(
                 bytes: [...readFileSync(embeddedFile)],
               });
               return staticBytesTypeName;
+            }
+            if (owner.module === "math" && expression.callee.property === "trunc") {
+              rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+              if (expression.arguments.length !== 1) {
+                throw new DiagnosticError(fileName, expression.location, `math.trunc expects 1 argument, received ${expression.arguments.length}`, {
+                  code: "Z0501",
+                  helps: ["use `math.trunc(value)` with an f32 or f64 value"],
+                });
+              }
+              const argumentType = canonicalType(
+                inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state),
+                state.foreignNamedTypes,
+              );
+              if (!isFloatType(argumentType)) {
+                throw new DiagnosticError(fileName, expression.arguments[0].location, `math.trunc requires f32 or f64, found ${displayAssignableType(argumentType, state)}`, {
+                  code: "Z0104",
+                  helps: ["convert to a floating-point type before rounding"],
+                });
+              }
+              const name: StandardFunctionName = argumentType === "f32" ? "math.trunc.f32" : "math.trunc.f64";
+              state.standardFunctionReferences.set(expression.callee.location.offset, name);
+              state.expressionTypes.set(
+                expression.callee.location.offset,
+                functionTypeName([{ name: "value", mode: "value", type: argumentType }], argumentType, null),
+              );
+              return argumentType;
             }
             const name = standardModuleFunction(owner.module, expression.callee.property);
             if (!name) {
@@ -20219,6 +20234,23 @@ function integerRangeContains(targetType: string, sourceType: string): boolean {
   );
 }
 
+function numericConversionRequiresCheck(targetType: string, sourceType: string): boolean {
+  if (targetType === sourceType) return false;
+  if (isIntegerType(targetType) && isIntegerType(sourceType)) {
+    return !integerRangeContains(targetType, sourceType);
+  }
+  if (isFloatType(targetType) && isIntegerType(sourceType)) {
+    const source = integerBounds(sourceType)!;
+    const precision = targetType === "f32" ? 24 : 53;
+    return source.width > precision;
+  }
+  if (isIntegerType(targetType) && isFloatType(sourceType)) return true;
+  if (isFloatType(targetType) && isFloatType(sourceType)) {
+    return targetType === "f32" && sourceType === "f64";
+  }
+  return true;
+}
+
 function constantIntegerValue(expression: Expression): bigint | null {
   if (expression.kind === "number") return isIntegerLiteral(expression.value) ? BigInt(expression.value) : null;
   if (expression.kind === "unary") {
@@ -20321,6 +20353,62 @@ function requireNumericLiteralFits(
     return;
   }
   numericLiteralTypes.set(expression.location.offset, type);
+}
+
+function requireNumericConversionLiteral(
+  expression: Extract<Expression, { kind: "number" }>,
+  targetType: string,
+  fileName: string,
+  numericLiteralTypes: Map<number, string>,
+): boolean {
+  if (isIntegerType(targetType)) {
+    if (isIntegerLiteral(expression.value)) {
+      requireNumericLiteralFits(expression, targetType, fileName, numericLiteralTypes);
+      return true;
+    }
+    const value = Number(expression.value);
+    const bounds = integerBounds(targetType)!;
+    const lower = Number(bounds.minimum);
+    const upperExclusive = targetType.startsWith("u")
+      ? 2 ** bounds.width
+      : 2 ** (bounds.width - 1);
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value < lower || value >= upperExclusive) {
+      throw new DiagnosticError(
+        fileName,
+        expression.location,
+        `floating-point value ${expression.value} cannot convert exactly to ${targetType}`,
+        {
+          code: "Z0104",
+          notes: ["integer construction requires a finite, integral, in-range value"],
+          helps: ['round deliberately first, for example `u32(math.trunc(value))`'],
+        },
+      );
+    }
+    numericLiteralTypes.set(expression.location.offset, targetType);
+    return true;
+  }
+  if (isFloatType(targetType)) {
+    requireNumericLiteralFits(expression, targetType, fileName, numericLiteralTypes);
+    const value = Number(expression.value);
+    const converted = targetType === "f32" ? Math.fround(value) : value;
+    const exactlyRepresentable = isIntegerLiteral(expression.value)
+      ? Number.isFinite(converted) && Number.isInteger(converted) && BigInt(converted) === BigInt(expression.value)
+      : Object.is(converted, value);
+    if (!exactlyRepresentable) {
+      throw new DiagnosticError(
+        fileName,
+        expression.location,
+        `numeric value ${expression.value} cannot convert exactly to ${targetType}`,
+        {
+          code: "Z0104",
+          notes: ["numeric constructors preserve the same value rather than rounding silently"],
+          helps: ["choose a wider floating-point type or an exactly representable value"],
+        },
+      );
+    }
+    return true;
+  }
+  return false;
 }
 
 function isNullableForeignTypeName(type: string): boolean {

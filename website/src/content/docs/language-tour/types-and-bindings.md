@@ -125,20 +125,28 @@ value. Convert to an option when that produces a better Z-facing API:
 const window = Option.fromNullable(app.keyWindow);
 ```
 
-## Explicit integer conversion
+## Explicit numeric conversion
 
-Calling an integer type constructs the same mathematical value in that type:
+Calling a numeric type constructs the same mathematical value in that type:
 
 ```z
 const byte: u8 = 42;
 const widened = i32(byte);
 const nativeCount = isize(values.length);
 const narrowed = u8(widened);
+const nativeWidth = f64(narrowed);
 ```
 
-If every source value fits, conversion lowers to a native cast. Otherwise Z
-checks the runtime value and traps when it is out of range. Integer literals are
-contextually typed and produce a compile-time error when they do not fit.
+If every source value fits exactly, conversion lowers to a native cast.
+Otherwise Z checks the runtime value and traps rather than change it. Converting
+a float to an integer requires a finite, integral, in-range value; converting an
+integer to a float rejects precision loss. Deliberate rounding is visible:
+
+```zs
+import math from "std/math";
+
+const pixels = u32(math.trunc(measuredWidth));
+```
 
 This is intentionally different from TypeScript's `as`: a Z type construction
 performs a real conversion rather than merely asserting a static interpretation.
@@ -147,7 +155,7 @@ performs a real conversion rather than merely asserting a static interpretation.
 Primitive values normally use their direct native representation. Fixed arrays
 store their elements inline. `Array<T>` owns growable storage, `String` owns
 UTF-8 storage, and `Slice<T>` is a non-owning pointer/length descriptor.
-Checked indexing and narrowing conversions may add runtime checks.
+Checked indexing and representability-risk conversions may add runtime checks.
 :::
 
 Next: [Structs and classes](/language-tour/structs-and-classes/).

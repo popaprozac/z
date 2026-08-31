@@ -161,7 +161,43 @@ function integerCType(in name: String): String throws String {
   if (name == "u64") return "uint64_t";
   if (name == "isize") return "intptr_t";
   if (name == "usize") return "size_t";
+  if (name == "f32") return "float";
+  if (name == "f64") return "double";
   throw `native C emission does not support integer type ${name}`;
+}
+
+function isFloatingTypeName(in name: String): boolean {
+  return name == "f32" || name == "f64";
+}
+
+function integerTypeWidth(in name: String): usize {
+  if (name == "i8" || name == "u8") return 8;
+  if (name == "i16" || name == "u16") return 16;
+  if (name == "i32" || name == "u32") return 32;
+  if (name == "i64" || name == "u64") return 64;
+  if (name == "isize" || name == "usize") return 64;
+  return 0;
+}
+
+function nativeNumericConversionRequiresCheck(
+  in source: String,
+  in target: String
+): boolean {
+  if (source == target) return false;
+  const sourceFloat = isFloatingTypeName(source);
+  const targetFloat = isFloatingTypeName(target);
+  if (sourceFloat && targetFloat) return source == "f64" && target == "f32";
+  if (sourceFloat) return true;
+  if (targetFloat) {
+    const precision: usize = target == "f32" ? usize(24) : usize(53);
+    return integerTypeWidth(source) > precision;
+  }
+  return !(
+    source == "u8"
+    || (source == "i32" && target == "i64")
+    || (source == "u32" && target == "u64")
+    || (source == "usize" && target == "u64")
+  );
 }
 
 function nativeCIntegerType(in name: String): String throws String {
@@ -4191,13 +4227,7 @@ function appendExpression(
       declaration.expressions[index].value.byteLength
     );
     const argument = declaration.expressions[index].children[0];
-    if (
-      source == target
-      || source == "u8"
-      || (source == "i32" && target == "i64")
-      || (source == "u32" && target == "u64")
-      || (source == "usize" && target == "u64")
-    ) {
+    if (!nativeNumericConversionRequiresCheck(source, target)) {
       const targetCType = try integerCType(target);
       output.append("((");
       output.append(targetCType);
@@ -4963,6 +4993,16 @@ function appendExpression(
         == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "process.run"
     ) output.append("z_stage1_process_run");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "math.trunc.f32"
+    ) output.append("__builtin_truncf");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "math.trunc.f64"
+    ) output.append("__builtin_trunc");
     else if (
       declaration.expressions[callee].kind
         == LoweredExpressionKind.localValue
@@ -18171,6 +18211,130 @@ function programUsesStandardCall(
   return false;
 }
 
+function integerMinimumLiteral(in name: String): String throws String {
+  if (name == "i8") return "-128.0";
+  if (name == "i16") return "-32768.0";
+  if (name == "i32") return "-2147483648.0";
+  if (name == "i64" || name == "isize") return "-9223372036854775808.0";
+  if (
+    name == "u8"
+    || name == "u16"
+    || name == "u32"
+    || name == "u64"
+    || name == "usize"
+  ) return "0.0";
+  throw `native numeric conversion does not support integer type ${name}`;
+}
+
+function integerUpperExclusiveLiteral(in name: String): String throws String {
+  if (name == "i8") return "128.0";
+  if (name == "u8") return "256.0";
+  if (name == "i16") return "32768.0";
+  if (name == "u16") return "65536.0";
+  if (name == "i32") return "2147483648.0";
+  if (name == "u32") return "4294967296.0";
+  if (name == "i64" || name == "isize") return "9223372036854775808.0";
+  if (name == "u64" || name == "usize") return "18446744073709551616.0";
+  throw `native numeric conversion does not support integer type ${name}`;
+}
+
+function appendCheckedFloatingConversion(
+  inout output: TextBuffer,
+  in source: String,
+  in target: String
+): void throws String {
+  const sourceType = try integerCType(source);
+  const targetType = try integerCType(target);
+  output.append("static inline __attribute__((unused)) ");
+  output.append(targetType);
+  output.append(" z_stage1_checked_convert_");
+  output.append(source);
+  output.append("_to_");
+  output.append(target);
+  output.append("(");
+  output.append(sourceType);
+  output.append(" value) {\n");
+  if (isFloatingTypeName(source) && !isFloatingTypeName(target)) {
+    const trunc = source == "f32" ? "__builtin_truncf" : "__builtin_trunc";
+    const minimum = try integerMinimumLiteral(target);
+    const upperExclusive = try integerUpperExclusiveLiteral(target);
+    output.append("  if (!(value >= (");
+    output.append(sourceType);
+    output.append(")");
+    output.append(minimum);
+    output.append(" && value < (");
+    output.append(sourceType);
+    output.append(")");
+    output.append(upperExclusive);
+    output.append(") || ");
+    output.append(trunc);
+    output.append("(value) != value) abort();\n  return (");
+    output.append(targetType);
+    output.append(")value;\n}\n\n");
+    return;
+  }
+  if (!isFloatingTypeName(source) && isFloatingTypeName(target)) {
+    const minimum = try integerMinimumLiteral(source);
+    const upperExclusive = try integerUpperExclusiveLiteral(source);
+    output.append("  const ");
+    output.append(targetType);
+    output.append(" converted = (");
+    output.append(targetType);
+    output.append(")value;\n  if (!(converted >= (");
+    output.append(targetType);
+    output.append(")");
+    output.append(minimum);
+    output.append(" && converted < (");
+    output.append(targetType);
+    output.append(")");
+    output.append(upperExclusive);
+    output.append(") || (");
+    output.append(sourceType);
+    output.append(")converted != value) abort();\n  return converted;\n}\n\n");
+    return;
+  }
+  output.append("  const ");
+  output.append(targetType);
+  output.append(" converted = (");
+  output.append(targetType);
+  output.append(")value;\n  if ((");
+  output.append(sourceType);
+  output.append(")converted != value) abort();\n  return converted;\n}\n\n");
+}
+
+function appendCheckedFloatingConversionRuntime(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  let emitted = Array<String>();
+  for (const declaration of program.functions) {
+    for (const expression of declaration.expressions) {
+      if (
+        expression.kind != LoweredExpressionKind.integerConversion
+        || expression.labels.length != 1
+      ) continue;
+      const source = expression.labels[0].copyBytes(
+        0,
+        expression.labels[0].byteLength
+      );
+      const target = expression.value.copyBytes(0, expression.value.byteLength);
+      if (
+        !isFloatingTypeName(source)
+        && !isFloatingTypeName(target)
+      ) continue;
+      if (!nativeNumericConversionRequiresCheck(source, target)) continue;
+      const key = `${source}:${target}`;
+      if (labelsContain(emitted, key)) continue;
+      emitted.push(move key);
+      try appendCheckedFloatingConversion(
+        inout output,
+        source,
+        target
+      );
+    }
+  }
+}
+
 function programUsesMainDelay(in program: LoweredProgram): boolean {
   for (const declaration of program.functions) {
     if (
@@ -19750,6 +19914,10 @@ function emitLoweredC(
   output.append("  if (value < 0) abort();\n");
   output.append("  return (uint32_t)value;\n");
   output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_convert_u32_to_i32(uint32_t value) {\n");
+  output.append("  if (value > INT32_MAX) abort();\n");
+  output.append("  return (int32_t)value;\n");
+  output.append("}\n\n");
   output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_convert_usize_to_i32(size_t value) {\n");
   output.append("  if (value > INT32_MAX) abort();\n");
   output.append("  return (int32_t)value;\n");
@@ -19766,6 +19934,7 @@ function emitLoweredC(
   output.append("  if (value < 0) abort();\n");
   output.append("  return (size_t)value;\n");
   output.append("}\n\n");
+  try appendCheckedFloatingConversionRuntime(inout output, program);
   appendWrappingIntegerRuntime(inout output, "i32", "int32_t");
   appendWrappingIntegerRuntime(inout output, "u8", "uint8_t");
   appendWrappingIntegerRuntime(inout output, "u32", "uint32_t");

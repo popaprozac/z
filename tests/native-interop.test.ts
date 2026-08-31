@@ -4551,8 +4551,10 @@ test("checks integer arithmetic and provides explicit wrapping and saturation", 
   assert.notEqual(trapped.status, 0);
 });
 
-test("constructs integer values with explicit checked conversions", () => {
+test("constructs numeric values with explicit value-preserving conversions", () => {
   const source = `
+    import math from "std/math";
+
     function widen(value: u8): i32 {
       return i32(value);
     }
@@ -4565,12 +4567,24 @@ test("constructs integer values with explicit checked conversions", () => {
       return isize(value);
     }
 
+    function contentSize(value: f64): u32 {
+      return u32(math.trunc(value));
+    }
+
+    function compactSize(value: f32): u32 {
+      return u32(math.trunc(value));
+    }
+
     function main(): i32 {
       const small: u8 = 42;
       const count: usize = 44;
       if (widen(small) != 42) return 1;
       if (narrow(43) != 43) return 2;
       if (nativeCount(count) != 44) return 3;
+      const nativeWidth = f64(count);
+      if (contentSize(nativeWidth + 0.75) != 44) return 4;
+      if (compactSize(3.75) != 3) return 5;
+      if (u32(42.0) != 42) return 6;
       return 0;
     }
   `;
@@ -4578,11 +4592,19 @@ test("constructs integer values with explicit checked conversions", () => {
   assert.match(generated, /return \(\(int32_t\)\(value\)\);/);
   assert.match(generated, /z_checked_convert_i32_to_u8/);
   assert.match(generated, /z_checked_convert_usize_to_isize/);
+  assert.match(generated, /__builtin_trunc/);
+  assert.match(generated, /__builtin_truncf/);
+  assert.match(generated, /z_checked_convert_f64_to_u32/);
 
   const conversionOffset = source.indexOf("isize(value)") + 1;
   const conversionHover = hover(source, "integer-conversions.zs", conversionOffset)?.contents.value ?? "";
   assert.match(conversionHover, /isize\(value: usize\): isize/);
-  assert.match(conversionHover, /runtime range check/);
+  assert.match(conversionHover, /runtime representability check/);
+  const truncOffset = source.indexOf("math.trunc") + "math.".length + 1;
+  assert.match(hover(source, "integer-conversions.zs", truncOffset)?.contents.value ?? "", /rounds toward zero/);
+  const incompleteMath = source.replace("math.trunc", "math.tr");
+  const completionOffset = incompleteMath.indexOf("math.tr") + "math.tr".length;
+  assert.equal(completions(incompleteMath, "integer-conversions.zs", completionOffset).some((item) => item.label === "trunc"), true);
 
   assert.throws(
     () => compileToC("function main(): i32 { const value = u8(256); return i32(value); }", "constant-conversion.zs"),
@@ -4592,9 +4614,11 @@ test("constructs integer values with explicit checked conversions", () => {
     () => compileToC("function main(): i32 { const value: usize = 1; const native: isize = value; return 0; }", "implicit-conversion.zs"),
     /expected isize, found usize/,
   );
+  const floating = compileToC("function main(): i32 { const value = f64(1); return i32(value); }", "float-conversion.zs");
+  assert.match(floating, /const double value = \(\(double\)\(1\.0\)\)/);
   assert.throws(
-    () => compileToC("function main(): i32 { const value = f64(1); return 0; }", "float-conversion.zs"),
-    /not available in the integer-only conversion tier/,
+    () => compileToC("function main(): i32 { const value = u32(42.5); return i32(value); }", "fractional-conversion.zs"),
+    /floating-point value 42\.5 cannot convert exactly to u32/,
   );
 
   const directory = mkdtempSync("/tmp/z-integer-conversion-");
@@ -4613,6 +4637,17 @@ test("constructs integer values with explicit checked conversions", () => {
   `);
   const trapped = spawnSync(process.execPath, [cli, "run", trapFile], { encoding: "utf8" });
   assert.notEqual(trapped.status, 0);
+
+  const lossyFloatFile = resolve(directory, "lossy-float.zs");
+  writeFileSync(lossyFloatFile, `
+    function main(): i32 {
+      const value: u64 = 9007199254740993;
+      const converted = f64(value);
+      return converted == 0.0 ? 1 : 0;
+    }
+  `);
+  const lossyFloat = spawnSync(process.execPath, [cli, "run", lossyFloatFile], { encoding: "utf8" });
+  assert.notEqual(lossyFloat.status, 0);
 
   const asyncFile = resolve(directory, "async.zs");
   writeFileSync(asyncFile, `

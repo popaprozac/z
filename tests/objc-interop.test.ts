@@ -633,7 +633,7 @@ hostToolchainTest("builds the interactive Z Notes AppKit and sqlite3 application
   const countConversion = modelSource.indexOf("isize(this.notes.length)") + 1;
   assert.match(
     hover(modelSource, model, countConversion)?.contents.value ?? "",
-    /runtime range check/,
+    /runtime representability check/,
   );
 
   const persistence = resolve(projectRoot, "examples/applications/z-notes/persistence.zs");

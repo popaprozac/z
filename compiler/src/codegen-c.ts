@@ -20,7 +20,7 @@ import type {
   ForeignCallArgumentPlan,
   ForeignConnectionCallInfo,
   ForeignStatusCallInfo,
-  IntegerConversion,
+  NumericConversion,
   IntegerOperation,
   MutexWithLockCallInfo,
   ObjCAutoreleasePoolCallInfo,
@@ -443,7 +443,7 @@ export function generateC(
   }
   const integerRuntime = generateIntegerRuntime(
     semanticInfo.integerOperations,
-    semanticInfo.integerConversions,
+    semanticInfo.numericConversions,
     semanticInfo.numericLiteralTypes,
   );
   if (integerRuntime.length > 0) lines.push("", ...integerRuntime);
@@ -10085,18 +10085,18 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return maybeRetainClass(expression, value, context);
     }
     case "call": {
-      const integerConversion = context.semanticInfo.integerConversions.get(expression.location.offset);
-      if (integerConversion) {
+      const numericConversion = context.semanticInfo.numericConversions.get(expression.location.offset);
+      if (numericConversion) {
         const value = generateExpression(expression.arguments[0], context);
-        const targetType = primitiveTypeNames[integerConversion.targetType];
-        if (!targetType) throw new Error(`unsupported integer conversion target ${JSON.stringify(integerConversion.targetType)}`);
-        const sourceType = primitiveTypeNames[integerConversion.sourceType];
-        if (!sourceType) throw new Error(`unsupported integer conversion source ${JSON.stringify(integerConversion.sourceType)}`);
-        const sourceValue = integerConversion.sourceDisplayType
+        const targetType = primitiveTypeNames[numericConversion.targetType];
+        if (!targetType) throw new Error(`unsupported numeric conversion target ${JSON.stringify(numericConversion.targetType)}`);
+        const sourceType = primitiveTypeNames[numericConversion.sourceType];
+        if (!sourceType) throw new Error(`unsupported numeric conversion source ${JSON.stringify(numericConversion.sourceType)}`);
+        const sourceValue = numericConversion.sourceDisplayType
           ? `((${sourceType})(${value}))`
           : value;
-        return integerConversion.checked
-          ? `${integerConversionName(integerConversion)}(${sourceValue})`
+        return numericConversion.checked
+          ? `${numericConversionName(numericConversion)}(${sourceValue})`
           : `((${targetType})(${sourceValue}))`;
       }
       if (context.semanticInfo.optionFromNullable.has(expression.location.offset)) {
@@ -11508,7 +11508,7 @@ static void z_process_set_arguments(int argc, char **argv) {
 
 function generateIntegerRuntime(
   operations: ReadonlyMap<number, IntegerOperation>,
-  conversions: ReadonlyMap<number, IntegerConversion>,
+  conversions: ReadonlyMap<number, NumericConversion>,
   contextualLiterals: ReadonlyMap<number, string>,
 ): string[] {
   const uniqueOperations = new Map<string, IntegerOperation>();
@@ -11519,26 +11519,59 @@ function generateIntegerRuntime(
   const generatedOperations = [...uniqueOperations.values()]
     .sort((left, right) => integerOperationName(left).localeCompare(integerOperationName(right)))
     .flatMap((operation) => [generateIntegerOperation(operation), ""]);
-  const uniqueConversions = new Map<string, IntegerConversion>();
+  const uniqueConversions = new Map<string, NumericConversion>();
   for (const conversion of conversions.values()) {
     if (!conversion.checked) continue;
     uniqueConversions.set(`${conversion.sourceType}:${conversion.targetType}`, conversion);
   }
   const generatedConversions = [...uniqueConversions.values()]
-    .sort((left, right) => integerConversionName(left).localeCompare(integerConversionName(right)))
-    .flatMap((conversion) => [generateIntegerConversion(conversion), ""]);
+    .sort((left, right) => numericConversionName(left).localeCompare(numericConversionName(right)))
+    .flatMap((conversion) => [generateNumericConversion(conversion), ""]);
   return [...generatedOperations, ...generatedConversions];
 }
 
-function integerConversionName(conversion: IntegerConversion): string {
+function numericConversionName(conversion: NumericConversion): string {
   return `z_checked_convert_${conversion.sourceType}_to_${conversion.targetType}`;
 }
 
-function generateIntegerConversion(conversion: IntegerConversion): string {
+function generateNumericConversion(conversion: NumericConversion): string {
   const sourceCType = primitiveTypeNames[conversion.sourceType];
   const targetCType = primitiveTypeNames[conversion.targetType];
   if (!sourceCType || !targetCType) {
-    throw new Error(`unsupported integer conversion ${conversion.sourceType} to ${conversion.targetType}`);
+    throw new Error(`unsupported numeric conversion ${conversion.sourceType} to ${conversion.targetType}`);
+  }
+  const sourceIsFloat = conversion.sourceType === "f32" || conversion.sourceType === "f64";
+  const targetIsFloat = conversion.targetType === "f32" || conversion.targetType === "f64";
+  if (sourceIsFloat && !targetIsFloat) {
+    const targetBounds = integerRuntimeBounds(conversion.targetType);
+    const upperExclusive = targetBounds.maximum + 1n;
+    const trunc = conversion.sourceType === "f32" ? "__builtin_truncf" : "__builtin_trunc";
+    return [
+      `static Z_UNUSED_FUNCTION inline ${targetCType} ${numericConversionName(conversion)}(${sourceCType} value) {`,
+      `  if (!(value >= (${sourceCType})${targetBounds.minimum}.0 && value < (${sourceCType})${upperExclusive}.0) || ${trunc}(value) != value) abort();`,
+      `  return (${targetCType})value;`,
+      "}",
+    ].join("\n");
+  }
+  if (!sourceIsFloat && targetIsFloat) {
+    const sourceBounds = integerRuntimeBounds(conversion.sourceType);
+    const upperExclusive = sourceBounds.maximum + 1n;
+    return [
+      `static Z_UNUSED_FUNCTION inline ${targetCType} ${numericConversionName(conversion)}(${sourceCType} value) {`,
+      `  const ${targetCType} converted = (${targetCType})value;`,
+      `  if (!(converted >= (${targetCType})${sourceBounds.minimum}.0 && converted < (${targetCType})${upperExclusive}.0) || (${sourceCType})converted != value) abort();`,
+      "  return converted;",
+      "}",
+    ].join("\n");
+  }
+  if (sourceIsFloat && targetIsFloat) {
+    return [
+      `static Z_UNUSED_FUNCTION inline ${targetCType} ${numericConversionName(conversion)}(${sourceCType} value) {`,
+      `  const ${targetCType} converted = (${targetCType})value;`,
+      `  if ((${sourceCType})converted != value) abort();`,
+      "  return converted;",
+      "}",
+    ].join("\n");
   }
   const limits: Readonly<Record<string, { readonly minimum?: string; readonly maximum: string }>> = {
     i8: { minimum: "INT8_MIN", maximum: "INT8_MAX" },
@@ -11570,7 +11603,7 @@ function generateIntegerConversion(conversion: IntegerConversion): string {
     throw new Error(`checked integer conversion ${conversion.sourceType} to ${conversion.targetType} has no range check`);
   }
   return [
-    `static Z_UNUSED_FUNCTION inline ${targetCType} ${integerConversionName(conversion)}(${sourceCType} value) {`,
+    `static Z_UNUSED_FUNCTION inline ${targetCType} ${numericConversionName(conversion)}(${sourceCType} value) {`,
     `  if (${checks.join(" || ")}) abort();`,
     `  return (${targetCType})value;`,
     "}",
@@ -11716,10 +11749,15 @@ function generateNumericLiteral(value: string, type: string | undefined): string
   const isFloating = /[.eE]/.test(value);
   if (type === "f32") return `${value}${isFloating ? "F" : ".0F"}`;
   if (type === "f64") return isFloating ? value : `${value}.0`;
-  if (type === "u32") return `${value}U`;
-  if (type === "u64" || type === "usize") return `${value}ULL`;
-  if (type === "i64" || type === "isize") return `${value}LL`;
-  return value;
+  const integerValue = isFloating && type && [
+    "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize",
+  ].includes(type)
+    ? BigInt(Number(value)).toString()
+    : value;
+  if (type === "u32") return `${integerValue}U`;
+  if (type === "u64" || type === "usize") return `${integerValue}ULL`;
+  if (type === "i64" || type === "isize") return `${integerValue}LL`;
+  return integerValue;
 }
 
 function generateContextualSignedLiteral(operator: "+" | "-", value: string, type: string): string {

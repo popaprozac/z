@@ -12041,24 +12041,45 @@ function main(): i32 {
   );
   assert.notEqual(narrowingExecution.status, 0);
 
-  const unsupportedConversionSource = resolve(
+  const floatingConversionSource = resolve(
     directory,
     "native-floating-conversion.zs",
   );
   writeFileSync(
-    unsupportedConversionSource,
-    "function main(): i32 { const value = f64(1); return 0; }\n",
+    floatingConversionSource,
+    'import math from "std/math";\n'
+      + "function main(): i32 {\n"
+      + "  const width: u32 = 42;\n"
+      + "  const native = f64(width);\n"
+      + "  return i32(u32(math.trunc(native + 0.75)));\n"
+      + "}\n",
   );
-  const unsupportedConversionCheck = spawnSync(
+  const floatingConversionCheck = spawnSync(
     driver,
-    ["check", unsupportedConversionSource],
+    ["check", floatingConversionSource],
     { encoding: "utf8" },
   );
-  assert.equal(unsupportedConversionCheck.status, 1);
-  assert.match(
-    unsupportedConversionCheck.stderr,
-    /numeric conversion is not available in the integer-only conversion tier/,
+  assert.equal(
+    floatingConversionCheck.status,
+    0,
+    floatingConversionCheck.stderr,
   );
+  const floatingConversionApplication = resolve(
+    directory,
+    "native-floating-conversion",
+  );
+  const floatingConversionBuild = spawnSync(
+    driver,
+    ["build", floatingConversionSource, floatingConversionApplication],
+    { encoding: "utf8" },
+  );
+  assert.equal(floatingConversionBuild.status, 0, floatingConversionBuild.stderr);
+  const floatingConversionExecution = spawnSync(
+    floatingConversionApplication,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(floatingConversionExecution.status, 42, floatingConversionExecution.stderr);
 
   const manifestProject = resolve(directory, "manifest-project");
   const manifestInclude = resolve(manifestProject, "include");

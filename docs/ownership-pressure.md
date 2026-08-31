@@ -4495,9 +4495,11 @@ ordinary `Option.some` path needs representation unification. Finally, an
 Objective-C `NSString` argument captured by `objc.register` missed the normal
 contextual `String` conversion, requiring an explicitly typed local before the
 registration plan. These are compiler pressure targets, not intended Zapp API
-patterns. A small `NSRect` constructor shim also remains until Z deliberately
-settles floating-point conversion semantics rather than silently inheriting C
-casts.
+patterns. That final `NSRect` constructor shim became the pressure test that
+settled Z's numeric-construction rule. Integer/float constructors now preserve
+the same mathematical value or trap, `std/math` exposes explicit type-preserving
+`math.trunc`, and Zapp can express the geometry conversion without inheriting a
+silent C cast.
 
 ## Zapp retained protocol-slot pressure
 

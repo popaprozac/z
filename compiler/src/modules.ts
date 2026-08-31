@@ -608,6 +608,8 @@ function buildScope(node: ModuleNode): ModuleScope {
         standardModules.set(declaration.moduleName, "objc");
       } else if (declaration.header === "std/embed") {
         standardModules.set(declaration.moduleName, "embed");
+      } else if (declaration.header === "std/math") {
+        standardModules.set(declaration.moduleName, "math");
       }
       bind(declaration.moduleName, linkedImportName(node, declaration.moduleName), declaration.location);
     } else {

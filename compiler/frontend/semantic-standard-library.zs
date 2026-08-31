@@ -263,16 +263,45 @@ function embedCall(
   }));
 }
 
+function mathCall(
+  in memberName: String,
+  in argumentType: String,
+  argumentCount: usize
+): Option<NativeStandardCallShape> {
+  if (
+    memberName != "trunc"
+    || argumentCount != 1
+    || (argumentType != "f32" && argumentType != "f64")
+  ) return Option<NativeStandardCallShape>.none;
+  let parameterModes = Array<String>();
+  let parameterTypes = Array<String>();
+  parameterModes.push("value");
+  parameterTypes.push(argumentType.copyBytes(0, argumentType.byteLength));
+  return Option.some(NativeStandardCallShape({
+    name: argumentType == "f32" ? "math.trunc.f32" : "math.trunc.f64",
+    signature: standardSignature(
+      move parameterModes,
+      move parameterTypes,
+      argumentType,
+      ""
+    ),
+  }));
+}
+
 export function nativeStandardCall(
   in program: Program,
   in namespaceName: String,
   in memberName: String,
-  argumentCount: usize
+  argumentCount: usize,
+  in argumentType: String
 ): Option<NativeStandardCallShape> {
   const header = namespaceHeader(program, namespaceName);
   if (header == "std/fs") return fsCall(memberName);
   if (header == "std/process") return processCall(memberName);
   if (header == "std/embed") return embedCall(memberName, argumentCount);
+  if (header == "std/math") {
+    return mathCall(memberName, argumentType, argumentCount);
+  }
   if (
     header == "std/console"
     && argumentCount == 1

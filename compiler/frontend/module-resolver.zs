@@ -4853,7 +4853,7 @@ function isIntegerConstructionSource(
   moduleIndex: usize,
   in typeName: String
 ): boolean {
-  if (isIntegerTypeName(typeName)) return true;
+  if (isIntegerTypeName(typeName) || isFloatTypeName(typeName)) return true;
   match (typeSymbolLocation(modules, moduleIndex, typeName)) {
     some(location) => {
       match (
@@ -7878,12 +7878,12 @@ function inferExpressionNodeType(
         return "";
       }
       const base = identifierLookupName(callee);
-      if (isIntegerTypeName(base)) {
+      if (isIntegerTypeName(base) || isFloatTypeName(base)) {
         if (children.length != 2) {
           throw resolutionError(
             ModuleResolveErrorKind.typeMismatch,
             module.path,
-            `${base} numeric construction expects exactly one integer value`,
+            `${base} numeric construction expects exactly one numeric value`,
             node.line,
             node.column
           );
@@ -7910,7 +7910,7 @@ function inferExpressionNodeType(
           throw resolutionError(
             ModuleResolveErrorKind.typeMismatch,
             module.path,
-            `${base} numeric construction requires an integer value, found ${actual}`,
+            `${base} numeric construction requires a numeric value, found ${actual}`,
             tree.nodes[argument].line,
             tree.nodes[argument].column
           );
@@ -7924,15 +7924,6 @@ function inferExpressionNodeType(
           inout evidence
         );
         return copiedString(base);
-      }
-      if (isFloatTypeName(base)) {
-        throw resolutionError(
-          ModuleResolveErrorKind.typeMismatch,
-          module.path,
-          `${base}(value) numeric conversion is not available in the integer-only conversion tier`,
-          node.line,
-          node.column
-        );
       }
       if (importedStandardType(
         module,
@@ -8656,11 +8647,50 @@ function inferExpressionNodeType(
             signature.returnType.byteLength
           );
         }
+        let standardArgumentType = "";
+        if (
+          memberName == "trunc"
+          && importedStandardNamespace(
+            module,
+            namespaceName,
+            "std/math"
+          )
+        ) {
+          const mathArguments = callArgumentNodes(children);
+          if (mathArguments.length != 1) {
+            throw genericCallError(
+              module,
+              tree,
+              calleeIndex,
+              `math.trunc expects 1 argument, received ${mathArguments.length}`
+            );
+          }
+          standardArgumentType = try inferExpressionNodeType(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            mathArguments[0],
+            inout bindings,
+            inout evidence
+          );
+          if (
+            standardArgumentType != "f32"
+            && standardArgumentType != "f64"
+          ) throw genericCallError(
+            module,
+            tree,
+            mathArguments[0],
+            `math.trunc requires f32 or f64, found ${standardArgumentType}`
+          );
+        }
         match (nativeStandardCall(
           module.program,
           namespaceName,
           memberName,
-          children.length - 1
+          children.length - 1,
+          standardArgumentType
         )) {
           some(standard) => {
             const namespaceSymbol = moduleSymbolIndex(

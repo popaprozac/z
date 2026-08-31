@@ -7227,12 +7227,12 @@ function emitFrameExpressionInner(
         });
         return `${taskScopeAsyncScheduleName(expression.location.offset)}(${[scope, ...captures].join(", ")})`;
       }
-      const integerConversion = plan.types.semanticInfo.integerConversions.get(expression.location.offset);
-      if (integerConversion) {
+      const numericConversion = plan.types.semanticInfo.numericConversions.get(expression.location.offset);
+      if (numericConversion) {
         const value = emitFrameExpression(expression.arguments[0], plan, fileName);
-        const targetType = cFrameType(integerConversion.targetType, plan.types);
-        return integerConversion.checked
-          ? `z_checked_convert_${integerConversion.sourceType}_to_${integerConversion.targetType}(${value})`
+        const targetType = cFrameType(numericConversion.targetType, plan.types);
+        return numericConversion.checked
+          ? `z_checked_convert_${numericConversion.sourceType}_to_${numericConversion.targetType}(${value})`
           : `((${targetType})(${value}))`;
       }
       const standard = plan.types.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);

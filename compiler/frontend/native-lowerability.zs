@@ -1703,7 +1703,11 @@ function validateNativeExpressionTree(
       const callee = view tree.nodes[node.children[0]];
       if (
         callee.kind == ExpressionKind.identifierExpression
-        && isIntegerTypeName(callee.value)
+        && (
+          isIntegerTypeName(callee.value)
+          || callee.value == "f32"
+          || callee.value == "f64"
+        )
         && node.children.length == 2
       ) {
         const source = node.children[1];
@@ -1727,7 +1731,7 @@ function validateNativeExpressionTree(
           throw loweringBoundary(
             path,
             "Z1000",
-            "the native compiler cannot yet prove this integer conversion operand's type",
+            "the native compiler cannot yet prove this numeric conversion operand's type",
             sourceLine,
             sourceColumn,
             sourceLength
