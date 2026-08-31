@@ -2826,7 +2826,7 @@ function lowerTypeName(
       name: name.copyBytes(0, name.byteLength),
     });
   }
-  if (name == "objc.Registration") {
+  if (name == "objc.Registration" || name == "ZObjCRegistration") {
     return LoweredType({
       kind: LoweredTypeKind.foreignObjCType,
       name: "ZObjCRegistration",
@@ -3175,6 +3175,12 @@ function lowerModuleTypeName(
     return LoweredType({
       kind: LoweredTypeKind.onceType,
       name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (name == "objc.Registration" || name == "ZObjCRegistration") {
+    return LoweredType({
+      kind: LoweredTypeKind.foreignObjCType,
+      name: "ZObjCRegistration",
     });
   }
   const nullableTarget = nullableTargetType(name);
