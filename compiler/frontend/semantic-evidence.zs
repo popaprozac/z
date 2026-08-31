@@ -354,8 +354,10 @@ export function recordCallResolution(
     ));
     concreteIndex = concreteIndex + 1;
   }
+  const offset = tree.nodes[callIndex].offset;
+  const resolutionIndex = evidence.callResolutions.length;
   evidence.callResolutions.push(ModuleCallResolution({
-    offset: tree.nodes[callIndex].offset,
+    offset,
     line: tree.nodes[callIndex].line,
     column: tree.nodes[callIndex].column,
     targetModuleIndex,
@@ -375,6 +377,20 @@ export function recordCallResolution(
     foreignSuccessValues: Array<String>(),
     foreignArguments: Array<ModuleForeignArgument>(),
   }));
+  if (!evidence.callResolutionIndices.has(offset)) {
+    evidence.callResolutionIndices.set(offset, resolutionIndex);
+  }
+}
+
+function callResolutionIndex(
+  in evidence: ModuleSemanticEvidence,
+  offset: usize
+): usize {
+  const found = evidence.callResolutionIndices.get(offset);
+  return match (in found) {
+    some(index) => index;
+    none => evidence.callResolutions.length;
+  };
 }
 
 export function recordForeignCallFacts(
@@ -383,12 +399,13 @@ export function recordForeignCallFacts(
   in symbol: ModuleSymbol,
   inout evidence: ModuleSemanticEvidence
 ): void {
-  let resolutionIndex: usize = 0;
-  while (resolutionIndex < evidence.callResolutions.length) {
+  const resolutionIndex = callResolutionIndex(
+    evidence,
+    tree.nodes[callIndex].offset
+  );
+  if (resolutionIndex < evidence.callResolutions.length) {
     if (
-      evidence.callResolutions[resolutionIndex].offset
-        == tree.nodes[callIndex].offset
-      && evidence.callResolutions[resolutionIndex].line
+      evidence.callResolutions[resolutionIndex].line
         == tree.nodes[callIndex].line
       && evidence.callResolutions[resolutionIndex].column
         == tree.nodes[callIndex].column
@@ -433,7 +450,6 @@ export function recordForeignCallFacts(
       }
       return;
     }
-    resolutionIndex = resolutionIndex + 1;
   }
 }
 
@@ -447,12 +463,13 @@ export function recordObjCCallFacts(
   in parameterNativeTypes: Array<String>,
   inout evidence: ModuleSemanticEvidence
 ): void {
-  let resolutionIndex: usize = 0;
-  while (resolutionIndex < evidence.callResolutions.length) {
+  const resolutionIndex = callResolutionIndex(
+    evidence,
+    tree.nodes[callIndex].offset
+  );
+  if (resolutionIndex < evidence.callResolutions.length) {
     if (
-      evidence.callResolutions[resolutionIndex].offset
-        == tree.nodes[callIndex].offset
-      && evidence.callResolutions[resolutionIndex].line
+      evidence.callResolutions[resolutionIndex].line
         == tree.nodes[callIndex].line
       && evidence.callResolutions[resolutionIndex].column
         == tree.nodes[callIndex].column
@@ -474,7 +491,6 @@ export function recordObjCCallFacts(
       }
       return;
     }
-    resolutionIndex = resolutionIndex + 1;
   }
 }
 

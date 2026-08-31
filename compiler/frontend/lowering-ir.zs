@@ -6321,25 +6321,36 @@ function resolvedCallTarget(
   in tree: ExpressionTree,
   index: usize
 ): Option<String> {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-    ) {
-      if (
-        resolution.kind == "foreign"
-        && resolution.foreignSuccessValues.length > 0
-      ) return Option.some(
-        `z_stage1_foreign_${resolution.targetModuleIndex}_${resolution.targetSymbolIndex}`
-      );
-      return Option.some(resolution.targetName.copyBytes(
-        0,
-        resolution.targetName.byteLength
-      ));
-    }
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.callResolutions.length) {
+    return Option<String>.none;
   }
-  return Option<String>.none;
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  if (
+    resolution.kind == "foreign"
+    && resolution.foreignSuccessValues.length > 0
+  ) return Option.some(
+    `z_stage1_foreign_${resolution.targetModuleIndex}_${resolution.targetSymbolIndex}`
+  );
+  return Option.some(resolution.targetName.copyBytes(
+    0,
+    resolution.targetName.byteLength
+  ));
+}
+
+function callResolutionIndexForOffset(
+  in evidence: ModuleSemanticEvidence,
+  offset: usize
+): usize {
+  const found = evidence.callResolutionIndices.get(offset);
+  return match (in found) {
+    some(index) => index;
+    none => evidence.callResolutions.length;
+  };
 }
 
 function resolvedCallResolutionIndex(
@@ -6347,16 +6358,18 @@ function resolvedCallResolutionIndex(
   in tree: ExpressionTree,
   index: usize
 ): usize {
-  let resolutionIndex: usize = 0;
-  while (resolutionIndex < evidence.callResolutions.length) {
-    const resolution = view evidence.callResolutions[resolutionIndex];
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-    ) return resolutionIndex;
-    resolutionIndex = resolutionIndex + 1;
+  const resolutionIndex = callResolutionIndexForOffset(
+    evidence,
+    tree.nodes[index].offset
+  );
+  if (resolutionIndex >= evidence.callResolutions.length) {
+    return evidence.callResolutions.length;
   }
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  if (
+    resolution.line == tree.nodes[index].line
+    && resolution.column == tree.nodes[index].column
+  ) return resolutionIndex;
   return evidence.callResolutions.length;
 }
 
@@ -6365,14 +6378,14 @@ function resolvedCallKind(
   in tree: ExpressionTree,
   index: usize
 ): String {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-    ) return resolution.kind.copyBytes(0, resolution.kind.byteLength);
-  }
-  return "";
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.callResolutions.length) return "";
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  return resolution.kind.copyBytes(0, resolution.kind.byteLength);
 }
 
 function resolvedObjectiveCSelector(
@@ -6380,17 +6393,17 @@ function resolvedObjectiveCSelector(
   in tree: ExpressionTree,
   index: usize
 ): String {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-    ) return resolution.objectiveCSelector.copyBytes(
-      0,
-      resolution.objectiveCSelector.byteLength
-    );
-  }
-  return "";
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.callResolutions.length) return "";
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  return resolution.objectiveCSelector.copyBytes(
+    0,
+    resolution.objectiveCSelector.byteLength
+  );
 }
 
 function resolvedObjectiveCReceiverNativeType(
@@ -6398,17 +6411,17 @@ function resolvedObjectiveCReceiverNativeType(
   in tree: ExpressionTree,
   index: usize
 ): String {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-    ) return resolution.objectiveCReceiverNativeType.copyBytes(
-      0,
-      resolution.objectiveCReceiverNativeType.byteLength
-    );
-  }
-  return "";
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.callResolutions.length) return "";
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  return resolution.objectiveCReceiverNativeType.copyBytes(
+    0,
+    resolution.objectiveCReceiverNativeType.byteLength
+  );
 }
 
 function resolvedGenericMethodSuffix(
@@ -6418,23 +6431,25 @@ function resolvedGenericMethodSuffix(
   in tree: ExpressionTree,
   index: usize
 ): String throws String {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-      && resolution.callableTypeParameterCount > 0
-      && (
-        resolution.kind == "method"
-        || resolution.kind == "staticMethod"
-      )
-    ) return try genericCallableSpecializationSuffix(
-      program,
-      importedTypes,
-      resolution.typeArguments
-    );
-  }
-  return "";
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.callResolutions.length) return "";
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  if (
+    resolution.callableTypeParameterCount == 0
+    || (
+      resolution.kind != "method"
+      && resolution.kind != "staticMethod"
+    )
+  ) return "";
+  return try genericCallableSpecializationSuffix(
+    program,
+    importedTypes,
+    resolution.typeArguments
+  );
 }
 
 function resolvedGenericFunctionSuffix(
@@ -6444,20 +6459,22 @@ function resolvedGenericFunctionSuffix(
   in tree: ExpressionTree,
   index: usize
 ): String throws String {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-      && resolution.callableTypeParameterCount > 0
-      && resolution.kind == "function"
-    ) return try genericCallableSpecializationSuffix(
-      program,
-      importedTypes,
-      resolution.typeArguments
-    );
-  }
-  return "";
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.callResolutions.length) return "";
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  if (
+    resolution.callableTypeParameterCount == 0
+    || resolution.kind != "function"
+  ) return "";
+  return try genericCallableSpecializationSuffix(
+    program,
+    importedTypes,
+    resolution.typeArguments
+  );
 }
 
 function resolvedStaticMethodOwnerType(
@@ -6467,10 +6484,17 @@ function resolvedStaticMethodOwnerType(
   in tree: ExpressionTree,
   index: usize
 ): Option<LoweredType> throws String {
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
   if (
-    resolvedCallKind(evidence, tree, index) != "staticMethod"
+    resolutionIndex >= evidence.callResolutions.length
+    || evidence.callResolutions[resolutionIndex].kind != "staticMethod"
     || tree.nodes[index].children.length == 0
   ) return Option<LoweredType>.none;
+  const resolution = view evidence.callResolutions[resolutionIndex];
   const callee = tree.nodes[index].children[0];
   if (
     tree.nodes[callee].kind != ExpressionKind.memberExpression
@@ -6481,51 +6505,43 @@ function resolvedStaticMethodOwnerType(
   if (sourceOwner.byteLength == 0) {
     throw "native static-method lowering lost its source owner type";
   }
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset != tree.nodes[index].offset
-      || resolution.line != tree.nodes[index].line
-      || resolution.column != tree.nodes[index].column
-    ) continue;
-    const ownerTypeArgumentCount = resolution.typeArguments.length
-      - resolution.callableTypeParameterCount;
-    if (ownerTypeArgumentCount > 0) {
-      let ownerTypeArguments = Array<String>();
-      let argumentIndex: usize = 0;
-      while (argumentIndex < ownerTypeArgumentCount) {
-        ownerTypeArguments.push(resolution.typeArguments[argumentIndex]
-          .copyBytes(
-            0,
-            resolution.typeArguments[argumentIndex].byteLength
-          ));
-        argumentIndex = argumentIndex + 1;
-      }
-      const concreteOwner = concreteGenericTypeName(
-        sourceOwner,
-        ownerTypeArguments
-      );
-      const concrete = attempt lowerModuleTypeName(
-        program,
-        importedTypes,
-        concreteOwner
-      );
-      match (concrete) {
-        success(type) => return Option.some(type);
-        failure(_) => {
-          const message =
-            `native static-method lowering could not materialize owner ${concreteOwner}`;
-          throw message;
-        }
-      }
+  const ownerTypeArgumentCount = resolution.typeArguments.length
+    - resolution.callableTypeParameterCount;
+  if (ownerTypeArgumentCount > 0) {
+    let ownerTypeArguments = Array<String>();
+    let argumentIndex: usize = 0;
+    while (argumentIndex < ownerTypeArgumentCount) {
+      ownerTypeArguments.push(resolution.typeArguments[argumentIndex]
+        .copyBytes(
+          0,
+          resolution.typeArguments[argumentIndex].byteLength
+        ));
+      argumentIndex = argumentIndex + 1;
     }
-    const ownerType = try lowerModuleTypeName(
+    const concreteOwner = concreteGenericTypeName(
+      sourceOwner,
+      ownerTypeArguments
+    );
+    const concrete = attempt lowerModuleTypeName(
       program,
       importedTypes,
-      sourceOwner
+      concreteOwner
     );
-    return Option.some(ownerType);
+    match (concrete) {
+      success(type) => return Option.some(type);
+      failure(_) => {
+        const message =
+          `native static-method lowering could not materialize owner ${concreteOwner}`;
+        throw message;
+      }
+    }
   }
-  throw "native static-method lowering lost semantic call evidence";
+  const ownerType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    sourceOwner
+  );
+  return Option.some(ownerType);
 }
 
 function resolvedCallIsAsynchronous(
@@ -6533,14 +6549,13 @@ function resolvedCallIsAsynchronous(
   in tree: ExpressionTree,
   index: usize
 ): boolean {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-    ) return resolution.asynchronous;
-  }
-  return false;
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  return resolutionIndex < evidence.callResolutions.length
+    && evidence.callResolutions[resolutionIndex].asynchronous;
 }
 
 function resolvedCallReceiverMode(
@@ -6548,17 +6563,17 @@ function resolvedCallReceiverMode(
   in tree: ExpressionTree,
   index: usize
 ): String {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-    ) return resolution.receiverMode.copyBytes(
-      0,
-      resolution.receiverMode.byteLength
-    );
-  }
-  return "";
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.callResolutions.length) return "";
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  return resolution.receiverMode.copyBytes(
+    0,
+    resolution.receiverMode.byteLength
+  );
 }
 
 function resolvedForeignCallTarget(
@@ -6566,25 +6581,25 @@ function resolvedForeignCallTarget(
   in tree: ExpressionTree,
   index: usize
 ): Option<String> {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-      && resolution.kind == "foreign"
-    ) {
-      if (resolution.foreignSuccessValues.length > 0) {
-        return Option.some(
-          `z_stage1_foreign_${resolution.targetModuleIndex}_${resolution.targetSymbolIndex}`
-        );
-      }
-      return Option.some(resolution.targetName.copyBytes(
-        0,
-        resolution.targetName.byteLength
-      ));
-    }
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.callResolutions.length) {
+    return Option<String>.none;
   }
-  return Option<String>.none;
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  if (resolution.kind != "foreign") return Option<String>.none;
+  if (resolution.foreignSuccessValues.length > 0) {
+    return Option.some(
+      `z_stage1_foreign_${resolution.targetModuleIndex}_${resolution.targetSymbolIndex}`
+    );
+  }
+  return Option.some(resolution.targetName.copyBytes(
+    0,
+    resolution.targetName.byteLength
+  ));
 }
 
 function resolvedForeignArguments(
@@ -6592,26 +6607,29 @@ function resolvedForeignArguments(
   in tree: ExpressionTree,
   index: usize
 ): Array<ModuleForeignArgument> {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset != tree.nodes[index].offset
-      || resolution.line != tree.nodes[index].line
-      || resolution.column != tree.nodes[index].column
-      || resolution.kind != "foreign"
-      || resolution.foreignSuccessValues.length > 0
-    ) continue;
-    let arguments = Array<ModuleForeignArgument>();
-    for (const argument of resolution.foreignArguments) {
-      arguments.push(ModuleForeignArgument({
-        kind: argument.kind.copyBytes(0, argument.kind.byteLength),
-        source: argument.source,
-        value: argument.value.copyBytes(0, argument.value.byteLength),
-        mode: argument.mode.copyBytes(0, argument.mode.byteLength),
-      }));
-    }
-    return arguments;
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.callResolutions.length) {
+    return Array<ModuleForeignArgument>();
   }
-  return Array<ModuleForeignArgument>();
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  if (
+    resolution.kind != "foreign"
+    || resolution.foreignSuccessValues.length > 0
+  ) return Array<ModuleForeignArgument>();
+  let arguments = Array<ModuleForeignArgument>();
+  for (const argument of resolution.foreignArguments) {
+    arguments.push(ModuleForeignArgument({
+      kind: argument.kind.copyBytes(0, argument.kind.byteLength),
+      source: argument.source,
+      value: argument.value.copyBytes(0, argument.value.byteLength),
+      mode: argument.mode.copyBytes(0, argument.mode.byteLength),
+    }));
+  }
+  return arguments;
 }
 
 function containsString(in values: Array<String>, in value: String): boolean {
@@ -6765,12 +6783,13 @@ function resolvedCallParameterModes(
   in tree: ExpressionTree,
   index: usize
 ): Array<String> {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset != tree.nodes[index].offset
-      || resolution.line != tree.nodes[index].line
-      || resolution.column != tree.nodes[index].column
-    ) continue;
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex < evidence.callResolutions.length) {
+    const resolution = view evidence.callResolutions[resolutionIndex];
     let modes = Array<String>();
     for (const mode of resolution.parameterModes) {
       modes.push(mode.copyBytes(0, mode.byteLength));
@@ -6799,12 +6818,13 @@ function resolvedCallParameterTypes(
   in tree: ExpressionTree,
   index: usize
 ): Array<String> {
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset != tree.nodes[index].offset
-      || resolution.line != tree.nodes[index].line
-      || resolution.column != tree.nodes[index].column
-    ) continue;
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex < evidence.callResolutions.length) {
+    const resolution = view evidence.callResolutions[resolutionIndex];
     if (
       resolution.kind == "function"
       && resolution.callableTypeParameterCount > 0
@@ -6848,7 +6868,6 @@ function resolvedCallParameterTypes(
       types.push(type.copyBytes(0, type.byteLength));
     }
     if (types.length > 0) return types;
-    break;
   }
   if (tree.nodes[index].children.length > 0) {
     const callee = tree.nodes[index].children[0];
@@ -8129,13 +8148,15 @@ function staticallyResolvedExpressionTypeName(
     none => {}
   }
   if (tree.nodes[index].kind == ExpressionKind.callExpression) {
-    for (const resolution of evidence.callResolutions) {
-      if (
-        resolution.offset == tree.nodes[index].offset
-        && resolution.line == tree.nodes[index].line
-        && resolution.column == tree.nodes[index].column
-        && resolution.returnType.byteLength > 0
-      ) return Option.some(resolution.returnType.copyBytes(
+    const resolutionIndex = resolvedCallResolutionIndex(
+      evidence,
+      tree,
+      index
+    );
+    if (resolutionIndex < evidence.callResolutions.length) {
+      const resolution = view evidence.callResolutions[resolutionIndex];
+      if (resolution.returnType.byteLength > 0) return Option.some(
+        resolution.returnType.copyBytes(
         0,
         resolution.returnType.byteLength
       ));
@@ -8296,14 +8317,14 @@ function staticallyResolvedExpressionTypeName(
         none => {}
       }
     }
-    for (const resolution of evidence.callResolutions) {
-      if (
-        resolution.offset != tree.nodes[attempted].offset
-        || resolution.line != tree.nodes[attempted].line
-        || resolution.column != tree.nodes[attempted].column
-        || resolution.errorType.byteLength == 0
-      ) continue;
-      return Option.some(
+    const resolutionIndex = resolvedCallResolutionIndex(
+      evidence,
+      tree,
+      attempted
+    );
+    if (resolutionIndex < evidence.callResolutions.length) {
+      const resolution = view evidence.callResolutions[resolutionIndex];
+      if (resolution.errorType.byteLength > 0) return Option.some(
         `Result<${resolution.returnType}, ${resolution.errorType}>`
       );
     }
@@ -9129,21 +9150,21 @@ function lowerExpressionContextual(
     }
     let callReturnType = "";
     let callErrorType = "";
-    for (const resolution of evidence.callResolutions) {
-      if (
-        resolution.offset == tree.nodes[callInput].offset
-        && resolution.line == tree.nodes[callInput].line
-        && resolution.column == tree.nodes[callInput].column
-      ) {
-        callReturnType = resolution.returnType.copyBytes(
-          0,
-          resolution.returnType.byteLength
-        );
-        callErrorType = resolution.errorType.copyBytes(
-          0,
-          resolution.errorType.byteLength
-        );
-      }
+    const callResolutionIndex = resolvedCallResolutionIndex(
+      evidence,
+      tree,
+      callInput
+    );
+    if (callResolutionIndex < evidence.callResolutions.length) {
+      const resolution = view evidence.callResolutions[callResolutionIndex];
+      callReturnType = resolution.returnType.copyBytes(
+        0,
+        resolution.returnType.byteLength
+      );
+      callErrorType = resolution.errorType.copyBytes(
+        0,
+        resolution.errorType.byteLength
+      );
     }
     let returnType = try lowerModuleTypeName(
       program,
@@ -9169,11 +9190,6 @@ function lowerExpressionContextual(
     );
     const parameterModes = resolvedCallParameterModes(
       program,
-      evidence,
-      tree,
-      callInput
-    );
-    const callResolutionIndex = resolvedCallResolutionIndex(
       evidence,
       tree,
       callInput
@@ -16207,19 +16223,22 @@ function directThrowingCallResult(
       none => {}
     }
   }
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset != tree.nodes[index].offset
-      || resolution.line != tree.nodes[index].line
-      || resolution.column != tree.nodes[index].column
-      || resolution.errorType.byteLength == 0
-    ) continue;
-    const resultName = `Result<${resolution.returnType}, ${resolution.errorType}>`;
-    return try intrinsicResultDeclaration(
-      program,
-      importedTypes,
-      resultName
-    );
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex < evidence.callResolutions.length) {
+    const resolution = view evidence.callResolutions[resolutionIndex];
+    if (resolution.errorType.byteLength > 0) {
+      const resultName =
+        `Result<${resolution.returnType}, ${resolution.errorType}>`;
+      return try intrinsicResultDeclaration(
+        program,
+        importedTypes,
+        resultName
+      );
+    }
   }
   let callee = tree.nodes[index].children[0];
   if (
@@ -17553,13 +17572,15 @@ function testExpressionTypeName(
     return Option.some("i32");
   }
   if (tree.nodes[index].kind == ExpressionKind.callExpression) {
-    for (const resolution of evidence.callResolutions) {
-      if (
-        resolution.offset == tree.nodes[index].offset
-        && resolution.line == tree.nodes[index].line
-        && resolution.column == tree.nodes[index].column
-        && resolution.returnType.byteLength > 0
-      ) return Option.some(resolution.returnType.copyBytes(
+    const resolutionIndex = resolvedCallResolutionIndex(
+      evidence,
+      tree,
+      index
+    );
+    if (resolutionIndex < evidence.callResolutions.length) {
+      const resolution = view evidence.callResolutions[resolutionIndex];
+      if (resolution.returnType.byteLength > 0) return Option.some(
+        resolution.returnType.copyBytes(
         0,
         resolution.returnType.byteLength
       ));
