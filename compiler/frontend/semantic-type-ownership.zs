@@ -561,6 +561,16 @@ function typeContainsStoredViewInner(
             typeIndex = typeIndex + 1;
           }
           for (const field of signature.fields) {
+            if (substitutions.length == 0) {
+              if (typeContainsStoredViewInner(
+                modules,
+                location.moduleIndex,
+                field.typeName,
+                nextVisiting,
+                nextVisitingLocations
+              )) return true;
+              continue;
+            }
             const fieldType = substituteGenericType(
               field.typeName,
               substitutions
@@ -575,6 +585,16 @@ function typeContainsStoredViewInner(
           }
           for (const variant of signature.variants) {
             if (variant.payloadType.byteLength == 0) continue;
+            if (substitutions.length == 0) {
+              if (typeContainsStoredViewInner(
+                modules,
+                location.moduleIndex,
+                variant.payloadType,
+                nextVisiting,
+                nextVisitingLocations
+              )) return true;
+              continue;
+            }
             const payloadType = substituteGenericType(
               variant.payloadType,
               substitutions
