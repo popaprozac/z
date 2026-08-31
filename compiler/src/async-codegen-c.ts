@@ -1563,17 +1563,9 @@ function registerAsyncFrameBinding(
   borrowedLocals: Set<string>,
   fileName: string,
 ): void {
-  const existing = locals.get(name);
-  if (existing && existing !== type) {
-    unsupported(
-      fileName,
-      location,
-      `persistent async control flow cannot reuse binding ${JSON.stringify(name)} with both ${JSON.stringify(existing)} and ${JSON.stringify(type)}`,
-      "use distinct binding names in suspending branches",
-    );
-  }
-  locals.set(name, type);
-  if (borrowed) borrowedLocals.add(name);
+  const storage = asyncFrameRegistrationName(name, type, locals);
+  locals.set(storage, type);
+  if (borrowed) borrowedLocals.add(storage);
 }
 
 function registerAsyncForBindings(
@@ -1634,9 +1626,10 @@ function registerAsyncMatchBindings(
   if (arm.binding && arm.bindingLocation && variant!.payload) {
     requireFrameType(variant!.payload.name, arm.bindingLocation, fileName, "async match payload", types);
     const borrowed = site.subjectBinding === null;
+    const storage = asyncFrameRegistrationName(arm.binding, variant!.payload.name, locals);
     if (
-      locals.has(arm.binding)
-      && borrowedLocals.has(arm.binding) !== borrowed
+      locals.has(storage)
+      && borrowedLocals.has(storage) !== borrowed
       && hasFrameCleanup(variant!.payload.name, types)
     ) {
       unsupported(
@@ -4677,11 +4670,12 @@ function assignPersistentBorrowedBinding(
   value: string,
   plan: AsyncFunctionPlan,
 ): string {
-  return plan.borrowedLocals.has(name)
+  const storage = asyncFrameBindingName(name, type, plan.locals);
+  return plan.borrowedLocals.has(storage)
     ? plan.types.structs.get(type)?.kind === "class"
-      ? `frame->${frameField(name)} = ${value};`
-      : `frame->${frameField(name)} = &(${value});`
-    : `frame->${frameField(name)} = ${value};`;
+      ? `frame->${frameField(storage)} = ${value};`
+      : `frame->${frameField(storage)} = &(${value});`
+    : `frame->${frameField(storage)} = ${value};`;
 }
 
 function emitAsyncForBranch(
@@ -5020,13 +5014,14 @@ function emitAsyncMatchBinding(
   const payload = `((${subject}).data.${variant!.name})`;
   const lines: string[] = [];
   if (arm.binding && variant!.payload) {
+    const storage = asyncFrameBindingName(arm.binding, variant!.payload.name, plan.locals);
     if (site.subjectBinding) {
-      const destination = frameStoredValue(arm.binding, variant!.payload.name, plan.types);
+      const destination = frameStoredValue(storage, variant!.payload.name, plan.types);
       lines.push(requiresNativeFramePlacement(variant!.payload.name, plan.types)
-        ? `new (frame->${frameField(arm.binding)}) ${cFrameType(variant!.payload.name, plan.types)}(std::move(${payload}));`
+        ? `new (frame->${frameField(storage)}) ${cFrameType(variant!.payload.name, plan.types)}(std::move(${payload}));`
         : `${destination} = ${payload};`);
       if (hasFrameCleanup(variant!.payload.name, plan.types)) {
-        lines.push(`frame->${frameLiveField(arm.binding)} = true;`);
+        lines.push(`frame->${frameLiveField(storage)} = true;`);
       }
       if (hasFrameCleanup(site.subjectType, plan.types)) {
         const nativePayload = requiresNativeFramePlacement(variant!.payload.name, plan.types);
@@ -5065,10 +5060,11 @@ function emitAsyncMatchCleanupLines(
   const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName) ?? null;
   const lines: string[] = [];
   if (arm.binding && variant?.payload && hasFrameCleanup(variant.payload.name, plan.types)) {
+    const storage = asyncFrameBindingName(arm.binding, variant.payload.name, plan.locals);
     lines.push(
-      `if (frame->${frameLiveField(arm.binding)}) {`,
-      `  ${frameCleanup(frameStoredValue(arm.binding, variant.payload.name, plan.types), variant.payload.name, plan.types)}`,
-      `  frame->${frameLiveField(arm.binding)} = false;`,
+      `if (frame->${frameLiveField(storage)}) {`,
+      `  ${frameCleanup(frameStoredValue(storage, variant.payload.name, plan.types), variant.payload.name, plan.types)}`,
+      `  frame->${frameLiveField(storage)} = false;`,
       "}",
     );
   }
@@ -6613,6 +6609,20 @@ function emitPreparedFrameExpression(
         return;
       case "dynamicArrayExpression":
         for (const element of candidate.elements) visit(element);
+        if (candidate.elements.length > 0) {
+          const type = dynamicArrayTypeName(candidate.elementType);
+          const temporary = `_z_async_array_${candidate.location.offset}`;
+          prefix.push(
+            `${cFrameType(type, plan.types)} ${temporary} = (${cFrameType(type, plan.types)}){ .data = NULL, .length = 0, .capacity = 0 };`,
+          );
+          const elementPlan = { ...plan, expressionBindings };
+          for (const element of candidate.elements) {
+            prefix.push(
+              `${dynamicArrayPushName(type)}(&(${temporary}), ${emitFrameExpression(element, elementPlan, fileName)});`,
+            );
+          }
+          expressionBindings.set(candidate.location.offset, temporary);
+        }
         return;
       case "template":
         for (const part of candidate.parts) if (part.kind === "value") visit(part.expression);
@@ -6947,7 +6957,7 @@ function emitFrameExpressionInner(
       }
       if (plan.bindings?.has(expression.name)) {
         const value = plan.bindings.get(expression.name)!;
-        const type = plan.locals.get(expression.name);
+        const type = frameExpressionType(expression, plan);
         if (
           type
           && plan.types.semanticInfo.movedExpressions.has(expression.location.offset)
@@ -6964,19 +6974,20 @@ function emitFrameExpressionInner(
         }
         return value;
       }
-      if (!plan.locals.has(expression.name)) {
-        unsupported(fileName, expression.location, "the first async lowering slice cannot reference this value");
-      }
       {
-        const type = plan.locals.get(expression.name)!;
-        const value = plan.borrowedLocals?.has(expression.name)
-          ? borrowedFrameValue(expression.name, type, plan.types)
-          : frameStoredValue(expression.name, type, plan.types);
+        const type = frameExpressionType(expression, plan);
+        const storage = asyncFrameBindingName(expression.name, type, plan.locals);
+        if (!plan.locals.has(storage)) {
+          unsupported(fileName, expression.location, "the first async lowering slice cannot reference this value");
+        }
+        const value = plan.borrowedLocals?.has(storage)
+          ? borrowedFrameValue(storage, type, plan.types)
+          : frameStoredValue(storage, type, plan.types);
         if (plan.types.semanticInfo.movedExpressions.has(expression.location.offset)) {
           if (requiresNativeFramePlacement(type, plan.types)) {
-            return frameTakeExpression(value, `frame->${frameLiveField(expression.name)}`);
+            return frameTakeExpression(value, `frame->${frameLiveField(storage)}`);
           }
-          return `(frame->${frameLiveField(expression.name)} = false, ${value})`;
+          return `(frame->${frameLiveField(storage)} = false, ${value})`;
         }
         if (plan.types.semanticInfo.managedCopies.has(expression.location.offset)) {
           const retained = retainManagedFrameValue(type, value, plan.types);
@@ -7066,21 +7077,13 @@ function emitFrameExpressionInner(
       return `(${cFrameType(type, plan.types)}){ .data = { ${elements.join(", ")} } }`;
     }
     case "dynamicArrayExpression": {
-      if (expression.elements.length > 0) {
-        unsupported(
-          fileName,
-          expression.location,
-          "populated Array construction is not executable in an async frame yet",
-        );
-      }
+      const prepared = plan.expressionBindings?.get(expression.location.offset);
+      if (prepared) return prepared;
       const type = dynamicArrayTypeName(expression.elementType);
       return `(${cFrameType(type, plan.types)}){ .data = NULL, .length = 0, .capacity = 0 }`;
     }
     case "index": {
-      const analyzedOwnerType = frameExpressionType(expression.object, plan);
-      const ownerType = expression.object.kind === "identifier"
-        ? plan.locals.get(expression.object.name) ?? analyzedOwnerType
-        : analyzedOwnerType;
+      const ownerType = frameExpressionType(expression.object, plan);
       const array = parseFixedArrayType(ownerType);
       const slice = parseSliceType(ownerType);
       const dynamic = parseDynamicArrayType(ownerType);
@@ -7175,15 +7178,10 @@ function emitFrameExpressionInner(
       }
       if (
         expression.callee.kind === "member"
-        && (parseViewType(
-          expression.callee.object.kind === "identifier"
-            ? plan.locals.get(expression.callee.object.name) ?? frameExpressionType(expression.callee.object, plan)
-            : frameExpressionType(expression.callee.object, plan),
-        )?.target ?? frameExpressionType(expression.callee.object, plan)) === "TaskControl"
+        && (parseViewType(frameExpressionType(expression.callee.object, plan))?.target
+          ?? frameExpressionType(expression.callee.object, plan)) === "TaskControl"
       ) {
-        const receiverType = expression.callee.object.kind === "identifier"
-          ? plan.locals.get(expression.callee.object.name) ?? frameExpressionType(expression.callee.object, plan)
-          : frameExpressionType(expression.callee.object, plan);
+        const receiverType = frameExpressionType(expression.callee.object, plan);
         const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
         const value = parseViewType(receiverType) ? `(*(${receiver}))` : receiver;
         return `z_task_control_request_cancel(${value})`;
@@ -8002,6 +8000,27 @@ function frameStoredValue(name: string, type: string, types: AsyncTypeContext): 
     : field;
 }
 
+function asyncFrameBindingName(
+  sourceName: string,
+  type: string,
+  locals: ReadonlyMap<string, string>,
+): string {
+  const primary = locals.get(sourceName);
+  if (primary === undefined || primary === type) return sourceName;
+  const specialized = `${sourceName}__z_${nativePart(type)}`;
+  return locals.has(specialized) ? specialized : sourceName;
+}
+
+function asyncFrameRegistrationName(
+  sourceName: string,
+  type: string,
+  locals: ReadonlyMap<string, string>,
+): string {
+  const primary = locals.get(sourceName);
+  if (primary === undefined || primary === type) return sourceName;
+  return `${sourceName}__z_${nativePart(type)}`;
+}
+
 function frameResultValue(frame: string, type: string, types: AsyncTypeContext): string {
   const field = `${frame}->result`;
   const cType = cFrameType(type, types);
@@ -8048,8 +8067,11 @@ function asyncExpressionLiveFlag(expression: Expression, plan: AsyncFunctionPlan
     return `frame->${suspension.field}_live`;
   }
   if (expression.kind === "identifier") {
-    const type = plan.locals.get(expression.name);
-    if (type && hasFrameCleanup(type, plan.types)) return `frame->${frameLiveField(expression.name)}`;
+    const type = frameExpressionType(expression, plan);
+    const storage = asyncFrameBindingName(expression.name, type, plan.locals);
+    if (plan.locals.has(storage) && hasFrameCleanup(type, plan.types)) {
+      return `frame->${frameLiveField(storage)}`;
+    }
   }
   return null;
 }

@@ -2134,15 +2134,29 @@ test("constructs populated Array values with owned elements in source order", ()
   `, "populated-array-type.zs")[0];
   assert.match(wrongElement.message, /expected i32, found boolean/);
 
-  assert.throws(
-    () => compileToC(`
-      async function main(): i32 {
-        const values = Array<i32>(20, 22);
-        return values[0] + values[1] - 42;
-      }
-    `, "populated-array-async.zs"),
-    /populated Array construction is not executable in an async frame yet/,
-  );
+  const asyncSource = `
+    enum AsyncArrayInput {
+      name String,
+      values Array<i32>,
+    }
+
+    async function main(): i32 {
+      const values = Array<i32>(20, 22);
+      const input = AsyncArrayInput.values(values);
+      const observed = match (input) {
+        name(value) => i32(value.byteLength);
+        values(value) => value[0] + value[1];
+      };
+      return observed - 42;
+    }
+  `;
+  const asyncGenerated = compileToC(asyncSource, "populated-array-async.zs");
+  assert.match(asyncGenerated, /Z_DynamicArray_.*i32_push\(&\(_z_async_array_/);
+  const asyncDirectory = mkdtempSync("/tmp/z-populated-array-async-");
+  const asyncFileName = resolve(asyncDirectory, "main.zs");
+  writeFileSync(asyncFileName, asyncSource);
+  const asyncRun = spawnSync(process.execPath, [cli, "run", asyncFileName], { encoding: "utf8" });
+  assert.equal(asyncRun.status, 0, asyncRun.stderr);
 });
 
 test("borrows growable Array storage as read-only and mutable Slice values", () => {
