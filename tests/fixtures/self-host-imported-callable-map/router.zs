@@ -1,5 +1,5 @@
 import { Map } from "std/collections";
-import { Handler, Message } from "./contracts.zs";
+import { Handler, ImportedOffset, Message } from "./contracts.zs";
 
 class Offset {
   value: i32;
@@ -19,6 +19,13 @@ function createIncrement(): Handler {
 }
 
 export function route(value: i32): i32 {
+  let importedValues = Map<String, ImportedOffset>();
+  importedValues.set("offset", new ImportedOffset({ value: 1 }));
+  let importedTotal: i32 = 0;
+  for (const entry of importedValues) {
+    importedTotal = importedTotal + entry.value.value;
+  }
+  if (importedTotal != 1) return -2;
   let registry = Registry({ handlers: Map<String, Handler>() });
   const installed = createIncrement();
   registry.add("increment", installed);

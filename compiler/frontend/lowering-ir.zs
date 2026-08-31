@@ -3317,6 +3317,23 @@ function lowerModuleTypeName(
           name: intrinsicMapName(keyType, valueType),
         });
       }
+      if (generic.base == "Map.Entry" && generic.arguments.length == 2) {
+        const keyType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        const valueType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[1]
+        );
+        const mapName = intrinsicMapName(keyType, valueType);
+        return LoweredType({
+          kind: LoweredTypeKind.structType,
+          name: `${mapName}_Entry`,
+        });
+      }
       if (generic.base == "Set" && generic.arguments.length == 1) {
         const elementType = try lowerModuleTypeName(
           program,
@@ -24722,6 +24739,20 @@ function collectIntrinsicTypeName(
       );
       match (map) {
         some(declaration) => {
+          const valueOptionName = intrinsicOptionName(declaration.valueType);
+          const valueOption = try intrinsicOptionDeclaration(
+            program,
+            importedTypes,
+            valueOptionName
+          );
+          match (valueOption) {
+            some(optionDeclaration) => {
+              if (!containsLoweredEnum(enums, optionDeclaration.name)) {
+                enums.push(move optionDeclaration);
+              }
+            }
+            none => throw "native Map value Option lowering lost its intrinsic declaration";
+          }
           if (!containsLoweredMap(maps, declaration.name)) {
             maps.push(move declaration);
           }
