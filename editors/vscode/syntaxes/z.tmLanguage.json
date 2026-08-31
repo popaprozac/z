@@ -3,6 +3,7 @@
   "name": "Z",
   "scopeName": "source.z",
   "patterns": [
+    { "include": "#rawNativeBodies" },
     { "include": "#comments" },
     { "include": "#foreignDeclarations" },
     { "include": "#strings" },
@@ -19,6 +20,155 @@
     { "include": "#numbers" }
   ],
   "repository": {
+    "rawNativeBodies": {
+      "patterns": [{
+        "name": "meta.embedded.raw.c.z",
+        "begin": "\\b(raw)\\s+(c)\\b",
+        "beginCaptures": {
+          "1": { "name": "keyword.control.raw.z" },
+          "2": { "name": "support.language.native.z" }
+        },
+        "end": "(?<=\\})",
+        "patterns": [
+          { "include": "#rawCBody" },
+          { "include": "#comments" },
+          { "include": "#types" },
+          { "include": "#keywords" },
+          { "include": "#operators" },
+          { "include": "#numbers" }
+        ]
+      }, {
+        "name": "meta.embedded.raw.cpp.z",
+        "begin": "\\b(raw)\\s+(cpp)\\b",
+        "beginCaptures": {
+          "1": { "name": "keyword.control.raw.z" },
+          "2": { "name": "support.language.native.z" }
+        },
+        "end": "(?<=\\})",
+        "patterns": [
+          { "include": "#rawCppBody" },
+          { "include": "#comments" },
+          { "include": "#types" },
+          { "include": "#keywords" },
+          { "include": "#operators" },
+          { "include": "#numbers" }
+        ]
+      }, {
+        "name": "meta.embedded.raw.objc.z",
+        "begin": "\\b(raw)\\s+(objc)\\b",
+        "beginCaptures": {
+          "1": { "name": "keyword.control.raw.z" },
+          "2": { "name": "support.language.native.z" }
+        },
+        "end": "(?<=\\})",
+        "patterns": [
+          { "include": "#rawObjCBody" },
+          { "include": "#comments" },
+          { "include": "#types" },
+          { "include": "#keywords" },
+          { "include": "#operators" },
+          { "include": "#numbers" }
+        ]
+      }]
+    },
+    "rawCBody": {
+      "name": "meta.embedded.block.c.z",
+      "contentName": "source.c",
+      "begin": "(\\{)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.section.block.begin.z" }
+      },
+      "end": "(\\})",
+      "endCaptures": {
+        "1": { "name": "punctuation.section.block.end.z" }
+      },
+      "patterns": [
+        { "include": "#rawCBraces" },
+        { "include": "source.c" }
+      ]
+    },
+    "rawCBraces": {
+      "name": "meta.embedded.block.c.z",
+      "contentName": "source.c",
+      "begin": "(\\{)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.section.block.begin.c" }
+      },
+      "end": "(\\})",
+      "endCaptures": {
+        "1": { "name": "punctuation.section.block.end.c" }
+      },
+      "patterns": [
+        { "include": "#rawCBraces" },
+        { "include": "source.c" }
+      ]
+    },
+    "rawCppBody": {
+      "name": "meta.embedded.block.cpp.z",
+      "contentName": "source.cpp",
+      "begin": "(\\{)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.section.block.begin.z" }
+      },
+      "end": "(\\})",
+      "endCaptures": {
+        "1": { "name": "punctuation.section.block.end.z" }
+      },
+      "patterns": [
+        { "include": "#rawCppBraces" },
+        { "include": "source.cpp" }
+      ]
+    },
+    "rawCppBraces": {
+      "name": "meta.embedded.block.cpp.z",
+      "contentName": "source.cpp",
+      "begin": "(\\{)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.section.block.begin.cpp" }
+      },
+      "end": "(\\})",
+      "endCaptures": {
+        "1": { "name": "punctuation.section.block.end.cpp" }
+      },
+      "patterns": [
+        { "include": "#rawCppBraces" },
+        { "include": "source.cpp" }
+      ]
+    },
+    "rawObjCBody": {
+      "name": "meta.embedded.block.objc.z",
+      "contentName": "source.objc",
+      "begin": "(\\{)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.section.block.begin.z" }
+      },
+      "end": "(\\})",
+      "endCaptures": {
+        "1": { "name": "punctuation.section.block.end.z" }
+      },
+      "patterns": [
+        { "include": "#rawObjCBraces" },
+        { "include": "source.objc" },
+        { "include": "source.c" }
+      ]
+    },
+    "rawObjCBraces": {
+      "name": "meta.embedded.block.objc.z",
+      "contentName": "source.objc",
+      "begin": "(\\{)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.section.block.begin.objc" }
+      },
+      "end": "(\\})",
+      "endCaptures": {
+        "1": { "name": "punctuation.section.block.end.objc" }
+      },
+      "patterns": [
+        { "include": "#rawObjCBraces" },
+        { "include": "source.objc" },
+        { "include": "source.c" }
+      ]
+    },
     "comments": {
       "patterns": [
         { "name": "comment.block.z", "begin": "/\\*", "end": "\\*/" },

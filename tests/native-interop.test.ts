@@ -1055,9 +1055,61 @@ test("provides raw-boundary completion, hover, and syntax highlighting vocabular
   assert.equal(operands.some((item) => item.label === "move"), false);
   assert.ok(operands.some((item) => item.label === "input"));
 
-  const grammar = readFileSync(resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json"), "utf8");
+  const grammarPath = resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json");
+  const grammar = readFileSync(grammarPath, "utf8");
   assert.ok(grammar.includes("keyword.control.raw.z"));
   assert.ok(grammar.includes("(c|cpp|objc)"));
+  const parsedGrammar = JSON.parse(grammar) as {
+    readonly patterns: Array<{ readonly include?: string }>;
+    readonly repository: Record<string, unknown>;
+  };
+  assert.equal(parsedGrammar.patterns[0]?.include, "#rawNativeBodies");
+  assert.ok(parsedGrammar.repository.rawCBody);
+  assert.ok(parsedGrammar.repository.rawCppBody);
+  assert.ok(parsedGrammar.repository.rawObjCBody);
+  assert.match(grammar, /meta\.embedded\.block\.c\.z/);
+  assert.match(grammar, /meta\.embedded\.block\.cpp\.z/);
+  assert.match(grammar, /meta\.embedded\.block\.objc\.z/);
+  assert.match(grammar, /"include": "source\.c"/);
+  assert.match(grammar, /"include": "source\.cpp"/);
+  assert.match(grammar, /"include": "source\.objc"/);
+
+  const extension = JSON.parse(readFileSync(
+    resolve(projectRoot, "editors/vscode/package.json"),
+    "utf8",
+  )) as {
+    readonly contributes: {
+      readonly grammars: Array<{
+        readonly embeddedLanguages?: Record<string, string>;
+      }>;
+    };
+  };
+  assert.deepEqual(extension.contributes.grammars[0]?.embeddedLanguages, {
+    "meta.embedded.block.c.z": "c",
+    "meta.embedded.block.cpp.z": "cpp",
+    "meta.embedded.block.objc.z": "objective-c",
+  });
+
+  const nativeBody = `
+    function operation(): i32 = raw c {
+      int rawOnlyName = 42;
+      if (rawOnlyName > 0) {
+        rawOnlyName -= 1;
+      }
+      return rawOnlyName + 1;
+    }
+    function main(): i32 { return operation() - 42; }
+  `;
+  const semantic = decodeSemanticTokens(
+    semanticTokens(nativeBody, "raw-semantic-boundary.zs").data,
+  );
+  const rawOnly = positionForOffset(
+    nativeBody,
+    nativeBody.indexOf("rawOnlyName"),
+  );
+  assert.equal(semantic.some((token) => (
+    token.line === rawOnly.line && token.character === rawOnly.character
+  )), false);
 });
 
 test("selects native dialects for raw bodies and preserves executor affinity", () => {

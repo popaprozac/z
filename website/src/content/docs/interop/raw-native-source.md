@@ -89,6 +89,13 @@ native diagnostics back to this `.zs` location, and include native headers
 explicitly imported by the containing module. A header remains available even
 when the raw body is its only consumer.
 
+The Z editor extension embeds the platform C, C++, or Objective-C TextMate
+grammar inside both named and anonymous raw bodies. Nested native braces remain
+inside the embedded language, while Z semantic tokens stop at the raw-source
+boundary. Native completion, hover, and go-to-definition are a later
+Clang-backed editor tier; highlighting does not imply that Z has type-checked
+the body.
+
 ## What raw source can see
 
 The generated translation unit already includes imported headers. Their

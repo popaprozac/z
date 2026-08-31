@@ -18,7 +18,12 @@
     "grammars": [{
       "language": "z",
       "scopeName": "source.z",
-      "path": "./syntaxes/z.tmLanguage.json"
+      "path": "./syntaxes/z.tmLanguage.json",
+      "embeddedLanguages": {
+        "meta.embedded.block.c.z": "c",
+        "meta.embedded.block.cpp.z": "cpp",
+        "meta.embedded.block.objc.z": "objective-c"
+      }
     }],
     "jsonValidation": [{
       "fileMatch": ["z.json"],

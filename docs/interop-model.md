@@ -387,6 +387,12 @@ as checked Z. The boundary remains private implementation code; no native
 declaration becomes part of Z's safe type system merely because the raw body
 can see it.
 
+The editor embeds C, C++, or Objective-C grammar scopes inside the raw body and
+keeps Z semantic tokens outside that range. This first editor tier colors
+nested native blocks without pretending to provide native type evidence.
+Clang-backed completion, hover, diagnostics, and definition lookup remain a
+separate future layer.
+
 `raw objc` may be combined with `on thread.main`. Async, throwing, generic, and
 method raw bodies remain outside the first tier. Clang diagnostics are mapped
 back to the raw source location. Until helpers move to separate translation
