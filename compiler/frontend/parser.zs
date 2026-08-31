@@ -234,6 +234,10 @@ export struct FunctionDeclaration {
   executorAffinity: String;
   threadContract: String;
   objectiveCSelector: String = "";
+  rawLanguage: String = "";
+  rawSource: String = "";
+  rawLine: usize = 0;
+  rawColumn: usize = 0;
   body: StatementArena;
   offset: usize;
   line: usize;
@@ -3258,6 +3262,10 @@ function parseFunctionDeclaration(
     objectiveCSelector = selector.text.copyBytes(0, selector.text.byteLength);
   }
   let body = StatementArena({ nodes: Array<Statement>(), roots: Array<usize>() });
+  let rawLanguage = "";
+  let rawSource = "";
+  let rawLine: usize = 0;
+  let rawColumn: usize = 0;
   if (signatureOnly) {
     try expectKind(tokens, inout current, TokenKind.semicolon, "`;` after a function signature");
   } else if (takeIf(tokens, inout current, TokenKind.equal)) {
@@ -3276,8 +3284,12 @@ function parseFunctionDeclaration(
       && language.text != "cpp"
       && language.text != "objc"
     ) throw fail(language, "raw native language must be `c`, `cpp`, or `objc`");
+    rawLanguage = language.text.copyBytes(0, language.text.byteLength);
     try expectKind(tokens, inout current, TokenKind.leftBrace, "`{` starting a raw native body");
-    try expectKind(tokens, inout current, TokenKind.rawBody, "raw native source");
+    const rawBody = try expect(tokens, inout current, TokenKind.rawBody, "raw native source");
+    rawSource = rawBody.text.copyBytes(0, rawBody.text.byteLength);
+    rawLine = rawBody.line;
+    rawColumn = rawBody.column;
     try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` ending a raw native body");
   } else {
     let bodyNodes = Array<Statement>();
@@ -3305,6 +3317,10 @@ function parseFunctionDeclaration(
     executorAffinity,
     threadContract,
     objectiveCSelector,
+    rawLanguage,
+    rawSource,
+    rawLine,
+    rawColumn,
     body,
     offset: start.offset,
     line: start.line,

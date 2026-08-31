@@ -442,6 +442,10 @@ export struct LoweredFunction {
   nativeCExportName: String;
   compilerIntrinsic: String = "";
   compilerIntrinsicType: Option<LoweredType> = Option<LoweredType>.none;
+  rawLanguage: String = "";
+  rawSource: String = "";
+  rawLine: usize = 0;
+  rawColumn: usize = 0;
   asynchronous: boolean;
   asyncSuspension: String;
   mainDelaySegments: Array<LoweredMainDelaySegment>;
@@ -6706,6 +6710,29 @@ function collectForeignLowering(
   inout headers: Array<String>,
   inout functions: Array<LoweredForeignFunction>
 ): void throws String {
+  let containsRawFunction = false;
+  for (const declaration of program.functions) {
+    if (declaration.rawLanguage.byteLength > 0) {
+      containsRawFunction = true;
+      break;
+    }
+  }
+  if (containsRawFunction) {
+    for (const declaration of program.imports) {
+      if (
+        !stringEndsWithBytes(declaration.header, ".h")
+        && !stringEndsWithBytes(declaration.header, ".hh")
+        && !stringEndsWithBytes(declaration.header, ".hpp")
+      ) continue;
+      try requireSafeForeignHeader(declaration.header);
+      if (!containsString(headers, declaration.header)) {
+        headers.push(declaration.header.copyBytes(
+          0,
+          declaration.header.byteLength
+        ));
+      }
+    }
+  }
   for (const resolution of evidence.callResolutions) {
     if (
       resolution.kind != "foreign"
@@ -24169,6 +24196,16 @@ function lowerFunction(
       : "",
     compilerIntrinsic: "",
     compilerIntrinsicType: Option<LoweredType>.none,
+    rawLanguage: declaration.rawLanguage.copyBytes(
+      0,
+      declaration.rawLanguage.byteLength
+    ),
+    rawSource: declaration.rawSource.copyBytes(
+      0,
+      declaration.rawSource.byteLength
+    ),
+    rawLine: declaration.rawLine,
+    rawColumn: declaration.rawColumn,
     asynchronous: declaration.asynchronous,
     asyncSuspension: move asyncSuspension,
     mainDelaySegments,

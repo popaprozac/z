@@ -83,7 +83,11 @@ function isVerifiedForeignNumericType(
           location.symbolIndex
         ].typeSignature
       ) {
-        some(signature) => return signature.foreignNativeName.byteLength > 0
+        some(signature) => return (
+            signature.foreignKind != "enum"
+            || signature.foreignFlags
+          )
+          && signature.foreignNativeName.byteLength > 0
           && isNumericTypeName(signature.foreignUnderlyingType);
         none => {}
       }

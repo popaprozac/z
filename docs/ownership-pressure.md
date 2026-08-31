@@ -4675,9 +4675,36 @@ emit the original ARC reference directly. `isize`, `usize`, and canonical
 wrapper allocation, or new source syntax was introduced.
 
 With build-time smoke selection replacing the runtime environment probe, Zapp
-deleted `application-host.m` and `webview-bridge.m`. The remaining production
-Objective-C implementation seam is the byte-level compressed-asset bridge;
-the desktop smoke harness remains test-only.
+deleted `application-host.m` and `webview-bridge.m`. The byte-level compressed
+asset bridge was the next production seam; the desktop smoke harness remains
+test-only.
+
+## Named raw bodies through the fixed-point compiler
+
+Removing Zapp's final production Objective-C asset bridge exposed a real
+composition gap rather than a reason to retain handwritten native source. The
+macOS backend could express Brotli decompression as one private, typed
+`raw objc` function, but the fixed-point parser previously accepted that
+syntax and discarded its opaque body. Native emission consequently produced an
+empty function. It also omitted `compression.h` because no ordinary checked Z
+call referenced the import.
+
+The native parser now retains the raw language, source text, and source
+location; lowering carries those facts without interpreting them; and the C
+emitter writes the body verbatim behind a source-mapped function boundary. A
+module containing a named raw body also retains every explicitly imported C,
+C++, or Objective-C header for that translation unit. This does not make the
+body safe Z—the native compiler remains responsible for its contents—but it
+keeps the escape hatch usable through fixed-point compilation rather than
+silently changing behavior.
+
+Zapp now performs the same one-allocation Brotli decode in that private Z
+module and transfers the buffer directly into `NSData` ownership. Production
+desktop builds contain no tracked handwritten `.m` or umbrella `.h`; only the
+conditionally compiled smoke harness remains native test support. A focused
+fixed-point regression rejects empty-stub emission, and the complete Z Notes
+smoke exercises the imported header, raw Objective-C body, WebKit response,
+and deterministic shutdown end to end.
 
 ## Not tested yet
 

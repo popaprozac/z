@@ -84,6 +84,11 @@ function activateNative(): i32 on thread.main = raw objc {
 The supported tags are `c`, `cpp`, and `objc`. Async, throwing, generic, and
 method raw bodies remain outside the current tier.
 
+Stage 0 and the fixed-point native compiler preserve the body verbatim, map
+native diagnostics back to this `.zs` location, and include native headers
+explicitly imported by the containing module. A header remains available even
+when the raw body is its only consumer.
+
 ## What raw source can see
 
 The generated translation unit already includes imported headers. Their

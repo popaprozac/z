@@ -198,6 +198,27 @@ test("keeps raw native bodies opaque across native lexer and parser parity", () 
   assert.equal(observedExpressions, "6");
   assert.equal(authoritativeExpressions, observedExpressions);
 
+  const rawEmissionDirectory = mkdtempSync("/tmp/z-native-raw-emission-");
+  const rawEmissionInput = resolve(rawEmissionDirectory, "main.zs");
+  writeFileSync(
+    rawEmissionInput,
+    "function add(left: i32, right: i32): i32 = raw c {\n"
+      + "  return left + right;\n"
+      + "}\n"
+      + "function main(): i32 { return add(20, 22) - 42; }\n",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", rawEmissionInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /int32_t add\(int32_t left, int32_t right\)[\s\S]*return left \+ right;/);
+  assert.doesNotMatch(
+    emission.stdout,
+    /int32_t add\(int32_t left, int32_t right\) \{\s*\(void\)left;\s*\(void\)right;\s*\}/,
+  );
+
   const directory = mkdtempSync("/tmp/z-native-contextual-raw-");
   const ordinaryBinding = resolve(directory, "main.zs");
   writeFileSync(
@@ -9033,7 +9054,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     [clangPath, contractPath, invalidForeignEnumPath, emittedForeignPath],
     { encoding: "utf8" },
   );
-  assert.equal(invalidForeignEnum.status, 3);
+  assert.equal(invalidForeignEnum.status, 3, invalidForeignEnum.stderr);
 
   const uncontractedForeignFunctionPath = resolve(
     directory,
@@ -9221,8 +9242,9 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
 
   if (process.platform === "darwin") {
     const objcBlocks = spawnSync(
-      executable,
+      process.execPath,
       [
+        cli,
         "run",
         resolve(projectRoot, "tests/fixtures/objc-block-native.zs"),
       ],
@@ -17179,13 +17201,13 @@ test("classifies unresolved foreign integer conversion evidence before native lo
   assert.equal(native.status, 1, native.stdout);
   assert.ok(
     native.stderr.includes(
-      `${input}:4:25: error[Z1000]: the native compiler cannot yet prove this integer conversion operand's type`,
+      `${input}:4:25: error[Z1000]: the native compiler cannot yet prove this numeric conversion operand's type`,
     ),
     native.stderr,
   );
   assert.match(
     native.stderr,
-    /\^\^\^\^\^\^\^\^\^\^\^\^\^\^\^\^\^ the native compiler cannot yet prove this integer conversion operand's type/,
+    /\^\^\^\^\^\^\^\^\^\^\^\^\^\^\^\^\^ the native compiler cannot yet prove this numeric conversion operand's type/,
   );
 });
 

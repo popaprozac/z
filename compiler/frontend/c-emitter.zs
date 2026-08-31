@@ -8239,6 +8239,21 @@ function appendFunction(
     output.append("  z_stage1_process_argc = argc;\n");
     output.append("  z_stage1_process_argv = argv;\n");
   }
+  if (declaration.rawLanguage.byteLength > 0) {
+    output.append("#line ");
+    output.append(`${declaration.rawLine}`);
+    output.append(" ");
+    appendCStringLiteral(inout output, declaration.sourcePath);
+    output.append("\n");
+    let padding: usize = 1;
+    while (padding < declaration.rawColumn) {
+      output.append(" ");
+      padding = padding + 1;
+    }
+    output.append(declaration.rawSource);
+    output.append("\n#line 1 \"<z-generated>\"\n}\n\n");
+    return;
+  }
   if (
     declaration.mainDelaySegments.length > 0
     || declaration.mainDelayIfs.length > 0

@@ -379,6 +379,14 @@ function nativeCount(input: i32): i32 = raw cpp {
 }
 ```
 
+Both compiler frontends retain the body verbatim and include the native
+headers explicitly imported by that Z module, even when no ordinary checked Z
+call references a header symbol. This is important for small ABI boundaries
+whose macros, unions, or ownership-transfer operation cannot yet be expressed
+as checked Z. The boundary remains private implementation code; no native
+declaration becomes part of Z's safe type system merely because the raw body
+can see it.
+
 `raw objc` may be combined with `on thread.main`. Async, throwing, generic, and
 method raw bodies remain outside the first tier. Clang diagnostics are mapped
 back to the raw source location. Until helpers move to separate translation
