@@ -31,7 +31,7 @@ import { parse } from "./parser.ts";
 import { displayArrayType, parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { pathToFileURL } from "node:url";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isLocalSourceModuleSpecifier, type SourceModuleInfo } from "./modules.ts";
 import { displayFunctionType, functionTypeName, parseFunctionType } from "./function-types.ts";
@@ -133,6 +133,7 @@ const primitiveTypeTokens = [
 
 type LanguageAnalysisDependency = {
   readonly fileName: string;
+  readonly exists: boolean;
   readonly size: number;
   readonly modified: number;
 };
@@ -166,20 +167,114 @@ function languageAnalysisDependencies(
 ): LanguageAnalysisDependency[] {
   const entry = resolve(entryFileName);
   const dependencies = new Map<string, LanguageAnalysisDependency>();
+  const includeDirectories = [
+    ...analysis.projectBuild.includeDirectories,
+    ...analysis.moduleIncludeDirectories,
+  ];
+  const add = (fileName: string): void => {
+    const resolved = resolve(fileName);
+    if (resolved === entry || dependencies.has(resolved)) return;
+    dependencies.set(resolved, languageAnalysisDependency(resolved));
+  };
   for (const module of analysis.sourceModules.values()) {
     const fileName = resolve(module.fileName);
-    if (fileName === entry || dependencies.has(fileName)) continue;
-    try {
-      const status = statSync(fileName);
-      dependencies.set(fileName, {
-        fileName,
-        size: status.size,
-        modified: status.mtimeMs,
-      });
-    } catch {
-      // A removed dependency invalidates the entry on the next request.
-      dependencies.set(fileName, { fileName, size: -1, modified: -1 });
+    add(fileName);
+    addForeignAnalysisDependencies(
+      module.program,
+      fileName,
+      includeDirectories,
+      add,
+    );
+  }
+  if (analysis.projectBuild.manifestPath) add(analysis.projectBuild.manifestPath);
+  if (analysis.projectBuild.generatedBuild) add(analysis.projectBuild.generatedBuild.fileName);
+  return [...dependencies.values()];
+}
+
+function languageAnalysisDependency(fileName: string): LanguageAnalysisDependency {
+  try {
+    const status = statSync(fileName);
+    return {
+      fileName,
+      exists: true,
+      size: status.size,
+      modified: status.mtimeMs,
+    };
+  } catch {
+    return { fileName, exists: false, size: -1, modified: -1 };
+  }
+}
+
+function addForeignAnalysisDependencies(
+  program: Program,
+  sourceFileName: string,
+  includeDirectories: readonly string[],
+  add: (fileName: string) => void,
+): void {
+  for (const declaration of program.imports) {
+    if (
+      declaration.header.startsWith("std/")
+      || isLocalSourceModuleSpecifier(declaration.header)
+      || declaration.header.endsWith(".zs")
+    ) continue;
+    const declarationDirectory = dirname(
+      resolve(declaration.location.fileName ?? sourceFileName),
+    );
+    const directories = [...new Set([
+      declarationDirectory,
+      dirname(resolve(sourceFileName)),
+      ...includeDirectories.map((directory) => resolve(directory)),
+    ])];
+    for (const directory of directories) {
+      add(resolve(directory, declaration.header));
+      add(resolve(directory, `${declaration.header}.zd`));
+      add(resolve(directory, `${basename(declaration.header)}.zd`));
     }
+  }
+}
+
+function failedLanguageAnalysisDependencies(
+  source: string,
+  fileName: string,
+  error: unknown,
+): LanguageAnalysisDependency[] {
+  const entry = resolve(fileName);
+  const dependencies = new Map<string, LanguageAnalysisDependency>();
+  const add = (candidate: string): void => {
+    const resolved = resolve(candidate);
+    if (resolved === entry || dependencies.has(resolved)) return;
+    dependencies.set(resolved, languageAnalysisDependency(resolved));
+  };
+  const inspect = (candidateSource: string, candidateFileName: string): void => {
+    try {
+      const program = parse(lex(candidateSource, candidateFileName), candidateFileName);
+      addForeignAnalysisDependencies(program, candidateFileName, [], add);
+    } catch {
+      // The original diagnostic remains authoritative.
+    }
+  };
+  inspect(source, fileName);
+  if (error instanceof DiagnosticError) {
+    const diagnosticFileName = resolve(error.fileName);
+    if (
+      diagnosticFileName !== entry
+      && diagnosticFileName.endsWith(".zs")
+      && existsSync(diagnosticFileName)
+    ) {
+      add(diagnosticFileName);
+      inspect(readFileSync(diagnosticFileName, "utf8"), diagnosticFileName);
+    }
+  }
+  let directory = dirname(entry);
+  while (true) {
+    const manifest = resolve(directory, "z.json");
+    if (existsSync(manifest)) {
+      add(manifest);
+      break;
+    }
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
   }
   return [...dependencies.values()];
 }
@@ -190,9 +285,11 @@ function languageAnalysisDependenciesAreCurrent(
   return dependencies.every((dependency) => {
     try {
       const status = statSync(dependency.fileName);
-      return status.size === dependency.size && status.mtimeMs === dependency.modified;
+      return dependency.exists
+        && status.size === dependency.size
+        && status.mtimeMs === dependency.modified;
     } catch {
-      return false;
+      return !dependency.exists;
     }
   });
 }
@@ -216,7 +313,11 @@ function languageAnalysis(source: string, fileName: string): AnalyzedSource {
     if (cached.analysis && languageAnalysisDependenciesAreCurrent(cached.dependencies)) {
       return cached.analysis;
     }
-    if (!cached.analysis && Date.now() - cached.createdAt < failedLanguageAnalysisLifetime) {
+    if (
+      !cached.analysis
+      && Date.now() - cached.createdAt < failedLanguageAnalysisLifetime
+      && languageAnalysisDependenciesAreCurrent(cached.dependencies)
+    ) {
       throw cached.error;
     }
   }
@@ -235,7 +336,7 @@ function languageAnalysis(source: string, fileName: string): AnalyzedSource {
       source,
       analysis: null,
       error,
-      dependencies: [],
+      dependencies: failedLanguageAnalysisDependencies(source, fileName, error),
       createdAt: Date.now(),
     });
     throw error;

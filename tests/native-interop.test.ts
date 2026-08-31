@@ -75,6 +75,41 @@ test("recognizes child-process buffer and decoded-string overflow failures", () 
   assert.equal(isProcessOutputOverflowError(undefined), false);
 });
 
+test("shares one foreign header identity across linked module aliases", () => {
+  const directory = mkdtempSync("/tmp/z-foreign-linked-aliases-");
+  const headerPath = resolve(directory, "shared.h");
+  const dependencyPath = resolve(directory, "dependency.zs");
+  const entryPath = resolve(directory, "main.zs");
+  writeFileSync(
+    headerPath,
+    "typedef enum ZSharedMode { ZSharedModeFirst = 0 } ZSharedMode;\n",
+  );
+  writeFileSync(
+    dependencyPath,
+    [
+      'import native from "./shared.h";',
+      "export function dependencyMode(): i32 {",
+      "  const value: native.ZSharedMode = native.ZSharedModeFirst;",
+      "  return i32(value);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const source = [
+    'import { dependencyMode } from "./dependency.zs";',
+    'import native from "./shared.h";',
+    "function main(): i32 {",
+    "  const value: native.ZSharedMode = native.ZSharedModeFirst;",
+    "  return dependencyMode() + i32(value);",
+    "}",
+    "",
+  ].join("\n");
+  writeFileSync(entryPath, source);
+
+  const analysis = analyzeSource(source, entryPath);
+  assert.equal(analysis.semanticInfo.warnings.length, 0);
+});
+
 test("regenerates cached foreign declarations after a protocol upgrade", () => {
   const directory = mkdtempSync("/tmp/z-foreign-adapter-protocol-");
   const sourcePath = resolve(directory, "main.zs");

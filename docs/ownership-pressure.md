@@ -4551,6 +4551,34 @@ Free C functions whose signatures themselves carry Objective-C object or
 use an imported Objective-C method or an explicit reviewed contract until that
 metadata path preserves ObjC identity.
 
+## Compiler-scale foreign aliases must not multiply Clang work
+
+The modular Zapp macOS runtime imports the same native surfaces from several
+small Z modules. Stage 0 correctly gives every source module a private linked
+namespace, but the foreign cache originally included that private alias in its
+producer identity. A cold editor request consequently produced and decoded the
+same Clang AST seventeen times even though only three distinct headers were in
+play. Instrumentation attributed 58.78 seconds of a 59.03-second analysis to
+foreign resolution; the Z graph and semantic work were not the bottleneck.
+
+The cache now separates native evidence identity from source namespace
+identity. It builds one compiler-owned canonical IR per exact header/config/
+contract key, then requalifies that checked IR into each module-local alias.
+This preserves the existing source spelling and nominal behavior—including
+callable and Objective-C protocol types—without rerunning Clang or walking its
+AST. The Zapp cold diagnostic probe now completes in 11.28 seconds with no
+diagnostics, versus a controlled 51.49-second pre-change sample. A linked
+two-module C-enum fixture and the complete native/Objective-C suites guard the
+namespace boundary.
+
+The exercise also found that the editor's short-lived failed-analysis cache
+watched only source text. Creating a missing `.zd`, editing `z.json`, or
+changing a local header could therefore leave a stale result for two seconds.
+Analysis cache entries now snapshot manifests, generated overlays, source
+modules, headers, and both present and absent declaration candidates. The
+cache remains useful across diagnostics, hover, completion, and semantic
+tokens while external build/interop evidence invalidates it immediately.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

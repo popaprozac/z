@@ -423,3 +423,43 @@ neutral at `1.02 ± 0.02`. The hybrid check was likewise effectively flat at
 3.870 seconds before and 3.900 seconds after (`1.01 ± 0.01`) while also
 analyzing and lowering the expanded compiler implementation. This is recorded
 as a confirmed generated-code improvement, not a claimed end-to-end speedup.
+
+## Compiler-scale flow and foreign-import checkpoint
+
+On 2026-08-30, five native-frontend changes reduced repeated ownership-state
+copies, indexed call evidence by source offset, used compact symbol identities
+for stored-view recursion, and avoided full generic parsing or empty
+substitution walks on common lookup paths. Hyperfine compared the same complete
+native-driver emission with warm filesystem caches over five interleaved runs:
+
+| Native `z emit compiler/driver/main.zs` | Mean | Range |
+| --- | ---: | ---: |
+| Before | 2.650 s ± 0.017 s | 2.626–2.666 s |
+| After | 1.570 s ± 0.014 s | 1.552–1.586 s |
+
+The optimized compiler was 1.69 ± 0.02 times faster for that workload. The
+change passed the 127-test fixed-point self-hosting suite. This is compiler
+throughput, not generated-program runtime.
+
+The same checkpoint profiled a cold language-service diagnostic request for
+Zapp's macOS `application.zs`. Of a 59.03-second instrumented run, 58.78
+seconds were spent resolving foreign modules; entry parsing, project loading,
+the Z module graph, generic materialization, and semantic analysis together
+took under 260 milliseconds. The graph imported `zapp_desktop.h`, Foundation,
+and WebKit seventeen times through module-local aliases, and the cache treated
+every alias as a different Clang producer.
+
+Foreign import caching now keys the expensive producer by header, include
+configuration, contract/API-note freshness, language, deployment target, and
+local header freshness—not by a module's private alias. One compiler-owned
+canonical IR is retained and cheaply requalified for each local namespace, so
+source-facing hover names and nominal types remain unchanged. A one-process
+cold sample fell from the controlled 51.49-second pre-change baseline to 11.28
+seconds, a 4.56-times improvement. The remaining latency is primarily the
+three genuinely distinct Clang imports and remains an optimization target;
+this checkpoint does not claim a persistent cross-process SDK cache.
+
+Editor analysis dependencies now also include `z.json`, generated overlays,
+source modules, local headers, and present or absent `.zd` candidates. Creating,
+editing, or deleting one therefore invalidates both successful and briefly
+cached failed analyses immediately instead of returning stale diagnostics.

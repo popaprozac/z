@@ -61,6 +61,12 @@ type ImportedHeader = {
   readonly ir: HeaderInfo;
 };
 
+type CachedImportedHeader = {
+  readonly namespace: string;
+  readonly canonical: ImportedHeader;
+  readonly aliases: Map<string, ImportedHeader>;
+};
+
 type ClangNode = {
   readonly id?: string;
   readonly kind?: string;
@@ -131,10 +137,72 @@ function callbackTypedefParameterNames(node: ClangNode, parameterCount: number):
   }
 }
 
-const headerCache = new Map<string, ImportedHeader>();
+const headerCache = new Map<string, CachedImportedHeader>();
 const foreignSourceCache = new Map<string, { readonly freshness: string; readonly source: string }>();
 const clangNodeSourceFiles = new WeakMap<ClangNode, string>();
 let cachedSdkPath: string | null | undefined;
+
+function requalifyCachedHeader<T>(
+  value: T,
+  sourceNamespace: string,
+  targetNamespace: string,
+  seen = new Map<object, unknown>(),
+): T {
+  if (typeof value === "string") {
+    return value.replaceAll(sourceNamespace, targetNamespace) as T;
+  }
+  if (value === null || typeof value !== "object") return value;
+  const cached = seen.get(value);
+  if (cached !== undefined) return cached as T;
+  if (Array.isArray(value)) {
+    const output: unknown[] = [];
+    seen.set(value, output);
+    for (const item of value) {
+      output.push(requalifyCachedHeader(
+        item,
+        sourceNamespace,
+        targetNamespace,
+        seen,
+      ));
+    }
+    return output as T;
+  }
+  if (value instanceof Map) {
+    const output = new Map<unknown, unknown>();
+    seen.set(value, output);
+    for (const [key, item] of value) {
+      output.set(
+        requalifyCachedHeader(key, sourceNamespace, targetNamespace, seen),
+        requalifyCachedHeader(item, sourceNamespace, targetNamespace, seen),
+      );
+    }
+    return output as T;
+  }
+  if (value instanceof Set) {
+    const output = new Set<unknown>();
+    seen.set(value, output);
+    for (const item of value) {
+      output.add(requalifyCachedHeader(
+        item,
+        sourceNamespace,
+        targetNamespace,
+        seen,
+      ));
+    }
+    return output as T;
+  }
+  const output: Record<string, unknown> = {};
+  seen.set(value, output);
+  for (const [key, item] of Object.entries(value)) {
+    output[key] = requalifyCachedHeader(
+      item,
+      sourceNamespace,
+      targetNamespace,
+      seen,
+    );
+  }
+  return output as T;
+}
 
 export function resolveForeignModules(
   declarations: readonly ImportDeclaration[],
@@ -320,11 +388,14 @@ function resolveImportedHeaders(
       declarationOverride ? `${declarationOverride.fileName}:${declarationOverride.source}` : ""
     }`;
     const targetKey = deploymentTarget ? `${deploymentTarget.platform}:${deploymentTarget.minimumVersion}` : "host-default";
-    const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${notesFreshness}\0${declaration.moduleName}\0${framework ?? language}\0${targetKey}`;
-    let header = headerCache.get(cacheKey);
-    if (!header) {
-      header = readHeader(
-        declaration,
+    const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${notesFreshness}\0${framework ?? language}\0${targetKey}`;
+    let cachedHeader = headerCache.get(cacheKey);
+    if (!cachedHeader) {
+      const namespace = `__z_foreign_cache_${createHash("sha256")
+        .update(cacheKey)
+        .digest("hex")}`;
+      const canonical = readHeader(
+        { ...declaration, moduleName: namespace },
         fileName,
         declarationIncludeDirectories,
         headerDirectory,
@@ -335,7 +406,21 @@ function resolveImportedHeaders(
         generatedNotes,
         declarationOverride,
       );
-      headerCache.set(cacheKey, header);
+      cachedHeader = {
+        namespace,
+        canonical,
+        aliases: new Map(),
+      };
+      headerCache.set(cacheKey, cachedHeader);
+    }
+    let header = cachedHeader.aliases.get(declaration.moduleName);
+    if (!header) {
+      header = requalifyCachedHeader(
+        cachedHeader.canonical,
+        cachedHeader.namespace,
+        declaration.moduleName,
+      );
+      cachedHeader.aliases.set(declaration.moduleName, header);
     }
     modules.set(declaration.moduleName, { declaration, header });
   }
