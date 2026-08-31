@@ -123,19 +123,19 @@ test("regenerates cached foreign declarations after a protocol upgrade", () => {
 
   writeForeignDeclarationArtifact(sourcePath, "./native.h", artifactPath);
   const current = readFileSync(artifactPath, "utf8");
-  assert.match(current, /^ZFDCL000000000000000b\n/);
+  assert.match(current, /^ZFDCL000000000000000c\n/);
 
   writeFileSync(
     artifactPath,
     current.replace(
-      /^ZFDCL000000000000000b\n/,
-      "ZFDCL000000000000000a\n",
+      /^ZFDCL000000000000000c\n/,
+      "ZFDCL000000000000000b\n",
     ),
   );
   writeForeignDeclarationArtifact(sourcePath, "./native.h", artifactPath);
   assert.match(
     readFileSync(artifactPath, "utf8"),
-    /^ZFDCL000000000000000b\n/,
+    /^ZFDCL000000000000000c\n/,
   );
 });
 

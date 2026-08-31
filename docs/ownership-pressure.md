@@ -4528,10 +4528,12 @@ lifetimes, and `objc.adapt` for retained or stored protocol arguments.
 With the handler identity Z-owned, the next extraction moved the complete
 embedded-asset request policy into the Z protocol implementation: origin and
 path validation, SPA fallback, asset selection, MIME and encoding choice,
-`NSURLResponse` construction, and WebKit delivery. Handwritten Objective-C now
-only exposes immutable generated asset-table entries, decompresses Brotli
-bytes into ARC `NSData`, and constructs the native `NSError` used by WebKit.
-The packaged two-window Z Notes smoke test exercises this path end to end.
+`NSURLResponse` construction, typed `NSError` construction, and WebKit
+delivery. Generated `embed.StaticBytes` values now form the immutable asset
+catalog directly in Z; raw payloads borrow process-lifetime bytes into
+`NSData` without copying. Handwritten Objective-C only decompresses Brotli
+bytes into an ownership-transferring `NSData`. The packaged two-window Z Notes
+smoke test exercises this path end to end.
 
 That migration also closed two native-frontend seams. Objective-C class and
 protocol identity is now canonical by Clang runtime name, so `NSString` or
@@ -4570,6 +4572,21 @@ AST. The Zapp cold diagnostic probe now completes in 11.28 seconds with no
 diagnostics, versus a controlled 51.49-second pre-change sample. A linked
 two-module C-enum fixture and the complete native/Objective-C suites guard the
 namespace boundary.
+
+The same migration moved frontend origin, development mode, bridge bootstrap,
+and ordered CSS/JavaScript injection policy into a generated typed Z module.
+Removing the parallel Objective-C tables and readers reduced the native host
+archive from 54,544 to 35,640 bytes (34.7%) and the complete packaged smoke
+binary by 1,296 bytes. More importantly, one checked Z representation now owns
+runtime behavior instead of keeping C and Z configuration in sync.
+
+Constructing the WebKit error in Z exposed two importer gaps rather than
+justifying another native bridge. Objective-C lightweight generic arguments
+such as `NSDictionary<Key, Value> *` are now deliberately erased while the
+nominal `NSDictionary` identity remains, matching their ABI. Objective-C
+object-valued globals such as `NSLocalizedDescriptionKey` now survive foreign
+normalization with their imported object type and native symbol spelling. A
+fixed-point Foundation fixture and the Z Notes smoke test guard both paths.
 
 The exercise also found that the editor's short-lived failed-analysis cache
 watched only source text. Creating a missing `.zd`, editing `z.json`, or

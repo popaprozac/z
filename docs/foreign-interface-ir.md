@@ -166,7 +166,7 @@ Z sema and native backends
 The first adapter seam is now executable. The real Clang header producer can
 frame functions, scalar typedefs, nominal enum types, typed native constants,
 record layouts/fields, and the first Objective-C declaration graph as a
-versioned `ZFDCL` raw-declaration stream. Version 11 carries scalar
+versioned `ZFDCL` raw-declaration stream. Version 12 carries scalar
 alias/underlying identity, enum identity/underlying type and flag-enum status,
 constant identity/type, record identity/layout, canonical C record identity
 across typedef aliases, field order/types, function names, namespaces,

@@ -798,8 +798,8 @@ function attachNamespaceConstants(
         0,
         contract.nativeName.byteLength
       ),
-      valueType: localForeignTypeName(
-        contracts.types,
+      valueType: localObjCTypeName(
+        contracts,
         namespace,
         contract.typeName
       ),
@@ -1115,8 +1115,8 @@ function attachSelectiveConstant(
       0,
       contracts.constants[constantIndex].nativeName.byteLength
     );
-  modules[moduleIndex].symbols[symbolIndex].valueType = localForeignTypeName(
-    contracts.types,
+  modules[moduleIndex].symbols[symbolIndex].valueType = localObjCTypeName(
+    contracts,
     namespace,
     contracts.constants[constantIndex].typeName
   );

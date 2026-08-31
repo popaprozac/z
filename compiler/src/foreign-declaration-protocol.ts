@@ -6,7 +6,7 @@ import type {
   ForeignType,
 } from "./foreign-ir.ts";
 
-export const foreignDeclarationProtocolVersion = 11;
+export const foreignDeclarationProtocolVersion = 12;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {

@@ -3092,6 +3092,17 @@ export function normalizeForeignContracts(
       typeIndex = typeIndex + 1;
     }
     if (typeName.byteLength == 0) {
+      for (const interface_ of declarations.objectiveCInterfaces) {
+        if (declaration.typeName == interface_.typeName) {
+          typeName = interface_.exportName.copyBytes(
+            0,
+            interface_.exportName.byteLength
+          );
+          break;
+        }
+      }
+    }
+    if (typeName.byteLength == 0) {
       const scalar = attempt scalarTypeName(declaration.typeName);
       match (scalar) {
         success(name) => typeName = move name;

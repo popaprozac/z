@@ -11,6 +11,9 @@ function main(): i32 {
   const nativeComputed = Native.ZObjCStringFixture.echo(copy computed);
   const directNativeComputed = Native.ZObjCStringFixture.echo(generatedMessage());
   if (!directNativeComputed.isEqualToString("answer=42")) return 1;
+  const descriptionKey: Foundation.NSString =
+    Foundation.NSLocalizedDescriptionKey;
+  if (!descriptionKey.isEqualToString("NSLocalizedDescription")) return 3;
   const roundTrip: String = nativeComputed;
   console.log(`round trip=${roundTrip}`);
 

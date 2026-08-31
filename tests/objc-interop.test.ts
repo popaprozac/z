@@ -2263,6 +2263,20 @@ test("owns standalone Objective-C protocol adapters as storable ARC values", () 
       const message: Foundation.NSString = "hello";
       return message;
     }
+
+    function bridgeError(
+      in message: Foundation.NSString
+    ): Foundation.NSError {
+      const userInfo = Foundation.NSDictionary.dictionaryWithObject(
+        message,
+        forKey: Foundation.NSLocalizedDescriptionKey
+      );
+      return Foundation.NSError.errorWithDomain(
+        "com.example.z",
+        code: 1,
+        userInfo: userInfo
+      );
+    }
   `;
   assert.deepEqual(diagnostics(crossHeaderSource, "/tmp/z-objc-cross-header-protocol.zs"), []);
 

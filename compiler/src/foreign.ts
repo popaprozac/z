@@ -1794,7 +1794,10 @@ function mapObjCType(
     if (/^(?:__strong\s+)?id(?:\s|<|$)/.test(spelling.replace(/\b_(?:Nullable|Nonnull|Null_unspecified)\b/g, "").trim())) {
       return objectType(null, nullable);
     }
-    const objectMatch = /(?:__kindof\s+)?([A-Za-z_]\w*)\s*\*/.exec(spelling);
+    // Objective-C lightweight generics are source-level annotations over the
+    // same object-pointer ABI. Preserve the nominal interface identity while
+    // intentionally erasing arguments such as NSDictionary<Key, Value>.
+    const objectMatch = /(?:__kindof\s+)?([A-Za-z_]\w*)(?:\s*<[^>]+>)?\s*\*/.exec(spelling);
     if (objectMatch && typeNames.has(objectMatch[1])) return objectType(objectMatch[1], nullable);
   }
 

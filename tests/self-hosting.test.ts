@@ -7776,6 +7776,11 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     );
     assert.match(objectiveCStringSource, /isEqualToString:/);
     assert.doesNotMatch(objectiveCStringSource, /\.isEqualToString\(/);
+    assert.match(objectiveCStringSource, /NSLocalizedDescriptionKey/);
+    assert.doesNotMatch(
+      objectiveCStringSource,
+      /Foundation\.NSLocalizedDescriptionKey/,
+    );
   }
 
   const contextualOptionChecking = spawnSync(
@@ -8394,7 +8399,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL000000000000000b\nM/);
+  assert.match(encoded, /^ZFDCL000000000000000c\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -8519,7 +8524,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     [directory],
   ).get("native");
   assert.ok(objcStream);
-  assert.match(objcStream, /^ZFDCL000000000000000b\nM/);
+  assert.match(objcStream, /^ZFDCL000000000000000c\nM/);
   assert.match(objcStream, /\nQ/);
   assert.match(objcStream, /\nI/);
   assert.match(objcStream, /\nJ/);
