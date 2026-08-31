@@ -6,6 +6,7 @@ import {
 } from "../frontend/foreign-declaration-protocol.zs";
 import {
   normalizeForeignContracts,
+  NativeForeignContractSet,
   parseForeignContracts,
   RawForeignContractSet,
   RawForeignFunctionContract,
@@ -251,10 +252,13 @@ function cacheIdentity(
 export function loadForeignModuleContract(
   in modulePath: String,
   in moduleSource: String,
+  in moduleName: String,
   in header: String,
   line: usize,
   column: usize,
-  in config: NativeProjectConfig
+  in config: NativeProjectConfig,
+  inout sharedContractKeys: Array<String>,
+  inout sharedContracts: Array<NativeForeignContractSet>
 ): NativeForeignModuleContract throws String {
   let contractPath = "";
   let contractSource = "";
@@ -313,8 +317,20 @@ export function loadForeignModuleContract(
       moduleSource
     );
   }
-  const declarationSource = try fs.readText(artifactPath);
   const producerCacheKey = try fs.readText(`${artifactPath}.meta`);
+  const sharedContractKey = `${producerCacheKey}\n${moduleName}`;
+  let sharedIndex: usize = 0;
+  while (sharedIndex < sharedContractKeys.length) {
+    if (sharedContractKeys[sharedIndex] == sharedContractKey) {
+      return NativeForeignModuleContract({
+        modulePath: modulePath.copyBytes(0, modulePath.byteLength),
+        cacheKey: producerCacheKey,
+        contracts: sharedContracts[sharedIndex],
+      });
+    }
+    sharedIndex = sharedIndex + 1;
+  }
+  const declarationSource = try fs.readText(artifactPath);
   const declarations = try decodeRawForeignDeclarations(declarationSource);
   if (contractPath.byteLength > 0) {
     const declaredHeader = resolvedDeclaredHeader(
@@ -342,6 +358,8 @@ export function loadForeignModuleContract(
     declarations,
     header
   );
+  sharedContractKeys.push(move sharedContractKey);
+  sharedContracts.push(normalized);
   return NativeForeignModuleContract({
     modulePath: modulePath.copyBytes(0, modulePath.byteLength),
     cacheKey: producerCacheKey,

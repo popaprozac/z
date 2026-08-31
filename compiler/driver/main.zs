@@ -16,6 +16,7 @@ import {
   decodeRawForeignDeclarations,
 } from "../frontend/foreign-declaration-protocol.zs";
 import {
+  NativeForeignContractSet,
   normalizeForeignContracts,
   parseForeignContracts,
 } from "../frontend/foreign-contracts.zs";
@@ -238,7 +239,9 @@ function loadModule(
   inout loaded: Set<String>,
   inout loadedForeign: Set<String>,
   inout modules: Array<ParsedModule>,
-  inout foreignModules: Array<NativeForeignModuleContract>
+  inout foreignModules: Array<NativeForeignModuleContract>,
+  inout sharedForeignContractKeys: Array<String>,
+  inout sharedForeignContracts: Array<NativeForeignContractSet>
 ): void throws String {
   const normalized = normalizedModulePath(path);
   const canonical = try fs.realPath(normalized);
@@ -303,10 +306,13 @@ function loadModule(
       const foreignModule = try loadForeignModuleContract(
         canonical,
         moduleSource.source,
+        declaration.moduleName,
         header,
         line,
         column,
-        config
+        config,
+        inout sharedForeignContractKeys,
+        inout sharedForeignContracts
       );
       foreignModules.push(foreignModule);
     }
@@ -319,7 +325,9 @@ function loadModule(
       inout loaded,
       inout loadedForeign,
       inout modules,
-      inout foreignModules
+      inout foreignModules,
+      inout sharedForeignContractKeys,
+      inout sharedForeignContracts
     );
   }
 }
@@ -339,13 +347,17 @@ function loadProject(
   let loadedForeign = Set<String>();
   let modules = Array<ParsedModule>();
   let foreignModules = Array<NativeForeignModuleContract>();
+  let sharedForeignContractKeys = Array<String>();
+  let sharedForeignContracts = Array<NativeForeignContractSet>();
   try loadModule(
     canonicalEntry,
     config,
     inout loaded,
     inout loadedForeign,
     inout modules,
-    inout foreignModules
+    inout foreignModules,
+    inout sharedForeignContractKeys,
+    inout sharedForeignContracts
   );
 
   const baseGraphOutcome = attempt resolveParsedModulesWithForeignContracts(
@@ -377,7 +389,9 @@ function loadProject(
         inout loaded,
         inout loadedForeign,
         inout modules,
-        inout foreignModules
+        inout foreignModules,
+        inout sharedForeignContractKeys,
+        inout sharedForeignContracts
       );
     }
     const adaptedGraphOutcome = attempt resolveParsedModulesWithForeignContracts(

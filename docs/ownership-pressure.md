@@ -4596,6 +4596,23 @@ modules, headers, and both present and absent declaration candidates. The
 cache remains useful across diagnostics, hover, completion, and semantic
 tokens while external build/interop evidence invalidates it immediately.
 
+Profiling the fixed-point `z metadata` path then found a native-driver version
+of the same modularity tax. The staged application contained groups of four to
+seven 12–28 MB ZFDCL artifacts with identical producer fingerprints. Although
+the adjacent adapter correctly avoided rebuilding their Clang evidence, Z
+still read, decoded, allocated, and normalized every copy.
+`NativeForeignContractSet` is now immutable ARC identity, and the driver shares
+one normalized graph only when both the producer fingerprint and imported
+namespace match. Module-local bindings remain distinct while the expensive
+evidence owner is retained once.
+
+The exact generated Z Notes metadata workload fell from 38.47 seconds to 11.34
+seconds (3.39 times faster) with the same 149,930-byte result shape. The adapter
+still validates freshness for every import, preserving transitive-header
+invalidation. The remaining 11 seconds and duplicate on-disk artifacts are
+useful evidence for a future canonical persistent ZFDCL cache rather than a
+reason to weaken correctness today.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

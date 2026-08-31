@@ -230,7 +230,7 @@ export struct NativeForeignObjCProtocolContract {
   methods: Array<NativeForeignObjCMethodContract>;
 }
 
-export struct NativeForeignContractSet {
+export readonly class NativeForeignContractSet {
   moduleSpecifier: String;
   types: Array<NativeForeignTypeContract>;
   constants: Array<NativeForeignConstantContract>;
@@ -3933,7 +3933,7 @@ export function normalizeForeignContracts(
       failure(_) => {}
     }
   }
-  return NativeForeignContractSet({
+  return new NativeForeignContractSet({
     moduleSpecifier: contracts.moduleSpecifier.copyBytes(
       0,
       contracts.moduleSpecifier.byteLength

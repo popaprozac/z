@@ -463,3 +463,20 @@ Editor analysis dependencies now also include `z.json`, generated overlays,
 source modules, local headers, and present or absent `.zd` candidates. Creating,
 editing, or deleting one therefore invalidates both successful and briefly
 cached failed analyses immediately instead of returning stale diagnostics.
+
+The fixed-point driver had a second alias cost after Stage 0 stopped repeating
+Clang work. Each Z module still owned a separate 12–28 MB ZFDCL artifact and
+the native compiler decoded and normalized every artifact even when the
+producer fingerprint and imported namespace were identical. The normalized
+contract graph is now one immutable ARC identity shared within the compiler
+invocation. Reuse requires both the adapter's dependency/contract fingerprint
+and the source-visible namespace, so two aliases cannot accidentally exchange
+qualified native identities.
+
+On the same generated Z Notes benchmark project, a warm-filesystem
+`z metadata` invocation fell from 38.47 seconds to 11.34 seconds, a 3.39-times
+improvement. Both outputs were 149,930 bytes; the only observed JSON changes
+were source offsets from an unrelated five-byte source correction. This cache
+does not skip adapter freshness validation and does not yet deduplicate the
+large on-disk artifacts. Persistent canonical ZFDCL storage and cheaper
+cross-process dependency validation remain follow-up work.
