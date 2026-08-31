@@ -64,6 +64,20 @@ This contract contributes four facts:
 There is no import statement inside the `.zd`. The `declare module` header is
 already the authoring scope, and editor completion can use its Clang symbols.
 
+The same capability vocabulary applies when a free C function accepts a
+concrete Objective-C object:
+
+```z
+declare module "desktop_host.h" {
+  export function observe_window(in window: _, in title: _): _;
+}
+```
+
+Clang remains authoritative for the `NSWindow *` or `NSString *` identities;
+`in` states that the function borrows those ARC references for the call. The
+generated call passes the original objects directly, without a wrapper or raw
+pointer type.
+
 ## Core vocabulary
 
 | Fact | Meaning at the Z boundary |

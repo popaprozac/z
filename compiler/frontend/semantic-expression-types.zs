@@ -71,6 +71,28 @@ function isVerifiedForeignNominalType(
   return false;
 }
 
+function isVerifiedForeignNumericType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      match (
+        in modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].typeSignature
+      ) {
+        some(signature) => return signature.foreignNativeName.byteLength > 0
+          && isNumericTypeName(signature.foreignUnderlyingType);
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 function nativeFunctionSignaturesCompatible(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -324,6 +346,11 @@ export function requireExpressionType(
   }
   if (
     isNumericTypeName(expected)
+    && isNumericTypeName(actual)
+    && isContextualNumericLiteral(tree, index)
+  ) return;
+  if (
+    isVerifiedForeignNumericType(modules, moduleIndex, expected)
     && isNumericTypeName(actual)
     && isContextualNumericLiteral(tree, index)
   ) return;

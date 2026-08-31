@@ -575,6 +575,7 @@ These are semantic mappings, not textual rewrites:
 | C++ `T &&` | `move value: _` with value lifecycle contract | Consumed unique owner |
 | C++ RAII value | `export type` with `copy` or `move`, and `deinit` | Deterministic Z-owned native storage |
 | Objective-C object/method/property/protocol | Usually no `.zd` entry | Clang supplies ARC identity, nullability, selectors, blocks, and protocol metadata directly |
+| Concrete Objective-C object in a free C function | `in object: _` | Clang supplies the exact class and nullability; `.zd` supplies the explicit call-scoped borrow, with direct ARC-reference ABI lowering |
 | Clang `swift_attr("@UIActor")` / `swift_attr("@MainActor")` | Imported automatically | Z exposes `on thread.main` in hover and enforces the same executor boundary |
 | Swift `@MainActor` in a `z.json`-declared Swift target | Imported automatically from the emitted symbol graph | Generated Objective-C headers erase actor isolation; Z merges the toolchain graph with the header-derived declaration |
 | Legacy native UI type or method without actor metadata | `.zd` `on thread.main` fallback or reviewed shipped API notes | The affinity enters the same FIIR field as a compiler-derived fact |

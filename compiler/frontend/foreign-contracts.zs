@@ -1264,7 +1264,13 @@ function scalarTypeName(in nativeType: String): String throws String {
     || nativeType == "unsigned long long int"
     || nativeType == "u64"
   ) return "u64";
-  if (nativeType == "_Bool" || nativeType == "bool") return "boolean";
+  if (nativeType == "isize") return "isize";
+  if (nativeType == "usize") return "usize";
+  if (
+    nativeType == "_Bool"
+    || nativeType == "bool"
+    || nativeType == "boolean"
+  ) return "boolean";
   throw `native Z declaration scalar tier does not support "${nativeType}"`;
 }
 
@@ -1574,6 +1580,19 @@ function foreignValueTypeName(
     }
     none => {}
   }
+  match (foreignObjCValueTypeName(declarations, nativeType)) {
+    some(typeName) => return typeName;
+    none => match (in canonicalNativeType) {
+      some(typeName) => match (foreignObjCValueTypeName(
+        declarations,
+        typeName
+      )) {
+        some(objectTypeName) => return objectTypeName;
+        none => {}
+      }
+      none => {}
+    }
+  }
   match (foreignEnumTypeIndex(declarations, nativeType)) {
     some(typeIndex) => return declarations.types[
       typeIndex
@@ -1622,6 +1641,85 @@ function foreignValueTypeName(
     nativeType,
     canonicalNativeType
   );
+}
+
+function stringContainsBytes(
+  in value: String,
+  in candidate: String
+): boolean {
+  if (candidate.byteLength == 0) return true;
+  if (candidate.byteLength > value.byteLength) return false;
+  let start: usize = 0;
+  while (start + candidate.byteLength <= value.byteLength) {
+    let matches = true;
+    let index: usize = 0;
+    while (index < candidate.byteLength) {
+      if (value.byteAt(start + index) != candidate.byteAt(index)) {
+        matches = false;
+        break;
+      }
+      index = index + 1;
+    }
+    if (matches) return true;
+    start = start + 1;
+  }
+  return false;
+}
+
+function foreignObjCValueTypeName(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String
+): Option<String> {
+  const compact = compactNativeType(nativeType);
+  for (const interface_ of declarations.objectiveCInterfaces) {
+    const pointerPrefix = `${interface_.className}*`;
+    if (!stringStartsWith(compact, pointerPrefix)) continue;
+    const qualifiers = compact.copyBytes(
+      pointerPrefix.byteLength,
+      compact.byteLength
+    );
+    if (
+      qualifiers.byteLength > 0
+      && qualifiers != "__strong"
+      && qualifiers != "__weak"
+      && qualifiers != "__unsafe_unretained"
+      && qualifiers != "__autoreleasing"
+      && qualifiers != "_Nonnull"
+      && qualifiers != "_Nullable"
+      && qualifiers != "__strong_Nonnull"
+      && qualifiers != "__strong_Nullable"
+      && qualifiers != "__weak_Nonnull"
+      && qualifiers != "__weak_Nullable"
+      && qualifiers != "__unsafe_unretained_Nonnull"
+      && qualifiers != "__unsafe_unretained_Nullable"
+      && qualifiers != "__autoreleasing_Nonnull"
+      && qualifiers != "__autoreleasing_Nullable"
+    ) continue;
+    const typeName = interface_.exportName.copyBytes(
+      0,
+      interface_.exportName.byteLength
+    );
+    if (stringContainsBytes(qualifiers, "Nullable")) {
+      return Option.some(`${typeName} | null`);
+    }
+    return Option.some(typeName);
+  }
+  return Option<String>.none;
+}
+
+function foreignObjCValueTypeNameWithCanonical(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String,
+  in canonicalNativeType: Option<String>
+): Option<String> {
+  match (foreignObjCValueTypeName(declarations, nativeType)) {
+    some(typeName) => return Option.some(typeName);
+    none => {}
+  }
+  return match (in canonicalNativeType) {
+    some(typeName) => foreignObjCValueTypeName(declarations, typeName);
+    none => Option<String>.none;
+  };
 }
 
 function statusScalarTypeName(
@@ -3474,6 +3572,31 @@ export function normalizeForeignContracts(
           }
         }
         failure(_) => {}
+      }
+      match (foreignObjCValueTypeNameWithCanonical(
+        declarations,
+        declarations.parameters[rawParameterIndex].nativeType,
+        declarations.parameters[rawParameterIndex].canonicalNativeType
+      )) {
+        some(typeName) => {
+          if (contract.parameters[parameterIndex].capability != "in") {
+            throw `Objective-C object parameter "${contract.parameters[parameterIndex].name}" requires the in capability`;
+          }
+          parameters.push(NativeForeignParameterContract({
+            name: contract.parameters[parameterIndex].name.copyBytes(
+              0,
+              contract.parameters[parameterIndex].name.byteLength
+            ),
+            capability: "in",
+            abiMode: "value",
+            typeName,
+            nullOnly: false,
+            fixedValue: "",
+          }));
+          parameterIndex = parameterIndex + 1;
+          continue;
+        }
+        none => {}
       }
       const scalarPointer = resolvedScalarPointerShape(
         declarations,

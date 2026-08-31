@@ -4654,10 +4654,30 @@ real `@property(class, readonly)` getter and verifies the emitted
 `[NativeOwner currentOwner]` expression.
 
 This lets Zapp keep the `NSApplication` identity, synchronized host result, and
-run-loop lifecycle in checked Z. The remaining handwritten host seam is now
-limited to the native run-loop wake operation and smoke-mode environment
-probe. Writable class-property assignment remains deferred until a real API
-requires it.
+run-loop lifecycle in checked Z. The direct `stop` plus application-defined
+event wake now lives in Z as ordinary checked AppKit calls. Writable
+class-property assignment remains deferred until a real API requires it.
+
+## Objective-C objects in free C declaration contracts
+
+Removing Zapp's application and WebView smoke bridges exposed a narrower
+contract gap: a C test hook accepted `WKWebView *`,
+`WKUserContentController *`, `NSString *`, `NSUInteger`, and `BOOL`. Clang had
+all of the nominal and scalar evidence, but the fixed `.zd` normalizer treated
+the object references as unsupported scalar pointers and omitted target-width
+`usize` aliases.
+
+Concrete Objective-C references now cross a free C function boundary as
+explicit `in` parameters. Both Stage 0 and the fixed compiler validate the
+class identity, nullability, ownership availability, and namespace alias, then
+emit the original ARC reference directly. `isize`, `usize`, and canonical
+`boolean` also remain source-nameable through the contract. No raw pointer type,
+wrapper allocation, or new source syntax was introduced.
+
+With build-time smoke selection replacing the runtime environment probe, Zapp
+deleted `application-host.m` and `webview-bridge.m`. The remaining production
+Objective-C implementation seam is the byte-level compressed-asset bridge;
+the desktop smoke harness remains test-only.
 
 ## Not tested yet
 

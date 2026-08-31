@@ -626,20 +626,66 @@ function readHeader(
     declarationOverride,
   );
   validateForeignTypeApiNotes(notes, produced.namedTypes, produced.interfaces, fileName, declaration.location);
+  const objectiveCTypeNames = new Map(
+    [...produced.interfaces.values()].map((interface_) => [
+      interface_.className,
+      interface_.typeName,
+    ]),
+  );
+  const objectiveCObjectType = (
+    className: string | null,
+    nullable: boolean,
+  ): ForeignObjectType => {
+    const existing = [...objectTypes.values()].find((type) => (
+      type.className === className && type.nullable === nullable
+    ));
+    if (existing) return existing;
+    const baseName = className
+      ? objectiveCTypeNames.get(className) ?? `${declaration.moduleName}.${className}`
+      : "id";
+    const typeName = nullable || !className
+      ? `__z_objc:${nullable ? "nullable" : "nonnull"}:${baseName}`
+      : baseName;
+    const created: ForeignObjectType = {
+      kind: "object",
+      typeName,
+      cName: className ? `${className} *` : "id",
+      className,
+      nullable,
+    };
+    objectTypes.set(typeName, created);
+    return created;
+  };
   const contracts = normalizeForeignContracts(
     produced.functions,
     produced.nativeTypes,
     notes,
     {
-      mapType: (spelling, note, position, pointerTypes, namedTypes) => mapForeignType(
-        spelling.nativeName,
-        note,
-        position,
-        pointerTypes,
-        namedTypes,
-        spelling.canonicalNativeName,
-        imported.unsupportedValueRecords,
-      ),
+      mapType: (spelling, note, position, pointerTypes, namedTypes) => {
+        if (objectiveC) {
+          const mappedObject = mapObjCType(
+            {
+              qualType: spelling.nativeName,
+              desugaredQualType: spelling.canonicalNativeName,
+            },
+            "",
+            position,
+            namedTypes,
+            objectiveCTypeNames,
+            objectiveCObjectType,
+          );
+          if (mappedObject.kind === "object") return mappedObject;
+        }
+        return mapForeignType(
+          spelling.nativeName,
+          note,
+          position,
+          pointerTypes,
+          namedTypes,
+          spelling.canonicalNativeName,
+          imported.unsupportedValueRecords,
+        );
+      },
       mapCallbackContext: mapCallbackContextType,
       mapCallbackRelease: mapCallbackReleaseType,
       mapVariadicType: (type) => type === "cstring"

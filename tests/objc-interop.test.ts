@@ -124,6 +124,29 @@ hostToolchainTest("imports AppKit classes and emits an ARC Objective-C NSWindow 
   assert.doesNotMatch(activateHover, /iOS|watchOS|tvOS/);
 }, 20_000);
 
+hostToolchainTest("keeps Objective-C object parameters in native declaration parity", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "tests/fixtures/objc-contract-functions.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+
+  assert.match(
+    artifact.source,
+    /z_objc_contract_observe\(object, true\)/,
+  );
+  assert.match(
+    artifact.source,
+    /return z_objc_contract_length\(value\)/,
+  );
+
+  const nativeCheck = spawnSync(
+    process.execPath,
+    [cli, "check", example, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+}, 30_000);
+
 hostToolchainTest("gives every Objective-C C export an autorelease pool", () => {
   if (process.platform !== "darwin") return;
   const source = `
@@ -148,6 +171,24 @@ hostToolchainTest("gives every Objective-C C export an autorelease pool", () => 
     "-fsyntax-only", "-",
   ], { input: artifact.source, encoding: "utf8" });
   assert.equal(compilation.status, 0, compilation.stderr);
+});
+
+hostToolchainTest("keeps contextual native option literals in fixed-point parity", () => {
+  if (process.platform !== "darwin") return;
+  const fixture = resolve(
+    projectRoot,
+    "tests/fixtures/objc-contextual-option-literal.zs",
+  );
+  const source = readFileSync(fixture, "utf8");
+  const artifact = compileToNative(source, fixture);
+  assert.match(artifact.source, /modifierFlags:0/);
+
+  const nativeCheck = spawnSync(
+    process.execPath,
+    [cli, "check", fixture, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
 });
 
 hostToolchainTest("merges Objective-C category methods into their interface surface", () => {

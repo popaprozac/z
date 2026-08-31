@@ -1043,10 +1043,11 @@ first tier is conservatively main-executor-bound and allocates one generated
 An imported protocol existential such as `WebKit.WKURLSchemeTask` also widens
 safely to an Objective-C method parameter typed as ordinary `id`; this is the
 native `id<P>` to `id` conversion and emits no cast or wrapper. Free C functions
-whose signatures contain Objective-C objects or `id<Protocol>` are not yet in
-the checked header-only function tier. Prefer an imported Objective-C method,
-or describe the boundary with a reviewed declaration instead of erasing the
-type through `unsafe`.
+whose signatures contain concrete Objective-C objects may be refined by a
+reviewed `.zd` declaration. Spell those call-scoped references with `in`; Z
+verifies the exact imported class identity and passes the ARC reference without
+a wrapper or pointer erasure. Protocol-qualified `id<Protocol>` parameters on
+free C functions remain a separate future contract tier.
 
 | Native surface | Ordinary header import | `std/objc` bridge |
 | --- | --- | --- |

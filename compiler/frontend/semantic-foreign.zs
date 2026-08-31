@@ -445,7 +445,7 @@ function objcProtocolTypeSignature(
 
 function foreignFunctionSignature(
   in contract: NativeForeignFunctionContract,
-  in types: Array<NativeForeignTypeContract>,
+  in contracts: NativeForeignContractSet,
   in namespace: String
 ): ModuleFunctionSignature {
   let parameterModes = Array<String>();
@@ -462,8 +462,8 @@ function foreignFunctionSignature(
       continue;
     }
     nativeToVisible.push(visibleIndex);
-    const parameterType = localForeignTypeName(
-      types,
+    const parameterType = localObjCTypeName(
+      contracts,
       namespace,
       parameter.typeName
     );
@@ -482,7 +482,7 @@ function foreignFunctionSignature(
   let errorType = "";
   match (in contract.errorType) {
     some(typeName) => {
-      errorType = localForeignTypeName(types, namespace, typeName);
+      errorType = localObjCTypeName(contracts, namespace, typeName);
     }
     none => {}
   }
@@ -516,8 +516,8 @@ function foreignFunctionSignature(
     viewParameter,
     invalidatesParameters,
     invalidatesLifetimes,
-    returnType: localForeignTypeName(
-      types,
+    returnType: localObjCTypeName(
+      contracts,
       namespace,
       contract.returnType
     ),
@@ -708,7 +708,7 @@ function attachSelectiveFunction(
     Option<ModuleFunctionSignature>.some(
       foreignFunctionSignature(
         contracts.functions[contractIndex],
-        contracts.types,
+        contracts,
         namespace
       )
     );
@@ -758,7 +758,7 @@ function attachNamespaceFunctions(
       ),
       valueType: "",
       functionSignature: Option<ModuleFunctionSignature>.some(
-        foreignFunctionSignature(contract, contracts.types, namespace)
+        foreignFunctionSignature(contract, contracts, namespace)
       ),
       typeSignature: Option<ModuleTypeSignature>.none,
       foreignHeader: contracts.moduleSpecifier.copyBytes(

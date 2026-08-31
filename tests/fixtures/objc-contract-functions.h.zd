@@ -1,0 +1,7 @@
+declare module "objc-contract-functions.h" {
+  export function z_objc_contract_length(in value: _): _;
+  export function z_objc_contract_observe(
+    in object: _,
+    enabled: _
+  ): _;
+}

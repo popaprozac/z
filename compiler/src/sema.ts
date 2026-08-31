@@ -15861,7 +15861,21 @@ function foreignPointer(type: ValueType, state: AnalysisState): ForeignPointerTy
 function foreignObject(type: ValueType, state: AnalysisState): ForeignObjectType | null {
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never") return null;
-  return state.foreignObjectTypes.get(String(actual)) ?? null;
+  const imported = state.foreignObjectTypes.get(String(actual));
+  if (imported) return imported;
+  const display = state.typeDisplayNames.get(String(actual)) ?? String(actual);
+  for (const [name, object] of state.foreignObjectTypes) {
+    if ((state.typeDisplayNames.get(name) ?? name) == display) return object;
+  }
+  const named = state.foreignNamedTypes.get(String(actual));
+  if (named?.kind !== "object") return null;
+  return {
+    kind: "object",
+    typeName: String(actual),
+    cName: named.cName,
+    className: named.className,
+    nullable: isNullableObjCTypeName(String(actual)),
+  };
 }
 
 function nullableForeignReference(type: ValueType, state: AnalysisState): boolean {
@@ -17781,7 +17795,7 @@ function contextualObjCStringToZ(
   state: AnalysisState,
 ): ValueType | null {
   if (underlyingType(expected) !== "String") return null;
-  const actualObject = state.foreignObjectTypes.get(String(underlyingType(actual)));
+  const actualObject = foreignObject(actual, state);
   const stringType = [...state.foreignObjectTypes.values()].find((candidate) => (
     candidate.className === "NSString" && !candidate.nullable
   ));
@@ -17833,7 +17847,7 @@ function requireObjCAssignable(
   }
   const actualProtocol = parseObjCProtocolType(String(underlyingType(actual)));
   if (!expected.className && actualProtocol) return;
-  const actualObject = state.foreignObjectTypes.get(String(underlyingType(actual)));
+  const actualObject = foreignObject(actual, state);
   if (!actualObject || (expected.className && !isObjCSubclass(actualObject, expected, state))) {
     throw new DiagnosticError(fileName, expression.location, `${subject} expects ${expected.cName}, found ${describeValueType(actual, state)}`);
   }
@@ -18534,6 +18548,43 @@ function checkForeignCall(
         state.foreignArgumentAccesses.set(argument.location.offset, "in");
         state.expressionTypes.set(argument.location.offset, String(underlyingType(stored)));
         state.expressionTypes.set(argument.nameLocation.offset, String(underlyingType(stored)));
+        continue;
+      }
+      if (parameter?.type.kind === "object") {
+        if (argument.access !== "in") {
+          throw new DiagnosticError(
+            fileName,
+            argument.location,
+            `Objective-C object parameter of ${JSON.stringify(target.name)} requires an \`in\` argument`,
+          );
+        }
+        const stored = locals.get(argument.name);
+        if (!stored) {
+          throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+        }
+        if (initializationState(stored) !== "initialized") {
+          throw new DiagnosticError(fileName, argument.location, `in argument ${JSON.stringify(argument.name)} must be initialized before the call`);
+        }
+        if (ownershipState(stored) !== "available") {
+          throw movedValueError(
+            fileName,
+            { name: argument.name, location: argument.location },
+            state,
+            ownershipState(stored) === "maybeMoved",
+          );
+        }
+        requireObjCAssignable(
+          parameter.type,
+          underlyingType(stored),
+          argument,
+          structs,
+          enums,
+          fileName,
+          state,
+        );
+        state.foreignArgumentAccesses.set(argument.location.offset, "in");
+        state.expressionTypes.set(argument.location.offset, parameter.type.typeName);
+        state.expressionTypes.set(argument.nameLocation.offset, parameter.type.typeName);
         continue;
       }
       if (parameter?.type.kind === "unsupported") {
