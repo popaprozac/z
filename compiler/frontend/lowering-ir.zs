@@ -250,6 +250,8 @@ export enum LoweredExpressionKind {
   closureValue,
   methodCall,
   objectiveCMessageCall,
+  objectiveCDataCopy,
+  objectiveCDataBorrow,
   objectiveCInstanceOf,
   objectiveCStringFromZ,
   objectiveCStringToZ,
@@ -3108,6 +3110,10 @@ function lowerModuleTypeName(
   if (name == "id") return LoweredType({
     kind: LoweredTypeKind.foreignObjCType,
     name: "id",
+  });
+  if (qualifiedTypeMember(name) == "NSData") return LoweredType({
+    kind: LoweredTypeKind.foreignObjCType,
+    name: "NSData",
   });
   if (name == "objc.Selector") return LoweredType({
     kind: LoweredTypeKind.foreignHandleType,
@@ -13286,6 +13292,44 @@ function lowerExpressionContextual(
       index
     );
     const callKind = resolvedCallKind(evidence, tree, index);
+    if (
+      callKind == "objectiveCDataCopy"
+      || callKind == "objectiveCDataBorrow"
+    ) {
+      if (tree.nodes[index].children.length != 2) {
+        throw "native NSData bridge lowering received a malformed call";
+      }
+      const parameterTypes = resolvedCallParameterTypes(
+        program,
+        evidence,
+        tree,
+        index
+      );
+      if (parameterTypes.length != 1) {
+        throw "native NSData bridge lowering lost its byte parameter";
+      }
+      let children = Array<usize>();
+      const argumentInput = tree.nodes[index].children[1];
+      const bytes = try lowerExpressionExpected(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput,
+        parameterTypes[0],
+        inout output
+      );
+      children.push(bytes);
+      return pushExpression(
+        inout output,
+        callKind == "objectiveCDataCopy"
+          ? LoweredExpressionKind.objectiveCDataCopy
+          : LoweredExpressionKind.objectiveCDataBorrow,
+        "",
+        move children,
+        Array<String>()
+      );
+    }
     if (
       objectiveCSelector.byteLength > 0
       && (callKind == "method" || callKind == "staticMethod")

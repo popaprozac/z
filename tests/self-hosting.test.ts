@@ -4278,6 +4278,116 @@ test("embeds static bytes through the fixed-point native frontend", () => {
   }
 }, 60_000);
 
+hostToolchainTest("borrows embedded bytes into NSData through the fixed-point frontend", () => {
+  if (process.platform !== "darwin") return;
+  const directory = mkdtempSync("/tmp/z-self-host-embedded-data-");
+  const input = resolve(
+    projectRoot,
+    "examples/interop/objc/embedded-data.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /static inline __attribute__\(\(unused\)\) NSData \*z_stage1_nsdata_borrow_static_bytes\(Z_StaticBytes bytes\)/,
+    );
+    assert.match(
+      emission.stdout,
+      /initWithBytesNoCopy:source length:\(NSUInteger\)bytes\.length freeWhenDone:NO/,
+    );
+    assert.match(
+      emission.stdout,
+      /z_stage1_nsdata_borrow_static_bytes\(__z_module_\d+_PAYLOAD\)/,
+    );
+
+    const executable = resolve(directory, "embedded-data");
+    const compilation = spawnSync(
+      "clang",
+      [
+        "-x", "objective-c",
+        "-fobjc-arc",
+        "-framework", "Foundation",
+        "-Wall", "-Wextra", "-Werror",
+        "-",
+        "-o", executable,
+      ],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 60_000);
+
+hostToolchainTest("copies byte slices into NSData through the fixed-point frontend", () => {
+  if (process.platform !== "darwin") return;
+  const directory = mkdtempSync("/tmp/z-self-host-data-copy-");
+  const input = resolve(
+    projectRoot,
+    "examples/interop/objc/data-copy.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /static inline __attribute__\(\(unused\)\) NSData \*z_stage1_nsdata_copy_bytes\(Z___z_Slice_u8 bytes\)/,
+    );
+    assert.match(
+      emission.stdout,
+      /\[\[NSData alloc\] initWithBytes:source length:\(NSUInteger\)bytes\.length\]/,
+    );
+    assert.match(
+      emission.stdout,
+      /z_stage1_nsdata_copy_bytes\(bytes\)/,
+    );
+
+    const executable = resolve(directory, "data-copy");
+    const compilation = spawnSync(
+      "clang",
+      [
+        "-x", "objective-c",
+        "-fobjc-arc",
+        "-framework", "Foundation",
+        "-Wall", "-Wextra", "-Werror",
+        "-",
+        "-o", executable,
+      ],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 60_000);
+
 hostToolchainTest("lowers lexical Objective-C pools without closure allocation natively", () => {
   if (process.platform !== "darwin") return;
   const directory = mkdtempSync("/tmp/z-self-host-objc-pool-");

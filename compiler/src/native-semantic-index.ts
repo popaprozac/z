@@ -70,6 +70,8 @@ export class NativeSemanticIndex {
             && target.kind !== "struct" && target.kind !== "class")
           || (resolution.kind === "constructor" && target.kind !== "class")
           || (resolution.kind === "standard" && target.kind !== "namespace")
+          || ((resolution.kind === "objectiveCDataCopy" || resolution.kind === "objectiveCDataBorrow")
+            && target.kind !== "namespace")
         ) {
           throw new Error(`native frontend returned a mismatched ${resolution.kind} target at offset ${resolution.offset} in ${module.path}`);
         }

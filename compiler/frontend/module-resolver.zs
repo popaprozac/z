@@ -8712,22 +8712,111 @@ function inferExpressionNodeType(
       let staticMethod = false;
       if (ownerType.byteLength == 0) {
         const candidate = typeExpressionName(tree, receiverIndex);
-        match (typeSymbolLocation(modules, moduleIndex, candidate)) {
-          some(typeLocation) => {
-            const typeKind = modules[typeLocation.moduleIndex].symbols[typeLocation.symbolIndex].kind;
-            if (
-              typeKind == ModuleSymbolKind.structSymbol
-              || typeKind == ModuleSymbolKind.classSymbol
-            ) {
-              ownerType = candidate.copyBytes(0, candidate.byteLength);
-              staticMethod = true;
+        const candidateBase = qualifiedTypeBase(candidate);
+        if (
+          qualifiedTypeMember(candidate) == "NSData"
+          && importedStandardNamespace(
+            module,
+            candidateBase,
+            "Foundation/Foundation.h"
+          )
+        ) {
+          ownerType = candidate.copyBytes(0, candidate.byteLength);
+          staticMethod = true;
+        } else {
+          match (typeSymbolLocation(modules, moduleIndex, candidate)) {
+            some(typeLocation) => {
+              const typeKind = modules[typeLocation.moduleIndex].symbols[typeLocation.symbolIndex].kind;
+              if (
+                typeKind == ModuleSymbolKind.structSymbol
+                || typeKind == ModuleSymbolKind.classSymbol
+              ) {
+                ownerType = candidate.copyBytes(0, candidate.byteLength);
+                staticMethod = true;
+              }
             }
+            none => {}
           }
-          none => {}
         }
       }
       if (ownerType.byteLength > 0) {
         const methodName = identifierLookupName(tree.nodes[calleeIndex].value);
+        if (
+          staticMethod
+          && qualifiedTypeMember(ownerType) == "NSData"
+          && (methodName == "copy" || methodName == "borrow")
+        ) {
+          if (optionalMethodCall) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              "optional call cannot invoke an NSData byte bridge",
+              tree.nodes[calleeIndex].line,
+              tree.nodes[calleeIndex].column
+            );
+          }
+          let parameterModes = Array<String>();
+          parameterModes.push("in");
+          let parameterTypes = Array<String>();
+          parameterTypes.push(methodName == "borrow"
+            ? "embed.StaticBytes"
+            : "Slice<u8>");
+          const signature = ModuleFunctionSignature({
+            asynchronous: false,
+            executorAffinity: "",
+            threadContract: "",
+            typeParameters: Array<String>(),
+            typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+            parameterModes,
+            parameterTypes,
+            viewParameter: Option<usize>.none,
+            invalidatesParameters: Array<usize>(),
+            invalidatesLifetimes: Array<String>(),
+            returnType: ownerType.copyBytes(0, ownerType.byteLength),
+            errorType: "",
+          });
+          const dataNamespace = qualifiedTypeBase(ownerType);
+          const dataSymbolIndex = moduleSymbolIndex(
+            modules[moduleIndex],
+            dataNamespace
+          );
+          if (
+            dataSymbolIndex >= modules[moduleIndex].symbols.length
+            || modules[moduleIndex].symbols[dataSymbolIndex].kind
+              != ModuleSymbolKind.namespaceSymbol
+          ) throw resolutionError(
+            ModuleResolveErrorKind.unknownType,
+            module.path,
+            `could not resolve Objective-C type ${ownerType}`,
+            tree.nodes[receiverIndex].line,
+            tree.nodes[receiverIndex].column
+          );
+          const substitutions = Array<NativeValueBinding>();
+          const argumentNodes = callArgumentNodes(children);
+          const dataCallKind = methodName == "borrow"
+            ? "objectiveCDataBorrow"
+            : "objectiveCDataCopy";
+          return try inferSignatureCallType(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            calleeIndex,
+            index,
+            argumentNodes,
+            inout bindings,
+            "",
+            "",
+            `${ownerType}.${methodName}`,
+            signature,
+            substitutions,
+            moduleIndex,
+            dataSymbolIndex,
+            dataCallKind,
+            inout evidence
+          );
+        }
         if (
           ownerType == "TaskScope"
           || importedStandardType(

@@ -21,7 +21,7 @@ export type ZProgramCallMetadata = {
   readonly target: {
     readonly module: string;
     readonly symbol: string;
-    readonly kind: "function" | "method" | "staticMethod" | "constructor" | "standard";
+    readonly kind: "function" | "method" | "staticMethod" | "constructor" | "standard" | "objectiveCDataCopy" | "objectiveCDataBorrow";
     readonly name: string;
   };
   readonly asynchronous: boolean;

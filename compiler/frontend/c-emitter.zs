@@ -4693,6 +4693,30 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind
+      == LoweredExpressionKind.objectiveCDataCopy
+    || declaration.expressions[index].kind
+      == LoweredExpressionKind.objectiveCDataBorrow
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native NSData bridge emission received a malformed byte value";
+    }
+    output.append(
+      declaration.expressions[index].kind
+          == LoweredExpressionKind.objectiveCDataCopy
+        ? "z_stage1_nsdata_copy_bytes("
+        : "z_stage1_nsdata_borrow_static_bytes("
+    );
+    const bytes = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      bytes
+    );
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
       == LoweredExpressionKind.objectiveCMessageCall
   ) {
     if (declaration.expressions[index].children.length == 0) {
@@ -18912,6 +18936,8 @@ function emitLoweredC(
   const usesExecutorBoundClasses = programUsesExecutorBoundClasses(program);
   let usesObjectiveCStringFromZ = false;
   let usesObjectiveCStringToZ = false;
+  let usesObjectiveCDataCopy = false;
+  let usesObjectiveCDataBorrow = false;
   for (const declaration of program.functions) {
     for (const expression of declaration.expressions) {
       if (
@@ -18920,6 +18946,12 @@ function emitLoweredC(
       if (
         expression.kind == LoweredExpressionKind.objectiveCStringToZ
       ) usesObjectiveCStringToZ = true;
+      if (
+        expression.kind == LoweredExpressionKind.objectiveCDataCopy
+      ) usesObjectiveCDataCopy = true;
+      if (
+        expression.kind == LoweredExpressionKind.objectiveCDataBorrow
+      ) usesObjectiveCDataBorrow = true;
     }
   }
   let usesCStringConversion =
@@ -18953,6 +18985,9 @@ function emitLoweredC(
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
   output.append("#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n");
+  if (usesObjectiveCDataCopy || usesObjectiveCDataBorrow) {
+    output.append("#import <Foundation/Foundation.h>\n");
+  }
   output.append("#ifndef Z_API\n#define Z_API\n#endif\n");
   for (const header of program.foreignHeaders) {
     output.append("#include \"");
@@ -19495,6 +19530,18 @@ function emitLoweredC(
   appendWeakRuntime(inout output);
   try appendTypeDefinitions(inout output, program);
   try appendCopyHelpers(inout output, program);
+  if (usesObjectiveCDataCopy) {
+    output.append("static inline __attribute__((unused)) NSData *z_stage1_nsdata_copy_bytes(Z___z_Slice_u8 bytes) {\n");
+    output.append("  const void *source = bytes.data != NULL ? (const void *)bytes.data : (const void *)\"\";\n");
+    output.append("  return [[NSData alloc] initWithBytes:source length:(NSUInteger)bytes.length];\n");
+    output.append("}\n\n");
+  }
+  if (usesObjectiveCDataBorrow) {
+    output.append("static inline __attribute__((unused)) NSData *z_stage1_nsdata_borrow_static_bytes(Z_StaticBytes bytes) {\n");
+    output.append("  void *source = bytes.data != NULL ? (void *)bytes.data : (void *)\"\";\n");
+    output.append("  return [[NSData alloc] initWithBytesNoCopy:source length:(NSUInteger)bytes.length freeWhenDone:NO];\n");
+    output.append("}\n\n");
+  }
   for (const declaration of program.enums) {
     let nullablePayload = Option<LoweredType>.none;
     let hasNone = false;
