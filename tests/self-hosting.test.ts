@@ -8013,6 +8013,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "",
         "@interface NativeOwner : NativeBase",
         "+ (instancetype)sharedOwner;",
+        "@property(class, nonatomic, readonly) NativeOwner *currentOwner;",
         "@property(nonatomic, readonly, getter=answer) int value;",
         "@property(nonatomic) int writableValue;",
         "@property(nonatomic) NativeBase *writableBase;",
@@ -8031,6 +8032,10 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "@implementation NativeOwner",
         "+ (instancetype)sharedOwner {",
         "  return [[self alloc] init];",
+        "}",
+        "",
+        "+ (NativeOwner *)currentOwner {",
+        "  return [self sharedOwner];",
         "}",
         "",
         "- (int)answer {",
@@ -8090,7 +8095,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "  if (options == native.NativeOptionFirst) return 2;",
         "  const rect = native.native_make_rect();",
         "  if (native.native_read_rect_alias(rect) != 42) return 3;",
-        "  const owner = native.NativeOwner.sharedOwner();",
+        "  const owner = native.NativeOwner.currentOwner;",
         "  const root = new NativeRoot({ owner });",
         "  const base = owner.base;",
         "  const body = owner.body;",
@@ -8140,7 +8145,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     const objcEmission = readFileSync(objcEmissionPath, "utf8");
     assert.match(
       objcEmission,
-      /NativeOwner \* const owner = \[NativeOwner sharedOwner\]/,
+      /NativeOwner \* const owner = \[NativeOwner currentOwner\]/,
     );
     assert.match(
       objcEmission,

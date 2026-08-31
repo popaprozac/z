@@ -307,7 +307,7 @@ function objcInterfaceTypeSignature(
     for (const property of contracts.objectiveCInterfaces[
       hierarchy[hierarchyIndex]
     ].properties) {
-      if (!property.instance || !property.representable) continue;
+      if (!property.representable) continue;
       let protocols = Array<String>();
       for (const protocol of property.protocols) {
         protocols.push(`${namespace}.${protocol}`);
@@ -323,6 +323,7 @@ function objcInterfaceTypeSignature(
           namespace,
           property.typeName
         ),
+        classProperty: !property.instance,
         executorAffinity: property.executorAffinity.copyBytes(
           0,
           property.executorAffinity.byteLength

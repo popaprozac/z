@@ -124,6 +124,7 @@ export struct LoweredField {
   optionalField: boolean;
   borrowedView: boolean;
   defaultTarget: String;
+  classProperty: boolean = false;
   objectiveCGetter: String = "";
   objectiveCSetter: String = "";
 }
@@ -8047,10 +8048,57 @@ function fieldTypeNameForOwner(
       && imported.targetName != ownerTypeName
     ) continue;
     for (const field of imported.fields) {
-      if (field.name == fieldName) {
+      if (field.name == fieldName && !field.classProperty) {
         return Option.some(loweredTypeIdentity(field.type));
       }
     }
+  }
+  return Option<String>.none;
+}
+
+function objectiveCClassPropertyGetterForOwner(
+  in importedTypes: Array<LoweredImportedType>,
+  in ownerTypeName: String,
+  in fieldName: String
+): Option<String> {
+  for (const imported of importedTypes) {
+    if (
+      imported.kind != LoweredTypeKind.foreignObjCType
+      || (
+        imported.localName != ownerTypeName
+        && imported.targetName != ownerTypeName
+      )
+    ) continue;
+    for (const field of imported.fields) {
+      if (
+        field.classProperty
+        && field.name == fieldName
+        && field.objectiveCGetter.byteLength > 0
+      ) return Option.some(field.objectiveCGetter.copyBytes(
+        0,
+        field.objectiveCGetter.byteLength
+      ));
+    }
+  }
+  return Option<String>.none;
+}
+
+function objectiveCNativeTypeNameForOwner(
+  in importedTypes: Array<LoweredImportedType>,
+  in ownerTypeName: String
+): Option<String> {
+  for (const imported of importedTypes) {
+    if (
+      imported.kind == LoweredTypeKind.foreignObjCType
+      && (
+        imported.localName == ownerTypeName
+        || imported.targetName == ownerTypeName
+      )
+      && imported.nativeTypeName.byteLength > 0
+    ) return Option.some(imported.nativeTypeName.copyBytes(
+      0,
+      imported.nativeTypeName.byteLength
+    ));
   }
   return Option<String>.none;
 }
@@ -14599,6 +14647,42 @@ function lowerExpressionContextual(
       throw "native lowering received a malformed member expression";
     }
     const receiverInput = tree.nodes[index].children[0];
+    const classOwnerTypeName = typeExpressionName(tree, receiverInput);
+    if (classOwnerTypeName.byteLength > 0) {
+      match (objectiveCClassPropertyGetterForOwner(
+        importedTypes,
+        classOwnerTypeName,
+        tree.nodes[index].value
+      )) {
+        some(getter) => {
+          const nativeOwner = match (objectiveCNativeTypeNameForOwner(
+            importedTypes,
+            classOwnerTypeName
+          )) {
+            some(name) => name;
+            none => throw "native Objective-C class property lowering lost its class receiver";
+          };
+          let propertyChildren = Array<usize>();
+          propertyChildren.push(pushExpression(
+            inout output,
+            LoweredExpressionKind.localValue,
+            nativeOwner,
+            Array<usize>(),
+            Array<String>()
+          ));
+          let propertyLabels = Array<String>();
+          propertyLabels.push("class");
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.objectiveCMessageCall,
+            getter,
+            propertyChildren,
+            propertyLabels
+          );
+        }
+        none => {}
+      }
+    }
     match (evidenceResolvedExpressionTypeName(
       program,
       importedTypes,
@@ -25711,6 +25795,7 @@ function copyImportedTypeAlias(
         0,
         field.defaultTarget.byteLength
       ),
+      classProperty: field.classProperty,
       objectiveCGetter: field.objectiveCGetter.copyBytes(
         0,
         field.objectiveCGetter.byteLength
@@ -25897,6 +25982,7 @@ function importedTypesForModule(
                 optionalField: false,
                 borrowedView: false,
                 defaultTarget: "",
+                classProperty: field.classProperty,
                 objectiveCGetter: field.objectiveCGetter.copyBytes(
                   0,
                   field.objectiveCGetter.byteLength

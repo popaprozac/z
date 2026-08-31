@@ -63,6 +63,15 @@ The fixed-point compiler emits direct setter messages. Imported `readonly`
 properties remain compile-time errors, and a Z `String` assigned to an
 `NSString` property is converted with its explicit byte length.
 
+Readonly Objective-C class properties also preserve the native API spelling:
+
+```z
+const app = AppKit.NSApplication.sharedApplication;
+```
+
+This lowers directly to `[NSApplication sharedApplication]` under Clang ARC;
+it does not introduce a wrapper allocation or runtime lookup.
+
 Imported Objective-C inheritance remains part of the checked type relation, so
 a non-null subclass such as `WKWebView` can populate nullable superclass
 storage such as `NSView | null`. These rules let a native desktop application

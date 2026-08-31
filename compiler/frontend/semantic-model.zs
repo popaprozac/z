@@ -229,6 +229,7 @@ export struct ModuleSymbol {
 export struct ModuleFieldSignature {
   name: String;
   typeName: String;
+  classProperty: boolean = false;
   executorAffinity: String;
   visibility: String;
   readonlyField: boolean;

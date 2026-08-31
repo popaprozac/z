@@ -146,6 +146,7 @@ import {
   matchShape,
   matchVariantIndex,
   methodCallableSignature,
+  objectiveCClassPropertyShape,
   rebaseModuleFunctionSignature,
   typeExpressionName,
 } from "./semantic-member-lookups.zs";
@@ -5892,6 +5893,47 @@ function inferExpressionNodeType(
     const memberName = identifierLookupName(value);
     if (receiverType.byteLength == 0) {
       const candidateType = typeExpressionName(tree, children[0]);
+      match (objectiveCClassPropertyShape(
+        modules,
+        moduleIndex,
+        candidateType,
+        memberName
+      )) {
+        some(property) => {
+          let requiredAffinity = property.executorAffinity.copyBytes(
+            0,
+            property.executorAffinity.byteLength
+          );
+          if (requiredAffinity.byteLength == 0) {
+            requiredAffinity = aggregateExecutorAffinity(
+              modules,
+              property.ownerModuleIndex,
+              property.ownerSymbolIndex
+            );
+          }
+          try requireMainExecutorContext(
+            module,
+            tree,
+            index,
+            bindings,
+            requiredAffinity,
+            `Objective-C class property "${candidateType}.${memberName}"`
+          );
+          recordExpressionResolution(
+            modules,
+            moduleIndex,
+            tree,
+            index,
+            property.typeName,
+            inout evidence
+          );
+          return property.typeName.copyBytes(
+            0,
+            property.typeName.byteLength
+          );
+        }
+        none => {}
+      }
       match (matchShape(modules, moduleIndex, candidateType)) {
         some(shape) => {
           const variantIndex = matchVariantIndex(shape, memberName);

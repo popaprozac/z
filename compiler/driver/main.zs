@@ -572,6 +572,14 @@ function projectUsesObjectiveC(in project: NativeProject): boolean {
     for (const resolution of module.semanticEvidence.callResolutions) {
       if (resolution.objectiveCSelector.byteLength > 0) return true;
     }
+    for (const symbol of module.symbols) {
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          if (signature.foreignKind == "objcInterface") return true;
+        }
+        none => {}
+      }
+    }
   }
   return false;
 }

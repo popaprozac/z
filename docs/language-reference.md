@@ -3534,6 +3534,18 @@ references and `.zd`-declared C handles use `nil` or `NULL` as the `none` niche
 and remain one pointer with no wrapper allocation; general options use the
 ordinary tagged enum layout.
 
+Imported readonly Objective-C class properties keep their familiar member
+spelling and are direct message sends:
+
+```zs
+const app = AppKit.NSApplication.sharedApplication;
+```
+
+The fixed-point compiler emits `[NSApplication sharedApplication]`; there is no
+Z wrapper call or allocation. Writable class-property assignment remains a
+staged surface, while writable instance properties already use ordinary Z
+assignment.
+
 An imported Objective-C property or method returning dynamic `id` remains an
 Objective-C reference rather than becoming an untyped Z value. Test its runtime
 class with `instanceof`; the compiler lowers the check directly to

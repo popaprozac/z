@@ -4634,6 +4634,29 @@ observation hook around that path, which is compiled out of production builds.
 The work added no source syntax: ordinary closure ownership, imported
 nullability, and protocol receiver capabilities compose at the boundary.
 
+## Readonly Objective-C class properties in the fixed-point compiler
+
+Moving Zapp's application host and run-loop ownership into Z exposed one more
+bootstrap-only seam: Stage 0 accepted
+`AppKit.NSApplication.sharedApplication`, but native semantic construction
+discarded properties whose receiver was a class rather than an instance. The
+foreign declaration protocol already retained the distinction, so the fix did
+not require a new source feature or metadata version.
+
+The native resolver now keeps representable class properties distinct from
+instance fields, checks their executor affinity, and lowers readonly access to
+a direct class getter message. The native driver also selects Objective-C when
+an imported Objective-C interface is present, covering programs whose only
+message send is a property read. A freshly bootstrapped fixture executes a
+real `@property(class, readonly)` getter and verifies the emitted
+`[NativeOwner currentOwner]` expression.
+
+This lets Zapp keep the `NSApplication` identity, synchronized host result, and
+run-loop lifecycle in checked Z. The remaining handwritten host seam is now
+limited to the native run-loop wake operation and smoke-mode environment
+probe. Writable class-property assignment remains deferred until a real API
+requires it.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

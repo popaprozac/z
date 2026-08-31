@@ -50,6 +50,7 @@ export struct NativeFieldShape {
   ownerModuleIndex: usize;
   ownerSymbolIndex: usize;
   typeName: String;
+  classProperty: boolean = false;
   executorAffinity: String;
   visibility: String;
   readonlyField: boolean;
@@ -377,7 +378,7 @@ export function aggregateFieldShape(
             typeIndex = typeIndex + 1;
           }
           for (const field of signature.fields) {
-            if (field.name == fieldName) {
+            if (field.name == fieldName && !field.classProperty) {
               const fieldType = rebaseTypeName(
                 modules,
                 location.moduleIndex,
@@ -393,6 +394,7 @@ export function aggregateFieldShape(
                 ownerModuleIndex: location.moduleIndex,
                 ownerSymbolIndex: location.symbolIndex,
                 typeName: substituteGenericType(fieldType, substitutions),
+                classProperty: false,
                 executorAffinity: field.executorAffinity.copyBytes(
                   0,
                   field.executorAffinity.byteLength
@@ -419,6 +421,76 @@ export function aggregateFieldShape(
                 ),
               }));
             }
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return Option<NativeFieldShape>.none;
+}
+
+export function objectiveCClassPropertyShape(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in ownerType: String,
+  in propertyName: String
+): Option<NativeFieldShape> {
+  match (inferredTypeSymbolLocation(modules, moduleIndex, ownerType)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[
+        location.symbolIndex
+      ].typeSignature) {
+        some(signature) => {
+          if (signature.foreignKind != "objcInterface") {
+            return Option<NativeFieldShape>.none;
+          }
+          for (const field of signature.fields) {
+            if (!field.classProperty || field.name != propertyName) continue;
+            return Option.some(NativeFieldShape({
+              name: field.name.copyBytes(0, field.name.byteLength),
+              ownerName: modules[location.moduleIndex].symbols[
+                location.symbolIndex
+              ].name.copyBytes(
+                0,
+                modules[location.moduleIndex].symbols[
+                  location.symbolIndex
+                ].name.byteLength
+              ),
+              ownerModuleIndex: location.moduleIndex,
+              ownerSymbolIndex: location.symbolIndex,
+              typeName: rebaseTypeName(
+                modules,
+                location.moduleIndex,
+                moduleIndex,
+                field.typeName
+              ),
+              classProperty: true,
+              executorAffinity: field.executorAffinity.copyBytes(
+                0,
+                field.executorAffinity.byteLength
+              ),
+              visibility: field.visibility.copyBytes(
+                0,
+                field.visibility.byteLength
+              ),
+              readonlyField: field.readonlyField,
+              optionalField: field.optionalField,
+              foreignUnion: false,
+              viewLifetime: field.viewLifetime.copyBytes(
+                0,
+                field.viewLifetime.byteLength
+              ),
+              objectiveCGetter: field.objectiveCGetter.copyBytes(
+                0,
+                field.objectiveCGetter.byteLength
+              ),
+              objectiveCSetter: field.objectiveCSetter.copyBytes(
+                0,
+                field.objectiveCSetter.byteLength
+              ),
+            }));
           }
         }
         none => {}

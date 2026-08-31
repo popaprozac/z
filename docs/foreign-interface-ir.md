@@ -263,7 +263,9 @@ First-tier native Objective-C semantic
 normalization, direct class/instance message lowering, and retained protocol
 registration are implemented. Representable instance-property reads share the
 ordinary field surface, include inherited and custom-getter properties, and
-lower directly to Objective-C getter messages. Dynamic `id` properties remain
+lower directly to Objective-C getter messages. Readonly class properties use
+the same source member surface and lower to direct class getter messages, so
+`NSApplication.sharedApplication` does not require a native wrapper. Dynamic `id` properties remain
 one-pointer Objective-C references; a checked `instanceof` target lowers to
 `isKindOfClass:` and narrows the true branch to the imported class. Imported
 writable instance-property assignments consume the preserved custom setter and
@@ -273,8 +275,8 @@ arguments without truncating embedded null bytes. Imported inheritance also
 permits a non-null Objective-C subclass where a nullable superclass reference
 is expected. Because those references store one native identity, ownership
 validation does not recursively treat their imported message properties as
-embedded Z fields. Class properties, optional property access, protocol runtime
-checks, and general Z-class runtime checks still fail closed.
+embedded Z fields. Writable class properties, optional property access,
+protocol runtime checks, and general Z-class runtime checks still fail closed.
 Selected selectors and exact ABI spellings
 survive through semantic evidence consumed by the Objective-C emitter. For
 `objc.register`, that evidence additionally records the native receiver, Z
