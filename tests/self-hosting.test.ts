@@ -1418,6 +1418,53 @@ test("transfers one retained captured callable into aggregate storage", () => {
   );
 }, 240_000);
 
+test("lowers early try closures and transfers cleanup-bearing match payloads once", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-try-closure-owned-match.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /static void z_stage1_callable_run_\d+_call\([\s\S]*if \(\(\*value\) != 42\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /bool _z_stage1_live__z_stage1_match_payload_\d+_\d+ = true;/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_Record current = \(_z_stage1_live__z_stage1_match_payload_\d+_\d+ = false, _z_stage1_match_payload_\d+_\d+\);/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-native-try-closure-match-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("executes one scheduler-yield suspension in an imported async function", () => {
   const input = resolve(
     projectRoot,

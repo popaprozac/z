@@ -9,6 +9,10 @@ function publishApplicationStatus(ticket: i32): void on thread.main {
 }
 
 async function main(): i32 {
+  const observe: (in value: i32) => void = move (
+    in value: i32
+  ): void => {};
+  observe(0);
   const work = thread.spawn(async (): i32 => {
     const ticket = refreshProject();
     await on thread.main publishApplicationStatus(ticket);

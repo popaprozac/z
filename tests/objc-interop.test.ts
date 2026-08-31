@@ -2290,14 +2290,39 @@ test("owns standalone Objective-C protocol adapters as storable ARC values", () 
         in task: WebKit.WKURLSchemeTask
       ): void as "webView:stopURLSchemeTask:" {}
     }
+
+    export class ImportedMessageHandler on thread.main
+      implements WebKit.WKScriptMessageHandler {
+      function receive(
+        in controller: WebKit.WKUserContentController,
+        in message: WebKit.WKScriptMessage
+      ): void as "userContentController:didReceiveScriptMessage:" {}
+    }
   `);
   const entrySource = `
     import EntryWebKit from "WebKit/WebKit.h";
-    import { ImportedAdapterOwner } from "./owner.zs";
-    function inspect(in owner: ImportedAdapterOwner): i32 { return 1; }
+    import Foundation from "Foundation/Foundation.h";
+    import { ImportedMessageHandler } from "./owner.zs";
+    import objc from "std/objc";
+    import { thread } from "std/thread";
+    function install(
+      in controller: EntryWebKit.WKUserContentController,
+      in handler: ImportedMessageHandler,
+      in name: Foundation.NSString
+    ): objc.Registration on thread.main {
+      return objc.register({
+        add: controller.addScriptMessageHandler(handler, name),
+        remove: controller.removeScriptMessageHandlerForName(name),
+      });
+    }
   `;
   writeFileSync(entryFile, entrySource);
-  assert.deepEqual(diagnostics(entrySource, entryFile), []);
+  const importedProtocolParity = spawnSync(
+    process.execPath,
+    [cli, "check", entryFile, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(importedProtocolParity.status, 0, importedProtocolParity.stderr);
   rmSync(moduleDirectory, { recursive: true, force: true });
 
   const crossHeaderSource = `
@@ -2340,7 +2365,7 @@ test("owns standalone Objective-C protocol adapters as storable ARC values", () 
     "objc.adapt<WebKit.WKNavigationDelegate>(controller)",
   );
   assert.match(diagnostics(wrongProtocol, fileName)[0]?.message ?? "", /does not implement Objective-C protocol WKNavigationDelegate/);
-}, 30_000);
+}, 60_000);
 
 test("dispatches through borrowed Objective-C protocol existential callback values", () => {
   if (process.platform !== "darwin") return;

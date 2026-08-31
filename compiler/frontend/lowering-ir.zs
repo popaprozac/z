@@ -5674,19 +5674,41 @@ function planCleanupStatement(
                 if (statements[loweredArm].labels.length != 1) {
                   throw "native cleanup planning lost a match payload binding";
                 }
-                const cleanup = LoweredCleanup({
-                  name: statements[loweredArm].labels[0].copyBytes(
+                const bindingName = statements[loweredArm].labels[0]
+                  .copyBytes(
                     0,
                     statements[loweredArm].labels[0].byteLength
-                  ),
-                  type: move payloadType,
-                  guard: statements[loweredArm].liveFlag.copyBytes(
+                  );
+                const moved = cleanupIndexMovesBinding(
+                  moveIndex,
+                  bindingName,
+                  tree.nodes[arm].offset
+                );
+                let guard = "";
+                if (
+                  moved
+                  && (forceMoveLiveGuards || moveIndex.hasControlFlow)
+                ) {
+                  guard = ownerLiveFlag(bindingName);
+                  statements[loweredArm].liveFlag = guard.copyBytes(
                     0,
-                    statements[loweredArm].liveFlag.byteLength
-                  ),
-                });
-                armLive.push(copyCleanup(cleanup));
-                patternCleanups.push(move cleanup);
+                    guard.byteLength
+                  );
+                  liveFlags.push(LoweredLiveFlag({
+                    owner: bindingName.copyBytes(0, bindingName.byteLength),
+                    name: guard.copyBytes(0, guard.byteLength),
+                    parameter: false,
+                  }));
+                }
+                if (!moved || guard.byteLength > 0) {
+                  const cleanup = LoweredCleanup({
+                    name: move bindingName,
+                    type: move payloadType,
+                    guard: move guard,
+                  });
+                  armLive.push(copyCleanup(cleanup));
+                  patternCleanups.push(move cleanup);
+                }
               }
               if (
                 consuming
@@ -17995,6 +18017,27 @@ function rewriteObjCPoolReturns(
   }
 }
 
+function rewritePlainVoidClosureReturns(
+  in roots: Array<usize>,
+  inout statements: Array<LoweredStatement>
+): void {
+  for (const statementIndex of roots) {
+    if (
+      statements[statementIndex].kind
+        == LoweredStatementKind.returnStatement
+      && !loweredStatementHasLabel(statements[statementIndex], "throw")
+    ) {
+      statements[statementIndex].expression = Option<usize>.none;
+      statements[statementIndex].type = Option<LoweredType>.none;
+    }
+    let children = Array<usize>();
+    for (const child of statements[statementIndex].children) {
+      children.push(child);
+    }
+    rewritePlainVoidClosureReturns(children, inout statements);
+  }
+}
+
 function completeNativeClosureBlocks(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -18008,7 +18051,8 @@ function completeNativeClosureBlocks(
 ): void throws String {
   const closureUseOffset = arena.nodes[sourceStatementIndex].offset;
   let expressionIndex = start;
-  while (expressionIndex < expressions.length) {
+  const expressionEnd = expressions.length;
+  while (expressionIndex < expressionEnd) {
     if (
       expressions[expressionIndex].kind
         == LoweredExpressionKind.closureValue
@@ -18034,6 +18078,15 @@ function completeNativeClosureBlocks(
         );
         loweredStatements.push(lowered);
       }
+      // A block callable is currently guaranteed to be synchronous,
+      // nonthrowing, and void by contextual lowering above. Its `return;`
+      // statements therefore return from the callable, not from an enclosing
+      // throwing Z function whose Result shape happened to be used while the
+      // shared statement lowerer was running.
+      rewritePlainVoidClosureReturns(
+        loweredStatements,
+        inout statements
+      );
       let parameter: usize = 0;
       while (parameter < expressions[expressionIndex].closureParameterCount) {
         const parameterName = expressions[expressionIndex].labels[
@@ -18123,8 +18176,17 @@ function completeNativeClosureBlocks(
       while (statementIndex < statements.length) {
         match (in statements[statementIndex].type) {
           some(type) => {
-            if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
-              throw "native block callable closures do not support cleanup-bearing local values yet";
+            const ownsCleanupBearingLocal = (
+              statements[statementIndex].kind
+                == LoweredStatementKind.localStatement
+              || (
+                statements[statementIndex].kind
+                  == LoweredStatementKind.matchArmStatement
+                && statements[statementIndex].matchBindingNeedsCleanup
+              )
+            ) && moduleTypeNeedsCleanup(program, importedTypes, type);
+            if (ownsCleanupBearingLocal) {
+              throw `native block callable closures do not support cleanup-bearing local ${statements[statementIndex].name}: ${type.name} yet`;
             }
           }
           none => {}
@@ -21505,6 +21567,7 @@ function lowerStatementCore(
               importedTypes,
               targetType
             );
+            const callStart = expressions.length;
             const call = try lowerExpression(
               program,
               importedTypes,
@@ -21512,6 +21575,17 @@ function lowerStatementCore(
               tree,
               attempted,
               inout expressions
+            );
+            try completeNativeClosureBlocks(
+              program,
+              importedTypes,
+              evidence,
+              arena,
+              ownerName,
+              index,
+              callStart,
+              inout expressions,
+              inout statements
             );
             let labels = Array<String>();
             labels.push(move targetName);
@@ -21586,6 +21660,7 @@ function lowerStatementCore(
                 some(declaration) => declaration;
                 none => throw "native try lowering requires an enclosing throwing function";
               };
+              const callStart = expressions.length;
               const call = try lowerExpression(
                 program,
                 importedTypes,
@@ -21593,6 +21668,17 @@ function lowerStatementCore(
                 tree,
                 attempted,
                 inout expressions
+              );
+              try completeNativeClosureBlocks(
+                program,
+                importedTypes,
+                evidence,
+                arena,
+                ownerName,
+                index,
+                callStart,
+                inout expressions,
+                inout statements
               );
               let labels = Array<String>();
               labels.push("");
@@ -21672,6 +21758,7 @@ function lowerStatementCore(
                 some(declaration) => declaration;
                 none => throw "native try lowering requires one direct throwing function call or fallible task await yet";
               };
+              const callStart = expressions.length;
               const call = try lowerExpression(
                 program,
                 importedTypes,
@@ -21679,6 +21766,17 @@ function lowerStatementCore(
                 tree,
                 attempted,
                 inout expressions
+              );
+              try completeNativeClosureBlocks(
+                program,
+                importedTypes,
+                evidence,
+                arena,
+                ownerName,
+                index,
+                callStart,
+                inout expressions,
+                inout statements
               );
               let tryLabels = Array<String>();
               tryLabels.push(arena.nodes[index].name.copyBytes(
@@ -22047,17 +22145,15 @@ function lowerStatementCore(
                   importedTypes,
                   expectedTypeName
                 );
-                if (moduleTypeRetainsCapturedIdentity(bindingType)) {
-                  loweredValue = try wrapOwnedStorage(
-                    program,
-                    importedTypes,
-                    tree,
-                    root,
-                    expectedTypeName,
-                    loweredValue,
-                    inout expressions
-                  );
-                }
+                loweredValue = try wrapOwnedStorage(
+                  program,
+                  importedTypes,
+                  tree,
+                  root,
+                  expectedTypeName,
+                  loweredValue,
+                  inout expressions
+                );
               }
             }
             none => throw "native lowering cannot lower an opaque expression";
@@ -26000,6 +26096,66 @@ function importedTypesForModule(
         }));
       }
       none => {}
+    }
+  }
+  // A public Z aggregate can carry a foreign Objective-C type through one or
+  // more module boundaries. Semantic analysis retains that canonical native
+  // identity in member and call evidence, so native lowering must retain the
+  // matching ABI type even when the consuming source file did not redundantly
+  // import the originating header. This is lowering evidence only: source
+  // visibility and member access remain enforced by semantic analysis.
+  for (const candidateModule of graph.modules) {
+    for (const symbol of candidateModule.symbols) {
+      if (
+        symbol.kind != ModuleSymbolKind.classSymbol
+        && symbol.kind != ModuleSymbolKind.traitSymbol
+        || symbol.foreignHeader.byteLength == 0
+      ) continue;
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          const objcInterface = signature.foreignKind == "objcInterface"
+            && symbol.kind == ModuleSymbolKind.classSymbol;
+          const objcProtocol = signature.foreignKind == "objcProtocol"
+            && symbol.kind == ModuleSymbolKind.traitSymbol;
+          if (
+            (!objcInterface && !objcProtocol)
+            || signature.foreignNativeName.byteLength == 0
+          ) continue;
+          const loweredNativeName = objcProtocol
+            ? `id<${signature.foreignNativeName}>`
+            : signature.foreignNativeName.copyBytes(
+                0,
+                signature.foreignNativeName.byteLength
+              );
+          let present = false;
+          for (const type of types) {
+            if (
+              type.kind == LoweredTypeKind.foreignObjCType
+              && type.targetName == loweredNativeName
+            ) present = true;
+          }
+          if (present) continue;
+          types.push(LoweredImportedType({
+            localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+            targetName: loweredNativeName.copyBytes(
+              0,
+              loweredNativeName.byteLength
+            ),
+            nativeTypeName: loweredNativeName,
+            kind: LoweredTypeKind.foreignObjCType,
+            executorBound: signature.executorAffinity.byteLength > 0,
+            threadShareable: false,
+            workerDestructible: false,
+            needsDeinit: false,
+            resourceRelease: "",
+            fields: Array<LoweredField>(),
+            variants: Array<LoweredVariant>(),
+            payloadBearing: false,
+            underlyingType: "",
+          }));
+        }
+        none => {}
+      }
     }
   }
   for (const symbol of graph.modules[moduleIndex].symbols) {

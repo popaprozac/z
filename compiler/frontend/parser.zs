@@ -4064,7 +4064,22 @@ function expressionTreeText(in tree: ExpressionTree, in arena: StatementArena): 
       output.append(label);
     }
     output.append("}");
-    if (node.statements.length > 0) {
+    let hasStatementBody = node.statements.length > 0;
+    if (
+      node.kind == ExpressionKind.closureExpression
+      && node.labels.length > 2
+      && node.labels[2] == "block"
+    ) hasStatementBody = true;
+    if (
+      node.kind == ExpressionKind.executorPlacementExpression
+      && node.labels.length > 2
+      && node.labels[2] != "call"
+    ) hasStatementBody = true;
+    if (
+      node.kind == ExpressionKind.valueBlockExpression
+      || node.kind == ExpressionKind.unsafeExpression
+    ) hasStatementBody = true;
+    if (hasStatementBody) {
       output.append("body{");
       for (const statement of node.statements) {
         const rendered = statementText(arena, statement);

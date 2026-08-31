@@ -7000,6 +7000,15 @@ function appendStatement(
             output.append(declaration.statements[arm].name);
           }
           output.append(";\n");
+          if (declaration.statements[arm].liveFlag.byteLength > 0) {
+            appendIndent(inout output, depth + 2);
+            output.append("bool ");
+            appendCBindingName(
+              inout output,
+              declaration.statements[arm].liveFlag
+            );
+            output.append(" = true;\n");
+          }
         }
         none => {}
       }

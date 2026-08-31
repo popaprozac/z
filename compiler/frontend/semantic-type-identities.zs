@@ -749,8 +749,8 @@ export function typeSatisfiesTrait(
         match (typeSymbolLocation(modules, concreteLocation.moduleIndex, implemented)) {
           some(location) => {
             if (
-              location.moduleIndex == traitLocation.moduleIndex
-              && location.symbolIndex == traitLocation.symbolIndex
+              symbolTypeIdentity(modules, location)
+              == symbolTypeIdentity(modules, traitLocation)
             ) satisfied = true;
           }
           none => {}
