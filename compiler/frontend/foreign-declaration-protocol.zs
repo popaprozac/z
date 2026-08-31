@@ -1178,7 +1178,7 @@ export function decodeRawForeignDeclarations(
   try expectLiteral(inout cursor, "ZFDCL");
   let module = emptyRawForeignModule();
   module.version = try readHexUsize(inout cursor);
-  if (module.version != 12) {
+  if (module.version != 13) {
     throw `unsupported foreign declaration stream version ${module.version}`;
   }
   try endRecord(inout cursor);

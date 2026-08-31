@@ -334,6 +334,8 @@ export struct LoweredExpression {
   threadSafe: boolean = false;
   closureBlockBody: boolean = false;
   closureParameterCount: usize = 0;
+  closureParameterModes: Array<String> = Array<String>();
+  objectiveCBlockNativeType: String = "";
 }
 
 export struct LoweredMainDelaySegment {
@@ -6428,6 +6430,36 @@ function resolvedObjectiveCReceiverNativeType(
     0,
     resolution.objectiveCReceiverNativeType.byteLength
   );
+}
+
+function resolvedObjectiveCParameterNativeTypes(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Array<String> {
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  let types = Array<String>();
+  if (resolutionIndex >= evidence.callResolutions.length) return types;
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  for (const typeName of resolution.objectiveCParameterNativeTypes) {
+    types.push(typeName.copyBytes(0, typeName.byteLength));
+  }
+  return types;
+}
+
+function nativeTypeIsObjectiveCBlock(in typeName: String): boolean {
+  let index: usize = 0;
+  while (index + 1 < typeName.byteLength) {
+    if (typeName.byteAt(index) == 40 && typeName.byteAt(index + 1) == 94) {
+      return true;
+    }
+    index = index + 1;
+  }
+  return false;
 }
 
 function resolvedGenericMethodSuffix(
@@ -13411,6 +13443,11 @@ function lowerExpressionContextual(
         tree,
         index
       );
+      const parameterNativeTypes = resolvedObjectiveCParameterNativeTypes(
+        evidence,
+        tree,
+        index
+      );
       let argument: usize = 1;
       while (argument < tree.nodes[index].children.length) {
         const argumentInput = tree.nodes[index].children[argument];
@@ -13434,6 +13471,27 @@ function lowerExpressionContextual(
             argumentInput,
             inout output
           );
+        }
+        if (
+          parameterTypes.length >= argument
+          && parameterNativeTypes.length >= argument
+          && nativeTypeIsObjectiveCBlock(
+            parameterNativeTypes[argument - 1]
+          )
+        ) {
+          const parameterType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            parameterTypes[argument - 1]
+          );
+          if (parameterType.kind != LoweredTypeKind.functionType) {
+            throw "native Objective-C block lowering lost its callable type";
+          }
+          output[value].objectiveCBlockNativeType =
+            parameterNativeTypes[argument - 1].copyBytes(
+              0,
+              parameterNativeTypes[argument - 1].byteLength
+            );
         }
         if (
           parameterModes.length >= argument
@@ -15409,6 +15467,11 @@ function lowerExpressionExpected(
           }
           output[closure].closureBlockBody = true;
           output[closure].closureParameterCount = parameterNames.length;
+          for (const parameterMode of signature.parameterModes) {
+            output[closure].closureParameterModes.push(
+              parameterMode.copyBytes(0, parameterMode.byteLength)
+            );
+          }
           output[closure].threadSafe = signature.threadContract
             == "thread.any";
           return closure;
@@ -17846,11 +17909,18 @@ function completeNativeClosureBlocks(
           0,
           expressions[expressionIndex].labels[3 + parameter].byteLength
         );
-        rewriteClosureParameterValues(
-          inout expressions,
-          bodyExpressionStart,
-          parameterName
-        );
+        if (
+          parameter >= expressions[expressionIndex]
+            .closureParameterModes.length
+          || expressions[expressionIndex].closureParameterModes[parameter]
+            != "value"
+        ) {
+          rewriteClosureParameterValues(
+            inout expressions,
+            bodyExpressionStart,
+            parameterName
+          );
+        }
         parameter = parameter + 1;
       }
       const captures = try collectCallableBlockCaptures(

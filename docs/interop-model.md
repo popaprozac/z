@@ -941,10 +941,29 @@ function decidePolicyForNavigationAction(
 ```
 
 The block parameter must use `in`. The generated adapter invokes it through a
-typed stack callable and owns one ARC block box. If Z copies the callable into
-owned storage, its existing function-value retain/release path keeps that box
-and the copied native block alive; otherwise both are released when the native
-callback returns.
+typed callable and owns one ARC block box. Stage 0 can deliberately copy the
+callable into owned storage; its existing function-value retain/release path
+then keeps that box and the copied native block alive. The fixed-point backend
+executes synchronous invocation and rejects explicit callable copy until that
+lowering tier lands, so the borrowed block cannot escape unsafely.
+
+The same bridge works in the other direction for imported completion-handler
+parameters. A captured Z closure is boxed once under ARC, passed as the exact
+Clang block ABI type, and releases its callable environment when the native
+block dies:
+
+```zs
+webView.evaluateJavaScript(
+  move source,
+  completionHandler: move (value, error): void => {
+    if (error != null) report(error);
+  }
+);
+```
+
+Both directions execute through Stage 0 and the fixed-point native compiler.
+Nullable Objective-C callback values remain nullable imported references, so
+ordinary narrowing applies inside the Z closure without an untyped bridge.
 
 Byte storage crosses into Foundation with explicit copy semantics:
 

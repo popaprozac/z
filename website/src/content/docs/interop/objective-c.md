@@ -162,8 +162,26 @@ function decide(
 }
 ```
 
-`in` expresses the callback-time borrow. If the function value is copied into
-owned Z storage, its ARC bridge retains the native block safely.
+`in` expresses the callback-time borrow. Stage 0 can copy the function value
+into owned Z storage, where its ARC bridge retains the native block safely.
+The fixed-point backend currently executes synchronous invocation and rejects
+explicit callable copy, preserving the non-escaping boundary.
+
+Imported completion-handler parameters accept captured Z closures directly:
+
+```z
+webView.evaluateJavaScript(
+  move source,
+  completionHandler: move (value, error): void => {
+    if (error != null) report(error);
+  }
+);
+```
+
+The compiler uses the exact imported block ABI, keeps the closure environment
+alive under ARC, and preserves nullable Objective-C values for ordinary Z
+narrowing. Both incoming and outgoing block adapters run through Stage 0 and
+the fixed-point native compiler.
 
 Z byte storage can become independently owned Foundation data explicitly:
 

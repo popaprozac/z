@@ -1911,6 +1911,20 @@ hostToolchainTest("retains owned Z closure environments across Objective-C block
   );
 }, 30_000);
 
+hostToolchainTest("round-trips nullable Objective-C block values and protocol callbacks", () => {
+  if (process.platform !== "darwin") return;
+  const fixture = resolve(projectRoot, "tests/fixtures/objc-block-native.zs");
+  const source = readFileSync(fixture, "utf8");
+  const artifact = compileToNative(source, fixture);
+  assert.match(artifact.source, /@interface Z_ObjCClosureBox : NSObject/);
+  assert.match(artifact.source, /ZObjCProtocolAdapter_NativeBlockHandler/);
+  assert.match(artifact.source, /z_objc_received_block_NativeBlockHandler_requestValue_1/);
+  const result = spawnSync(process.execPath, [cli, "run", fixture], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+}, 30_000);
+
 hostToolchainTest("drains explicit lexical Objective-C autorelease pools", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/objc/autorelease-pool.zs");

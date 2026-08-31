@@ -4613,6 +4613,27 @@ invalidation. The remaining 11 seconds and duplicate on-disk artifacts are
 useful evidence for a future canonical persistent ZFDCL cache rather than a
 reason to weaken correctness today.
 
+## Direct Objective-C completion blocks in the fixed-point compiler
+
+Removing Zapp's `evaluateJavaScript:completionHandler:` wrapper exposed a
+fixed-point metadata boundary rather than a reason to keep handwritten
+Objective-C. `ZFDCL` version 13 now preserves recursive block-function
+signatures, including nullable Objective-C values, and native normalization
+requalifies those nested identities for each importing module.
+
+The fixed-point emitter now boxes a captured Z closure once under ARC and
+passes it with the exact imported block ABI. The box consumes and releases the
+callable environment exactly once. In the opposite direction, a protocol
+adapter wraps a received Objective-C block as a typed non-escaping `in`
+function value. A freshly bootstrapped fixture executes both directions and
+checks nullable completion values; the Z Notes application builds and launches
+while calling WebKit's evaluation method directly from Z.
+
+This removes the policy-bearing native wrapper. Zapp retains only a smoke-test
+observation hook around that path, which is compiled out of production builds.
+The work added no source syntax: ordinary closure ownership, imported
+nullability, and protocol receiver capabilities compose at the boundary.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

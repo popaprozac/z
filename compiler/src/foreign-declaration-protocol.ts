@@ -6,7 +6,7 @@ import type {
   ForeignType,
 } from "./foreign-ir.ts";
 
-export const foreignDeclarationProtocolVersion = 12;
+export const foreignDeclarationProtocolVersion = 13;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -42,6 +42,16 @@ function semanticTypeName(type: ForeignType): string {
   if (type.kind === "pointer") return type.typeName;
   if (type.kind === "pointerOut") return type.pointer.typeName;
   if (type.kind === "scalarPointer") return type.typeName;
+  if (type.kind === "block") {
+    const parameters = type.parameters.map((parameter, index) => (
+      `argument${index + 1}: ${semanticTypeName(parameter)}`
+    ));
+    if (parameters.some((parameter) => parameter.endsWith(": "))) return "";
+    const returnType = semanticTypeName(type.returnType);
+    if (!returnType) return "";
+    const threadContract = type.thread === "any" ? " on thread.any" : "";
+    return `(${parameters.join(", ")}) => ${returnType}${threadContract}`;
+  }
   return "";
 }
 
@@ -68,6 +78,8 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign declarations.
+ * Version 13 preserves Objective-C block parameter signatures so the native
+ * frontend can type and lower completion-handler calls directly.
  * Version 11 preserves Clang's flag-enum classification so the native
  * frontend can retain nominal enum identity across bitwise expressions.
  * Version 10 adds Objective-C interface properties, including their getter,

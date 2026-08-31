@@ -9,6 +9,7 @@ import {
   LoweredFunctionType,
   LoweredObjCAdapterFactory,
   LoweredObjCProtocolAdapter,
+  LoweredObjCProtocolMethod,
   LoweredObjCRegistration,
   LoweredCleanup,
   LoweredMainDelayLoop,
@@ -264,6 +265,66 @@ function appendCallableHelperName(
   appendCBindingName(inout output, declaration.name);
   output.append("_");
   output.append(`${expressionIndex}`);
+}
+
+function appendObjCBlockArgumentHelperName(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void {
+  output.append("z_stage1_objc_block_");
+  appendCBindingName(inout output, declaration.name);
+  output.append("_");
+  output.append(`${expressionIndex}`);
+}
+
+function appendObjCBlockArgumentTypeName(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void {
+  output.append("ZStage1ObjCBlock_");
+  appendCBindingName(inout output, declaration.name);
+  output.append("_");
+  output.append(`${expressionIndex}`);
+}
+
+function appendObjCBlockTypedef(
+  inout output: TextBuffer,
+  in nativeType: String,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void throws String {
+  let caret: usize = 0;
+  while (
+    caret + 1 < nativeType.byteLength
+    && (
+      nativeType.byteAt(caret) != 40
+      || nativeType.byteAt(caret + 1) != 94
+    )
+  ) {
+    caret = caret + 1;
+  }
+  if (caret + 1 >= nativeType.byteLength) {
+    throw "native Objective-C block adapter received a non-block ABI type";
+  }
+  let close = caret + 2;
+  while (close < nativeType.byteLength && nativeType.byteAt(close) != 41) {
+    close = close + 1;
+  }
+  if (close >= nativeType.byteLength) {
+    throw "native Objective-C block adapter received a malformed ABI type";
+  }
+  output.append("typedef ");
+  output.append(nativeType.copyBytes(0, close));
+  output.append(" ");
+  appendObjCBlockArgumentTypeName(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  output.append(nativeType.copyBytes(close, nativeType.byteLength));
+  output.append(";\n");
 }
 
 function callableCaptureLiveFlag(in name: String): String {
@@ -3431,6 +3492,16 @@ function appendExpression(
     || declaration.expressions[index].kind
       == LoweredExpressionKind.closureValue
   ) {
+    const objectiveCBlock = declaration.expressions[index]
+      .objectiveCBlockNativeType.byteLength > 0;
+    if (objectiveCBlock) {
+      appendObjCBlockArgumentHelperName(
+        inout output,
+        declaration,
+        index
+      );
+      output.append("(");
+    }
     output.append("z_stage1_callable_");
     appendCBindingName(inout output, declaration.name);
     output.append("_");
@@ -3460,6 +3531,7 @@ function appendExpression(
       }
       output.append(")");
     } else output.append("_value");
+    if (objectiveCBlock) output.append(")");
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.integerValue) {
@@ -8227,6 +8299,110 @@ function appendForeignCallbackHelpers(
   output.append("_deinit(box);\n  free(box);\n}\n\n");
 }
 
+function programUsesObjectiveCBlockArguments(
+  in program: LoweredProgram
+): boolean {
+  for (const declaration of program.functions) {
+    for (const expression of declaration.expressions) {
+      if (expression.objectiveCBlockNativeType.byteLength > 0) return true;
+    }
+  }
+  return false;
+}
+
+function appendObjCBlockArgumentRuntime(inout output: TextBuffer): void {
+  output.append("@interface ZStage1ObjCClosureBox : NSObject {\n@public\n  void *_z_context;\n  void (*_z_release)(void *context);\n}\n- (instancetype)initConsumingContext:(void *)context releaseFunction:(void (*)(void *context))releaseFunction;\n@end\n\n");
+  output.append("@implementation ZStage1ObjCClosureBox\n- (instancetype)initConsumingContext:(void *)context releaseFunction:(void (*)(void *context))releaseFunction {\n  self = [super init];\n  if (self != nil) {\n    _z_context = context;\n    _z_release = releaseFunction;\n  }\n  return self;\n}\n\n- (void)dealloc {\n  if (_z_release != NULL) _z_release(_z_context);\n}\n@end\n\n");
+}
+
+function appendObjCReceivedBlockRuntime(inout output: TextBuffer): void {
+  output.append("@interface ZStage1ObjCReceivedBlockBox : NSObject {\n@public\n  id _z_block;\n}\n- (instancetype)initWithBlock:(id)block;\n@end\n\n");
+  output.append("@implementation ZStage1ObjCReceivedBlockBox\n- (instancetype)initWithBlock:(id)block {\n  self = [super init];\n  if (self != nil) _z_block = [block copy];\n  return self;\n}\n@end\n\n");
+}
+
+function appendObjCBlockArgumentHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const owner of program.functions) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < owner.expressions.length) {
+      const expression = view owner.expressions[expressionIndex];
+      if (expression.objectiveCBlockNativeType.byteLength == 0) {
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      if (
+        expression.kind != LoweredExpressionKind.directFunctionValue
+        && expression.kind != LoweredExpressionKind.closureValue
+      ) throw "native Objective-C block adapter requires a callable value";
+      if (expression.labels.length == 0) {
+        throw "native Objective-C block adapter lost its function type";
+      }
+      let functionTypeIndex = program.functionTypes.length;
+      let candidate: usize = 0;
+      while (candidate < program.functionTypes.length) {
+        if (program.functionTypes[candidate].name == expression.labels[0]) {
+          functionTypeIndex = candidate;
+        }
+        candidate = candidate + 1;
+      }
+      if (functionTypeIndex >= program.functionTypes.length) {
+        throw "native Objective-C block adapter could not resolve its function type";
+      }
+      const functionType = view program.functionTypes[functionTypeIndex];
+      try appendObjCBlockTypedef(
+        inout output,
+        expression.objectiveCBlockNativeType,
+        owner,
+        expressionIndex
+      );
+      output.append("static ");
+      appendObjCBlockArgumentTypeName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append(" ");
+      appendObjCBlockArgumentHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("(Z_");
+      output.append(functionType.name);
+      output.append(" value) {\n  ZStage1ObjCClosureBox *box = [[ZStage1ObjCClosureBox alloc] initConsumingContext:value.context releaseFunction:value.release];\n  return ^");
+      const returnType = try cType(functionType.returnType);
+      output.append(returnType);
+      output.append("(");
+      let parameter: usize = 0;
+      while (parameter < functionType.parameters.length) {
+        if (parameter > 0) output.append(", ");
+        try appendCallableParameterDeclaration(
+          inout output,
+          functionType.parameters[parameter],
+          `argument${parameter}`
+        );
+        parameter = parameter + 1;
+      }
+      if (functionType.parameters.length == 0) output.append("void");
+      output.append(") { ");
+      if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+        output.append("return ");
+      }
+      output.append("value.call(box->_z_context");
+      parameter = 0;
+      while (parameter < functionType.parameters.length) {
+        output.append(", ");
+        appendCBindingName(inout output, `argument${parameter}`);
+        parameter = parameter + 1;
+      }
+      output.append("); } ;\n}\n\n");
+      expressionIndex = expressionIndex + 1;
+    }
+  }
+}
+
 function appendCallableHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -9969,6 +10145,23 @@ function appendCallableHelpers(
         parameter = parameter + 1;
       }
       output.append(") {\n");
+      parameter = 0;
+      while (parameter < functionType.parameters.length) {
+        output.append("  (void)");
+        if (expression.kind == LoweredExpressionKind.closureValue) {
+          appendCBindingName(
+            inout output,
+            expression.labels[parameterLabelStart + parameter]
+          );
+        } else {
+          appendCBindingName(
+            inout output,
+            functionType.parameters[parameter].name
+          );
+        }
+        output.append(";\n");
+        parameter = parameter + 1;
+      }
       appendCallableCaptureLiveMacros(
         inout output,
         program,
@@ -18667,10 +18860,277 @@ function appendObjCMessageWithNames(
   output.append("]");
 }
 
-function appendObjCProtocolAdapter(
+function nativeTypeIsObjCBlock(in typeName: String): boolean {
+  let index: usize = 0;
+  while (index + 1 < typeName.byteLength) {
+    if (typeName.byteAt(index) == 40 && typeName.byteAt(index + 1) == 94) {
+      return true;
+    }
+    index = index + 1;
+  }
+  return false;
+}
+
+function appendObjCProtocolBlockTypeName(
   inout output: TextBuffer,
+  in adapter: LoweredObjCProtocolAdapter,
+  methodIndex: usize,
+  parameterIndex: usize
+): void {
+  output.append("ZStage1ObjCProtocolBlock_");
+  appendCBindingName(inout output, adapter.name);
+  output.append(`_${methodIndex}_${parameterIndex}`);
+}
+
+function appendObjCProtocolBlockCallName(
+  inout output: TextBuffer,
+  in adapter: LoweredObjCProtocolAdapter,
+  methodIndex: usize,
+  parameterIndex: usize
+): void {
+  output.append("z_stage1_objc_protocol_block_call_");
+  appendCBindingName(inout output, adapter.name);
+  output.append(`_${methodIndex}_${parameterIndex}`);
+}
+
+function appendObjCProtocolBlockRetainName(
+  inout output: TextBuffer,
+  in adapter: LoweredObjCProtocolAdapter,
+  methodIndex: usize,
+  parameterIndex: usize
+): void {
+  appendObjCProtocolBlockCallName(
+    inout output,
+    adapter,
+    methodIndex,
+    parameterIndex
+  );
+  output.append("_retain");
+}
+
+function appendObjCProtocolBlockReleaseName(
+  inout output: TextBuffer,
+  in adapter: LoweredObjCProtocolAdapter,
+  methodIndex: usize,
+  parameterIndex: usize
+): void {
+  appendObjCProtocolBlockCallName(
+    inout output,
+    adapter,
+    methodIndex,
+    parameterIndex
+  );
+  output.append("_release");
+}
+
+function appendObjCProtocolBlockTypedef(
+  inout output: TextBuffer,
+  in nativeType: String,
+  in adapter: LoweredObjCProtocolAdapter,
+  methodIndex: usize,
+  parameterIndex: usize
+): void throws String {
+  let caret: usize = 0;
+  while (
+    caret + 1 < nativeType.byteLength
+    && (
+      nativeType.byteAt(caret) != 40
+      || nativeType.byteAt(caret + 1) != 94
+    )
+  ) {
+    caret = caret + 1;
+  }
+  if (caret + 1 >= nativeType.byteLength) {
+    throw "native Objective-C protocol adapter received a non-block ABI type";
+  }
+  let close = caret + 2;
+  while (close < nativeType.byteLength && nativeType.byteAt(close) != 41) {
+    close = close + 1;
+  }
+  if (close >= nativeType.byteLength) {
+    throw "native Objective-C protocol adapter received a malformed block ABI type";
+  }
+  output.append("typedef ");
+  output.append(nativeType.copyBytes(0, close));
+  output.append(" ");
+  appendObjCProtocolBlockTypeName(
+    inout output,
+    adapter,
+    methodIndex,
+    parameterIndex
+  );
+  output.append(nativeType.copyBytes(close, nativeType.byteLength));
+  output.append(";\n");
+}
+
+function objCProtocolMethodParameters(
+  in program: LoweredProgram,
+  in method: LoweredObjCProtocolMethod
+): Array<LoweredParameter> throws String {
+  for (const declaration of program.functions) {
+    if (declaration.name != method.targetName) continue;
+    let parameters = Array<LoweredParameter>();
+    for (const parameter of declaration.parameters) {
+      parameters.push(LoweredParameter({
+        name: parameter.name.copyBytes(0, parameter.name.byteLength),
+        type: LoweredType({
+          kind: parameter.type.kind,
+          name: parameter.type.name.copyBytes(0, parameter.type.name.byteLength),
+        }),
+        mode: parameter.mode,
+      }));
+    }
+    return parameters;
+  }
+  throw `native Objective-C adapter lost the Z method ${method.targetName}`;
+}
+
+function objCProtocolMethodHasBlock(
+  in method: LoweredObjCProtocolMethod
+): boolean {
+  for (const nativeType of method.nativeParameterTypes) {
+    if (nativeTypeIsObjCBlock(nativeType)) return true;
+  }
+  return false;
+}
+
+function programUsesObjectiveCProtocolBlocks(
+  in program: LoweredProgram
+): boolean {
+  for (const adapter of program.objectiveCProtocolAdapters) {
+    for (const method of adapter.methods) {
+      if (objCProtocolMethodHasBlock(method)) return true;
+    }
+  }
+  return false;
+}
+
+function appendObjCProtocolBlockHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
   in adapter: LoweredObjCProtocolAdapter
 ): void throws String {
+  let methodIndex: usize = 0;
+  while (methodIndex < adapter.methods.length) {
+    const method = view adapter.methods[methodIndex];
+    if (!objCProtocolMethodHasBlock(method)) {
+      methodIndex = methodIndex + 1;
+      continue;
+    }
+    const methodParameters = try objCProtocolMethodParameters(
+      program,
+      method
+    );
+    let parameterIndex: usize = 0;
+    while (parameterIndex < methodParameters.length) {
+      const parameter = view methodParameters[parameterIndex];
+      if (
+        parameter.type.kind != LoweredTypeKind.functionType
+        || !nativeTypeIsObjCBlock(method.nativeParameterTypes[parameterIndex])
+      ) {
+        parameterIndex = parameterIndex + 1;
+        continue;
+      }
+      let functionTypeIndex = program.functionTypes.length;
+      let candidate: usize = 0;
+      while (candidate < program.functionTypes.length) {
+        if (program.functionTypes[candidate].name == parameter.type.name) {
+          functionTypeIndex = candidate;
+        }
+        candidate = candidate + 1;
+      }
+      if (functionTypeIndex >= program.functionTypes.length) {
+        throw "native Objective-C protocol block adapter lost its function type";
+      }
+      const functionType = view program.functionTypes[functionTypeIndex];
+      try appendObjCProtocolBlockTypedef(
+        inout output,
+        method.nativeParameterTypes[parameterIndex],
+        adapter,
+        methodIndex,
+        parameterIndex
+      );
+      output.append("static void ");
+      appendObjCProtocolBlockRetainName(
+        inout output,
+        adapter,
+        methodIndex,
+        parameterIndex
+      );
+      output.append("(void *context) {\n  (void)(__bridge_retained void *)(__bridge id)context;\n}\n\n");
+      output.append("static void ");
+      appendObjCProtocolBlockReleaseName(
+        inout output,
+        adapter,
+        methodIndex,
+        parameterIndex
+      );
+      output.append("(void *context) {\n  id value = (__bridge_transfer id)context;\n  (void)value;\n}\n\n");
+      output.append("static ");
+      const returnType = try cType(functionType.returnType);
+      output.append(returnType);
+      output.append(" ");
+      appendObjCProtocolBlockCallName(
+        inout output,
+        adapter,
+        methodIndex,
+        parameterIndex
+      );
+      output.append("(void *context");
+      let argument: usize = 0;
+      while (argument < functionType.parameters.length) {
+        output.append(", ");
+        try appendCallableParameterDeclaration(
+          inout output,
+          functionType.parameters[argument],
+          `argument${argument}`
+        );
+        argument = argument + 1;
+      }
+      output.append(") {\n  ZStage1ObjCReceivedBlockBox *box = (__bridge ZStage1ObjCReceivedBlockBox *)context;\n  ");
+      appendObjCProtocolBlockTypeName(
+        inout output,
+        adapter,
+        methodIndex,
+        parameterIndex
+      );
+      output.append(" block = (");
+      appendObjCProtocolBlockTypeName(
+        inout output,
+        adapter,
+        methodIndex,
+        parameterIndex
+      );
+      output.append(")box->_z_block;\n  ");
+      if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+        output.append("return ");
+      }
+      output.append("block(");
+      argument = 0;
+      while (argument < functionType.parameters.length) {
+        if (argument > 0) output.append(", ");
+        if (functionType.parameters[argument].mode != LoweredParameterMode.value) {
+          output.append("(*");
+        }
+        appendCBindingName(inout output, `argument${argument}`);
+        if (functionType.parameters[argument].mode != LoweredParameterMode.value) {
+          output.append(")");
+        }
+        argument = argument + 1;
+      }
+      output.append(");\n}\n\n");
+      parameterIndex = parameterIndex + 1;
+    }
+    methodIndex = methodIndex + 1;
+  }
+}
+
+function appendObjCProtocolAdapter(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in adapter: LoweredObjCProtocolAdapter
+): void throws String {
+  try appendObjCProtocolBlockHelpers(inout output, program, adapter);
   output.append("@interface ");
   output.append(adapter.name);
   output.append(" : NSObject <");
@@ -18701,7 +19161,14 @@ function appendObjCProtocolAdapter(
   output.append(" *)owner {\n  self = [super init];\n  if (self != nil) {\n    _z_owner = Z_");
   output.append(adapter.ownerType);
   output.append("_retain(owner);\n  }\n  return self;\n}\n\n");
-  for (const method of adapter.methods) {
+  let methodIndex: usize = 0;
+  while (methodIndex < adapter.methods.length) {
+    const method = view adapter.methods[methodIndex];
+    const hasBlock = objCProtocolMethodHasBlock(method);
+    let methodParameters = Array<LoweredParameter>();
+    if (hasBlock) {
+      methodParameters = try objCProtocolMethodParameters(program, method);
+    }
     try appendObjCMethodDeclaration(
       inout output,
       method.selector,
@@ -18709,18 +19176,76 @@ function appendObjCProtocolAdapter(
       method.nativeParameterTypes
     );
     output.append(" {\n  ");
+    let argumentIndex: usize = 0;
+    while (argumentIndex < methodParameters.length) {
+      const parameter = view methodParameters[argumentIndex];
+      if (
+        parameter.type.kind == LoweredTypeKind.functionType
+        && nativeTypeIsObjCBlock(method.nativeParameterTypes[argumentIndex])
+      ) {
+        if (parameter.mode != LoweredParameterMode.input) {
+          throw "native Objective-C protocol block parameters currently require `in` in the Z implementation";
+        }
+        output.append("ZStage1ObjCReceivedBlockBox * const z_block_box_");
+        output.append(`${argumentIndex}`);
+        output.append(" = [[ZStage1ObjCReceivedBlockBox alloc] initWithBlock:argument_");
+        output.append(`${argumentIndex}`);
+        output.append("];\n  Z_");
+        output.append(parameter.type.name);
+        output.append(" z_argument_");
+        output.append(`${argumentIndex}`);
+        output.append(" = { .call = ");
+        appendObjCProtocolBlockCallName(
+          inout output,
+          adapter,
+          methodIndex,
+          argumentIndex
+        );
+        output.append(", .context = (__bridge void *)z_block_box_");
+        output.append(`${argumentIndex}`);
+        output.append(", .retain = ");
+        appendObjCProtocolBlockRetainName(
+          inout output,
+          adapter,
+          methodIndex,
+          argumentIndex
+        );
+        output.append(", .release = ");
+        appendObjCProtocolBlockReleaseName(
+          inout output,
+          adapter,
+          methodIndex,
+          argumentIndex
+        );
+        output.append(" };\n  ");
+      }
+      argumentIndex = argumentIndex + 1;
+    }
     if (method.nativeReturnType != "void") output.append("return ");
     output.append(method.targetName);
     output.append("(_z_owner");
-    let argumentIndex: usize = 0;
+    argumentIndex = 0;
     while (argumentIndex < method.nativeParameterTypes.length) {
-      output.append(", argument_");
-      output.append(`${argumentIndex}`);
+      if (
+        hasBlock
+        && nativeTypeIsObjCBlock(method.nativeParameterTypes[argumentIndex])
+      ) {
+        const parameter = view methodParameters[argumentIndex];
+        if (parameter.type.kind != LoweredTypeKind.functionType) {
+          throw "native Objective-C protocol adapter lost its callable parameter";
+        }
+        output.append(", &z_argument_");
+        output.append(`${argumentIndex}`);
+      } else {
+        output.append(", argument_");
+        output.append(`${argumentIndex}`);
+      }
       argumentIndex = argumentIndex + 1;
     }
     output.append(");\n");
     if (method.nativeReturnType == "void") output.append("  return;\n");
     output.append("}\n\n");
+    methodIndex = methodIndex + 1;
   }
   output.append("- (void)dealloc {\n  Z_");
   output.append(adapter.ownerType);
@@ -19529,6 +20054,12 @@ function emitLoweredC(
   if (program.foreignResources.length > 0) output.append("\n");
   appendWeakRuntime(inout output);
   try appendTypeDefinitions(inout output, program);
+  if (programUsesObjectiveCBlockArguments(program)) {
+    appendObjCBlockArgumentRuntime(inout output);
+  }
+  if (programUsesObjectiveCProtocolBlocks(program)) {
+    appendObjCReceivedBlockRuntime(inout output);
+  }
   try appendCopyHelpers(inout output, program);
   if (usesObjectiveCDataCopy) {
     output.append("static inline __attribute__((unused)) NSData *z_stage1_nsdata_copy_bytes(Z___z_Slice_u8 bytes) {\n");
@@ -19909,12 +20440,13 @@ function emitLoweredC(
   try appendTaskScopeScheduleHelpers(inout output, program);
   try appendAsyncMethodAwaitStartPrototypes(inout output, program);
   try appendCallableHelpers(inout output, program);
+  try appendObjCBlockArgumentHelpers(inout output, program);
   try appendAsyncCallableAwaitHelpers(inout output, program);
   try appendAsyncMethodAwaitHelpers(inout output, program);
   try appendPersistentAsyncParentHelpers(inout output, program);
   if (program.objectiveCProtocolAdapters.length > 0) {
     for (const adapter of program.objectiveCProtocolAdapters) {
-      try appendObjCProtocolAdapter(inout output, adapter);
+      try appendObjCProtocolAdapter(inout output, program, adapter);
     }
     for (const factory of program.objectiveCAdapterFactories) {
       appendObjCAdapterFactory(inout output, factory);

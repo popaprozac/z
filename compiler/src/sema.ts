@@ -19401,6 +19401,7 @@ function validateType(
     return;
   }
   if (isNullableObjCTypeName(type.name)) {
+    if (state.foreignObjectTypes.has(type.name)) return;
     const target = foreignNamedTypes.get(publicObjCTypeName(type.name));
     if (target?.kind !== "object") {
       throw new DiagnosticError(
@@ -19469,7 +19470,13 @@ function validateType(
     validateType({ name: array.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     return;
   }
-  if (!primitiveTypes.has(type.name) && !structs.has(type.name) && !enums.has(type.name) && !foreignNamedTypes.has(type.name)) {
+  if (
+    !primitiveTypes.has(type.name)
+    && !structs.has(type.name)
+    && !enums.has(type.name)
+    && !foreignNamedTypes.has(type.name)
+    && !state.foreignObjectTypes.has(type.name)
+  ) {
     throw new DiagnosticError(fileName, type.location, `unknown type ${JSON.stringify(type.name)}`);
   }
   if (!allowVoid && type.name === "void") {

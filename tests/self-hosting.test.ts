@@ -8399,7 +8399,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL000000000000000c\nM/);
+  assert.match(encoded, /^ZFDCL000000000000000d\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -8524,7 +8524,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     [directory],
   ).get("native");
   assert.ok(objcStream);
-  assert.match(objcStream, /^ZFDCL000000000000000c\nM/);
+  assert.match(objcStream, /^ZFDCL000000000000000d\nM/);
   assert.match(objcStream, /\nQ/);
   assert.match(objcStream, /\nI/);
   assert.match(objcStream, /\nJ/);
@@ -9213,6 +9213,18 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
       .split("\n")
       .some((record) => record.startsWith("D") && /x/.test(record)),
   );
+
+  if (process.platform === "darwin") {
+    const objcBlocks = spawnSync(
+      executable,
+      [
+        "run",
+        resolve(projectRoot, "tests/fixtures/objc-block-native.zs"),
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(objcBlocks.status, 0, objcBlocks.stderr);
+  }
 
   const truncatedPath = resolve(directory, "truncated.zfdcl");
   writeFileSync(truncatedPath, encoded.slice(0, -2));

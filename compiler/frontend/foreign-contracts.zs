@@ -18,6 +18,7 @@ import {
   ModuleTypeParameterConstraint,
 } from "./semantic-model.zs";
 import {
+  nativeFunctionSignature,
   nativeFunctionTypeName,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
@@ -2665,6 +2666,44 @@ function relativeObjCTypeName(
   in declarations: RawForeignModuleDeclarations,
   in typeName: String
 ): String {
+  match (nativeFunctionSignature(typeName)) {
+    some(signature) => {
+      let parameterTypes = Array<String>();
+      for (const parameterType of signature.parameterTypes) {
+        parameterTypes.push(relativeObjCTypeName(
+          declarations,
+          parameterType
+        ));
+      }
+      const localizedSignature = ModuleFunctionSignature({
+        asynchronous: signature.asynchronous,
+        executorAffinity: signature.executorAffinity.copyBytes(
+          0,
+          signature.executorAffinity.byteLength
+        ),
+        threadContract: signature.threadContract.copyBytes(
+          0,
+          signature.threadContract.byteLength
+        ),
+        typeParameters: Array<String>(),
+        typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+        parameterModes: copy signature.parameterModes,
+        parameterTypes,
+        viewParameter: Option<usize>.none,
+        invalidatesParameters: Array<usize>(),
+        invalidatesLifetimes: Array<String>(),
+        returnType: relativeObjCTypeName(
+          declarations,
+          signature.returnType
+        ),
+        errorType: signature.errorType.byteLength > 0
+          ? relativeObjCTypeName(declarations, signature.errorType)
+          : "",
+      });
+      return nativeFunctionTypeName(in localizedSignature);
+    }
+    none => {}
+  }
   if (stringStartsWith(typeName, "__z_objc:nullable:")) {
     const target = typeName.copyBytes(18, typeName.byteLength);
     const relative = relativeObjCTypeName(declarations, target);
