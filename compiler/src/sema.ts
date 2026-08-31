@@ -972,7 +972,7 @@ function registerObjCAdapterType(
     });
   }
   const protocolType = parseObjCProtocolType(generic.arguments[0])?.protocol ?? generic.arguments[0];
-  const protocol = state.foreignProtocols.get(protocolType);
+  const protocol = importedObjCProtocol(protocolType, state);
   if (!protocol) {
     throw new DiagnosticError(fileName, location, `objc.Adapter requires an imported Objective-C protocol, found ${JSON.stringify(protocolType)}`, {
       code: "Z0810",
@@ -1003,16 +1003,30 @@ function registerObjCAdapterType(
   return typeName;
 }
 
+function importedObjCProtocol(
+  typeName: string,
+  state: AnalysisState,
+): ForeignObjCProtocol | undefined {
+  const direct = state.foreignProtocols.get(typeName);
+  if (direct) return direct;
+  const nativeName = typeName.slice(typeName.lastIndexOf(".") + 1);
+  return [...state.foreignProtocols.values()].find((candidate) => (
+    candidate.protocolName === nativeName
+  ));
+}
+
 function objCAdapterProtocolType(typeName: string, state: AnalysisState): string | null {
   const generic = parseGenericType(typeName);
   if (!generic || generic.arguments.length !== 1) return null;
   const separator = generic.base.lastIndexOf(".");
   if (separator < 0) return null;
   const namespace = generic.base.slice(0, separator);
-  return generic.base.slice(separator + 1) === "Adapter"
-    && state.standardModuleBindings.get(namespace) === "objc"
-    ? parseObjCProtocolType(generic.arguments[0])?.protocol ?? generic.arguments[0]
-    : null;
+  if (
+    generic.base.slice(separator + 1) !== "Adapter"
+    || state.standardModuleBindings.get(namespace) !== "objc"
+  ) return null;
+  const protocolType = parseObjCProtocolType(generic.arguments[0])?.protocol ?? generic.arguments[0];
+  return importedObjCProtocol(protocolType, state)?.protocolName ?? protocolType;
 }
 
 function registerObjCAdapterTypesInProgram(
@@ -1631,6 +1645,7 @@ export function analyze(
         validateUserName(declaration.moduleName, declaration.location, fileName);
         declareGlobal(globals, declaration.moduleName, { kind: "standardModule", module }, declaration.location, fileName);
         state.standardModuleBindings.set(declaration.moduleName, module);
+        state.standardModuleBindings.set(module, module);
         continue;
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
@@ -3036,7 +3051,20 @@ function validateObjCProtocolMethodSignature(
     const expected = String(objCProtocolParameterValueType(requirement.parameters[index], state));
     const expectedFunction = parseFunctionType(expected);
     const actualFunction = parseFunctionType(parameter.type.name);
+    const actualProtocolName = parseObjCProtocolType(parameter.type.name)?.protocol;
+    const actualProtocol = actualProtocolName
+      ? importedObjCProtocol(actualProtocolName, state)
+      : undefined;
+    const protocolCompatible = requirement.parameters[index].protocols.length === 1
+      && actualProtocol?.protocolName === requirement.parameters[index].protocols[0];
+    const nativeObjectCompatible = sameForeignNamedType(
+      expected,
+      parameter.type.name,
+      state.foreignNamedTypes,
+    );
     const compatible = parameter.type.name === expected
+      || protocolCompatible
+      || nativeObjectCompatible
       || Boolean(expectedFunction && actualFunction && functionTypesCompatible(expectedFunction, actualFunction));
     if (!compatible) {
       throw new DiagnosticError(
@@ -10970,7 +10998,7 @@ function inferExpressionInner(
                   });
                 }
                 const protocolType = parseObjCProtocolType(adapterCall.arguments[0])?.protocol ?? adapterCall.arguments[0];
-                const protocol = state.foreignProtocols.get(protocolType);
+                const protocol = importedObjCProtocol(protocolType, state);
                 if (!protocol) {
                   throw new DiagnosticError(fileName, expression.callee.location, `objc.adapt requires an imported Objective-C protocol, found ${JSON.stringify(protocolType)}`, {
                     code: "Z0810",
@@ -10995,7 +11023,7 @@ function inferExpressionInner(
                     code: "Z0810",
                   });
                 }
-                if (!conformance.protocols.some((candidate) => candidate.typeName === protocol.typeName)) {
+                if (!conformance.protocols.some((candidate) => candidate.protocolName === protocol.protocolName)) {
                   throw new DiagnosticError(fileName, ownerExpression.location, `${ownerClass.name} does not implement Objective-C protocol ${protocol.protocolName}`, {
                     code: "Z0810",
                     helps: [`add \`${protocol.typeName}\` to the class implements list`],
@@ -17133,8 +17161,9 @@ function objcProtocolReceiver(
   if (type === "unknown" || type === "never") return null;
   const parsed = parseObjCProtocolType(String(underlyingType(type)));
   if (!parsed) return null;
-  const protocol = state.foreignProtocols.get(parsed.protocol);
+  const protocol = importedObjCProtocol(parsed.protocol, state);
   if (!protocol) return null;
+  const methods = objcProtocolRequirements(protocol, state.foreignProtocols);
   return {
     instance: true,
     declaration: {
@@ -17142,8 +17171,27 @@ function objcProtocolReceiver(
       typeName: protocol.typeName,
       className: `id<${protocol.protocolName}>`,
       superName: null,
-      methods: objcProtocolRequirements(protocol, state.foreignProtocols),
-      properties: [],
+      methods,
+      // Clang represents Objective-C protocol properties as their accessor
+      // methods in the protocol AST. Preserve the familiar property surface
+      // for non-void, zero-argument getters on existential receivers.
+      properties: methods.flatMap((method) => (
+        method.instance
+        && method.parameters.length === 0
+        && foreignValueType(method.returnType) !== "void"
+          ? [{
+              name: method.baseName,
+              getter: method.selector,
+              setter: null,
+              classProperty: false,
+              readonly: true,
+              ownership: "unspecified" as const,
+              protocols: [],
+              type: method.returnType,
+              metadata: method.metadata,
+            }]
+          : []
+      )),
       metadata: protocol.metadata,
     },
   };
@@ -19856,7 +19904,10 @@ function requireAssignable(
   if (actual === "null" && isNullableForeignTypeName(String(underlyingType(expected)))) {
     return;
   }
-  const expectedProtocol = parseObjCProtocolType(String(underlyingType(expected)))?.protocol ?? null;
+  const expectedProtocolType = parseObjCProtocolType(String(underlyingType(expected)))?.protocol ?? null;
+  const expectedProtocol = expectedProtocolType
+    ? importedObjCProtocol(expectedProtocolType, state)?.protocolName ?? expectedProtocolType
+    : null;
   const actualAdapterProtocol = actual === "unknown" || actual === "never"
     ? null
     : objCAdapterProtocolType(String(underlyingType(actual)), state);
@@ -19865,6 +19916,15 @@ function requireAssignable(
   const actualObject = actual === "unknown" || actual === "never"
     ? null
     : state.foreignObjectTypes.get(String(underlyingType(actual)));
+  if (actual === "String" && expectedObject) {
+    const stringObject = [...state.foreignObjectTypes.values()].find((candidate) => (
+      candidate.className === "NSString" && !candidate.nullable
+    ));
+    if (stringObject && isObjCSubclass(stringObject, expectedObject, state)) {
+      state.objcStringsToNative.add(expression.location.offset);
+      return;
+    }
+  }
   const actualProtocol = actual === "unknown" || actual === "never"
     ? null
     : parseObjCProtocolType(String(underlyingType(actual)));

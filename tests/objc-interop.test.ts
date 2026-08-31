@@ -2211,6 +2211,61 @@ test("owns standalone Objective-C protocol adapters as storable ARC values", () 
     "adapt<P>(controller: ZClass implements P): objc.Adapter<P>",
   );
 
+  const moduleDirectory = mkdtempSync("/tmp/z-objc-adapter-module-");
+  const ownerFile = resolve(moduleDirectory, "owner.zs");
+  const entryFile = resolve(moduleDirectory, "main.zs");
+  writeFileSync(ownerFile, `
+    import WebKit from "WebKit/WebKit.h";
+    import objc from "std/objc";
+    import { thread } from "std/thread";
+
+    export class ImportedAdapterOwner on thread.main
+      implements WebKit.WKURLSchemeHandler {
+      readonly adapter: objc.Adapter<WebKit.WKURLSchemeHandler>;
+
+      function start(
+        in webView: WebKit.WKWebView,
+        in task: WebKit.WKURLSchemeTask
+      ): void as "webView:startURLSchemeTask:" {
+        const request = task.request;
+      }
+
+      function stop(
+        in webView: WebKit.WKWebView,
+        in task: WebKit.WKURLSchemeTask
+      ): void as "webView:stopURLSchemeTask:" {}
+    }
+  `);
+  const entrySource = `
+    import EntryWebKit from "WebKit/WebKit.h";
+    import { ImportedAdapterOwner } from "./owner.zs";
+    function inspect(in owner: ImportedAdapterOwner): i32 { return 1; }
+  `;
+  writeFileSync(entryFile, entrySource);
+  assert.deepEqual(diagnostics(entrySource, entryFile), []);
+  rmSync(moduleDirectory, { recursive: true, force: true });
+
+  const crossHeaderSource = `
+    import WebKit from "WebKit/WebKit.h";
+    import Foundation from "Foundation/Foundation.h";
+    import { thread } from "std/thread";
+
+    class CrossHeaderNavigationDelegate on thread.main
+      implements WebKit.WKNavigationDelegate {
+      function fail(
+        in webView: WebKit.WKWebView,
+        in navigation: WebKit.WKNavigation | null,
+        in error: Foundation.NSError
+      ): void as "webView:didFailProvisionalNavigation:withError:" {}
+    }
+
+    function bridgeString(): Foundation.NSString {
+      const message: Foundation.NSString = "hello";
+      return message;
+    }
+  `;
+  assert.deepEqual(diagnostics(crossHeaderSource, "/tmp/z-objc-cross-header-protocol.zs"), []);
+
   const wrongProtocol = source.replace(
     "objc.adapt<WebKit.WKURLSchemeHandler>(controller)",
     "objc.adapt<WebKit.WKNavigationDelegate>(controller)",

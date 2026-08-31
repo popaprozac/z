@@ -83,10 +83,11 @@ export function materializeGenerics(
   const traitTemplates = new Map(
     program.traits.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]),
   );
+  const objcNamespaceImports = program.imports.filter(
+    (declaration) => declaration.header === "std/objc" && declaration.bindings === null,
+  );
   const objcNamespaces = new Set(
-    program.imports
-      .filter((declaration) => declaration.header === "std/objc" && declaration.bindings === null)
-      .map((declaration) => declaration.moduleName),
+    objcNamespaceImports.flatMap((declaration) => [declaration.moduleName, "objc"]),
   );
   const traits = new Map(program.traits.map((item) => [item.name, item]));
   const typeAliasTargets = new Map(

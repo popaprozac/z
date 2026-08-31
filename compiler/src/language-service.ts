@@ -32,7 +32,7 @@ import { displayArrayType, parseDynamicArrayType, parseFixedArrayType, parseSlic
 import { parseGenericType } from "./generic-types.ts";
 import { pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isLocalSourceModuleSpecifier, type SourceModuleInfo } from "./modules.ts";
 import { displayFunctionType, functionTypeName, parseFunctionType } from "./function-types.ts";
 import { displayTaskType, parseTaskType } from "./async-types.ts";
@@ -131,6 +131,117 @@ const primitiveTypeTokens = [
   "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "usize", "isize",
 ] as const;
 
+type LanguageAnalysisDependency = {
+  readonly fileName: string;
+  readonly size: number;
+  readonly modified: number;
+};
+
+type LanguageAnalysisCacheEntry = {
+  readonly source: string;
+  readonly analysis: AnalyzedSource | null;
+  readonly error: unknown;
+  readonly dependencies: readonly LanguageAnalysisDependency[];
+  readonly createdAt: number;
+};
+
+// Diagnostics, semantic tokens, hover, and completion all ask the same
+// question for one document version. Keep only two complete graphs because an
+// AppKit/WebKit project analysis is intentionally rich and therefore large.
+const languageAnalysisCache = new Map<string, LanguageAnalysisCacheEntry>();
+const maximumCachedLanguageAnalyses = 2;
+const failedLanguageAnalysisLifetime = 2_000;
+
+function languageAnalysisKey(fileName: string): string {
+  try {
+    return realpathSync(fileName);
+  } catch {
+    return resolve(fileName);
+  }
+}
+
+function languageAnalysisDependencies(
+  analysis: AnalyzedSource,
+  entryFileName: string,
+): LanguageAnalysisDependency[] {
+  const entry = resolve(entryFileName);
+  const dependencies = new Map<string, LanguageAnalysisDependency>();
+  for (const module of analysis.sourceModules.values()) {
+    const fileName = resolve(module.fileName);
+    if (fileName === entry || dependencies.has(fileName)) continue;
+    try {
+      const status = statSync(fileName);
+      dependencies.set(fileName, {
+        fileName,
+        size: status.size,
+        modified: status.mtimeMs,
+      });
+    } catch {
+      // A removed dependency invalidates the entry on the next request.
+      dependencies.set(fileName, { fileName, size: -1, modified: -1 });
+    }
+  }
+  return [...dependencies.values()];
+}
+
+function languageAnalysisDependenciesAreCurrent(
+  dependencies: readonly LanguageAnalysisDependency[],
+): boolean {
+  return dependencies.every((dependency) => {
+    try {
+      const status = statSync(dependency.fileName);
+      return status.size === dependency.size && status.mtimeMs === dependency.modified;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function cacheLanguageAnalysis(key: string, entry: LanguageAnalysisCacheEntry): void {
+  languageAnalysisCache.delete(key);
+  languageAnalysisCache.set(key, entry);
+  while (languageAnalysisCache.size > maximumCachedLanguageAnalyses) {
+    const oldest = languageAnalysisCache.keys().next().value;
+    if (oldest === undefined) break;
+    languageAnalysisCache.delete(oldest);
+  }
+}
+
+function languageAnalysis(source: string, fileName: string): AnalyzedSource {
+  const key = languageAnalysisKey(fileName);
+  const cached = languageAnalysisCache.get(key);
+  if (cached?.source === source) {
+    languageAnalysisCache.delete(key);
+    languageAnalysisCache.set(key, cached);
+    if (cached.analysis && languageAnalysisDependenciesAreCurrent(cached.dependencies)) {
+      return cached.analysis;
+    }
+    if (!cached.analysis && Date.now() - cached.createdAt < failedLanguageAnalysisLifetime) {
+      throw cached.error;
+    }
+  }
+  try {
+    const analysis = analyzeSource(source, fileName, { requireMain: false });
+    cacheLanguageAnalysis(key, {
+      source,
+      analysis,
+      error: null,
+      dependencies: languageAnalysisDependencies(analysis, fileName),
+      createdAt: Date.now(),
+    });
+    return analysis;
+  } catch (error) {
+    cacheLanguageAnalysis(key, {
+      source,
+      analysis: null,
+      error,
+      dependencies: [],
+      createdAt: Date.now(),
+    });
+    throw error;
+  }
+}
+
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
   "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success", "failure",
@@ -152,7 +263,7 @@ export function diagnostics(source: string, fileName: string): ServiceDiagnostic
       }).semanticInfo.warnings
         .map((warning) => serviceDiagnostic(warning, fileName));
     }
-    return analyzeSource(source, fileName, { requireMain: false }).semanticInfo.warnings
+    return languageAnalysis(source, fileName).semanticInfo.warnings
       .map((warning) => serviceDiagnostic(warning, fileName));
   } catch (error) {
     return [error instanceof DiagnosticError
@@ -5861,7 +5972,7 @@ function importAnalysis(source: string, fileName: string): AnalyzedSource | null
 
 function safeAnalysis(source: string, fileName: string): AnalyzedSource | null {
   try {
-    return analyzeSource(source, fileName, { requireMain: false });
+    return languageAnalysis(source, fileName);
   } catch {
     return null;
   }

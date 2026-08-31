@@ -66,6 +66,34 @@ test("keeps labeled arguments reserved for Objective-C selectors", () => {
   );
 });
 
+test("invalidates shared editor analysis when source or an imported module changes", () => {
+  const directory = mkdtempSync("/tmp/z-editor-analysis-cache-");
+  const dependencyFile = resolve(directory, "dependency.zs");
+  const entryFile = resolve(directory, "main.zs");
+  const entry = `
+    import { value } from "./dependency.zs";
+    function main(): i32 { return value(); }
+  `;
+  try {
+    writeFileSync(dependencyFile, `export function value(): i32 { return 1; }`);
+    writeFileSync(entryFile, entry);
+    assert.deepEqual(diagnostics(entry, entryFile), []);
+    // Hover and semantic tokens reuse the successful graph built above.
+    assert.match(hover(entry, entryFile, entry.indexOf("value()") + 2)?.contents.value ?? "", /value/);
+    assert.ok(semanticTokens(entry, entryFile).data.length > 0);
+
+    writeFileSync(dependencyFile, `export function value(): String { return "changed"; }`);
+    const future = new Date(Date.now() + 2_000);
+    utimesSync(dependencyFile, future, future);
+    assert.match(diagnostics(entry, entryFile)[0]?.message ?? "", /expected i32, found String/);
+
+    const repaired = entry.replace("function main(): i32", "function inspect(): String");
+    assert.deepEqual(diagnostics(repaired, entryFile), []);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("highlights and explains wildcard match arms", () => {
   const source = `
     enum Value { number i32, empty, }
