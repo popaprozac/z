@@ -6,6 +6,7 @@ import {
   valueBindingType,
 } from "./semantic-flow-state.zs";
 import {
+  ModuleSymbolLocation,
   inferredTypeSymbolLocation,
   rebaseTypeName,
   semanticTypeIdentity,
@@ -50,6 +51,32 @@ function containsString(in values: Array<String>, in value: String): boolean {
     if (candidate == value) return true;
   }
   return false;
+}
+
+function containsSymbolLocation(
+  in values: Array<ModuleSymbolLocation>,
+  in value: ModuleSymbolLocation
+): boolean {
+  for (const candidate of values) {
+    if (
+      candidate.moduleIndex == value.moduleIndex
+      && candidate.symbolIndex == value.symbolIndex
+    ) return true;
+  }
+  return false;
+}
+
+function copySymbolLocations(
+  in values: Array<ModuleSymbolLocation>
+): Array<ModuleSymbolLocation> {
+  let copied = Array<ModuleSymbolLocation>();
+  for (const value of values) {
+    copied.push(ModuleSymbolLocation({
+      moduleIndex: value.moduleIndex,
+      symbolIndex: value.symbolIndex,
+    }));
+  }
+  return copied;
 }
 
 function typeIsThreadShareableInner(
@@ -435,28 +462,31 @@ export function typeMovesOnOwnedUse(
   return typeHasCleanup(modules, moduleIndex, typeName, visiting);
 }
 
-export function typeContainsStoredView(
+function typeContainsStoredViewInner(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
   in typeName: String,
-  in visiting: Array<String>
+  in visiting: Array<String>,
+  in visitingLocations: Array<ModuleSymbolLocation>
 ): boolean {
   if (stringStartsWith(typeName, "view ")) return true;
   const nullableTarget = nullableTargetType(typeName);
   if (nullableTarget.byteLength > 0) {
-    return typeContainsStoredView(
+    return typeContainsStoredViewInner(
       modules,
       moduleIndex,
       nullableTarget,
-      visiting
+      visiting,
+      visitingLocations
     );
   }
   match (fixedArrayShape(typeName)) {
-    some(array) => return typeContainsStoredView(
+    some(array) => return typeContainsStoredViewInner(
       modules,
       moduleIndex,
       array.elementType,
-      visiting
+      visiting,
+      visitingLocations
     );
     none => {}
   }
@@ -465,11 +495,12 @@ export function typeContainsStoredView(
     some(generic) => {
       for (const argument of generic.arguments) {
         arguments.push(argument.copyBytes(0, argument.byteLength));
-        if (typeContainsStoredView(
+        if (typeContainsStoredViewInner(
           modules,
           moduleIndex,
           argument,
-          visiting
+          visiting,
+          visitingLocations
         )) return true;
       }
     }
@@ -491,10 +522,19 @@ export function typeContainsStoredView(
         }
         none => {}
       }
-      const identity = semanticTypeIdentity(modules, moduleIndex, typeName);
-      if (containsString(visiting, identity)) return false;
       let nextVisiting = copyStrings(visiting);
-      nextVisiting.push(identity);
+      let nextVisitingLocations = copySymbolLocations(visitingLocations);
+      if (arguments.length > 0) {
+        const identity = semanticTypeIdentity(modules, moduleIndex, typeName);
+        if (containsString(visiting, identity)) return false;
+        nextVisiting.push(identity);
+      } else {
+        if (containsSymbolLocation(visitingLocations, location)) return false;
+        nextVisitingLocations.push(ModuleSymbolLocation({
+          moduleIndex: location.moduleIndex,
+          symbolIndex: location.symbolIndex,
+        }));
+      }
       match (
         in modules[location.moduleIndex].symbols[
           location.symbolIndex
@@ -525,11 +565,12 @@ export function typeContainsStoredView(
               field.typeName,
               substitutions
             );
-            if (typeContainsStoredView(
+            if (typeContainsStoredViewInner(
               modules,
               location.moduleIndex,
               fieldType,
-              nextVisiting
+              nextVisiting,
+              nextVisitingLocations
             )) return true;
           }
           for (const variant of signature.variants) {
@@ -538,11 +579,12 @@ export function typeContainsStoredView(
               variant.payloadType,
               substitutions
             );
-            if (typeContainsStoredView(
+            if (typeContainsStoredViewInner(
               modules,
               location.moduleIndex,
               payloadType,
-              nextVisiting
+              nextVisiting,
+              nextVisitingLocations
             )) return true;
           }
         }
@@ -552,6 +594,22 @@ export function typeContainsStoredView(
     none => {}
   }
   return false;
+}
+
+export function typeContainsStoredView(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  let visitingLocations = Array<ModuleSymbolLocation>();
+  return typeContainsStoredViewInner(
+    modules,
+    moduleIndex,
+    typeName,
+    visiting,
+    visitingLocations
+  );
 }
 
 export function typeIsRetainedParameterViewAggregate(
