@@ -2,9 +2,15 @@ import console from "std/console";
 import Foundation from "Foundation/Foundation.h";
 import Native from "objc-strings.h";
 
+function generatedMessage(): String {
+  return `answer=${40 + 2}`;
+}
+
 function main(): i32 {
-  const computed = `answer=${40 + 2}`;
+  const computed = generatedMessage();
   const nativeComputed = Native.ZObjCStringFixture.echo(copy computed);
+  const directNativeComputed = Native.ZObjCStringFixture.echo(generatedMessage());
+  if (!directNativeComputed.isEqualToString("answer=42")) return 1;
   const roundTrip: String = nativeComputed;
   console.log(`round trip=${roundTrip}`);
 

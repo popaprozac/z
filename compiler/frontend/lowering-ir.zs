@@ -6894,6 +6894,31 @@ function resolvedCallParameterTypes(
   return Array<String>();
 }
 
+function resolvedCallReturnTypeName(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Option<String> {
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.callResolutions.length) {
+    return Option<String>.none;
+  }
+  const resolution = view evidence.callResolutions[resolutionIndex];
+  if (
+    resolution.line != tree.nodes[index].line
+    || resolution.column != tree.nodes[index].column
+    || resolution.returnType.byteLength == 0
+  ) return Option<String>.none;
+  return Option.some(resolution.returnType.copyBytes(
+    0,
+    resolution.returnType.byteLength
+  ));
+}
+
 function rewriteClosureParameterValues(
   inout expressions: Array<LoweredExpression>,
   start: usize,
@@ -8632,6 +8657,12 @@ function evidenceResolvedExpressionTypeName(
     );
     const offset = tree.nodes[index].offset;
     return namedValueTypeName(program, evidence, "", name, offset);
+  }
+  if (tree.nodes[index].kind == ExpressionKind.callExpression) {
+    match (resolvedCallReturnTypeName(evidence, tree, index)) {
+      some(returnType) => return Option.some(move returnType);
+      none => {}
+    }
   }
   if (
     tree.nodes[index].kind == ExpressionKind.arrayExpression
