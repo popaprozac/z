@@ -21,7 +21,7 @@ type Case = {
 };
 
 type AdditionalVariant = {
-  readonly id: "rust" | "zig" | "nim";
+  readonly id: "rust" | "zig" | "nim" | "go";
   readonly source: string;
 };
 
@@ -74,7 +74,7 @@ const samples = positiveInteger(process.env.Z_BENCH_SAMPLES, 9);
 const warmups = positiveInteger(process.env.Z_BENCH_WARMUPS, 2);
 const scale = positiveNumber(process.env.Z_BENCH_SCALE, 1);
 
-const cases: readonly Case[] = [
+const caseDefinitions: readonly Case[] = [
   {
     id: "arithmetic",
     iterations: 50_000_000,
@@ -142,7 +142,56 @@ const cases: readonly Case[] = [
     semantics: "one OS thread creation, one owned result transfer, and one join per iteration",
     linkArguments: ["-pthread"],
   },
+  {
+    id: "channel-local",
+    iterations: 2_000_000,
+    reference: "reference.c",
+    referenceLanguage: "c",
+    additionalVariants: [
+      { id: "rust", source: "reference.rs" },
+      { id: "go", source: "reference.go" },
+    ],
+    semantics: "one capacity-1 channel send followed by one receive on the same thread",
+    linkArguments: ["-pthread"],
+  },
+  {
+    id: "channel-thread",
+    iterations: 250_000,
+    reference: "reference.c",
+    referenceLanguage: "c",
+    additionalVariants: [
+      { id: "rust", source: "reference.rs" },
+      { id: "go", source: "reference.go" },
+    ],
+    semantics: "one async producer and one dedicated synchronous consumer; the blocking native references isolate Z's additional task-frame cost rather than matching scheduling semantics",
+    linkArguments: ["-pthread"],
+  },
+  {
+    id: "channel-thread-sync",
+    iterations: 250_000,
+    reference: "../channel-thread/reference.c",
+    referenceLanguage: "c",
+    additionalVariants: [
+      { id: "rust", source: "../channel-thread/reference.rs" },
+      { id: "go", source: "../channel-thread/reference.go" },
+    ],
+    semantics: "one synchronous producer and one dedicated synchronous consumer thread transferring u64 values through a capacity-1 channel",
+    linkArguments: ["-pthread"],
+  },
 ];
+const requestedCaseIds = new Set(
+  (process.env.Z_BENCH_CASES ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean),
+);
+const cases = requestedCaseIds.size === 0
+  ? caseDefinitions
+  : caseDefinitions.filter((definition) => requestedCaseIds.has(definition.id));
+if (cases.length === 0 || cases.length !== (requestedCaseIds.size || cases.length)) {
+  const known = caseDefinitions.map((definition) => definition.id).join(", ");
+  throw new Error(`Z_BENCH_CASES must name known cases: ${known}`);
+}
 
 rmSync(buildRoot, { recursive: true, force: true });
 mkdirSync(buildRoot, { recursive: true });
@@ -228,9 +277,15 @@ for (const definition of cases) {
   console.log(comparisons.join(", "));
 }
 
-const hyperfine = runHyperfineArithmetic();
+const hyperfine = cases.some((definition) => definition.id === "arithmetic")
+  ? runHyperfineArithmetic()
+  : [];
 const report = renderReport(results, hyperfine);
-const reportPath = join(benchmarkRoot, "results", "checkpoint-1-macos-arm64.md");
+const reportPath = join(
+  benchmarkRoot,
+  "results",
+  process.env.Z_BENCH_REPORT ?? "checkpoint-1-macos-arm64.md",
+);
 mkdirSync(dirname(reportPath), { recursive: true });
 writeFileSync(reportPath, report);
 console.log(`\nwrote ${reportPath}`);
@@ -363,7 +418,7 @@ function buildExternalVariant(options: {
       ZIG_GLOBAL_CACHE_DIR: join(buildRoot, "zig-global-cache"),
       ZIG_LOCAL_CACHE_DIR: join(buildRoot, "zig-local-cache"),
     });
-  } else {
+  } else if (options.variant.id === "nim") {
     run(nimCompiler, [
       "c",
       "--hints:off",
@@ -376,6 +431,17 @@ function buildExternalVariant(options: {
       `--out:${executable}`,
       options.source,
     ]);
+  } else {
+    run("go", [
+      "build",
+      "-trimpath",
+      "-ldflags=-s -w",
+      "-o", executable,
+      options.source,
+    ], {
+      ...process.env,
+      GOCACHE: join(buildRoot, "go-cache"),
+    });
   }
   const compileMilliseconds = performance.now() - compileStarted;
 
@@ -501,11 +567,15 @@ function renderReport(
   results_: readonly CaseResult[],
   hyperfine_: readonly HyperfineResult[],
 ): string {
+  const activeCases = new Set(results_.map((result) => result.definition.id));
+  const channelOnly = [...activeCases].every((id) => id.startsWith("channel-"));
+  const title = channelOnly ? "Z channel performance checkpoint" : "Z performance checkpoint 1";
   const generatedAt = new Date().toISOString();
   const clangVersion = firstLine(run("clang", ["--version"]).stdout);
   const rustVersion = firstLine(run("rustc", ["--version"]).stdout);
   const zigVersion = firstLine(run("zig", ["version"]).stdout);
   const nimVersion = firstLine(run(nimCompiler, ["--version"]).stdout);
+  const goVersion = firstLine(run("go", ["version"]).stdout);
   const hyperfineVersion = firstLine(run("hyperfine", ["--version"]).stdout);
   const osVersion = firstLine(run("sw_vers", ["-productVersion"]).stdout);
   const hardware = firstLine(run("uname", ["-m"]).stdout);
@@ -528,8 +598,31 @@ function renderReport(
   const hyperfineRows = hyperfine_.map((result) => (
     `| ${result.command} | ${(result.meanSeconds * 1000).toFixed(2)} ms | ± ${(result.standardDeviationSeconds * 1000).toFixed(2)} ms |`
   )).join("\n");
+  const classificationRows = [
+    { cases: ["arithmetic"], area: "Arithmetic", finding: "Z and C emit the same hot loop; Z adds a checked subtraction for elapsed-time calculation outside that loop", classification: "Zero-wrapper confirmed" },
+    { cases: ["direct-c-call"], area: "Direct C call", finding: "Z emits one direct `z_bench_mix` call per iteration with no adapter", classification: "Zero-wrapper confirmed" },
+    { cases: ["dynamic-array"], area: "Dynamic array", finding: "Z and C use the same 2× growth path and vectorized scan; Z retains explicit overflow guards", classification: "Optimizer removes abstraction; intentional safety checks remain" },
+    { cases: ["struct-ownership"], area: "Struct ownership", finding: "Z, C++, Rust, and Zig reduce to one drop call and checksum update per iteration", classification: "Move/deinit abstraction removed" },
+    { cases: ["async-task-pair"], area: "Async task pair", finding: "Child tasks and direct awaits both allocate one async frame per call; structured scheduling adds no allocation in this case", classification: "Current runtime cost, not task-syntax cost" },
+    { cases: ["native-thread"], area: "Native thread", finding: "Z lowers directly to pthread create/join but carries a larger task frame and one fixed root frame", classification: "Native call confirmed; current memory overhead" },
+    { cases: ["channel-local"], area: "Local channel", finding: "Z uses one preallocated bounded ring, one mutex acquisition per operation, and no per-message channel allocation", classification: "Intentional synchronization cost" },
+    { cases: ["channel-thread"], area: "Async cross-thread channel", finding: "Z transfers through the bounded ring while suspending the producer through one heap-owned task frame per send", classification: "Native synchronization confirmed; async frame cost remains" },
+    { cases: ["channel-thread-sync"], area: "Synchronous cross-thread channel", finding: "Z transfers through the same bounded ring and parks producer or consumer directly on native condition variables", classification: "Native synchronization confirmed" },
+  ].filter((row) => row.cases.some((id) => activeCases.has(id)))
+    .map((row) => `| ${row.area} | ${row.finding} | ${row.classification} |`)
+    .join("\n");
+  const hyperfineSection = hyperfine_.length === 0 ? "" : `
+## Whole-process sanity check
 
-  return `# Z performance checkpoint 1
+Hyperfine includes process startup and reports the mean of 10 runs after 2
+warmups for the 50-million-iteration arithmetic workload.
+
+| Variant | Mean wall time | Standard deviation |
+| --- | ---: | ---: |
+${hyperfineRows}
+`;
+
+  return `# ${title}
 
 Generated ${generatedAt} on ${hardware}, macOS ${osVersion}.
 
@@ -537,6 +630,7 @@ Generated ${generatedAt} on ${hardware}, macOS ${osVersion}.
 - Rust: ${rustVersion}
 - Zig: ${zigVersion} (ReleaseSafe)
 - Nim: ${nimVersion} (ARC release mode)
+- Go: ${goVersion}
 - Hyperfine: ${hyperfineVersion}
 - Z release profile under test: \`clang -O3 -DNDEBUG\`
 - Samples: ${samples} measured runs after ${warmups} warmups; table reports the median
@@ -550,15 +644,7 @@ Each workload's C, C++, or Z direct-await reference is the \`1.000×\` baseline.
 | Workload | Variant | Median | Relative to baseline | Allocation calls/frees (requested bytes) |
 | --- | --- | ---: | ---: | ---: |
 ${rows}
-
-## Whole-process sanity check
-
-Hyperfine includes process startup and reports the mean of 10 runs after 2
-warmups for the 50-million-iteration arithmetic workload.
-
-| Variant | Mean wall time | Standard deviation |
-| --- | ---: | ---: |
-${hyperfineRows}
+${hyperfineSection}
 
 ## Compilation and stripped binary size
 
@@ -576,21 +662,21 @@ ${semanticRows}
 
 | Area | Finding | Classification |
 | --- | --- | --- |
-| Arithmetic | Z and C emit the same hot loop; Z adds a checked subtraction for elapsed-time calculation outside that loop | Zero-wrapper confirmed |
-| Direct C call | Z emits one direct \`z_bench_mix\` call per iteration with no adapter | Zero-wrapper confirmed |
-| Dynamic array | Z and C use the same 2× growth path and vectorized scan; Z retains explicit overflow guards | Optimizer removes abstraction; intentional safety checks remain |
-| Struct ownership | Z, C++, Rust, and Zig reduce to one drop call and checksum update per iteration | Move/deinit abstraction removed |
-| Async task pair | Child tasks and direct awaits both allocate one async frame per call; structured scheduling adds no allocation in this case | Current runtime cost, not task-syntax cost |
-| Native thread | Z lowers directly to pthread create/join but carries a larger task frame and one fixed root frame | Native call confirmed; current memory overhead |
+${classificationRows}
 
 ## Scope and interpretation
 
-Rust, Zig, and Nim are included only where their standard operations preserve
-the contract in the table above. Missing cells are deliberate, not zero-cost
-claims. Allocation instrumentation currently covers the generated Z and C/C++
-translation units; other languages report \`—\` until they have equivalent
-allocator-level counters. Swift is not part of this first portable-kernel
+Rust, Zig, Nim, and Go are included only where their standard operations
+preserve the contract in the table above. Missing cells are deliberate, not
+zero-cost claims. Allocation instrumentation currently covers the generated Z
+and C/C++ translation units; other languages report \`—\` until they have
+equivalent allocator-level counters. Swift is not part of this portable-kernel
 checkpoint.
+
+The `channel-thread` row deliberately compares Z's suspending producer with
+the same blocking native handoff used by the synchronous control. It isolates
+the current async task-frame cost; `channel-thread-sync` is the semantics-matched
+native ceiling comparison.
 
 This tests Z's current ceiling through generated C/C++ and Clang, not the
 debug-oriented \`z run\` profile. Cross-language compilation times include

@@ -1,8 +1,8 @@
 # Z benchmarks
 
 This directory holds repeatable, semantics-matched performance probes for Z's
-generated native code. The first checkpoint uses Apple Clang, Rust, Zig, and
-Nim with a harness-local release profile:
+generated native code. The first checkpoint uses Apple Clang, Rust, Zig, Nim,
+and focused Go channel references with a harness-local release profile:
 
 ```sh
 bun run bench
@@ -13,8 +13,8 @@ The harness:
 - emits Z through the current Bun-hosted Stage-0 compiler;
 - compiles generated C with `-O3 -DNDEBUG`;
 - compiles C/C++ baselines with the same optimizer;
-- includes Rust, Zig ReleaseSafe, and Nim ARC release implementations where
-  their operations preserve the stated contract;
+- includes Rust, Zig ReleaseSafe, Nim ARC release, and focused Go
+  implementations where their operations preserve the stated contract;
 - passes workload sizes at runtime so the optimizer cannot precompute results;
 - validates matching checksums;
 - reports medians after warmups;
@@ -26,6 +26,9 @@ The harness:
 Use `Z_BENCH_SCALE=0.1` for a short smoke run, or adjust
 `Z_BENCH_SAMPLES` and `Z_BENCH_WARMUPS`. Results are machine-specific and must
 not be compared across hosts without recording hardware and toolchain versions.
+Use `Z_BENCH_CASES=channel-local,channel-thread` to run a focused subset and
+`Z_BENCH_REPORT=checkpoint-channels.md` to keep that report separate from the
+full checkpoint.
 
 The native reference must preserve the relevant Z semantics. For example,
 wrapping arithmetic is compared with unsigned modular C arithmetic, checked

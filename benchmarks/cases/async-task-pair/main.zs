@@ -11,12 +11,14 @@ async function main(): i32 {
   const started = bench.z_bench_now_ns();
 
   while (index < iterations) {
-    const first = task ready(index);
-    index = index + 1;
-    const second = task ready(index);
-    index = index + 1;
-    checksum = checksum + await first;
-    checksum = checksum + await second;
+    async scope {
+      const first = task ready(index);
+      index = index + 1;
+      const second = task ready(index);
+      index = index + 1;
+      checksum = checksum + await first;
+      checksum = checksum + await second;
+    }
   }
 
   const elapsed = bench.z_bench_now_ns() - started;

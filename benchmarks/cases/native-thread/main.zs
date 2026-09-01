@@ -8,10 +8,12 @@ async function main(): i32 {
   const started = bench.z_bench_now_ns();
 
   while (index < iterations) {
-    const input = index;
-    const worker = thread.spawn(move (): u64 => input);
-    checksum = checksum + await worker;
-    index = index + 1;
+    async scope {
+      const input = index;
+      const worker = thread.spawn(move (): u64 => input);
+      checksum = checksum + await worker;
+      index = index + 1;
+    }
   }
 
   const elapsed = bench.z_bench_now_ns() - started;
