@@ -1378,7 +1378,7 @@ function main(): i32 {
       console.error("usage: z version");
       return 2;
     }
-    console.log("z 0.1.0-dev revision 2026-08-25.1 compiler-api 2");
+    console.log("z 0.1.0-dev revision 2026-08-31.1 compiler-api 2");
     return 0;
   }
   if (command == "check") {
