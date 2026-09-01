@@ -4719,12 +4719,6 @@ function analyzeStatement(
       return;
     }
     case "destructure": {
-      if (owner.async) {
-        throw new DiagnosticError(fileName, statement.location, "destructuring is not executable in async functions yet", {
-          code: "Z0700",
-          helps: ["bind the aggregate normally in async code until destructuring is added to task-frame lowering"],
-        });
-      }
       const arrayViewInitializer = Boolean(
         statement.arrayBindings
         && statement.initializer.kind === "unary"
@@ -4766,6 +4760,13 @@ function analyzeStatement(
       if (expected) requireAssignable(expected, initializerType, statement.initializer, fileName, structs, enums, state);
       const inferredSourceType = String(underlyingType(expected ?? initializerType));
       const sourceType = parseViewType(inferredSourceType)?.target ?? inferredSourceType;
+      if (owner.async && parseChannelHandleType(sourceType)?.kind !== "endpoints") {
+        throw new DiagnosticError(fileName, statement.location, "this destructuring shape is not executable in async functions yet", {
+          code: "Z0700",
+          notes: ["Channel endpoint destructuring is supported because both ownership-bearing fields transfer directly into task-frame storage"],
+          helps: ["bind the aggregate normally in async code until general destructuring is added to task-frame lowering"],
+        });
+      }
       if (statement.arrayBindings) {
         const fixed = parseFixedArrayType(sourceType);
         const dynamic = parseDynamicArrayType(sourceType);
@@ -11902,6 +11903,17 @@ function inferExpressionInner(
             });
           }
           checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+          if (
+            channel.kind === "receiver"
+            && operation === "receive"
+            && state.asyncCallContexts.at(-1)?.mode === "spawn"
+          ) {
+            throw new DiagnosticError(fileName, expression.location, "a unique Receiver.receive operation must be awaited directly in the first channel tier", {
+              code: "Z0710",
+              notes: ["direct await keeps one lexical receive operation active on the unique endpoint"],
+              helps: ["write `await receiver.receive()`; concurrent receive loans remain future work"],
+            });
+          }
           registerAsyncCall(callable, expression.location, fileName, state);
           if (callable.receiverMode === "move") {
             consumeOwnedValue(expression.callee.object, receiverValueType, locals, structs, enums, fileName, state);

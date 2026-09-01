@@ -23,6 +23,12 @@ import { standardFunctionSignature } from "./standard-library.ts";
 import { parseViewType } from "./view-types.ts";
 import { parseOnceLifetimeType } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
+import {
+  channelClosedTypeName,
+  channelReceiverTypeName,
+  channelSenderTypeName,
+  parseChannelHandleType,
+} from "./channel-types.ts";
 import { parseFunctionType, type FunctionType } from "./function-types.ts";
 import { writableTypeName } from "./readonly-types.ts";
 import { collectPlacementCaptures } from "./placement-captures.ts";
@@ -42,6 +48,18 @@ import {
   generateObjCMessage,
   semanticInfoUsesForeignRuntimeEntry,
   taskScopeAsyncScheduleName,
+  channelAsyncCancelWaitName,
+  channelAsyncReceiveTryName,
+  channelAsyncSendTryName,
+  channelBoundedName,
+  channelCloseName,
+  channelReceiverName,
+  channelReceiverOperationReleaseName,
+  channelReceiverOperationRetainName,
+  channelSenderName,
+  channelSenderRetainName,
+  nicheOptionNull,
+  nicheOptionPayload,
 } from "./codegen-c.ts";
 
 type AwaitSite = {
@@ -126,6 +144,13 @@ type AsyncValueBranchSite = {
 
 type AsyncOperation =
   | { readonly kind: "statement"; readonly statement: Statement }
+  | {
+    readonly kind: "channelDestructure";
+    readonly statement: Extract<Statement, { kind: "destructure" }>;
+    readonly valueType: string;
+    readonly senderBinding: string;
+    readonly receiverBinding: string;
+  }
   | { readonly kind: "scopeEnter"; readonly scope: number; readonly name: string }
   | { readonly kind: "scopeExit"; readonly scope: number; readonly name: string | null; readonly cancel: boolean }
   | { readonly kind: "localCleanup"; readonly name: string; readonly type: string }
@@ -177,7 +202,13 @@ type AsyncTarget = {
   readonly declaration: FunctionDeclaration;
   readonly owner: StructDeclaration | null;
   readonly foreign?: ForeignAsyncProjection;
+  readonly channel?: ChannelAsyncProjection;
   readonly nativeThreadMode?: "sync" | "async";
+};
+
+type ChannelAsyncProjection = {
+  readonly valueType: string;
+  readonly operation: "send" | "receive";
 };
 
 type ForeignAsyncProjection = NonNullable<ObjCCallInfo["async"]> & {
@@ -189,6 +220,7 @@ type AsyncFunctionPlan = {
   readonly declaration: FunctionDeclaration;
   readonly owner: StructDeclaration | null;
   readonly foreign: ForeignAsyncProjection | null;
+  readonly channel: ChannelAsyncProjection | null;
   readonly nativeThread: boolean;
   readonly asyncNativeThread: boolean;
   readonly generator: ReturnType<typeof parseAsyncGeneratorType>;
@@ -228,6 +260,7 @@ type AsyncTypeContext = {
   readonly functions: ReadonlyMap<string, FunctionDeclaration>;
   readonly semanticInfo: SemanticInfo;
   readonly foreignTargets: ReadonlyMap<number, AsyncTarget>;
+  readonly channelTargets: ReadonlyMap<number, AsyncTarget>;
 };
 
 type FrameExpressionContext = {
@@ -368,6 +401,57 @@ export function generateAsyncC(
       },
     });
   }
+  const structsByName = new Map(program.structs.map((declaration) => [declaration.name, declaration]));
+  const channelTargetByShape = new Map<string, AsyncTarget>();
+  const channelTargets = new Map<number, AsyncTarget>();
+  for (const [callOffset, call] of semanticInfo.channelCalls) {
+    if (
+      (call.endpoint !== "sender" || call.operation !== "send")
+      && (call.endpoint !== "receiver" || call.operation !== "receive")
+    ) continue;
+    const operation = call.operation as ChannelAsyncProjection["operation"];
+    const key = `${operation}\0${call.valueType}`;
+    let target = channelTargetByShape.get(key);
+    if (!target) {
+      const location: SourceLocation = { offset: callOffset, line: 1, column: 1, fileName };
+      const ownerName = operation === "send"
+        ? channelSenderTypeName(call.valueType)
+        : channelReceiverTypeName(call.valueType);
+      const owner = structsByName.get(ownerName);
+      if (!owner) throw new Error(`missing materialized Channel endpoint ${JSON.stringify(ownerName)}`);
+      target = {
+        owner,
+        channel: { valueType: call.valueType, operation },
+        declaration: {
+          kind: "function",
+          name: operation,
+          async: true,
+          receiverMode: null,
+          parameters: operation === "send"
+            ? [{
+                name: "value",
+                // The semantic call requires `move`; task-frame inputs store the
+                // transferred owner as an ordinary by-value parameter.
+                mode: "value",
+                type: { name: call.valueType, location },
+                location,
+              }]
+            : [],
+          returnType: {
+            name: operation === "send" ? "void" : optionTypeName(call.valueType),
+            location,
+          },
+          errorType: operation === "send"
+            ? { name: channelClosedTypeName(call.valueType), location }
+            : null,
+          body: [],
+          location,
+        },
+      };
+      channelTargetByShape.set(key, target);
+    }
+    channelTargets.set(callOffset, target);
+  }
   const callableTargets: AsyncTarget[] = [...semanticInfo.closures.values()]
     .filter((closure) => closure.storable && Boolean(closure.declaration.async))
     .map((closure) => ({ declaration: closure.declaration, owner: null }));
@@ -376,17 +460,19 @@ export function generateAsyncC(
     ...threadTargets.values(),
     ...taskScopeTargets.values(),
     ...foreignTargets.values(),
+    ...channelTargetByShape.values(),
     ...callableTargets,
   ];
   const functions = new Map(
     targets.filter((target) => !target.owner).map((target) => [target.declaration.name, target]),
   );
   const types: AsyncTypeContext = {
-    structs: new Map(program.structs.map((declaration) => [declaration.name, declaration])),
+    structs: structsByName,
     enums: new Map(program.enums.map((declaration) => [declaration.name, declaration])),
     functions: new Map(program.functions.map((declaration) => [declaration.name, declaration])),
     semanticInfo,
     foreignTargets,
+    channelTargets,
   };
   const placementTargets = new Map<number, PlacementTarget>();
   const registerPlacement = (
@@ -459,6 +545,7 @@ function planFunction(
 ): AsyncFunctionPlan {
   const { declaration, owner } = target;
   const foreign = target.foreign ?? null;
+  const channel = target.channel ?? null;
   const nativeThread = target.nativeThreadMode !== undefined;
   const asyncNativeThread = target.nativeThreadMode === "async";
   const generator = parseAsyncGeneratorType(declaration.returnType.name);
@@ -1172,6 +1259,47 @@ function planFunction(
           appendScopeExit(activeScope, statement.kind === "throw", false);
         }
       }
+      if (statement.kind === "destructure") {
+        const channel = semanticInfo.channelCalls.get(statement.initializer.location.offset);
+        const sender = statement.objectBindings.find((binding) => binding.fieldName === "sender");
+        const receiver = statement.objectBindings.find((binding) => binding.fieldName === "receiver");
+        if (
+          !channel
+          || channel.endpoint !== "factory"
+          || channel.operation !== "bounded"
+          || !sender
+          || !receiver
+          || statement.objectBindings.length !== 2
+        ) {
+          unsupported(
+            fileName,
+            statement.location,
+            "async destructuring currently supports the complete { sender, receiver } result of Channel.bounded",
+          );
+        }
+        if (scope !== 0 || controlDepth !== 0) {
+          unsupported(
+            fileName,
+            statement.location,
+            "Channel endpoint destructuring inside nested async control flow needs lexical endpoint cleanup states",
+            "construct the channel in the outer async function body",
+          );
+        }
+        const senderType = channelSenderTypeName(channel.valueType);
+        const receiverType = channelReceiverTypeName(channel.valueType);
+        requireFrameType(senderType, sender.bindingLocation, fileName, "Channel sender", types);
+        requireFrameType(receiverType, receiver.bindingLocation, fileName, "Channel receiver", types);
+        locals.set(sender.bindingName, senderType);
+        locals.set(receiver.bindingName, receiverType);
+        operations.push({
+          kind: "channelDestructure",
+          statement,
+          valueType: channel.valueType,
+          senderBinding: sender.bindingName,
+          receiverBinding: receiver.bindingName,
+        });
+        continue;
+      }
       operations.push({ kind: "statement", statement });
       if (statement.kind === "variable") {
         const threadSpawn = statement.initializer?.kind === "call"
@@ -1475,6 +1603,7 @@ function planFunction(
     declaration,
     owner,
     foreign,
+    channel,
     nativeThread,
     asyncNativeThread,
     generator,
@@ -2333,6 +2462,10 @@ function tryResolveAsyncCall(
 ): { readonly target: AsyncTarget; readonly receiver: Expression | null; readonly callable?: FunctionType } | null {
   const foreign = types.foreignTargets.get(call.location.offset);
   if (foreign) return { target: foreign, receiver: null };
+  const channel = types.channelTargets.get(call.location.offset);
+  if (channel && call.callee.kind === "member") {
+    return { target: channel, receiver: call.callee.object };
+  }
   if (call.callee.kind === "identifier") {
     const target = functions.get(call.callee.name);
     if (target?.declaration.async) return { target, receiver: null };
@@ -2689,6 +2822,7 @@ function generateRuntime(
   const usesThreads = usesTaskScopes
     || usesForeignRuntimeEntry
     || plans.some((plan) => plan.foreign !== null)
+    || plans.some((plan) => plan.channel !== null)
     || plans.some((plan) => [...plan.spawns.values()].some((site) => site.nativeThread));
   const usesMainPlacement = plans.some((plan) => (
     [...plan.awaits.values()].some((site) => site.placement !== null)
@@ -3195,6 +3329,35 @@ function generateRuntime(
       "static __attribute__((unused)) void z_async_enqueue_from_thread(Z_AsyncExecutor *executor, Z_AsyncTask *task) {",
       "  z_async_thread_lock(executor);",
       "  if (z_async_is_completed(task) || task->queued || task->suspended) abort();",
+      "  task->thread_queued = true;",
+      "  task->thread_next = NULL;",
+      "  if (executor->thread_enqueued_tail != NULL) executor->thread_enqueued_tail->thread_next = task;",
+      "  else executor->thread_enqueued_head = task;",
+      "  executor->thread_enqueued_tail = task;",
+      ...(usesDarwinMainLoop ? [
+        "#if defined(__APPLE__)",
+        "  if (executor->main_executor) {",
+        "    CFRunLoopSourceSignal(executor->main_source);",
+        "    CFRunLoopWakeUp(executor->main_run_loop);",
+        "  }",
+        "#endif",
+      ] : []),
+      "#if defined(_WIN32)",
+      "  WakeConditionVariable(&executor->thread_condition);",
+      "#else",
+      "  if (pthread_cond_signal(&executor->thread_condition) != 0) abort();",
+      "#endif",
+      "  z_async_thread_unlock(executor);",
+      "}",
+      "",
+      "static __attribute__((unused)) void z_async_resume_from_thread(Z_AsyncTask *task) {",
+      "  Z_AsyncExecutor *executor = task->executor;",
+      "  z_async_thread_lock(executor);",
+      "  if (z_async_is_completed(task) || task->queued || task->thread_queued || !task->suspended) {",
+      "    z_async_thread_unlock(executor);",
+      "    return;",
+      "  }",
+      "  task->suspended = false;",
       "  task->thread_queued = true;",
       "  task->thread_next = NULL;",
       "  if (executor->thread_enqueued_tail != NULL) executor->thread_enqueued_tail->thread_next = task;",
@@ -3877,6 +4040,9 @@ function generateRuntime(
   for (const plan of plans) lines.push(`typedef struct ${plan.frameName} ${plan.frameName};`);
   if (plans.length > 0) lines.push("");
   for (const plan of plans) lines.push(generateFrame(plan, planByKey), "");
+  for (const plan of plans) {
+    if (plan.channel) lines.push(generateChannelWake(plan), "");
+  }
   for (const plan of plans) lines.push(`static void ${plan.pollName}(Z_AsyncTask *task);`);
   for (const plan of plans) {
     lines.push(
@@ -4030,8 +4196,22 @@ function generateFrame(
   for (const site of plan.asyncForSites) {
     lines.push(`  Z_AsyncTask *child_${site.index};`);
   }
+  if (plan.channel) lines.push("  Z_ChannelWaiter channel_waiter;");
   lines.push("};");
   return lines.join("\n");
+}
+
+function channelWakeName(plan: AsyncFunctionPlan): string {
+  return `z_async_channel_wake_${targetPart(plan)}`;
+}
+
+function generateChannelWake(plan: AsyncFunctionPlan): string {
+  return [
+    `static void ${channelWakeName(plan)}(void *context) {`,
+    `  ${plan.frameName} *frame = (${plan.frameName} *)context;`,
+    "  z_async_resume_from_thread(&frame->task);",
+    "}",
+  ].join("\n");
 }
 
 function generateDestroy(
@@ -4042,6 +4222,13 @@ function generateDestroy(
     `static __attribute__((unused)) void ${plan.destroyName}(${plan.frameName} *frame) {`,
     "  if (frame == NULL) return;",
   ];
+  if (plan.channel) {
+    lines.push(
+      "  if (frame->channel_waiter.registered) {",
+      `    ${channelAsyncCancelWaitName(plan.channel.valueType)}(frame->value_this.storage, &frame->channel_waiter, ${plan.channel.operation === "send" ? "true" : "false"});`,
+      "  }",
+    );
+  }
   for (const [index, target] of [...plan.children].reverse()) {
     const child = planByKey.get(targetKey(target))!;
     lines.push(
@@ -4088,6 +4275,15 @@ function generateDestroy(
   }
   for (const [name, type] of [...plan.locals].reverse()) {
     if (plan.borrowedLocals.has(name) || !hasFrameCleanup(type, plan.types)) continue;
+    if (plan.channel?.operation === "receive" && name === "this") {
+      lines.push(
+        `  if (frame->${frameLiveField(name)}) {`,
+        `    ${channelReceiverOperationReleaseName(plan.channel.valueType)}(&(frame->${frameField(name)}));`,
+        `    frame->${frameLiveField(name)} = false;`,
+        "  }",
+      );
+      continue;
+    }
     lines.push(
       `  if (frame->${frameLiveField(name)}) {`,
       `    ${frameCleanup(frameStoredValue(name, type, plan.types), type, plan.types)}`,
@@ -4148,6 +4344,14 @@ function generateStart(plan: AsyncFunctionPlan): string {
   lines.push("  frame->task.executor = executor;");
   lines.push("  frame->task.completion_executor = executor;");
   lines.push("  frame->task.native_executor = NULL;");
+  if (plan.channel) {
+    lines.push(
+      "  frame->channel_waiter.next = NULL;",
+      "  frame->channel_waiter.context = frame;",
+      `  frame->channel_waiter.wake = ${channelWakeName(plan)};`,
+      "  frame->channel_waiter.registered = false;",
+    );
+  }
   if (plan.declaration.errorType) {
     lines.push("  frame->failed = false;");
     if (hasFrameCleanup(plan.declaration.errorType.name, plan.types)) lines.push("  frame->live_error = false;");
@@ -4476,7 +4680,11 @@ function emitAwaitArguments(
     : undefined;
   if (site.receiver) {
     let receiver = emitFrameExpression(site.receiver, parent, fileName);
-    if (site.target.owner?.kind === "class") {
+    if (site.target.channel?.operation === "send") {
+      receiver = `${channelSenderRetainName(site.target.channel.valueType)}(${receiver})`;
+    } else if (site.target.channel?.operation === "receive") {
+      receiver = `${channelReceiverOperationRetainName(site.target.channel.valueType)}(${receiver})`;
+    } else if (site.target.owner?.kind === "class") {
       receiver = `Z_${site.target.owner.name}_retain(${receiver})`;
     }
     arguments_.push(receiver);
@@ -5168,6 +5376,7 @@ function generatePoll(
   fileName: string,
 ): string {
   if (plan.foreign) return generateForeignAsyncPoll(plan);
+  if (plan.channel) return generateChannelAsyncPoll(plan);
   const cases: string[] = [];
   const labels = new Map<number, number>();
   let state = 0;
@@ -5352,6 +5561,25 @@ function generatePoll(
         `  ${frameCleanup(frameStoredValue(operation.name, operation.type, plan.types), operation.type, plan.types)}`,
         `  frame->${frameLiveField(operation.name)} = false;`,
         "}",
+        `frame->state = ${state + 1};`,
+        "continue;",
+      ]));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "channelDestructure") {
+      const initializer = operation.statement.initializer;
+      if (initializer.kind !== "call" || initializer.arguments.length !== 1) {
+        unsupported(fileName, initializer.location, "Channel.bounded destructuring lost its analyzed constructor call");
+      }
+      const temporary = `_z_channel_endpoints_${state}`;
+      const capacity = emitFrameExpression(initializer.arguments[0], plan, fileName);
+      cases.push(caseBlock(state, [
+        `${asyncChannelEndpointsName(operation.valueType)} ${temporary} = ${channelBoundedName(operation.valueType)}((uintptr_t)(${capacity}));`,
+        `frame->${frameField(operation.senderBinding)} = ${temporary}.sender;`,
+        `frame->${frameLiveField(operation.senderBinding)} = true;`,
+        `frame->${frameField(operation.receiverBinding)} = ${temporary}.receiver;`,
+        `frame->${frameLiveField(operation.receiverBinding)} = true;`,
         `frame->state = ${state + 1};`,
         "continue;",
       ]));
@@ -5877,6 +6105,72 @@ ${renderedCases.map((item) => indent(item, 6)).join("\n")}
     }
   }
 }`;
+}
+
+function generateChannelAsyncPoll(plan: AsyncFunctionPlan): string {
+  const channel = plan.channel!;
+  const valueType = channel.valueType;
+  const valueCType = cFrameType(valueType, plan.types);
+  const receiver = "frame->value_this";
+  const cancel = channelAsyncCancelWaitName(valueType);
+  const cancellation = [
+    "  if (z_async_is_cancellation_requested(task)) {",
+    `    ${cancel}(${receiver}.storage, &frame->channel_waiter, ${channel.operation === "send" ? "true" : "false"});`,
+    "    task->cancelled = true;",
+    "    z_async_complete_task(task);",
+    "    return;",
+    "  }",
+  ];
+  if (channel.operation === "send") {
+    const errorType = channelClosedTypeName(valueType);
+    const errorCType = cFrameType(errorType, plan.types);
+    return [
+      `static void ${plan.pollName}(Z_AsyncTask *task) {`,
+      `  ${plan.frameName} *frame = (${plan.frameName} *)task;`,
+      ...cancellation,
+      "  task->suspended = true;",
+      `  const int status = ${channelAsyncSendTryName(valueType)}(${receiver}, &frame->value_value, &frame->channel_waiter);`,
+      "  if (status == 0) return;",
+      "  task->suspended = false;",
+      ...(hasFrameCleanup(valueType, plan.types) ? ["  frame->live_value_value = false;"] : []),
+      "  if (status < 0) {",
+      `    frame->error = (${errorCType}){ .value = frame->value_value };`,
+      ...(hasFrameCleanup(errorType, plan.types) ? ["    frame->live_error = true;"] : []),
+      "    frame->failed = true;",
+      "  } else {",
+      "    frame->failed = false;",
+      "  }",
+      "  z_async_complete_task(task);",
+      "}",
+    ].join("\n");
+  }
+
+  const optionType = optionTypeName(valueType);
+  const optionCType = cFrameType(optionType, plan.types);
+  const declaration = plan.types.enums.get(optionType);
+  const niche = declaration
+    ? nicheOptionPayload(declaration, plan.types.semanticInfo.foreignNamedTypes)
+    : null;
+  const some = niche
+    ? "value"
+    : `(${optionCType}){ .tag = ${resultTag(optionType, "some")}, .data = { .some = value } }`;
+  const none = niche
+    ? nicheOptionNull(valueType)
+    : `(${optionCType}){ .tag = ${resultTag(optionType, "none")} }`;
+  return [
+    `static void ${plan.pollName}(Z_AsyncTask *task) {`,
+    `  ${plan.frameName} *frame = (${plan.frameName} *)task;`,
+    ...cancellation,
+    `  ${valueCType} value = (${valueCType}){0};`,
+    "  task->suspended = true;",
+    `  const int status = ${channelAsyncReceiveTryName(valueType)}(${receiver}, &value, &frame->channel_waiter);`,
+    "  if (status == 0) return;",
+    "  task->suspended = false;",
+    `  frame->result = status < 0 ? ${none} : ${some};`,
+    ...(hasFrameCleanup(optionType, plan.types) ? ["  frame->live_result = true;"] : []),
+    "  z_async_complete_task(task);",
+    "}",
+  ].join("\n");
 }
 
 function generateForeignAsyncPoll(plan: AsyncFunctionPlan): string {
@@ -7156,6 +7450,11 @@ function emitFrameExpressionInner(
         plan.types,
       );
     case "call": {
+      const channelCall = plan.types.semanticInfo.channelCalls.get(expression.location.offset);
+      if (channelCall && expression.callee.kind === "member" && channelCall.operation === "close") {
+        const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+        return `${channelCloseName(channelCall.valueType)}((${receiver}).storage)`;
+      }
       const mutexConstructor = plan.types.semanticInfo.mutexConstructors.get(expression.location.offset);
       if (mutexConstructor) {
         return `${asyncMutexInitializeName(mutexConstructor)}(${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
@@ -7606,6 +7905,12 @@ function cScalar(type: string): string {
 function cFrameType(type: string, types: AsyncTypeContext): string {
   const writable = writableTypeName(type);
   if (writable !== type) return cFrameType(writable, types);
+  const channel = parseChannelHandleType(type);
+  if (channel?.kind === "sender") return channelSenderName(channel.valueType);
+  if (channel?.kind === "receiver") return channelReceiverName(channel.valueType);
+  if (channel?.kind === "syncSender") return asyncChannelSyncSenderName(channel.valueType);
+  if (channel?.kind === "syncReceiver") return asyncChannelSyncReceiverName(channel.valueType);
+  if (channel?.kind === "endpoints") return asyncChannelEndpointsName(channel.valueType);
   if (parseTaskType(type)) return "Z_AsyncTask *";
   const functionType = parseFunctionType(type);
   if (functionType) return functionTypeCName(functionType);
@@ -7624,7 +7929,10 @@ function cFrameType(type: string, types: AsyncTypeContext): string {
   if (parseSliceType(type)) return `Z_Slice_${asyncNativeSymbolPart(type)}`;
   if (parseDynamicArrayType(type)) return `Z_DynamicArray_${asyncNativeSymbolPart(type)}`;
   const aggregate = types.structs.get(type);
-  if (aggregate) return aggregate.kind === "class" ? `Z_${type} *` : `Z_${type}`;
+  if (aggregate) {
+    const name = `Z_${asyncNativeSymbolPart(type)}`;
+    return aggregate.kind === "class" ? `${name} *` : name;
+  }
   if (types.enums.has(type)) return resultCName(type);
   const foreign = types.semanticInfo.foreignNamedTypes.get(type);
   if (foreign) return foreign.cName;
@@ -7659,6 +7967,38 @@ function asyncMutexName(valueType: string): string {
   return `Z_Mutex_${asyncNativeSymbolPart(valueType)}`;
 }
 
+function asyncChannelSyncSenderName(valueType: string): string {
+  return `Z_ChannelSyncSender_${asyncNativeSymbolPart(valueType)}`;
+}
+
+function asyncChannelSyncReceiverName(valueType: string): string {
+  return `Z_ChannelSyncReceiver_${asyncNativeSymbolPart(valueType)}`;
+}
+
+function asyncChannelEndpointsName(valueType: string): string {
+  return `Z_ChannelEndpoints_${asyncNativeSymbolPart(valueType)}`;
+}
+
+function asyncChannelSenderDeinitName(valueType: string): string {
+  return `z_channel_${asyncNativeSymbolPart(valueType)}_sender_deinit`;
+}
+
+function asyncChannelReceiverDeinitName(valueType: string): string {
+  return `z_channel_${asyncNativeSymbolPart(valueType)}_receiver_deinit`;
+}
+
+function asyncChannelSyncSenderRetainName(valueType: string): string {
+  return `z_channel_${asyncNativeSymbolPart(valueType)}_sync_sender_retain`;
+}
+
+function asyncChannelSyncSenderDeinitName(valueType: string): string {
+  return `z_channel_${asyncNativeSymbolPart(valueType)}_sync_sender_deinit`;
+}
+
+function asyncChannelSyncReceiverDeinitName(valueType: string): string {
+  return `z_channel_${asyncNativeSymbolPart(valueType)}_sync_receiver_deinit`;
+}
+
 function asyncMutexInitializeName(valueType: string): string {
   return `z_mutex_${asyncNativeSymbolPart(valueType)}_initialize`;
 }
@@ -7676,6 +8016,9 @@ function retainManagedFrameValue(
   if (type === "TaskControl") return `z_task_control_retain(${value})`;
   const mutex = parseMutexType(type);
   if (mutex) return `${asyncMutexRetainName(mutex.valueType)}(${value})`;
+  const channel = parseChannelHandleType(type);
+  if (channel?.kind === "sender") return `${channelSenderRetainName(channel.valueType)}(${value})`;
+  if (channel?.kind === "syncSender") return `${asyncChannelSyncSenderRetainName(channel.valueType)}(${value})`;
   const functionType = parseFunctionType(type);
   if (functionType) return `${functionTypeCName(functionType)}_retain(${value})`;
   if (types.structs.get(type)?.kind === "class") return `Z_${type}_retain(${value})`;
@@ -7719,6 +8062,8 @@ function isFrameReferenceIdentityType(type: string, types: AsyncTypeContext): bo
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   const writable = writableTypeName(type);
   if (writable !== type) return isSupportedFrameType(writable, types, visiting);
+  const channel = parseChannelHandleType(type);
+  if (channel) return isSupportedFrameType(channel.valueType, types, visiting);
   if (parseTaskType(type)) return true;
   if (parseFunctionType(type)) return true;
   if (type === "TaskScope") return true;
@@ -7767,6 +8112,11 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
 function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   const writable = writableTypeName(type);
   if (writable !== type) return hasFrameCleanup(writable, types, visiting);
+  const channel = parseChannelHandleType(type);
+  if (channel) {
+    if (["sender", "receiver", "syncSender", "syncReceiver", "endpoints"].includes(channel.kind)) return true;
+    if (channel.kind === "closed") return hasFrameCleanup(channel.valueType, types, visiting);
+  }
   if (visiting.has(type)) return false;
   if (parseAsyncGeneratorType(type)) return true;
   if (parseFunctionType(type)) return true;
@@ -7802,6 +8152,14 @@ function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new S
 function frameCleanup(value: string, type: string, types: AsyncTypeContext): string {
   const writable = writableTypeName(type);
   if (writable !== type) return frameCleanup(value, writable, types);
+  const channel = parseChannelHandleType(type);
+  if (channel?.kind === "sender") return `${asyncChannelSenderDeinitName(channel.valueType)}(&(${value}));`;
+  if (channel?.kind === "receiver") return `${asyncChannelReceiverDeinitName(channel.valueType)}(&(${value}));`;
+  if (channel?.kind === "syncSender") return `${asyncChannelSyncSenderDeinitName(channel.valueType)}(&(${value}));`;
+  if (channel?.kind === "syncReceiver") return `${asyncChannelSyncReceiverDeinitName(channel.valueType)}(&(${value}));`;
+  if (channel?.kind === "endpoints") {
+    return `${asyncChannelReceiverDeinitName(channel.valueType)}(&((${value}).receiver));\n${asyncChannelSenderDeinitName(channel.valueType)}(&((${value}).sender));`;
+  }
   if (parseAsyncGeneratorType(type)) {
     return `if ((${value}).context != NULL) { (${value}).destroy((${value}).context); (${value}).context = NULL; }`;
   }

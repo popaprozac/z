@@ -466,6 +466,59 @@ export function generateC(
       "}",
     );
   }
+  if (channelValueTypes.length > 0) {
+    lines.push(
+      "typedef struct Z_ChannelWaiter Z_ChannelWaiter;",
+      "struct Z_ChannelWaiter {",
+      "  Z_ChannelWaiter *next;",
+      "  void *context;",
+      "  void (*wake)(void *context);",
+      "  bool registered;",
+      "};",
+      "static Z_UNUSED_FUNCTION void z_channel_waiter_push(Z_ChannelWaiter **head, Z_ChannelWaiter **tail, Z_ChannelWaiter *waiter) {",
+      "  if (waiter->registered) return;",
+      "  waiter->next = NULL;",
+      "  waiter->registered = true;",
+      "  if (*tail == NULL) *head = waiter;",
+      "  else (*tail)->next = waiter;",
+      "  *tail = waiter;",
+      "}",
+      "static Z_UNUSED_FUNCTION Z_ChannelWaiter *z_channel_waiter_pop(Z_ChannelWaiter **head, Z_ChannelWaiter **tail) {",
+      "  Z_ChannelWaiter *waiter = *head;",
+      "  if (waiter == NULL) return NULL;",
+      "  *head = waiter->next;",
+      "  if (*head == NULL) *tail = NULL;",
+      "  waiter->next = NULL;",
+      "  waiter->registered = false;",
+      "  return waiter;",
+      "}",
+      "static Z_UNUSED_FUNCTION void z_channel_waiter_remove(Z_ChannelWaiter **head, Z_ChannelWaiter **tail, Z_ChannelWaiter *waiter) {",
+      "  if (!waiter->registered) return;",
+      "  Z_ChannelWaiter **link = head;",
+      "  while (*link != NULL && *link != waiter) link = &(*link)->next;",
+      "  if (*link == NULL) abort();",
+      "  *link = waiter->next;",
+      "  if (*tail == waiter) {",
+      "    *tail = NULL;",
+      "    for (Z_ChannelWaiter *current = *head; current != NULL; current = current->next) *tail = current;",
+      "  }",
+      "  waiter->next = NULL;",
+      "  waiter->registered = false;",
+      "}",
+      "static Z_UNUSED_FUNCTION void z_channel_waiter_wake(Z_ChannelWaiter *waiter) {",
+      "  if (waiter != NULL && waiter->wake != NULL) waiter->wake(waiter->context);",
+      "}",
+      "static Z_UNUSED_FUNCTION void z_channel_waiter_wake_all(Z_ChannelWaiter *waiter) {",
+      "  while (waiter != NULL) {",
+      "    Z_ChannelWaiter *next = waiter->next;",
+      "    waiter->next = NULL;",
+      "    waiter->registered = false;",
+      "    z_channel_waiter_wake(waiter);",
+      "    waiter = next;",
+      "  }",
+      "}",
+    );
+  }
   lines.push("");
 
   if (usesTaskScope) {
@@ -740,6 +793,10 @@ export function generateC(
       "  uintptr_t tail;",
       "  bool closed;",
       "  bool receiver_alive;",
+      "  Z_ChannelWaiter *send_waiters_head;",
+      "  Z_ChannelWaiter *send_waiters_tail;",
+      "  Z_ChannelWaiter *receive_waiters_head;",
+      "  Z_ChannelWaiter *receive_waiters_tail;",
       `  ${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} *items;`,
       "};",
       "",
@@ -1217,6 +1274,8 @@ function generateChannelRuntimeDeclarations(
     `static ${channelEndpointsName(valueType)} ${channelBoundedName(valueType)}(uintptr_t capacity);`,
     `static ${channelSenderName(valueType)} ${channelSenderRetainName(valueType)}(${channelSenderName(valueType)} sender);`,
     `static ${channelSyncSenderName(valueType)} ${channelSyncSenderRetainName(valueType)}(${channelSyncSenderName(valueType)} sender);`,
+    `static ${channelReceiverName(valueType)} ${channelReceiverOperationRetainName(valueType)}(${channelReceiverName(valueType)} receiver);`,
+    `static void ${channelReceiverOperationReleaseName(valueType)}(${channelReceiverName(valueType)} *receiver);`,
     `static void ${channelSenderDeinitName(valueType)}(${channelSenderName(valueType)} *sender);`,
     `static void ${channelReceiverDeinitName(valueType)}(${channelReceiverName(valueType)} *receiver);`,
     `static void ${channelSyncSenderDeinitName(valueType)}(${channelSyncSenderName(valueType)} *sender);`,
@@ -1226,6 +1285,9 @@ function generateChannelRuntimeDeclarations(
     `static void ${channelCloseName(valueType)}(${channelStorageName(valueType)} *storage);`,
     `static ${sendResult} ${channelSyncSendName(valueType)}(${channelSyncSenderName(valueType)} sender, ${value} value);`,
     `static ${receiveResult} ${channelSyncReceiveName(valueType)}(${channelSyncReceiverName(valueType)} receiver);`,
+    `static int ${channelAsyncSendTryName(valueType)}(${channelSenderName(valueType)} sender, ${value} *value, Z_ChannelWaiter *waiter);`,
+    `static int ${channelAsyncReceiveTryName(valueType)}(${channelReceiverName(valueType)} receiver, ${value} *value, Z_ChannelWaiter *waiter);`,
+    `static void ${channelAsyncCancelWaitName(valueType)}(${channelStorageName(valueType)} *storage, Z_ChannelWaiter *waiter, bool sending);`,
   ];
 }
 
@@ -1319,6 +1381,19 @@ static ${channelSenderName(valueType)} ${channelSenderRetainName(valueType)}(${c
   return sender;
 }
 
+static Z_UNUSED_FUNCTION ${channelReceiverName(valueType)} ${channelReceiverOperationRetainName(valueType)}(${channelReceiverName(valueType)} receiver) {
+  if (receiver.storage == NULL) abort();
+  __atomic_add_fetch(&receiver.storage->refcount, 1, __ATOMIC_RELAXED);
+  return receiver;
+}
+
+static Z_UNUSED_FUNCTION void ${channelReceiverOperationReleaseName(valueType)}(${channelReceiverName(valueType)} *receiver) {
+  if (receiver == NULL || receiver->storage == NULL) return;
+  ${storage} *storage = receiver->storage;
+  receiver->storage = NULL;
+  z_channel_${nativeSymbolPart(valueType)}_storage_release(storage);
+}
+
 static Z_UNUSED_FUNCTION ${channelSyncSenderName(valueType)} ${channelSyncSenderRetainName(valueType)}(${channelSyncSenderName(valueType)} sender) {
   if (sender.storage == NULL) abort();
   __atomic_add_fetch(&sender.storage->refcount, 1, __ATOMIC_RELAXED);
@@ -1340,7 +1415,7 @@ static void ${channelSenderDeinitName(valueType)}(${channelSenderName(valueType)
   z_channel_${nativeSymbolPart(valueType)}_sender_storage_deinit(storage);
 }
 
-static void ${channelSyncSenderDeinitName(valueType)}(${channelSyncSenderName(valueType)} *sender) {
+static Z_UNUSED_FUNCTION void ${channelSyncSenderDeinitName(valueType)}(${channelSyncSenderName(valueType)} *sender) {
   if (sender == NULL || sender->storage == NULL) return;
   ${storage} *storage = sender->storage;
   sender->storage = NULL;
@@ -1348,10 +1423,18 @@ static void ${channelSyncSenderDeinitName(valueType)}(${channelSyncSenderName(va
 }
 
 static void z_channel_${nativeSymbolPart(valueType)}_receiver_storage_deinit(${storage} *storage) {
+  Z_ChannelWaiter *send_waiters = NULL;
+  Z_ChannelWaiter *receive_waiters = NULL;
 #if defined(_WIN32)
   AcquireSRWLockExclusive(&storage->native);
   storage->receiver_alive = false;
   storage->closed = true;
+  send_waiters = storage->send_waiters_head;
+  receive_waiters = storage->receive_waiters_head;
+  storage->send_waiters_head = storage->send_waiters_tail = NULL;
+  storage->receive_waiters_head = storage->receive_waiters_tail = NULL;
+  z_channel_waiter_wake_all(send_waiters);
+  z_channel_waiter_wake_all(receive_waiters);
   WakeAllConditionVariable(&storage->readable);
   WakeAllConditionVariable(&storage->writable);
   ReleaseSRWLockExclusive(&storage->native);
@@ -1359,6 +1442,12 @@ static void z_channel_${nativeSymbolPart(valueType)}_receiver_storage_deinit(${s
   if (pthread_mutex_lock(&storage->native) != 0) abort();
   storage->receiver_alive = false;
   storage->closed = true;
+  send_waiters = storage->send_waiters_head;
+  receive_waiters = storage->receive_waiters_head;
+  storage->send_waiters_head = storage->send_waiters_tail = NULL;
+  storage->receive_waiters_head = storage->receive_waiters_tail = NULL;
+  z_channel_waiter_wake_all(send_waiters);
+  z_channel_waiter_wake_all(receive_waiters);
   if (pthread_cond_broadcast(&storage->readable) != 0) abort();
   if (pthread_cond_broadcast(&storage->writable) != 0) abort();
   if (pthread_mutex_unlock(&storage->native) != 0) abort();
@@ -1373,42 +1462,57 @@ static void ${channelReceiverDeinitName(valueType)}(${channelReceiverName(valueT
   z_channel_${nativeSymbolPart(valueType)}_receiver_storage_deinit(storage);
 }
 
-static void ${channelSyncReceiverDeinitName(valueType)}(${channelSyncReceiverName(valueType)} *receiver) {
+static Z_UNUSED_FUNCTION void ${channelSyncReceiverDeinitName(valueType)}(${channelSyncReceiverName(valueType)} *receiver) {
   if (receiver == NULL || receiver->storage == NULL) return;
   ${storage} *storage = receiver->storage;
   receiver->storage = NULL;
   z_channel_${nativeSymbolPart(valueType)}_receiver_storage_deinit(storage);
 }
 
-static ${channelSyncSenderName(valueType)} ${channelSenderSyncName(valueType)}(${channelSenderName(valueType)} sender) {
+static Z_UNUSED_FUNCTION ${channelSyncSenderName(valueType)} ${channelSenderSyncName(valueType)}(${channelSenderName(valueType)} sender) {
   ${channelSenderName(valueType)} retained = ${channelSenderRetainName(valueType)}(sender);
   return (${channelSyncSenderName(valueType)}){ .storage = retained.storage };
 }
 
-static ${channelSyncReceiverName(valueType)} ${channelReceiverSyncName(valueType)}(${channelReceiverName(valueType)} receiver) {
+static Z_UNUSED_FUNCTION ${channelSyncReceiverName(valueType)} ${channelReceiverSyncName(valueType)}(${channelReceiverName(valueType)} receiver) {
   if (receiver.storage == NULL) abort();
   return (${channelSyncReceiverName(valueType)}){ .storage = receiver.storage };
 }
 
 static void ${channelCloseName(valueType)}(${storage} *storage) {
   if (storage == NULL) abort();
+  Z_ChannelWaiter *send_waiters = NULL;
+  Z_ChannelWaiter *receive_waiters = NULL;
 #if defined(_WIN32)
   AcquireSRWLockExclusive(&storage->native);
   storage->closed = true;
+  send_waiters = storage->send_waiters_head;
+  receive_waiters = storage->receive_waiters_head;
+  storage->send_waiters_head = storage->send_waiters_tail = NULL;
+  storage->receive_waiters_head = storage->receive_waiters_tail = NULL;
+  z_channel_waiter_wake_all(send_waiters);
+  z_channel_waiter_wake_all(receive_waiters);
   WakeAllConditionVariable(&storage->readable);
   WakeAllConditionVariable(&storage->writable);
   ReleaseSRWLockExclusive(&storage->native);
 #else
   if (pthread_mutex_lock(&storage->native) != 0) abort();
   storage->closed = true;
+  send_waiters = storage->send_waiters_head;
+  receive_waiters = storage->receive_waiters_head;
+  storage->send_waiters_head = storage->send_waiters_tail = NULL;
+  storage->receive_waiters_head = storage->receive_waiters_tail = NULL;
+  z_channel_waiter_wake_all(send_waiters);
+  z_channel_waiter_wake_all(receive_waiters);
   if (pthread_cond_broadcast(&storage->readable) != 0) abort();
   if (pthread_cond_broadcast(&storage->writable) != 0) abort();
   if (pthread_mutex_unlock(&storage->native) != 0) abort();
 #endif
 }
 
-static ${sendCType} ${channelSyncSendName(valueType)}(${channelSyncSenderName(valueType)} sender, ${valueCType} value) {
+static Z_UNUSED_FUNCTION ${sendCType} ${channelSyncSendName(valueType)}(${channelSyncSenderName(valueType)} sender, ${valueCType} value) {
   ${storage} *storage = sender.storage;
+  Z_ChannelWaiter *receive_waiter = NULL;
   if (storage == NULL) abort();
 #if defined(_WIN32)
   AcquireSRWLockExclusive(&storage->native);
@@ -1435,18 +1539,22 @@ static ${sendCType} ${channelSyncSendName(valueType)}(${channelSyncSenderName(va
   storage->items[storage->tail] = value;
   storage->tail = (storage->tail + 1) % storage->capacity;
   storage->length += 1;
+  receive_waiter = z_channel_waiter_pop(&storage->receive_waiters_head, &storage->receive_waiters_tail);
 #if defined(_WIN32)
   WakeConditionVariable(&storage->readable);
+  z_channel_waiter_wake(receive_waiter);
   ReleaseSRWLockExclusive(&storage->native);
 #else
   if (pthread_cond_signal(&storage->readable) != 0) abort();
+  z_channel_waiter_wake(receive_waiter);
   if (pthread_mutex_unlock(&storage->native) != 0) abort();
 #endif
   return (${sendCType}){ .tag = ${variantTag(sendType, "success")} };
 }
 
-static ${receiveCType} ${channelSyncReceiveName(valueType)}(${channelSyncReceiverName(valueType)} receiver) {
+static Z_UNUSED_FUNCTION ${receiveCType} ${channelSyncReceiveName(valueType)}(${channelSyncReceiverName(valueType)} receiver) {
   ${storage} *storage = receiver.storage;
+  Z_ChannelWaiter *send_waiter = NULL;
   if (storage == NULL) abort();
 #if defined(_WIN32)
   AcquireSRWLockExclusive(&storage->native);
@@ -1470,14 +1578,120 @@ static ${receiveCType} ${channelSyncReceiveName(valueType)}(${channelSyncReceive
   ${valueCType} value = storage->items[storage->head];
   storage->head = (storage->head + 1) % storage->capacity;
   storage->length -= 1;
+  send_waiter = z_channel_waiter_pop(&storage->send_waiters_head, &storage->send_waiters_tail);
 #if defined(_WIN32)
   WakeConditionVariable(&storage->writable);
+  z_channel_waiter_wake(send_waiter);
   ReleaseSRWLockExclusive(&storage->native);
 #else
   if (pthread_cond_signal(&storage->writable) != 0) abort();
+  z_channel_waiter_wake(send_waiter);
   if (pthread_mutex_unlock(&storage->native) != 0) abort();
 #endif
   return ${receiveSome};
+}
+
+static Z_UNUSED_FUNCTION int ${channelAsyncSendTryName(valueType)}(${channelSenderName(valueType)} sender, ${valueCType} *value, Z_ChannelWaiter *waiter) {
+  ${storage} *storage = sender.storage;
+  if (storage == NULL || value == NULL || waiter == NULL) abort();
+  Z_ChannelWaiter *receive_waiter = NULL;
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&storage->native);
+#else
+  if (pthread_mutex_lock(&storage->native) != 0) abort();
+#endif
+  if (storage->closed || !storage->receiver_alive) {
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&storage->native);
+#else
+    if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+    return -1;
+  }
+  if (storage->length == storage->capacity) {
+    z_channel_waiter_push(&storage->send_waiters_head, &storage->send_waiters_tail, waiter);
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&storage->native);
+#else
+    if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+    return 0;
+  }
+  storage->items[storage->tail] = *value;
+  storage->tail = (storage->tail + 1) % storage->capacity;
+  storage->length += 1;
+  receive_waiter = z_channel_waiter_pop(&storage->receive_waiters_head, &storage->receive_waiters_tail);
+#if defined(_WIN32)
+  WakeConditionVariable(&storage->readable);
+  z_channel_waiter_wake(receive_waiter);
+  ReleaseSRWLockExclusive(&storage->native);
+#else
+  if (pthread_cond_signal(&storage->readable) != 0) abort();
+  z_channel_waiter_wake(receive_waiter);
+  if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+  return 1;
+}
+
+static Z_UNUSED_FUNCTION int ${channelAsyncReceiveTryName(valueType)}(${channelReceiverName(valueType)} receiver, ${valueCType} *value, Z_ChannelWaiter *waiter) {
+  ${storage} *storage = receiver.storage;
+  if (storage == NULL || value == NULL || waiter == NULL) abort();
+  Z_ChannelWaiter *send_waiter = NULL;
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&storage->native);
+#else
+  if (pthread_mutex_lock(&storage->native) != 0) abort();
+#endif
+  if (storage->length == 0) {
+    if (storage->closed) {
+#if defined(_WIN32)
+      ReleaseSRWLockExclusive(&storage->native);
+#else
+      if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+      return -1;
+    }
+    z_channel_waiter_push(&storage->receive_waiters_head, &storage->receive_waiters_tail, waiter);
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&storage->native);
+#else
+    if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+    return 0;
+  }
+  *value = storage->items[storage->head];
+  storage->head = (storage->head + 1) % storage->capacity;
+  storage->length -= 1;
+  send_waiter = z_channel_waiter_pop(&storage->send_waiters_head, &storage->send_waiters_tail);
+#if defined(_WIN32)
+  WakeConditionVariable(&storage->writable);
+  z_channel_waiter_wake(send_waiter);
+  ReleaseSRWLockExclusive(&storage->native);
+#else
+  if (pthread_cond_signal(&storage->writable) != 0) abort();
+  z_channel_waiter_wake(send_waiter);
+  if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+  return 1;
+}
+
+static Z_UNUSED_FUNCTION void ${channelAsyncCancelWaitName(valueType)}(${storage} *storage, Z_ChannelWaiter *waiter, bool sending) {
+  if (storage == NULL || waiter == NULL) return;
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&storage->native);
+#else
+  if (pthread_mutex_lock(&storage->native) != 0) abort();
+#endif
+  z_channel_waiter_remove(
+    sending ? &storage->send_waiters_head : &storage->receive_waiters_head,
+    sending ? &storage->send_waiters_tail : &storage->receive_waiters_tail,
+    waiter
+  );
+#if defined(_WIN32)
+  ReleaseSRWLockExclusive(&storage->native);
+#else
+  if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
 }`;
 }
 
@@ -5467,7 +5681,7 @@ ${destroySwitch}
 };`;
 }
 
-function nicheOptionPayload(
+export function nicheOptionPayload(
   declaration: EnumDeclaration,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string | null {
@@ -5479,7 +5693,7 @@ function nicheOptionPayload(
   return pointer && !pointer.nullable ? option.target : null;
 }
 
-function nicheOptionNull(payloadType: string): "nil" | "NULL" {
+export function nicheOptionNull(payloadType: string): "nil" | "NULL" {
   return parseViewType(payloadType) || parsePointerTypeName(payloadType) ? "NULL" : "nil";
 }
 
@@ -12736,11 +12950,11 @@ function channelStorageName(valueType: string): string {
   return `Z_Channel_${nativeSymbolPart(valueType)}_Storage`;
 }
 
-function channelSenderName(valueType: string): string {
+export function channelSenderName(valueType: string): string {
   return `Z_ChannelSender_${nativeSymbolPart(valueType)}`;
 }
 
-function channelReceiverName(valueType: string): string {
+export function channelReceiverName(valueType: string): string {
   return `Z_ChannelReceiver_${nativeSymbolPart(valueType)}`;
 }
 
@@ -12756,16 +12970,24 @@ function channelEndpointsName(valueType: string): string {
   return `Z_ChannelEndpoints_${nativeSymbolPart(valueType)}`;
 }
 
-function channelBoundedName(valueType: string): string {
+export function channelBoundedName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_bounded`;
 }
 
-function channelSenderRetainName(valueType: string): string {
+export function channelSenderRetainName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_sender_retain`;
 }
 
 function channelSenderDeinitName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_sender_deinit`;
+}
+
+export function channelReceiverOperationRetainName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_receiver_operation_retain`;
+}
+
+export function channelReceiverOperationReleaseName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_receiver_operation_release`;
 }
 
 function channelSyncSenderRetainName(valueType: string): string {
@@ -12792,7 +13014,7 @@ function channelReceiverSyncName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_receiver_sync`;
 }
 
-function channelCloseName(valueType: string): string {
+export function channelCloseName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_close`;
 }
 
@@ -12802,6 +13024,18 @@ function channelSyncSendName(valueType: string): string {
 
 function channelSyncReceiveName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_sync_receive`;
+}
+
+export function channelAsyncSendTryName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_async_send_try`;
+}
+
+export function channelAsyncReceiveTryName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_async_receive_try`;
+}
+
+export function channelAsyncCancelWaitName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_async_cancel_wait`;
 }
 
 function objcAutoreleasePoolName(offset: number): string {
