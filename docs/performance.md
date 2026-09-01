@@ -72,6 +72,24 @@ optimization target; replacing the channel storage or weakening ownership is
 not. This cost is recorded for optimization and does not block using channels
 for Zapp Worker control traffic.
 
+### Tracked optimization: reusable async invocation frames
+
+This is an explicit performance backlog item, not only a historical benchmark
+observation.
+
+| Item | Requirement |
+| --- | --- |
+| Scope | Short-lived heap-owned frames created by repeated async calls, beginning with channel `send` and `receive` |
+| Candidate implementation | Per-executor cache, size-class pool, or another reuse design that keeps ownership local to the responsible executor |
+| Allocation goal | Allocation count grows with peak concurrently live frames, not the total number of completed operations |
+| Semantic constraints | Preserve exact liveness, owned-result transfer, cancellation propagation, waiter removal, executor-affine destruction, and deterministic cleanup |
+| Validation | Re-run the focused channel suite unchanged; add cancellation/close stress under ASan and verify balanced cleanup before accepting a speedup |
+| Product priority | Important runtime optimization, but not a blocker for the first Zapp Worker vertical slice because control traffic is not a per-element bulk-data path |
+
+The first implementation should remain narrow. General slab allocators,
+work-stealing executors, wait sets, and channel selection are separate design
+problems and should not be pulled into frame reuse without measured need.
+
 ## Native main-executor frame audit
 
 On 2026-08-08, the fixed-point backend's first cross-suspension-local tier was

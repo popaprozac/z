@@ -581,6 +581,18 @@ buffered messages before `receive` returns `none`, and cancellation unregisters
 the current waiter. Explicit `.sync()` conversion provides blocking
 `SyncSender<T>` and `SyncReceiver<T>` endpoints for native-thread code.
 
+The first focused release-mode checkpoint separates channel storage cost from
+async invocation cost. The capacity-one synchronous cross-thread path used four
+fixed allocations and measured at C parity. The equivalent async producer
+currently creates one heap-owned task frame for each `await sender.send(...)`:
+250,000 sends produced 250,004 balanced allocations and about 44 MiB of total
+requested storage. This makes per-executor frame reuse a concrete compiler and
+runtime optimization target; it is not evidence for changing the channel API
+or weakening ownership. Completion requires allocation growth to follow peak
+in-flight work rather than total sends while retaining cancellation, waiter
+removal, live-state cleanup, and executor-routed destruction. See the
+[focused channel report](../benchmarks/results/checkpoint-2-channels-macos-arm64.md).
+
 Only positive-capacity `Channel<T>.bounded(capacity)` exists in this tier.
 `Channel<T>.unbounded()` is reserved as an explicit future factory. Rendezvous,
 selection, timeouts, concurrent receive loans, and async-to-sync round trips are
