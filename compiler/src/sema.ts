@@ -98,6 +98,13 @@ import {
   parseOnceType,
 } from "./once-types.ts";
 import { mutexTypeName, parseMutexType } from "./mutex-types.ts";
+import {
+  channelClosedTypeName,
+  channelEndpointsTypeName,
+  channelSyncReceiverTypeName,
+  channelSyncSenderTypeName,
+  parseChannelHandleType,
+} from "./channel-types.ts";
 import type { GenericAggregateMaterialization } from "./generics.ts";
 import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableSelfTypeName, hashableTraitDeclaration } from "./hash-types.ts";
@@ -178,6 +185,12 @@ export type MutexWithLockCallInfo = {
   readonly functionType: string;
   readonly returnType: string;
   readonly errorType: string | null;
+};
+
+export type ChannelCallInfo = {
+  readonly valueType: string;
+  readonly operation: "bounded" | "send" | "receive" | "close" | "sync";
+  readonly endpoint: "factory" | "sender" | "receiver" | "syncSender" | "syncReceiver";
 };
 
 export type ObjCAutoreleasePoolCallInfo = {
@@ -452,6 +465,7 @@ export type SemanticInfo = {
   readonly onceGetCalls: ReadonlyMap<number, string>;
   readonly mutexConstructors: ReadonlyMap<number, string>;
   readonly mutexWithLockCalls: ReadonlyMap<number, MutexWithLockCallInfo>;
+  readonly channelCalls: ReadonlyMap<number, ChannelCallInfo>;
   readonly aggregateExecutorAffinities: ReadonlyMap<string, ExecutorAffinityInfo>;
   readonly fieldExecutorAffinities: ReadonlyMap<string, ExecutorAffinityInfo>;
   readonly shareableClasses: ReadonlySet<string>;
@@ -562,7 +576,13 @@ type StandardTypeName =
   | "TaskControl"
   | "Once"
   | "OnceLifetime"
-  | "Mutex";
+  | "Mutex"
+  | "Channel"
+  | "Sender"
+  | "Receiver"
+  | "SyncSender"
+  | "SyncReceiver"
+  | "ChannelClosed";
 
 type AnalysisState = {
   readonly packageIdsByFile: ReadonlyMap<string, string>;
@@ -618,6 +638,7 @@ type AnalysisState = {
   readonly onceGetCalls: Map<number, string>;
   readonly mutexConstructors: Map<number, string>;
   readonly mutexWithLockCalls: Map<number, MutexWithLockCallInfo>;
+  readonly channelCalls: Map<number, ChannelCallInfo>;
   readonly activeMutexLockRoots: Map<string, SourceLocation>;
   analyzingModuleConstant: boolean;
   readonly aggregateExecutorAffinities: Map<string, ExecutorAffinityInfo>;
@@ -898,7 +919,7 @@ type SymbolValue =
   | { readonly kind: "testFail" }
   | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
-  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" | "Hasher" | "TaskScope" | "TaskControl" | "Once" | "OnceLifetime" | "Mutex" }
+  | { readonly kind: "standardType"; readonly type: StandardTypeName }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
@@ -1261,6 +1282,7 @@ export function analyze(
     onceGetCalls: new Map(),
     mutexConstructors: new Map(),
     mutexWithLockCalls: new Map(),
+    channelCalls: new Map(),
     activeMutexLockRoots: new Map(),
     analyzingModuleConstant: false,
     aggregateExecutorAffinities: new Map(),
@@ -1578,6 +1600,35 @@ export function analyze(
         }
         continue;
       }
+      if (declaration.header === "std/channel") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/channel requires a selective import", {
+            code: "Z0501",
+            helps: ['use `import { Channel } from "std/channel";`'],
+          });
+        }
+        const exports = new Set([
+          "Channel",
+          "Sender",
+          "Receiver",
+          "SyncSender",
+          "SyncReceiver",
+          "ChannelClosed",
+        ]);
+        for (const binding of declaration.bindings) {
+          if (!exports.has(binding.importedName)) {
+            throw new DiagnosticError(fileName, binding.location, `std/channel has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["std/channel exports `Channel`, `Sender`, `Receiver`, `SyncSender`, `SyncReceiver`, and `ChannelClosed`"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          const standardType = binding.importedName as StandardTypeName;
+          declareGlobal(globals, binding.localName, { kind: "standardType", type: standardType }, binding.location, fileName);
+          state.standardTypeBindings.set(binding.localName, standardType);
+        }
+        continue;
+      }
       if (declaration.header === "std/thread") {
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/thread requires a selective import", {
@@ -1653,7 +1704,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/test`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/sync`, `std/thread`, `std/async`, `std/fs`, `std/process`, `std/objc`, `std/embed`, and `std/math`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/test`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/sync`, `std/channel`, `std/thread`, `std/async`, `std/fs`, `std/process`, `std/objc`, `std/embed`, and `std/math`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -6347,6 +6398,7 @@ function finalizeClosureFunctionValue(
       capture.type === "TaskScope"
       || capture.type === "TaskControl"
       || parseMutexType(capture.type)
+      || ["sender", "syncSender"].includes(parseChannelHandleType(capture.type)?.kind ?? "")
       || structs.get(capture.type)?.kind === "class"
       || parseFunctionType(capture.type)
       || parseWeakType(capture.type)
@@ -11574,6 +11626,36 @@ function inferExpressionInner(
             ? structs.get(expression.callee.object.name)
             : null;
           if (aggregate) {
+            const channel = parseChannelHandleType(aggregate.name);
+            if (channel?.kind === "factory") {
+              rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+              if (expression.callee.property !== "bounded") {
+                throw new DiagnosticError(fileName, expression.callee.location, `Channel has no static method ${JSON.stringify(expression.callee.property)}`, {
+                  code: "Z0710",
+                  helps: ["use `Channel<T>.bounded(capacity)`"],
+                });
+              }
+              if (expression.arguments.length !== 1) {
+                throw new DiagnosticError(fileName, expression.location, `Channel.bounded expects 1 capacity argument, received ${expression.arguments.length}`, { code: "Z0710" });
+              }
+              const capacity = expression.arguments[0];
+              const capacityType = canonicalType(
+                inferExpression(capacity, locals, globals, structs, enums, fileName, state),
+                state.foreignNamedTypes,
+              );
+              if (!isIntegerType(capacityType)) {
+                throw new DiagnosticError(fileName, capacity.location, `Channel.bounded capacity must be an integer, found ${displayAssignableType(capacityType, state)}`, { code: "Z0710" });
+              }
+              if (capacity.kind === "number" && /^[0-9]+$/.test(capacity.value) && BigInt(capacity.value) === 0n) {
+                throw new DiagnosticError(fileName, capacity.location, "Channel.bounded capacity must be greater than zero", { code: "Z0710" });
+              }
+              state.channelCalls.set(expression.location.offset, {
+                valueType: channel.valueType,
+                operation: "bounded",
+                endpoint: "factory",
+              });
+              return channelEndpointsTypeName(channel.valueType);
+            }
             const method = aggregate.methods.find((candidate) => candidate.name === expression.callee.property);
             if (!method) {
               throw new DiagnosticError(fileName, expression.callee.location, `${aggregate.kind} ${JSON.stringify(aggregate.name)} has no static method ${JSON.stringify(expression.callee.property)}`);
@@ -11755,6 +11837,93 @@ function inferExpressionInner(
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
         const receiverView = parseViewType(String(receiverType));
         const receiverValueType = receiverView?.target ?? String(receiverType);
+        const channel = parseChannelHandleType(receiverValueType);
+        if (channel && channel.kind !== "factory" && channel.kind !== "endpoints" && channel.kind !== "closed") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          const operation = expression.callee.property;
+          const location = expression.callee.location;
+          const makeCall = (
+            async: boolean,
+            receiverMode: "move" | null,
+            parameters: FunctionDeclaration["parameters"],
+            returnType: string,
+            errorType: string | null,
+          ): FunctionDeclaration => ({
+            kind: "function",
+            name: operation,
+            async,
+            receiverMode,
+            parameters,
+            returnType: { name: returnType, location },
+            errorType: errorType ? { name: errorType, location } : null,
+            body: [],
+            location,
+          });
+          let callable: FunctionDeclaration;
+          if (operation === "send" && (channel.kind === "sender" || channel.kind === "syncSender")) {
+            callable = makeCall(
+              channel.kind === "sender",
+              null,
+              [{ name: "value", mode: "move", type: { name: channel.valueType, location }, location }],
+              "void",
+              channelClosedTypeName(channel.valueType),
+            );
+          } else if (operation === "receive" && (channel.kind === "receiver" || channel.kind === "syncReceiver")) {
+            callable = makeCall(
+              channel.kind === "receiver",
+              null,
+              [],
+              optionTypeName(channel.valueType),
+              null,
+            );
+          } else if (operation === "close" && (channel.kind === "sender" || channel.kind === "syncSender")) {
+            callable = makeCall(false, null, [], "void", null);
+          } else if (operation === "sync" && channel.kind === "sender") {
+            callable = makeCall(false, null, [], channelSyncSenderTypeName(channel.valueType), null);
+          } else if (operation === "sync" && channel.kind === "receiver") {
+            callable = makeCall(false, "move", [], channelSyncReceiverTypeName(channel.valueType), null);
+          } else {
+            throw new DiagnosticError(fileName, expression.callee.location, `${displayAssignableType(receiverValueType, state)} has no method ${JSON.stringify(operation)}`, { code: "Z0710" });
+          }
+          if (
+            operation === "send"
+            && hasOwnershipType(channel.valueType, structs, enums, state)
+            && isNamedStorageExpression(expression.arguments[0])
+          ) {
+            throw new DiagnosticError(fileName, expression.arguments[0].location, "sending an existing message owner requires an explicit move", {
+              code: "Z0218",
+              helps: [`write \`sender.send(move ${storageRoot(expression.arguments[0])?.name ?? "value"})\``],
+            });
+          }
+          if (!isNamedStorageExpression(expression.callee.object)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, `Channel endpoint method ${JSON.stringify(operation)} requires a named handle`, {
+              code: "Z0710",
+              helps: ["bind the endpoint before using it"],
+            });
+          }
+          checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+          registerAsyncCall(callable, expression.location, fileName, state);
+          if (callable.receiverMode === "move") {
+            consumeOwnedValue(expression.callee.object, receiverValueType, locals, structs, enums, fileName, state);
+          }
+          state.channelCalls.set(expression.location.offset, {
+            valueType: channel.valueType,
+            operation: operation as ChannelCallInfo["operation"],
+            endpoint: channel.kind,
+          });
+          if (callable.errorType) {
+            if (!allowThrowingCall) {
+              throw new DiagnosticError(fileName, expression.location, `throwing Channel.${operation} requires \`attempt\` or \`try\``, {
+                code: callable.async ? "Z0701" : "Z0301",
+                helps: [callable.async
+                  ? `write \`try await sender.${operation}(move value)\` or \`attempt await sender.${operation}(move value)\``
+                  : `write \`try sender.${operation}(move value)\` or \`attempt sender.${operation}(move value)\``],
+              });
+            }
+            return resultTypeName(callable.returnType.name, callable.errorType.name);
+          }
+          return callable.returnType.name;
+        }
         const mutex = parseMutexType(receiverValueType);
         if (mutex) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -14126,6 +14295,13 @@ function consumeOwnedValue(
   if (!force && !hasOwnershipType(type, structs, enums, state)) return;
   if (state.objcStringsToZ.has(expression.location.offset)) return;
   const actual = String(underlyingType(type));
+  const channel = parseChannelHandleType(actual);
+  if (channel?.kind === "sender" || channel?.kind === "syncSender") {
+    if (!force && (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index")) {
+      state.managedCopies.add(expression.location.offset);
+      return;
+    }
+  }
   if (parseWeakType(actual)) {
     if (!force && (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index")) {
       state.managedCopies.add(expression.location.offset);
@@ -16538,6 +16714,14 @@ function hasCleanupType(
   if (readonly) return hasCleanupType(readonly.target, structs, enums, foreignTypes, visiting);
   if (actual === "String" || actual === "TextBuffer" || actual === "Arena" || actual === "TaskScope" || actual === "TaskControl") return true;
   if (parseMutexType(actual)) return true;
+  const channel = parseChannelHandleType(String(actual));
+  if (channel) {
+    if (channel.kind === "factory") return false;
+    if (channel.kind === "closed") {
+      return hasCleanupType(channel.valueType, structs, enums, foreignTypes, visiting);
+    }
+    return true;
+  }
   if (parseOnceLifetimeType(actual)) return true;
   if (actual === fsLockTypeName || actual === "fs.Lock") return true;
   if (actual === nativeConnectionTypeName) return true;
@@ -16587,6 +16771,7 @@ function explicitCopyPlanForType(
     || actual === "TaskScope"
     || actual === "TaskControl"
     || parseMutexType(actual)
+    || parseChannelHandleType(actual)
     || parseOnceType(actual)
     || parseOnceLifetimeType(actual)
     || actual === fsLockTypeName
@@ -16628,6 +16813,7 @@ function explicitAggregateCopyable(
     || type === "Arena"
     || type === "TaskControl"
     || parseMutexType(type)
+    || parseChannelHandleType(type)
     || type === fsLockTypeName
     || type === "fs.Lock"
     || parseAsyncGeneratorType(type)
@@ -16843,6 +17029,22 @@ function shareableTypeIssue(
       ? null
       : mutexThreadShareIssue(actual, structs, enums, state);
   }
+  const channel = parseChannelHandleType(actual);
+  if (channel) {
+    if (channel.kind === "factory") return null;
+    const transferable = initialThreadTransferKind(channel.valueType, structs, enums, state, visiting);
+    if (!transferable) {
+      return {
+        reason: `${path} carries messages of non-transferable type ${displayAssignableType(channel.valueType, state)}`,
+        help: "use an owned thread-transferable message type, or keep the channel on one executor",
+      };
+    }
+    if (channel.kind === "sender" || channel.kind === "syncSender") return null;
+    return {
+      reason: `${path} is a unique ${channel.kind === "receiver" ? "Receiver" : "SyncReceiver"} capability`,
+      help: "move the receiver to one owner instead of sharing it",
+    };
+  }
   const dynamic = parseDynamicArrayType(actual);
   if (dynamic) {
     if (!dynamic.readonly) {
@@ -16990,6 +17192,14 @@ function initialThreadTransferKind(
     return initialThreadTransferKind(mutex.valueType, structs, enums, state, visiting)
       ? "share"
       : null;
+  }
+  const channel = parseChannelHandleType(actual);
+  if (channel) {
+    if (channel.kind === "factory") return "copy";
+    const payload = initialThreadTransferKind(channel.valueType, structs, enums, state, visiting);
+    if (!payload) return null;
+    if (channel.kind === "sender" || channel.kind === "syncSender") return "share";
+    return "move";
   }
   const fixed = parseFixedArrayType(actual);
   if (fixed) {

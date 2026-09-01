@@ -101,7 +101,7 @@ type ModuleScope = {
   readonly globals: Map<string, string>;
   readonly namespaces: Map<string, ModuleNode>;
   readonly standardModules: Map<string, StandardModuleName>;
-  readonly standardTypes: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "Mutex">;
+  readonly standardTypes: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "Mutex" | "Channel" | "Sender" | "Receiver" | "SyncSender" | "SyncReceiver" | "ChannelClosed">;
 };
 
 export function isLocalSourceModuleSpecifier(specifier: string): boolean {
@@ -632,6 +632,18 @@ function buildScope(node: ModuleNode): ModuleScope {
           standardTypes.set(binding.localName, "OnceLifetime");
         } else if (declaration.header === "std/sync" && binding.importedName === "Mutex") {
           standardTypes.set(binding.localName, "Mutex");
+        } else if (
+          declaration.header === "std/channel"
+          && (
+            binding.importedName === "Channel"
+            || binding.importedName === "Sender"
+            || binding.importedName === "Receiver"
+            || binding.importedName === "SyncSender"
+            || binding.importedName === "SyncReceiver"
+            || binding.importedName === "ChannelClosed"
+          )
+        ) {
+          standardTypes.set(binding.localName, binding.importedName);
         } else if (declaration.header === "std/async" && binding.importedName === "TaskScope") {
           standardTypes.set(binding.localName, "TaskScope");
         } else if (declaration.header === "std/async" && binding.importedName === "TaskControl") {

@@ -32,6 +32,15 @@ import {
   onceTypeName,
 } from "./once-types.ts";
 import { mutexTypeName } from "./mutex-types.ts";
+import {
+  channelClosedTypeName,
+  channelEndpointsTypeName,
+  channelFactoryTypeName,
+  channelReceiverTypeName,
+  channelSenderTypeName,
+  channelSyncReceiverTypeName,
+  channelSyncSenderTypeName,
+} from "./channel-types.ts";
 import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 import type { DeferredGenericMethodDemand } from "./generic-inference.ts";
 
@@ -123,6 +132,19 @@ export function materializeGenerics(
       .filter((binding) => binding.importedName === "Mutex")
       .map((binding) => binding.localName),
   );
+  const channelBindings = new Map(
+    program.imports
+      .flatMap((declaration) => declaration.header === "std/channel" ? declaration.bindings ?? [] : [])
+      .filter((binding) => (
+        binding.importedName === "Channel"
+        || binding.importedName === "Sender"
+        || binding.importedName === "Receiver"
+        || binding.importedName === "SyncSender"
+        || binding.importedName === "SyncReceiver"
+        || binding.importedName === "ChannelClosed"
+      ))
+      .map((binding) => [binding.localName, binding.importedName] as const),
+  );
   const hashableImport = program.imports
     .flatMap((declaration) => declaration.header === "std/hash" ? declaration.bindings ?? [] : [])
     .find((binding) => binding.importedName === "Hashable");
@@ -146,6 +168,7 @@ export function materializeGenerics(
   const generatorStepInstances = new Map<string, EnumDeclaration>();
   const mapInstances = new Set<string>();
   const setInstances = new Set<string>();
+  const channelInstances = new Set<string>();
   type ConcreteMethodDemand = {
     readonly ownerName: string;
     readonly ownerSubstitutions: ReadonlyMap<string, string>;
@@ -342,6 +365,13 @@ export function materializeGenerics(
       typeDisplayNames.set(name, `Mutex<${displayName(args[0])}>`);
       return name;
     }
+    const channelBinding = channelBindings.get(generic.base);
+    if (channelBinding) {
+      if (args.length !== 1) {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `${channelBinding} expects 1 type argument, received ${args.length}`);
+      }
+      return instantiateChannelType(channelBinding, args[0]);
+    }
     const genericSeparator = generic.base.lastIndexOf(".");
     if (
       genericSeparator > 0
@@ -491,6 +521,23 @@ export function materializeGenerics(
     }
     if (value.kind === "member" && value.object?.kind === "identifier") {
       const generic = parseGenericType(value.object.name);
+      const channelBinding = generic ? channelBindings.get(generic.base) : null;
+      if (generic && channelBinding) {
+        if (generic.arguments.length !== 1) {
+          throw new DiagnosticError(fileName, value.location, `${channelBinding} expects 1 type argument, received ${generic.arguments.length}`);
+        }
+        const transformed = transformObject(value, substitutions, remapLocation);
+        return {
+          ...transformed,
+          object: {
+            ...transformed.object,
+            name: instantiateChannelType(
+              channelBinding,
+              substituteName(generic.arguments[0], substitutions),
+            ),
+          },
+        };
+      }
       if (generic?.base === "Option") {
         const transformed = transformObject(value, substitutions, remapLocation);
         return {
@@ -767,6 +814,73 @@ export function materializeGenerics(
       location,
     });
     return name;
+  }
+
+  function instantiateChannelType(
+    requested: "Channel" | "Sender" | "Receiver" | "SyncSender" | "SyncReceiver" | "ChannelClosed",
+    valueType: string,
+  ): string {
+    const factory = channelFactoryTypeName(valueType);
+    const sender = channelSenderTypeName(valueType);
+    const receiver = channelReceiverTypeName(valueType);
+    const syncSender = channelSyncSenderTypeName(valueType);
+    const syncReceiver = channelSyncReceiverTypeName(valueType);
+    const endpoints = channelEndpointsTypeName(valueType);
+    const closed = channelClosedTypeName(valueType);
+    const requestedName = {
+      Channel: factory,
+      Sender: sender,
+      Receiver: receiver,
+      SyncSender: syncSender,
+      SyncReceiver: syncReceiver,
+      ChannelClosed: closed,
+    }[requested];
+    if (channelInstances.has(valueType)) return requestedName;
+    channelInstances.add(valueType);
+    const location = program.functions[0]?.location ?? program.structs[0]?.location ?? program.enums[0]?.location
+      ?? { offset: 0, line: 1, column: 1 };
+    typeDisplayNames.set(factory, `Channel<${displayName(valueType)}>`);
+    typeDisplayNames.set(sender, `Sender<${displayName(valueType)}>`);
+    typeDisplayNames.set(receiver, `Receiver<${displayName(valueType)}>`);
+    typeDisplayNames.set(syncSender, `SyncSender<${displayName(valueType)}>`);
+    typeDisplayNames.set(syncReceiver, `SyncReceiver<${displayName(valueType)}>`);
+    typeDisplayNames.set(endpoints, `Channel.Endpoints<${displayName(valueType)}>`);
+    typeDisplayNames.set(closed, `ChannelClosed<${displayName(valueType)}>`);
+    const emptyHandle = (name: string): StructDeclaration => ({
+      kind: "struct",
+      name,
+      typeParameters: [],
+      typeParameterConstraints: [],
+      implements: [],
+      fields: [],
+      constructor: null,
+      methods: [],
+      deinitializer: null,
+      location,
+    });
+    structs.push(
+      emptyHandle(factory),
+      emptyHandle(sender),
+      emptyHandle(receiver),
+      emptyHandle(syncSender),
+      emptyHandle(syncReceiver),
+      {
+        ...emptyHandle(endpoints),
+        fields: [
+          { name: "sender", type: { name: sender, location }, visibility: "public", readonly: true, location },
+          { name: "receiver", type: { name: receiver, location }, visibility: "public", readonly: true, location },
+        ],
+      },
+      {
+        ...emptyHandle(closed),
+        fields: [
+          { name: "value", type: { name: valueType, location }, visibility: "public", readonly: true, location },
+        ],
+      },
+    );
+    instantiateStruct("Option", [valueType]);
+    instantiateResult(["void", closed]);
+    return requestedName;
   }
 
   function instantiateFunction(base: string, args: string[], requestLocation?: FunctionDeclaration["location"]): string {

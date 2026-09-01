@@ -72,6 +72,15 @@ import {
   parseOnceType,
 } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
+import {
+  channelClosedTypeName,
+  channelEndpointsTypeName,
+  channelReceiverTypeName,
+  channelSenderTypeName,
+  channelSyncReceiverTypeName,
+  channelSyncSenderTypeName,
+  parseChannelHandleType,
+} from "./channel-types.ts";
 import { parseReadonlyType, readonlyTypeName, writableTypeName } from "./readonly-types.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { parseObjCProtocolType } from "./objc-types.ts";
@@ -226,10 +235,11 @@ export function generateC(
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
   const onceValueTypes = collectOnceValueTypes(program, semanticInfo);
   const mutexValueTypes = collectMutexValueTypes(program, semanticInfo);
+  const channelValueTypes = collectChannelValueTypes(program, semanticInfo);
   const embeddedRuntimeName = options.embeddedRuntimeName ?? null;
   const embeddedRuntimeInitializer = options.embeddedRuntimeInitializer ?? null;
   const usesEmbeddedRuntime = embeddedRuntimeName !== null;
-  const usesMutex = mutexValueTypes.length > 0 || onceValueTypes.length > 0;
+  const usesMutex = mutexValueTypes.length > 0 || onceValueTypes.length > 0 || channelValueTypes.length > 0;
   const usesExecutorBoundClasses = program.structs.some((declaration) => (
     declaration.kind === "class"
     && semanticInfo.aggregateExecutorAffinities.has(declaration.name)
@@ -566,6 +576,19 @@ export function generateC(
       `} ${mutexName(valueType)};`,
     );
   }
+  for (const valueType of channelValueTypes) {
+    lines.push(
+      `typedef struct ${channelStorageName(valueType)} ${channelStorageName(valueType)};`,
+      `typedef struct ${channelSenderName(valueType)} { ${channelStorageName(valueType)} *storage; } ${channelSenderName(valueType)};`,
+      `typedef struct ${channelReceiverName(valueType)} { ${channelStorageName(valueType)} *storage; } ${channelReceiverName(valueType)};`,
+      `typedef struct ${channelSyncSenderName(valueType)} { ${channelStorageName(valueType)} *storage; } ${channelSyncSenderName(valueType)};`,
+      `typedef struct ${channelSyncReceiverName(valueType)} { ${channelStorageName(valueType)} *storage; } ${channelSyncReceiverName(valueType)};`,
+      `typedef struct ${channelEndpointsName(valueType)} {`,
+      `  ${channelSenderName(valueType)} sender;`,
+      `  ${channelReceiverName(valueType)} receiver;`,
+      `} ${channelEndpointsName(valueType)};`,
+    );
+  }
   if (
     program.structs.length > 0
     || program.enums.length > 0
@@ -698,6 +721,30 @@ export function generateC(
       "",
     );
   }
+  for (const valueType of channelValueTypes) {
+    lines.push(
+      `struct ${channelStorageName(valueType)} {`,
+      "  Z_NativeMutex native;",
+      "#if defined(_WIN32)",
+      "  CONDITION_VARIABLE readable;",
+      "  CONDITION_VARIABLE writable;",
+      "#else",
+      "  pthread_cond_t readable;",
+      "  pthread_cond_t writable;",
+      "#endif",
+      "  size_t refcount;",
+      "  size_t sender_count;",
+      "  uintptr_t capacity;",
+      "  uintptr_t length;",
+      "  uintptr_t head;",
+      "  uintptr_t tail;",
+      "  bool closed;",
+      "  bool receiver_alive;",
+      `  ${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} *items;`,
+      "};",
+      "",
+    );
+  }
   for (const declaration of program.constants) {
     lines.push(generateModuleConstant(declaration, structs, enums, semanticInfo));
   }
@@ -755,6 +802,9 @@ export function generateC(
       `static void ${mutexDeinitName(valueType)}(${mutexName(valueType)} *mutex);`,
     );
   }
+  for (const valueType of channelValueTypes) {
+    lines.push(...generateChannelRuntimeDeclarations(valueType, structs, enums, semanticInfo));
+  }
   for (const [offset, call] of semanticInfo.mutexWithLockCalls) {
     lines.push(`${generateMutexWithLockSignature(offset, call, structs, enums, semanticInfo)};`);
   }
@@ -788,6 +838,9 @@ export function generateC(
   }
   for (const valueType of mutexValueTypes) {
     lines.push(generateMutexRuntime(valueType, structs, enums, semanticInfo), "");
+  }
+  for (const valueType of channelValueTypes) {
+    lines.push(generateChannelRuntime(valueType, structs, enums, semanticInfo), "");
   }
   for (const [offset, call] of semanticInfo.mutexWithLockCalls) {
     lines.push(generateMutexWithLockHelper(offset, call, structs, enums, semanticInfo), "");
@@ -1138,6 +1191,293 @@ static __attribute__((unused)) void ${mutexDeinitName(valueType)}(${mutexName(va
   if (pthread_mutex_destroy(&storage->native) != 0) abort();
 #endif
 ${cleanup ? `${indent(cleanup, 2)}\n` : ""}  free(storage);
+}`;
+}
+
+function generateChannelRuntimeDeclarations(
+  valueType: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string[] {
+  const value = mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes);
+  const sendResult = mapType(
+    resultTypeName("void", channelClosedTypeName(valueType)),
+    structs,
+    enums,
+    semanticInfo.foreignNamedTypes,
+  );
+  const receiveResult = mapType(
+    optionTypeName(valueType),
+    structs,
+    enums,
+    semanticInfo.foreignNamedTypes,
+  );
+  return [
+    `static ${channelEndpointsName(valueType)} ${channelBoundedName(valueType)}(uintptr_t capacity);`,
+    `static ${channelSenderName(valueType)} ${channelSenderRetainName(valueType)}(${channelSenderName(valueType)} sender);`,
+    `static ${channelSyncSenderName(valueType)} ${channelSyncSenderRetainName(valueType)}(${channelSyncSenderName(valueType)} sender);`,
+    `static void ${channelSenderDeinitName(valueType)}(${channelSenderName(valueType)} *sender);`,
+    `static void ${channelReceiverDeinitName(valueType)}(${channelReceiverName(valueType)} *receiver);`,
+    `static void ${channelSyncSenderDeinitName(valueType)}(${channelSyncSenderName(valueType)} *sender);`,
+    `static void ${channelSyncReceiverDeinitName(valueType)}(${channelSyncReceiverName(valueType)} *receiver);`,
+    `static ${channelSyncSenderName(valueType)} ${channelSenderSyncName(valueType)}(${channelSenderName(valueType)} sender);`,
+    `static ${channelSyncReceiverName(valueType)} ${channelReceiverSyncName(valueType)}(${channelReceiverName(valueType)} receiver);`,
+    `static void ${channelCloseName(valueType)}(${channelStorageName(valueType)} *storage);`,
+    `static ${sendResult} ${channelSyncSendName(valueType)}(${channelSyncSenderName(valueType)} sender, ${value} value);`,
+    `static ${receiveResult} ${channelSyncReceiveName(valueType)}(${channelSyncReceiverName(valueType)} receiver);`,
+  ];
+}
+
+function generateChannelRuntime(
+  valueType: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const storage = channelStorageName(valueType);
+  const valueCType = mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes);
+  const sendType = resultTypeName("void", channelClosedTypeName(valueType));
+  const sendCType = mapType(sendType, structs, enums, semanticInfo.foreignNamedTypes);
+  const closedCType = mapType(channelClosedTypeName(valueType), structs, enums, semanticInfo.foreignNamedTypes);
+  const receiveType = optionTypeName(valueType);
+  const receiveCType = mapType(receiveType, structs, enums, semanticInfo.foreignNamedTypes);
+  const receiveDeclaration = enums.get(receiveType);
+  const receiveNiche = receiveDeclaration
+    ? nicheOptionPayload(receiveDeclaration, semanticInfo.foreignNamedTypes)
+    : null;
+  const receiveSome = receiveNiche
+    ? "value"
+    : `(${receiveCType}){ .tag = ${variantTag(receiveType, "some")}, .data = { .some = value } }`;
+  const receiveNone = receiveNiche
+    ? nicheOptionNull(valueType)
+    : `(${receiveCType}){ .tag = ${variantTag(receiveType, "none")} }`;
+  const itemCleanup = generateOwnedEnvironmentCleanup(
+    "storage->items[index]",
+    valueType,
+    structs,
+    enums,
+    semanticInfo,
+    { value: 0 },
+  );
+  const storageCleanup = itemCleanup
+    ? `  while (storage->length > 0) {
+    uintptr_t index = storage->head;
+${indent(itemCleanup, 4)}
+    storage->head = (storage->head + 1) % storage->capacity;
+    storage->length -= 1;
+  }
+`
+    : "";
+  return `static void z_channel_${nativeSymbolPart(valueType)}_storage_release(${storage} *storage) {
+  if (__atomic_sub_fetch(&storage->refcount, 1, __ATOMIC_ACQ_REL) != 0) return;
+${storageCleanup}#if !defined(_WIN32)
+  if (pthread_cond_destroy(&storage->readable) != 0) abort();
+  if (pthread_cond_destroy(&storage->writable) != 0) abort();
+  if (pthread_mutex_destroy(&storage->native) != 0) abort();
+#endif
+  free(storage->items);
+  free(storage);
+}
+
+static ${channelEndpointsName(valueType)} ${channelBoundedName(valueType)}(uintptr_t capacity) {
+  if (capacity == 0) abort();
+  ${storage} *storage = (${storage} *)calloc(1, sizeof(${storage}));
+  if (storage == NULL) abort();
+  storage->items = (${valueCType} *)calloc(capacity, sizeof(${valueCType}));
+  if (storage->items == NULL) {
+    free(storage);
+    abort();
+  }
+#if defined(_WIN32)
+  InitializeSRWLock(&storage->native);
+  InitializeConditionVariable(&storage->readable);
+  InitializeConditionVariable(&storage->writable);
+#else
+  if (pthread_mutex_init(&storage->native, NULL) != 0
+      || pthread_cond_init(&storage->readable, NULL) != 0
+      || pthread_cond_init(&storage->writable, NULL) != 0) {
+    free(storage->items);
+    free(storage);
+    abort();
+  }
+#endif
+  storage->refcount = 2;
+  storage->sender_count = 1;
+  storage->capacity = capacity;
+  storage->receiver_alive = true;
+  return (${channelEndpointsName(valueType)}){
+    .sender = (${channelSenderName(valueType)}){ .storage = storage },
+    .receiver = (${channelReceiverName(valueType)}){ .storage = storage },
+  };
+}
+
+static ${channelSenderName(valueType)} ${channelSenderRetainName(valueType)}(${channelSenderName(valueType)} sender) {
+  if (sender.storage == NULL) abort();
+  __atomic_add_fetch(&sender.storage->refcount, 1, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&sender.storage->sender_count, 1, __ATOMIC_RELAXED);
+  return sender;
+}
+
+static Z_UNUSED_FUNCTION ${channelSyncSenderName(valueType)} ${channelSyncSenderRetainName(valueType)}(${channelSyncSenderName(valueType)} sender) {
+  if (sender.storage == NULL) abort();
+  __atomic_add_fetch(&sender.storage->refcount, 1, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&sender.storage->sender_count, 1, __ATOMIC_RELAXED);
+  return sender;
+}
+
+static void z_channel_${nativeSymbolPart(valueType)}_sender_storage_deinit(${storage} *storage) {
+  if (__atomic_sub_fetch(&storage->sender_count, 1, __ATOMIC_ACQ_REL) == 0) {
+    ${channelCloseName(valueType)}(storage);
+  }
+  z_channel_${nativeSymbolPart(valueType)}_storage_release(storage);
+}
+
+static void ${channelSenderDeinitName(valueType)}(${channelSenderName(valueType)} *sender) {
+  if (sender == NULL || sender->storage == NULL) return;
+  ${storage} *storage = sender->storage;
+  sender->storage = NULL;
+  z_channel_${nativeSymbolPart(valueType)}_sender_storage_deinit(storage);
+}
+
+static void ${channelSyncSenderDeinitName(valueType)}(${channelSyncSenderName(valueType)} *sender) {
+  if (sender == NULL || sender->storage == NULL) return;
+  ${storage} *storage = sender->storage;
+  sender->storage = NULL;
+  z_channel_${nativeSymbolPart(valueType)}_sender_storage_deinit(storage);
+}
+
+static void z_channel_${nativeSymbolPart(valueType)}_receiver_storage_deinit(${storage} *storage) {
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&storage->native);
+  storage->receiver_alive = false;
+  storage->closed = true;
+  WakeAllConditionVariable(&storage->readable);
+  WakeAllConditionVariable(&storage->writable);
+  ReleaseSRWLockExclusive(&storage->native);
+#else
+  if (pthread_mutex_lock(&storage->native) != 0) abort();
+  storage->receiver_alive = false;
+  storage->closed = true;
+  if (pthread_cond_broadcast(&storage->readable) != 0) abort();
+  if (pthread_cond_broadcast(&storage->writable) != 0) abort();
+  if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+  z_channel_${nativeSymbolPart(valueType)}_storage_release(storage);
+}
+
+static void ${channelReceiverDeinitName(valueType)}(${channelReceiverName(valueType)} *receiver) {
+  if (receiver == NULL || receiver->storage == NULL) return;
+  ${storage} *storage = receiver->storage;
+  receiver->storage = NULL;
+  z_channel_${nativeSymbolPart(valueType)}_receiver_storage_deinit(storage);
+}
+
+static void ${channelSyncReceiverDeinitName(valueType)}(${channelSyncReceiverName(valueType)} *receiver) {
+  if (receiver == NULL || receiver->storage == NULL) return;
+  ${storage} *storage = receiver->storage;
+  receiver->storage = NULL;
+  z_channel_${nativeSymbolPart(valueType)}_receiver_storage_deinit(storage);
+}
+
+static ${channelSyncSenderName(valueType)} ${channelSenderSyncName(valueType)}(${channelSenderName(valueType)} sender) {
+  ${channelSenderName(valueType)} retained = ${channelSenderRetainName(valueType)}(sender);
+  return (${channelSyncSenderName(valueType)}){ .storage = retained.storage };
+}
+
+static ${channelSyncReceiverName(valueType)} ${channelReceiverSyncName(valueType)}(${channelReceiverName(valueType)} receiver) {
+  if (receiver.storage == NULL) abort();
+  return (${channelSyncReceiverName(valueType)}){ .storage = receiver.storage };
+}
+
+static void ${channelCloseName(valueType)}(${storage} *storage) {
+  if (storage == NULL) abort();
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&storage->native);
+  storage->closed = true;
+  WakeAllConditionVariable(&storage->readable);
+  WakeAllConditionVariable(&storage->writable);
+  ReleaseSRWLockExclusive(&storage->native);
+#else
+  if (pthread_mutex_lock(&storage->native) != 0) abort();
+  storage->closed = true;
+  if (pthread_cond_broadcast(&storage->readable) != 0) abort();
+  if (pthread_cond_broadcast(&storage->writable) != 0) abort();
+  if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+}
+
+static ${sendCType} ${channelSyncSendName(valueType)}(${channelSyncSenderName(valueType)} sender, ${valueCType} value) {
+  ${storage} *storage = sender.storage;
+  if (storage == NULL) abort();
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&storage->native);
+  while (storage->length == storage->capacity && !storage->closed && storage->receiver_alive) {
+    if (!SleepConditionVariableSRW(&storage->writable, &storage->native, INFINITE, 0)) abort();
+  }
+#else
+  if (pthread_mutex_lock(&storage->native) != 0) abort();
+  while (storage->length == storage->capacity && !storage->closed && storage->receiver_alive) {
+    if (pthread_cond_wait(&storage->writable, &storage->native) != 0) abort();
+  }
+#endif
+  if (storage->closed || !storage->receiver_alive) {
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&storage->native);
+#else
+    if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+    return (${sendCType}){
+      .tag = ${variantTag(sendType, "failure")},
+      .data = { .failure = (${closedCType}){ .value = value } },
+    };
+  }
+  storage->items[storage->tail] = value;
+  storage->tail = (storage->tail + 1) % storage->capacity;
+  storage->length += 1;
+#if defined(_WIN32)
+  WakeConditionVariable(&storage->readable);
+  ReleaseSRWLockExclusive(&storage->native);
+#else
+  if (pthread_cond_signal(&storage->readable) != 0) abort();
+  if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+  return (${sendCType}){ .tag = ${variantTag(sendType, "success")} };
+}
+
+static ${receiveCType} ${channelSyncReceiveName(valueType)}(${channelSyncReceiverName(valueType)} receiver) {
+  ${storage} *storage = receiver.storage;
+  if (storage == NULL) abort();
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&storage->native);
+  while (storage->length == 0 && !storage->closed) {
+    if (!SleepConditionVariableSRW(&storage->readable, &storage->native, INFINITE, 0)) abort();
+  }
+#else
+  if (pthread_mutex_lock(&storage->native) != 0) abort();
+  while (storage->length == 0 && !storage->closed) {
+    if (pthread_cond_wait(&storage->readable, &storage->native) != 0) abort();
+  }
+#endif
+  if (storage->length == 0) {
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&storage->native);
+#else
+    if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+    return ${receiveNone};
+  }
+  ${valueCType} value = storage->items[storage->head];
+  storage->head = (storage->head + 1) % storage->capacity;
+  storage->length -= 1;
+#if defined(_WIN32)
+  WakeConditionVariable(&storage->writable);
+  ReleaseSRWLockExclusive(&storage->native);
+#else
+  if (pthread_cond_signal(&storage->writable) != 0) abort();
+  if (pthread_mutex_unlock(&storage->native) != 0) abort();
+#endif
+  return ${receiveSome};
 }`;
 }
 
@@ -2307,6 +2647,63 @@ function collectMutexValueTypes(program: Program, semanticInfo: SemanticInfo): s
   return [...collected];
 }
 
+function collectChannelValueTypes(program: Program, semanticInfo: SemanticInfo): string[] {
+  const collected = new Set<string>([...semanticInfo.channelCalls.values()].map((call) => call.valueType));
+  const visiting = new Set<string>();
+  const add = (name: string): void => {
+    if (visiting.has(name)) return;
+    visiting.add(name);
+    const channel = parseChannelHandleType(name);
+    if (channel) {
+      collected.add(channel.valueType);
+      add(channel.valueType);
+      return;
+    }
+    const functionType = parseFunctionType(name);
+    if (functionType) {
+      for (const parameter of functionType.parameters) add(parameter.type);
+      add(functionType.returnType);
+      if (functionType.errorType) add(functionType.errorType);
+      return;
+    }
+    const fixed = parseFixedArrayType(name);
+    if (fixed) add(fixed.elementType);
+    const slice = parseSliceType(name);
+    if (slice) add(slice.elementType);
+    const dynamic = parseDynamicArrayType(name);
+    if (dynamic) add(dynamic.elementType);
+    const option = parseOptionType(name);
+    if (option) add(option.target);
+    const map = parseMapType(name);
+    if (map) {
+      add(map.keyType);
+      add(map.valueType);
+    }
+    const set = parseSetType(name);
+    if (set) add(set.elementType);
+  };
+  for (const declaration of program.functions) {
+    add(declaration.returnType.name);
+    if (declaration.errorType) add(declaration.errorType.name);
+    for (const parameter of declaration.parameters) add(parameter.type.name);
+  }
+  for (const declaration of program.structs) {
+    add(declaration.name);
+    for (const field of declaration.fields) add(field.type.name);
+    for (const method of declaration.methods) {
+      add(method.returnType.name);
+      if (method.errorType) add(method.errorType.name);
+      for (const parameter of method.parameters) add(parameter.type.name);
+    }
+  }
+  for (const declaration of program.enums) {
+    for (const variant of declaration.variants) if (variant.payload) add(variant.payload.name);
+  }
+  for (const type of semanticInfo.expressionTypes.values()) add(type);
+  for (const type of semanticInfo.bindingTypes.values()) add(type);
+  return [...collected];
+}
+
 function collectFixedArrayTypes(program: Program, semanticInfo: SemanticInfo): string[] {
   const collected = new Set<string>();
   const add = (name: string): void => {
@@ -3314,6 +3711,16 @@ function generateOwnedEnvironmentCleanup(
   if (type === "TaskControl") return `z_task_control_release(${value});`;
   const mutex = parseMutexType(type);
   if (mutex) return `${mutexDeinitName(mutex.valueType)}(&(${value}));`;
+  const channel = parseChannelHandleType(type);
+  if (channel) {
+    if (channel.kind === "sender") return `${channelSenderDeinitName(channel.valueType)}(&(${value}));`;
+    if (channel.kind === "receiver") return `${channelReceiverDeinitName(channel.valueType)}(&(${value}));`;
+    if (channel.kind === "syncSender") return `${channelSyncSenderDeinitName(channel.valueType)}(&(${value}));`;
+    if (channel.kind === "syncReceiver") return `${channelSyncReceiverDeinitName(channel.valueType)}(&(${value}));`;
+    if (channel.kind === "endpoints") {
+      return `${channelReceiverDeinitName(channel.valueType)}(&((${value}).receiver));\n${channelSenderDeinitName(channel.valueType)}(&((${value}).sender));`;
+    }
+  }
   const onceLifetime = parseOnceLifetimeType(type);
   if (onceLifetime) return `${onceLifetimeDeinitName(onceLifetime.valueType)}(&(${value}));`;
   if (type === fsLockTypeName || type === "fs.Lock") {
@@ -7778,6 +8185,11 @@ function generateOwnedClosureCaptureValue(
   else {
     const mutex = parseMutexType(capture.type);
     if (mutex) value = `${mutexRetainName(mutex.valueType)}(${value})`;
+    else if (parseChannelHandleType(capture.type)?.kind === "sender") {
+      value = `${channelSenderRetainName(parseChannelHandleType(capture.type)!.valueType)}(${value})`;
+    } else if (parseChannelHandleType(capture.type)?.kind === "syncSender") {
+      value = `${channelSyncSenderRetainName(parseChannelHandleType(capture.type)!.valueType)}(${value})`;
+    }
     else if (capturedClass?.kind === "class") value = `${retainName(capture.type)}(${value})`;
     else if (capturedFunction) value = `${functionTypeRetainName(capturedFunction)}(${value})`;
     else if (parseWeakType(capture.type)) value = `z_weak_retain(${value})`;
@@ -8482,6 +8894,21 @@ function generateValueCleanup(
     const release = `${mutexDeinitName(mutex.valueType)}(&(${value}));`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
   }
+  const channel = parseChannelHandleType(type);
+  if (channel) {
+    const release = channel.kind === "sender"
+      ? `${channelSenderDeinitName(channel.valueType)}(&(${value}));`
+      : channel.kind === "receiver"
+        ? `${channelReceiverDeinitName(channel.valueType)}(&(${value}));`
+        : channel.kind === "syncSender"
+          ? `${channelSyncSenderDeinitName(channel.valueType)}(&(${value}));`
+          : channel.kind === "syncReceiver"
+            ? `${channelSyncReceiverDeinitName(channel.valueType)}(&(${value}));`
+            : channel.kind === "endpoints"
+              ? `${channelReceiverDeinitName(channel.valueType)}(&((${value}).receiver)); ${channelSenderDeinitName(channel.valueType)}(&((${value}).sender));`
+              : "";
+    if (release) return liveFlag ? `if (${liveFlag}) { ${release} }` : release;
+  }
   const onceLifetime = parseOnceLifetimeType(type);
   if (onceLifetime) {
     const release = `${onceLifetimeDeinitName(onceLifetime.valueType)}(&(${value}));`;
@@ -8707,6 +9134,10 @@ function throwingCallResultType(expression: Expression, context: GenerationConte
     return resultTypeName(target.returnType.name, target.errorType!.name);
   }
   if (expression.kind === "call" && expression.callee.kind === "member") {
+    const channel = context.semanticInfo.channelCalls.get(expression.location.offset);
+    if (channel?.operation === "send") {
+      return resultTypeName("void", channelClosedTypeName(channel.valueType));
+    }
     const mutexWithLock = context.semanticInfo.mutexWithLockCalls.get(expression.location.offset);
     if (mutexWithLock?.errorType) {
       return resultTypeName(mutexWithLock.returnType, mutexWithLock.errorType);
@@ -10108,6 +10539,30 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (mutexWithLock && expression.callee.kind === "member") {
         return `${mutexWithLockName(expression.location.offset)}(${generateExpression(expression.callee.object, context)}, ${generateCallArgument(expression.arguments[0], context)})`;
       }
+      const channel = context.semanticInfo.channelCalls.get(expression.location.offset);
+      if (channel) {
+        if (channel.operation === "bounded") {
+          return `${channelBoundedName(channel.valueType)}((uintptr_t)(${generateExpression(expression.arguments[0], context)}))`;
+        }
+        if (expression.callee.kind !== "member") throw new Error("channel endpoint call requires a member receiver");
+        const receiver = generateExpression(expression.callee.object, context);
+        if (channel.operation === "sync" && channel.endpoint === "sender") {
+          return `${channelSenderSyncName(channel.valueType)}(${receiver})`;
+        }
+        if (channel.operation === "sync" && channel.endpoint === "receiver") {
+          return `${channelReceiverSyncName(channel.valueType)}(${receiver})`;
+        }
+        if (channel.operation === "close") {
+          return `${channelCloseName(channel.valueType)}((${receiver}).storage)`;
+        }
+        if (channel.operation === "send" && channel.endpoint === "syncSender") {
+          return `${channelSyncSendName(channel.valueType)}(${receiver}, ${generateExpression(expression.arguments[0], context)})`;
+        }
+        if (channel.operation === "receive" && channel.endpoint === "syncReceiver") {
+          return `${channelSyncReceiveName(channel.valueType)}(${receiver})`;
+        }
+        throw new Error(`async Channel.${channel.operation} must be lowered through the async task frame`);
+      }
       const autoreleasePool = context.semanticInfo.objcAutoreleasePoolCalls.get(expression.location.offset);
       if (autoreleasePool) {
         return `${objcAutoreleasePoolName(expression.location.offset)}(${generateCallArgument(expression.arguments[0], context)})`;
@@ -10621,6 +11076,9 @@ function maybeRetainClass(expression: Expression, value: string, context: Genera
   const type = inferExpressionType(expression, context);
   if (type === "TaskScope") return `z_task_scope_retain(${value})`;
   if (type === "TaskControl") return `z_task_control_retain(${value})`;
+  const channel = parseChannelHandleType(type);
+  if (channel?.kind === "sender") return `${channelSenderRetainName(channel.valueType)}(${value})`;
+  if (channel?.kind === "syncSender") return `${channelSyncSenderRetainName(channel.valueType)}(${value})`;
   if (parseWeakType(type)) return `z_weak_retain(${value})`;
   const functionType = parseFunctionType(type);
   if (functionType) return `${functionTypeRetainName(functionType)}(${value})`;
@@ -11810,6 +12268,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     || parseWeakResultType(analyzedType)
     || parseViewType(analyzedType)
     || parseMutexType(analyzedType)
+    || parseChannelHandleType(analyzedType)
     || parseOnceType(analyzedType)
     || parseOnceLifetimeType(analyzedType)
     || context.structs.has(analyzedType)
@@ -12092,6 +12551,16 @@ function mapType(
   if (onceLifetime) return onceLifetimeName(onceLifetime.valueType);
   const mutex = parseMutexType(name);
   if (mutex) return mutexName(mutex.valueType);
+  const channel = parseChannelHandleType(name);
+  if (channel) {
+    if (channel.kind === "factory") return "uint8_t";
+    if (channel.kind === "sender") return channelSenderName(channel.valueType);
+    if (channel.kind === "receiver") return channelReceiverName(channel.valueType);
+    if (channel.kind === "syncSender") return channelSyncSenderName(channel.valueType);
+    if (channel.kind === "syncReceiver") return channelSyncReceiverName(channel.valueType);
+    if (channel.kind === "endpoints") return channelEndpointsName(channel.valueType);
+    return structName(name);
+  }
   const primitive = primitiveTypeNames[name];
   if (primitive) return primitive;
   if (parseFixedArrayType(name)) return arrayName(name);
@@ -12263,6 +12732,78 @@ function mutexWithLockName(offset: number): string {
   return `z_mutex_with_lock_${offset}`;
 }
 
+function channelStorageName(valueType: string): string {
+  return `Z_Channel_${nativeSymbolPart(valueType)}_Storage`;
+}
+
+function channelSenderName(valueType: string): string {
+  return `Z_ChannelSender_${nativeSymbolPart(valueType)}`;
+}
+
+function channelReceiverName(valueType: string): string {
+  return `Z_ChannelReceiver_${nativeSymbolPart(valueType)}`;
+}
+
+function channelSyncSenderName(valueType: string): string {
+  return `Z_ChannelSyncSender_${nativeSymbolPart(valueType)}`;
+}
+
+function channelSyncReceiverName(valueType: string): string {
+  return `Z_ChannelSyncReceiver_${nativeSymbolPart(valueType)}`;
+}
+
+function channelEndpointsName(valueType: string): string {
+  return `Z_ChannelEndpoints_${nativeSymbolPart(valueType)}`;
+}
+
+function channelBoundedName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_bounded`;
+}
+
+function channelSenderRetainName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_sender_retain`;
+}
+
+function channelSenderDeinitName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_sender_deinit`;
+}
+
+function channelSyncSenderRetainName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_sync_sender_retain`;
+}
+
+function channelReceiverDeinitName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_receiver_deinit`;
+}
+
+function channelSyncSenderDeinitName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_sync_sender_deinit`;
+}
+
+function channelSyncReceiverDeinitName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_sync_receiver_deinit`;
+}
+
+function channelSenderSyncName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_sender_sync`;
+}
+
+function channelReceiverSyncName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_receiver_sync`;
+}
+
+function channelCloseName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_close`;
+}
+
+function channelSyncSendName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_sync_send`;
+}
+
+function channelSyncReceiveName(valueType: string): string {
+  return `z_channel_${nativeSymbolPart(valueType)}_sync_receive`;
+}
+
 function objcAutoreleasePoolName(offset: number): string {
   return `z_objc_autorelease_pool_${offset}`;
 }
@@ -12395,6 +12936,14 @@ function hasCleanupType(
     || type === fsLockTypeName
     || type === "fs.Lock"
   ) return true;
+  const channel = parseChannelHandleType(type);
+  if (channel) {
+    if (channel.kind === "factory") return false;
+    if (channel.kind === "closed") {
+      return hasCleanupType(channel.valueType, structs, enums, foreignTypes, visiting);
+    }
+    return true;
+  }
   if (type === nativeConnectionTypeName) return true;
   if (parseGeneratorType(type)) return true;
   if (parseWeakType(type)) return true;
@@ -12430,6 +12979,14 @@ function hasSemanticCleanupType(
   if (readonly) return hasSemanticCleanupType(readonly.target, structs, enums, semanticInfo, visiting);
   if (parseGeneratorType(type)) return true;
   if (parseMutexType(type)) return true;
+  const channel = parseChannelHandleType(type);
+  if (channel) {
+    if (channel.kind === "factory") return false;
+    if (channel.kind === "closed") {
+      return hasSemanticCleanupType(channel.valueType, structs, enums, semanticInfo, visiting);
+    }
+    return true;
+  }
   const foreignNamed = semanticInfo.foreignNamedTypes.get(type);
   if (foreignNamed?.kind === "object" || (foreignNamed?.kind === "record" && foreignNamed.resource)) return true;
   if (hasCleanupType(type, structs, enums, semanticInfo.foreignTypes)) return true;

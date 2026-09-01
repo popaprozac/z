@@ -695,6 +695,7 @@ export function compileToNative(
           semanticInfo.threadSpawnCalls.size > 0
           || semanticInfo.taskScopeAsyncCalls.size > 0
           || [...semanticInfo.standardTypeBindings.values()].includes("Mutex")
+          || [...semanticInfo.standardTypeBindings.values()].includes("Channel")
         )
         && process.platform !== "win32"
           ? ["-pthread"]
@@ -777,6 +778,7 @@ export function compileTestsToNative(
           semanticInfo.threadSpawnCalls.size > 0
           || semanticInfo.taskScopeAsyncCalls.size > 0
           || [...semanticInfo.standardTypeBindings.values()].includes("Mutex")
+          || [...semanticInfo.standardTypeBindings.values()].includes("Channel")
         )
         && process.platform !== "win32"
           ? ["-pthread"]
