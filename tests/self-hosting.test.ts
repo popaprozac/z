@@ -1592,6 +1592,58 @@ test("materializes typed errors from directly awaited async methods", () => {
   }
 }, 240_000);
 
+test("preserves owned requests and typed errors across a placed async service call", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-service-owned-error.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-service-owned-error-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /Z___z_Result_String_ServiceError called;/,
+    );
+    assert.match(emission.stdout, /Z_AsyncInvocation child;/);
+    assert.match(
+      emission.stdout,
+      /_z_stage1_live_request = false, request/,
+    );
+    assert.match(
+      emission.stdout,
+      /frame->child\.take_result\(frame->child\.task, &called\);/,
+    );
+    assert.match(
+      emission.stdout,
+      /switch \(_z_stage1_match_[0-9]+\.tag\)/,
+    );
+    assert.match(emission.stdout, /Z_ServiceError_deinit\(&scratch\);/);
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("retains owned arguments and results across a dynamic child await", () => {
   const input = resolve(
     projectRoot,

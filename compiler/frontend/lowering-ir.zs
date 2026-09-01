@@ -19019,7 +19019,11 @@ function statementIsFirstTierPlacedFunctionAwaitLocal(
       some(tree) => {
         let placement = tree.root;
         if (
-          tree.nodes[placement].kind == ExpressionKind.tryExpression
+          (
+            tree.nodes[placement].kind == ExpressionKind.tryExpression
+            || tree.nodes[placement].kind
+              == ExpressionKind.attemptExpression
+          )
           && tree.nodes[placement].children.length == 1
         ) placement = tree.nodes[placement].children[0];
         if (
@@ -19052,6 +19056,55 @@ function statementIsFirstTierPlacedFunctionAwaitLocal(
   };
 }
 
+function statementIsFirstTierPlacedMethodAwaitLocal(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (arena.nodes[index].kind != StatementKind.variableStatement) {
+    return false;
+  }
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        let placement = tree.root;
+        if (
+          (
+            tree.nodes[placement].kind == ExpressionKind.tryExpression
+            || tree.nodes[placement].kind
+              == ExpressionKind.attemptExpression
+          )
+          && tree.nodes[placement].children.length == 1
+        ) placement = tree.nodes[placement].children[0];
+        if (
+          tree.nodes[placement].kind
+            != ExpressionKind.executorPlacementExpression
+          || tree.nodes[placement].value != "await"
+          || tree.nodes[placement].labels.length < 3
+          || tree.nodes[placement].labels[2] != "call"
+          || tree.nodes[placement].children.length != 3
+        ) return false;
+        const operation = tree.nodes[placement].children[2];
+        if (
+          tree.nodes[operation].kind != ExpressionKind.callExpression
+          || tree.nodes[operation].children.length == 0
+        ) return false;
+        const callee = tree.nodes[operation].children[0];
+        for (const child of tree.nodes[placement].children) {
+          if (expressionTreeContainsSuspension(
+            arena,
+            tree,
+            child
+          )) return false;
+        }
+        return tree.nodes[callee].kind
+          == ExpressionKind.memberExpression;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
 function functionUsesFirstTierPlacedFunctionLinearAwait(
   in declaration: FunctionDeclaration
 ): boolean {
@@ -19059,6 +19112,24 @@ function functionUsesFirstTierPlacedFunctionLinearAwait(
   let awaitCount: usize = 0;
   for (const root of declaration.body.roots) {
     if (statementIsFirstTierPlacedFunctionAwaitLocal(
+      declaration.body,
+      root
+    )) {
+      awaitCount = awaitCount + 1;
+      continue;
+    }
+    if (statementContainsSuspension(declaration.body, root)) return false;
+  }
+  return awaitCount == 1;
+}
+
+function functionUsesFirstTierPlacedMethodLinearAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length < 2) return false;
+  let awaitCount: usize = 0;
+  for (const root of declaration.body.roots) {
+    if (statementIsFirstTierPlacedMethodAwaitLocal(
       declaration.body,
       root
     )) {
@@ -23655,8 +23726,12 @@ function lowerFunction(
     const firstTierPlacedFunctionLinear = declaration.executorAffinity
         != "thread.main"
       && functionUsesFirstTierPlacedFunctionLinearAwait(declaration);
+    const firstTierPlacedMethodLinear = declaration.executorAffinity
+        != "thread.main"
+      && functionUsesFirstTierPlacedMethodLinearAwait(declaration);
     const firstTierLinearAwait = functionUsesFirstTierLinearAwait(declaration)
-      || firstTierPlacedFunctionLinear;
+      || firstTierPlacedFunctionLinear
+      || firstTierPlacedMethodLinear;
     const firstTierPlacedMethodTail = declaration.executorAffinity
         != "thread.main"
       && functionUsesFirstTierPlacedMethodTailAwait(declaration);

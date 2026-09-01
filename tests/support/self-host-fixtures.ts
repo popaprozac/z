@@ -210,6 +210,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-async-double-await.zs": focusedPositive,
   "self-host-emit-async-service-main-publication.zs": focusedPositive,
   "self-host-emit-async-service-composition.zs": focusedPositive,
+  "self-host-emit-async-service-owned-error.zs": focusedPositive,
   "self-host-emit-async-owned-closure-parameter.zs": focusedPositive,
   "self-host-emit-async-tail-callable.zs": focusedPositive,
   "self-host-emit-async-tail-method.zs": focusedPositive,

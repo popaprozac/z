@@ -4706,6 +4706,31 @@ fixed-point regression rejects empty-stub emission, and the complete Z Notes
 smoke exercises the imported header, raw Objective-C body, WebKit response,
 and deterministic shutdown end to end.
 
+## Owned generated-service requests and errors across placement
+
+Turning Z Notes' generated `notes.create` route into a genuinely suspending
+main-executor method combined four previously separate shapes: JSON decoding
+into an owned request struct, transfer of that request into a child method,
+`attempt await on thread.main`, and serialization of an owned typed error after
+the parent resumes. Stage 0 already executed the source, while the fixed-point
+preflight only admitted the equivalent placed free-function local.
+
+The native lowerability and frame tiers now recognize the resolved async method
+call without inventing a wrapper function. The parent frame transfers the
+request exactly once, retains the child invocation through placement, takes the
+complete `Result<T, E>`, and resumes into an ordinary consuming match. A local
+created inside that post-suspension match arm also receives lexical cleanup;
+this application probe caught both its missing declaration and its initially
+missing destructor. Unused aliases restored from async-frame parameters are
+marked at the generated C boundary, so strict `-Werror` builds do not require
+artificial source uses.
+
+The Zapp smoke now exercises the unchanged TypeScript call through generated
+request decoding, the delayed main-isolated Z service, structured
+`NoteCreationError` details, successful note creation, cancellation, window
+teardown, and service shutdown. This closes a composition restriction without
+new Z syntax or framework-facing transport types.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

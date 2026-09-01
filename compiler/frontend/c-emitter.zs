@@ -1113,8 +1113,8 @@ function appendAsyncTailLocalInitializer(
     candidate = candidate + 1;
   }
   if (
-    rootPosition < declaration.roots.length
-    && !asyncFrameLocalNeedsStorage(
+    rootPosition >= declaration.roots.length
+    || !asyncFrameLocalNeedsStorage(
       program,
       declaration,
       rootPosition
@@ -1466,6 +1466,72 @@ function loweredStatementMovesBinding(
   return false;
 }
 
+function asyncImmediateReturnCleanupIsManaged(
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  tailExpressionIndex: usize,
+  in cleanup: LoweredCleanup,
+  in scopedCleanupName: String
+): boolean {
+  if (
+    scopedCleanupName.byteLength > 0
+    && cleanup.name == scopedCleanupName
+  ) return true;
+  for (const parameter of declaration.parameters) {
+    if (cleanup.name == parameter.name) return true;
+  }
+  const limit = asyncFrameLocalRootLimit(declaration);
+  let position: usize = 0;
+  while (position < limit) {
+    const root = declaration.roots[position];
+    if (
+      declaration.statements[root].kind
+        == LoweredStatementKind.localStatement
+      && declaration.statements[root].name == cleanup.name
+      && asyncFrameLocalNeedsStorage(program, declaration, position)
+    ) return true;
+    position = position + 1;
+  }
+  match (asyncTailAwaitMatchArm(
+    declaration,
+    tailExpressionIndex
+  )) {
+    some(armIndex) => {
+      const arm = view declaration.statements[armIndex];
+      if (
+        arm.labels.length == 1
+        && arm.labels[0] == cleanup.name
+      ) return true;
+    }
+    none => {}
+  }
+  return cleanup.name == "this";
+}
+
+function appendAsyncImmediateReturnScopedCleanups(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  tailExpressionIndex: usize,
+  in statement: LoweredStatement,
+  depth: usize,
+  in scopedCleanupName: String
+): void {
+  let remaining = statement.cleanups.length;
+  while (remaining > 0) {
+    remaining = remaining - 1;
+    const cleanup = view statement.cleanups[remaining];
+    if (asyncImmediateReturnCleanupIsManaged(
+      program,
+      declaration,
+      tailExpressionIndex,
+      cleanup,
+      scopedCleanupName
+    )) continue;
+    appendCleanup(inout output, cleanup, depth);
+  }
+}
+
 function appendAsyncTailImmediateReturn(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -1511,6 +1577,15 @@ function appendAsyncTailImmediateReturn(
       }
     }
   }
+  appendAsyncImmediateReturnScopedCleanups(
+    inout output,
+    program,
+    declaration,
+    tailExpressionIndex,
+    statement,
+    depth,
+    scopedCleanupName
+  );
   match (in scopedCleanupType) {
     some(type) => {
       appendIndent(inout output, depth);
@@ -3418,6 +3493,32 @@ function appendClassAndOnceRuntime(
   }
 }
 
+function appendCleanup(
+  inout output: TextBuffer,
+  in cleanup: LoweredCleanup,
+  depth: usize
+): void {
+  appendIndent(inout output, depth);
+  if (cleanup.guard.byteLength > 0) {
+    output.append("if (");
+    output.append(cleanup.guard);
+    output.append(") ");
+  }
+  if (cleanup.type.kind == LoweredTypeKind.classType) {
+    output.append("Z_");
+    output.append(cleanup.type.name);
+    output.append("_release(");
+    appendCBindingName(inout output, cleanup.name);
+    output.append(");\n");
+    return;
+  }
+  output.append("Z_");
+  output.append(cleanup.type.name);
+  output.append("_deinit(&");
+  appendCBindingName(inout output, cleanup.name);
+  output.append(");\n");
+}
+
 function appendCleanups(
   inout output: TextBuffer,
   in cleanups: Array<LoweredCleanup>,
@@ -3426,25 +3527,7 @@ function appendCleanups(
   let remaining = cleanups.length;
   while (remaining > 0) {
     remaining = remaining - 1;
-    appendIndent(inout output, depth);
-    if (cleanups[remaining].guard.byteLength > 0) {
-      output.append("if (");
-      output.append(cleanups[remaining].guard);
-      output.append(") ");
-    }
-    if (cleanups[remaining].type.kind == LoweredTypeKind.classType) {
-      output.append("Z_");
-      output.append(cleanups[remaining].type.name);
-      output.append("_release(");
-      appendCBindingName(inout output, cleanups[remaining].name);
-      output.append(");\n");
-      continue;
-    }
-    output.append("Z_");
-    output.append(cleanups[remaining].type.name);
-    output.append("_deinit(&");
-    appendCBindingName(inout output, cleanups[remaining].name);
-    output.append(");\n");
+    appendCleanup(inout output, cleanups[remaining], depth);
   }
 }
 
@@ -9008,6 +9091,7 @@ function appendCallableHelpers(
               functionType.parameters[aliasParameter],
               expression.labels[parameterLabelStart + aliasParameter]
             );
+            output.append(" __attribute__((unused))");
             output.append(" = frame->argument");
             output.append(`${aliasParameter}`);
             output.append(";\n");
@@ -9142,6 +9226,7 @@ function appendCallableHelpers(
               functionType.parameters[aliasParameter],
               tailDeclaration.parameters[aliasParameter].name
             );
+            output.append(" __attribute__((unused))");
             output.append(" = frame->argument");
             output.append(`${aliasParameter}`);
             output.append(";\n");
@@ -9328,6 +9413,7 @@ function appendCallableHelpers(
               functionType.parameters[aliasParameter],
               linearDeclaration.parameters[aliasParameter].name
             );
+            output.append(" __attribute__((unused))");
             output.append(" = frame->argument");
             output.append(`${aliasParameter}`);
             output.append(";\n");
@@ -11210,6 +11296,7 @@ function appendAsyncMethodAwaitHelpers(
             functionType.parameters[aliasParameter],
             tailDeclaration.parameters[aliasParameter].name
           );
+          output.append(" __attribute__((unused))");
           output.append(" = frame->argument");
           output.append(`${aliasParameter}`);
           output.append(";\n");
