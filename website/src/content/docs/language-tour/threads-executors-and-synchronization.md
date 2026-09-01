@@ -318,6 +318,13 @@ blocking synchronization. Async channel waits suspend task frames; explicit
 `SyncSender<T>` and `SyncReceiver<T>` operations block native threads.
 Cross-thread shared ARC identity requires atomic
 retains; thread-local ARC can avoid that cost when the compiler proves it local.
+
+The first release-mode channel checkpoint measured the synchronous
+capacity-one cross-thread path at C parity with four fixed allocations. The
+current async producer allocates one task frame per send, making frame reuse a
+known optimization target rather than a cost inherent to the channel ring.
+See the
+[full channel report](https://github.com/popaprozac/z/blob/main/benchmarks/results/checkpoint-2-channels-macos-arm64.md).
 :::
 
 :::caution[Platform coverage]

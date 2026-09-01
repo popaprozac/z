@@ -11,8 +11,8 @@ accept a JavaScript-like runtime tax.
 
 The repeatable suite lives in [`benchmarks/`](../benchmarks). It emits Z through
 the current Bun-hosted compiler and then builds the generated source with
-`clang -O3 -DNDEBUG`. C/C++, Rust, Zig ReleaseSafe, and Nim ARC variants are
-included only where they preserve the workload's stated contract.
+`clang -O3 -DNDEBUG`. C/C++, Rust, Zig ReleaseSafe, Nim ARC, and focused Go
+variants are included only where they preserve the workload's stated contract.
 
 Run it with:
 
@@ -44,6 +44,33 @@ The first checkpoint covers portable kernels, direct C calls, dynamic arrays,
 deterministic ownership, structured task overhead, and native threads. ARC
 identity, Map/Set, generators, Objective-C/C++ boundary calls, and richer async
 fan-out remain explicit follow-up cases.
+
+## Bounded channel checkpoint
+
+On 2026-09-01, the capacity-one bounded channel was measured over seven runs
+after two warmups on the same macOS arm64 development machine. The focused
+report is
+[`checkpoint-2-channels-macos-arm64.md`](../benchmarks/results/checkpoint-2-channels-macos-arm64.md).
+
+| Workload | Z | C | Rust | Go | Z allocations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Same-thread send + receive, 2M round trips | 18.674 ms | 17.449 ms | 14.727 ms | 32.594 ms | 2 fixed |
+| Async producer → native consumer, 250K values | 1.343 s | 1.102 s | 919.797 ms | 697.602 ms | 250,004 |
+| Synchronous producer → native consumer, 250K values | 1.087 s | 1.111 s | 925.699 ms | 701.108 ms | 4 fixed |
+
+The synchronous cross-thread control is the channel's native ceiling: Z was
+0.978 times the C duration in this sample and requested only 0.7 KiB of fixed
+storage. The ring, ownership transfer, mutex, and condition-variable lowering
+therefore do not show a material abstraction penalty.
+
+The async producer is a deliberately different scheduling contract measured
+against the same blocking native handoff. Each `await sender.send(...)`
+currently creates one heap-owned task frame. The tracked run requested about
+44 MiB across 250,004 balanced allocations—approximately 184 bytes per send—and
+ran 1.218 times the C duration. Frame reuse or pooling is therefore the clear
+optimization target; replacing the channel storage or weakening ownership is
+not. This cost is recorded for optimization and does not block using channels
+for Zapp Worker control traffic.
 
 ## Native main-executor frame audit
 
