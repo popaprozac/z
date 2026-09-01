@@ -2,7 +2,9 @@ import {
   assert,
   cli,
   compileToC,
+  completions,
   diagnostics,
+  hover,
   mkdtempSync,
   resolve,
   rmSync,
@@ -10,6 +12,89 @@ import {
   test,
   writeFileSync,
 } from "./support/bootstrap.ts";
+
+test("surfaces channel factories, endpoints, and failure ownership in the editor", () => {
+  const source = `
+    import {
+      Channel,
+      ChannelClosed,
+      Receiver,
+      Sender,
+      SyncReceiver,
+      SyncSender,
+    } from "std/channel";
+
+    async function publish(in sender: Sender<String>): void throws ChannelClosed<String> {
+      const message = "ready";
+      try await sender.send(move message);
+    }
+
+    async function consume(receiver: Receiver<String>): usize {
+      const message = await receiver.receive();
+      return match (message) {
+        some(value) => value.byteLength;
+        none => 0;
+      };
+    }
+
+    function main(): i32 {
+      const { sender, receiver } = Channel<String>.bounded(4);
+      const syncSender: SyncSender<String> = sender.sync();
+      const syncReceiver: SyncReceiver<String> = receiver.sync();
+      syncSender.close();
+      return 0;
+    }
+  `;
+  const file = "/tmp/z-channel-editor.zs";
+
+  assert.match(
+    hover(source, file, source.indexOf("Channel<String>") + 1)?.contents.value ?? "",
+    /bounded MPSC channel factory/,
+  );
+  assert.match(
+    hover(source, file, source.indexOf("bounded(4)") + 1)?.contents.value ?? "",
+    /bounded\(capacity: usize\).*Sender<String>.*Receiver<String>/s,
+  );
+  assert.match(
+    hover(source, file, source.indexOf("sender.send") + "sender.".length + 1)?.contents.value ?? "",
+    /async send\(move value: String\).*ChannelClosed<String>/s,
+  );
+  assert.match(
+    hover(source, file, source.indexOf("receiver.receive") + "receiver.".length + 1)?.contents.value ?? "",
+    /async receive\(\): Option<String>/,
+  );
+  assert.match(
+    hover(source, file, source.indexOf("ChannelClosed<String>") + 1)?.contents.value ?? "",
+    /preserves ownership of the unsent value/,
+  );
+
+  const factorySource = source.replace(".bounded(4)", ".bou");
+  const factoryOffset = factorySource.indexOf(".bou") + 4;
+  assert.match(
+    completions(factorySource, file, factoryOffset)
+      .find((item) => item.label === "bounded")?.detail ?? "",
+    /capacity: usize/,
+  );
+
+  const senderSource = source.replace("sender.send(move message)", "sender.se");
+  const senderOffset = senderSource.indexOf("sender.se") + "sender.se".length;
+  assert.match(
+    completions(senderSource, file, senderOffset)
+      .find((item) => item.label === "send")?.detail ?? "",
+    /async send\(move value: String\)/,
+  );
+
+  const importSource = `
+    import { SyncR } from "std/channel";
+    function main(): i32 { return 0; }
+  `;
+  const importOffset = importSource.indexOf("SyncR }") + "SyncR".length;
+  assert.equal(
+    completions(importSource, file, importOffset)
+      .find((item) => item.label === "SyncReceiver")?.kind,
+    22,
+  );
+});
 
 test("checks bounded channels with split asynchronous endpoints", () => {
   const source = `
@@ -187,6 +272,54 @@ test("runs asynchronous send and receive without blocking the executor", () => {
       return match (finished) {
         some(value) => value;
         none => firstValue + secondValue - 42 + sendStatus;
+      };
+    }
+  `;
+  try {
+    writeFileSync(file, source);
+    const result = spawnSync(process.execPath, [cli, "run", file], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("transfers cleanup-bearing struct messages through asynchronous backpressure", () => {
+  const directory = mkdtempSync("/tmp/z-channel-async-owned-runtime-");
+  const file = resolve(directory, "main.zs");
+  const source = `
+    import { Channel, ChannelClosed, Sender } from "std/channel";
+
+    struct Job {
+      name: String;
+    }
+
+    async function publish(sender: Sender<Job>): void throws ChannelClosed<Job> {
+      const first = Job({ name: "twenty" });
+      const second = Job({ name: "twenty-two" });
+      try await sender.send(move first);
+      try await sender.send(move second);
+      sender.close();
+    }
+
+    async function main(): i32 throws ChannelClosed<Job> {
+      const { sender, receiver } = Channel<Job>.bounded(1);
+      const publishing = task publish(move sender);
+      const first = await receiver.receive();
+      const second = await receiver.receive();
+      try await publishing;
+      const finished = await receiver.receive();
+      const firstLength = match (first) {
+        some(job) => i32(job.name.byteLength);
+        none => 0;
+      };
+      const secondLength = match (second) {
+        some(job) => i32(job.name.byteLength);
+        none => 0;
+      };
+      return match (finished) {
+        some(_) => 1;
+        none => firstLength + secondLength - 16;
       };
     }
   `;

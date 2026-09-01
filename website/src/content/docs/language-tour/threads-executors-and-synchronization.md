@@ -257,10 +257,66 @@ before publication and are handled through ordinary `try`/`attempt`.
 fields inside `Application` safe; mutable shared state still belongs behind a
 mutex or executor contract.
 
+## Typed asynchronous channels
+
+Use `std/channel` when ownership should move through an explicit pipeline:
+
+```z
+import { Channel, ChannelClosed, Sender } from "std/channel";
+
+struct Job {
+  document: String;
+}
+
+async function produce(sender: Sender<Job>): void throws ChannelClosed<Job> {
+  const job = Job({ document: "guide.md" });
+  try await sender.send(move job);
+  sender.close();
+}
+
+async function main(): i32 throws ChannelClosed<Job> {
+  const { sender, receiver } = Channel<Job>.bounded(8);
+  const producer = task produce(move sender);
+  const next = await receiver.receive();
+  try await producer;
+
+  return match (next) {
+    some(job) => i32(job.document.byteLength);
+    none => 0;
+  };
+}
+```
+
+The returned endpoints intentionally have different authority. `Sender<T>` is
+shareable between producers; `Receiver<T>` is unique. A full bounded channel
+suspends `send` without blocking the executor. An empty open channel suspends
+`receive`. Closing wakes waiters, drains buffered messages normally, and then
+produces `Option.none`.
+
+If closure wins a send race, `ChannelClosed<T>` preserves the unsent owner in
+`error.value`. Cancellation unregisters a suspended waiter before destroying
+its task frame.
+
+Native threads can opt into blocking access explicitly:
+
+```z
+const syncSender = sender.sync();
+const syncReceiver = receiver.sync(); // consumes the unique async receiver
+
+try syncSender.send(move job);
+const next = syncReceiver.receive();
+```
+
+Only `Channel<T>.bounded(capacity)` is implemented today, and capacity must be
+greater than zero. `Channel<T>.unbounded()` is reserved as a distinct future
+factory so storage policy never changes because an argument was omitted.
+
 :::note[Cost model]
 `thread.spawn` creates an OS thread and is much heavier than starting a task.
 Main placement schedules through the platform executor. `Mutex<T>` uses native
-blocking synchronization. Cross-thread shared ARC identity requires atomic
+blocking synchronization. Async channel waits suspend task frames; explicit
+`SyncSender<T>` and `SyncReceiver<T>` operations block native threads.
+Cross-thread shared ARC identity requires atomic
 retains; thread-local ARC can avoid that cost when the compiler proves it local.
 :::
 
@@ -274,4 +330,5 @@ platform-specific.
 Runnable examples:
 [thread transfer](https://github.com/popaprozac/z/blob/main/examples/async/thread-transfer.zs),
 [executor placement](https://github.com/popaprozac/z/blob/main/examples/async/executor-placement.zs),
+[bounded channels](https://github.com/popaprozac/z/blob/main/examples/async/channels.zs),
 and [mutex state](https://github.com/popaprozac/z/blob/main/examples/language/ownership/mutex-state.zs).

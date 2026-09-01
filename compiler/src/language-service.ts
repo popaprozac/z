@@ -29,7 +29,7 @@ import type {
 import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
 import { displayArrayType, parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
-import { parseGenericType } from "./generic-types.ts";
+import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { pathToFileURL } from "node:url";
 import { basename, dirname, resolve } from "node:path";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -45,6 +45,7 @@ import { parseReadonlyType } from "./readonly-types.ts";
 import { parseAsyncGeneratorType, parseGeneratorType } from "./generator-types.ts";
 import { parseOnceLifetimeType, parseOnceType } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
+import { parseChannelHandleType, type ChannelHandleType } from "./channel-types.ts";
 import { parseObjCProtocolType, publicObjCTypeName } from "./objc-types.ts";
 import { displayUnsafeNativeType } from "./unsafe-types.ts";
 import type { ExecutorAffinityInfo, ExplicitCopyPlan, NumericConversion, ObjCCallInfo } from "./sema.ts";
@@ -1052,6 +1053,15 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (!word) return null;
   const context = safeAnalysis(source, fileName);
   if (!context) return declarationHover(source, null, word.text, word.start, word.end);
+  const immediateMemberOwner = source.slice(0, word.start)
+    .match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?)\.$/)?.[1];
+  const immediateChannel = immediateMemberOwner
+    ? channelTypeFromSourceSpelling(context, immediateMemberOwner)
+    : null;
+  if (immediateChannel?.kind === "factory") {
+    const detail = channelMemberDetail(immediateChannel, word.text, context.typeDisplayNames);
+    if (detail) return markdownHover(detail, source, word.start, word.end);
+  }
   const sourceBindings = collectBindings(context);
   const directBinding = sourceBindings
     .filter((candidate) => (
@@ -1530,6 +1540,25 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       word.end,
     );
   }
+  const channelType = context.semanticInfo.standardTypeBindings.get(word.text);
+  if (channelType === "Channel") {
+    return markdownHover("Channel<T>  // bounded MPSC channel factory with split async endpoints", source, word.start, word.end);
+  }
+  if (channelType === "Sender") {
+    return markdownHover("Sender<T>  // shareable asynchronous sending endpoint", source, word.start, word.end);
+  }
+  if (channelType === "Receiver") {
+    return markdownHover("Receiver<T>  // unique asynchronous receiving endpoint", source, word.start, word.end);
+  }
+  if (channelType === "SyncSender") {
+    return markdownHover("SyncSender<T>  // shareable blocking sending endpoint", source, word.start, word.end);
+  }
+  if (channelType === "SyncReceiver") {
+    return markdownHover("SyncReceiver<T>  // unique blocking receiving endpoint", source, word.start, word.end);
+  }
+  if (channelType === "ChannelClosed") {
+    return markdownHover("ChannelClosed<T>  // typed send failure that preserves ownership of the unsent value", source, word.start, word.end);
+  }
   if (word.text === "next") {
     const receiver = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
     const binding = receiver
@@ -1605,6 +1634,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       if (word.text === "fromNullable") {
         return markdownHover(`fromNullable(value: ${explicit} | null): Option<${explicit}>`, source, word.start, word.end);
       }
+    }
+    const staticChannel = channelTypeFromSourceSpelling(context, memberPrefix[1]);
+    if (staticChannel?.kind === "factory") {
+      const detail = channelMemberDetail(staticChannel, word.text, context.typeDisplayNames);
+      if (detail) return markdownHover(detail, source, word.start, word.end);
     }
     if (context.semanticInfo.consoleBindings.has(memberPrefix[1])) {
       const detail = consoleMethodDetail(word.text);
@@ -1893,6 +1927,10 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         word.start,
         word.end,
       );
+    }
+    if (resolved?.kind === "channel") {
+      const detail = channelMemberDetail(resolved.channel, word.text, context.typeDisplayNames);
+      if (detail) return markdownHover(detail, source, word.start, word.end);
     }
     if (resolved?.kind === "fsLock" && word.text === "unlock") {
       return markdownHover(
@@ -2317,6 +2355,40 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
         label: "OnceLifetime",
         kind: completionKinds.struct,
         detail: "OnceLifetime<T>  // inferred move-only initialized-interval guard",
+      },
+    ];
+  }
+  if (specifier === "std/channel") {
+    return [
+      {
+        label: "Channel",
+        kind: completionKinds.struct,
+        detail: "Channel<T>.bounded(capacity: usize)  // bounded MPSC channel factory",
+      },
+      {
+        label: "Sender",
+        kind: completionKinds.struct,
+        detail: "Sender<T>  // shareable asynchronous sending endpoint",
+      },
+      {
+        label: "Receiver",
+        kind: completionKinds.struct,
+        detail: "Receiver<T>  // unique asynchronous receiving endpoint",
+      },
+      {
+        label: "SyncSender",
+        kind: completionKinds.struct,
+        detail: "SyncSender<T>  // shareable blocking sending endpoint",
+      },
+      {
+        label: "SyncReceiver",
+        kind: completionKinds.struct,
+        detail: "SyncReceiver<T>  // unique blocking receiving endpoint",
+      },
+      {
+        label: "ChannelClosed",
+        kind: completionKinds.struct,
+        detail: "ChannelClosed<T>  // typed send failure preserving the unsent value",
       },
     ];
   }
@@ -2793,9 +2865,9 @@ function symbolCompletions(
   try {
     const parsed = parse(lex(source, fileName), fileName);
     for (const declaration of parsed.imports) {
-      if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration" && declaration.header !== "std/sync" && declaration.header !== "std/async") continue;
+      if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration" && declaration.header !== "std/sync" && declaration.header !== "std/channel" && declaration.header !== "std/async") continue;
       for (const binding of declaration.bindings ?? []) {
-        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "Mutex" && binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") continue;
+        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "Mutex" && binding.importedName !== "Channel" && binding.importedName !== "Sender" && binding.importedName !== "Receiver" && binding.importedName !== "SyncSender" && binding.importedName !== "SyncReceiver" && binding.importedName !== "ChannelClosed" && binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") continue;
         const detail = binding.importedName === "TextBuffer"
           ? "move-only UTF-8 construction storage"
           : binding.importedName === "Arena"
@@ -2822,6 +2894,18 @@ function symbolCompletions(
                           ? "move-only initialized-interval guard"
                         : binding.importedName === "Mutex"
                           ? "move-only synchronized storage"
+                        : binding.importedName === "Channel"
+                          ? "bounded MPSC channel factory"
+                        : binding.importedName === "Sender"
+                          ? "shareable asynchronous sending endpoint"
+                        : binding.importedName === "Receiver"
+                          ? "unique asynchronous receiving endpoint"
+                        : binding.importedName === "SyncSender"
+                          ? "shareable blocking sending endpoint"
+                        : binding.importedName === "SyncReceiver"
+                          ? "unique blocking receiving endpoint"
+                        : binding.importedName === "ChannelClosed"
+                          ? "typed send failure preserving the unsent value"
                     : "mutable hash-composition state";
         builtIns.push({
           label: binding.localName,
@@ -2829,7 +2913,7 @@ function symbolCompletions(
             ? completionKinds.interface
             : binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? completionKinds.class : completionKinds.struct,
           detail: binding.localName === binding.importedName
-            ? `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" || binding.importedName === "AsyncGenerator" || binding.importedName === "OnceLifetime" || binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? "" : "()"}  // ${detail}`
+            ? `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" || binding.importedName === "AsyncGenerator" || binding.importedName === "OnceLifetime" || binding.importedName === "Sender" || binding.importedName === "Receiver" || binding.importedName === "SyncSender" || binding.importedName === "SyncReceiver" || binding.importedName === "ChannelClosed" || binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? "" : "()"}  // ${detail}`
             : `${binding.importedName}  // imported as ${binding.localName}`,
           sortText: `0-${binding.localName}`,
         });
@@ -3036,6 +3120,18 @@ function symbolCompletions(
                     ? "OnceLifetime<T>  // move-only initialized-interval guard"
                   : standardType === "Mutex"
                     ? "Mutex<T>(value: T)  // move-only handle; retained when safely captured by a native worker"
+                  : standardType === "Channel"
+                    ? "Channel<T>.bounded(capacity: usize)  // bounded MPSC channel factory"
+                  : standardType === "Sender"
+                    ? "Sender<T>  // shareable asynchronous sending endpoint"
+                  : standardType === "Receiver"
+                    ? "Receiver<T>  // unique asynchronous receiving endpoint"
+                  : standardType === "SyncSender"
+                    ? "SyncSender<T>  // shareable blocking sending endpoint"
+                  : standardType === "SyncReceiver"
+                    ? "SyncReceiver<T>  // unique blocking receiving endpoint"
+                  : standardType === "ChannelClosed"
+                    ? "ChannelClosed<T>  // typed send failure preserving the unsent value"
                   : "Hasher  // mutable hash-composition state",
       sortText: `0-${name}`,
     });
@@ -5096,6 +5192,14 @@ function memberCompletions(
   }
   const importContext = importAnalysis(source, fileName);
   if (!importContext) return [];
+  const staticChannel = channelTypeFromSourceSpelling(importContext, receiverText);
+  if (staticChannel?.kind === "factory") {
+    return filterCompletions(
+      channelCompletions(staticChannel, importContext.typeDisplayNames),
+      prefix,
+      100,
+    );
+  }
   if (importContext.semanticInfo.consoleBindings.has(receiverText)) {
     return filterCompletions(consoleCompletions(), prefix, 100);
   }
@@ -5247,6 +5351,17 @@ function memberCompletions(
       1000,
     );
   }
+  const recoveredChannel = channelTypeFromSourceSpelling(
+    importContext,
+    declaredBindingType(source, receiverText, receiverOffset) ?? "",
+  );
+  if (recoveredChannel) {
+    return filterCompletions(
+      channelCompletions(recoveredChannel, importContext.typeDisplayNames),
+      prefix,
+      1000,
+    );
+  }
   const fullContext = safeAnalysis(source, fileName);
   const directReceiver = fullContext ? resolveReceiver(fullContext, receiverText, receiverOffset) : null;
   if (directReceiver?.kind === "arena") {
@@ -5292,6 +5407,13 @@ function memberCompletions(
   if (directReceiver?.kind === "mutex") {
     return filterCompletions(
       mutexCompletions(directReceiver.valueType, importContext.typeDisplayNames),
+      prefix,
+      1000,
+    );
+  }
+  if (directReceiver?.kind === "channel") {
+    return filterCompletions(
+      channelCompletions(directReceiver.channel, importContext.typeDisplayNames),
       prefix,
       1000,
     );
@@ -5708,6 +5830,13 @@ function memberCompletions(
   if (resolved?.kind === "mutex") {
     return filterCompletions(
       mutexCompletions(resolved.valueType, context.typeDisplayNames),
+      prefix,
+      1000,
+    );
+  }
+  if (resolved?.kind === "channel") {
+    return filterCompletions(
+      channelCompletions(resolved.channel, context.typeDisplayNames),
       prefix,
       1000,
     );
@@ -6131,6 +6260,7 @@ type ResolvedReceiver =
   | { readonly kind: "taskControl" }
   | { readonly kind: "once"; readonly valueType: string }
   | { readonly kind: "mutex"; readonly valueType: string }
+  | { readonly kind: "channel"; readonly channel: ChannelHandleType }
   | { readonly kind: "fsLock" }
   | { readonly kind: "objcConnection" };
 
@@ -6174,6 +6304,113 @@ function mutexCompletions(
   }];
 }
 
+function channelTypeFromSourceSpelling(
+  context: AnalyzedSource,
+  sourceType: string,
+): ChannelHandleType | null {
+  const direct = parseChannelHandleType(sourceType);
+  if (direct) return direct;
+  const generic = parseGenericType(sourceType) ?? parseSourceGenericType(sourceType);
+  if (!generic || generic.arguments.length !== 1) return null;
+  const standard = context.semanticInfo.standardTypeBindings.get(generic.base);
+  if (
+    standard !== "Channel"
+    && standard !== "Sender"
+    && standard !== "Receiver"
+    && standard !== "SyncSender"
+    && standard !== "SyncReceiver"
+    && standard !== "ChannelClosed"
+  ) return null;
+  return parseChannelHandleType(genericTypeName(standard, generic.arguments));
+}
+
+function channelCompletions(
+  channel: ChannelHandleType,
+  typeDisplayNames: ReadonlyMap<string, string>,
+): CompletionItem[] {
+  const value = displayType(channel.valueType, typeDisplayNames);
+  if (channel.kind === "factory") {
+    return [{
+      label: "bounded",
+      kind: completionKinds.method,
+      detail: `bounded(capacity: usize): { sender: Sender<${value}>, receiver: Receiver<${value}> }`,
+      insertText: "bounded()",
+    }];
+  }
+  if (channel.kind === "sender") {
+    return [
+      {
+        label: "send",
+        kind: completionKinds.method,
+        detail: `async send(move value: ${value}): void throws ChannelClosed<${value}>`,
+        insertText: "send()",
+      },
+      {
+        label: "close",
+        kind: completionKinds.method,
+        detail: "close(): void  // closes the channel and wakes blocked operations",
+        insertText: "close()",
+      },
+      {
+        label: "sync",
+        kind: completionKinds.method,
+        detail: `sync(): SyncSender<${value}>  // retains a blocking sending endpoint`,
+        insertText: "sync()",
+      },
+    ];
+  }
+  if (channel.kind === "receiver") {
+    return [
+      {
+        label: "receive",
+        kind: completionKinds.method,
+        detail: `async receive(): Option<${value}>  // none after close and buffer drain`,
+        insertText: "receive()",
+      },
+      {
+        label: "sync",
+        kind: completionKinds.method,
+        detail: `sync(move this): SyncReceiver<${value}>  // consumes the unique async receiver`,
+        insertText: "sync()",
+      },
+    ];
+  }
+  if (channel.kind === "syncSender") {
+    return [
+      {
+        label: "send",
+        kind: completionKinds.method,
+        detail: `send(move value: ${value}): void throws ChannelClosed<${value}>  // blocks while full`,
+        insertText: "send()",
+      },
+      {
+        label: "close",
+        kind: completionKinds.method,
+        detail: "close(): void  // closes the channel and wakes blocked operations",
+        insertText: "close()",
+      },
+    ];
+  }
+  if (channel.kind === "syncReceiver") {
+    return [{
+      label: "receive",
+      kind: completionKinds.method,
+      detail: `receive(): Option<${value}>  // blocks while empty; none after close and drain`,
+      insertText: "receive()",
+    }];
+  }
+  return [];
+}
+
+function channelMemberDetail(
+  channel: ChannelHandleType,
+  member: string,
+  typeDisplayNames: ReadonlyMap<string, string>,
+): string | null {
+  return channelCompletions(channel, typeDisplayNames)
+    .find((completion) => completion.label === member)?.detail ?? null;
+}
+
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
   const nativeNamespace = resolveForeignModuleNamespace(context, text);
   if (nativeNamespace) return { kind: "module", ...nativeNamespace };
@@ -6201,6 +6438,8 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (once) return { kind: "once", valueType: once.valueType };
   const mutex = parseMutexType(receiverType);
   if (mutex) return { kind: "mutex", valueType: mutex.valueType };
+  const channel = parseChannelHandleType(receiverType);
+  if (channel) return { kind: "channel", channel };
   if (receiverType === fsLockTypeName || receiverType === "fs.Lock") {
     return { kind: "fsLock" };
   }

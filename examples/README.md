@@ -162,6 +162,7 @@ support or producing language-server diagnostics from hypothetical imports.
 ## Async
 
 - [`async-overview.zs`](async/async-overview.zs): overview of the implemented model
+- [`channels.zs`](async/channels.zs): bounded MPSC backpressure, owned message transfer, split sender/receiver authority, close, and drain
 - [`async-sequential.zs`](async/async-sequential.zs), [`async-tasks.zs`](async/async-tasks.zs), [`async-scopes.zs`](async/async-scopes.zs), and [`async-scope-locals.zs`](async/async-scope-locals.zs)
 - [`async-branch-expressions.zs`](async/async-branch-expressions.zs): selected-only suspension in logical, ternary, value-`if`, and loop-condition branches
 - [`async-errors.zs`](async/async-errors.zs), [`async-owned-errors.zs`](async/async-owned-errors.zs), [`async-cancellation.zs`](async/async-cancellation.zs), [`async-caller-cancellation.zs`](async/async-caller-cancellation.zs), [`async-delay.zs`](async/async-delay.zs), and [`scheduler-yield.zs`](async/scheduler-yield.zs)

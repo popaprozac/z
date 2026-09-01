@@ -4754,6 +4754,30 @@ emits canonical JSON `null`; and TypeScript sees `string | null`. Explicit
 while `field: Option<T>` remains required and `field?: T` additionally accepts
 an omitted input property.
 
+## Bounded channel ownership across async backpressure
+
+The first channel pressure test deliberately used an owned `Job` struct with a
+`String` field rather than a scalar. One producer moved two jobs through a
+capacity-one channel while the second send suspended; the consumer received
+both, joined the producer, and observed `none` only after explicit close and
+buffer drain.
+
+That composition exposed two async-lowering defects hidden by the scalar
+foundation. Cleanup for generic `ChannelClosed<Job>` emitted the compiler's raw
+generic identity instead of its encoded C symbol, and the intrinsic send frame
+cleared `live_value_value` rather than the parameter's actual `live_value`
+guard. Both would have either failed strict C compilation or compromised
+exactly-once message cleanup. The fixes use the same canonical symbol encoder
+and frame-field helpers as ordinary async aggregates; no new source syntax or
+channel-specific ownership exception was added.
+
+The resulting evidence is stronger than an integer queue: a cleanup-bearing
+message transfers once into a suspended send frame, once into channel storage,
+and once into the receiving `Option<Job>`. Cancellation or closure keeps the
+same proof, with `ChannelClosed<Job>.value` recovering an unsent owner. The
+realistic example remains unchanged at capacity one, so it continuously tests
+actual backpressure rather than only the immediate-send path.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

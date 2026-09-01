@@ -134,6 +134,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | Typed errors | [`async-errors.zs`](../examples/async/async-errors.zs) |
 | Cleanup-bearing async errors | [`async-owned-errors.zs`](../examples/async/async-owned-errors.zs) — owned String error fields across observation, propagation, completed discard, and cancellation |
 | Hot task and explicit join | [`async-tasks.zs`](../examples/async/async-tasks.zs) |
+| Bounded ownership channel | [`channels.zs`](../examples/async/channels.zs) — capacity-one backpressure, split MPSC authority, cleanup-bearing message transfer, close, and drain |
 | Stored async callable tasks | [`async-callable-tasks.zs`](../examples/async/async-callable-tasks.zs) — a stored async closure started later as `Task<T, E>`, typed success/failure observation, consuming cancellation, explicit join, lexical implicit join, and borrowed-owner cleanup |
 | Lexical task scopes | [`async-scopes.zs`](../examples/async/async-scopes.zs) |
 | Scope-local ownership and child borrows | [`async-scope-locals.zs`](../examples/async/async-scope-locals.zs) |

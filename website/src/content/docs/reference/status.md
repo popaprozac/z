@@ -28,7 +28,13 @@ production or compatibility-sensitive use.
 - Arrays, strings, maps, sets, filesystem/process primitives, synchronization,
   arenas, JSON foundations, and inline Z tests
 - Structured tasks, cancellation, executor placement, dedicated native threads,
-  `Mutex<T>`, and `Once<T>` across proven slices
+  `Mutex<T>`, `Once<T>`, and bounded MPSC `Channel<T>` communication across
+  proven slices. Channels split shareable async `Sender<T>` from unique async
+  `Receiver<T>`, preserve unsent ownership through `ChannelClosed<T>`, suspend
+  task frames under backpressure, wake cleanly on close/cancellation, and expose
+  explicit blocking `SyncSender<T>` / `SyncReceiver<T>` conversions for native
+  threads. Unbounded and rendezvous storage, selection, timeouts, and concurrent
+  receive loans remain future tiers
 - Stored synchronous callables and a Stage 0 stored-async task tier that
   preserve either `thread.main` isolation or arbitrary-thread `thread.any`
   sharing without scheduling implicitly. Native lowering now preserves the

@@ -6132,7 +6132,7 @@ function generateChannelAsyncPoll(plan: AsyncFunctionPlan): string {
       `  const int status = ${channelAsyncSendTryName(valueType)}(${receiver}, &frame->value_value, &frame->channel_waiter);`,
       "  if (status == 0) return;",
       "  task->suspended = false;",
-      ...(hasFrameCleanup(valueType, plan.types) ? ["  frame->live_value_value = false;"] : []),
+      ...(hasFrameCleanup(valueType, plan.types) ? [`  frame->${frameLiveField("value")} = false;`] : []),
       "  if (status < 0) {",
       `    frame->error = (${errorCType}){ .value = frame->value_value };`,
       ...(hasFrameCleanup(errorType, plan.types) ? ["    frame->live_error = true;"] : []),
@@ -8221,8 +8221,8 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
       + `${indent(frameCleanup(element, fixedArray.elementType, types), 2)}\n}`;
   }
   const aggregate = types.structs.get(type);
-  if (aggregate?.kind === "class") return `Z_${type}_release(${value});`;
-  if (aggregate?.kind === "struct") return `Z_${type}_deinit(&(${value}));`;
+  if (aggregate?.kind === "class") return `Z_${asyncNativeSymbolPart(type)}_release(${value});`;
+  if (aggregate?.kind === "struct") return `Z_${asyncNativeSymbolPart(type)}_deinit(&(${value}));`;
   const enumeration = types.enums.get(type);
   if (enumeration) {
     const niche = asyncOptionNichePayload(type, types);
@@ -8261,8 +8261,8 @@ function frameManagedCleanup(value: string, type: string, types: AsyncTypeContex
       + `${indent(cleanup, 2)}\n}`;
   }
   const aggregate = types.structs.get(type);
-  if (aggregate?.kind === "class") return `Z_${type}_release(${value});`;
-  if (aggregate?.kind === "struct") return hasManagedFrameCleanup(type, types) ? `Z_${type}_deinit(&(${value}));` : "";
+  if (aggregate?.kind === "class") return `Z_${asyncNativeSymbolPart(type)}_release(${value});`;
+  if (aggregate?.kind === "struct") return hasManagedFrameCleanup(type, types) ? `Z_${asyncNativeSymbolPart(type)}_deinit(&(${value}));` : "";
   const enumeration = types.enums.get(type);
   if (!enumeration) return "";
   const niche = asyncOptionNichePayload(type, types);

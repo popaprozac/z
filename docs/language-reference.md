@@ -406,6 +406,79 @@ condition variables, semaphores, asynchronous synchronization, timed
 acquisition, public handle copying, and a public guard API remain separate
 future layers.
 
+### Typed channels
+
+`std/channel` provides bounded multiple-producer, single-consumer channels with
+split capabilities:
+
+```z
+import { Channel, ChannelClosed, Sender } from "std/channel";
+
+struct Job {
+  name: String;
+}
+
+async function publish(sender: Sender<Job>): void throws ChannelClosed<Job> {
+  const job = Job({ name: "index" });
+  try await sender.send(move job);
+  sender.close();
+}
+
+async function main(): i32 throws ChannelClosed<Job> {
+  const { sender, receiver } = Channel<Job>.bounded(8);
+  const publishing = task publish(move sender);
+  const next = await receiver.receive();
+  try await publishing;
+  return match (next) {
+    some(job) => i32(job.name.byteLength) - 5;
+    none => 1;
+  };
+}
+```
+
+`bounded(capacity)` requires a positive capacity. `Sender<T>` is a shareable
+asynchronous sending endpoint; `Receiver<T>` is the unique asynchronous
+receiving endpoint. An owned message requires `move`. A full bounded channel
+suspends `send` without blocking its executor. An open empty channel suspends
+`receive`. Closing wakes waiters, buffered messages remain receivable, and
+`receive()` returns `Option.none` after the closed channel is drained.
+
+Sending is fallible because closure may race the operation:
+
+```z
+const outcome = attempt await sender.send(move job);
+match (outcome) {
+  success => console.log("queued");
+  failure(error) => recover(move error.value);
+}
+```
+
+`ChannelClosed<T>` owns the unsent value. This preserves deterministic message
+ownership rather than discarding it at the communication boundary.
+
+Explicit endpoint conversion provides blocking OS-thread access:
+
+```z
+const syncSender = sender.sync();
+const syncReceiver = receiver.sync();
+
+try syncSender.send(move job);
+const next = syncReceiver.receive();
+```
+
+`SyncSender<T>.send` blocks while full and `SyncReceiver<T>.receive` blocks
+while empty and open. The receiver conversion consumes `Receiver<T>` so receive
+authority stays unique. These operations do not suspend a task and should not
+run on an executor thread that must remain responsive.
+
+Only `Channel<T>.bounded(capacity)` is implemented. The explicit
+`Channel<T>.unbounded()` spelling is reserved for a later storage tier; omitted
+capacity will not mean unbounded. Zero-capacity rendezvous, channel selection,
+timeouts, concurrent receive loans, and conversion back from synchronous
+endpoints remain future work. The first tier requires direct
+`await receiver.receive()` rather than creating a separate child task for a
+unique receive operation.
+
 `export c function` adds a stable C ABI entry point without removing the
 ordinary Z export:
 

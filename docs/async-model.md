@@ -545,18 +545,49 @@ the task frame. A struct async instance method must initially declare `move
 this`, transferring its value into the frame; static async methods on either
 kind have no receiver restriction. `deinit` is never async.
 
-## Planned channels, actors, and pluggable executors
+## Bounded channels and planned actors
 
-The following shapes describe intended direction and are not implemented yet.
-Typed channels should transfer ownership:
+The first typed channel tier is executable:
 
 ```z
-const [sender, receiver] = Channel<Job>.bounded(64);
-try await sender.send(job); // moves a non-copyable job
+import { Channel, ChannelClosed, Sender } from "std/channel";
+
+struct Job {
+  id: i32;
+}
+
+async function publish(sender: Sender<Job>): void throws ChannelClosed<Job> {
+  const job = Job({ id: 42 });
+  try await sender.send(move job);
+  sender.close();
+}
+
+async function main(): i32 throws ChannelClosed<Job> {
+  const { sender, receiver } = Channel<Job>.bounded(64);
+  const publishing = task publish(move sender);
+  const next = await receiver.receive();
+  try await publishing;
+  return match (next) {
+    some(job) => job.id - 42;
+    none => 1;
+  };
+}
 ```
 
-Actors are intended to isolate long-lived mutable state; channels would remain
-the primitive for pipelines and explicit communication. Future executor
+`Sender<T>` is a shareable producer capability; `Receiver<T>` is a unique
+consumer capability. Full/empty waits suspend task frames rather than blocking
+the executor. `ChannelClosed<T>` preserves an unsent owned message, close drains
+buffered messages before `receive` returns `none`, and cancellation unregisters
+the current waiter. Explicit `.sync()` conversion provides blocking
+`SyncSender<T>` and `SyncReceiver<T>` endpoints for native-thread code.
+
+Only positive-capacity `Channel<T>.bounded(capacity)` exists in this tier.
+`Channel<T>.unbounded()` is reserved as an explicit future factory. Rendezvous,
+selection, timeouts, concurrent receive loans, and async-to-sync round trips are
+not implemented.
+
+Actors remain intended to isolate long-lived mutable state; channels remain the
+primitive for pipelines and explicit communication. Future executor
 capabilities should let Z participate in Dispatch, GUI run loops, Windows
 thread-pool I/O, custom engines, and deterministic tests.
 
@@ -669,6 +700,6 @@ sequential iteration. Multiple children may be started inside an
 before the next iteration. Cross-iteration fan-out requires a future dynamic
 child group rather than overwriting a fixed slot.
 
-Later phases add channels, broader sendability, actors, native cancellation
+Later phases add broader channel shapes, broader sendability, actors, native cancellation
 hooks, repeated-callback async sequences, and richer ownership-bearing foreign
 completion payloads. Async-free programs never link the runtime.

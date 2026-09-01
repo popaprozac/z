@@ -1930,6 +1930,82 @@ The first tier is an exclusive mutex. Read/write locks, condition variables,
 semaphores, atomics, asynchronous mutexes, timed acquisition, nonblocking
 acquisition, and direct public handle copying remain separate designs.
 
+Cross-task communication uses typed channels from `std/channel`:
+
+```z
+import { Channel, ChannelClosed, Sender } from "std/channel";
+
+struct Job {
+  path: String;
+}
+
+async function produce(sender: Sender<Job>): void throws ChannelClosed<Job> {
+  const job = Job({ path: "guide.md" });
+  try await sender.send(move job);
+  sender.close();
+}
+
+async function main(): i32 throws ChannelClosed<Job> {
+  const { sender, receiver } = Channel<Job>.bounded(64);
+  const producer = task produce(move sender);
+  const next = await receiver.receive();
+  try await producer;
+  return match (next) {
+    some(job) => i32(job.path.byteLength);
+    none => 0;
+  };
+}
+```
+
+`Channel<T>.bounded(capacity)` returns a split multiple-producer,
+single-consumer pair. Capacity is explicit and must be greater than zero. The
+split is part of the capability model: `Sender<T>` may be retained and shared
+between safe producers, while `Receiver<T>` remains unique. Z does not expose
+one symmetric channel handle whose receive authority can be accidentally
+duplicated.
+
+The asynchronous endpoint surface is deliberately small:
+
+```z
+async send(move value: T): void throws ChannelClosed<T>
+async receive(): Option<T>
+close(): void
+```
+
+`send` transfers message ownership. It completes immediately when the bounded
+buffer has room and otherwise suspends the current task without blocking the
+executor thread. If closure wins, `ChannelClosed<T>` returns the unsent owner
+as `error.value`; a failed send never silently destroys the message. `receive`
+completes immediately when a buffered message exists, suspends while the
+channel is open and empty, and returns `none` only after closure and buffer
+drain. Explicit `close()` wakes both kinds of waiter. Releasing the last sender
+also closes the channel. Cancellation unregisters a suspended operation before
+its task frame is destroyed.
+
+Blocking native-thread access is an explicit endpoint conversion rather than
+an overload chosen by context:
+
+```z
+const syncSender = sender.sync();
+const syncReceiver = receiver.sync(); // consumes the unique Receiver<T>
+
+try syncSender.send(move job);        // blocks while full
+const next = syncReceiver.receive();  // blocks while empty and open
+```
+
+The names remain `send` and `receive` because the endpoint type already states
+the scheduling behavior. `SyncSender<T>` retains shared send authority;
+`Receiver<T>.sync(move this)` consumes the unique asynchronous receiver and
+produces one `SyncReceiver<T>`. Synchronous channel operations should not be
+used on an executor thread that cannot afford to block.
+
+The first tier requires a direct `await receiver.receive()` so one lexical
+receive operation owns the unique endpoint at a time. Concurrent receive loans,
+selection across channels, timeouts, zero-capacity rendezvous channels, and
+unbounded storage remain future designs. The future unbounded factory is
+reserved as the explicit `Channel<T>.unbounded()` spelling; omitting capacity
+will not silently select a different resource policy.
+
 The bootstrap recognizes explicit relative paths ending in `.zs`, recursively
 loads an acyclic dependency graph, and links it into one native translation
 unit. Each dependency receives private compiler identities so unrelated files

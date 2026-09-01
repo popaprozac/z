@@ -174,6 +174,7 @@ produces `Z0700`.
 Runnable examples:
 [async overview](https://github.com/popaprozac/z/blob/main/examples/async/async-overview.zs),
 [scopes](https://github.com/popaprozac/z/blob/main/examples/async/async-scopes.zs),
+[bounded channels](https://github.com/popaprozac/z/blob/main/examples/async/channels.zs),
 and [cancellation](https://github.com/popaprozac/z/blob/main/examples/async/async-caller-cancellation.zs).
 
 Next: [Threads, executors, and synchronization](/language-tour/threads-executors-and-synchronization/).
