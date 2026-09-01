@@ -132,19 +132,29 @@ export function materializeGenerics(
       .filter((binding) => binding.importedName === "Mutex")
       .map((binding) => binding.localName),
   );
-  const channelBindings = new Map(
-    program.imports
-      .flatMap((declaration) => declaration.header === "std/channel" ? declaration.bindings ?? [] : [])
-      .filter((binding) => (
-        binding.importedName === "Channel"
-        || binding.importedName === "Sender"
-        || binding.importedName === "Receiver"
-        || binding.importedName === "SyncSender"
-        || binding.importedName === "SyncReceiver"
-        || binding.importedName === "ChannelClosed"
-      ))
-      .map((binding) => [binding.localName, binding.importedName] as const),
-  );
+  const channelBindings = new Map<
+    string,
+    "Channel" | "Sender" | "Receiver" | "SyncSender" | "SyncReceiver" | "ChannelClosed"
+  >();
+  for (const binding of program.imports
+    .flatMap((declaration) => declaration.header === "std/channel" ? declaration.bindings ?? [] : [])
+    .filter((binding) => (
+      binding.importedName === "Channel"
+      || binding.importedName === "Sender"
+      || binding.importedName === "Receiver"
+      || binding.importedName === "SyncSender"
+      || binding.importedName === "SyncReceiver"
+      || binding.importedName === "ChannelClosed"
+    ))) {
+    const importedName = binding.importedName as
+      "Channel" | "Sender" | "Receiver" | "SyncSender" | "SyncReceiver" | "ChannelClosed";
+    // Module linking canonicalizes standard-library type references to their
+    // imported names while retaining a linked local binding for the import.
+    // Recognize both shapes so a channel endpoint stored behind an exported
+    // aggregate is materialized after modules are joined.
+    channelBindings.set(binding.localName, importedName);
+    channelBindings.set(importedName, importedName);
+  }
   const hashableImport = program.imports
     .flatMap((declaration) => declaration.header === "std/hash" ? declaration.bindings ?? [] : [])
     .find((binding) => binding.importedName === "Hashable");

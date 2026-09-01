@@ -502,3 +502,45 @@ test("keeps unique receiver operations directly awaited in the first tier", () =
   assert.equal(diagnostic?.code, "Z0710");
   assert.match(diagnostic?.message ?? "", /must be awaited directly/i);
 });
+
+test("materializes channel endpoints stored by an exported module aggregate", () => {
+  const directory = mkdtempSync("/tmp/z-channel-module-storage-");
+  const worker = resolve(directory, "worker.zs");
+  const main = resolve(directory, "main.zs");
+  try {
+    writeFileSync(worker, `
+      import { Sender, SyncReceiver } from "std/channel";
+
+      export enum WorkerCommand {
+        stop,
+      }
+
+      export readonly class WorkerMailbox {
+        readonly sender: Sender<WorkerCommand>;
+      }
+
+      export struct WorkerInbox {
+        commands: SyncReceiver<WorkerCommand>;
+      }
+    `);
+    writeFileSync(main, `
+      import { Channel } from "std/channel";
+      import { WorkerCommand, WorkerInbox, WorkerMailbox } from "./worker.zs";
+
+      function main(): i32 {
+        const { sender, receiver } = Channel<WorkerCommand>.bounded(1);
+        const mailbox = new WorkerMailbox({ sender });
+        const inbox = WorkerInbox({ commands: receiver.sync() });
+        mailbox.sender.close();
+        return match (inbox.commands.receive()) {
+          some(_) => 1;
+          none => 0;
+        };
+      }
+    `);
+    const result = spawnSync(process.execPath, [cli, "run", main], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
