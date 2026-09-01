@@ -4409,6 +4409,37 @@ test("embeds static bytes through the fixed-point native frontend", () => {
   }
 }, 60_000);
 
+test("emits type-only static byte catalogs through the fixed-point frontend", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-static-bytes-type-only-");
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/static-bytes-type-only.zs",
+  );
+  try {
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /typedef struct Z_StaticBytes/);
+    assert.match(emission.stdout, /Z_StaticBytes bytes;/);
+    assert.equal(/z_stage1_embedded_bytes_/.test(emission.stdout), false);
+
+    const executable = resolve(directory, "static-bytes-type-only");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 hostToolchainTest("borrows embedded bytes into NSData through the fixed-point frontend", () => {
   if (process.platform !== "darwin") return;
   const directory = mkdtempSync("/tmp/z-self-host-embedded-data-");

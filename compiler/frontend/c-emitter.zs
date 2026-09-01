@@ -20056,16 +20056,14 @@ function emitLoweredC(
   output.append("  size_t length;\n");
   output.append("  size_t capacity;\n");
   output.append("} Z_String;\n\n");
-  if (program.embeddedBytes.length > 0) {
-    output.append("typedef struct Z_StaticBytes {\n");
-    output.append("  const uint8_t *data;\n");
-    output.append("  size_t length;\n");
-    output.append("} Z_StaticBytes;\n\n");
-    output.append("static inline __attribute__((unused)) uint8_t z_stage1_static_bytes_at(Z_StaticBytes value, size_t index) {\n");
-    output.append("  if (index >= value.length) abort();\n");
-    output.append("  return value.data[index];\n");
-    output.append("}\n\n");
-  }
+  output.append("typedef struct Z_StaticBytes {\n");
+  output.append("  const uint8_t *data;\n");
+  output.append("  size_t length;\n");
+  output.append("} Z_StaticBytes;\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_static_bytes_at(Z_StaticBytes value, size_t index) {\n");
+  output.append("  if (index >= value.length) abort();\n");
+  output.append("  return value.data[index];\n");
+  output.append("}\n\n");
   output.append("static inline __attribute__((unused)) const char *z_stage1_string_cstring(Z_String value) {\n");
   output.append("  return value.data != NULL ? value.data : \"\";\n");
   output.append("}\n\n");

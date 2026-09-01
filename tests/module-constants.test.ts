@@ -59,6 +59,33 @@ test("embeds immutable file bytes as a cleanup-free module constant", () => {
   assert.match(diagnostics(missingPath, example)[0]?.message ?? "", /could not embed file/);
 });
 
+test("emits the StaticBytes ABI for type-only asset catalogs", () => {
+  const example = resolve(
+    projectRoot,
+    "tests/fixtures/static-bytes-type-only.zs",
+  );
+  const artifact = compileToNative(readFileSync(example, "utf8"), example);
+  assert.deepEqual(artifact.embeddedFiles, []);
+  assert.match(artifact.source, /typedef struct Z_StaticBytes/);
+  assert.match(artifact.source, /Z_StaticBytes bytes;/);
+  assert.equal(/z_embedded_bytes_/.test(artifact.source), false);
+
+  const directory = mkdtempSync("/tmp/z-static-bytes-type-only-");
+  try {
+    const executable = resolve(directory, "static-bytes-type-only");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: artifact.source },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("keeps visibility modifiers distinct from declaration keywords", () => {
   const source = `
     internal function packageAnswer(): i32 { return 42; }

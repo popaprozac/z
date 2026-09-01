@@ -489,14 +489,12 @@ export function generateC(
     "  intptr_t native;",
     "} Z_FsLock;",
   );
-  if (semanticInfo.embeddedBytes.size > 0) {
-    lines.push(
-      "typedef struct Z_StaticBytes {",
-      "  const uint8_t *data;",
-      "  uintptr_t length;",
-      "} Z_StaticBytes;",
-    );
-  }
+  lines.push(
+    "typedef struct Z_StaticBytes {",
+    "  const uint8_t *data;",
+    "  uintptr_t length;",
+    "} Z_StaticBytes;",
+  );
   if (usesFileLock) {
     lines.push(
       "static void Z_FsLock_deinit(Z_FsLock *lock);",
