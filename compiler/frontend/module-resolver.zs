@@ -204,6 +204,7 @@ import {
   typeIsForeignViewOnlyRecord,
   typeIsRetainedParameterViewAggregate,
   typeIsThreadShareable,
+  typeIsThreadTransferable,
   typeIsArenaOwnerBundle,
   typeNameIsArena,
   typeMovesOnOwnedUse,
@@ -1417,6 +1418,68 @@ function importedStandardNamespace(
     ) return true;
   }
   return false;
+}
+
+function importsStandardChannel(in module: ParsedModule): boolean {
+  for (const declaration of module.program.imports) {
+    if (declaration.header == "std/channel") return true;
+  }
+  return false;
+}
+
+function standardChannelTypeKind(
+  in module: ParsedModule,
+  in localName: String
+): String {
+  if (!importsStandardChannel(module)) return "";
+  const names = Array<String>(
+    "Channel",
+    "Sender",
+    "Receiver",
+    "SyncSender",
+    "SyncReceiver",
+    "ChannelClosed"
+  );
+  for (const name of names) {
+    if (
+      localName == name
+      || importedStandardType(
+        module,
+        localName,
+        "std/channel",
+        name
+      )
+    ) return name.copyBytes(0, name.byteLength);
+  }
+  return "";
+}
+
+function channelCallSignature(
+  asynchronous: boolean,
+  in parameterType: String,
+  in returnType: String,
+  in errorType: String
+): ModuleFunctionSignature {
+  let parameterModes = Array<String>();
+  let parameterTypes = Array<String>();
+  if (parameterType.byteLength > 0) {
+    parameterModes.push("value");
+    parameterTypes.push(parameterType.copyBytes(0, parameterType.byteLength));
+  }
+  return ModuleFunctionSignature({
+    asynchronous,
+    executorAffinity: "",
+    threadContract: "",
+    typeParameters: Array<String>(),
+    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+    parameterModes,
+    parameterTypes,
+    viewParameter: Option<usize>.none,
+    invalidatesParameters: Array<usize>(),
+    invalidatesLifetimes: Array<String>(),
+    returnType: returnType.copyBytes(0, returnType.byteLength),
+    errorType: errorType.copyBytes(0, errorType.byteLength),
+  });
 }
 
 function mutexPayloadSupported(in typeName: String): boolean {
@@ -8796,23 +8859,117 @@ function inferExpressionNodeType(
           ownerType = candidate.copyBytes(0, candidate.byteLength);
           staticMethod = true;
         } else {
-          match (typeSymbolLocation(modules, moduleIndex, candidate)) {
-            some(typeLocation) => {
-              const typeKind = modules[typeLocation.moduleIndex].symbols[typeLocation.symbolIndex].kind;
-              if (
-                typeKind == ModuleSymbolKind.structSymbol
-                || typeKind == ModuleSymbolKind.classSymbol
-              ) {
-                ownerType = candidate.copyBytes(0, candidate.byteLength);
-                staticMethod = true;
-              }
+          let channelFactory = false;
+          match (genericTypeShape(candidate)) {
+            some(generic) => {
+              channelFactory = generic.arguments.length == 1
+                && standardChannelTypeKind(module, generic.base) == "Channel";
             }
             none => {}
+          }
+          if (channelFactory) {
+            ownerType = candidate.copyBytes(0, candidate.byteLength);
+            staticMethod = true;
+          } else {
+            match (typeSymbolLocation(modules, moduleIndex, candidate)) {
+              some(typeLocation) => {
+                const typeKind = modules[typeLocation.moduleIndex].symbols[typeLocation.symbolIndex].kind;
+                if (
+                  typeKind == ModuleSymbolKind.structSymbol
+                  || typeKind == ModuleSymbolKind.classSymbol
+                ) {
+                  ownerType = candidate.copyBytes(0, candidate.byteLength);
+                  staticMethod = true;
+                }
+              }
+              none => {}
+            }
           }
         }
       }
       if (ownerType.byteLength > 0) {
         const methodName = identifierLookupName(tree.nodes[calleeIndex].value);
+        if (staticMethod) {
+          match (genericTypeShape(ownerType)) {
+            some(channel) => {
+              if (
+                channel.arguments.length == 1
+                && standardChannelTypeKind(module, channel.base) == "Channel"
+              ) {
+                if (optionalMethodCall) throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "optional call cannot invoke Channel.bounded",
+                  tree.nodes[calleeIndex].line,
+                  tree.nodes[calleeIndex].column
+                );
+                if (methodName != "bounded") throw resolutionError(
+                  ModuleResolveErrorKind.unknownMember,
+                  module.path,
+                  `Channel has no static method "${methodName}"; use Channel<T>.bounded(capacity)`,
+                  tree.nodes[calleeIndex].line,
+                  tree.nodes[calleeIndex].column
+                );
+                const argumentNodes = callArgumentNodes(children);
+                if (argumentNodes.length != 1) throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `Channel.bounded expects 1 capacity argument, received ${argumentNodes.length}`,
+                  tree.nodes[index].line,
+                  tree.nodes[index].column
+                );
+                const capacity = argumentNodes[0];
+                const capacityType = try inferExpressionNodeType(
+                  module,
+                  modules,
+                  moduleIndex,
+                  arena,
+                  tree,
+                  capacity,
+                  inout bindings,
+                  inout evidence
+                );
+                try requireSettledExpressionType(
+                  module,
+                  tree,
+                  capacity,
+                  capacityType
+                );
+                if (!isIntegerTypeName(capacityType)) throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `Channel.bounded capacity must be an integer, found ${capacityType}`,
+                  tree.nodes[capacity].line,
+                  tree.nodes[capacity].column
+                );
+                if (
+                  tree.nodes[capacity].kind == ExpressionKind.numberExpression
+                  && tree.nodes[capacity].value == "0"
+                ) throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "Channel.bounded capacity must be greater than zero",
+                  tree.nodes[capacity].line,
+                  tree.nodes[capacity].column
+                );
+                const payload = view channel.arguments[0];
+                if (!typeIsThreadTransferable(
+                  modules,
+                  moduleIndex,
+                  payload
+                )) throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `Channel message type ${payload} is not transferable across threads`,
+                  tree.nodes[receiverIndex].line,
+                  tree.nodes[receiverIndex].column
+                );
+                return `Channel.Endpoints<${payload}>`;
+              }
+            }
+            none => {}
+          }
+        }
         if (
           staticMethod
           && qualifiedTypeMember(ownerType) == "NSData"
@@ -9223,6 +9380,155 @@ function inferExpressionNodeType(
             receiverRoot
           );
           return `view ${actual}`;
+        }
+        match (genericTypeShape(ownerType)) {
+          some(channel) => {
+            const endpointKind = standardChannelTypeKind(
+              module,
+              channel.base
+            );
+            if (
+              channel.arguments.length == 1
+              && (
+                endpointKind == "Sender"
+                || endpointKind == "Receiver"
+                || endpointKind == "SyncSender"
+                || endpointKind == "SyncReceiver"
+              )
+            ) {
+              if (optionalMethodCall) throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `optional call cannot invoke ${endpointKind}.${methodName}; unwrap the endpoint first`,
+                tree.nodes[calleeIndex].line,
+                tree.nodes[calleeIndex].column
+              );
+              const receiverRoot = expressionStorageRootName(
+                tree,
+                receiverIndex
+              );
+              if (receiverRoot.byteLength == 0) throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `Channel endpoint method "${methodName}" requires a named handle`,
+                tree.nodes[receiverIndex].line,
+                tree.nodes[receiverIndex].column
+              );
+              const payload = view channel.arguments[0];
+              const argumentNodes = callArgumentNodes(children);
+              let signature = channelCallSignature(
+                false,
+                "",
+                "",
+                ""
+              );
+              let receiverMode = "";
+              if (
+                methodName == "send"
+                && (endpointKind == "Sender" || endpointKind == "SyncSender")
+              ) {
+                signature = channelCallSignature(
+                  endpointKind == "Sender",
+                  payload,
+                  "void",
+                  `ChannelClosed<${payload}>`
+                );
+                if (argumentNodes.length == 1) {
+                  const argument = argumentNodes[0];
+                  let visiting = Array<String>();
+                  const argumentRoot = expressionStorageRootName(
+                    tree,
+                    argument
+                  );
+                  const explicitMove = tree.nodes[argument].kind
+                      == ExpressionKind.unaryExpression
+                    && tree.nodes[argument].value == "move";
+                  if (
+                    argumentRoot.byteLength > 0
+                    && typeHasCleanup(
+                      modules,
+                      moduleIndex,
+                      payload,
+                      visiting
+                    )
+                    && !explicitMove
+                  ) throw resolutionError(
+                    ModuleResolveErrorKind.typeMismatch,
+                    module.path,
+                    "sending an existing message owner requires an explicit move",
+                    tree.nodes[argument].line,
+                    tree.nodes[argument].column
+                  );
+                }
+              } else if (
+                methodName == "receive"
+                && (endpointKind == "Receiver" || endpointKind == "SyncReceiver")
+              ) {
+                signature = channelCallSignature(
+                  endpointKind == "Receiver",
+                  "",
+                  `Option<${payload}>`,
+                  ""
+                );
+              } else if (
+                methodName == "close"
+                && (endpointKind == "Sender" || endpointKind == "SyncSender")
+              ) {
+                signature = channelCallSignature(false, "", "void", "");
+              } else if (methodName == "sync" && endpointKind == "Sender") {
+                signature = channelCallSignature(
+                  false,
+                  "",
+                  `SyncSender<${payload}>`,
+                  ""
+                );
+              } else if (methodName == "sync" && endpointKind == "Receiver") {
+                signature = channelCallSignature(
+                  false,
+                  "",
+                  `SyncReceiver<${payload}>`,
+                  ""
+                );
+                receiverMode = "move";
+              } else throw resolutionError(
+                ModuleResolveErrorKind.unknownMember,
+                module.path,
+                `${ownerType} has no method "${methodName}"`,
+                tree.nodes[calleeIndex].line,
+                tree.nodes[calleeIndex].column
+              );
+              const substitutions = Array<NativeValueBinding>();
+              const callType = try inferSignatureCallType(
+                module,
+                modules,
+                moduleIndex,
+                arena,
+                tree,
+                calleeIndex,
+                index,
+                argumentNodes,
+                inout bindings,
+                receiverRoot,
+                receiverMode,
+                `${ownerType}.${methodName}`,
+                signature,
+                substitutions,
+                0,
+                0,
+                "value",
+                inout evidence
+              );
+              if (receiverMode == "move") {
+                setValueBindingOwnership(
+                  inout bindings,
+                  receiverRoot,
+                  NativeOwnershipState.moved
+                );
+              }
+              return callType;
+            }
+          }
+          none => {}
         }
         match (genericTypeShape(ownerType)) {
           some(mutex) => {

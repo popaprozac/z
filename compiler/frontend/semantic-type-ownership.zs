@@ -152,6 +152,16 @@ function typeIsThreadShareableInner(
         return true;
       }
       if (
+        (generic.base == "Sender" || generic.base == "SyncSender")
+        && generic.arguments.length == 1
+      ) {
+        // Sender identity is shared, while each message is transferred into
+        // the channel. Channel construction separately proves the broader
+        // transferable-message contract; requiring the payload itself to be
+        // shareable would incorrectly reject owned String and value messages.
+        return true;
+      }
+      if (
         (generic.base == "Option" && generic.arguments.length == 1)
         || (generic.base == "Result" && generic.arguments.length == 2)
       ) {
@@ -233,6 +243,202 @@ export function typeIsThreadShareable(
 ): boolean {
   let visiting = Array<String>();
   return typeIsThreadShareableInner(
+    modules,
+    moduleIndex,
+    typeName,
+    inout visiting
+  );
+}
+
+function typeIsThreadTransferableInner(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  inout visiting: Array<String>
+): boolean {
+  if (
+    typeName == "void"
+    || typeName == "boolean"
+    || typeName == "i8"
+    || typeName == "i16"
+    || typeName == "i32"
+    || typeName == "i64"
+    || typeName == "u8"
+    || typeName == "u16"
+    || typeName == "u32"
+    || typeName == "u64"
+    || typeName == "isize"
+    || typeName == "usize"
+    || typeName == "f32"
+    || typeName == "f64"
+    || typeName == "String"
+    || typeName == "TextBuffer"
+  ) return true;
+  if (
+    stringStartsWith(typeName, "view ")
+    || stringStartsWith(typeName, "Slice<")
+    || stringStartsWith(typeName, "Task<")
+    || stringStartsWith(typeName, "Weak<")
+  ) return false;
+  match (nativeFunctionSignature(typeName)) {
+    some(signature) => return signature.threadContract == "thread.any";
+    none => {}
+  }
+  const actual = transparentTypeName(modules, moduleIndex, typeName);
+  if (actual != typeName) return typeIsThreadTransferableInner(
+    modules,
+    moduleIndex,
+    actual,
+    inout visiting
+  );
+  match (fixedArrayShape(actual)) {
+    some(array) => return typeIsThreadTransferableInner(
+      modules,
+      moduleIndex,
+      array.elementType,
+      inout visiting
+    );
+    none => {}
+  }
+  let arguments = Array<String>();
+  match (genericTypeShape(actual)) {
+    some(generic) => {
+      if (
+        (generic.base == "Sender" || generic.base == "SyncSender")
+        && generic.arguments.length == 1
+      ) return typeIsThreadTransferableInner(
+        modules,
+        moduleIndex,
+        generic.arguments[0],
+        inout visiting
+      );
+      if (
+        (generic.base == "Receiver" || generic.base == "SyncReceiver")
+        && generic.arguments.length == 1
+      ) return typeIsThreadTransferableInner(
+        modules,
+        moduleIndex,
+        generic.arguments[0],
+        inout visiting
+      );
+      if (
+        (
+          generic.base == "Array"
+          || generic.base == "Set"
+          || generic.base == "Option"
+          || generic.base == "Mutex"
+          || generic.base == "ChannelClosed"
+        )
+        && generic.arguments.length == 1
+      ) return typeIsThreadTransferableInner(
+        modules,
+        moduleIndex,
+        generic.arguments[0],
+        inout visiting
+      );
+      if (
+        (generic.base == "Map" || generic.base == "Result")
+        && generic.arguments.length == 2
+      ) {
+        for (const argument of generic.arguments) {
+          if (!typeIsThreadTransferableInner(
+            modules,
+            moduleIndex,
+            argument,
+            inout visiting
+          )) return false;
+        }
+        return true;
+      }
+      for (const argument of generic.arguments) {
+        arguments.push(argument.copyBytes(0, argument.byteLength));
+      }
+    }
+    none => {}
+  }
+  if (containsString(visiting, actual)) return true;
+  match (inferredTypeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => {
+      const symbol = view modules[location.moduleIndex].symbols[
+        location.symbolIndex
+      ];
+      if (symbol.kind == ModuleSymbolKind.classSymbol) {
+        return typeIsThreadShareable(modules, moduleIndex, actual);
+      }
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          if (
+            signature.foreignNativeName.byteLength > 0
+            || signature.executorAffinity.byteLength > 0
+            || signature.customDeinit
+          ) return false;
+          let nextVisiting = copyStrings(visiting);
+          nextVisiting.push(actual.copyBytes(0, actual.byteLength));
+          let substitutions = Array<NativeValueBinding>();
+          let typeIndex: usize = 0;
+          while (
+            typeIndex < signature.typeParameters.length
+            && typeIndex < arguments.length
+          ) {
+            const argument = rebaseTypeName(
+              modules,
+              moduleIndex,
+              location.moduleIndex,
+              arguments[typeIndex]
+            );
+            addValueBinding(
+              inout substitutions,
+              signature.typeParameters[typeIndex],
+              argument
+            );
+            typeIndex = typeIndex + 1;
+          }
+          for (const field of signature.fields) {
+            const fieldType = substituteGenericType(
+              field.typeName,
+              substitutions
+            );
+            if (
+              field.executorAffinity.byteLength > 0
+              || !typeIsThreadTransferableInner(
+                modules,
+                location.moduleIndex,
+                fieldType,
+                inout nextVisiting
+              )
+            ) return false;
+          }
+          for (const variant of signature.variants) {
+            const payloadType = substituteGenericType(
+              variant.payloadType,
+              substitutions
+            );
+            if (
+              variant.payloadType.byteLength > 0
+              && !typeIsThreadTransferableInner(
+                modules,
+                location.moduleIndex,
+                payloadType,
+                inout nextVisiting
+              )
+            ) return false;
+          }
+          return true;
+        }
+        none => return false;
+      }
+    }
+    none => return false;
+  }
+}
+
+export function typeIsThreadTransferable(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  let visiting = Array<String>();
+  return typeIsThreadTransferableInner(
     modules,
     moduleIndex,
     typeName,
@@ -355,8 +561,24 @@ export function typeHasCleanup(
         || generic.base == "Task"
         || generic.base == "Weak"
         || generic.base == "Mutex"
+        || generic.base == "Sender"
+        || generic.base == "Receiver"
+        || generic.base == "SyncSender"
+        || generic.base == "SyncReceiver"
+        || generic.base == "Channel.Endpoints"
       ) {
         return true;
+      }
+      if (
+        generic.base == "ChannelClosed"
+        && generic.arguments.length == 1
+      ) {
+        return typeHasCleanup(
+          modules,
+          moduleIndex,
+          generic.arguments[0],
+          visiting
+        );
       }
       if (generic.base == "Option" || generic.base == "Result") {
         for (const argument of generic.arguments) {
@@ -758,6 +980,13 @@ export function typeSupportsExplicitCopy(
     || actual == "__z_std_fs_Lock"
     || stringStartsWith(actual, "Weak<")
     || stringStartsWith(actual, "Mutex<")
+    || stringStartsWith(actual, "Channel<")
+    || stringStartsWith(actual, "Sender<")
+    || stringStartsWith(actual, "Receiver<")
+    || stringStartsWith(actual, "SyncSender<")
+    || stringStartsWith(actual, "SyncReceiver<")
+    || stringStartsWith(actual, "ChannelClosed<")
+    || stringStartsWith(actual, "Channel.Endpoints<")
     || stringStartsWith(actual, "__z_native_function:")
   ) return false;
   match (fixedArrayShape(actual)) {

@@ -16000,6 +16000,62 @@ test("keeps native semantic authority composable across a representative Z corpu
   }
 }, 120_000);
 
+test("preserves bounded channel endpoint and ownership effects natively", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-channel-parity.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+  assert.match(parity.stdout, /exports [1-9]\d* expression type contracts/);
+
+  const observedBindings = parity.stdout.match(
+    /observes (\d+) inferred local binding stage-0 Z resolutions/,
+  )?.[1];
+  const authoritativeBindings = parity.stdout.match(
+    /uses (\d+) inferred local binding native-authoritative contracts/,
+  )?.[1];
+  const observedExpressions = parity.stdout.match(
+    /observes (\d+) expression stage-0 Z resolutions/,
+  )?.[1];
+  const authoritativeExpressions = parity.stdout.match(
+    /uses (\d+) expression native-authoritative contracts/,
+  )?.[1];
+  assert.ok(observedBindings);
+  assert.ok(observedExpressions);
+  assert.equal(authoritativeBindings, observedBindings);
+  assert.equal(authoritativeExpressions, observedExpressions);
+
+  const directory = mkdtempSync("/tmp/z-native-channel-negative-");
+  const negative = resolve(directory, "main.zs");
+  writeFileSync(negative, [
+    'import { Channel } from "std/channel";',
+    "struct Message { body: String; }",
+    "async function main(): i32 {",
+    "  const { sender, receiver } = Channel<Message>.bounded(1);",
+    '  const message = Message({ body: "owned" });',
+    "  await sender.send(message);",
+    "  return 0;",
+    "}",
+    "",
+  ].join("\n"));
+  const missingMove = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", negative],
+    { encoding: "utf8" },
+  );
+  assert.equal(missingMove.status, 1);
+  assert.match(
+    missingMove.stderr,
+    /sending an existing message owner requires an explicit move/,
+  );
+  rmSync(directory, { recursive: true, force: true });
+}, 120_000);
+
 test("preserves trait receiver capabilities in the native module graph", () => {
   const input = resolve(projectRoot, "examples/language/basics/classes.zs");
   const result = spawnSync(

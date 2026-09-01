@@ -328,6 +328,48 @@ export function aggregateFieldShape(
       for (const argument of generic.arguments) {
         arguments.push(argument.copyBytes(0, argument.byteLength));
       }
+      if (
+        generic.base == "Channel.Endpoints"
+        && generic.arguments.length == 1
+        && (fieldName == "sender" || fieldName == "receiver")
+      ) {
+        const endpoint = fieldName == "sender" ? "Sender" : "Receiver";
+        return Option.some(NativeFieldShape({
+          name: fieldName.copyBytes(0, fieldName.byteLength),
+          ownerName: ownerType.copyBytes(0, ownerType.byteLength),
+          ownerModuleIndex: moduleIndex,
+          ownerSymbolIndex: 0,
+          typeName: `${endpoint}<${generic.arguments[0]}>`,
+          executorAffinity: "",
+          visibility: "public",
+          readonlyField: true,
+          optionalField: false,
+          foreignUnion: false,
+          viewLifetime: "",
+        }));
+      }
+      if (
+        generic.base == "ChannelClosed"
+        && generic.arguments.length == 1
+        && fieldName == "value"
+      ) {
+        return Option.some(NativeFieldShape({
+          name: "value",
+          ownerName: ownerType.copyBytes(0, ownerType.byteLength),
+          ownerModuleIndex: moduleIndex,
+          ownerSymbolIndex: 0,
+          typeName: generic.arguments[0].copyBytes(
+            0,
+            generic.arguments[0].byteLength
+          ),
+          executorAffinity: "",
+          visibility: "public",
+          readonlyField: true,
+          optionalField: false,
+          foreignUnion: false,
+          viewLifetime: "",
+        }));
+      }
       if (generic.base == "Map.Entry" && generic.arguments.length == 2) {
         let fieldType = "";
         if (fieldName == "key") {

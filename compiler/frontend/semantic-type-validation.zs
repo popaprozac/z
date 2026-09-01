@@ -178,6 +178,13 @@ function intrinsicTypeArity(in name: String): Option<NativeTypeArity> {
     || name == "Once"
     || name == "OnceLifetime"
     || name == "Mutex"
+    || name == "Channel"
+    || name == "Sender"
+    || name == "Receiver"
+    || name == "SyncSender"
+    || name == "SyncReceiver"
+    || name == "ChannelClosed"
+    || name == "Channel.Endpoints"
   ) return Option.some(NativeTypeArity({ minimum: 1, maximum: 1 }));
   if (name == "Map") {
     return Option.some(NativeTypeArity({ minimum: 2, maximum: 2 }));
@@ -236,6 +243,12 @@ function mutexPayloadTypeSupported(in name: String): boolean {
         generic.base == "Once"
         || generic.base == "OnceLifetime"
         || generic.base == "Mutex"
+        || generic.base == "Channel"
+        || generic.base == "Sender"
+        || generic.base == "Receiver"
+        || generic.base == "SyncSender"
+        || generic.base == "SyncReceiver"
+        || generic.base == "Channel.Endpoints"
         || generic.base == "Task"
       ) return false;
       for (const argument of generic.arguments) {

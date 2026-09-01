@@ -82,7 +82,14 @@ export function isIntrinsicTypeName(in name: String): boolean {
     || name == "WeakExpired"
     || name == "Once"
     || name == "OnceLifetime"
-    || name == "Mutex";
+    || name == "Mutex"
+    || name == "Channel"
+    || name == "Sender"
+    || name == "Receiver"
+    || name == "SyncSender"
+    || name == "SyncReceiver"
+    || name == "ChannelClosed"
+    || name == "Channel.Endpoints";
 }
 
 export function qualifiedTypeBase(in name: String): String {
