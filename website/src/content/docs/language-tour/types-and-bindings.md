@@ -125,6 +125,28 @@ value. Convert to an option when that produces a better Z-facing API:
 const window = Option.fromNullable(app.keyWindow);
 ```
 
+Value structs may make omission part of their construction contract with
+`field?: T`. The field is stored as `Option<T>`: omission produces `none`, a
+direct `T` is lifted to `some`, and an already-computed `Option<T>` transfers
+without another wrapper.
+
+```zs
+struct NoteDraft {
+  title: String;
+  subtitle?: String;
+}
+
+const plain = NoteDraft({ title: "Draft" });
+const subtitle: Option<String> = Option.some("Local only");
+const detailed = NoteDraft({
+  title: "Draft",
+  subtitle: move subtitle,
+});
+```
+
+Use `field: Option<T>` when callers must explicitly supply either `some` or
+`none`; use `field?: T` when omission itself is a supported construction shape.
+
 ## Explicit numeric conversion
 
 Calling a numeric type constructs the same mathematical value in that type:

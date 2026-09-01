@@ -16147,6 +16147,21 @@ function isExplicitOptionExpression(
     }
     none => {}
   }
+  if (
+    tree.nodes[index].kind == ExpressionKind.unaryExpression
+    && tree.nodes[index].children.length == 1
+    && (
+      tree.nodes[index].value == "move"
+      || tree.nodes[index].value == "copy"
+    )
+  ) {
+    const operand = tree.nodes[index].children[0];
+    return isExplicitOptionExpression(
+      evidence,
+      tree,
+      operand
+    );
+  }
   let candidate = index;
   if (
     tree.nodes[candidate].kind == ExpressionKind.callExpression

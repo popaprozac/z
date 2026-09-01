@@ -4731,6 +4731,29 @@ request decoding, the delayed main-isolated Z service, structured
 teardown, and service shutdown. This closes a composition restriction without
 new Z syntax or framework-facing transport types.
 
+## Optional service fields and already-optional transfer
+
+Extending Zapp's generated service boundary from arrays and nominal structs to
+`Option<T>` exposed one fixed-point lowering discrepancy. Z had already
+defined `field?: T` as `Option<T>` storage that accepts either a direct payload
+or an already-computed option. The native lowerer correctly recognized a plain
+`Option<T>` initializer but treated `move option` as a payload and attempted to
+construct `Option<Option<T>>` in emitted C.
+
+Capability wrappers now preserve the operand's already-optional identity during
+optional-field construction. This is compiler analysis only: no new source
+syntax, allocation, tag, or runtime check was added. Direct `T` still lifts to
+`some`, omission still becomes `none`, and `move Option<T>` transfers its
+existing representation exactly once.
+
+The Z Notes service now proves the broader composition end to end. JavaScript
+omits `CreateNoteInput.subtitle`; generated Z decoding produces `Option.none`;
+the option transfers through the application model; generated response encoding
+emits canonical JSON `null`; and TypeScript sees `string | null`. Explicit
+`Option<T>` service parameters and results use the same recursive codec rule,
+while `field: Option<T>` remains required and `field?: T` additionally accepts
+an omitted input property.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

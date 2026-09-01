@@ -408,6 +408,8 @@ test("keeps optional struct fields ownership-safe through native parsing and emi
       + "  const omitted = Envelope();\n"
       + "  const resource = Resource({ value: 42 });\n"
       + "  const lifted = Envelope({ payload: move resource });\n"
+      + "  const option = Option<Resource>.some(Resource({ value: 42 }));\n"
+      + "  const forwarded = Envelope({ payload: move option });\n"
       + "  const absent = match (in omitted.payload) {\n"
       + "    some(value) => value.value;\n"
       + "    none => 0;\n"
@@ -416,7 +418,11 @@ test("keeps optional struct fields ownership-safe through native parsing and emi
       + "    some(value) => value.value;\n"
       + "    none => 0;\n"
       + "  };\n"
-      + "  return absent + present - 42;\n"
+      + "  const forwardedValue = match (in forwarded.payload) {\n"
+      + "    some(value) => value.value;\n"
+      + "    none => 0;\n"
+      + "  };\n"
+      + "  return absent + present + forwardedValue - 84;\n"
       + "}\n",
   );
 
@@ -449,6 +455,11 @@ test("keeps optional struct fields ownership-safe through native parsing and emi
   assert.match(
     emission.stdout,
     /\.payload = \(Z___z_Option_Resource\)\{\.tag = Z___z_Option_ResourceTag_some, \.payload\.some = resource\}/,
+  );
+  assert.match(emission.stdout, /\.payload = option/);
+  assert.doesNotMatch(
+    emission.stdout,
+    /\.payload\.some = option/,
   );
   assert.doesNotMatch(emission.stdout, /Z_Resource_deinit\(&resource\);/);
 
