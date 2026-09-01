@@ -138,6 +138,8 @@ export type EnumVariant = {
 export type FunctionDeclaration = {
   readonly kind: "function";
   readonly name: string;
+  /** Source-level method name retained by compiler-generated generic specializations. */
+  readonly genericOriginName?: string;
   /** Compiler-derived implementation selected by a source-backed standard module. */
   readonly compilerIntrinsic?: {
     readonly kind: "jsonDecode" | "jsonEncode";

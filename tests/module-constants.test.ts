@@ -278,7 +278,7 @@ test("checks and lowers source-hashed generated call adaptations", () => {
       export struct Builder {
         result: i32;
 
-        function register(inout this, name: String, value: i32): void {}
+        function register<T>(inout this, name: String, value: T): void {}
 
         internal function install(inout this, name: String, value: i32): void {
           this.result = value;

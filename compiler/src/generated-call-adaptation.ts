@@ -114,7 +114,9 @@ export function validateGeneratedCallAdapters(
       );
     }
     const aggregateName = displayAggregateName(resolution.aggregate.name, typeDisplayNames);
-    const actualTarget = `${aggregateName}.${resolution.declaration.name}`;
+    const methodName = resolution.declaration.genericOriginName
+      ?? resolution.declaration.name;
+    const actualTarget = `${aggregateName}.${methodName}`;
     if (actualTarget !== adapter.target) {
       diagnostic(
         module.fileName,

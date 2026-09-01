@@ -987,6 +987,7 @@ export function materializeGenerics(
     return transform({
       ...demand.template,
       name: monomorphizedName(demand.template.name, [...demand.arguments]),
+      genericOriginName: demand.template.name,
       typeParameters: [],
       typeParameterConstraints: [],
     }, substitutions, specializationLocationRemapper()) as FunctionDeclaration;
@@ -1089,6 +1090,7 @@ export function materializeGenerics(
       methods.push(transform({
         ...template,
         name: monomorphizedName(template.name, args),
+        genericOriginName: template.name,
         typeParameters: [],
         typeParameterConstraints: [],
       }, substitutions, remapLocation) as FunctionDeclaration);
