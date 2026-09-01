@@ -1015,6 +1015,17 @@ export function programTypeSignature(
   if (declaration.kind == DeclarationKind.traitDeclaration) {
     for (const traitDeclaration of program.traits) {
       if (traitDeclaration.name != declaration.name) continue;
+      let typeParameters = Array<String>();
+      let typeParameterConstraints = Array<ModuleTypeParameterConstraint>();
+      for (const parameter of traitDeclaration.typeParameters) {
+        typeParameters.push(parameter.name.copyBytes(0, parameter.name.byteLength));
+        for (const constraint of parameter.constraints) {
+          typeParameterConstraints.push(ModuleTypeParameterConstraint({
+            parameter: parameter.name.copyBytes(0, parameter.name.byteLength),
+            traitName: constraint.name.copyBytes(0, constraint.name.byteLength),
+          }));
+        }
+      }
       let methods = Array<ModuleMethodSignature>();
       for (const method of traitDeclaration.methods) {
         methods.push(ModuleMethodSignature({
@@ -1028,8 +1039,8 @@ export function programTypeSignature(
       return Option.some(ModuleTypeSignature({
         nativeCName: "",
         nativeCUnderlyingType: "",
-        typeParameters: Array<String>(),
-        typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+        typeParameters,
+        typeParameterConstraints,
         executorAffinity: "",
         implementedTraits: Array<String>(),
         fields: Array<ModuleFieldSignature>(),

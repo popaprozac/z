@@ -1196,8 +1196,15 @@ function validateTraitTypes(
   in declaration: TraitDeclaration
 ): void throws ModuleResolveError {
   let empty = Array<NativeTypeParameterBinding>();
+  const bindings = try validateTypeParameters(
+    module,
+    modules,
+    moduleIndex,
+    empty,
+    declaration.typeParameters
+  );
   for (const method of declaration.methods) {
-    try validateFunctionTypes(module, modules, moduleIndex, empty, method, true, false);
+    try validateFunctionTypes(module, modules, moduleIndex, bindings, method, true, false);
     let returnViewVisiting = Array<String>();
     if (typeContainsStoredView(
       modules,

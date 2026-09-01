@@ -7831,8 +7831,12 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   assert.equal(decodedMetadata.schemaVersion, 1);
   assert.deepEqual(
     decodedMetadata.modules[0].symbols.map((symbol: { name: string }) => symbol.name),
-    ["MetadataService", "register"],
+    ["MetadataSource", "MetadataService", "register"],
   );
+  const metadataSource = decodedMetadata.modules[0].symbols.find(
+    (symbol: { name: string }) => symbol.name === "MetadataSource",
+  );
+  assert.deepEqual(metadataSource.typeSignature.typeParameters, ["T"]);
   const metadataService = decodedMetadata.modules[0].symbols.find(
     (symbol: { name: string }) => symbol.name === "MetadataService",
   );
