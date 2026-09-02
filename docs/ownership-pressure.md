@@ -4840,6 +4840,40 @@ walks stop at closure boundaries. No block-bodied workaround or source-level
 restriction was added. A focused emitted-C execution test retains this exact
 shape, while Z Notes proves it through a real foreign-thread ZJS callback.
 
+## Note snapshots across locks and executor isolation
+
+Making the Z Notes application worker index real stored notes exposed two
+adjacent `Mutex.withLock` composition boundaries. The native preflight already
+rejects returning cleanup-bearing lock results, so this direct snapshot is not
+yet executable:
+
+```zs
+return state.withLock((in value): Array<Note> => copy value.notes);
+```
+
+The attempted allocation-outside-the-lock form then uncovered a native-emitter
+bug rather than a semantic rejection. An outer mutable `Array<Note>` captured
+by the lock closure was emitted as a pointer-to-const, and a `for...of` nested
+inside that closure was also misclassified as a free capture. Stage 0 and the
+native checker accepted the source, but strict generated-C compilation failed.
+This remains a compiler gap to close; application code should not depend on the
+accepted check alone for that shape.
+
+The grounded application solution was simpler. `NotesCore` keeps its genuinely
+cross-thread counter behind `Mutex<T>`, while `NotesService` owns a mutable
+`NotesCatalog on thread.main`. Service creation, mutation, snapshot copying,
+and generated worker dispatch already carry main-executor proof, so the catalog
+needs no redundant lock. The worker receives an owned `Array<Note>` through the
+generated service boundary, processes it on its dedicated engine thread, and
+publishes progress to both native Z and authorized WebViews.
+
+This pressure test reinforces an important design rule: use executor isolation
+for state whose operations are naturally confined to one executor, and reach
+for `Mutex<T>` only when the state must be shared concurrently. The compiler
+still needs complete cleanup-bearing lock results and correct `inout`/nested-loop
+capture lowering, because general synchronized snapshots remain a legitimate
+systems-programming shape.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
