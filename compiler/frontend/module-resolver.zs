@@ -6274,7 +6274,8 @@ function inferExpressionNodeType(
       tree,
       index,
       value,
-      operand
+      operand,
+      isActiveTypeParameter(bindings, operand)
     );
     if (value == "view" && result.byteLength > 0) {
       const operandIndex = children[0];

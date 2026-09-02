@@ -1779,6 +1779,12 @@ never owns the referenced value. To extract an element from a container, use an
 owner operation such as `remove`; moving a field or indexed element directly
 would leave a hole in its containing owner.
 
+An owned generic parameter may also be forwarded with `move value`. The
+operator consumes that binding inside the generic body; a concrete
+ownership-bearing specialization transfers its owner, while a cleanup-free
+specialization remains an ordinary by-value pass. This exception is limited to
+active type parameters so `move` on a directly known scalar remains an error.
+
 `view projection` creates a read-only, non-owning local projection without
 duplicating the value. The owner remains usable for reads, but mutation,
 movement, and destruction are rejected until the view's last use. Use `copy`

@@ -9154,6 +9154,13 @@ function inferExpressionInner(
         const sourceType = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
         if (sourceType === "unknown" || sourceType === "never") return sourceType;
         const actual = String(underlyingType(sourceType));
+        const activeReceiver = state.activeReceiver
+          ? structs.get(state.activeReceiver)
+          : null;
+        const genericOwnedParameter = Boolean(
+          state.activeFunction?.typeParameters?.includes(actual)
+          || activeReceiver?.typeParameters?.includes(actual),
+        );
         if (parseViewType(actual)) {
           throw new DiagnosticError(fileName, expression.location, "cannot move a view because it does not own the referenced value", {
             code: "Z0218",
@@ -9170,7 +9177,10 @@ function inferExpressionInner(
             helps: ["use `copy value` if its `.zd` contract declares `copy`, or borrow it with `in`"],
           });
         }
-        if (native?.kind === "object" || !hasOwnershipType(actual, structs, enums, state)) {
+        if (
+          native?.kind === "object"
+          || (!genericOwnedParameter && !hasOwnershipType(actual, structs, enums, state))
+        ) {
           throw new DiagnosticError(fileName, expression.location, `type ${displayAssignableType(actual, state)} has no unique ownership to move`, {
             code: "Z0218",
             length: 4,

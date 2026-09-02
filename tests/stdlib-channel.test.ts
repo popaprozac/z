@@ -127,6 +127,44 @@ test("checks bounded channels with split asynchronous endpoints", () => {
   assert.deepEqual(diagnostics(source, "/tmp/z-channel-async-endpoints.zs"), []);
 });
 
+test("forwards ownership-bearing messages through a generic channel wrapper", () => {
+  const source = `
+    import { Channel, ChannelClosed, Sender } from "std/channel";
+
+    struct Envelope {
+      channel: String;
+      payload: String;
+    }
+
+    readonly class Mailbox<Message> {
+      readonly sender: Sender<Message>;
+
+      async function post(message: Message): void throws ChannelClosed<Message> {
+        try await this.sender.send(move message);
+      }
+    }
+
+    async function publish(): i32 throws ChannelClosed<Envelope> {
+      const { sender, receiver } = Channel<Envelope>.bounded(1);
+      const mailbox = new Mailbox<Envelope>({ sender });
+      try await mailbox.post(Envelope({
+        channel: "ready",
+        payload: "{\\"value\\":42}",
+      }));
+      const received = await receiver.receive();
+      return match (received) {
+        some(message) => message.channel == "ready" ? 0 : 1;
+        none => 2;
+      };
+    }
+  `;
+
+  assert.deepEqual(
+    diagnostics(source, "/tmp/z-channel-generic-owned-forward.zs"),
+    [],
+  );
+});
+
 test("checks explicit synchronous channel endpoint conversion", () => {
   const source = `
     import { Channel, ChannelClosed } from "std/channel";

@@ -56,6 +56,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
     files: [
       "tests/async-expressions.test.ts",
       "tests/async-runtime.test.ts",
+      "tests/stdlib-channel.test.ts",
     ],
   },
 };

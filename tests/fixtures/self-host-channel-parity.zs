@@ -11,6 +11,16 @@ struct NativeMessage {
   body: String;
 }
 
+readonly class NativeMailbox<Message> {
+  readonly sender: SyncSender<Message>;
+
+  function post(
+    message: Message
+  ): void throws ChannelClosed<Message> {
+    try this.sender.send(move message);
+  }
+}
+
 async function sendAsync(
   sender: Sender<NativeMessage>
 ): void throws ChannelClosed<NativeMessage> {
@@ -30,9 +40,9 @@ function useSync(): i32 throws ChannelClosed<NativeMessage> {
   const { sender, receiver } = Channel<NativeMessage>.bounded(1);
   const producer: SyncSender<NativeMessage> = sender.sync();
   const consumer: SyncReceiver<NativeMessage> = receiver.sync();
+  const mailbox = new NativeMailbox<NativeMessage>({ sender: producer });
   const message = NativeMessage({ body: "sync" });
-  try producer.send(move message);
-  producer.close();
+  try mailbox.post(move message);
   return match (consumer.receive()) {
     some(received) => i32(received.body.byteLength);
     none => 0;

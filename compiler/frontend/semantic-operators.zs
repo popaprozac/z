@@ -89,7 +89,8 @@ export function unaryOperatorType(
   in tree: ExpressionTree,
   index: usize,
   in operator: String,
-  in operand: String
+  in operand: String,
+  genericOwnedParameter: boolean
 ): String throws ModuleResolveError {
   if (operand.byteLength == 0) return "";
   if (operator == "view") {
@@ -129,7 +130,10 @@ export function unaryOperatorType(
       );
     }
     let visiting = Array<String>();
-    if (!typeHasCleanup(modules, moduleIndex, operand, visiting)) {
+    if (
+      !genericOwnedParameter
+      && !typeHasCleanup(modules, moduleIndex, operand, visiting)
+    ) {
       throw invalidOperator(
         module,
         tree,
