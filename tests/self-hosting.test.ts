@@ -17942,3 +17942,31 @@ test("requests cancellation through a borrowed stored TaskControl", () => {
     /z_stage1_task_control_request_cancel\(\(Z_TaskControl \*\)/,
   );
 });
+
+hostToolchainTest("compares borrowed String elements through native lowering", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-view-string-equality.zs",
+  );
+  const stage0 = spawnSync(process.execPath, [cli, "run", input], {
+    encoding: "utf8",
+  });
+  assert.equal(stage0.status, 0, stage0.stderr);
+
+  const emission = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8",
+  });
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /z_string_equal\(/);
+
+  const directory = mkdtempSync("/tmp/z-view-string-equality-");
+  const executable = resolve(directory, "view-string-equality");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+});

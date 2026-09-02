@@ -7568,6 +7568,72 @@ function resolvedExpressionTypeName(
   ));
 }
 
+// Native semantic evidence intentionally omits a few expression types that can
+// be recovered without ambiguity from lexical bindings. Lowering needs that
+// recovery for type-directed operators such as String equality; otherwise a
+// borrowed element from readonly Array<String> falls back to a C struct `==`.
+function loweringExpressionTypeName(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Option<String> {
+  match (resolvedExpressionTypeName(evidence, tree, index)) {
+    some(name) => return Option.some(move name);
+    none => {}
+  }
+  if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
+    const name = tree.nodes[index].value.copyBytes(
+      0,
+      tree.nodes[index].value.byteLength
+    );
+    const offset = tree.nodes[index].offset;
+    return namedValueTypeName(
+      program,
+      evidence,
+      "",
+      name,
+      offset
+    );
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.indexExpression
+    && tree.nodes[index].children.length > 0
+  ) {
+    const owner = tree.nodes[index].children[0];
+    match (loweringExpressionTypeName(program, evidence, tree, owner)) {
+      some(ownerType) => {
+        let container = ownerType;
+        if (stringStartsWith(container, "view ")) {
+          container = container.copyBytes(5, container.byteLength);
+        }
+        if (stringStartsWith(container, "readonly ")) {
+          container = container.copyBytes(9, container.byteLength);
+        }
+        match (genericTypeShape(container)) {
+          some(generic) => if (
+            generic.arguments.length == 1
+            && (generic.base == "Array" || generic.base == "Slice")
+          ) return Option.some(generic.arguments[0].copyBytes(
+            0,
+            generic.arguments[0].byteLength
+          ));
+          none => {}
+        }
+        match (fixedArrayShape(container)) {
+          some(array) => return Option.some(array.elementType.copyBytes(
+            0,
+            array.elementType.byteLength
+          ));
+          none => {}
+        }
+      }
+      none => {}
+    }
+  }
+  return Option<String>.none;
+}
+
 function resolvedMemberReceiverTypeIs(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
@@ -10099,12 +10165,14 @@ function lowerExpressionContextual(
         Array<String>()
       );
     }
-    const leftType = resolvedExpressionTypeName(
+    const leftType = loweringExpressionTypeName(
+      program,
       evidence,
       tree,
       leftInput
     );
-    const rightType = resolvedExpressionTypeName(
+    const rightType = loweringExpressionTypeName(
+      program,
       evidence,
       tree,
       rightInput
@@ -10132,7 +10200,7 @@ function lowerExpressionContextual(
     let usesFloatingPoint = false;
     match (in leftType) {
       some(name) => {
-        comparesString = name == "String";
+        comparesString = name == "String" || name == "view String";
         usesFloatingPoint = name == "f32" || name == "f64";
       }
       none => {}
@@ -10140,7 +10208,7 @@ function lowerExpressionContextual(
     if (!comparesString) {
       match (in rightType) {
         some(name) => {
-          comparesString = name == "String";
+          comparesString = name == "String" || name == "view String";
           if (name == "f32" || name == "f64") usesFloatingPoint = true;
         }
         none => {}
