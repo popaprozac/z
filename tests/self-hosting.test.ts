@@ -17975,3 +17975,30 @@ hostToolchainTest("compares borrowed String elements through native lowering", (
   const execution = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(execution.status, 0, execution.stderr);
 });
+
+hostToolchainTest("owns template temporaries inside expression-bodied closures", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-expression-closure-template.zs",
+  );
+  const emission = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8",
+  });
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /z_stage1_callable_main_\d+_call[\s\S]*Z_String _z_stage1_borrow_/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-expression-closure-template-");
+  const executable = resolve(directory, "expression-closure-template");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.equal(execution.stdout, "worker message: ready\n");
+});

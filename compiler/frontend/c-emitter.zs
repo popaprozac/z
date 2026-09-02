@@ -5762,6 +5762,10 @@ function containsBorrowedTemporary(
 ): boolean {
   if (
     declaration.expressions[index].kind
+      == LoweredExpressionKind.closureValue
+  ) return false;
+  if (
+    declaration.expressions[index].kind
       == LoweredExpressionKind.borrowedTemporary
   ) return true;
   for (const child of declaration.expressions[index].children) {
@@ -5776,6 +5780,10 @@ function appendBorrowedTemporaryInitializers(
   index: usize,
   depth: usize
 ): void throws String {
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.closureValue
+  ) return;
   for (const child of declaration.expressions[index].children) {
     try appendBorrowedTemporaryInitializers(
       inout output,
@@ -5813,6 +5821,10 @@ function appendBorrowedTemporaryCleanups(
   index: usize,
   depth: usize
 ): void {
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.closureValue
+  ) return;
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.borrowedTemporary
@@ -10410,46 +10422,95 @@ function appendCallableHelpers(
           capture = capture + 1;
         }
       }
+      let borrowedExpressionBody = false;
+      let borrowedBody: usize = 0;
       if (
         expression.kind == LoweredExpressionKind.closureValue
-        && expression.closureBlockBody
+        && !expression.closureBlockBody
+        && expression.children.length > 0
       ) {
-        for (const statement of expression.statements) {
-          try appendStatement(inout output, owner, statement, 1);
-        }
-        output.append("  return;\n");
-      } else {
-        output.append("  return ");
+        borrowedBody = expression.children[0];
+        borrowedExpressionBody = containsBorrowedTemporary(
+          owner,
+          borrowedBody
+        );
       }
-      if (expression.kind == LoweredExpressionKind.directFunctionValue) {
-        appendCBindingName(inout output, expression.value);
-        output.append("(");
-        parameter = 0;
-        while (parameter < functionType.parameters.length) {
-          if (parameter > 0) output.append(", ");
-          appendCBindingName(
-            inout output,
-            functionType.parameters[parameter].name
-          );
-          parameter = parameter + 1;
-        }
-        output.append(")");
-      } else if (!expression.closureBlockBody) {
-        if (expression.children.length == 0) {
-          throw "native closure helper lost its body";
-        }
-        if (expression.labels[2] == "throwing") {
-          output.append("(");
+      if (borrowedExpressionBody) {
+        try appendBorrowedTemporaryInitializers(
+          inout output,
+          owner,
+          borrowedBody,
+          1
+        );
+        appendIndent(inout output, 1);
+        if (functionType.returnType.kind != LoweredTypeKind.voidType) {
           output.append(returnType);
-          output.append("){ .tag = Z_");
-          output.append(functionType.returnType.name);
-          output.append("Tag_success, .payload.success = ");
+          output.append(` _z_stage1_callable_result_${expressionIndex} = `);
+          if (expression.labels[2] == "throwing") {
+            output.append("(");
+            output.append(returnType);
+            output.append("){ .tag = Z_");
+            output.append(functionType.returnType.name);
+            output.append("Tag_success, .payload.success = ");
+          }
         }
-        const body = expression.children[0];
-        try appendExpression(inout output, owner, body);
+        try appendExpression(inout output, owner, borrowedBody);
         if (expression.labels[2] == "throwing") output.append(" }");
+        output.append(";\n");
+        appendBorrowedTemporaryCleanups(
+          inout output,
+          owner,
+          borrowedBody,
+          1
+        );
+        appendIndent(inout output, 1);
+        if (functionType.returnType.kind == LoweredTypeKind.voidType) {
+          output.append("return;\n");
+        } else {
+          output.append(`return _z_stage1_callable_result_${expressionIndex};\n`);
+        }
+      } else {
+        if (
+          expression.kind == LoweredExpressionKind.closureValue
+          && expression.closureBlockBody
+        ) {
+          for (const statement of expression.statements) {
+            try appendStatement(inout output, owner, statement, 1);
+          }
+          output.append("  return;\n");
+        } else {
+          output.append("  return ");
+        }
+        if (expression.kind == LoweredExpressionKind.directFunctionValue) {
+          appendCBindingName(inout output, expression.value);
+          output.append("(");
+          parameter = 0;
+          while (parameter < functionType.parameters.length) {
+            if (parameter > 0) output.append(", ");
+            appendCBindingName(
+              inout output,
+              functionType.parameters[parameter].name
+            );
+            parameter = parameter + 1;
+          }
+          output.append(")");
+        } else if (!expression.closureBlockBody) {
+          if (expression.children.length == 0) {
+            throw "native closure helper lost its body";
+          }
+          if (expression.labels[2] == "throwing") {
+            output.append("(");
+            output.append(returnType);
+            output.append("){ .tag = Z_");
+            output.append(functionType.returnType.name);
+            output.append("Tag_success, .payload.success = ");
+          }
+          const body = expression.children[0];
+          try appendExpression(inout output, owner, body);
+          if (expression.labels[2] == "throwing") output.append(" }");
+        }
+        if (!expression.closureBlockBody) output.append(";\n");
       }
-      if (!expression.closureBlockBody) output.append(";\n");
       output.append("}\n\n");
       appendCallableCaptureLiveMacroUndefs(
         inout output,

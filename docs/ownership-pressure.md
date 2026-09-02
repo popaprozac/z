@@ -4815,6 +4815,31 @@ The separate ZJS worker-host probe continues to exercise typed bidirectional
 channels and direct Z service calls, so that future replacement has executable
 behavioral evidence rather than only a design sketch.
 
+## Worker message events and closure-local temporaries
+
+Zapp's public application-worker message stream carries three owned `String`
+values from an arbitrary native engine thread, schedules delivery on the main
+executor, and publishes one immutable value through a retained generic event
+handler. Writing the natural expression-bodied subscriber exposed a native
+emission scope defect:
+
+```zs
+worker.messages.subscribe(
+  move (in message): void => console.log(
+    `worker message ${message.channel}: ${message.payload}`
+  )
+);
+```
+
+The interpolation's borrowed `String` temporary was being initialized in the
+enclosing function even though it referenced the closure parameter. The
+generated helper consequently used one undeclared parameter and the outer
+function emitted a duplicate cleanup. Expression-bodied closure helpers now
+initialize and destroy their own borrowed temporaries, and outer temporary
+walks stop at closure boundaries. No block-bodied workaround or source-level
+restriction was added. A focused emitted-C execution test retains this exact
+shape, while Z Notes proves it through a real foreign-thread ZJS callback.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
