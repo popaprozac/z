@@ -424,6 +424,7 @@ export function recordForeignCallFacts(
             source: argument.source,
             value: argument.value.copyBytes(0, argument.value.byteLength),
             mode: argument.mode.copyBytes(0, argument.mode.byteLength),
+            thread: argument.thread.copyBytes(0, argument.thread.byteLength),
           })
         );
         if (

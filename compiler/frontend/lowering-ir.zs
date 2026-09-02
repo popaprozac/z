@@ -6698,6 +6698,7 @@ function resolvedForeignArguments(
       source: argument.source,
       value: argument.value.copyBytes(0, argument.value.byteLength),
       mode: argument.mode.copyBytes(0, argument.mode.byteLength),
+      thread: argument.thread.copyBytes(0, argument.thread.byteLength),
     }));
   }
   return arguments;
@@ -6822,6 +6823,7 @@ function collectForeignLowering(
         source: argument.source,
         value: argument.value.copyBytes(0, argument.value.byteLength),
         mode: argument.mode.copyBytes(0, argument.mode.byteLength),
+        thread: argument.thread.copyBytes(0, argument.thread.byteLength),
       }));
     }
     functions.push(LoweredForeignFunction({
@@ -14493,6 +14495,10 @@ function lowerExpressionContextual(
           callbackLabels.push(nativeArgument.mode.copyBytes(
             0,
             nativeArgument.mode.byteLength
+          ));
+          callbackLabels.push(nativeArgument.thread.copyBytes(
+            0,
+            nativeArgument.thread.byteLength
           ));
           nativeChildren.push(pushExpression(
             inout output,
@@ -26367,10 +26373,13 @@ function importedTypesForModule(
           ) {
             let fields = Array<LoweredField>();
             for (const field of signature.fields) {
-              const fieldType = try loweredForeignFieldType(
+              const fieldType = match (attempt loweredForeignFieldType(
                 types,
                 field.typeName
-              );
+              )) {
+                success(type) => type;
+                failure(error) => throw `${error} in field "${symbol.name}.${field.name}"`;
+              };
               fields.push(LoweredField({
                 name: field.name.copyBytes(0, field.name.byteLength),
                 type: fieldType,

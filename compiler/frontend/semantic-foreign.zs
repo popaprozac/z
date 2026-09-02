@@ -583,6 +583,7 @@ function foreignArgumentPlan(
           parameter.fixedValue.byteLength
         ),
         mode: "value",
+        thread: "",
       }));
       nativeIndex = nativeIndex + 1;
       continue;
@@ -618,6 +619,10 @@ function foreignArgumentPlan(
             0,
             callback.lifetime.byteLength
           ),
+          thread: callback.thread.copyBytes(
+            0,
+            callback.thread.byteLength
+          ),
         }));
       }
       nativeIndex = nativeIndex + 1;
@@ -626,6 +631,7 @@ function foreignArgumentPlan(
     let kind = "argument";
     let value = "";
     let mode = parameter.abiMode.copyBytes(0, parameter.abiMode.byteLength);
+    let thread = "";
     if (parameter.abiMode == "callback") {
       kind = "callbackAdapter";
       value = parameter.typeName.copyBytes(0, parameter.typeName.byteLength);
@@ -633,6 +639,7 @@ function foreignArgumentPlan(
       for (const callback of contract.callbacks) {
         if (callback.parameterIndex == nativeIndex) {
           mode = callback.lifetime.copyBytes(0, callback.lifetime.byteLength);
+          thread = callback.thread.copyBytes(0, callback.thread.byteLength);
           break;
         }
       }
@@ -645,6 +652,7 @@ function foreignArgumentPlan(
       source: visibleSourceForNativeParameter(contract, nativeIndex),
       value,
       mode,
+      thread,
     }));
     nativeIndex = nativeIndex + 1;
   }

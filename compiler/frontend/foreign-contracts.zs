@@ -1225,51 +1225,52 @@ export function parseForeignContracts(
 }
 
 function scalarTypeName(in nativeType: String): String throws String {
-  if (nativeType == "void") return "void";
-  if (nativeType == "float" || nativeType == "f32") return "f32";
-  if (nativeType == "double" || nativeType == "f64") return "f64";
-  if (nativeType == "signed char" || nativeType == "i8") return "i8";
-  if (nativeType == "unsigned char" || nativeType == "u8") return "u8";
+  const compact = compactNativeType(nativeType);
+  if (compact == "void") return "void";
+  if (compact == "float" || compact == "f32") return "f32";
+  if (compact == "double" || compact == "f64") return "f64";
+  if (compact == "signedchar" || compact == "i8") return "i8";
+  if (compact == "unsignedchar" || compact == "u8") return "u8";
   if (
-    nativeType == "short"
-    || nativeType == "short int"
-    || nativeType == "signed short"
-    || nativeType == "signed short int"
-    || nativeType == "i16"
+    compact == "short"
+    || compact == "shortint"
+    || compact == "signedshort"
+    || compact == "signedshortint"
+    || compact == "i16"
   ) return "i16";
   if (
-    nativeType == "unsigned short"
-    || nativeType == "unsigned short int"
-    || nativeType == "u16"
+    compact == "unsignedshort"
+    || compact == "unsignedshortint"
+    || compact == "u16"
   ) return "u16";
   if (
-    nativeType == "int"
-    || nativeType == "signed int"
-    || nativeType == "i32"
+    compact == "int"
+    || compact == "signedint"
+    || compact == "i32"
   ) return "i32";
   if (
-    nativeType == "unsigned"
-    || nativeType == "unsigned int"
-    || nativeType == "u32"
+    compact == "unsigned"
+    || compact == "unsignedint"
+    || compact == "u32"
   ) return "u32";
   if (
-    nativeType == "long long"
-    || nativeType == "long long int"
-    || nativeType == "signed long long"
-    || nativeType == "signed long long int"
-    || nativeType == "i64"
+    compact == "longlong"
+    || compact == "longlongint"
+    || compact == "signedlonglong"
+    || compact == "signedlonglongint"
+    || compact == "i64"
   ) return "i64";
   if (
-    nativeType == "unsigned long long"
-    || nativeType == "unsigned long long int"
-    || nativeType == "u64"
+    compact == "unsignedlonglong"
+    || compact == "unsignedlonglongint"
+    || compact == "u64"
   ) return "u64";
-  if (nativeType == "isize") return "isize";
-  if (nativeType == "usize") return "usize";
+  if (compact == "isize") return "isize";
+  if (compact == "usize") return "usize";
   if (
-    nativeType == "_Bool"
-    || nativeType == "bool"
-    || nativeType == "boolean"
+    compact == "_Bool"
+    || compact == "bool"
+    || compact == "boolean"
   ) return "boolean";
   throw `native Z declaration scalar tier does not support "${nativeType}"`;
 }
@@ -1521,7 +1522,13 @@ function nativeCallbackShape(
         }
         contextIndex = nativeParameterCount;
       } else {
-        const zParameterType = try scalarTypeNameWithCanonical(
+        let zParameterType = "";
+        if (
+          parameterType == "constchar*"
+          || parameterType == "constsignedchar*"
+          || parameterType == "constunsignedchar*"
+        ) zParameterType = "cstring";
+        else zParameterType = try scalarTypeNameWithCanonical(
           declarations,
           parameterType,
           Option<String>.none
@@ -3288,9 +3295,6 @@ export function normalizeForeignContracts(
         throw `native callback "${callback.parameter}" cannot also be its own context parameter`;
       }
       const callbackParameter = view contract.parameters[callbackIndex];
-      if (callback.thread == "any") {
-        throw `the first fixed-point native callback tier supports thread caller; thread any requires runtime-entry and atomic callback ownership`;
-      }
       let releaseIndex = Option<usize>.none;
       let lifetime = "call";
       if (callback.release.byteLength > 0) {

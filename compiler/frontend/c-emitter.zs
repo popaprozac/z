@@ -8390,11 +8390,57 @@ function programUsesForeignCallbackType(
   return false;
 }
 
+function programUsesThreadAnyForeignCallbackType(
+  in program: LoweredProgram,
+  in name: String
+): boolean {
+  for (const declaration of program.functions) {
+    for (const expression of declaration.expressions) {
+      if (
+        expression.kind == LoweredExpressionKind.foreignCallbackValue
+        && expression.value == name
+        && expression.labels.length >= 3
+        && expression.labels[2] == "any"
+      ) return true;
+    }
+  }
+  return false;
+}
+
+function programUsesThreadAnyForeignCallbacks(
+  in program: LoweredProgram
+): boolean {
+  for (const declaration of program.functions) {
+    for (const expression of declaration.expressions) {
+      if (
+        expression.kind == LoweredExpressionKind.foreignCallbackValue
+        && expression.labels.length >= 3
+        && expression.labels[2] == "any"
+      ) return true;
+    }
+  }
+  return false;
+}
+
 function appendForeignCallbackHelpers(
   inout output: TextBuffer,
+  in program: LoweredProgram,
   in declaration: LoweredFunctionType
 ): void throws String {
   const returnType = try cType(declaration.returnType);
+  const anyThread = programUsesThreadAnyForeignCallbackType(
+    program,
+    declaration.name
+  );
+  if (anyThread) {
+    output.append("typedef struct Z_");
+    output.append(declaration.name);
+    output.append("_c_escape_box_storage {\n  Z_");
+    output.append(declaration.name);
+    output.append(" value;\n  void *runtime_context;\n  Z_ExecutorBoundReleaseEnqueue runtime_enqueue;\n  Z_ForeignRuntimeLifetime runtime_retain;\n  Z_ForeignRuntimeLifetime runtime_release;\n} Z_");
+    output.append(declaration.name);
+    output.append("_c_escape_box_storage;\n\n");
+  }
   output.append("static __attribute__((unused)) ");
   output.append(returnType);
   output.append(" z_stage1_c_callback_Z_");
@@ -8411,42 +8457,75 @@ function appendForeignCallbackHelpers(
     parameterIndex = parameterIndex + 1;
   }
   if (parameterIndex > 0) output.append(", ");
-  output.append("void *callback_context) {\n  Z_");
-  output.append(declaration.name);
-  output.append(" *callback = (Z_");
-  output.append(declaration.name);
-  output.append(" *)callback_context;\n  ");
+  output.append("void *callback_context) {\n  ");
+  if (anyThread) {
+    output.append("Z_");
+    output.append(declaration.name);
+    output.append("_c_escape_box_storage *box = (Z_");
+    output.append(declaration.name);
+    output.append("_c_escape_box_storage *)callback_context;\n  Z_ForeignThreadEntry entry = z_foreign_thread_enter(box->runtime_context, box->runtime_enqueue);\n  ");
+  } else {
+    output.append("Z_");
+    output.append(declaration.name);
+    output.append(" *callback = (Z_");
+    output.append(declaration.name);
+    output.append(" *)callback_context;\n  ");
+  }
   if (declaration.returnType.kind != LoweredTypeKind.voidType) {
-    output.append("return ");
+    if (anyThread) {
+      output.append(returnType);
+      output.append(" result = ");
+    } else output.append("return ");
   }
   output.append("Z_");
   output.append(declaration.name);
-  output.append("_call(*callback");
+  if (anyThread) output.append("_call(box->value");
+  else output.append("_call(*callback");
   for (const parameter of declaration.parameters) {
     output.append(", ");
     appendCBindingName(inout output, parameter.name);
   }
-  output.append(");\n}\n\n");
+  output.append(");\n");
+  if (anyThread) {
+    output.append("  z_foreign_thread_leave(entry);\n");
+    if (declaration.returnType.kind != LoweredTypeKind.voidType) {
+      output.append("  return result;\n");
+    }
+  }
+  output.append("}\n\n");
   output.append("static __attribute__((unused)) void *Z_");
   output.append(declaration.name);
   output.append("_c_escape_box(Z_");
   output.append(declaration.name);
   output.append(" value) {\n  Z_");
   output.append(declaration.name);
+  if (anyThread) output.append("_c_escape_box_storage");
   output.append(" *box = (Z_");
   output.append(declaration.name);
-  output.append(" *)malloc(sizeof(Z_");
-  output.append(declaration.name);
-  output.append("));\n  if (box == NULL) abort();\n  *box = value;\n  return box;\n}\n\n");
+  if (anyThread) output.append("_c_escape_box_storage");
+  output.append(" *)malloc(sizeof(*box));\n  if (box == NULL) abort();\n  ");
+  if (anyThread) {
+    output.append("box->value = value;\n  box->runtime_context = z_foreign_runtime_context;\n  box->runtime_enqueue = z_foreign_runtime_enqueue;\n  box->runtime_retain = z_foreign_runtime_retain;\n  box->runtime_release = z_foreign_runtime_release;\n  if (box->runtime_retain != NULL) box->runtime_retain(box->runtime_context);");
+  } else output.append("*box = value;");
+  output.append("\n  return box;\n}\n\n");
   output.append("static __attribute__((unused)) void Z_");
   output.append(declaration.name);
   output.append("_c_escape_box_release(void *context) {\n  Z_");
   output.append(declaration.name);
+  if (anyThread) output.append("_c_escape_box_storage");
   output.append(" *box = (Z_");
   output.append(declaration.name);
-  output.append(" *)context;\n  if (box == NULL) return;\n  Z_");
-  output.append(declaration.name);
-  output.append("_deinit(box);\n  free(box);\n}\n\n");
+  if (anyThread) output.append("_c_escape_box_storage");
+  output.append(" *)context;\n  if (box == NULL) return;\n  ");
+  if (anyThread) {
+    output.append("Z_ForeignThreadEntry entry = z_foreign_thread_enter(box->runtime_context, box->runtime_enqueue);\n  Z_");
+    output.append(declaration.name);
+    output.append("_deinit(&box->value);\n  z_foreign_thread_leave(entry);\n  if (box->runtime_release != NULL) box->runtime_release(box->runtime_context);\n  free(box);\n}\n\n");
+  } else {
+    output.append("Z_");
+    output.append(declaration.name);
+    output.append("_deinit(box);\n  free(box);\n}\n\n");
+  }
 }
 
 function programUsesObjectiveCBlockArguments(
@@ -15692,12 +15771,17 @@ typedef void (*Z_ExecutorBoundReleaseEnqueue)(
   void *value,
   void (*finalize)(void *value)
 );
+typedef void (*Z_ForeignRuntimeLifetime)(void *context);
 typedef struct Z_ForeignThreadEntry {
   void *previous_context;
   Z_ExecutorBoundReleaseEnqueue previous_enqueue;
 } Z_ForeignThreadEntry;
 static Z_THREAD_LOCAL void *z_executor_bound_release_context = NULL;
 static Z_THREAD_LOCAL Z_ExecutorBoundReleaseEnqueue z_executor_bound_release_enqueue = NULL;
+static __attribute__((unused)) void *z_foreign_runtime_context = NULL;
+static __attribute__((unused)) Z_ExecutorBoundReleaseEnqueue z_foreign_runtime_enqueue = NULL;
+static __attribute__((unused)) Z_ForeignRuntimeLifetime z_foreign_runtime_retain = NULL;
+static __attribute__((unused)) Z_ForeignRuntimeLifetime z_foreign_runtime_release = NULL;
 
 static __attribute__((unused)) Z_ForeignThreadEntry z_foreign_thread_enter(
   void *context,
@@ -16051,6 +16135,12 @@ Z_API ${prefix}_runtime_status ${prefix}_runtime_initialize(const ${prefix}_runt
 ${initializerValidation}  z_embedded_runtime_${prefix}.context = config == NULL ? NULL : config->context;
   z_embedded_runtime_${prefix}.enqueue_release = config == NULL ? NULL : config->enqueue_release;
   z_embedded_runtime_${prefix}.is_main_thread = config == NULL ? NULL : config->is_main_thread;
+  z_foreign_runtime_context = &z_embedded_runtime_${prefix};
+  z_foreign_runtime_enqueue = z_embedded_runtime_${prefix}.enqueue_release == NULL
+    ? NULL
+    : z_embedded_runtime_${prefix}_enqueue_release;
+  z_foreign_runtime_retain = z_embedded_runtime_${prefix}_retain;
+  z_foreign_runtime_release = z_embedded_runtime_${prefix}_release;
 ${initializeRoot}  __atomic_store_n(&z_embedded_runtime_${prefix}.state, 1, __ATOMIC_RELEASE);
   return ${constant}_RUNTIME_OK;
 }
@@ -16084,6 +16174,10 @@ ${shutdownRoot}  if (__atomic_load_n(&z_embedded_runtime_${prefix}.active_callba
     __atomic_store_n(&z_embedded_runtime_${prefix}.state, ${drainingState}, __ATOMIC_RELEASE);
     return ${activeCallbackStatus};
   }
+  z_foreign_runtime_release = NULL;
+  z_foreign_runtime_retain = NULL;
+  z_foreign_runtime_enqueue = NULL;
+  z_foreign_runtime_context = NULL;
   z_embedded_runtime_${prefix}.context = NULL;
   z_embedded_runtime_${prefix}.enqueue_release = NULL;
   z_embedded_runtime_${prefix}.is_main_thread = NULL;
@@ -17060,7 +17154,7 @@ function appendFunctionTypeHelpers(
   else output.append("  value->call = NULL;\n");
   output.append("  value->context = NULL;\n  value->retain = NULL;\n  value->release = NULL;\n}\n\n");
   if (programUsesForeignCallbackType(program, declaration.name)) {
-    try appendForeignCallbackHelpers(inout output, declaration);
+    try appendForeignCallbackHelpers(inout output, program, declaration);
   }
 }
 
@@ -19737,6 +19831,7 @@ function emitLoweredC(
   const usesThreads = taskTypeNames.length > 0 || usesTaskScope;
   const usesArena = programUsesArena(program);
   const usesExecutorBoundClasses = programUsesExecutorBoundClasses(program);
+  const usesForeignRuntimeEntry = programUsesThreadAnyForeignCallbacks(program);
   let usesObjectiveCStringFromZ = false;
   let usesObjectiveCStringToZ = false;
   let usesObjectiveCDataCopy = false;
@@ -19853,6 +19948,7 @@ function emitLoweredC(
   if (
     embeddedRuntimeName.byteLength > 0
     || usesExecutorBoundClasses
+    || usesForeignRuntimeEntry
   ) {
     appendForeignRuntimeEntrySupport(inout output);
   }

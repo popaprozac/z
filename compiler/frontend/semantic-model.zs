@@ -193,6 +193,7 @@ export struct ModuleForeignArgument {
   source: usize;
   value: String;
   mode: String;
+  thread: String;
 }
 
 export enum ModuleSymbolKind {

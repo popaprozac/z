@@ -9898,6 +9898,38 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.match(nativeCallbackC, /_c_escape_box\(/);
   assert.match(nativeCallbackC, /_c_escape_box_release/);
 
+  const anyThreadCallbackExample = resolve(
+    projectRoot,
+    "tests/fixtures/callbacks-any-thread.zs",
+  );
+  const anyThreadCallbackRun = spawnSync(
+    driver,
+    ["run", anyThreadCallbackExample],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(
+    anyThreadCallbackRun.status,
+    0,
+    anyThreadCallbackRun.stderr,
+  );
+  const anyThreadCallbackC = readFileSync(
+    resolve(
+      projectRoot,
+      "tests/fixtures/.z-cache/run/program.c",
+    ),
+    "utf8",
+  );
+  assert.match(anyThreadCallbackC, /_c_escape_box_storage/);
+  assert.match(anyThreadCallbackC, /z_foreign_thread_enter\(/);
+  assert.match(anyThreadCallbackC, /runtime_retain/);
+  assert.match(
+    anyThreadCallbackC,
+    /__atomic_add_fetch\(&environment->refcount, 1, __ATOMIC_RELAXED\)/,
+  );
+
   const recursiveDriver = resolve(directory, "z-native-generation-2");
   const recursiveCompilation = spawnSync(
     driver,
