@@ -6334,6 +6334,26 @@ function wrapOwnedStorage(
     importedTypes,
     payloadTypeName
   );
+  return wrapOwnedStorageType(
+    program,
+    importedTypes,
+    tree,
+    input,
+    payloadType,
+    value,
+    inout output
+  );
+}
+
+function wrapOwnedStorageType(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in tree: ExpressionTree,
+  input: usize,
+  in payloadType: LoweredType,
+  value: usize,
+  inout output: Array<LoweredExpression>
+): usize {
   if (!moduleTypeNeedsCleanup(program, importedTypes, payloadType)) {
     return value;
   }
@@ -12461,7 +12481,7 @@ function lowerExpressionContextual(
             children.push(receiver);
             if (tree.nodes[calleeInput].value != "clear") {
               const argumentInput = tree.nodes[index].children[1];
-              const argument = try lowerExpression(
+              let argument = try lowerExpression(
                 program,
                 importedTypes,
                 evidence,
@@ -12469,6 +12489,33 @@ function lowerExpressionContextual(
                 argumentInput,
                 inout output
               );
+              if (tree.nodes[calleeInput].value == "add") {
+                match (evidenceResolvedExpressionTypeName(
+                  program,
+                  importedTypes,
+                  evidence,
+                  tree,
+                  argumentInput
+                )) {
+                  some(argumentTypeName) => {
+                    const argumentType = try lowerModuleTypeName(
+                      program,
+                      importedTypes,
+                      argumentTypeName
+                    );
+                    argument = wrapOwnedStorageType(
+                      program,
+                      importedTypes,
+                      tree,
+                      argumentInput,
+                      argumentType,
+                      argument,
+                      inout output
+                    );
+                  }
+                  none => {}
+                }
+              }
               children.push(argument);
             }
             let kind = LoweredExpressionKind.setHas;
@@ -12544,7 +12591,7 @@ function lowerExpressionContextual(
             let argument: usize = 1;
             while (argument < tree.nodes[index].children.length) {
               const argumentInput = tree.nodes[index].children[argument];
-              const value = try lowerExpression(
+              let value = try lowerExpression(
                 program,
                 importedTypes,
                 evidence,
@@ -12552,6 +12599,33 @@ function lowerExpressionContextual(
                 argumentInput,
                 inout output
               );
+              if (tree.nodes[calleeInput].value == "set") {
+                match (evidenceResolvedExpressionTypeName(
+                  program,
+                  importedTypes,
+                  evidence,
+                  tree,
+                  argumentInput
+                )) {
+                  some(argumentTypeName) => {
+                    const argumentType = try lowerModuleTypeName(
+                      program,
+                      importedTypes,
+                      argumentTypeName
+                    );
+                    value = wrapOwnedStorageType(
+                      program,
+                      importedTypes,
+                      tree,
+                      argumentInput,
+                      argumentType,
+                      value,
+                      inout output
+                    );
+                  }
+                  none => {}
+                }
+              }
               children.push(value);
               argument = argument + 1;
             }

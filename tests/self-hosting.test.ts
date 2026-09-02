@@ -1476,6 +1476,49 @@ test("lowers early try closures and transfers cleanup-bearing match payloads onc
   }
 }, 240_000);
 
+test("transfers nested TaskControl ownership through matches and Map storage once", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-task-control-owned-match.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z_Request request = \(_z_stage1_live__z_stage1_match_payload_\d+_\d+ = false, _z_stage1_match_payload_\d+_\d+\);/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z___z_Map_3_u64Request_set\(&\(requests\), 1, \(_z_stage1_live_request = false, request\)\);/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-native-task-control-owned-match-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("executes one scheduler-yield suspension in an imported async function", () => {
   const input = resolve(
     projectRoot,

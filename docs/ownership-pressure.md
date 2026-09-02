@@ -4874,6 +4874,40 @@ still needs complete cleanup-bearing lock results and correct `inout`/nested-loo
 capture lowering, because general synchronized snapshots remain a legitimate
 systems-programming shape.
 
+## Task controls in synchronized request registries
+
+Zapp's application-worker service cancellation registry needs to retain one
+optional `TaskControl` for each in-flight request. A mutable ARC request record
+correctly failed `thread.any` transfer: putting a mutable class inside a Mutex
+does not make unsynchronized mutation through another alias safe. The
+application now stores deeply readonly ARC request records and replaces an
+entry under `Mutex.withLock` when its control changes. Cancellation may then
+read the immutable record from any worker while the map remains synchronized.
+
+An intermediate value-struct version exposed a separate native ownership bug.
+Stage 0 already treated both operations below as transfers:
+
+```zs
+const found = requests.remove(requestId);
+match (found) {
+  some(value) => {
+    let request = value;
+    requests.set(requestId, request);
+  }
+  none => {}
+}
+```
+
+When `request` contained `Option<TaskControl>`, the fixed-point emitter moved
+neither identifier at the collection boundary and later destroyed storage that
+the Map now owned. Native collection lowering now applies the ordinary owned
+storage rule to `Map.set` and `Set.add`: cleanup-free values remain direct,
+single-owner aggregates move, and shared ARC identities retain. A strict-C
+execution fixture requires the match-payload and Map-argument live flags to be
+cleared exactly once. Task runtime discovery also walks lowered collection,
+function, and enum payload declarations, so a nested `TaskControl` emits the
+runtime definitions its generated cleanup calls require.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

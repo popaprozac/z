@@ -2650,6 +2650,30 @@ function programUsesTaskScope(in program: LoweredProgram): boolean {
   for (const constant of program.constants) {
     if (typeUsesTaskScope(constant.type)) return true;
   }
+  for (const declaration of program.fixedArrays) {
+    if (typeUsesTaskScope(declaration.elementType)) return true;
+  }
+  for (const declaration of program.arrays) {
+    if (typeUsesTaskScope(declaration.elementType)) return true;
+  }
+  for (const declaration of program.slices) {
+    if (typeUsesTaskScope(declaration.elementType)) return true;
+  }
+  for (const declaration of program.maps) {
+    if (
+      typeUsesTaskScope(declaration.keyType)
+      || typeUsesTaskScope(declaration.valueType)
+    ) return true;
+  }
+  for (const declaration of program.sets) {
+    if (typeUsesTaskScope(declaration.elementType)) return true;
+  }
+  for (const declaration of program.functionTypes) {
+    if (typeUsesTaskScope(declaration.returnType)) return true;
+    for (const parameter of declaration.parameters) {
+      if (typeUsesTaskScope(parameter.type)) return true;
+    }
+  }
   for (const aggregate of program.structs) {
     for (const field of aggregate.fields) {
       if (typeUsesTaskScope(field.type)) return true;
@@ -2659,6 +2683,14 @@ function programUsesTaskScope(in program: LoweredProgram): boolean {
         if (expressionsUseTaskScope(deinitializer.expressions)) return true;
       }
       none => {}
+    }
+  }
+  for (const declaration of program.enums) {
+    for (const variant of declaration.variants) {
+      match (in variant.payload) {
+        some(type) => if (typeUsesTaskScope(type)) return true;
+        none => {}
+      }
     }
   }
   for (const declaration of program.functions) {
@@ -10777,10 +10809,10 @@ function appendTaskScopeRuntime(
   output.append("static void z_stage1_task_scope_discard_jobs(Z_TaskScope *scope) {\n  Z_TaskScopeJob *job = scope->jobs;\n  scope->jobs = NULL;\n  while (job != NULL) {\n    Z_TaskScopeJob *next = job->scope_next;\n    if (job->child.task != NULL) abort();\n    free(job);\n    job = next;\n  }\n}\n\n");
   output.append("static void Z_TaskScope_release(Z_TaskScope *scope) {\n  if (scope == NULL) return;\n  if (__atomic_fetch_sub(&scope->refcount, 1, __ATOMIC_ACQ_REL) != 1) return;\n  if (scope->pending != 0 || scope->external_head != NULL) abort();\n  z_stage1_task_scope_discard_jobs(scope);\n#if defined(_WIN32)\n  DeleteCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_destroy(&scope->mutex) != 0) abort();\n#endif\n  free(scope);\n}\n\n");
   output.append("static void Z_TaskControl_release(Z_TaskControl *control) {\n  if (control == NULL) return;\n  if (__atomic_fetch_sub(&control->refcount, 1, __ATOMIC_ACQ_REL) != 1) return;\n  Z_TaskScope_release(control->scope);\n  free(control);\n}\n\n");
-  output.append("static void Z_TaskScope_deinit(Z_TaskScope **scope) {\n  if (scope == NULL) return;\n  Z_TaskScope_release(*scope);\n  *scope = NULL;\n}\n\n");
+  output.append("static __attribute__((unused)) void Z_TaskScope_deinit(Z_TaskScope **scope) {\n  if (scope == NULL) return;\n  Z_TaskScope_release(*scope);\n  *scope = NULL;\n}\n\n");
   output.append("static void Z_TaskControl_deinit(Z_TaskControl **control) {\n  if (control == NULL) return;\n  Z_TaskControl_release(*control);\n  *control = NULL;\n}\n\n");
   output.append("static Z_TaskControl *z_stage1_task_control_new(bool accepted) {\n  Z_TaskControl *control = (Z_TaskControl *)calloc(1, sizeof(*control));\n  if (control == NULL) abort();\n  control->refcount = 1;\n  control->accepted = accepted;\n  return control;\n}\n\n");
-  output.append("static Z_TaskScope *z_stage1_task_scope_new(Z_AsyncExecutor *executor) {\n  Z_TaskScope *scope = (Z_TaskScope *)calloc(1, sizeof(*scope));\n  if (scope == NULL) abort();\n  scope->refcount = 1;\n  scope->executor = executor != NULL ? executor : &scope->local_executor;\n#if defined(_WIN32)\n  InitializeCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_init(&scope->mutex, NULL) != 0) abort();\n#endif\n  return scope;\n}\n\n");
+  output.append("static __attribute__((unused)) Z_TaskScope *z_stage1_task_scope_new(Z_AsyncExecutor *executor) {\n  Z_TaskScope *scope = (Z_TaskScope *)calloc(1, sizeof(*scope));\n  if (scope == NULL) abort();\n  scope->refcount = 1;\n  scope->executor = executor != NULL ? executor : &scope->local_executor;\n#if defined(_WIN32)\n  InitializeCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_init(&scope->mutex, NULL) != 0) abort();\n#endif\n  return scope;\n}\n\n");
   output.append("static void z_stage1_task_scope_job_cancel(Z_AsyncTask *task) {\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;\n  if (job->control != NULL) job->control->cancellation_requested = true;\n  if (job->child.task != NULL) z_stage1_async_request_cancel(job->child.task);\n}\n\n");
   output.append("static void z_stage1_task_scope_job_poll(Z_AsyncTask *task) {\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;\n  if (job->state == 0) {\n    job->state = 1;\n    if (task->cancellation_requested) z_stage1_async_request_cancel(job->child.task);\n    if (job->child.task == NULL) abort();\n    if (job->child.task->completed) z_stage1_async_enqueue(task->executor, task);\n    else {\n      if (job->child.task->waiter != NULL) abort();\n      job->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, job->child.task);\n    }\n    return;\n  }\n  if (job->state != 1 || job->child.task == NULL || !job->child.task->completed) abort();\n  task->cancelled = task->cancellation_requested || job->child.task->cancelled;\n  z_stage1_task_scope_release_invocation(&job->child);\n  task->completed = true;\n  Z_TaskScope *scope = job->scope;\n  Z_TaskControl *control = job->control;\n  z_stage1_task_scope_lock(scope);\n  if (scope->pending == 0) abort();\n  scope->pending -= 1;\n  if (control != NULL) control->job = NULL;\n  job->control = NULL;\n  z_stage1_task_scope_unlock(scope);\n  Z_TaskControl_release(control);\n}\n\n");
   output.append("static void z_stage1_task_scope_drain_external(Z_TaskScope *scope) {\n  z_stage1_task_scope_lock(scope);\n  Z_TaskScopeJob *job = scope->external_head;\n  scope->external_head = NULL;\n  scope->external_tail = NULL;\n  z_stage1_task_scope_unlock(scope);\n  while (job != NULL) {\n    Z_TaskScopeJob *next = job->external_next;\n    job->external_next = NULL;\n    z_stage1_async_enqueue(scope->executor, &job->task);\n    job = next;\n  }\n}\n\n");
@@ -10792,9 +10824,9 @@ function appendTaskScopeRuntime(
   output.append("}\n\n");
   output.append("#if defined(__APPLE__)\nstatic void z_stage1_task_scope_dispatch_perform(void *context) {\n  Z_TaskScope *scope = (Z_TaskScope *)context;\n  z_stage1_task_scope_perform(scope);\n  Z_TaskScope_release(scope);\n}\n#endif\n\n");
   output.append("static void z_stage1_task_scope_schedule_perform(Z_TaskScope *scope) {\n#if defined(__APPLE__)\n  if (pthread_main_np() != 0) z_stage1_task_scope_perform(scope);\n  else dispatch_async_f(dispatch_get_main_queue(), Z_TaskScope_retain(scope), z_stage1_task_scope_dispatch_perform);\n#else\n  z_stage1_task_scope_perform(scope);\n#endif\n}\n\n");
-  output.append("static Z_TaskControl *z_stage1_task_scope_spawn_async(Z_TaskScope *scope, Z_AsyncInvocation child) {\n  if (scope == NULL || child.task == NULL) abort();\n  Z_TaskControl *control = z_stage1_task_control_new(true);\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)calloc(1, sizeof(*job));\n  if (job == NULL) abort();\n  job->task.poll = z_stage1_task_scope_job_poll;\n  job->task.request_cancel = z_stage1_task_scope_job_cancel;\n  job->task.executor = scope->executor;\n  job->child = child;\n  job->scope = scope;\n  z_stage1_task_scope_lock(scope);\n  if (scope->closing) {\n    z_stage1_task_scope_unlock(scope);\n    free(job);\n    z_stage1_task_scope_release_invocation(&child);\n    control->accepted = false;\n    return control;\n  }\n  control->scope = Z_TaskScope_retain(scope);\n  control->job = job;\n  job->control = Z_TaskControl_retain(control);\n  job->scope_next = scope->jobs;\n  scope->jobs = job;\n  if (scope->external_tail == NULL) scope->external_head = job;\n  else scope->external_tail->external_next = job;\n  scope->external_tail = job;\n  scope->pending += 1;\n  z_stage1_task_scope_unlock(scope);\n  z_stage1_task_scope_schedule_perform(scope);\n  return control;\n}\n\n");
+  output.append("static __attribute__((unused)) Z_TaskControl *z_stage1_task_scope_spawn_async(Z_TaskScope *scope, Z_AsyncInvocation child) {\n  if (scope == NULL || child.task == NULL) abort();\n  Z_TaskControl *control = z_stage1_task_control_new(true);\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)calloc(1, sizeof(*job));\n  if (job == NULL) abort();\n  job->task.poll = z_stage1_task_scope_job_poll;\n  job->task.request_cancel = z_stage1_task_scope_job_cancel;\n  job->task.executor = scope->executor;\n  job->child = child;\n  job->scope = scope;\n  z_stage1_task_scope_lock(scope);\n  if (scope->closing) {\n    z_stage1_task_scope_unlock(scope);\n    free(job);\n    z_stage1_task_scope_release_invocation(&child);\n    control->accepted = false;\n    return control;\n  }\n  control->scope = Z_TaskScope_retain(scope);\n  control->job = job;\n  job->control = Z_TaskControl_retain(control);\n  job->scope_next = scope->jobs;\n  scope->jobs = job;\n  if (scope->external_tail == NULL) scope->external_head = job;\n  else scope->external_tail->external_next = job;\n  scope->external_tail = job;\n  scope->pending += 1;\n  z_stage1_task_scope_unlock(scope);\n  z_stage1_task_scope_schedule_perform(scope);\n  return control;\n}\n\n");
   output.append("static __attribute__((unused)) bool z_stage1_task_control_request_cancel(Z_TaskControl *control) {\n  if (control == NULL || !control->accepted || control->scope == NULL) return false;\n  Z_TaskScope *scope = control->scope;\n  z_stage1_task_scope_lock(scope);\n  if (control->cancellation_requested || control->job == NULL) {\n    z_stage1_task_scope_unlock(scope);\n    return false;\n  }\n  control->cancellation_requested = true;\n  Z_TaskScopeJob *job = control->job;\n  z_stage1_task_scope_unlock(scope);\n  z_stage1_async_request_cancel(&job->task);\n  z_stage1_task_scope_schedule_perform(scope);\n  return true;\n}\n\n");
-  output.append("static void z_stage1_task_scope_join(Z_TaskScope *scope, bool cancel) {\n  if (scope == NULL) abort();\n  z_stage1_task_scope_lock(scope);\n  scope->closing = true;\n  if (cancel) scope->cancelling = true;\n  if (cancel) {\n    for (Z_TaskScopeJob *job = scope->jobs; job != NULL; job = job->scope_next) z_stage1_async_request_cancel(&job->task);\n  }\n  z_stage1_task_scope_unlock(scope);\n  for (;;) {\n    z_stage1_task_scope_drain_external(scope);\n    z_stage1_task_scope_lock(scope);\n    const size_t pending = scope->pending;\n    z_stage1_task_scope_unlock(scope);\n    if (pending == 0) break;\n    if (!z_stage1_async_drive_one(scope->executor)) abort();\n  }\n  z_stage1_task_scope_discard_jobs(scope);\n}\n\n");
+  output.append("static __attribute__((unused)) void z_stage1_task_scope_join(Z_TaskScope *scope, bool cancel) {\n  if (scope == NULL) abort();\n  z_stage1_task_scope_lock(scope);\n  scope->closing = true;\n  if (cancel) scope->cancelling = true;\n  if (cancel) {\n    for (Z_TaskScopeJob *job = scope->jobs; job != NULL; job = job->scope_next) z_stage1_async_request_cancel(&job->task);\n  }\n  z_stage1_task_scope_unlock(scope);\n  for (;;) {\n    z_stage1_task_scope_drain_external(scope);\n    z_stage1_task_scope_lock(scope);\n    const size_t pending = scope->pending;\n    z_stage1_task_scope_unlock(scope);\n    if (pending == 0) break;\n    if (!z_stage1_async_drive_one(scope->executor)) abort();\n  }\n  z_stage1_task_scope_discard_jobs(scope);\n}\n\n");
 }
 
 function appendAsyncCallableAwaitHelpers(
@@ -17782,11 +17814,6 @@ function appendMapRuntime(
     output.append(" key, ");
     output.append(valueType);
     output.append(" value) {\n");
-    if (ownedIdentityGet) {
-      output.append("  value = Z_");
-      output.append(declaration.valueType.name);
-      output.append("_retain(value);\n");
-    }
     output.append("  Z_");
     output.append(declaration.name);
     output.append("_ensure_capacity(self);\n");
