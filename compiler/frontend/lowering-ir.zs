@@ -2885,7 +2885,7 @@ function lowerTypeName(
       name: "String",
     });
   }
-  if (name == "embed.StaticBytes") {
+  if (name == "embed.StaticBytes" || name == "StaticBytes") {
     return LoweredType({
       kind: LoweredTypeKind.staticBytesType,
       name: "StaticBytes",
@@ -3114,6 +3114,12 @@ function lowerModuleTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): LoweredType throws String {
+  if (name == "embed.StaticBytes" || name == "StaticBytes") {
+    return LoweredType({
+      kind: LoweredTypeKind.staticBytesType,
+      name: "StaticBytes",
+    });
+  }
   if (name == "id") return LoweredType({
     kind: LoweredTypeKind.foreignObjCType,
     name: "id",

@@ -4778,6 +4778,43 @@ same proof, with `ChannelClosed<Job>.value` recovering an unsent owner. The
 realistic example remains unchanged at capacity one, so it continuously tests
 actual backpressure rather than only the immediate-send path.
 
+## Configured application workers through an engine-neutral lifetime
+
+Zapp's first configured application worker combined embedded module bytes,
+generated cross-module metadata, a dedicated ZJS thread, cooperative
+cancellation, deterministic join, and application/service teardown ordering.
+Two fixed-point limits became visible before that complete shape could remain
+entirely in Z:
+
+- an imported aggregate containing generic `Sender<T>` / `Receiver<T>`
+  endpoints does not yet have a complete native storage representation; and
+- an ownership-bearing `Task<T, E>` returned by `thread.spawn` cannot yet be
+  stored and awaited by the generated application supervisor in every native
+  frame context.
+
+The first production tier therefore keeps the safety boundary narrow instead
+of weakening either rule. Z owns an ARC `ApplicationWorkerControl`, stores one
+opaque native identity, requests cancellation, joins every worker before
+service shutdown, and destroys the identity from `deinit`. The engine adapter
+implements a small cancel/join/destroy vtable and owns the OS thread plus ZJS
+context. Embedded `StaticBytes` remain process-lifetime immutable storage and
+cross into `NSData` without copying.
+
+This probe also found two general native-emission gaps that are now closed.
+An imported value struct field spelled `embed.StaticBytes` or `StaticBytes`
+retains its nominal static-byte representation through module lowering, and
+ordinary non-exported Z functions receive translation-unit-local linkage.
+The latter prevents a private Z helper such as `advance` from colliding with a
+same-named symbol in an embedded native library.
+
+The engine-neutral control ABI is an implementation seam, not a new source
+language feature or permission escape hatch. The desired follow-up is to move
+the supervisor back into ordinary Z once generic channel endpoint storage and
+ownership-bearing native thread-task joins compose in the fixed-point backend.
+The separate ZJS worker-host probe continues to exercise typed bidirectional
+channels and direct Z service calls, so that future replacement has executable
+behavioral evidence rather than only a design sketch.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
@@ -4800,6 +4837,9 @@ actual backpressure rather than only the immediate-send path.
   child-task mutable borrows, whole Z value aggregates containing them, and
   fallible results now survive suspension, return/await relay, `try`/`attempt`,
   match, failure, and cancellation;
+- imported generic channel endpoints stored in cross-module aggregates, plus
+  application-lifetime ownership-bearing `thread.spawn` tasks supervised and
+  joined entirely by fixed-point Z;
 - Windows C++ UI ownership and callback shapes.
 - a Rust-produced native library with opaque ownership, escaping callbacks,
   thread-affinity contracts, Cargo-driven artifact preparation, and a complete

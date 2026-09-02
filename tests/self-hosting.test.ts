@@ -4440,6 +4440,94 @@ test("emits type-only static byte catalogs through the fixed-point frontend", ()
   }
 }, 30_000);
 
+test("preserves imported StaticBytes fields through native module lowering", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-static-bytes-module-");
+  const assetModule = resolve(directory, "asset.zs");
+  const input = resolve(directory, "main.zs");
+  try {
+    writeFileSync(resolve(directory, "payload.txt"), "Z");
+    writeFileSync(assetModule, [
+      'import embed from "std/embed";',
+      "export struct Asset {",
+      "  bytes: embed.StaticBytes;",
+      "}",
+      "",
+    ].join("\n"));
+    writeFileSync(input, [
+      'import embed from "std/embed";',
+      'import { Asset } from "./asset.zs";',
+      'const PAYLOAD: embed.StaticBytes = embed.bytes("./payload.txt");',
+      "function main(): i32 {",
+      "  const asset = Asset({ bytes: PAYLOAD });",
+      "  return asset.bytes.length == 1 ? 0 : 1;",
+      "}",
+      "",
+    ].join("\n"));
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /Z_StaticBytes bytes;/);
+
+    const executable = resolve(directory, "static-bytes-module");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("keeps ordinary native Z functions out of the host link namespace", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-private-linkage-");
+  const input = resolve(directory, "main.zs");
+  try {
+    writeFileSync(input, [
+      "function advance(): i32 {",
+      "  return 42;",
+      "}",
+      "function main(): i32 {",
+      "  return advance() - 42;",
+      "}",
+      "",
+    ].join("\n"));
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /static __attribute__\(\(unused\)\) int32_t advance\(void\)/,
+    );
+
+    const generated = resolve(directory, "generated.c");
+    const host = resolve(directory, "host.c");
+    const executable = resolve(directory, "private-linkage");
+    writeFileSync(generated, emission.stdout);
+    writeFileSync(host, "int advance(void) { return 7; }\n");
+    const compilation = spawnSync(
+      "clang",
+      [generated, host, "-std=c11", "-Wall", "-Wextra", "-Werror", "-o", executable],
+      { encoding: "utf8" },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 hostToolchainTest("borrows embedded bytes into NSData through the fixed-point frontend", () => {
   if (process.platform !== "darwin") return;
   const directory = mkdtempSync("/tmp/z-self-host-embedded-data-");

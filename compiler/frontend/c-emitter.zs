@@ -7328,6 +7328,9 @@ function appendFunctionSignature(
   }
   if (method) output.append("static __attribute__((unused)) ");
   else if (declaration.nativeCExportName.byteLength > 0) output.append("static ");
+  else if (declaration.name != "main") {
+    output.append("static __attribute__((unused)) ");
+  }
   output.append(returnType);
   output.append(" ");
   appendCBindingName(inout output, declaration.name);
