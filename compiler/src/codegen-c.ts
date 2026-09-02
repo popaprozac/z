@@ -3692,7 +3692,7 @@ export function closureFunctionType(closure: ClosureInfo): FunctionType {
   return declarationFunctionType(closure.declaration, closure.captures.length);
 }
 
-function functionAdapterName(name: string): string {
+export function functionAdapterName(name: string): string {
   return `__z_function_adapter_${nativeSymbolPart(name)}`;
 }
 

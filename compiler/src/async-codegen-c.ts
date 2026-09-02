@@ -43,6 +43,7 @@ import {
   functionTypeCName,
   functionTypeContextParameterName,
   functionValueLiteral,
+  functionAdapterName,
   generateFunctionTypeParameters,
   generateObjCBlockArgument,
   generateObjCMessage,
@@ -7248,6 +7249,12 @@ function emitFrameExpressionInner(
     case "identifier":
       if (plan.types.semanticInfo.moduleConstantReferences.has(expression.location.offset)) {
         return plan.types.semanticInfo.moduleConstantReferences.get(expression.location.offset)!;
+      }
+      if (plan.types.functions.has(expression.name)) {
+        const functionType = parseFunctionType(frameExpressionType(expression, plan));
+        if (functionType) {
+          return functionValueLiteral(functionType, functionAdapterName(expression.name));
+        }
       }
       if (plan.bindings?.has(expression.name)) {
         const value = plan.bindings.get(expression.name)!;

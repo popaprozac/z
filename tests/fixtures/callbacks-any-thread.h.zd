@@ -14,4 +14,17 @@ declare module "callbacks-any-thread.h" {
   }
 
   export function z_join_any_thread_callback(): _;
+
+  export function z_invoke_any_thread_text_callback(
+    move callback: _,
+    context: _,
+    release: _
+  ): _ {
+    callback callback {
+      context context;
+      deinit release;
+      thread any;
+      invoked once;
+    }
+  }
 }

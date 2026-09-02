@@ -5,7 +5,17 @@
 #include <stdint.h>
 
 typedef int32_t (*ZAnyThreadCallback)(int32_t value, void *context);
+typedef void (*ZAnyThreadTextCallback)(const char *value, void *context);
 typedef void (*ZAnyThreadRelease)(void *context);
+
+static inline void z_invoke_any_thread_text_callback(
+  ZAnyThreadTextCallback callback,
+  void *context,
+  ZAnyThreadRelease release
+) {
+  callback("native text", context);
+  release(context);
+}
 
 static pthread_t z_any_thread;
 static ZAnyThreadCallback z_any_callback = 0;

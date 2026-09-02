@@ -192,6 +192,37 @@ test("types stored async operations without starting detached work", () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("stores named synchronous function values inside async frames", () => {
+  const source = `
+    import { thread } from "std/thread";
+
+    type Handler = (value: i32) => i32 on thread.any;
+
+    function increment(value: i32): i32 on thread.any {
+      return value + 1;
+    }
+
+    function invoke(handler: Handler, value: i32): i32 {
+      return handler(value);
+    }
+
+    async function main(): i32 {
+      const handler: Handler = increment;
+      return invoke(handler, 41) - 42;
+    }
+  `;
+  assert.doesNotThrow(() => check(source, "async-named-function-value.zs"));
+  const generated = compileToC(source, "async-named-function-value.zs");
+  assert.match(generated, /\.call = __z_function_adapter_increment/);
+
+  const directory = mkdtempSync("/tmp/z-async-named-function-value-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, source);
+  const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("starts, joins, and cancels stored async operations as structured tasks", () => {
   const example = resolve(projectRoot, "examples/async/async-callable-tasks.zs");
   const source = readFileSync(example, "utf8");

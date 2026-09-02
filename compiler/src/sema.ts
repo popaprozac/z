@@ -6542,10 +6542,15 @@ function validateConcurrentForeignCallbackSignature(
     ...callback.parameters.map((parameter, index) => ({
       label: `parameter ${index + 1}`,
       type: String(foreignValueType(parameter)),
+      parameter: true,
     })),
-    { label: "return value", type: String(foreignValueType(callback.returnType)) },
+    { label: "return value", type: String(foreignValueType(callback.returnType)), parameter: false },
   ];
   for (const value of values) {
+    // Native callback inputs are used synchronously on the invoking thread.
+    // A borrowed cstring does not itself cross threads; normal borrow and
+    // async-capture rules still prevent it from escaping the callback.
+    if (value.parameter && value.type === "cstring") continue;
     const issue = shareableTypeIssue(value.type, structs, enums, state);
     if (!issue) continue;
     throw new DiagnosticError(

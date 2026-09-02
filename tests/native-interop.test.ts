@@ -2893,6 +2893,20 @@ test("owns arbitrary-thread native callback environments atomically and checks c
   `;
   assert.doesNotThrow(() => compileToC(namedFunction, fixture));
 
+  const borrowedTextParameter = `
+    import callbacks from "callbacks-any-thread.h";
+    function main(): i32 {
+      callbacks.z_invoke_any_thread_text_callback(
+        move (value): void => {
+          const copied = String.from(value);
+          if (copied.byteLength == 0) return;
+        }
+      );
+      return 0;
+    }
+  `;
+  assert.doesNotThrow(() => compileToC(borrowedTextParameter, fixture));
+
   const storedEnvironment = `
     import callbacks from "callbacks-any-thread.h";
     function main(): i32 {
