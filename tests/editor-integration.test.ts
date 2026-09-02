@@ -259,12 +259,27 @@ test("keeps generic service methods fully classified in source and hover signatu
   const fileName = resolve(directory, "services.zs");
   const source = `
     import { thread } from "std/thread";
+    import { Mutex } from "std/sync";
 
     internal type AsyncHandler =
       async (in invocation: String) => String on thread.any;
 
     trait Service {}
     trait ServiceLifecycle {}
+
+    struct State {
+      active: boolean = false;
+    }
+
+    class Holder<T> {
+      readonly state: Mutex<State>;
+
+      function isActive(): boolean {
+        return this.state.withLock(
+          (in state): boolean => state.active
+        );
+      }
+    }
 
     internal struct Routes {
       function register<T: Service>(
@@ -343,6 +358,120 @@ test("keeps generic service methods fully classified in source and hover signatu
     assert.match(hover(source, fileName, nameOffset + 2)?.contents.value ?? "", /name: String/);
     assert.match(hover(source, fileName, moveOffset + 2)?.contents.value ?? "", /move String -> String/);
     assert.match(hover(source, fileName, typeParameterOffset)?.contents.value ?? "", /T: Service & ServiceLifecycle/);
+    const activeOffset = source.indexOf("state.active") + "state.".length;
+    assert.match(hover(source, fileName, activeOffset + 2)?.contents.value ?? "", /active: boolean/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("keeps test matcher hover after earlier selective imports", () => {
+  const source = `
+    import { sleep } from "std/time";
+    import { expect } from "std/test";
+
+    test "matcher hover" {
+      sleep(0);
+      expect(42).toEqual(42);
+    }
+  `;
+  const fileName = resolve(projectRoot, "test-matcher-editor.zs");
+  assert.deepEqual(diagnostics(source, fileName), []);
+  const offset = source.indexOf("toEqual");
+  assert.match(
+    hover(source, fileName, offset + 2)?.contents.value ?? "",
+    /toEqual\(expected: T\): void/,
+  );
+});
+
+test("keeps hover through indexed and multiline member chains", () => {
+  const source = `
+    struct Profile {
+      workerIds: Array<String>;
+    }
+
+    function copyWorkerId(in profile: Profile, workerIndex: usize): String {
+      return profile.workerIds[
+        workerIndex
+      ].copyBytes(
+        0,
+        profile.workerIds[workerIndex].byteLength
+      );
+    }
+  `;
+  const fileName = resolve(projectRoot, "indexed-chain-editor.zs");
+  assert.deepEqual(diagnostics(source, fileName), []);
+
+  const copyOffset = source.indexOf("copyBytes");
+  assert.match(
+    hover(source, fileName, copyOffset + 2)?.contents.value ?? "",
+    /copyBytes\(start: usize, end: usize\): String/,
+  );
+  const lengthOffset = source.indexOf("byteLength");
+  assert.match(
+    hover(source, fileName, lengthOffset + 2)?.contents.value ?? "",
+    /byteLength: usize/,
+  );
+
+});
+
+test("keeps authored generic hover through transitive modules and trait constraints", () => {
+  const directory = mkdtempSync("/tmp/z-authored-generic-hover-");
+  const contractFile = resolve(directory, "contract.zs");
+  const routesFile = resolve(directory, "routes.zs");
+  const entryFile = resolve(directory, "main.zs");
+  const contract = `
+    export struct Registry {
+      function add(inout this, value: String): void {}
+    }
+
+    export trait Engine {
+      function result(): i32;
+    }
+  `;
+  const routes = `
+    import { Registry } from "./contract.zs";
+
+    export struct Routes {
+      registry: Registry;
+    }
+  `;
+  const entry = `
+    import { Engine } from "./contract.zs";
+    import { Routes } from "./routes.zs";
+
+    struct Builder<T> {
+      routes: Routes;
+
+      function register(inout this, value: String): void {
+        this.routes.registry.add(move value);
+      }
+    }
+
+    function observe<E: Engine>(in engine: E): i32 {
+      return engine.result();
+    }
+  `;
+  try {
+    writeFileSync(resolve(directory, "z.json"), JSON.stringify({
+      package: { name: "authored-generic-hover", version: "0.1.0" },
+      library: { entry: "main.zs" },
+    }));
+    writeFileSync(contractFile, contract);
+    writeFileSync(routesFile, routes);
+    writeFileSync(entryFile, entry);
+    assert.deepEqual(diagnostics(entry, entryFile), []);
+
+    const addOffset = entry.indexOf("add(move");
+    assert.match(
+      hover(entry, entryFile, addOffset + 1)?.contents.value ?? "",
+      /add\(inout this, value: String\): void/,
+    );
+    const resultOffset = entry.indexOf("result()");
+    assert.match(
+      hover(entry, entryFile, resultOffset + 1)?.contents.value ?? "",
+      /result\(\): i32/,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

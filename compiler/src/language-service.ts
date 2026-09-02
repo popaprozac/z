@@ -37,11 +37,11 @@ import { isLocalSourceModuleSpecifier, type SourceModuleInfo } from "./modules.t
 import { displayFunctionType, functionTypeName, parseFunctionType } from "./function-types.ts";
 import { displayTaskType, parseTaskType } from "./async-types.ts";
 import { parseWeakType } from "./weak-types.ts";
-import { parseViewType } from "./view-types.ts";
+import { parseViewType, viewTypeName } from "./view-types.ts";
 import { parseOptionType } from "./option-types.ts";
 import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
-import { parseReadonlyType } from "./readonly-types.ts";
+import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 import { parseAsyncGeneratorType, parseGeneratorType } from "./generator-types.ts";
 import { parseOnceLifetimeType, parseOnceType } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
@@ -498,8 +498,22 @@ export function completions(source: string, fileName: string, offset: number): C
       insertText: "toEqual()",
     }], testMatcher[2] ?? "", 100);
   }
-  const member = before.match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.([A-Za-z_][A-Za-z0-9_]*)?$/);
-  if (member) return memberCompletions(source, fileName, offset, member[1], member[2] ?? "");
+  const memberSuffix = before.match(/([A-Za-z_][A-Za-z0-9_]*)?$/)?.[1] ?? "";
+  const memberDot = offset - memberSuffix.length - 1;
+  const memberReceiver = source[memberDot] === "."
+    ? memberReceiverBeforeDot(source, memberDot)
+    : null;
+  if (memberReceiver) {
+    return memberCompletions(
+      source,
+      fileName,
+      offset,
+      memberReceiver.text,
+      memberSuffix,
+      memberReceiver.start,
+      memberDot,
+    );
+  }
   const objectFields = objectFieldCompletions(source, fileName, offset);
   if (objectFields) return objectFields;
   const protocolMethods = objcProtocolMethodCompletions(source, fileName, offset);
@@ -1621,10 +1635,29 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
   }
 
-  const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.$/);
-  if (memberPrefix) {
-    if (memberPrefix[1] === "Option" || /^Option<[^<>]+>$/.test(memberPrefix[1])) {
-      const explicit = memberPrefix[1].startsWith("Option<") ? memberPrefix[1].slice(7, -1) : "T";
+  // Generic type syntax can place the namespace immediately after `<`, which
+  // is intentionally outside the expression receiver grammar. Preserve native
+  // type/protocol hover by recognizing the adjacent imported namespace.
+  const adjacentPrefix = source.slice(0, word.start);
+  const adjacentMatch = adjacentPrefix.match(/([A-Za-z_][A-Za-z0-9_]*)\.$/);
+  const adjacentNamespace = adjacentMatch
+    && adjacentPrefix.slice(0, adjacentMatch.index).trimEnd().endsWith("<")
+    ? adjacentMatch[1]
+    : null;
+  const adjacentModule = adjacentNamespace
+    && !sourceNameIsShadowed(context, adjacentNamespace, word.start, fileName)
+    ? context.foreignModules.get(adjacentNamespace)
+    : null;
+  if (adjacentModule) {
+    const detail = describeModuleMember(adjacentModule, [], word.text);
+    if (detail) return markdownHover(detail, source, word.start, word.end);
+  }
+
+  const memberReceiver = memberReceiverBeforeMember(source, word.start);
+  if (memberReceiver) {
+    const memberText = memberReceiver.text;
+    if (memberText === "Option" || /^Option<[^<>]+>$/.test(memberText)) {
+      const explicit = memberText.startsWith("Option<") ? memberText.slice(7, -1) : "T";
       if (word.text === "some") {
         return markdownHover(`some(value: ${explicit}): Option<${explicit}>`, source, word.start, word.end);
       }
@@ -1635,16 +1668,29 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         return markdownHover(`fromNullable(value: ${explicit} | null): Option<${explicit}>`, source, word.start, word.end);
       }
     }
-    const staticChannel = channelTypeFromSourceSpelling(context, memberPrefix[1]);
+    const sourceEnum = sourceEnumForType(context, memberText);
+    const sourceVariant = sourceEnum?.variants.find((variant) => variant.name === word.text);
+    if (sourceEnum && sourceVariant) {
+      const payload = sourceVariant.payload
+        ? `(value: ${displayType(sourceVariant.payload.name, context.typeDisplayNames)})`
+        : "";
+      return markdownHover(
+        `${word.text}${payload}: ${memberText}`,
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    const staticChannel = channelTypeFromSourceSpelling(context, memberText);
     if (staticChannel?.kind === "factory") {
       const detail = channelMemberDetail(staticChannel, word.text, context.typeDisplayNames);
       if (detail) return markdownHover(detail, source, word.start, word.end);
     }
-    if (context.semanticInfo.consoleBindings.has(memberPrefix[1])) {
+    if (context.semanticInfo.consoleBindings.has(memberText)) {
       const detail = consoleMethodDetail(word.text);
       if (detail) return markdownHover(detail, source, word.start, word.end);
     }
-    const standardOwner = context.semanticInfo.standardModuleBindings.get(memberPrefix[1]);
+    const standardOwner = context.semanticInfo.standardModuleBindings.get(memberText);
     if (standardOwner === "thread" && word.text === "spawn") {
       return markdownHover(
         "spawn<T>(operation: () => T): Task<T>\nspawn<T, E>(operation: () => T throws E): Task<T, E>  // starts one native thread; accepts synchronous or async one-shot closures; async continuations stay worker-affine",
@@ -1772,15 +1818,15 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (standardName) {
       return markdownHover(standardFunctionDetail(word.text, standardName), source, word.start, word.end);
     }
-    if (memberPrefix[1] === "String" && word.text === "from") {
+    if (memberText === "String" && word.text === "from") {
       return markdownHover("from(value: cstring): String  // copies borrowed C bytes", source, word.start, word.end);
     }
-    const foreignStaticOwner = resolveForeignValueType(context, memberPrefix[1]);
+    const foreignStaticOwner = resolveForeignValueType(context, memberText);
     const foreignStaticMethod = foreignStaticOwner?.staticMethods.find((item) => item.name === word.text);
     if (foreignStaticMethod) {
       return markdownHover(foreignCxxStaticMethodDetail(foreignStaticMethod), source, word.start, word.end);
     }
-    const staticOwner = sourceAggregateForType(context, memberPrefix[1]);
+    const staticOwner = sourceAggregateForType(context, memberText);
     const staticMethod = staticOwner?.declaration.methods.find((item) => item.static && item.name === word.text);
     if (staticOwner && staticMethod) {
       const includePrivate = insideAggregateBody(source, fileName, word.start, staticOwner.declaration.name);
@@ -1793,11 +1839,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         );
       }
     }
-    const handleModule = context.foreignModules.get(memberPrefix[1]);
+    const handleModule = context.foreignModules.get(memberText);
     const handleType = handleModule ? resolveModuleHandleType(handleModule, word.text) : null;
     if (handleType) {
       return markdownHover(
-        `${memberPrefix[1]}.${word.text}  // owned opaque native handle; deinit ${handleType.release}`,
+        `${memberText}.${word.text}  // owned opaque native handle; deinit ${handleType.release}`,
         source,
         word.start,
         word.end,
@@ -1805,15 +1851,15 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     const sourceImport = context.sourceProgram.imports.find((declaration) => (
       !declaration.bindings
-      && declaration.moduleName === memberPrefix[1]
+      && declaration.moduleName === memberText
       && localSourceModule(context, declaration)
     ));
     const sourceModule = sourceImport ? localSourceModule(context, sourceImport) : null;
     if (sourceModule?.exports.has(word.text)
-      && !sourceNameIsShadowed(context, memberPrefix[1], word.start, fileName)) {
+      && !sourceNameIsShadowed(context, memberText, word.start, fileName)) {
       return markdownHover(sourceExportDetail(sourceModule, word.text, context.typeDisplayNames), source, word.start, word.end);
     }
-    const resolved = resolveReceiver(context, memberPrefix[1], word.start - memberPrefix[1].length - 1);
+    const resolved = resolveReceiver(context, memberText, memberReceiver.start);
     if (resolved?.kind === "module") {
       const declaration = resolveModuleFunction(resolved.module, resolved.namespacePath, word.text);
       if (declaration) {
@@ -1865,6 +1911,19 @@ export function hover(source: string, fileName: string, offset: number): Hover |
           word.start,
           word.end,
         );
+      }
+    }
+    if (resolved?.kind === "trait") {
+      for (const owner of resolved.declarations) {
+        const method = owner.declaration.methods.find((item) => item.name === word.text);
+        if (method) {
+          return markdownHover(
+            methodDetail(method, context.typeDisplayNames, owner.substitutions),
+            source,
+            word.start,
+            word.end,
+          );
+        }
       }
     }
     if (resolved?.kind === "foreignValue") {
@@ -2178,9 +2237,9 @@ function nativeDefinition(
       if (target) return target;
     }
   }
-  const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.$/);
-  if (memberPrefix) {
-    const resolved = resolveReceiver(context, memberPrefix[1], word.start - memberPrefix[1].length - 1);
+  const memberReceiver = memberReceiverBeforeMember(source, word.start);
+  if (memberReceiver) {
+    const resolved = resolveReceiver(context, memberReceiver.text, memberReceiver.start);
     if (resolved?.kind === "module") {
       const declaration = resolveModuleFunction(resolved.module, resolved.namespacePath, word.text)
         ?? resolved.module.constants.get(word.text)
@@ -2246,7 +2305,7 @@ function importedTestBinding(
   source: string,
   localName: string,
 ): "expect" | "fail" | null {
-  const pattern = /\bimport\s*\{([\s\S]*?)\}\s*from\s*["']std\/test["']\s*;/g;
+  const pattern = /\bimport\s*\{([^}]*)\}\s*from\s*["']std\/test["']\s*;/g;
   for (const match of source.matchAll(pattern)) {
     for (const item of match[1].split(",")) {
       const binding = /^\s*(expect|fail)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$/.exec(item);
@@ -5159,6 +5218,8 @@ function memberCompletions(
   offset: number,
   receiverText: string,
   prefix: string,
+  receiverStart: number,
+  receiverDot: number,
 ): CompletionItem[] {
   if (receiverText === "Option" || /^Option<[^<>]+>$/.test(receiverText)) {
     const explicit = receiverText.startsWith("Option<") ? receiverText.slice(7, -1) : "T";
@@ -5324,7 +5385,7 @@ function memberCompletions(
     if (declaration) return filterCompletions(objcCompletions(declaration, false, importContext), prefix, 1000);
   }
 
-  const receiverOffset = offset - receiverText.length - prefix.length - 1;
+  const receiverOffset = receiverStart;
   const sourceBinding = localSourceBinding(importContext, receiverText);
   const sourceConstant = sourceBinding
     ? sourceExportDeclaration(sourceBinding.module, sourceBinding.importedName)
@@ -5418,6 +5479,13 @@ function memberCompletions(
       1000,
     );
   }
+  if (directReceiver?.kind === "trait") {
+    return filterCompletions(
+      traitCompletions(directReceiver.declarations, importContext.typeDisplayNames),
+      prefix,
+      1000,
+    );
+  }
   if (directReceiver?.kind === "generator") {
     return filterCompletions([{
       label: "next",
@@ -5434,7 +5502,7 @@ function memberCompletions(
       insertText: "next()",
     }], prefix, 1000);
   }
-  const dotOffset = receiverOffset + receiverText.length;
+  const dotOffset = receiverDot;
   const tailOffset = completionTailOffset(source, offset);
   const sanitized = source.slice(0, dotOffset) + source.slice(tailOffset);
   const lengthSanitized = source.slice(0, dotOffset) + ".length" + source.slice(tailOffset);
@@ -5637,6 +5705,13 @@ function memberCompletions(
     const includePrivate = insideAggregateBody(source, fileName, offset, resolved.declaration.name);
     return filterCompletions(
       structCompletions(resolved.declaration, context.typeDisplayNames, includePrivate, canAccessInternalMembers(context, resolved.declaration), resolved.sourceDeclaration),
+      prefix,
+      1000,
+    );
+  }
+  if (resolved?.kind === "trait") {
+    return filterCompletions(
+      traitCompletions(resolved.declarations, context.typeDisplayNames),
       prefix,
       1000,
     );
@@ -5961,7 +6036,20 @@ function localSourceBinding(
   readonly localName: string;
   readonly specifier: string;
 } | null {
-  for (const declaration of context.sourceProgram.imports) {
+  return sourceBindingInProgram(context, context.sourceProgram, localName);
+}
+
+function sourceBindingInProgram(
+  context: AnalyzedSource,
+  program: Program,
+  localName: string,
+): {
+  readonly module: SourceModuleInfo;
+  readonly importedName: string;
+  readonly localName: string;
+  readonly specifier: string;
+} | null {
+  for (const declaration of program.imports) {
     if (!declaration.bindings) continue;
     const binding = declaration.bindings.find((item) => item.localName === localName);
     if (!binding) continue;
@@ -6232,6 +6320,13 @@ type ResolvedReceiver =
     readonly declaration: StructDeclaration;
     readonly sourceDeclaration: StructDeclaration | null;
   }
+  | {
+    readonly kind: "trait";
+    readonly declarations: readonly {
+      readonly declaration: Program["traits"][number];
+      readonly substitutions: ReadonlyMap<string, string>;
+    }[];
+  }
   | { readonly kind: "foreignRecord"; readonly declaration: Extract<ForeignNamedType, { kind: "record" }> }
   | { readonly kind: "foreignValue"; readonly declaration: Extract<ForeignNamedType, { kind: "value" }> }
   | { readonly kind: "integer"; readonly type: string }
@@ -6412,18 +6507,34 @@ function channelMemberDetail(
 }
 
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
-  const nativeNamespace = resolveForeignModuleNamespace(context, text);
+  const compactText = text.replace(/\s+/g, "");
+  const nativeNamespace = resolveForeignModuleNamespace(context, compactText);
   if (nativeNamespace) return { kind: "module", ...nativeNamespace };
-  const [moduleName, className, extra] = text.split(".");
+  const [moduleName, className, extra] = compactText.split(".");
   if (!extra && moduleName && className) {
     const declaration = context.foreignModules.get(moduleName)?.interfaces.get(className);
     if (declaration) return { kind: "objc", declaration, instance: false };
   }
-  const finalSegment = text.lastIndexOf(".");
-  const expressionOffset = finalSegment === -1 ? offset : offset + finalSegment + 1;
-  const type = context.semanticInfo.expressionTypes.get(expressionOffset)
-    ?? context.semanticInfo.expressionTypes.get(offset);
-  if (!type) return null;
+  const expressionOffsets = receiverSemanticOffsets(text, offset);
+  const sourceType = sourceReceiverFallbackType(context, text, offset);
+  const semanticTypes = expressionOffsets
+      .toReversed()
+      .map((candidate) => context.semanticInfo.expressionTypes.get(candidate))
+      .filter((candidate): candidate is string => candidate !== undefined);
+  const authoredPostfixChain = text.includes("[") || (text.match(/\./g)?.length ?? 0) > 1;
+  const candidateTypes = authoredPostfixChain
+    ? [...(sourceType ? [sourceType] : []), ...semanticTypes]
+    : [...semanticTypes, ...(sourceType ? [sourceType] : [])];
+  for (const candidate of [...new Set(candidateTypes)]) {
+    const traits = sourceTraitConstraintsAtOffset(context, candidate, offset);
+    if (traits.length) return { kind: "trait", declarations: traits };
+    const resolved = resolveReceiverType(context, candidate);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+function resolveReceiverType(context: AnalyzedSource, type: string): ResolvedReceiver | null {
   const view = parseViewType(type);
   const receiverType = view?.target ?? type;
   if (receiverType === objcConnectionTypeName || receiverType === objcRegistrationTypeName) {
@@ -6480,11 +6591,25 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
       },
     };
   }
-  const declaration = context.program.structs.find((item) => item.name === receiverType);
+  const sourceAggregate = sourceAggregateForType(context, receiverType);
+  const declaration = context.program.structs.find((item) => item.name === receiverType)
+    ?? sourceAggregate?.declaration;
   if (declaration) {
     const sourceType = context.typeDisplayNames.get(receiverType) ?? receiverType;
-    const sourceDeclaration = sourceAggregateForType(context, sourceType)?.declaration ?? null;
+    const sourceDeclaration = sourceAggregateForType(context, sourceType)?.declaration
+      ?? sourceAggregate?.declaration
+      ?? null;
     return { kind: "struct", declaration, sourceDeclaration };
+  }
+  const sourceTrait = sourceTraitForType(context, receiverType);
+  if (sourceTrait) {
+    return {
+      kind: "trait",
+      declarations: [{
+        declaration: sourceTrait.declaration,
+        substitutions: sourceTrait.substitutions,
+      }],
+    };
   }
   const foreign = context.semanticInfo.foreignNamedTypes.get(receiverType);
   if (foreign?.kind === "record") return { kind: "foreignRecord", declaration: foreign };
@@ -6818,6 +6943,20 @@ function structCompletions(
   ];
 }
 
+function traitCompletions(
+  declarations: Extract<ResolvedReceiver, { kind: "trait" }>["declarations"],
+  typeDisplayNames: ReadonlyMap<string, string>,
+): CompletionItem[] {
+  return uniqueCompletions(declarations.flatMap((owner) => (
+    owner.declaration.methods.map((method) => ({
+      label: method.name,
+      kind: completionKinds.method,
+      detail: methodDetail(method, typeDisplayNames, owner.substitutions),
+      insertText: `${method.name}()`,
+    }))
+  )));
+}
+
 function memberFieldCompletionDetail(
   field: StructDeclaration["fields"][number],
   typeDisplayNames: ReadonlyMap<string, string>,
@@ -6868,16 +7007,24 @@ function staticCompletions(
 function sourceAggregateForType(
   context: AnalyzedSource,
   typeName: string,
-): { readonly declaration: StructDeclaration; readonly substitutions: ReadonlyMap<string, string> } | null {
+  scopeProgram: Program = context.sourceProgram,
+): {
+  readonly declaration: StructDeclaration;
+  readonly substitutions: ReadonlyMap<string, string>;
+  readonly module: SourceModuleInfo | null;
+} | null {
+  const view = parseViewType(typeName);
+  const readonly = parseReadonlyType(view?.target ?? typeName);
+  typeName = readonly?.target ?? view?.target ?? typeName;
   const generic = parseGenericType(typeName) ?? parseSourceGenericType(typeName);
   const base = generic?.base ?? typeName;
-  const selective = localSourceBinding(context, base);
+  const selective = sourceBindingInProgram(context, scopeProgram, base);
   const selectiveDeclaration = selective
     ? sourceExportDeclaration(selective.module, selective.importedName)
     : null;
   const namespaceParts = base.split(".");
   const namespaceImport = namespaceParts.length === 2
-    ? context.sourceProgram.imports.find((item) => (
+    ? scopeProgram.imports.find((item) => (
       !item.bindings
       && item.moduleName === namespaceParts[0]
       && localSourceModule(context, item)
@@ -6892,14 +7039,420 @@ function sourceAggregateForType(
     : namespaceDeclaration?.kind === "struct" || namespaceDeclaration?.kind === "class"
       ? namespaceDeclaration
       : null;
+  const localDeclaration = scopeProgram.structs.find((item) => item.name === base) ?? null;
+  const graphMatches = importedDeclaration || localDeclaration
+    ? []
+    : [...context.sourceModules.values()].flatMap((module) => {
+        const candidate = sourceExportDeclaration(module, base);
+        return candidate?.kind === "struct" || candidate?.kind === "class"
+          ? [{ declaration: candidate, module }]
+          : [];
+      });
+  const graphMatch = graphMatches.length === 1 ? graphMatches[0] : null;
   const declaration = importedDeclaration
-    ?? context.sourceProgram.structs.find((item) => item.name === base)
+    ?? localDeclaration
+    ?? graphMatch?.declaration
     ?? context.program.structs.find((item) => item.name === typeName);
   if (!declaration) return null;
+  const module = importedDeclaration && selectiveDeclaration === importedDeclaration
+    ? selective?.module ?? null
+    : importedDeclaration && namespaceDeclaration === importedDeclaration
+      ? namespaceModule
+      : graphMatch?.declaration === declaration
+        ? graphMatch.module
+      : [...context.sourceModules.values()].find((candidate) => (
+          candidate.program === scopeProgram
+          || (declaration.location.fileName
+            && resolve(candidate.fileName) === resolve(declaration.location.fileName))
+        )) ?? null;
   const substitutions = new Map(
     declaration.typeParameters?.map((parameter, index) => [parameter, generic?.arguments[index] ?? parameter]) ?? [],
   );
-  return { declaration, substitutions };
+  return { declaration, substitutions, module };
+}
+
+function sourceTraitForType(
+  context: AnalyzedSource,
+  typeName: string,
+  scopeProgram: Program = context.sourceProgram,
+): {
+  readonly declaration: Program["traits"][number];
+  readonly substitutions: ReadonlyMap<string, string>;
+  readonly module: SourceModuleInfo | null;
+} | null {
+  const generic = parseGenericType(typeName) ?? parseSourceGenericType(typeName);
+  const base = generic?.base ?? typeName;
+  const selective = sourceBindingInProgram(context, scopeProgram, base);
+  const selectiveDeclaration = selective
+    ? sourceExportDeclaration(selective.module, selective.importedName)
+    : null;
+  const namespaceParts = base.split(".");
+  const namespaceImport = namespaceParts.length === 2
+    ? scopeProgram.imports.find((item) => (
+        !item.bindings
+        && item.moduleName === namespaceParts[0]
+        && localSourceModule(context, item)
+      ))
+    : null;
+  const namespaceModule = namespaceImport ? localSourceModule(context, namespaceImport) : null;
+  const namespaceDeclaration = namespaceModule && namespaceParts[1]
+    ? sourceExportDeclaration(namespaceModule, namespaceParts[1])
+    : null;
+  const importedDeclaration = selectiveDeclaration?.kind === "trait"
+    ? selectiveDeclaration
+    : namespaceDeclaration?.kind === "trait"
+      ? namespaceDeclaration
+      : null;
+  const localDeclaration = scopeProgram.traits.find((item) => item.name === base) ?? null;
+  const graphMatches = importedDeclaration || localDeclaration
+    ? []
+    : [...context.sourceModules.values()].flatMap((module) => {
+        const candidate = sourceExportDeclaration(module, base);
+        return candidate?.kind === "trait" ? [{ declaration: candidate, module }] : [];
+      });
+  const graphMatch = graphMatches.length === 1 ? graphMatches[0] : null;
+  const declaration = importedDeclaration
+    ?? localDeclaration
+    ?? graphMatch?.declaration
+    ?? context.program.traits.find((item) => item.name === typeName);
+  if (!declaration) return null;
+  const module = importedDeclaration && selectiveDeclaration === importedDeclaration
+    ? selective?.module ?? null
+    : importedDeclaration && namespaceDeclaration === importedDeclaration
+      ? namespaceModule
+      : graphMatch?.declaration === declaration
+        ? graphMatch.module
+        : [...context.sourceModules.values()].find((candidate) => (
+            candidate.program === scopeProgram
+            || (declaration.location.fileName
+              && resolve(candidate.fileName) === resolve(declaration.location.fileName))
+          )) ?? null;
+  const substitutions = new Map(
+    declaration.typeParameters?.map((parameter, index) => [parameter, generic?.arguments[index] ?? parameter]) ?? [],
+  );
+  return { declaration, substitutions, module };
+}
+
+function sourceCallableAtOffset(
+  context: AnalyzedSource,
+  offset: number,
+): Program["functions"][number] | null {
+  return [
+    ...context.sourceProgram.functions,
+    ...context.sourceProgram.structs.flatMap((declaration) => declaration.methods),
+  ]
+    .filter((declaration) => (
+      declaration.location.offset <= offset
+      && maximumSourceOffset(declaration) >= offset
+    ))
+    .sort((left, right) => left.location.offset - right.location.offset)
+    .at(-1) ?? null;
+}
+
+function sourceTraitConstraintsAtOffset(
+  context: AnalyzedSource,
+  typeName: string,
+  offset: number,
+): readonly {
+  readonly declaration: Program["traits"][number];
+  readonly substitutions: ReadonlyMap<string, string>;
+}[] {
+  const callable = sourceCallableAtOffset(context, offset);
+  const constraint = callable?.typeParameterConstraints?.find((item) => item.parameter === typeName);
+  if (!constraint) return [];
+  return constraint.traits.flatMap((reference) => {
+    const trait = sourceTraitForType(context, reference.name);
+    return trait ? [{ declaration: trait.declaration, substitutions: trait.substitutions }] : [];
+  });
+}
+
+function sourceEnumForType(context: AnalyzedSource, typeName: string): Program["enums"][number] | null {
+  const direct = context.sourceProgram.enums.find((item) => item.name === typeName);
+  if (direct) return direct;
+  const selective = localSourceBinding(context, typeName);
+  const selectiveDeclaration = selective
+    ? sourceExportDeclaration(selective.module, selective.importedName)
+    : null;
+  if (selectiveDeclaration?.kind === "enum") return selectiveDeclaration;
+  const [namespace, member, extra] = typeName.split(".");
+  if (extra || !namespace || !member) return null;
+  const namespaceImport = context.sourceProgram.imports.find((item) => (
+    !item.bindings
+    && item.moduleName === namespace
+    && localSourceModule(context, item)
+  ));
+  const module = namespaceImport ? localSourceModule(context, namespaceImport) : null;
+  const declaration = module ? sourceExportDeclaration(module, member) : null;
+  return declaration?.kind === "enum" ? declaration : null;
+}
+
+function substituteEditorType(type: string, substitutions: ReadonlyMap<string, string>): string {
+  const direct = substitutions.get(type);
+  if (direct) return direct;
+  const readonly = parseReadonlyType(type);
+  if (readonly) return readonlyTypeName(substituteEditorType(readonly.target, substitutions));
+  const view = parseViewType(type);
+  if (view) return viewTypeName(substituteEditorType(view.target, substitutions));
+  const callable = parseFunctionType(type);
+  if (callable) {
+    return functionTypeName(
+      callable.parameters.map((parameter) => ({
+        ...parameter,
+        type: substituteEditorType(parameter.type, substitutions),
+      })),
+      substituteEditorType(callable.returnType, substitutions),
+      callable.errorType ? substituteEditorType(callable.errorType, substitutions) : null,
+      callable.thread,
+      callable.async,
+    );
+  }
+  const generic = parseGenericType(type) ?? parseSourceGenericType(type);
+  return generic
+    ? genericTypeName(generic.base, generic.arguments.map((argument) => substituteEditorType(argument, substitutions)))
+    : type;
+}
+
+function maximumSourceOffset(value: unknown): number {
+  let maximum = -1;
+  const visit = (item: unknown): void => {
+    if (!item || typeof item !== "object") return;
+    if (Array.isArray(item)) {
+      for (const child of item) visit(child);
+      return;
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.offset === "number" && typeof record.line === "number") {
+      maximum = Math.max(maximum, record.offset);
+      return;
+    }
+    for (const child of Object.values(record)) visit(child);
+  };
+  visit(value);
+  return maximum;
+}
+
+function sourceAggregateAtOffset(context: AnalyzedSource, offset: number): StructDeclaration | null {
+  return context.sourceProgram.structs
+    .filter((declaration) => (
+      declaration.location.offset <= offset
+      && maximumSourceOffset(declaration) >= offset
+    ))
+    .sort((left, right) => left.location.offset - right.location.offset)
+    .at(-1) ?? null;
+}
+
+function sourceFunctionForName(
+  context: AnalyzedSource,
+  name: string,
+): Program["functions"][number] | null {
+  const direct = context.sourceProgram.functions.find((item) => item.name === name);
+  if (direct) return direct;
+  const imported = localSourceBinding(context, name);
+  const declaration = imported
+    ? sourceExportDeclaration(imported.module, imported.importedName)
+    : null;
+  return declaration?.kind === "function" ? declaration : null;
+}
+
+function sourceVariableAtOffset(
+  context: AnalyzedSource,
+  name: string,
+  offset: number,
+): Extract<Statement, { kind: "variable" }> | null {
+  const candidates: Extract<Statement, { kind: "variable" }>[] = [];
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    if (record.kind === "variable") {
+      const declaration = value as Extract<Statement, { kind: "variable" }>;
+      if (declaration.name === name && declaration.nameLocation.offset <= offset) {
+        candidates.push(declaration);
+      }
+    }
+    for (const item of Object.values(record)) visit(item);
+  };
+  visit(context.sourceProgram);
+  return candidates.sort((left, right) => left.nameLocation.offset - right.nameLocation.offset).at(-1) ?? null;
+}
+
+function sourceExpressionText(expression: Expression): string | null {
+  if (expression.kind === "identifier") return expression.name;
+  if (expression.kind === "member") {
+    const object = sourceExpressionText(expression.object);
+    return object ? `${object}.${expression.property}` : null;
+  }
+  return null;
+}
+
+function sourceInitializerType(
+  context: AnalyzedSource,
+  expression: Expression,
+  offset: number,
+): string | null {
+  if (expression.kind === "new" || expression.kind === "structExpression") return expression.typeName;
+  if (expression.kind === "dynamicArrayExpression") return `Array<${expression.elementType}>`;
+  if (expression.kind === "identifier" && expression.name === "this") {
+    const aggregate = sourceAggregateAtOffset(context, offset);
+    return aggregate
+      ? aggregate.typeParameters?.length
+        ? genericTypeName(aggregate.name, aggregate.typeParameters)
+        : aggregate.name
+      : null;
+  }
+  if (expression.kind !== "call") return null;
+  if (expression.callee.kind === "identifier") {
+    return sourceFunctionForName(context, expression.callee.name)?.returnType.name ?? null;
+  }
+  if (expression.callee.kind !== "member") return null;
+  const receiverText = sourceExpressionText(expression.callee.object);
+  const receiverType = receiverText
+    ? sourceReceiverFallbackType(context, receiverText, offset)
+    : null;
+  if (!receiverType) return null;
+  const owner = sourceAggregateForType(context, receiverType);
+  const method = owner?.declaration.methods.find((candidate) => candidate.name === expression.callee.property);
+  return method ? substituteEditorType(method.returnType.name, owner!.substitutions) : null;
+}
+
+function sourceClosureParameterTypeAtOffset(
+  context: AnalyzedSource,
+  name: string,
+  offset: number,
+): string | null {
+  let inferred: string | null = null;
+  const visit = (value: unknown): void => {
+    if (inferred || !value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    if (record.kind === "call") {
+      const call = value as Extract<Expression, { kind: "call" }>;
+      if (call.callee.kind === "member" && call.callee.property === "withLock") {
+        const receiverText = sourceExpressionText(call.callee.object);
+        const receiverType = receiverText
+          ? sourceReceiverFallbackType(context, receiverText, offset)
+          : null;
+        const mutex = receiverType ? parseMutexType(receiverType) : null;
+        if (mutex) {
+          for (const argument of call.arguments) {
+            if (
+              argument.kind === "closure"
+              && argument.location.offset <= offset
+              && maximumSourceOffset(argument) >= offset
+              && argument.parameters.some((parameter) => parameter.name === name)
+            ) {
+              inferred = mutex.valueType;
+              return;
+            }
+          }
+        }
+      }
+    }
+    for (const item of Object.values(record)) visit(item);
+  };
+  visit(context.sourceProgram);
+  return inferred;
+}
+
+function sourceReceiverFallbackType(
+  context: AnalyzedSource,
+  text: string,
+  offset: number,
+): string | null {
+  let tokens;
+  try {
+    tokens = lex(text, "<editor-receiver>").filter((token) => token.kind !== "eof");
+  } catch {
+    return null;
+  }
+  if (tokens.length === 0 || tokens[0].kind !== "identifier") return null;
+  let index = 1;
+  const root = tokens[0].text;
+  let type: string | null;
+  if (root === "this") {
+    const aggregate = sourceAggregateAtOffset(context, offset);
+    type = aggregate
+      ? aggregate.typeParameters?.length
+        ? genericTypeName(aggregate.name, aggregate.typeParameters)
+        : aggregate.name
+      : null;
+  } else {
+    const entryFile = context.sourceModuleBatch.entryFileName;
+    const contextualClosureType = sourceClosureParameterTypeAtOffset(context, root, offset);
+    type = contextualClosureType ?? collectBindings(context)
+      .filter((binding) => (
+        binding.name === root
+        && binding.offset <= offset
+        && (!binding.fileName || resolve(binding.fileName) === resolve(entryFile))
+      ))
+      .sort((left, right) => left.offset - right.offset)
+      .at(-1)?.type ?? null;
+    type ??= sourceCallableAtOffset(context, offset)?.parameters
+      .find((parameter) => parameter.name === root)?.type.name ?? null;
+    const variable = sourceVariableAtOffset(context, root, offset);
+    if (variable?.type) type = variable.type.name;
+    else if (variable?.initializer) type = sourceInitializerType(context, variable.initializer, offset) ?? type;
+    if (!type && tokens[index]?.kind === "leftParen") {
+      type = sourceFunctionForName(context, root)?.returnType.name ?? null;
+    }
+  }
+  if (!type) return null;
+  let scopeProgram = context.sourceProgram;
+
+  const skipDelimited = (opening: string, closing: string): void => {
+    if (tokens[index]?.kind !== opening) return;
+    let depth = 0;
+    for (; index < tokens.length; index += 1) {
+      if (tokens[index].kind === opening) depth += 1;
+      else if (tokens[index].kind === closing) depth -= 1;
+      if (depth === 0) { index += 1; return; }
+    }
+  };
+
+  if (tokens[index]?.kind === "leftParen") skipDelimited("leftParen", "rightParen");
+  while (index < tokens.length) {
+    if (tokens[index].kind === "leftBracket") {
+      const target = parseViewType(type)?.target ?? parseReadonlyType(type)?.target ?? type;
+      const collection = parseFixedArrayType(target) ?? parseSliceType(target) ?? parseDynamicArrayType(target);
+      if (!collection) return null;
+      type = collection.elementType;
+      skipDelimited("leftBracket", "rightBracket");
+      continue;
+    }
+    if (tokens[index].kind !== "dot" || tokens[index + 1]?.kind !== "identifier") return null;
+    const member = tokens[index + 1].text;
+    index += 2;
+    const owner = sourceAggregateForType(context, type, scopeProgram);
+    const traitOwners = owner ? [] : sourceTraitConstraintsAtOffset(context, type, offset);
+    const field = owner?.declaration.fields.find((candidate) => candidate.name === member);
+    const traitMethod = traitOwners.flatMap((candidate) => (
+      candidate.declaration.methods
+        .filter((method) => method.name === member)
+        .map((method) => ({ method, substitutions: candidate.substitutions }))
+    ))[0];
+    const method = owner?.declaration.methods.find((candidate) => candidate.name === member)
+      ?? traitMethod?.method;
+    if (tokens[index]?.kind === "leftParen") {
+      if (!method) return null;
+      type = substituteEditorType(
+        method.returnType.name,
+        owner?.substitutions ?? traitMethod!.substitutions,
+      );
+      scopeProgram = owner?.module?.program ?? scopeProgram;
+      skipDelimited("leftParen", "rightParen");
+      continue;
+    }
+    if (!field) return null;
+    type = substituteEditorType(field.type.name, owner!.substitutions);
+    scopeProgram = owner!.module?.program ?? scopeProgram;
+  }
+  return type;
 }
 
 function parseSourceGenericType(typeName: string): { readonly base: string; readonly arguments: string[] } | null {
@@ -8245,6 +8798,93 @@ function topLevelCommaCount(text: string): number {
     else if (character === "," && depth === 0) count += 1;
   }
   return count;
+}
+
+type MemberReceiver = {
+  readonly text: string;
+  readonly start: number;
+};
+
+function receiverSemanticOffsets(text: string, start: number): number[] {
+  const offsets = [start];
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === "\"" || character === "'" || character === "`") {
+      const quote = character;
+      for (index += 1; index < text.length; index += 1) {
+        if (text[index] !== quote) continue;
+        let escapes = 0;
+        for (let probe = index - 1; probe >= 0 && text[probe] === "\\"; probe -= 1) escapes += 1;
+        if (escapes % 2 === 0) break;
+      }
+      continue;
+    }
+    const topLevel = parentheses === 0 && brackets === 0 && braces === 0;
+    if (topLevel && (character === "(" || character === "[")) offsets.push(start + index);
+    if (topLevel && character === ".") {
+      let member = index + 1;
+      while (member < text.length && /\s/.test(text[member])) member += 1;
+      if (/[A-Za-z_]/.test(text[member] ?? "")) offsets.push(start + member);
+    }
+    if (character === "(") parentheses += 1;
+    else if (character === ")") parentheses -= 1;
+    else if (character === "[") brackets += 1;
+    else if (character === "]") brackets -= 1;
+    else if (character === "{") braces += 1;
+    else if (character === "}") braces -= 1;
+  }
+  return offsets;
+}
+
+function memberReceiverBeforeMember(source: string, memberStart: number): MemberReceiver | null {
+  let dot = memberStart - 1;
+  while (dot >= 0 && /\s/.test(source[dot])) dot -= 1;
+  return source[dot] === "." ? memberReceiverBeforeDot(source, dot) : null;
+}
+
+function memberReceiverBeforeDot(source: string, dot: number): MemberReceiver | null {
+  let end = dot;
+  while (end > 0 && /\s/.test(source[end - 1])) end -= 1;
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  let angles = 0;
+  let cursor = end - 1;
+  for (; cursor >= 0; cursor -= 1) {
+    const character = source[cursor];
+    const nested = () => parentheses > 0 || brackets > 0 || braces > 0 || angles > 0;
+    if (character === "\"" || character === "'" || character === "`") {
+      const quote = character;
+      cursor -= 1;
+      while (cursor >= 0) {
+        if (source[cursor] === quote) {
+          let escapes = 0;
+          for (let probe = cursor - 1; probe >= 0 && source[probe] === "\\"; probe -= 1) escapes += 1;
+          if (escapes % 2 === 0) break;
+        }
+        cursor -= 1;
+      }
+      continue;
+    }
+    if (character === ")") { parentheses += 1; continue; }
+    if (character === "]") { brackets += 1; continue; }
+    if (character === "}") { braces += 1; continue; }
+    if (character === "(" && parentheses > 0) { parentheses -= 1; continue; }
+    if (character === "[" && brackets > 0) { brackets -= 1; continue; }
+    if (character === "{" && braces > 0) { braces -= 1; continue; }
+    if (parentheses === 0 && brackets === 0 && braces === 0) {
+      if (character === ">") { angles += 1; continue; }
+      if (character === "<" && angles > 0) { angles -= 1; continue; }
+    }
+    if (nested()) continue;
+    if (/\s/.test(character) || /[;=,+\-*/%!?:&|^~{}()[\]]/.test(character)) break;
+  }
+  const start = cursor + 1;
+  const text = source.slice(start, end);
+  return text && /[A-Za-z0-9_\])}>]$/.test(text) ? { text, start } : null;
 }
 
 function wordAt(source: string, offset: number): { readonly text: string; readonly start: number; readonly end: number } | null {
