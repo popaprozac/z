@@ -7336,7 +7336,7 @@ function sourceClosureParameterTypeAtOffset(
       if (call.callee.kind === "member" && call.callee.property === "withLock") {
         const receiverText = sourceExpressionText(call.callee.object);
         const receiverType = receiverText
-          ? sourceReceiverFallbackType(context, receiverText, offset)
+          ? sourceReceiverFallbackType(context, receiverText, offset, false)
           : null;
         const mutex = receiverType ? parseMutexType(receiverType) : null;
         if (mutex) {
@@ -7364,6 +7364,7 @@ function sourceReceiverFallbackType(
   context: AnalyzedSource,
   text: string,
   offset: number,
+  inferClosureParameters = true,
 ): string | null {
   let tokens;
   try {
@@ -7384,7 +7385,9 @@ function sourceReceiverFallbackType(
       : null;
   } else {
     const entryFile = context.sourceModuleBatch.entryFileName;
-    const contextualClosureType = sourceClosureParameterTypeAtOffset(context, root, offset);
+    const contextualClosureType = inferClosureParameters
+      ? sourceClosureParameterTypeAtOffset(context, root, offset)
+      : null;
     type = contextualClosureType ?? collectBindings(context)
       .filter((binding) => (
         binding.name === root

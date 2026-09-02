@@ -1159,7 +1159,7 @@ test("materializes concrete generic value structs through native ownership", () 
   );
   assert.match(
     moduleEmission.stdout,
-    /int32_t total\(const Z___z_mono_[A-Za-z0-9_]+ \*pair\)/,
+    /int32_t total\(Z___z_mono_[A-Za-z0-9_]+ const \*pair\)/,
   );
   assert.match(
     moduleEmission.stdout,
@@ -3010,7 +3010,7 @@ test("keeps native inferred binding evidence inside its declaration scope", () =
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(
     emission.stdout,
-    /size_t inspectRecords\(const Z___z_Array_Record \*records\)/,
+    /size_t inspectRecords\(Z___z_Array_Record const \*records\)/,
   );
   assert.match(emission.stdout, /return takeLength\(&\(\(\*records\)\)\);/);
   assert.doesNotMatch(emission.stdout, /takeLength\(\(\*records\)\)/);
@@ -3079,7 +3079,11 @@ test("owns Mutex fields through native aggregate lowering", () => {
   assert.match(emission.stdout, /pthread_mutex_lock/);
   assert.match(emission.stdout, /pthread_mutex_unlock/);
   assert.match(emission.stdout, /mutex_with_lock_Z_Application_increment_[0-9]+_body/);
-  assert.match(emission.stdout, /const int32_t \*completed/);
+  assert.match(emission.stdout, /int32_t const \*completed/);
+  assert.match(
+    emission.stdout,
+    /Z_Snapshot_release\(snapshot\);[\s\S]*return _z_stage1_return_/,
+  );
   assert.match(emission.stdout, /PTHREAD_MUTEX_INITIALIZER/);
   assert.match(
     emission.stdout,
@@ -3286,7 +3290,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(transitiveTypeEmission.status, 0, transitiveTypeEmission.stderr);
   assert.match(
     transitiveTypeEmission.stdout,
-    /int32_t readValue\(const Z_Wrapper \*wrapper\).*?_z_stage1_match_payload_\d+_\d+\.value/s,
+    /int32_t readValue\(Z_Wrapper const \*wrapper\).*?_z_stage1_match_payload_\d+_\d+\.value/s,
   );
   const transitiveTypeExecutable = resolve(directory, "transitive-types");
   const transitiveTypeCompilation = spawnSync(
@@ -3686,7 +3690,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(nativeStringEmission.stdout, /Z_String_deinit\(&value\)/);
   assert.match(
     nativeStringEmission.stdout,
-    /size_t borrowedLength\(const Z_String \*value\).*?\(\(\*value\)\)\.length/s,
+    /size_t borrowedLength\(Z_String const \*value\).*?\(\(\*value\)\)\.length/s,
   );
   assert.match(
     nativeStringEmission.stdout,
@@ -3884,7 +3888,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /userId\(const Z___z_Option_User \*option\).*?\(\*option\)\.payload\.some.*?return _z_stage1_match_payload_/s,
+    /userId\(Z___z_Option_User const \*option\).*?\(\*option\)\.payload\.some.*?return _z_stage1_match_payload_/s,
   );
   assert.doesNotMatch(optionEmission.stdout, /Option\.(?:some|none)/);
   const optionExecutable = resolve(directory, "option");
@@ -13151,14 +13155,14 @@ test("lowers the complete native frontend graph to C", () => {
     { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   assert.equal(emission.status, 0, emission.stderr);
-  assert.match(emission.stdout, /void appendCStringLiteral\(Z_String \*output, const Z_String \*value\);/);
+  assert.match(emission.stdout, /void appendCStringLiteral\(Z_String \*output, Z_String const \*value\);/);
   assert.match(
     emission.stdout,
-    /Z___z_Result_String_String emitLoweredC\(const Z_LoweredProgram \*program, const Z_String \*embeddedRuntimeName, const Z_String \*runtimeInitializerName, bool runtimeInitializerRequiresMain\);/,
+    /Z___z_Result_String_String emitLoweredC\(Z_LoweredProgram const \*program, Z_String const \*embeddedRuntimeName, Z_String const \*runtimeInitializerName, bool runtimeInitializerRequiresMain\);/,
   );
   assert.match(
     emission.stdout,
-    /Z___z_Result_Stage1ModuleGraphResult_String resolveModuleGraphPhase\(const Z_String \*entryPath, const Z_String \*batch\);/,
+    /Z___z_Result_Stage1ModuleGraphResult_String resolveModuleGraphPhase\(Z_String const \*entryPath, Z_String const \*batch\);/,
   );
   assert.match(
     emission.stdout,
@@ -16294,10 +16298,10 @@ test("preserves stored async callable ABI layout in native C emission", () => {
   assert.match(emission.stdout, /typedef struct Z_AsyncInvocation/);
   assert.match(
     emission.stdout,
-    /Z_AsyncInvocation \(\*start\)\(void \*context, Z_AsyncExecutor \*executor, const int32_t \*\)/,
+    /Z_AsyncInvocation \(\*start\)\(void \*context, Z_AsyncExecutor \*executor, int32_t const \*\)/,
   );
   assert.match(emission.stdout, /Z_.*_start\(Z_.* value, Z_AsyncExecutor \*executor/);
-  assert.doesNotMatch(emission.stdout, /int32_t \(\*call\)\(void \*context, const int32_t \*\)/);
+  assert.doesNotMatch(emission.stdout, /int32_t \(\*call\)\(void \*context, int32_t const \*\)/);
 
   const directory = mkdtempSync("/tmp/z-async-callable-layout-");
   const executable = resolve(directory, "program");
@@ -17941,6 +17945,7 @@ test("requests cancellation through a borrowed stored TaskControl", () => {
     emission.stdout,
     /z_stage1_task_control_request_cancel\(\(Z_TaskControl \*\)/,
   );
+  assert.match(emission.stdout, /Z_TaskControl \* const \*control/);
 });
 
 hostToolchainTest("compares borrowed String elements through native lowering", () => {

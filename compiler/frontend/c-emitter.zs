@@ -1257,15 +1257,8 @@ function appendCallableParameterDeclaration(
   in name: String
 ): void throws String {
   const type = try cType(parameter.type);
-  if (
-    parameter.mode == LoweredParameterMode.input
-    && parameter.type.kind != LoweredTypeKind.classType
-  ) output.append("const ");
   output.append(type);
-  if (
-    parameter.mode == LoweredParameterMode.input
-    && parameter.type.kind == LoweredTypeKind.classType
-  ) output.append(" const *");
+  if (parameter.mode == LoweredParameterMode.input) output.append(" const *");
   else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
   else output.append(" ");
   appendCBindingName(inout output, name);
@@ -3201,18 +3194,10 @@ function appendClassAndOnceRuntime(
           const parameterType = try cType(
             initializer.parameters[parameter].type
           );
-          if (
-            initializer.parameters[parameter].mode
-              == LoweredParameterMode.input
-            && initializer.parameters[parameter].type.kind
-              != LoweredTypeKind.classType
-          ) output.append("const ");
           output.append(parameterType);
           if (
             initializer.parameters[parameter].mode
               == LoweredParameterMode.input
-            && initializer.parameters[parameter].type.kind
-              == LoweredTypeKind.classType
           ) output.append(" const *");
           else if (
             initializer.parameters[parameter].mode
@@ -7372,15 +7357,8 @@ function appendFunctionSignature(
       appendCBindingName(inout output, parameter.name);
       continue;
     }
-    if (
-      parameter.mode == LoweredParameterMode.input
-      && parameter.type.kind != LoweredTypeKind.classType
-    ) output.append("const ");
     output.append(parameterType);
-    if (
-      parameter.mode == LoweredParameterMode.input
-      && parameter.type.kind == LoweredTypeKind.classType
-    ) output.append(" const *");
+    if (parameter.mode == LoweredParameterMode.input) output.append(" const *");
     else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
     else output.append(" ");
     appendCBindingName(inout output, parameter.name);
@@ -15497,9 +15475,9 @@ function appendMutexWithLockHelpers(
             expression.labels[captureLabel + 1]
           );
           const nativeCaptureType = try cType(captureType);
-          output.append(", const ");
+          output.append(", ");
           output.append(nativeCaptureType);
-          output.append(" *");
+          output.append(" const *");
           appendCBindingName(
             inout output,
             expression.labels[captureLabel]
@@ -15533,9 +15511,9 @@ function appendMutexWithLockHelpers(
           expression.labels[captureLabel + 1]
         );
         const nativeCaptureType = try cType(captureType);
-        output.append(", const ");
+        output.append(", ");
         output.append(nativeCaptureType);
-        output.append(" *");
+        output.append(" const *");
         appendCBindingName(
           inout output,
           expression.labels[captureLabel]
@@ -17079,15 +17057,8 @@ function appendFunctionTypeLayout(
   for (const parameter of declaration.parameters) {
     output.append(", ");
     const parameterType = try cType(parameter.type);
-    if (
-      parameter.mode == LoweredParameterMode.input
-      && parameter.type.kind != LoweredTypeKind.classType
-    ) output.append("const ");
     output.append(parameterType);
-    if (
-      parameter.mode == LoweredParameterMode.input
-      && parameter.type.kind == LoweredTypeKind.classType
-    ) output.append(" const *");
+    if (parameter.mode == LoweredParameterMode.input) output.append(" const *");
     else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
   }
   output.append(");\n  void *context;\n  void (*retain)(void *context);\n  void (*release)(void *context);\n} Z_");

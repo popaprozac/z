@@ -7154,6 +7154,8 @@ function collectMutexClosureCaptures(
   in ownerName: String,
   in expressions: Array<LoweredExpression>,
   start: usize,
+  in statements: Array<LoweredStatement>,
+  statementStart: usize,
   in parameterName: String,
   useOffset: usize
 ): Array<LoweredClosureCapture> throws String {
@@ -7174,6 +7176,19 @@ function collectMutexClosureCaptures(
       0,
       expressions[index].value.byteLength
     );
+    let declaredInside = false;
+    let scanStatement = statementStart;
+    while (scanStatement < statements.length) {
+      if (
+        statements[scanStatement].kind == LoweredStatementKind.localStatement
+        && statements[scanStatement].name == captureName
+      ) declaredInside = true;
+      scanStatement = scanStatement + 1;
+    }
+    if (declaredInside) {
+      index = index + 1;
+      continue;
+    }
     let exists = false;
     for (const capture of captures) {
       if (capture.name == captureName) exists = true;
@@ -7182,23 +7197,33 @@ function collectMutexClosureCaptures(
       index = index + 1;
       continue;
     }
-    const typeName = match (namedValueTypeName(
+    let typeName = "";
+    match (namedValueTypeName(
       program,
       evidence,
       ownerName,
       captureName,
       useOffset
     )) {
-      some(name) => name;
-      none => throw `native Mutex.withLock cannot resolve capture ${captureName}`;
-    };
+      some(name) => typeName = move name;
+      // Match payloads and other compiler-owned temporaries are introduced
+      // while lowering the closure body and are not lexical captures.
+      none => {}
+    }
+    if (typeName.byteLength == 0) {
+      index = index + 1;
+      continue;
+    }
     const type = try lowerModuleTypeName(
       program,
       importedTypes,
       typeName
     );
-    if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
-      throw `native Mutex.withLock does not support ownership-bearing capture ${captureName} yet`;
+    if (
+      moduleTypeNeedsCleanup(program, importedTypes, type)
+      && loweredRangeMovesName(expressions, start, captureName)
+    ) {
+      throw `native Mutex.withLock cannot consume ownership-bearing capture ${captureName}`;
     }
     captures.push(LoweredClosureCapture({
       name: move captureName,
@@ -11858,6 +11883,7 @@ function lowerExpressionContextual(
                 bodyInput,
                 inout output
               );
+              const noStatements = Array<LoweredStatement>();
               captures = try collectMutexClosureCaptures(
                 program,
                 importedTypes,
@@ -11865,6 +11891,8 @@ function lowerExpressionContextual(
                 "",
                 output,
                 bodyStart,
+                in noStatements,
+                0,
                 parameterName,
                 tree.nodes[closureInput].offset
               );
@@ -18716,6 +18744,8 @@ function completeNativeClosureBlocks(
       ownerName,
       expressions,
       bodyExpressionStart,
+      statements,
+      bodyStatementStart,
       parameterName,
       useOffset
     );
@@ -18746,17 +18776,81 @@ function completeNativeClosureBlocks(
       );
       expressions[expressionIndex].children.push(captureValue);
     }
-    let statementIndex = bodyStatementStart;
-    while (statementIndex < statements.length) {
-      match (in statements[statementIndex].type) {
-        some(type) => {
-          if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
-            throw "native Mutex.withLock block closures do not support cleanup-bearing local values yet";
-          }
-        }
-        none => {}
-      }
-      statementIndex = statementIndex + 1;
+    const mutexResultType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      expressions[expressionIndex].labels[2]
+    );
+    let returnStatement = bodyStatementStart;
+    while (returnStatement < statements.length) {
+      if (
+        statements[returnStatement].kind
+          == LoweredStatementKind.returnStatement
+      ) statements[returnStatement].type = Option.some(LoweredType({
+        kind: mutexResultType.kind,
+        name: mutexResultType.name.copyBytes(
+          0,
+          mutexResultType.name.byteLength
+        ),
+      }));
+      returnStatement = returnStatement + 1;
+    }
+    const bodyExpressionEnd = expressions.length;
+    let mutexLiveFlags = Array<LoweredLiveFlag>();
+    const inherited = Array<LoweredCleanup>();
+    const loopCleanups = Array<LoweredCleanup>();
+    const mutexMoveIndex = cleanupMoveIndex(
+      program,
+      evidence,
+      arena,
+      expressions
+    );
+    const introduced = try planCleanupSequence(
+      program,
+      importedTypes,
+      evidence,
+      arena,
+      ownerName,
+      sourceStatements,
+      loweredStatements,
+      inherited,
+      expressions,
+      mutexMoveIndex,
+      inout statements,
+      inout mutexLiveFlags,
+      false,
+      false,
+      loopCleanups
+    );
+    attachMoveLiveFlagsRange(
+      inout expressions,
+      mutexLiveFlags,
+      bodyExpressionStart,
+      bodyExpressionEnd
+    );
+    if (
+      introduced.length > 0
+      && sequenceFallsThrough(arena, sourceStatements)
+      && loweredSequenceFallsThrough(statements, loweredStatements)
+    ) {
+      let bodyCleanups = Array<LoweredCleanup>();
+      appendCleanupCopies(inout bodyCleanups, introduced);
+      const body = statements.length;
+      statements.push(LoweredStatement({
+        kind: LoweredStatementKind.blockStatement,
+        mutableBinding: false,
+        name: "",
+        type: Option<LoweredType>.none,
+        expression: Option<usize>.none,
+        secondExpression: Option<usize>.none,
+        children: move loweredStatements,
+        cleanups: move bodyCleanups,
+        liveFlag: "",
+        labels: Array<String>(),
+        matchConsumesSubject: false,
+        matchBindingNeedsCleanup: false,
+      }));
+      loweredStatements = Array<usize>(body);
     }
     expressions[expressionIndex].statements = move loweredStatements;
     expressions[expressionIndex].labels[3] = "lowered-block";
