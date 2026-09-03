@@ -2112,7 +2112,7 @@ function appendAsyncTailChildStart(
   appendIndent(inout output, depth);
   output.append("if (frame->child.task == NULL) abort();\n");
   appendIndent(inout output, depth);
-  output.append(`frame->state = ${waitingState};\n`);
+  output.append(`frame->_z_resume_state = ${waitingState};\n`);
   appendIndent(inout output, depth);
   output.append("if (frame->child.task->completed) z_stage1_async_enqueue(task->executor, task);\n");
   appendIndent(inout output, depth);
@@ -8980,7 +8980,7 @@ function appendCallableHelpers(
           if (resultNeedsDeinit) output.append("  bool live_result;\n");
         }
         if (persistentSuspension) {
-          output.append("  uint32_t state;\n");
+          output.append("  uint32_t _z_resume_state;\n");
           if (
             expression.kind == LoweredExpressionKind.directFunctionValue
             || closureMethodAwait
@@ -9090,8 +9090,8 @@ function appendCallableHelpers(
           output.append("    task->cancelled = true;\n");
           output.append("    task->completed = true;\n");
           output.append("    return;\n  }\n");
-          output.append("  if (frame->state == 0) {\n");
-          output.append("    frame->state = 1;\n");
+          output.append("  if (frame->_z_resume_state == 0) {\n");
+          output.append("    frame->_z_resume_state = 1;\n");
           output.append("    z_stage1_async_enqueue(task->executor, task);\n");
           output.append("    return;\n  }\n");
           if (directSchedulerYield) {
@@ -9210,7 +9210,7 @@ function appendCallableHelpers(
           output.append("_cleanup_owned(frame);\n    task->cancelled = true;\n    task->completed = true;\n    return;\n  }\n");
           let segmentIndex: usize = 0;
           while (segmentIndex < delayDeclaration.mainDelaySegments.length) {
-            output.append(`  if (frame->state == ${segmentIndex}) {\n`);
+            output.append(`  if (frame->_z_resume_state == ${segmentIndex}) {\n`);
             try appendMainFrameRestores(
               inout output,
               program,
@@ -9229,14 +9229,14 @@ function appendCallableHelpers(
               segmentIndex + 1,
               2
             );
-            output.append(`    frame->state = ${segmentIndex + 1};\n    z_stage1_async_schedule_delay(task, `);
+            output.append(`    frame->_z_resume_state = ${segmentIndex + 1};\n    z_stage1_async_schedule_delay(task, `);
             output.append(
               delayDeclaration.mainDelaySegments[segmentIndex].milliseconds
             );
             output.append(");\n    return;\n  }\n");
             segmentIndex = segmentIndex + 1;
           }
-          output.append("  if (frame->state != ");
+          output.append("  if (frame->_z_resume_state != ");
           output.append(`${delayDeclaration.mainDelaySegments.length}`);
           output.append(") abort();\n  ");
           if (functionType.returnType.kind != LoweredTypeKind.voidType) {
@@ -9329,14 +9329,14 @@ function appendCallableHelpers(
             output.append(";\n");
             capture = capture + 1;
           }
-          output.append("  if (task->cancellation_requested && frame->state == 0) {\n");
+          output.append("  if (task->cancellation_requested && frame->_z_resume_state == 0) {\n");
           appendAsyncStoredParameterCleanups(
             inout output,
             program,
             functionType,
             2
           );
-          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n");
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->_z_resume_state == 0) {\n");
           try appendAsyncTailChildStart(
             inout output,
             program,
@@ -9348,7 +9348,7 @@ function appendCallableHelpers(
             1,
             2
           );
-          output.append("  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+          output.append("  }\n  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(frame);\n");
           appendAsyncStoredParameterCleanups(
@@ -9444,7 +9444,7 @@ function appendCallableHelpers(
             output.append(";\n");
             aliasParameter = aliasParameter + 1;
           }
-          output.append("  if (task->cancellation_requested && frame->state == 0) {\n");
+          output.append("  if (task->cancellation_requested && frame->_z_resume_state == 0) {\n");
           try appendAsyncTailMatchBindingCleanup(
             inout output,
             program,
@@ -9464,7 +9464,7 @@ function appendCallableHelpers(
             functionType,
             2
           );
-          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n");
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->_z_resume_state == 0) {\n");
           let prefix: usize = 0;
           while (prefix + 1 < tailDeclaration.roots.length) {
             const prefixRoot = tailDeclaration.roots[prefix];
@@ -9492,7 +9492,7 @@ function appendCallableHelpers(
             tailRoot,
             2
           );
-          output.append("  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+          output.append("  }\n  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(frame);\n");
           try appendAsyncTailMatchBindingCleanup(
@@ -9631,7 +9631,7 @@ function appendCallableHelpers(
             output.append(";\n");
             aliasParameter = aliasParameter + 1;
           }
-          output.append("  if (task->cancellation_requested && frame->state == 0) {\n");
+          output.append("  if (task->cancellation_requested && frame->_z_resume_state == 0) {\n");
           try appendAsyncTailLocalCleanups(
             inout output,
             program,
@@ -9644,7 +9644,7 @@ function appendCallableHelpers(
             functionType,
             2
           );
-          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n");
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->_z_resume_state == 0) {\n");
           let prefix: usize = 0;
           while (prefix < shape.rootPosition) {
             const prefixRoot = linearDeclaration.roots[prefix];
@@ -9670,7 +9670,7 @@ function appendCallableHelpers(
             1,
             2
           );
-          output.append("  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+          output.append("  }\n  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(frame);\n");
           try appendAsyncTailLocalCleanups(
@@ -9742,7 +9742,7 @@ function appendCallableHelpers(
           }
           output.append("  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_release_child(frame);\n  frame->state = 2;\n");
+          output.append("_release_child(frame);\n  frame->_z_resume_state = 2;\n");
           let suffix = shape.rootPosition + 1;
           while (suffix < linearDeclaration.roots.length) {
             const suffixRoot = linearDeclaration.roots[suffix];
@@ -9830,7 +9830,7 @@ function appendCallableHelpers(
             output.append(";\n");
             aliasParameter = aliasParameter + 1;
           }
-          output.append("  if (task->cancellation_requested && frame->state == 0) {\n");
+          output.append("  if (task->cancellation_requested && frame->_z_resume_state == 0) {\n");
           try appendAsyncTailLocalCleanups(
             inout output,
             program,
@@ -9843,7 +9843,7 @@ function appendCallableHelpers(
             functionType,
             2
           );
-          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n");
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->_z_resume_state == 0) {\n");
           let prefix: usize = 0;
           while (prefix < shape.firstRootPosition) {
             const prefixRoot = doubleDeclaration.roots[prefix];
@@ -9869,7 +9869,7 @@ function appendCallableHelpers(
             1,
             2
           );
-          output.append("  }\n  if (frame->state == 1) {\n    if (frame->child.task == NULL || !frame->child.task->completed) abort();\n    if (task->cancellation_requested || frame->child.task->cancelled) {\n      ");
+          output.append("  }\n  if (frame->_z_resume_state == 1) {\n    if (frame->child.task == NULL || !frame->child.task->completed) abort();\n    if (task->cancellation_requested || frame->child.task->cancelled) {\n      ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(frame);\n");
           try appendAsyncTailLocalCleanups(
@@ -9923,7 +9923,7 @@ function appendCallableHelpers(
             2,
             2
           );
-          output.append("  }\n  if (frame->state != 2 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+          output.append("  }\n  if (frame->_z_resume_state != 2 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(frame);\n");
           try appendAsyncTailLocalCleanups(
@@ -9951,7 +9951,7 @@ function appendCallableHelpers(
           }
           output.append("  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_release_child(frame);\n  frame->state = 3;\n");
+          output.append("_release_child(frame);\n  frame->_z_resume_state = 3;\n");
           let suffix = shape.secondRootPosition + 1;
           while (suffix < doubleDeclaration.roots.length) {
             const suffixRoot = doubleDeclaration.roots[suffix];
@@ -11134,7 +11134,7 @@ function appendAsyncMethodAwaitHelpers(
         owner,
         expressionIndex
       );
-      output.append("_task {\n  Z_AsyncTask task;\n  uint32_t state;\n  Z_");
+      output.append("_task {\n  Z_AsyncTask task;\n  uint32_t _z_resume_state;\n  Z_");
       output.append(receiverType);
       output.append(classReceiver ? " *receiver;\n" : " receiver;\n  bool live_receiver;\n");
       let parameter: usize = 0;
@@ -11363,7 +11363,7 @@ function appendAsyncMethodAwaitHelpers(
         output.append("_cleanup_owned(frame);\n    task->cancelled = true;\n    task->completed = true;\n    return;\n  }\n");
         let segmentIndex: usize = 0;
         while (segmentIndex < delayDeclaration.mainDelaySegments.length) {
-          output.append(`  if (frame->state == ${segmentIndex}) {\n`);
+          output.append(`  if (frame->_z_resume_state == ${segmentIndex}) {\n`);
           try appendMainFrameRestores(
             inout output,
             program,
@@ -11387,14 +11387,14 @@ function appendAsyncMethodAwaitHelpers(
             segmentIndex + 1,
             2
           );
-          output.append(`    frame->state = ${segmentIndex + 1};\n    z_stage1_async_schedule_delay(task, `);
+          output.append(`    frame->_z_resume_state = ${segmentIndex + 1};\n    z_stage1_async_schedule_delay(task, `);
           output.append(
             delayDeclaration.mainDelaySegments[segmentIndex].milliseconds
           );
           output.append(");\n    return;\n  }\n");
           segmentIndex = segmentIndex + 1;
         }
-        output.append("  if (frame->state != ");
+        output.append("  if (frame->_z_resume_state != ");
         output.append(`${delayDeclaration.mainDelaySegments.length}`);
         output.append(") abort();\n  ");
         if (functionType.returnType.kind != LoweredTypeKind.voidType) {
@@ -11563,7 +11563,7 @@ function appendAsyncMethodAwaitHelpers(
           output.append(";\n");
           aliasParameter = aliasParameter + 1;
         }
-        output.append("  if (task->cancellation_requested && frame->state == 0) {\n");
+        output.append("  if (task->cancellation_requested && frame->_z_resume_state == 0) {\n");
         try appendAsyncTailMatchBindingCleanup(
           inout output,
           program,
@@ -11583,7 +11583,7 @@ function appendAsyncMethodAwaitHelpers(
           functionType,
           2
         );
-        output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n");
+        output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->_z_resume_state == 0) {\n");
         let prefix: usize = 0;
         while (prefix + 1 < tailDeclaration.roots.length) {
           const prefixRoot = tailDeclaration.roots[prefix];
@@ -11611,7 +11611,7 @@ function appendAsyncMethodAwaitHelpers(
           tailRoot,
           2
         );
-        output.append("  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+        output.append("  }\n  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
         appendAsyncCallableAwaitHelperName(
           inout output,
           owner,
@@ -11698,7 +11698,7 @@ function appendAsyncMethodAwaitHelpers(
         owner,
         expressionIndex
       );
-      output.append("_task *)task;\n  if (task->cancellation_requested) { task->cancelled = true; task->completed = true; return; }\n  if (frame->state == 0) { frame->state = 1; z_stage1_async_enqueue(task->executor, task); return; }\n  ");
+      output.append("_task *)task;\n  if (task->cancellation_requested) { task->cancelled = true; task->completed = true; return; }\n  if (frame->_z_resume_state == 0) { frame->_z_resume_state = 1; z_stage1_async_enqueue(task->executor, task); return; }\n  ");
       if (functionType.returnType.kind != LoweredTypeKind.voidType) {
         output.append("frame->result = ");
       }
@@ -12215,7 +12215,7 @@ function appendPersistentAsyncParentHelpers(
         };
         output.append("typedef struct ");
         appendPersistentAsyncParentName(inout output, declaration);
-        output.append(" {\n  Z_AsyncTask task;\n  uint32_t state;\n  ");
+        output.append(" {\n  Z_AsyncTask task;\n  uint32_t _z_resume_state;\n  ");
         if (shape.storedStatement < declaration.statements.length) {
           const storedType = match (
             in declaration.statements[shape.storedStatement].type
@@ -12289,10 +12289,10 @@ function appendPersistentAsyncParentHelpers(
         output.append(" *frame = (");
         appendPersistentAsyncParentName(inout output, declaration);
         output.append(" *)task;\n");
-        output.append("  if (task->cancellation_requested && frame->state == 0) {\n    ");
+        output.append("  if (task->cancellation_requested && frame->_z_resume_state == 0) {\n    ");
         appendPersistentAsyncParentName(inout output, declaration);
         output.append("_complete_cancelled(frame);\n    return;\n  }\n");
-        output.append("  if (frame->state == 0) {\n");
+        output.append("  if (frame->_z_resume_state == 0) {\n");
         if (shape.storedStatement < declaration.statements.length) {
           const storedType = match (
             in declaration.statements[shape.storedStatement].type
@@ -12352,7 +12352,7 @@ function appendPersistentAsyncParentHelpers(
         if (shape.cancelTask) {
           output.append("    z_stage1_async_request_cancel(frame->child.task);\n");
         }
-        output.append("    frame->state = 1;\n");
+        output.append("    frame->_z_resume_state = 1;\n");
         output.append("    if (frame->child.task->completed) {\n");
         output.append("      z_stage1_async_enqueue(task->executor, task);\n");
         output.append("    } else {\n");
@@ -12360,7 +12360,7 @@ function appendPersistentAsyncParentHelpers(
         output.append("      frame->child.task->waiter = task;\n");
         output.append("      z_stage1_async_enqueue(task->executor, frame->child.task);\n");
         output.append("    }\n    return;\n  }\n");
-        output.append("  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n");
+        output.append("  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n");
         output.append("  if (task->cancellation_requested");
         if (!shape.cancelTask) output.append(" || frame->child.task->cancelled");
         output.append(") {\n    ");

@@ -4908,6 +4908,32 @@ cleared exactly once. Task runtime discovery also walks lowered collection,
 function, and enum payload declarations, so a nested `TaskControl` emits the
 runtime definitions its generated cleanup calls require.
 
+## Stable application identity across an async run loop
+
+Converting Zapp's public application root from a consumed value struct into a
+readonly ARC class exposed two native-compiler composition gaps. First,
+compiler-neutral program metadata recorded public function and method calls but
+could not recover arguments from an explicit `new Application()` constructor
+resolution. Stage 0 and the fixed-point frontend now both treat call and `new`
+expressions as callable metadata sources while preserving their different child
+layouts. A fixed-point parity fixture proves the same constructor target and
+literal arguments in both compilers.
+
+Second, the natural application implementation retained a local named `state`
+across its final await. The native async frame also called its internal resume
+program counter `state`, producing a duplicate C member and a macro that rewrote
+the compiler's own field accesses. Generated frames now use the structurally
+reserved `_z_resume_state` member. An executable regression keeps a
+cleanup-bearing ARC local named `state` alive across child suspension, proving
+that ordinary source vocabulary cannot collide with this control field.
+
+The resulting Zapp root publishes the same ARC `Application` through
+`Once<Application>` for the complete run-loop interval, retains its managers,
+and uses a deterministic run guard to reach `stopped` on both success and typed
+failure. This is evidence that process-wide identity, main-executor lifecycle,
+and async cleanup compose without adding a new language capability or forcing
+an unsafe global.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

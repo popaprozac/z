@@ -203,6 +203,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-async-function-main-placement.zs": focusedPositive,
   "self-host-emit-async-function-main-placement-local.zs": focusedPositive,
   "self-host-emit-async-function-main-placement-local-throws.zs": focusedPositive,
+  "self-host-emit-async-local-state.zs": focusedPositive,
   "self-host-emit-async-function-main-placement-structured-invalid.zs": focusedNegative,
   "self-host-emit-async-prefixed-tail-method.zs": focusedPositive,
   "self-host-emit-async-branch-tail-method.zs": focusedPositive,

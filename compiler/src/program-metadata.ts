@@ -1,4 +1,9 @@
-import type { CallExpression, Expression, Program } from "./ast.ts";
+import type {
+  CallExpression,
+  Expression,
+  NewExpression,
+  Program,
+} from "./ast.ts";
 import type { SourceModuleBatch } from "./modules.ts";
 import type {
   Stage1ModuleGraph,
@@ -49,7 +54,10 @@ export type ZProgramMetadata = {
   readonly modules: readonly ZProgramModuleMetadata[];
 };
 
-function callExpressionAt(program: Program, offset: number): CallExpression | null {
+function callableExpressionAt(
+  program: Program,
+  offset: number,
+): CallExpression | NewExpression | null {
   const pending: unknown[] = [program];
   const visited = new Set<object>();
   while (pending.length > 0) {
@@ -63,13 +71,13 @@ function callExpressionAt(program: Program, offset: number): CallExpression | nu
     visited.add(value);
     const record = value as Record<string, unknown>;
     if (
-      record.kind === "call"
+      (record.kind === "call" || record.kind === "new")
       && typeof record.location === "object"
       && record.location !== null
       && (record.location as { offset?: unknown }).offset === offset
       && Array.isArray(record.arguments)
     ) {
-      return value as CallExpression;
+      return value as CallExpression | NewExpression;
     }
     pending.push(...Object.values(record));
   }
@@ -148,7 +156,7 @@ export function createZProgramMetadata(
           const targetSymbol = targetModule?.symbols[resolution.targetSymbol];
           if (!targetModule || !targetSymbol?.exported) return [];
           if (!resolutionIsPublicMember(targetSymbol, resolution.kind, resolution.targetName)) return [];
-          const call = callExpressionAt(program, resolution.offset);
+          const call = callableExpressionAt(program, resolution.offset);
           if (!call) {
             throw new Error(
               `program metadata could not find resolved call ${JSON.stringify(resolution.targetName)} `

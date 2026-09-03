@@ -122,3 +122,115 @@ function main(): i32 {
   ]);
   assert.equal(JSON.parse(renderZProgramMetadata(metadata)).schemaVersion, 1);
 });
+
+test("exports public constructor calls from new expressions", () => {
+  const path = "/tmp/program-constructor-metadata.zs";
+  const source = `
+export class Application {
+  constructor(name: String) {
+    this.name = move name;
+  }
+
+  readonly name: String;
+}
+
+function main(): i32 {
+  const app = new Application("Notes");
+  return app.name.byteLength == 0 ? 1 : 0;
+}
+`;
+  const program = parse(lex(source, path), path);
+  const batch: SourceModuleBatch = {
+    entryFileName: path,
+    modules: [{
+      fileName: path,
+      source,
+      program,
+      dependencies: new Map(),
+      packageSpecifiers: new Set(),
+      packageId: null,
+      packageName: null,
+    }],
+  };
+  const constructorOffset = source.indexOf("new Application");
+  const graph = {
+    entry: 0,
+    dependencyOrder: [0],
+    modules: [{
+      path,
+      dependencies: [],
+      symbols: [{
+        name: "Application",
+        kind: "class",
+        exported: true,
+        nativeCExport: false,
+        targetModule: null,
+        importedName: "Application",
+        functionSignature: null,
+        typeSignature: {
+          typeParameters: [],
+          typeParameterConstraints: [],
+          executorAffinity: null,
+          implementedTraits: [],
+          fields: [{
+            name: "name",
+            typeName: "String",
+            visibility: "public",
+            readonly: true,
+            optionalField: false,
+            executorAffinity: null,
+          }],
+          methods: [],
+          variants: [],
+          customConstructor: true,
+          constructorVisibility: "public",
+          constructorSignature: {
+            asynchronous: false,
+            executorAffinity: null,
+            typeParameters: [],
+            typeParameterConstraints: [],
+            parameterModes: ["value"],
+            parameterTypes: ["String"],
+            returnType: "Application",
+            errorType: null,
+          },
+        },
+        location: { offset: 1, line: 2, column: 1 },
+      }],
+      callResolutions: [{
+        offset: constructorOffset,
+        line: 11,
+        column: 15,
+        targetModule: 0,
+        targetSymbol: 0,
+        kind: "constructor",
+        targetName: "Application.constructor",
+        asynchronous: false,
+        receiverMode: "",
+        callableTypeParameterCount: 0,
+        typeParameters: [],
+        typeArguments: [],
+        parameterModes: ["value"],
+        parameterTypes: ["String"],
+        returnType: "Application",
+        errorType: null,
+      }],
+      bindingResolutions: [],
+      expressionResolutions: [],
+    }],
+  } satisfies Stage1ModuleGraph;
+
+  const metadata = createZProgramMetadata(graph, batch);
+  assert.equal(metadata.modules[0].calls.length, 1);
+  assert.deepEqual(metadata.modules[0].calls[0].target, {
+    module: path,
+    symbol: "Application",
+    kind: "constructor",
+    name: "Application.constructor",
+  });
+  assert.deepEqual(metadata.modules[0].calls[0].arguments, [{
+    kind: "string",
+    type: "String",
+    value: "Notes",
+  }]);
+});

@@ -1547,7 +1547,7 @@ test("executes one scheduler-yield suspension in an imported async function", ()
     assert.match(emission.stdout, /if \(task->cancellation_requested\)/);
     assert.match(
       emission.stdout,
-      /frame->state = 1;\n    z_stage1_async_enqueue\(task->executor, task\);/,
+      /frame->_z_resume_state = 1;\n    z_stage1_async_enqueue\(task->executor, task\);/,
     );
     const compilation = spawnSync(
       "clang",
@@ -2024,11 +2024,11 @@ test("continues a free-function frame after an awaited method result", () => {
     );
     assert.match(
       emission.stdout,
-      /take_result\(frame->child\.task, &loaded\);[\s\S]*frame->state = 2;/,
+      /take_result\(frame->child\.task, &loaded\);[\s\S]*frame->_z_resume_state = 2;/,
     );
     assert.match(
       emission.stdout,
-      /frame->state = 2;[\s\S]*frame->result = \([^;]*loaded\);/,
+      /frame->_z_resume_state = 2;[\s\S]*frame->result = \([^;]*loaded\);/,
     );
     const compilation = spawnSync(
       "clang",
@@ -2064,14 +2064,14 @@ test("resumes a reusable function through two awaited children", () => {
       { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
     assert.equal(emission.status, 0, emission.stderr);
-    assert.match(emission.stdout, /uint32_t state;[\s\S]*Z_String loaded;[\s\S]*Z_String separator;[\s\S]*Z_String decorated;[\s\S]*Z_AsyncInvocation child;/);
+    assert.match(emission.stdout, /uint32_t _z_resume_state;[\s\S]*Z_String loaded;[\s\S]*Z_String separator;[\s\S]*Z_String decorated;[\s\S]*Z_AsyncInvocation child;/);
     assert.match(
       emission.stdout,
-      /frame->state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &loaded\);[\s\S]*frame->state = 2;/,
+      /frame->_z_resume_state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &loaded\);[\s\S]*frame->_z_resume_state = 2;/,
     );
     assert.match(
       emission.stdout,
-      /frame->state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &decorated\);[\s\S]*frame->state = 3;/,
+      /frame->_z_resume_state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &decorated\);[\s\S]*frame->_z_resume_state = 3;/,
     );
     const compilation = spawnSync(
       "clang",
@@ -2109,11 +2109,11 @@ test("routes a service result before publishing it on the main executor", () => 
     assert.equal(emission.status, 0, emission.stderr);
     assert.match(
       emission.stdout,
-      /uint32_t state;[\s\S]*Z_RoutedResponse routed;[\s\S]*Z_PublishedResponse published;[\s\S]*Z_AsyncInvocation child;/,
+      /uint32_t _z_resume_state;[\s\S]*Z_RoutedResponse routed;[\s\S]*Z_PublishedResponse published;[\s\S]*Z_AsyncInvocation child;/,
     );
     assert.match(
       emission.stdout,
-      /frame->state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &routed\);[\s\S]*frame->state = 2;/,
+      /frame->_z_resume_state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &routed\);[\s\S]*frame->_z_resume_state = 2;/,
     );
     assert.match(
       emission.stdout,
@@ -2121,7 +2121,7 @@ test("routes a service result before publishing it on the main executor", () => 
     );
     assert.match(
       emission.stdout,
-      /frame->state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &published\);[\s\S]*frame->state = 3;/,
+      /frame->_z_resume_state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &published\);[\s\S]*frame->_z_resume_state = 3;/,
     );
     const compilation = spawnSync(
       "clang",
@@ -8005,6 +8005,46 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     { kind: "string", type: "String", value: "notes" },
     { kind: "other", type: "MetadataService" },
   ]);
+
+  const constructorFixture = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-program-metadata-constructor.zs",
+  );
+  const constructorMetadata = spawnSync(
+    executable,
+    ["metadata", constructorFixture],
+    { encoding: "utf8" },
+  );
+  assert.equal(constructorMetadata.status, 0, constructorMetadata.stderr);
+  const decodedConstructorMetadata = JSON.parse(constructorMetadata.stdout);
+  const constructorCall = decodedConstructorMetadata.modules[0].calls.find(
+    (call: { target: { kind: string } }) => call.target.kind === "constructor",
+  );
+  assert.deepEqual(constructorCall.target, {
+    module: constructorFixture,
+    symbol: "Application",
+    kind: "constructor",
+    name: "Application.constructor",
+  });
+  assert.deepEqual(constructorCall.arguments, [{
+    kind: "string",
+    type: "String",
+    value: "Notes",
+  }]);
+  const stage0ConstructorMetadata = spawnSync(
+    process.execPath,
+    [cli, "metadata", constructorFixture],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    stage0ConstructorMetadata.status,
+    0,
+    stage0ConstructorMetadata.stderr,
+  );
+  assert.deepEqual(
+    decodedConstructorMetadata,
+    JSON.parse(stage0ConstructorMetadata.stdout),
+  );
 
   const aliasConstructorFixture = resolve(
     projectRoot,
@@ -16493,7 +16533,7 @@ test("polls and resumes a stored async closure across scheduler.yield", () => {
   );
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(emission.stdout, /void \(\*poll\)\(Z_AsyncTask \*task\)/);
-  assert.match(emission.stdout, /frame->state = 1;/);
+  assert.match(emission.stdout, /frame->_z_resume_state = 1;/);
   assert.match(emission.stdout, /z_stage1_async_enqueue\(task->executor, task\)/);
   assert.match(emission.stdout, /Z_AsyncTask \*waiter;/);
   assert.match(emission.stdout, /invocation\.task->waiter = &awaiter\.task;/);
@@ -17102,7 +17142,7 @@ test("resumes synchronous work after an executor-placed async function local", (
   );
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(emission.stdout, /frame->child = Z_.*_start\(.*task->executor/);
-  assert.match(emission.stdout, /frame->state = 2/);
+  assert.match(emission.stdout, /frame->_z_resume_state = 2/);
   assert.match(emission.stdout, /z_stage1_async_schedule_delay\(task, 1\)/);
 
   const directory = mkdtempSync("/tmp/z-async-function-main-placement-local-");
@@ -17134,6 +17174,55 @@ test("resumes synchronous work after an executor-placed async function local", (
     execution.stdout,
     "completed free local publish\nreleased free local publish\n" +
       "observed free local publish\nreleased result free local publish\n",
+  );
+  rmSync(directory, { recursive: true, force: true });
+}, 60_000);
+
+test("keeps an async local named state distinct from resume storage", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-local-state.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /uint32_t _z_resume_state;/);
+  assert.match(emission.stdout, /Z_RunState \* state;/);
+  assert.doesNotMatch(emission.stdout, /uint32_t state;/);
+
+  const directory = mkdtempSync("/tmp/z-async-local-state-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread",
+      "-",
+      "-o",
+      executable,
+    ],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(
+    execution.status,
+    0,
+    `${execution.stderr}\nsignal: ${execution.signal}\nstdout: ${execution.stdout}`,
   );
   rmSync(directory, { recursive: true, force: true });
 }, 60_000);

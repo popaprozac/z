@@ -330,15 +330,25 @@ function callArgumentsInTree(
   in parameterTypes: Array<String>
 ): Option<String> {
   for (const node of tree.nodes) {
-    if (node.kind != ExpressionKind.callExpression || node.offset != offset) continue;
+    if (
+      (
+        node.kind != ExpressionKind.callExpression
+        && node.kind != ExpressionKind.newExpression
+      )
+      || node.offset != offset
+    ) continue;
     let output = TextBuffer();
     output.append("[");
-    let childIndex: usize = 1;
+    const firstArgument: usize = node.kind == ExpressionKind.callExpression
+      ? usize(1)
+      : usize(0);
+    let childIndex: usize = firstArgument;
     while (childIndex < node.children.length) {
-      if (childIndex > 1) output.append(",");
+      if (childIndex > firstArgument) output.append(",");
       let typeName = "";
-      if (childIndex - 1 < parameterTypes.length) {
-        typeName = copy parameterTypes[childIndex - 1];
+      const parameterIndex = childIndex - firstArgument;
+      if (parameterIndex < parameterTypes.length) {
+        typeName = copy parameterTypes[parameterIndex];
       }
       appendArgument(
         inout output,
