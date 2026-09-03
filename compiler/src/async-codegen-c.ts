@@ -7486,6 +7486,10 @@ function emitFrameExpressionInner(
       if (onceGet && expression.callee.kind === "member") {
         return `${asyncOnceGetName(onceGet)}(&(${emitFrameExpression(expression.callee.object, plan, fileName)}))`;
       }
+      const onceState = plan.types.semanticInfo.onceStateCalls.get(expression.location.offset);
+      if (onceState && expression.callee.kind === "member") {
+        return `${asyncOnceStateName(onceState)}(&(${emitFrameExpression(expression.callee.object, plan, fileName)}))`;
+      }
       if (
         expression.callee.kind === "member"
         && (parseViewType(frameExpressionType(expression.callee.object, plan))?.target
@@ -7989,6 +7993,10 @@ function asyncOnceInitializeName(valueType: string): string {
 
 function asyncOnceGetName(valueType: string): string {
   return `z_once_${asyncNativeSymbolPart(valueType)}_get`;
+}
+
+function asyncOnceStateName(valueType: string): string {
+  return `z_once_${asyncNativeSymbolPart(valueType)}_state`;
 }
 
 function asyncOnceLifetimeDeinitName(valueType: string): string {

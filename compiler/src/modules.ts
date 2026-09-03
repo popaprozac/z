@@ -31,6 +31,7 @@ import {
 } from "./standard-library.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
+import { onceStateTypeName } from "./once-types.ts";
 import {
   applyGeneratedCallAdaptersToProgram,
   type ValidatedGeneratedCallAdapter,
@@ -101,7 +102,7 @@ type ModuleScope = {
   readonly globals: Map<string, string>;
   readonly namespaces: Map<string, ModuleNode>;
   readonly standardModules: Map<string, StandardModuleName>;
-  readonly standardTypes: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "Mutex" | "Channel" | "Sender" | "Receiver" | "SyncSender" | "SyncReceiver" | "ChannelClosed">;
+  readonly standardTypes: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "OnceState" | "Mutex" | "Channel" | "Sender" | "Receiver" | "SyncSender" | "SyncReceiver" | "ChannelClosed">;
 };
 
 export function isLocalSourceModuleSpecifier(specifier: string): boolean {
@@ -549,7 +550,7 @@ function buildScope(node: ModuleNode): ModuleScope {
   );
   const namespaces = new Map<string, ModuleNode>();
   const standardModules = new Map<string, StandardModuleName>();
-  const standardTypes = new Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "Mutex">();
+  const standardTypes = new Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "OnceState" | "Mutex">();
   const occupied = new Map<string, SourceLocation>();
   for (const declaration of [
     ...node.program.constants,
@@ -630,6 +631,8 @@ function buildScope(node: ModuleNode): ModuleScope {
           standardTypes.set(binding.localName, "Once");
         } else if (declaration.header === "std/sync" && binding.importedName === "OnceLifetime") {
           standardTypes.set(binding.localName, "OnceLifetime");
+        } else if (declaration.header === "std/sync" && binding.importedName === "OnceState") {
+          standardTypes.set(binding.localName, "OnceState");
         } else if (declaration.header === "std/sync" && binding.importedName === "Mutex") {
           standardTypes.set(binding.localName, "Mutex");
         } else if (
@@ -1160,6 +1163,7 @@ function renameTypeName(name: string, scope: ModuleScope, typeParameters: Readon
 
 function renameSimpleType(name: string, scope: ModuleScope): string {
   const standardType = scope.standardTypes.get(name);
+  if (standardType === "OnceState") return onceStateTypeName;
   if (standardType) return standardType;
   const separator = name.indexOf(".");
   if (separator >= 0) {

@@ -4934,6 +4934,24 @@ failure. This is evidence that process-wide identity, main-executor lifecycle,
 and async cleanup compose without adding a new language capability or forcing
 an unsafe global.
 
+## Observable one-time-root lifecycle without weakened invariants
+
+Zapp then needed to distinguish a second process-wide `Application` from a
+same-instance rerun before entering `Once.initialize()`. Turning `initialize`
+into a conditional operation would have weakened the deliberately strict root
+invariant, while relying on its runtime trap prevented Zapp from returning its
+own typed `ApplicationStateError`.
+
+`std/sync` now exports the payload-free `OnceState` enum and synchronized
+`Once<T>.state()`. Stage 0 and the fixed-point compiler emit the same locked
+byte read and exhaustive enum value; the API adds no allocation, retain, or ARC
+identity. Editor hover and completion expose the three states and describe the
+result as a snapshot. Zapp may safely translate this snapshot before
+initialization because the entire application publication and cleanup sequence
+is serialized on `thread.main`. General concurrent code must not treat it as an
+atomic check-then-act operation; `initialize()` and `get()` retain their strict
+traps if the state changes or is otherwise invalid.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

@@ -235,11 +235,12 @@ not poison it.
 module initialization order:
 
 ```z
-import { Once } from "std/sync";
+import { Once, OnceState } from "std/sync";
 
 const application = Once<Application>();
 
 async function main(): i32 on thread.main {
+  if (application.state() != OnceState.empty) return 1;
   const current = new Application({ name: "Z" });
   const lifetime = application.initialize(move current);
 
@@ -256,6 +257,13 @@ before publication and are handled through ordinary `try`/`attempt`.
 `Once<T>` synchronizes publication and retrieval. It does not make arbitrary
 fields inside `Application` safe; mutable shared state still belongs behind a
 mutex or executor contract.
+
+`state(): OnceState` returns a synchronized `empty`, `initialized`, or `closed`
+snapshot. It is useful for diagnostics and for mapping a framework lifecycle to
+typed errors. The snapshot is not an atomic promise that a later `get()` or
+`initialize()` will succeed: another thread can change the cell after the read.
+The invariant-enforcing methods therefore keep their traps, and compound
+synchronization belongs in a dedicated API rather than a check-then-act pair.
 
 ## Typed asynchronous channels
 

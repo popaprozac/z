@@ -82,6 +82,7 @@ export function isIntrinsicTypeName(in name: String): boolean {
     || name == "WeakExpired"
     || name == "Once"
     || name == "OnceLifetime"
+    || name == "OnceState"
     || name == "Mutex"
     || name == "Channel"
     || name == "Sender"

@@ -153,6 +153,16 @@ export function matchShape(
     const target = subjectType.copyBytes(5, subjectType.byteLength);
     return matchShape(modules, moduleIndex, target);
   }
+  if (subjectType == "OnceState") {
+    let variants = Array<NativeMatchVariant>();
+    variants.push(matchVariant("empty", "", moduleIndex));
+    variants.push(matchVariant("initialized", "", moduleIndex));
+    variants.push(matchVariant("closed", "", moduleIndex));
+    return Option.some(NativeMatchShape({
+      name: "OnceState",
+      variants,
+    }));
+  }
   match (genericTypeShape(subjectType)) {
     some(generic) => {
       if (generic.base == "Option" && generic.arguments.length == 1) {

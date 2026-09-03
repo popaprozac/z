@@ -205,7 +205,7 @@ that authored Z code can request.
 introducing module initialization order:
 
 ```z
-import { Once } from "std/sync";
+import { Once, OnceState } from "std/sync";
 import { thread } from "std/thread";
 
 class Application on thread.main {
@@ -215,6 +215,7 @@ class Application on thread.main {
 const application = Once<Application>();
 
 async function main(): i32 on thread.main {
+  if (application.state() != OnceState.empty) return 1;
   const value = new Application({ name: "Notes" });
   const lifetime = application.initialize(move value);
 
@@ -235,6 +236,16 @@ been initialized is reported separately from a publication lifetime that has
 already closed. Reinitializing a closed cell remains invalid.
 `OnceLifetime<T>` is exported from `std/sync` so a public startup wrapper may
 name its return, but it has no user-callable constructor.
+
+`state(): OnceState` takes the same synchronization boundary and reports one
+payload-free lifecycle snapshot: `empty`, `initialized`, or `closed`. It does
+not weaken the invariant-enforcing operations: `initialize()` and `get()` keep
+their existing traps when called in an invalid state. A snapshot is useful for
+diagnostics and for translating a serialized framework lifecycle into typed
+errors. It is not a general check-then-act primitive because another thread may
+change the cell after `state()` returns. Code that needs an atomic conditional
+operation should use a purpose-built synchronized API rather than infer one
+from the snapshot.
 
 Repeated `get()` calls carry one canonical ARC identity into Z's synchronous
 `in`/`inout` exclusivity checker. The same is true through a transparent

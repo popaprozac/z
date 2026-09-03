@@ -283,6 +283,7 @@ export enum LoweredExpressionKind {
   onceEmpty,
   onceInitialize,
   onceGet,
+  onceState,
   threadSpawn,
   threadAwait,
   threadCancel,
@@ -3349,6 +3350,12 @@ function lowerTypeName(
       name: name.copyBytes(0, name.byteLength),
     });
   }
+  if (name == "OnceState") {
+    return LoweredType({
+      kind: LoweredTypeKind.enumType,
+      name: "OnceState",
+    });
+  }
   if (name == "objc.Registration" || name == "ZObjCRegistration") {
     return LoweredType({
       kind: LoweredTypeKind.foreignObjCType,
@@ -3708,6 +3715,12 @@ function lowerModuleTypeName(
     return LoweredType({
       kind: LoweredTypeKind.onceType,
       name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (name == "OnceState") {
+    return LoweredType({
+      kind: LoweredTypeKind.enumType,
+      name: "OnceState",
     });
   }
   if (name == "objc.Registration" || name == "ZObjCRegistration") {
@@ -5159,6 +5172,20 @@ function intrinsicEnumDeclaration(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): Option<LoweredEnum> throws String {
+  if (name == "OnceState") {
+    let variants = Array<LoweredVariant>();
+    variants.push(LoweredVariant({ name: "empty", payload: Option<LoweredType>.none }));
+    variants.push(LoweredVariant({ name: "initialized", payload: Option<LoweredType>.none }));
+    variants.push(LoweredVariant({ name: "closed", payload: Option<LoweredType>.none }));
+    return Option.some(LoweredEnum({
+      name: "OnceState",
+      nativeCName: "",
+      nativeCUnderlyingType: "",
+      variants,
+      payloadBearing: false,
+      needsDeinit: false,
+    }));
+  }
   const option = try intrinsicOptionDeclaration(
     program,
     importedTypes,
@@ -12367,6 +12394,7 @@ function lowerExpressionContextual(
             && (
               tree.nodes[calleeInput].value == "initialize"
               || tree.nodes[calleeInput].value == "get"
+              || tree.nodes[calleeInput].value == "state"
             )
           ) {
             const valueType = try lowerModuleTypeName(
@@ -12415,9 +12443,18 @@ function lowerExpressionContextual(
               );
             }
             if (tree.nodes[index].children.length != 1) {
-              throw "Once.get takes no arguments";
+              throw "Once.get/state takes no arguments";
             }
             const onceName = intrinsicOnceName(valueType);
+            if (tree.nodes[calleeInput].value == "state") {
+              return pushExpression(
+                inout output,
+                LoweredExpressionKind.onceState,
+                onceName,
+                children,
+                Array<String>()
+              );
+            }
             return pushExpression(
               inout output,
               LoweredExpressionKind.onceGet,
@@ -15955,7 +15992,7 @@ function lowerExpressionContextual(
         index,
         tree.nodes[receiverInput].value
       );
-      const intrinsic = try intrinsicOptionDeclaration(
+      const intrinsic = try intrinsicEnumDeclaration(
         program,
         importedTypes,
         intrinsicName
@@ -15970,7 +16007,7 @@ function lowerExpressionContextual(
               }
               let labels = Array<String>();
               labels.push(variant.name.copyBytes(0, variant.name.byteLength));
-              labels.push("tagged");
+              if (declaration.payloadBearing) labels.push("tagged");
               return pushExpression(
                 inout output,
                 LoweredExpressionKind.enumValue,
@@ -26074,6 +26111,21 @@ function collectIntrinsicTypeName(
       }
     }
     none => {}
+  }
+  if (name == "OnceState") {
+    const intrinsic = try intrinsicEnumDeclaration(
+      program,
+      importedTypes,
+      name
+    );
+    match (intrinsic) {
+      some(declaration) => {
+        if (!containsLoweredEnum(enums, declaration.name)) {
+          enums.push(move declaration);
+        }
+      }
+      none => {}
+    }
   }
   match (genericTypeShape(name)) {
     some(generic) => {

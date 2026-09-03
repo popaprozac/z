@@ -94,6 +94,8 @@ import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import {
   onceLifetimeTypeName,
+  onceStateTypeName,
+  onceStateVariants,
   parseOnceLifetimeType,
   parseOnceType,
 } from "./once-types.ts";
@@ -465,6 +467,7 @@ export type SemanticInfo = {
   readonly onceConstructors: ReadonlyMap<number, string>;
   readonly onceInitializeCalls: ReadonlyMap<number, string>;
   readonly onceGetCalls: ReadonlyMap<number, string>;
+  readonly onceStateCalls: ReadonlyMap<number, string>;
   readonly mutexConstructors: ReadonlyMap<number, string>;
   readonly mutexWithLockCalls: ReadonlyMap<number, MutexWithLockCallInfo>;
   readonly channelCalls: ReadonlyMap<number, ChannelCallInfo>;
@@ -578,6 +581,7 @@ type StandardTypeName =
   | "TaskControl"
   | "Once"
   | "OnceLifetime"
+  | "OnceState"
   | "Mutex"
   | "Channel"
   | "Sender"
@@ -640,6 +644,7 @@ type AnalysisState = {
   readonly onceConstructors: Map<number, string>;
   readonly onceInitializeCalls: Map<number, string>;
   readonly onceGetCalls: Map<number, string>;
+  readonly onceStateCalls: Map<number, string>;
   readonly mutexConstructors: Map<number, string>;
   readonly mutexWithLockCalls: Map<number, MutexWithLockCallInfo>;
   readonly channelCalls: Map<number, ChannelCallInfo>;
@@ -1287,6 +1292,7 @@ export function analyze(
     onceConstructors: new Map(),
     onceInitializeCalls: new Map(),
     onceGetCalls: new Map(),
+    onceStateCalls: new Map(),
     mutexConstructors: new Map(),
     mutexWithLockCalls: new Map(),
     channelCalls: new Map(),
@@ -1600,10 +1606,10 @@ export function analyze(
           });
         }
         for (const binding of declaration.bindings) {
-          if (binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "Mutex") {
+          if (binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "OnceState" && binding.importedName !== "Mutex") {
             throw new DiagnosticError(fileName, binding.location, `std/sync has no export ${JSON.stringify(binding.importedName)}`, {
               code: "Z0501",
-              helps: ["std/sync exports `Mutex`, `Once`, and `OnceLifetime`"],
+              helps: ["std/sync exports `Mutex`, `Once`, `OnceLifetime`, and `OnceState`"],
             });
           }
           validateUserName(binding.localName, binding.location, fileName);
@@ -1771,6 +1777,34 @@ export function analyze(
         `header ${JSON.stringify(declaration.header)} has no declaration ${JSON.stringify(binding.importedName)}`,
       );
     }
+  }
+
+  const onceStateSource = program.imports
+    .filter((declaration) => declaration.header === "std/sync")
+    .flatMap((declaration) => declaration.bindings ?? [])
+    .find((binding) => binding.importedName === "OnceState")
+    ?? program.imports
+      .filter((declaration) => declaration.header === "std/sync")
+      .flatMap((declaration) => declaration.bindings ?? [])
+      .find((binding) => binding.importedName === "Once")
+    ?? program.imports
+      .filter((declaration) => declaration.header === "std/sync")
+      .flatMap((declaration) => declaration.bindings ?? [])
+      .find((binding) => binding.importedName === "OnceLifetime");
+  if (onceStateSource && !program.enums.some((declaration) => declaration.name === onceStateTypeName)) {
+    const declaration: EnumDeclaration = {
+      kind: "enum",
+      name: onceStateTypeName,
+      underlyingType: null,
+      variants: onceStateVariants.map((name) => ({
+        name,
+        payload: null,
+        location: onceStateSource.location,
+      })),
+      location: onceStateSource.location,
+    };
+    (program.enums as EnumDeclaration[]).push(declaration);
+    typeDisplayNames.set(onceStateTypeName, "OnceState");
   }
 
   registerObjCAdapterTypesInProgram(program, fileName, state);
@@ -10372,6 +10406,15 @@ function inferExpressionInner(
         throw new DiagnosticError(fileName, expression.location, "foreign function values are not implemented; call the function instead");
       }
       if (expression.object.kind === "identifier") {
+        const standardType = globals.get(expression.object.name);
+        if (standardType?.kind === "standardType" && standardType.type === "OnceState") {
+          const declaration = enums.get(onceStateTypeName)!;
+          const variant = declaration.variants.find((candidate) => candidate.name === expression.property);
+          if (!variant) {
+            throw new DiagnosticError(fileName, expression.location, `enum "OnceState" has no variant ${JSON.stringify(expression.property)}`);
+          }
+          return onceStateTypeName;
+        }
         const aggregate = !locals.has(expression.object.name) ? structs.get(expression.object.name) : null;
         if (aggregate) {
           const method = aggregate.methods.find((candidate) => candidate.name === expression.property);
@@ -12104,6 +12147,13 @@ function inferExpressionInner(
               );
             }
             return once.valueType;
+          }
+          if (expression.callee.property === "state") {
+            if (expression.arguments.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, `Once.state expects 0 arguments, received ${expression.arguments.length}`);
+            }
+            state.onceStateCalls.set(expression.location.offset, once.valueType);
+            return onceStateTypeName;
           }
           if (expression.callee.property === "initialize") {
             requireMainExecutorContext(
@@ -20006,6 +20056,9 @@ function resolveSemanticTypeName(
     }
     const array = parseFixedArrayType(name);
     if (array) return fixedArrayTypeName(resolveName(array.elementType), array.length);
+    if (state.standardTypeBindings.get(name) === "OnceState") {
+      return onceStateTypeName;
+    }
     const declaration = structs.get(name) ?? enums.get(name);
     if (!declaration) return name;
     const resolution = { location: type.location, declaration };

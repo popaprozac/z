@@ -3527,6 +3527,29 @@ function appendClassAndOnceRuntime(
     output.append("_retain(value);\n");
     output.append("#if defined(_WIN32)\n  ReleaseSRWLockExclusive(&cell->native);\n#else\n  if (pthread_mutex_unlock(&cell->native) != 0) abort();\n#endif\n");
     output.append("  return value;\n}\n\n");
+    let emitsOnceState = false;
+    for (const enumeration of program.enums) {
+      if (enumeration.name == "OnceState") emitsOnceState = true;
+    }
+    if (emitsOnceState) {
+      output.append("static __attribute__((unused)) Z_OnceState Z_");
+      output.append(onceName);
+      output.append("_state(Z_");
+      output.append(onceName);
+      output.append(" *cell) {\n");
+      output.append("  if (cell == NULL) { fprintf(stderr, \"Once<");
+      output.append(valueName);
+      output.append("> received an invalid cell\\n\"); abort(); }\n");
+      output.append("#if defined(_WIN32)\n  AcquireSRWLockShared(&cell->native);\n#else\n  if (pthread_mutex_lock(&cell->native) != 0) abort();\n#endif\n");
+      output.append("  const uint8_t state = cell->state;\n");
+      output.append("#if defined(_WIN32)\n  ReleaseSRWLockShared(&cell->native);\n#else\n  if (pthread_mutex_unlock(&cell->native) != 0) abort();\n#endif\n");
+      output.append("  if (state == 0) return Z_OnceState_empty;\n");
+      output.append("  if (state == 1) return Z_OnceState_initialized;\n");
+      output.append("  if (state == 2) return Z_OnceState_closed;\n");
+      output.append("  fprintf(stderr, \"Once<");
+      output.append(valueName);
+      output.append("> has invalid runtime state\\n\");\n  abort();\n}\n\n");
+    }
     output.append("static __attribute__((unused)) void Z_OnceLifetime_");
     output.append(valueName);
     output.append("_deinit(Z_OnceLifetime_");
@@ -5684,6 +5707,22 @@ function appendExpression(
     output.append("Z_");
     output.append(declaration.expressions[index].value);
     output.append("_get(&(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
+    );
+    output.append("))");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.onceState) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received malformed Once.state";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_state(&(");
     const receiver = declaration.expressions[index].children[0];
     try appendExpression(
       inout output,

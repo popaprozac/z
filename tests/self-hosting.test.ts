@@ -4778,6 +4778,8 @@ test("emits module-owned Once class lifetimes through the native frontend", () =
       /cell->state = 2;/,
       "dropping the lifetime must permanently close the Once cell",
     );
+    assert.match(emission.stdout, /Z_Once_Application_state/);
+    assert.match(emission.stdout, /Z_OnceState_initialized/);
     assert.match(emission.stdout, /Z_Application_release/);
     assert.match(emission.stdout, /free\(self\);/);
 

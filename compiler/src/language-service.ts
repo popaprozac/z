@@ -1621,10 +1621,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover("TaskControl  // non-joining per-operation cancellation control; its TaskScope owns completion", source, word.start, word.end);
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Once") {
-    return markdownHover("Once<T>()  // synchronized one-time root for a main-lifecycle class; get() works on any Z-managed thread", source, word.start, word.end);
+    return markdownHover("Once<T>()  // synchronized one-time root for a main-lifecycle class; state() and get() work on any Z-managed thread", source, word.start, word.end);
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "OnceLifetime") {
     return markdownHover("OnceLifetime<T>  // move-only guard for one initialized Once<T> interval", source, word.start, word.end);
+  }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "OnceState") {
+    return markdownHover("enum OnceState { empty, initialized, closed }  // synchronized Once<T> lifecycle snapshot", source, word.start, word.end);
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Mutex") {
     return markdownHover(
@@ -2051,6 +2054,8 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         ? `initialize(move value: ${value}): OnceLifetime<${value}> on thread.main\n// publishes exactly once; the returned move-only guard owns the initialized interval`
         : word.text === "get"
           ? `get(): ${value}\n// synchronized retrieval from any Z-managed thread; member executor contracts still govern use`
+          : word.text === "state"
+            ? "state(): OnceState\n// synchronized lifecycle snapshot; do not use for general check-then-act synchronization"
           : null;
       if (detail) return markdownHover(detail, source, word.start, word.end);
     }
@@ -2495,12 +2500,17 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       {
         label: "Once",
         kind: completionKinds.struct,
-        detail: "Once<T>()  // synchronized main-lifecycle root; get() is cross-thread",
+        detail: "Once<T>()  // synchronized main-lifecycle root; state() and get() are cross-thread",
       },
       {
         label: "OnceLifetime",
         kind: completionKinds.struct,
         detail: "OnceLifetime<T>  // inferred move-only initialized-interval guard",
+      },
+      {
+        label: "OnceState",
+        kind: completionKinds.enum,
+        detail: "enum OnceState { empty, initialized, closed }  // synchronized lifecycle snapshot",
       },
     ];
   }
@@ -2995,6 +3005,16 @@ function recoveredMutexBindingType(source: string, name: string, offset: number)
   return annotated?.valueType ?? null;
 }
 
+function recoveredOnceBindingType(source: string, name: string, offset: number): string | null {
+  const declared = declaredBindingType(source, name, offset) ?? "";
+  const canonical = parseOnceType(declared);
+  if (canonical) return canonical.valueType;
+  const sourceGeneric = parseSourceGenericType(declared);
+  return sourceGeneric?.base === "Once" && sourceGeneric.arguments.length === 1
+    ? sourceGeneric.arguments[0]
+    : null;
+}
+
 function symbolCompletions(
   source: string,
   fileName: string,
@@ -3013,7 +3033,7 @@ function symbolCompletions(
     for (const declaration of parsed.imports) {
       if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration" && declaration.header !== "std/sync" && declaration.header !== "std/channel" && declaration.header !== "std/async") continue;
       for (const binding of declaration.bindings ?? []) {
-        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "replace" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "Mutex" && binding.importedName !== "Channel" && binding.importedName !== "Sender" && binding.importedName !== "Receiver" && binding.importedName !== "SyncSender" && binding.importedName !== "SyncReceiver" && binding.importedName !== "ChannelClosed" && binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") continue;
+        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "replace" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "OnceState" && binding.importedName !== "Mutex" && binding.importedName !== "Channel" && binding.importedName !== "Sender" && binding.importedName !== "Receiver" && binding.importedName !== "SyncSender" && binding.importedName !== "SyncReceiver" && binding.importedName !== "ChannelClosed" && binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") continue;
         const detail = binding.importedName === "TextBuffer"
           ? "move-only UTF-8 construction storage"
           : binding.importedName === "Arena"
@@ -3040,6 +3060,8 @@ function symbolCompletions(
                           ? "synchronized one-time root with Z-managed cross-thread retrieval"
                         : binding.importedName === "OnceLifetime"
                           ? "move-only initialized-interval guard"
+                        : binding.importedName === "OnceState"
+                          ? "synchronized Once lifecycle snapshot"
                         : binding.importedName === "Mutex"
                           ? "move-only synchronized storage"
                         : binding.importedName === "Channel"
@@ -3061,11 +3083,15 @@ function symbolCompletions(
             ? completionKinds.function
             : binding.importedName === "Hashable" || binding.importedName === "Iterator"
             ? completionKinds.interface
-            : binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? completionKinds.class : completionKinds.struct,
+            : binding.importedName === "TaskScope" || binding.importedName === "TaskControl"
+              ? completionKinds.class
+              : binding.importedName === "OnceState"
+                ? completionKinds.enum
+                : completionKinds.struct,
           detail: binding.localName === binding.importedName
             ? binding.importedName === "replace"
               ? "replace<T>(inout target: T, replacement: T): T  // ownership-preserving exchange"
-              : `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" || binding.importedName === "AsyncGenerator" || binding.importedName === "OnceLifetime" || binding.importedName === "Sender" || binding.importedName === "Receiver" || binding.importedName === "SyncSender" || binding.importedName === "SyncReceiver" || binding.importedName === "ChannelClosed" || binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? "" : "()"}  // ${detail}`
+              : `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" || binding.importedName === "AsyncGenerator" || binding.importedName === "OnceLifetime" || binding.importedName === "OnceState" || binding.importedName === "Sender" || binding.importedName === "Receiver" || binding.importedName === "SyncSender" || binding.importedName === "SyncReceiver" || binding.importedName === "ChannelClosed" || binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? "" : "()"}  // ${detail}`
             : `${binding.importedName}  // imported as ${binding.localName}`,
           sortText: `0-${binding.localName}`,
         });
@@ -3253,7 +3279,11 @@ function symbolCompletions(
       label: name,
       kind: standardType === "Hashable" || standardType === "Iterator"
         ? completionKinds.interface
-        : standardType === "TaskScope" || standardType === "TaskControl" ? completionKinds.class : completionKinds.struct,
+        : standardType === "TaskScope" || standardType === "TaskControl"
+          ? completionKinds.class
+          : standardType === "OnceState"
+            ? completionKinds.enum
+            : completionKinds.struct,
       detail: standardType === "TextBuffer"
         ? `${standardType}()  // move-only UTF-8 construction storage`
         : standardType === "Arena"
@@ -3275,9 +3305,11 @@ function symbolCompletions(
                   : standardType === "TaskControl"
                     ? "TaskControl  // returned by TaskScope.schedule; non-joining cancellation control"
                   : standardType === "Once"
-                    ? "Once<T>()  // synchronized main-lifecycle root; get() is cross-thread"
+                    ? "Once<T>()  // synchronized main-lifecycle root; state() and get() are cross-thread"
                   : standardType === "OnceLifetime"
                     ? "OnceLifetime<T>  // move-only initialized-interval guard"
+                  : standardType === "OnceState"
+                    ? "enum OnceState { empty, initialized, closed }  // synchronized lifecycle snapshot"
                   : standardType === "Mutex"
                     ? "Mutex<T>(value: T)  // move-only handle; retained when safely captured by a native worker"
                   : standardType === "Channel"
@@ -5344,6 +5376,13 @@ function memberCompletions(
       },
     ], prefix, 100);
   }
+  if (receiverText === "OnceState") {
+    return filterCompletions([
+      { label: "empty", kind: completionKinds.enumMember, detail: "OnceState.empty" },
+      { label: "initialized", kind: completionKinds.enumMember, detail: "OnceState.initialized" },
+      { label: "closed", kind: completionKinds.enumMember, detail: "OnceState.closed" },
+    ], prefix, 100);
+  }
   if (receiverText === "String") {
     return filterCompletions([{
       label: "from",
@@ -5494,13 +5533,11 @@ function memberCompletions(
   const sourceOnce = sourceConstant?.kind === "constant" && sourceConstant.type
     ? parseOnceType(sourceConstant.type.name)
     : null;
-  const declaredOnce = parseOnceType(
-    declaredBindingType(source, receiverText, receiverOffset) ?? "",
-  );
-  const recoveredOnce = sourceOnce ?? declaredOnce;
-  if (recoveredOnce) {
+  const recoveredOnceValue = sourceOnce?.valueType
+    ?? recoveredOnceBindingType(source, receiverText, receiverOffset);
+  if (recoveredOnceValue) {
     return filterCompletions(
-      onceCompletions(recoveredOnce.valueType, importContext.typeDisplayNames),
+      onceCompletions(recoveredOnceValue, importContext.typeDisplayNames),
       prefix,
       1000,
     );
@@ -6980,6 +7017,12 @@ function onceCompletions(
       kind: completionKinds.method,
       detail: `get(): ${value}  // synchronized Z-managed cross-thread retrieval`,
       insertText: "get()",
+    },
+    {
+      label: "state",
+      kind: completionKinds.method,
+      detail: "state(): OnceState  // synchronized lifecycle snapshot",
+      insertText: "state()",
     },
   ];
 }

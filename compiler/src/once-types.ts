@@ -1,5 +1,10 @@
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 
+// Canonical compiler identity for the payload-free public std/sync enum.
+export const onceStateTypeName = "__z_std_sync_OnceState";
+
+export const onceStateVariants = ["empty", "initialized", "closed"] as const;
+
 export type OnceType = {
   readonly valueType: string;
 };

@@ -1205,6 +1205,101 @@ test("traps when Once is read before initialization, after lifetime cleanup, or 
   }
 });
 
+test("observes synchronized Once lifecycle state without weakening its invariants", () => {
+  const directory = mkdtempSync("/tmp/z-once-state-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Once, OnceState } from "std/sync";
+      import { thread } from "std/thread";
+
+      class Application on thread.main {
+        readonly id: i32;
+      }
+
+      const application = Once<Application>();
+
+      function observedState(): OnceState {
+        return application.state();
+      }
+
+      function stateCode(): i32 {
+        return match (observedState()) {
+          empty => 0;
+          initialized => 1;
+          closed => 2;
+        };
+      }
+
+      function main(): i32 {
+        if (stateCode() != 0) return 1;
+        {
+          const lifetime = application.initialize(
+            new Application({ id: 42 })
+          );
+          if (stateCode() != 1) return 2;
+          const explicit = OnceState.initialized;
+          const explicitCode = match (explicit) {
+            empty => 0;
+            initialized => 1;
+            closed => 2;
+          };
+          if (explicitCode != 1) return 3;
+        }
+        return stateCode() == 2 ? 0 : 4;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    const native = spawnSync(
+      process.execPath,
+      [cli, "check", file, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(native.status, 0, native.stderr);
+
+    assert.match(
+      hover(source, file, source.indexOf("OnceState }") + 1)?.contents.value ?? "",
+      /enum OnceState \{ empty, initialized, closed \}.*lifecycle snapshot/s,
+    );
+    assert.match(
+      hover(source, file, source.indexOf("application.state") + "application.".length + 1)?.contents.value ?? "",
+      /state\(\): OnceState.*synchronized lifecycle snapshot/s,
+    );
+
+    const memberSource = source.replace(
+      "return application.state();",
+      "return application.sta;",
+    );
+    const memberOffset = memberSource.indexOf("application.sta")
+      + "application.sta".length;
+    assert.match(
+      completions(memberSource, file, memberOffset)
+        .find((item) => item.label === "state")?.detail ?? "",
+      /state\(\): OnceState/,
+    );
+
+    const variantSource = source.replace(
+      "OnceState.initialized",
+      "OnceState.ini",
+    );
+    const variantOffset = variantSource.indexOf("OnceState.ini")
+      + "OnceState.ini".length;
+    assert.equal(
+      completions(variantSource, file, variantOffset)
+        .some((item) => item.label === "initialized"),
+      true,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("keeps a class retained by get alive after its Once lifetime closes", () => {
   const directory = mkdtempSync("/tmp/z-once-retained-get-");
   const mainFile = resolve(directory, "main.zs");

@@ -69,6 +69,7 @@ import { parseSetType } from "./set-types.ts";
 import { generatorStepTypeName, isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
 import { parseUnsafeNativeType } from "./unsafe-types.ts";
 import {
+  onceStateTypeName,
   parseOnceLifetimeType,
   parseOnceType,
 } from "./once-types.ts";
@@ -854,6 +855,7 @@ export function generateC(
     lines.push(
       `static ${onceLifetimeName(valueType)} ${onceInitializeName(valueType)}(${onceName(valueType)} *cell, ${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} value);`,
       `static ${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} ${onceGetName(valueType)}(${onceName(valueType)} *cell);`,
+      `static ${enumName(onceStateTypeName)} ${onceStateName(valueType)}(${onceName(valueType)} *cell);`,
       `static void ${onceLifetimeDeinitName(valueType)}(${onceLifetimeName(valueType)} *lifetime);`,
     );
   }
@@ -1105,6 +1107,7 @@ function generateOnceRuntime(
   semanticInfo: SemanticInfo,
 ): string {
   const valueCType = mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes);
+  const stateCType = enumName(onceStateTypeName);
   const label = displayArrayType(valueType)
     .replace(/^__z_module_\d+_/, "")
     .replaceAll("\\", "\\\\")
@@ -1176,6 +1179,29 @@ static __attribute__((unused)) ${valueCType} ${onceGetName(valueType)}(${onceNam
   if (pthread_mutex_unlock(&cell->native) != 0) abort();
 #endif
   return value;
+}
+
+static __attribute__((unused)) ${stateCType} ${onceStateName(valueType)}(${onceName(valueType)} *cell) {
+  if (cell == NULL) {
+    fprintf(stderr, "Once<${label}> received an invalid cell\\n");
+    abort();
+  }
+#if defined(_WIN32)
+  AcquireSRWLockShared(&cell->native);
+#else
+  if (pthread_mutex_lock(&cell->native) != 0) abort();
+#endif
+  const uint8_t state = cell->state;
+#if defined(_WIN32)
+  ReleaseSRWLockShared(&cell->native);
+#else
+  if (pthread_mutex_unlock(&cell->native) != 0) abort();
+#endif
+  if (state == 0) return (${stateCType}){ .tag = ${variantTag(onceStateTypeName, "empty")} };
+  if (state == 1) return (${stateCType}){ .tag = ${variantTag(onceStateTypeName, "initialized")} };
+  if (state == 2) return (${stateCType}){ .tag = ${variantTag(onceStateTypeName, "closed")} };
+  fprintf(stderr, "Once<${label}> has invalid runtime state\\n");
+  abort();
 }
 
 static __attribute__((unused)) void ${onceLifetimeDeinitName(valueType)}(${onceLifetimeName(valueType)} *lifetime) {
@@ -2758,6 +2784,7 @@ function collectOnceValueTypes(program: Program, semanticInfo: SemanticInfo): st
     ...semanticInfo.onceConstructors.values(),
     ...semanticInfo.onceInitializeCalls.values(),
     ...semanticInfo.onceGetCalls.values(),
+    ...semanticInfo.onceStateCalls.values(),
   ]);
   const add = (name: string): void => {
     const once = parseOnceType(name) ?? parseOnceLifetimeType(name);
@@ -10685,7 +10712,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const objcProperty = context.semanticInfo.objcProperties.get(expression.location.offset);
       if (objcProperty) return `[${generateExpression(expression.object, context)} ${objcProperty.getter}]`;
       if (expression.object.kind === "identifier") {
-        const declaration = context.enums.get(expression.object.name);
+        const enumOwner = context.semanticInfo.standardTypeBindings.get(expression.object.name) === "OnceState"
+          ? onceStateTypeName
+          : expression.object.name;
+        const declaration = context.enums.get(enumOwner);
         const variant = declaration?.variants.find((candidate) => candidate.name === expression.property);
         if (declaration && variant) {
           const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
@@ -10797,6 +10827,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const onceGet = context.semanticInfo.onceGetCalls.get(expression.location.offset);
       if (onceGet && expression.callee.kind === "member") {
         return `${onceGetName(onceGet)}(&(${generateExpression(expression.callee.object, context)}))`;
+      }
+      const onceState = context.semanticInfo.onceStateCalls.get(expression.location.offset);
+      if (onceState && expression.callee.kind === "member") {
+        return `${onceStateName(onceState)}(&(${generateExpression(expression.callee.object, context)}))`;
       }
       const nativeConnection = context.semanticInfo.foreignConnectionCalls.get(expression.location.offset);
       if (nativeConnection) {
@@ -12925,6 +12959,10 @@ function onceInitializeName(valueType: string): string {
 
 function onceGetName(valueType: string): string {
   return `z_once_${nativeSymbolPart(valueType)}_get`;
+}
+
+function onceStateName(valueType: string): string {
+  return `z_once_${nativeSymbolPart(valueType)}_state`;
 }
 
 function onceLifetimeDeinitName(valueType: string): string {

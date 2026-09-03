@@ -290,6 +290,8 @@ export function collectionMethodSignature(
       executorAffinity = "thread.main";
     } else if (methodName == "get") {
       returnType = valueType;
+    } else if (methodName == "state") {
+      returnType = "OnceState";
     }
     if (returnType.byteLength > 0) {
       return Option.some(ModuleFunctionSignature({
