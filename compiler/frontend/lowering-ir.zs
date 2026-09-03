@@ -53,11 +53,17 @@ import {
   NativeValueBinding,
   addValueBinding,
 } from "./semantic-flow-state.zs";
-import { substituteGenericType } from "./semantic-type-ownership.zs";
+import {
+  substituteGenericType,
+  typeHasCleanup,
+  typeIsThreadShareable,
+  typeIsThreadTransferable,
+} from "./semantic-type-ownership.zs";
 import {
   collectTypeIdentities,
   rebaseTypeName,
   semanticTypeIdentity,
+  transparentTypeName,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
@@ -828,6 +834,8 @@ struct LoweredGenericStructUse {
   emittedName: String;
   typeParameters: Array<String>;
   typeArguments: Array<String>;
+  typeArgumentModules: Array<usize>;
+  typeArgumentSymbols: Array<usize>;
   fields: Array<LoweredGenericStructField>;
   customDeinit: boolean;
   referenceType: boolean;
@@ -1160,6 +1168,14 @@ function copyStrings(in values: Array<String>): Array<String> {
   return copied;
 }
 
+function copyUsizes(in values: Array<usize>): Array<usize> {
+  let copied = Array<usize>();
+  for (const value of values) {
+    copied.push(value);
+  }
+  return copied;
+}
+
 function typeContainsGenericParameter(
   in typeName: String,
   in parameters: Array<String>
@@ -1308,14 +1324,151 @@ function genericStructFields(
   return fields;
 }
 
+function appendSubstitutedTypeArgumentIdentities(
+  in sourceTypeName: String,
+  in path: String,
+  in typeParameters: Array<String>,
+  in typeArgumentModules: Array<usize>,
+  in typeArgumentSymbols: Array<usize>,
+  moduleCount: usize,
+  inout identities: Array<ModuleTypeIdentity>
+): void {
+  let parameterIndex: usize = 0;
+  while (parameterIndex < typeParameters.length) {
+    if (
+      sourceTypeName == typeParameters[parameterIndex]
+      && parameterIndex < typeArgumentModules.length
+      && parameterIndex < typeArgumentSymbols.length
+      && typeArgumentModules[parameterIndex] < moduleCount
+    ) {
+      match (typeIdentityAtPath(identities, path)) {
+        some(_) => {}
+        none => identities.push(ModuleTypeIdentity({
+          path: path.copyBytes(0, path.byteLength),
+          targetModuleIndex: typeArgumentModules[parameterIndex],
+          targetSymbolIndex: typeArgumentSymbols[parameterIndex],
+        }));
+      }
+      return;
+    }
+    parameterIndex = parameterIndex + 1;
+  }
+  match (genericTypeShape(sourceTypeName)) {
+    some(generic) => {
+      let argumentIndex: usize = 0;
+      while (argumentIndex < generic.arguments.length) {
+        const childPath = genericTypeIdentityPath(
+          path,
+          `${argumentIndex}`
+        );
+        appendSubstitutedTypeArgumentIdentities(
+          generic.arguments[argumentIndex],
+          childPath,
+          typeParameters,
+          typeArgumentModules,
+          typeArgumentSymbols,
+          moduleCount,
+          inout identities
+        );
+        argumentIndex = argumentIndex + 1;
+      }
+      return;
+    }
+    none => {}
+  }
+  const nullable = nullableTargetType(sourceTypeName);
+  if (nullable.byteLength > 0) {
+    const childPath = genericTypeIdentityPath(path, "0");
+    appendSubstitutedTypeArgumentIdentities(
+      nullable,
+      childPath,
+      typeParameters,
+      typeArgumentModules,
+      typeArgumentSymbols,
+      moduleCount,
+      inout identities
+    );
+    return;
+  }
+  if (stringStartsWith(sourceTypeName, "view ")) {
+    const childPath = genericTypeIdentityPath(path, "0");
+    const target = sourceTypeName.copyBytes(5, sourceTypeName.byteLength);
+    appendSubstitutedTypeArgumentIdentities(
+      target,
+      childPath,
+      typeParameters,
+      typeArgumentModules,
+      typeArgumentSymbols,
+      moduleCount,
+      inout identities
+    );
+    return;
+  }
+  if (stringStartsWith(sourceTypeName, "readonly ")) {
+    const childPath = genericTypeIdentityPath(path, "0");
+    const target = sourceTypeName.copyBytes(9, sourceTypeName.byteLength);
+    appendSubstitutedTypeArgumentIdentities(
+      target,
+      childPath,
+      typeParameters,
+      typeArgumentModules,
+      typeArgumentSymbols,
+      moduleCount,
+      inout identities
+    );
+    return;
+  }
+  match (fixedArrayShape(sourceTypeName)) {
+    some(array) => {
+      const childPath = genericTypeIdentityPath(path, "0");
+      appendSubstitutedTypeArgumentIdentities(
+        array.elementType,
+        childPath,
+        typeParameters,
+        typeArgumentModules,
+        typeArgumentSymbols,
+        moduleCount,
+        inout identities
+      );
+    }
+    none => {}
+  }
+}
+
 function collectGenericStructUseFromType(
   in graph: ModuleGraph,
   consumerModuleIndex: usize,
   in typeName: String,
   in identities: Array<ModuleTypeIdentity>,
   in path: String,
+  inout seen: Array<String>,
   inout uses: Array<LoweredGenericStructUse>
 ): void {
+  const transparent = transparentTypeName(
+    graph.modules,
+    consumerModuleIndex,
+    typeName
+  );
+  if (transparent != typeName) {
+    let transparentIdentities = Array<ModuleTypeIdentity>();
+    collectTypeIdentities(
+      graph.modules,
+      consumerModuleIndex,
+      transparent,
+      path,
+      inout transparentIdentities
+    );
+    collectGenericStructUseFromType(
+      graph,
+      consumerModuleIndex,
+      transparent,
+      transparentIdentities,
+      path,
+      inout seen,
+      inout uses
+    );
+    return;
+  }
   match (genericTypeShape(typeName)) {
     some(generic) => {
       let argumentIndex: usize = 0;
@@ -1330,6 +1483,7 @@ function collectGenericStructUseFromType(
           generic.arguments[argumentIndex],
           identities,
           childPath,
+          inout seen,
           inout uses
         );
         argumentIndex = argumentIndex + 1;
@@ -1367,6 +1521,9 @@ function collectGenericStructUseFromType(
                   typeName
                 )
               ) return;
+              const useIdentity = `${consumerModuleIndex}:${identity.targetModuleIndex}:${identity.targetSymbolIndex}:${typeName}`;
+              if (containsString(seen, useIdentity)) return;
+              seen.push(move useIdentity);
               let substitutions = Array<NativeValueBinding>();
               let parameterIndex: usize = 0;
               while (parameterIndex < signature.typeParameters.length) {
@@ -1376,6 +1533,27 @@ function collectGenericStructUseFromType(
                   generic.arguments[parameterIndex]
                 );
                 parameterIndex = parameterIndex + 1;
+              }
+              let ownerArguments = Array<String>();
+              for (const argument of generic.arguments) {
+                ownerArguments.push(rebaseTypeName(
+                  graph.modules,
+                  consumerModuleIndex,
+                  identity.targetModuleIndex,
+                  argument
+                ));
+              }
+              let ownerSubstitutions = Array<NativeValueBinding>();
+              let ownerParameterIndex: usize = 0;
+              while (
+                ownerParameterIndex < signature.typeParameters.length
+              ) {
+                addValueBinding(
+                  inout ownerSubstitutions,
+                  signature.typeParameters[ownerParameterIndex],
+                  ownerArguments[ownerParameterIndex]
+                );
+                ownerParameterIndex = ownerParameterIndex + 1;
               }
               const fields = genericStructFields(
                 graph,
@@ -1394,34 +1572,84 @@ function collectGenericStructUseFromType(
                 identity.targetSymbolIndex,
                 canonicalIdentity
               );
-              uses.push(LoweredGenericStructUse({
-                consumerModuleIndex,
-                ownerModuleIndex: identity.targetModuleIndex,
-                ownerName: symbol.name.copyBytes(
-                  0,
-                  symbol.name.byteLength
-                ),
-                sourceName: typeName.copyBytes(0, typeName.byteLength),
-                emittedName: emittedName.copyBytes(
-                  0,
-                  emittedName.byteLength
-                ),
-                typeParameters: copyStrings(signature.typeParameters),
-                typeArguments: copyStrings(generic.arguments),
-                fields,
-                customDeinit: signature.customDeinit,
-                referenceType: symbol.kind == ModuleSymbolKind.classSymbol,
-                executorBound: symbol.kind == ModuleSymbolKind.classSymbol
-                  && signature.executorAffinity.byteLength > 0,
-              }));
-              let ownerArguments = Array<String>();
-              for (const argument of generic.arguments) {
-                ownerArguments.push(rebaseTypeName(
+              let argumentModules = Array<usize>();
+              let argumentSymbols = Array<usize>();
+              let identityArgumentIndex: usize = 0;
+              while (identityArgumentIndex < generic.arguments.length) {
+                const childPath = genericTypeIdentityPath(
+                  path,
+                  `${identityArgumentIndex}`
+                );
+                match (typeIdentityAtPath(identities, childPath)) {
+                  some(argumentIdentity) => {
+                    argumentModules.push(argumentIdentity.targetModuleIndex);
+                    argumentSymbols.push(argumentIdentity.targetSymbolIndex);
+                  }
+                  none => {
+                    argumentModules.push(graph.modules.length);
+                    argumentSymbols.push(0);
+                  }
+                }
+                identityArgumentIndex = identityArgumentIndex + 1;
+              }
+              // A concrete generic aggregate can itself store another generic
+              // aggregate whose type remains parameterized in the source
+              // declaration. Close the owner's structural demand before the
+              // containing aggregate so its completed ABI is available while
+              // lowering the outer fields. Consumers then reuse that ABI;
+              // they do not need to import private nested implementation types.
+              for (const field of signature.fields) {
+                const ownerFieldType = substituteGenericType(
+                  field.typeName,
+                  ownerSubstitutions
+                );
+                let fieldIdentities = Array<ModuleTypeIdentity>();
+                collectTypeIdentities(
                   graph.modules,
-                  consumerModuleIndex,
                   identity.targetModuleIndex,
-                  argument
-                ));
+                  ownerFieldType,
+                  "",
+                  inout fieldIdentities
+                );
+                appendSubstitutedTypeArgumentIdentities(
+                  field.typeName,
+                  "",
+                  signature.typeParameters,
+                  argumentModules,
+                  argumentSymbols,
+                  graph.modules.length,
+                  inout fieldIdentities
+                );
+                collectGenericStructUseFromType(
+                  graph,
+                  identity.targetModuleIndex,
+                  ownerFieldType,
+                  fieldIdentities,
+                  "",
+                  inout seen,
+                  inout uses
+                );
+                if (consumerModuleIndex != identity.targetModuleIndex) {
+                  const rebasedFieldType = rebaseTypeName(
+                    graph.modules,
+                    identity.targetModuleIndex,
+                    consumerModuleIndex,
+                    field.typeName
+                  );
+                  const concreteFieldType = substituteGenericType(
+                    rebasedFieldType,
+                    substitutions
+                  );
+                  collectGenericStructUseFromType(
+                    graph,
+                    consumerModuleIndex,
+                    concreteFieldType,
+                    fieldIdentities,
+                    "",
+                    inout seen,
+                    inout uses
+                  );
+                }
               }
               const ownerSourceName = concreteGenericTypeName(
                 symbol.name,
@@ -1432,18 +1660,6 @@ function collectGenericStructUseFromType(
                 identity.targetModuleIndex,
                 ownerSourceName
               )) {
-                let ownerSubstitutions = Array<NativeValueBinding>();
-                let ownerParameterIndex: usize = 0;
-                while (
-                  ownerParameterIndex < signature.typeParameters.length
-                ) {
-                  addValueBinding(
-                    inout ownerSubstitutions,
-                    signature.typeParameters[ownerParameterIndex],
-                    ownerArguments[ownerParameterIndex]
-                  );
-                  ownerParameterIndex = ownerParameterIndex + 1;
-                }
                 const ownerFields = genericStructFields(
                   graph,
                   identity.targetModuleIndex,
@@ -1459,10 +1675,43 @@ function collectGenericStructUseFromType(
                     symbol.name.byteLength
                   ),
                   sourceName: move ownerSourceName,
-                  emittedName,
+                  emittedName: emittedName.copyBytes(
+                    0,
+                    emittedName.byteLength
+                  ),
                   typeParameters: copyStrings(signature.typeParameters),
                   typeArguments: move ownerArguments,
+                  typeArgumentModules: copyUsizes(argumentModules),
+                  typeArgumentSymbols: copyUsizes(argumentSymbols),
                   fields: move ownerFields,
+                  customDeinit: signature.customDeinit,
+                  referenceType: symbol.kind == ModuleSymbolKind.classSymbol,
+                  executorBound: symbol.kind == ModuleSymbolKind.classSymbol
+                    && signature.executorAffinity.byteLength > 0,
+                }));
+              }
+              if (!containsGenericStructUse(
+                uses,
+                consumerModuleIndex,
+                typeName
+              )) {
+                uses.push(LoweredGenericStructUse({
+                  consumerModuleIndex,
+                  ownerModuleIndex: identity.targetModuleIndex,
+                  ownerName: symbol.name.copyBytes(
+                    0,
+                    symbol.name.byteLength
+                  ),
+                  sourceName: typeName.copyBytes(0, typeName.byteLength),
+                  emittedName: emittedName.copyBytes(
+                    0,
+                    emittedName.byteLength
+                  ),
+                  typeParameters: copyStrings(signature.typeParameters),
+                  typeArguments: copyStrings(generic.arguments),
+                  typeArgumentModules: move argumentModules,
+                  typeArgumentSymbols: move argumentSymbols,
+                  fields,
                   customDeinit: signature.customDeinit,
                   referenceType: symbol.kind == ModuleSymbolKind.classSymbol,
                   executorBound: symbol.kind == ModuleSymbolKind.classSymbol
@@ -1488,6 +1737,7 @@ function collectGenericStructUseFromType(
       nullable,
       identities,
       childPath,
+      inout seen,
       inout uses
     );
     return;
@@ -1501,6 +1751,7 @@ function collectGenericStructUseFromType(
       target,
       identities,
       childPath,
+      inout seen,
       inout uses
     );
     return;
@@ -1514,6 +1765,7 @@ function collectGenericStructUseFromType(
       target,
       identities,
       childPath,
+      inout seen,
       inout uses
     );
     return;
@@ -1527,6 +1779,7 @@ function collectGenericStructUseFromType(
         array.elementType,
         identities,
         childPath,
+        inout seen,
         inout uses
       );
     }
@@ -1534,11 +1787,202 @@ function collectGenericStructUseFromType(
   }
 }
 
-function collectGenericStructUses(in graph: ModuleGraph): Array<LoweredGenericStructUse> {
+function appendCallDeclarationTypeIdentities(
+  in graph: ModuleGraph,
+  consumerModuleIndex: usize,
+  in resolution: ModuleCallResolution,
+  parameterIndex: usize,
+  returnType: boolean,
+  inout identities: Array<ModuleTypeIdentity>
+): void {
+  if (
+    resolution.targetModuleIndex >= graph.modules.length
+    || resolution.targetSymbolIndex >= graph.modules[
+      resolution.targetModuleIndex
+    ].symbols.length
+  ) return;
+  const symbol = view graph.modules[resolution.targetModuleIndex].symbols[
+    resolution.targetSymbolIndex
+  ];
+  let sourceType = "";
+  let typeParameters = Array<String>();
+  match (in symbol.typeSignature) {
+    some(owner) => {
+      for (const parameter of owner.typeParameters) {
+        typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
+      }
+      const methodName = qualifiedTypeMember(resolution.targetName);
+      for (const method of owner.methods) {
+        if (method.name != methodName) continue;
+        for (const parameter of method.signature.typeParameters) {
+          typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
+        }
+        if (returnType) {
+          sourceType = method.signature.returnType.copyBytes(
+            0,
+            method.signature.returnType.byteLength
+          );
+        } else if (parameterIndex < method.signature.parameterTypes.length) {
+          sourceType = method.signature.parameterTypes[parameterIndex]
+            .copyBytes(
+              0,
+              method.signature.parameterTypes[parameterIndex].byteLength
+            );
+        }
+      }
+    }
+    none => match (in symbol.functionSignature) {
+      some(signature) => {
+        for (const parameter of signature.typeParameters) {
+          typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
+        }
+        if (returnType) {
+          sourceType = signature.returnType.copyBytes(
+            0,
+            signature.returnType.byteLength
+          );
+        } else if (parameterIndex < signature.parameterTypes.length) {
+          sourceType = signature.parameterTypes[parameterIndex].copyBytes(
+            0,
+            signature.parameterTypes[parameterIndex].byteLength
+          );
+        }
+      }
+      none => {}
+    }
+  }
+  if (sourceType.byteLength == 0) return;
+  collectTypeIdentities(
+    graph.modules,
+    resolution.targetModuleIndex,
+    sourceType,
+    "",
+    inout identities
+  );
+  let argumentModules = Array<usize>();
+  let argumentSymbols = Array<usize>();
+  for (const argument of resolution.typeArguments) {
+    match (typeSymbolLocation(
+      graph.modules,
+      consumerModuleIndex,
+      argument
+    )) {
+      some(location) => {
+        argumentModules.push(location.moduleIndex);
+        argumentSymbols.push(location.symbolIndex);
+      }
+      none => {
+        argumentModules.push(graph.modules.length);
+        argumentSymbols.push(0);
+      }
+    }
+  }
+  appendSubstitutedTypeArgumentIdentities(
+    sourceType,
+    "",
+    typeParameters,
+    argumentModules,
+    argumentSymbols,
+    graph.modules.length,
+    inout identities
+  );
+}
+
+function collectGenericStructUses(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph
+): Array<LoweredGenericStructUse> {
   let uses = Array<LoweredGenericStructUse>();
+  let seen = Array<String>();
   let moduleIndex: usize = 0;
   while (moduleIndex < graph.modules.length) {
     const evidence = view graph.modules[moduleIndex].semanticEvidence;
+    const unsettledTypeParameters = programGenericTypeParameterNames(
+      parsed[moduleIndex].program
+    );
+    // Concrete generic aggregates can exist only in a declaration signature
+    // (for example a generated adapter marker parameter) and never appear as
+    // a local binding or expression. Declaration types are first-class demand
+    // roots too; otherwise native lowering learns about them only after it has
+    // already tried to lower the function.
+    for (const symbol of graph.modules[moduleIndex].symbols) {
+      match (in symbol.functionSignature) {
+        some(signature) => {
+          if (signature.typeParameters.length > 0) continue;
+          for (const parameterType of signature.parameterTypes) {
+            if (typeContainsGenericParameter(
+              parameterType,
+              unsettledTypeParameters
+            )) continue;
+            let identities = Array<ModuleTypeIdentity>();
+            collectTypeIdentities(
+              graph.modules,
+              moduleIndex,
+              parameterType,
+              "",
+              inout identities
+            );
+            collectGenericStructUseFromType(
+              graph,
+              moduleIndex,
+              parameterType,
+              identities,
+              "",
+              inout seen,
+              inout uses
+            );
+          }
+          if (!typeContainsGenericParameter(
+            signature.returnType,
+            unsettledTypeParameters
+          )) {
+            let returnIdentities = Array<ModuleTypeIdentity>();
+            collectTypeIdentities(
+              graph.modules,
+              moduleIndex,
+              signature.returnType,
+              "",
+              inout returnIdentities
+            );
+            collectGenericStructUseFromType(
+              graph,
+              moduleIndex,
+              signature.returnType,
+              returnIdentities,
+              "",
+              inout seen,
+              inout uses
+            );
+          }
+          if (
+            signature.errorType.byteLength > 0
+            && !typeContainsGenericParameter(
+              signature.errorType,
+              unsettledTypeParameters
+            )
+          ) {
+            let errorIdentities = Array<ModuleTypeIdentity>();
+            collectTypeIdentities(
+              graph.modules,
+              moduleIndex,
+              signature.errorType,
+              "",
+              inout errorIdentities
+            );
+            collectGenericStructUseFromType(
+              graph,
+              moduleIndex,
+              signature.errorType,
+              errorIdentities,
+              "",
+              inout seen,
+              inout uses
+            );
+          }
+        }
+        none => {}
+      }
+    }
     for (const resolution of evidence.bindingResolutions) {
       collectGenericStructUseFromType(
         graph,
@@ -1546,6 +1990,7 @@ function collectGenericStructUses(in graph: ModuleGraph): Array<LoweredGenericSt
         resolution.typeName,
         resolution.typeIdentities,
         "",
+        inout seen,
         inout uses
       );
     }
@@ -1556,8 +2001,75 @@ function collectGenericStructUses(in graph: ModuleGraph): Array<LoweredGenericSt
         resolution.typeName,
         resolution.typeIdentities,
         "",
+        inout seen,
         inout uses
       );
+    }
+    for (const resolution of evidence.callResolutions) {
+      if (!typeContainsGenericParameter(
+        resolution.returnType,
+        unsettledTypeParameters
+      )) {
+        let identities = Array<ModuleTypeIdentity>();
+        collectTypeIdentities(
+          graph.modules,
+          moduleIndex,
+          resolution.returnType,
+          "",
+          inout identities
+        );
+        appendCallDeclarationTypeIdentities(
+          graph,
+          moduleIndex,
+          resolution,
+          0,
+          true,
+          inout identities
+        );
+        collectGenericStructUseFromType(
+          graph,
+          moduleIndex,
+          resolution.returnType,
+          identities,
+          "",
+          inout seen,
+          inout uses
+        );
+      }
+      let callParameterIndex: usize = 0;
+      for (const parameterType of resolution.parameterTypes) {
+        const currentParameterIndex = callParameterIndex;
+        callParameterIndex = callParameterIndex + 1;
+        if (typeContainsGenericParameter(
+          parameterType,
+          unsettledTypeParameters
+        )) continue;
+        let identities = Array<ModuleTypeIdentity>();
+        collectTypeIdentities(
+          graph.modules,
+          moduleIndex,
+          parameterType,
+          "",
+          inout identities
+        );
+        appendCallDeclarationTypeIdentities(
+          graph,
+          moduleIndex,
+          resolution,
+          currentParameterIndex,
+          false,
+          inout identities
+        );
+        collectGenericStructUseFromType(
+          graph,
+          moduleIndex,
+          parameterType,
+          identities,
+          "",
+          inout seen,
+          inout uses
+        );
+      }
     }
     // A generic owner can reach a consumer through an imported aggregate
     // field without the consumer naming the generic class itself. Method-call
@@ -1626,6 +2138,7 @@ function collectGenericStructUses(in graph: ModuleGraph): Array<LoweredGenericSt
             ownerType,
             identities,
             "",
+            inout seen,
             inout uses
           );
         }
@@ -3450,6 +3963,23 @@ function lowerModuleTypeName(
           kind: LoweredTypeKind.enumType,
           name: intrinsicResultName(successType, errorType),
         });
+      }
+      // Prefer an exact concrete source spelling before compatibility
+      // matching. Specialization aliases such as `T -> i32` can make the
+      // unspecialized `Box<T>` template appear compatible with `Box<i32>`;
+      // selecting that template loses the concrete emitted ABI identity.
+      let exactIndex = importedTypes.length;
+      while (exactIndex > 0) {
+        exactIndex = exactIndex - 1;
+        if (importedTypes[exactIndex].localName == name) {
+          return LoweredType({
+            kind: importedTypes[exactIndex].kind,
+            name: importedTypes[exactIndex].targetName.copyBytes(
+              0,
+              importedTypes[exactIndex].targetName.byteLength
+            ),
+          });
+        }
       }
       // A specialized generic function still carries its source spelling
       // (for example Pair<T>) in the parsed declaration. Match that shape
@@ -6329,11 +6859,16 @@ function wrapOwnedStorage(
   inout output: Array<LoweredExpression>
 ): usize throws String {
   if (payloadTypeName == "null") return value;
-  const payloadType = try lowerModuleTypeName(
+  const payloadTypeOutcome = attempt lowerModuleTypeName(
     program,
     importedTypes,
     payloadTypeName
   );
+  const payloadType = match (payloadTypeOutcome) {
+    success(type) => type;
+    failure(message) => throw
+      `${message} while storing ${payloadTypeName} for expression at ${tree.nodes[input].line}:${tree.nodes[input].column}`;
+  };
   return wrapOwnedStorageType(
     program,
     importedTypes,
@@ -8016,15 +8551,37 @@ function importedValueStructIndex(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): Option<usize> {
+  // Prefer the authored local identity. A concrete generic value can also be
+  // reachable through internal substitution aliases such as `T`; choosing
+  // one of those aliases loses the contextual `Box<i32>` shape needed to
+  // lower a nested inferred constructor.
   let importedIndex = importedTypes.length;
   while (importedIndex > 0) {
     importedIndex = importedIndex - 1;
     if (
       importedTypes[importedIndex].kind == LoweredTypeKind.structType
-      && (
-        importedTypes[importedIndex].localName == name
-        || importedTypes[importedIndex].targetName == name
-      )
+      && importedTypes[importedIndex].localName == name
+    ) return Option.some(importedIndex);
+  }
+  // When the expected type has already been lowered to its emitted identity,
+  // prefer a concrete generic source spelling over a bare substitution alias.
+  importedIndex = importedTypes.length;
+  while (importedIndex > 0) {
+    importedIndex = importedIndex - 1;
+    if (
+      importedTypes[importedIndex].kind == LoweredTypeKind.structType
+      && importedTypes[importedIndex].targetName == name
+    ) match (genericTypeShape(importedTypes[importedIndex].localName)) {
+      some(_) => return Option.some(importedIndex);
+      none => {}
+    }
+  }
+  importedIndex = importedTypes.length;
+  while (importedIndex > 0) {
+    importedIndex = importedIndex - 1;
+    if (
+      importedTypes[importedIndex].kind == LoweredTypeKind.structType
+      && importedTypes[importedIndex].targetName == name
     ) return Option.some(importedIndex);
   }
   return Option<usize>.none;
@@ -9864,6 +10421,11 @@ function lowerExpressionContextual(
     if (classType.kind != LoweredTypeKind.classType) {
       throw `native new lowering requires a class, found ${tree.nodes[index].value}`;
     }
+    // Generic bodies retain their source spelling (for example Box<T>) in
+    // the expression tree while specialization aliases resolve that spelling
+    // to one concrete emitted class. Always emit through the resolved type so
+    // placeholders never leak into generated C identifiers.
+    className = classType.name.copyBytes(0, classType.name.byteLength);
     if (resolvedCallKind(evidence, tree, index) == "constructor") {
       const parameterModes = resolvedCallParameterModes(
         program,
@@ -13070,8 +13632,14 @@ function lowerExpressionContextual(
     }
     match (resolvedExpressionTypeName(evidence, tree, index)) {
       some(resolvedTypeName) => match (genericTypeShape(resolvedTypeName)) {
-        some(generic) => {
-          if (generic.base == constructorTypeName) match (importedStructTarget(
+        some(_) => {
+          // An empty generic marker may be constructed through a transparent
+          // alias. Its authored name no longer matches the resolved generic
+          // base, but semantic analysis intentionally leaves no callable
+          // resolution for aggregate construction. Ordinary function calls do,
+          // so only that construction-shaped case may adopt the resolved type.
+          const callKind = resolvedCallKind(evidence, tree, index);
+          if (callKind.byteLength == 0) match (importedStructTarget(
             importedTypes,
             resolvedTypeName
           )) {
@@ -13118,6 +13686,25 @@ function lowerExpressionContextual(
             );
           }
           none => {}
+        }
+      }
+      if (constructionName.byteLength == 0) {
+        const resolvedConstruction = attempt lowerModuleTypeName(
+          program,
+          importedTypes,
+          constructorTypeName
+        );
+        match (resolvedConstruction) {
+          success(type) => {
+            if (
+              type.kind == LoweredTypeKind.structType
+              || type.kind == LoweredTypeKind.classType
+            ) constructionName = type.name.copyBytes(
+              0,
+              type.name.byteLength
+            );
+          }
+          failure(_) => {}
         }
       }
       let localConstruction = false;
@@ -13241,7 +13828,7 @@ function lowerExpressionContextual(
                   inout output
                 );
               } else {
-                value = try lowerExpressionExpected(
+                const fieldOutcome = attempt lowerExpressionExpected(
                   program,
                   importedTypes,
                   evidence,
@@ -13250,6 +13837,12 @@ function lowerExpressionContextual(
                   expectedTypeName,
                   inout output
                 );
+                const fieldValue = match (fieldOutcome) {
+                  success(lowered) => lowered;
+                  failure(message) => throw
+                    `${message} for field ${constructionName}.${fieldName} expected ${expectedTypeName}`;
+                };
+                value = fieldValue;
               }
             } else {
               value = try lowerExpression(
@@ -13262,7 +13855,7 @@ function lowerExpressionContextual(
               );
             }
             if (expectedTypeName.byteLength > 0) {
-              value = try wrapOwnedStorage(
+              const storedOutcome = attempt wrapOwnedStorage(
                 program,
                 importedTypes,
                 tree,
@@ -13271,6 +13864,12 @@ function lowerExpressionContextual(
                 value,
                 inout output
               );
+              const storedValue = match (storedOutcome) {
+                success(stored) => stored;
+                failure(message) => throw
+                  `${message} for field ${constructionName}.${fieldName} expected ${expectedTypeName}`;
+              };
+              value = storedValue;
             } else {
               value = wrapImplicitOwnedTransfer(
                 tree,
@@ -24334,7 +24933,7 @@ function lowerFunction(
       );
     }
     sourceRoots.push(root);
-    const loweredRoot = try lowerStatement(
+    const loweredRootOutcome = attempt lowerStatement(
       program,
       importedTypes,
       evidence,
@@ -24344,6 +24943,11 @@ function lowerFunction(
       inout expressions,
       inout statements
     );
+    const loweredRoot = match (loweredRootOutcome) {
+      success(value) => value;
+      failure(message) => throw
+        `${message} while lowering statement at ${declaration.body.nodes[root].line}:${declaration.body.nodes[root].column}`;
+    };
     if (beforeSuspension) {
       try validateMainFrameLoweredStatement(
         program,
@@ -25981,7 +26585,10 @@ function appendConcreteGenericStructs(
     if (use.consumerModuleIndex != moduleIndex) continue;
     let present = false;
     for (const imported of importedTypes) {
-      if (imported.localName == use.sourceName) present = true;
+      if (
+        imported.localName == use.sourceName
+        && imported.targetName == use.emittedName
+      ) present = true;
     }
     if (present) continue;
     let fields = Array<LoweredField>();
@@ -25989,43 +26596,71 @@ function appendConcreteGenericStructs(
     let threadShareable = !use.customDeinit && !use.referenceType;
     let workerDestructible = !use.customDeinit && !use.referenceType;
     let executorBound = use.executorBound;
-    for (const sourceField of use.fields) {
-      const type = try lowerModuleTypeName(
-        program,
-        importedTypes,
-        sourceField.typeName
-      );
-      if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
-        needsDeinit = true;
+    if (
+      use.consumerModuleIndex != use.ownerModuleIndex
+      && containsLoweredStruct(structs, use.emittedName)
+    ) {
+      fields = loweredStructFields(structs, use.emittedName);
+      match (loweredStructCleanup(structs, use.emittedName)) {
+        some(value) => needsDeinit = value;
+        none => {}
       }
-      const visiting = Array<String>();
-      if (!moduleTypeIsThreadShareable(
-        program,
-        importedTypes,
-        sourceField.typeName,
-        visiting
-      )) threadShareable = false;
-      if (!moduleTypeIsWorkerDestructible(
-        program,
-        importedTypes,
-        sourceField.typeName,
-        visiting
-      )) workerDestructible = false;
-      if (moduleTypeHasExecutorAffinity(
-        program,
-        importedTypes,
-        sourceField.typeName,
-        visiting
-      )) executorBound = true;
-      fields.push(LoweredField({
-        name: sourceField.name.copyBytes(0, sourceField.name.byteLength),
-        type,
-        optionalField: sourceField.optionalField,
-        borrowedView: sourceField.borrowedView,
-        defaultTarget: sourceField.hasDefault && !sourceField.optionalField
-          ? `Z_${use.emittedName}___default_${sourceField.name}`
-          : "",
-      }));
+      threadShareable = loweredStructThreadShareable(
+        structs,
+        use.emittedName
+      );
+      workerDestructible = loweredStructWorkerDestructible(
+        structs,
+        use.emittedName
+      );
+      executorBound = loweredStructExecutorBound(
+        structs,
+        use.emittedName
+      );
+    } else {
+      for (const sourceField of use.fields) {
+        const typeOutcome = attempt lowerModuleTypeName(
+          program,
+          importedTypes,
+          sourceField.typeName
+        );
+        const type = match (typeOutcome) {
+          success(value) => value;
+          failure(message) => throw
+            `generic aggregate ${use.sourceName} field ${sourceField.name}: ${message}`;
+        };
+        if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+          needsDeinit = true;
+        }
+        const visiting = Array<String>();
+        if (!moduleTypeIsThreadShareable(
+          program,
+          importedTypes,
+          sourceField.typeName,
+          visiting
+        )) threadShareable = false;
+        if (!moduleTypeIsWorkerDestructible(
+          program,
+          importedTypes,
+          sourceField.typeName,
+          visiting
+        )) workerDestructible = false;
+        if (moduleTypeHasExecutorAffinity(
+          program,
+          importedTypes,
+          sourceField.typeName,
+          visiting
+        )) executorBound = true;
+        fields.push(LoweredField({
+          name: sourceField.name.copyBytes(0, sourceField.name.byteLength),
+          type,
+          optionalField: sourceField.optionalField,
+          borrowedView: sourceField.borrowedView,
+          defaultTarget: sourceField.hasDefault && !sourceField.optionalField
+            ? `Z_${use.emittedName}___default_${sourceField.name}`
+            : "",
+        }));
+      }
     }
     if (!containsLoweredStruct(structs, use.emittedName)) {
       let concreteFields = Array<LoweredField>();
@@ -26384,11 +27019,52 @@ function loweredForeignFieldType(
   throw `native imported record field has unsupported type ${name}`;
 }
 
+function appendDeferredGenericAliasType(
+  in localName: String,
+  in aliasTarget: String,
+  moduleIndex: usize,
+  in genericStructUses: Array<LoweredGenericStructUse>,
+  in structs: Array<LoweredStruct>,
+  inout types: Array<LoweredImportedType>
+): boolean {
+  for (const use of genericStructUses) {
+    if (
+      use.consumerModuleIndex != moduleIndex
+      || use.sourceName != aliasTarget
+    ) continue;
+    let fields = Array<LoweredField>();
+    match (loweredStructCleanup(structs, use.emittedName)) {
+      some(_) => fields = loweredStructFields(structs, use.emittedName);
+      none => {}
+    }
+    types.push(LoweredImportedType({
+      localName: localName.copyBytes(0, localName.byteLength),
+      targetName: use.emittedName.copyBytes(0, use.emittedName.byteLength),
+      nativeTypeName: "",
+      kind: use.referenceType
+        ? LoweredTypeKind.classType
+        : LoweredTypeKind.structType,
+      executorBound: use.executorBound,
+      threadShareable: false,
+      workerDestructible: !use.customDeinit && !use.referenceType,
+      needsDeinit: use.customDeinit || use.referenceType,
+      resourceRelease: "",
+      fields,
+      variants: Array<LoweredVariant>(),
+      payloadBearing: false,
+      underlyingType: "",
+    }));
+    return true;
+  }
+  return false;
+}
+
 function importedTypesForModule(
   in program: Program,
   in graph: ModuleGraph,
   in structs: Array<LoweredStruct>,
   in enums: Array<LoweredEnum>,
+  in genericStructUses: Array<LoweredGenericStructUse>,
   moduleIndex: usize
 ): Array<LoweredImportedType> throws String {
   let types = Array<LoweredImportedType>();
@@ -26947,7 +27623,32 @@ function importedTypesForModule(
       moduleIndex,
       graph.modules[targetModule].symbols[targetSymbolIndex].importedName
     );
-    const lowered = try lowerModuleTypeName(program, types, aliasTarget);
+    const loweredOutcome = attempt lowerModuleTypeName(
+      program,
+      types,
+      aliasTarget
+    );
+    let lowered = LoweredType({
+      kind: LoweredTypeKind.voidType,
+      name: "",
+    });
+    match (loweredOutcome) {
+      success(type) => lowered = type;
+      // A transparent alias can target a concrete generic aggregate whose
+      // demand is registered immediately after base imports. Defer that alias
+      // rather than turning import discovery order into a source-level cycle.
+      failure(_) => {
+        if (appendDeferredGenericAliasType(
+          symbol.name,
+          aliasTarget,
+          moduleIndex,
+          genericStructUses,
+          structs,
+          inout types
+        )) continue;
+        continue;
+      }
+    }
     if (lowered.kind == LoweredTypeKind.functionType) {
       const visiting = Array<String>();
       types.push(LoweredImportedType({
@@ -27114,8 +27815,47 @@ function appendGenericDemandArgumentTypes(
           payloadBearing: false,
           underlyingType: "",
         }));
-        none => throw
-          `native generic-function demand could not lower type ${symbol.name}`;
+        none => {
+          const visiting = Array<String>();
+          const needsDeinit = typeHasCleanup(
+            graph.modules,
+            targetModuleIndex,
+            symbol.name,
+            visiting
+          );
+          let executorBound = false;
+          match (in symbol.typeSignature) {
+            some(signature) => executorBound = symbol.kind
+                == ModuleSymbolKind.classSymbol
+              && signature.executorAffinity.byteLength > 0;
+            none => {}
+          }
+          types.push(LoweredImportedType({
+            localName: sourceName,
+            targetName,
+            nativeTypeName: "",
+            kind: symbol.kind == ModuleSymbolKind.classSymbol
+              ? LoweredTypeKind.classType
+              : LoweredTypeKind.structType,
+            executorBound,
+            threadShareable: typeIsThreadShareable(
+              graph.modules,
+              targetModuleIndex,
+              symbol.name
+            ),
+            workerDestructible: typeIsThreadTransferable(
+              graph.modules,
+              targetModuleIndex,
+              symbol.name
+            ),
+            needsDeinit,
+            resourceRelease: "",
+            fields: Array<LoweredField>(),
+            variants: Array<LoweredVariant>(),
+            payloadBearing: false,
+            underlyingType: "",
+          }));
+        }
       }
     } else {
       match (loweredEnumCopy(enums, targetName)) {
@@ -27140,8 +27880,38 @@ function appendGenericDemandArgumentTypes(
             underlyingType: "",
           }));
         }
-        none => throw
-          `native generic-function demand could not lower type ${symbol.name}`;
+        none => {
+          const visiting = Array<String>();
+          const needsDeinit = typeHasCleanup(
+            graph.modules,
+            targetModuleIndex,
+            symbol.name,
+            visiting
+          );
+          types.push(LoweredImportedType({
+            localName: sourceName,
+            targetName,
+            nativeTypeName: "",
+            kind: LoweredTypeKind.enumType,
+            executorBound: false,
+            threadShareable: typeIsThreadShareable(
+              graph.modules,
+              targetModuleIndex,
+              symbol.name
+            ),
+            workerDestructible: typeIsThreadTransferable(
+              graph.modules,
+              targetModuleIndex,
+              symbol.name
+            ),
+            needsDeinit,
+            resourceRelease: "",
+            fields: Array<LoweredField>(),
+            variants: Array<LoweredVariant>(),
+            payloadBearing: false,
+            underlyingType: "",
+          }));
+        }
       }
     }
     argumentIndex = argumentIndex + 1;
@@ -29072,7 +29842,7 @@ function lowerModulesIncludingTests(
     includeTests
   );
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
-  const genericStructUses = collectGenericStructUses(graph);
+  const genericStructUses = collectGenericStructUses(parsed, graph);
   let genericMethodUses = try collectGenericMethodUses(parsed, graph);
   let genericFunctionUses = try collectGenericFunctionUses(
     parsed,
@@ -29101,13 +29871,40 @@ function lowerModulesIncludingTests(
   const deferredGenericFunctionUses = Array<LoweredGenericFunctionUse>();
   const entryIndex = graph.entry;
   for (const moduleIndex of graph.dependencyOrder) {
-    let importedTypes = try importedTypesForModule(
+    const importedTypesOutcome = attempt importedTypesForModule(
       parsed[moduleIndex].program,
       graph,
       structs,
       enums,
+      genericStructUses,
       moduleIndex
     );
+    let importedTypes = match (importedTypesOutcome) {
+      success(types) => types;
+      failure(message) => throw
+        `${parsed[moduleIndex].path}: native import lowering: ${message}`;
+    };
+    // Generic aggregate specializations can be owned by a framework module
+    // while their concrete arguments are declared by a downstream consumer.
+    // Preserve those canonical argument types without introducing a source
+    // import cycle so constructors and ordinary methods specialize in place.
+    for (const use of genericStructUses) {
+      if (
+        use.consumerModuleIndex != moduleIndex
+        || use.ownerModuleIndex != moduleIndex
+      ) continue;
+      try appendGenericDemandArgumentTypes(
+        parsed,
+        graph,
+        structs,
+        enums,
+        privateTypeCollisionNames,
+        use.typeArguments,
+        use.typeArgumentModules,
+        use.typeArgumentSymbols,
+        inout importedTypes
+      );
+    }
     try collectForeignResources(importedTypes, inout foreignResources);
     try collectForeignLowering(
       parsed[moduleIndex].program,
@@ -29165,13 +29962,19 @@ function lowerModulesIncludingTests(
     if (genericOwnerModuleIndex >= parsed.length) {
       throw "native generic-method lowering lost its owner module";
     }
-    let importedTypes = try importedTypesForModule(
+    const importedTypesOutcome = attempt importedTypesForModule(
       parsed[genericOwnerModuleIndex].program,
       graph,
       structs,
       enums,
+      genericStructUses,
       genericOwnerModuleIndex
     );
+    let importedTypes = match (importedTypesOutcome) {
+      success(types) => types;
+      failure(message) => throw
+        `${parsed[genericOwnerModuleIndex].path}: generic method import lowering: ${message}`;
+    };
     try appendGenericDemandArgumentTypes(
       parsed,
       graph,
@@ -29220,13 +30023,19 @@ function lowerModulesIncludingTests(
     if (genericOwnerModuleIndex >= parsed.length) {
       throw "native generic-function lowering lost its owner module";
     }
-    let importedTypes = try importedTypesForModule(
+    const importedTypesOutcome = attempt importedTypesForModule(
       parsed[genericOwnerModuleIndex].program,
       graph,
       structs,
       enums,
+      genericStructUses,
       genericOwnerModuleIndex
     );
+    let importedTypes = match (importedTypesOutcome) {
+      success(types) => types;
+      failure(message) => throw
+        `${parsed[genericOwnerModuleIndex].path}: generic function import lowering: ${message}`;
+    };
     try appendGenericDemandArgumentTypes(
       parsed,
       graph,

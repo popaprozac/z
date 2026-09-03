@@ -2310,6 +2310,14 @@ test("materializes demand-driven generic ARC classes natively", () => {
       expectedStdout: "event 42\nconstructed callback\n",
       specializationCount: 1,
     },
+    {
+      input: resolve(
+        projectRoot,
+        "tests/fixtures/self-host-emit-generic-class-nested/main.zs",
+      ),
+      expectedStdout: "nested worker value 42\n",
+      specializationCount: 2,
+    },
   ];
   const directory = mkdtempSync("/tmp/z-native-generic-class-");
   try {
@@ -2335,13 +2343,13 @@ test("materializes demand-driven generic ARC classes natively", () => {
       );
       assert.equal(
         [...emission.stdout.matchAll(
-          /static inline __attribute__\(\(unused\)\) Z___z_mono_[A-Za-z0-9_]+ \*Z___z_mono_[A-Za-z0-9_]+_retain\(/g,
+          /static inline __attribute__\(\(unused\)\) Z___z_mono_[A-Za-z0-9_]+ \*Z___z_mono_[A-Za-z0-9_]+_retain\([^;{]*\) \{/g,
         )].length,
         testCase.specializationCount,
       );
       assert.equal(
         [...emission.stdout.matchAll(
-          /static __attribute__\(\(unused\)\) void Z___z_mono_[A-Za-z0-9_]+_release\(/g,
+          /static __attribute__\(\(unused\)\) void Z___z_mono_[A-Za-z0-9_]+_release\([^;{]*\) \{/g,
         )].length,
         testCase.specializationCount,
       );

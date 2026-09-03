@@ -3195,6 +3195,25 @@ function appendClassAndOnceRuntime(
     output.append(" *mutex);\n");
   }
   if (mutexNames.length > 0) output.append("\n");
+  // Generic classes can be emitted before an ordinary ARC class stored in one
+  // of their fields. Declare every ARC lifecycle helper before any constructor
+  // or finalizer body so aggregate order never becomes C declaration order.
+  for (const aggregate of program.structs) {
+    if (!aggregate.referenceType) continue;
+    output.append("static inline __attribute__((unused)) Z_");
+    output.append(aggregate.name);
+    output.append(" *Z_");
+    output.append(aggregate.name);
+    output.append("_retain(const Z_");
+    output.append(aggregate.name);
+    output.append(" *borrowed);\n");
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(aggregate.name);
+    output.append("_release(Z_");
+    output.append(aggregate.name);
+    output.append(" *self);\n");
+  }
+  if (program.structs.length > 0) output.append("\n");
   // A class may store Weak<AnotherClass> even when the target class appears
   // later in source/dependency order. Declare every typed weak cleanup helper
   // before emitting any class finalizer so those safe identity cycles remain
@@ -20201,6 +20220,10 @@ function emitLoweredC(
   output.append("}\n\n");
   output.append("static inline __attribute__((unused)) size_t z_stage1_checked_convert_i32_to_usize(int32_t value) {\n");
   output.append("  if (value < 0) abort();\n");
+  output.append("  return (size_t)value;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) size_t z_stage1_checked_convert_u64_to_usize(uint64_t value) {\n");
+  output.append("  if (value > SIZE_MAX) abort();\n");
   output.append("  return (size_t)value;\n");
   output.append("}\n\n");
   try appendCheckedFloatingConversionRuntime(inout output, program);
