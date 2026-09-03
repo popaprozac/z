@@ -439,7 +439,10 @@ export function materializeGenerics(
       }
     }
     if (value.kind === "call" && value.callee?.kind === "identifier") {
-      const generic = parseGenericType(value.callee.name);
+      const aliasedCallee = typeAliasTargets.has(value.callee.name)
+        ? substituteName(value.callee.name, substitutions)
+        : value.callee.name;
+      const generic = parseGenericType(aliasedCallee);
       if (generic?.base === "Array") {
         if (generic.arguments.length !== 1) {
           throw new DiagnosticError(fileName, value.location, "Array<T>(...) expects one type argument");
@@ -512,6 +515,17 @@ export function materializeGenerics(
         return {
           ...transformed,
           callee: { ...transformed.callee, name },
+          arguments: transform(value.arguments, substitutions, remapLocation),
+        };
+      }
+      if (
+        aliasedCallee !== value.callee.name
+        && program.structs.some((declaration) => declaration.name === aliasedCallee)
+      ) {
+        const transformed = transformObject(value, substitutions, remapLocation);
+        return {
+          ...transformed,
+          callee: { ...transformed.callee, name: aliasedCallee },
           arguments: transform(value.arguments, substitutions, remapLocation),
         };
       }

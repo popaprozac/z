@@ -7998,6 +7998,41 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     { kind: "other", type: "MetadataService" },
   ]);
 
+  const aliasConstructorFixture = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-program-metadata-alias-constructor.zs",
+  );
+  const aliasConstructorMetadata = spawnSync(
+    executable,
+    ["metadata", aliasConstructorFixture],
+    { encoding: "utf8" },
+  );
+  assert.equal(aliasConstructorMetadata.status, 0, aliasConstructorMetadata.stderr);
+  const decodedAliasConstructorMetadata = JSON.parse(aliasConstructorMetadata.stdout);
+  const aliasGetCall = decodedAliasConstructorMetadata.modules[0].calls.find(
+    (call: { target: { name: string } }) => call.target.name === "Registry.get",
+  );
+  assert.deepEqual(aliasGetCall.typeArguments, ["Command", "Message"]);
+  assert.deepEqual(aliasGetCall.parameterTypes, ["Protocol<Command, Message>"]);
+  assert.deepEqual(aliasGetCall.arguments, [{
+    kind: "other",
+    type: "Protocol<Command, Message>",
+  }]);
+  const stage0AliasConstructorMetadata = spawnSync(
+    process.execPath,
+    [cli, "metadata", aliasConstructorFixture],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    stage0AliasConstructorMetadata.status,
+    0,
+    stage0AliasConstructorMetadata.stderr,
+  );
+  assert.deepEqual(
+    decodedAliasConstructorMetadata,
+    JSON.parse(stage0AliasConstructorMetadata.stdout),
+  );
+
   const checking = spawnSync(
     executable,
     ["check", resolve(projectRoot, "tests/fixtures/self-host-emit-input.zs")],

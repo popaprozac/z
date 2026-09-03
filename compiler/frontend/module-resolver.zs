@@ -7773,8 +7773,20 @@ function inferExpressionNodeType(
         none => {}
       }
     }
-    const constructionType = typeExpressionName(tree, calleeIndex);
-    match (typeSymbolLocation(modules, moduleIndex, constructionType)) {
+    // Type aliases are transparent at construction sites too. In particular,
+    // an alias of a generic empty marker such as `Protocol()` must retain the
+    // concrete generic arguments so an enclosing generic call can infer and
+    // record its checked call resolution.
+    const authoredConstructionType = typeExpressionName(tree, calleeIndex);
+    const constructionType = transparentTypeName(
+      modules,
+      moduleIndex,
+      authoredConstructionType
+    );
+    const constructionLocation = authoredConstructionType == constructionType
+      ? typeSymbolLocation(modules, moduleIndex, constructionType)
+      : inferredTypeSymbolLocation(modules, moduleIndex, constructionType);
+    match (constructionLocation) {
       some(location) => {
         const constructionKind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
         if (isForeignUnionType(modules, moduleIndex, constructionType)) {
