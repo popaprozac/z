@@ -378,6 +378,55 @@ test("moves owned structs and retains ARC classes across async task frames", () 
   assert.equal(failed.stdout, "released failed session 9\n");
 });
 
+test("constructs user-defined classes directly inside async task frames", () => {
+  const source = `
+    import console from "std/console";
+    import { delay } from "std/time";
+
+    struct SessionOptions {
+      id: i32;
+    }
+
+    class Session {
+      readonly id: i32;
+
+      constructor(in options: SessionOptions) {
+        this.id = options.id;
+      }
+
+      deinit {
+        console.log(\`released constructed session \${this.id}\`);
+      }
+    }
+
+    async function main(): i32 {
+      const options = SessionOptions({ id: 42 });
+      const session = new Session(in options);
+      await delay(1);
+      return session.id - 42;
+    }
+  `;
+  const fileName = "async-user-class-constructor.zs";
+  const generated = compileToC(source, fileName);
+  assert.match(
+    generated,
+    /frame->value_session = Z_Session_new\(&\(frame->value_options\)\)/,
+  );
+  assert.match(generated, /frame->live_session = true/);
+  assert.match(generated, /Z_Session_release\(frame->value_session\)/);
+
+  const directory = mkdtempSync("/tmp/z-async-user-constructor-");
+  const input = resolve(directory, "main.zs");
+  try {
+    writeFileSync(input, source);
+    const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "released constructed session 42\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("constructs and destroys move-only C++ values across async suspension", () => {
   const example = resolve(projectRoot, "examples/async/async-native-ownership.zs");
   const source = readFileSync(example, "utf8");

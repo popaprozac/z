@@ -7715,7 +7715,15 @@ function emitFrameExpressionInner(
         unsupported(fileName, expression.location, "async new requires a Z class type");
       }
       if (declaration.constructor) {
-        unsupported(fileName, expression.location, "user-defined class constructors in async frames have not landed yet");
+        const arguments_ = expression.arguments.map((argument, index) => (
+          emitFrameCallArgument(
+            argument,
+            plan,
+            fileName,
+            declaration.constructor!.parameters[index],
+          )
+        ));
+        return `Z_${expression.typeName}_new(${arguments_.join(", ")})`;
       }
       const object = expression.arguments[0];
       if (!object || object.kind !== "objectExpression") {
@@ -7832,21 +7840,34 @@ function emitSyncCallArguments(
   fileName: string,
   standardSignature?: ReturnType<typeof standardFunctionSignature>,
 ): string[] {
-  return expression.arguments.map((argument, index) => {
-    const value = emitFrameExpression(argument, plan, fileName);
-    const slice = emitFrameSliceConversion(argument, value, plan, fileName);
-    if (slice) return slice;
-    const parameter = synchronousZCallParameter(expression, index, plan);
-    if (parameter && parseSliceType(parameter.type.name)) return value;
-    if (standardSignature?.parameters[index]?.abi === "value") return value;
-    if (plan.types.semanticInfo.foreignCxxArgumentAccesses.has(argument.location.offset)) return value;
-    if (plan.types.semanticInfo.foreignArgumentAccesses.get(argument.location.offset) === "in") return `&(${value})`;
-    const access = plan.types.semanticInfo.nativeArgumentAccesses.get(argument.location.offset);
-    if (!access) return value;
-    const type = frameExpressionType(argument, plan);
-    if (access === "in" && plan.types.structs.get(type)?.kind === "class") return value;
-    return `&(${value})`;
-  });
+  return expression.arguments.map((argument, index) => emitFrameCallArgument(
+    argument,
+    plan,
+    fileName,
+    synchronousZCallParameter(expression, index, plan),
+    standardSignature?.parameters[index]?.abi === "value",
+  ));
+}
+
+function emitFrameCallArgument(
+  argument: Expression,
+  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  fileName: string,
+  parameter?: FunctionDeclaration["parameters"][number],
+  standardValueAbi = false,
+): string {
+  const value = emitFrameExpression(argument, plan, fileName);
+  const slice = emitFrameSliceConversion(argument, value, plan, fileName);
+  if (slice) return slice;
+  if (parameter && parseSliceType(parameter.type.name)) return value;
+  if (standardValueAbi) return value;
+  if (plan.types.semanticInfo.foreignCxxArgumentAccesses.has(argument.location.offset)) return value;
+  if (plan.types.semanticInfo.foreignArgumentAccesses.get(argument.location.offset) === "in") return `&(${value})`;
+  const access = plan.types.semanticInfo.nativeArgumentAccesses.get(argument.location.offset);
+  if (!access) return value;
+  const type = frameExpressionType(argument, plan);
+  if (access === "in" && plan.types.structs.get(type)?.kind === "class") return value;
+  return `&(${value})`;
 }
 
 function synchronousZCallParameter(
