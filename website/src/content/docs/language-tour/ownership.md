@@ -35,6 +35,27 @@ increment(inout counter);
 Immutable `in` is normally inferred at a call site. Writable `inout`, `out`,
 `move`, and `copy` remain explicit because they change storage or ownership.
 
+## Replace initialized storage
+
+Use the selectively imported `replace` utility when the old owner must be
+returned instead of destroyed by assignment:
+
+```z
+import { replace } from "std/memory";
+
+let current = Resource({ id: 1 });
+const next = Resource({ id: 2 });
+const previous = replace(inout current, move next);
+```
+
+`current` stays initialized with `next`, while `previous` owns the displaced
+value. A named ownership-bearing replacement requires `move`; fresh values can
+be passed directly. The operation adds no allocation or copy and does not
+provide synchronization. View-bearing storage remains excluded from this first
+tier because its owner provenance cannot be exchanged independently. Direct
+ARC bindings preserve alias identity through the exchange; aggregates containing
+nested ARC identities wait for complete whole-value provenance transfer.
+
 ## Views
 
 A view borrows part of an owner without retaining or copying it:

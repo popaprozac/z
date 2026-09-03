@@ -7457,6 +7457,10 @@ function emitFrameExpressionInner(
         plan.types,
       );
     case "call": {
+      const memoryReplace = plan.types.semanticInfo.memoryReplaceCalls.get(expression.location.offset);
+      if (memoryReplace) {
+        return `${asyncMemoryReplaceName(memoryReplace)}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
+      }
       const channelCall = plan.types.semanticInfo.channelCalls.get(expression.location.offset);
       if (channelCall && expression.callee.kind === "member" && channelCall.operation === "close") {
         const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
@@ -8038,6 +8042,10 @@ function asyncMutexDeinitName(valueType: string): string {
 
 function asyncMutexWithLockName(offset: number): string {
   return `z_mutex_with_lock_${offset}`;
+}
+
+function asyncMemoryReplaceName(valueType: string): string {
+  return `z_memory_replace_${asyncNativeSymbolPart(valueType)}`;
 }
 
 function asyncObjCAutoreleasePoolName(offset: number): string {

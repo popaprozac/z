@@ -869,6 +869,10 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("function"), modifiers: 4 });
       continue;
     }
+    if (context.semanticInfo.memoryReplaceBindings.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("function"), modifiers: 4 });
+      continue;
+    }
     if (context.semanticInfo.testBindings.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("function"), modifiers: 4 });
       continue;
@@ -1487,6 +1491,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   const standardFunction = context.semanticInfo.standardFunctionBindings.get(word.text);
   if (standardFunction) {
     return markdownHover(standardFunctionDetail(word.text, standardFunction), source, word.start, word.end);
+  }
+  if (context.semanticInfo.memoryReplaceBindings.has(word.text)) {
+    return markdownHover(
+      `${word.text}<T>(inout target: T, replacement: T): T  // transfers the previous owner out and leaves target initialized`,
+      source,
+      word.start,
+      word.end,
+    );
   }
   const testBinding = context.semanticInfo.testBindings.get(word.text);
   if (testBinding === "expect") {
@@ -2378,11 +2390,18 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
     }];
   }
   if (specifier === "std/memory") {
-    return [{
-      label: "Arena",
-      kind: completionKinds.struct,
-      detail: "Arena(options?: { initialCapacity: usize })  // growable region storage",
-    }];
+    return [
+      {
+        label: "Arena",
+        kind: completionKinds.struct,
+        detail: "Arena(options?: { initialCapacity: usize })  // growable region storage",
+      },
+      {
+        label: "replace",
+        kind: completionKinds.function,
+        detail: "replace<T>(inout target: T, replacement: T): T  // ownership-preserving exchange",
+      },
+    ];
   }
   if (specifier === "std/collections") {
     return [
@@ -2926,11 +2945,13 @@ function symbolCompletions(
     for (const declaration of parsed.imports) {
       if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration" && declaration.header !== "std/sync" && declaration.header !== "std/channel" && declaration.header !== "std/async") continue;
       for (const binding of declaration.bindings ?? []) {
-        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "Mutex" && binding.importedName !== "Channel" && binding.importedName !== "Sender" && binding.importedName !== "Receiver" && binding.importedName !== "SyncSender" && binding.importedName !== "SyncReceiver" && binding.importedName !== "ChannelClosed" && binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") continue;
+        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "replace" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "Mutex" && binding.importedName !== "Channel" && binding.importedName !== "Sender" && binding.importedName !== "Receiver" && binding.importedName !== "SyncSender" && binding.importedName !== "SyncReceiver" && binding.importedName !== "ChannelClosed" && binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") continue;
         const detail = binding.importedName === "TextBuffer"
           ? "move-only UTF-8 construction storage"
           : binding.importedName === "Arena"
             ? "move-only growable region storage"
+            : binding.importedName === "replace"
+              ? "ownership-preserving exchange"
             : binding.importedName === "Map"
               ? "owned associative storage"
               : binding.importedName === "Set"
@@ -2968,11 +2989,15 @@ function symbolCompletions(
                     : "mutable hash-composition state";
         builtIns.push({
           label: binding.localName,
-          kind: binding.importedName === "Hashable" || binding.importedName === "Iterator"
+          kind: binding.importedName === "replace"
+            ? completionKinds.function
+            : binding.importedName === "Hashable" || binding.importedName === "Iterator"
             ? completionKinds.interface
             : binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? completionKinds.class : completionKinds.struct,
           detail: binding.localName === binding.importedName
-            ? `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" || binding.importedName === "AsyncGenerator" || binding.importedName === "OnceLifetime" || binding.importedName === "Sender" || binding.importedName === "Receiver" || binding.importedName === "SyncSender" || binding.importedName === "SyncReceiver" || binding.importedName === "ChannelClosed" || binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? "" : "()"}  // ${detail}`
+            ? binding.importedName === "replace"
+              ? "replace<T>(inout target: T, replacement: T): T  // ownership-preserving exchange"
+              : `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" || binding.importedName === "AsyncGenerator" || binding.importedName === "OnceLifetime" || binding.importedName === "Sender" || binding.importedName === "Receiver" || binding.importedName === "SyncSender" || binding.importedName === "SyncReceiver" || binding.importedName === "ChannelClosed" || binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? "" : "()"}  // ${detail}`
             : `${binding.importedName}  // imported as ${binding.localName}`,
           sortText: `0-${binding.localName}`,
         });
@@ -3134,6 +3159,14 @@ function symbolCompletions(
       label: name,
       kind: completionKinds.function,
       detail: standardFunctionDetail(name, standardFunction),
+      sortText: `0-${name}`,
+    });
+  }
+  for (const name of context.semanticInfo.memoryReplaceBindings) {
+    items.push({
+      label: name,
+      kind: completionKinds.function,
+      detail: `${name}<T>(inout target: T, replacement: T): T  // ownership-preserving exchange`,
       sortText: `0-${name}`,
     });
   }

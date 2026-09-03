@@ -2357,6 +2357,34 @@ keys, and copy-only native C++ values still wait for their distinct storage
 rules. A Z value struct may provide an explicit owned wrapper where that is
 already safe.
 
+## Ownership-preserving replacement
+
+`std/memory` exports `replace` for exchanging initialized storage while
+transferring its previous value to the caller:
+
+```z
+import { replace } from "std/memory";
+
+let current = Resource({ id: 1 });
+const next = Resource({ id: 2 });
+const previous = replace(inout current, move next);
+```
+
+The first argument is an exclusive `inout` loan and must name mutable,
+initialized storage. The replacement must have exactly the same type. A named
+ownership-bearing replacement uses explicit `move`; a freshly constructed
+value may be passed directly. The old owner becomes the return value and the
+target remains initialized, so both are cleaned exactly once unless moved
+again. This is not synchronization: shared cross-thread state must still be
+exchanged while protected by `Mutex<T>` or an executor.
+
+The generated operation is a direct native exchange—load the old value, store
+the replacement, and return the old value—with no allocation, retain, release,
+or copy. Direct ARC class bindings carry their alias identity and local-
+uniqueness evidence with the corresponding owner. View-bearing stored values
+and aggregates containing nested ARC class references are rejected in the
+first tier because exchanging them also requires complete provenance transfer.
+
 ## Arena regions
 
 `std/memory` provides the first explicit region allocator without a new keyword

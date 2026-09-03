@@ -455,6 +455,8 @@ export type SemanticInfo = {
   readonly dynamicArrayPushTypes: ReadonlySet<string>;
   readonly arenaCreateCalls: ReadonlyMap<number, string>;
   readonly arenaResetCalls: ReadonlySet<number>;
+  readonly memoryReplaceBindings: ReadonlySet<string>;
+  readonly memoryReplaceCalls: ReadonlyMap<number, string>;
   readonly threadSpawnCalls: ReadonlyMap<number, number>;
   readonly threadSpawnCaptureTransfers: ReadonlyMap<number, readonly ThreadTransferKind[]>;
   readonly taskScopeSpawnCalls: ReadonlyMap<number, number>;
@@ -628,6 +630,8 @@ type AnalysisState = {
   readonly unboundStoredViewContainerInitializers: Set<number>;
   readonly arenaCreateCalls: Map<number, string>;
   readonly arenaResetCalls: Set<number>;
+  readonly memoryReplaceBindings: Set<string>;
+  readonly memoryReplaceCalls: Map<number, string>;
   readonly threadSpawnCalls: Map<number, number>;
   readonly threadSpawnCaptureTransfers: Map<number, readonly ThreadTransferKind[]>;
   readonly taskScopeSpawnCalls: Map<number, number>;
@@ -720,7 +724,7 @@ type AnalysisState = {
     string,
     ReadonlyMap<string, ReadonlySet<string>>
   >;
-  readonly classAliasExpressionIdentities: Map<number, string>;
+  readonly classAliasExpressionIdentities: Map<number, ReadonlySet<string>>;
   readonly functionClassAliasIdentities: Map<string, string>;
   readonly aggregateClassAliasExpressionFields: Map<
     number,
@@ -917,6 +921,7 @@ type SymbolValue =
   | { readonly kind: "console" }
   | { readonly kind: "testExpect" }
   | { readonly kind: "testFail" }
+  | { readonly kind: "memoryReplace" }
   | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
   | { readonly kind: "standardType"; readonly type: StandardTypeName }
@@ -1272,6 +1277,8 @@ export function analyze(
     unboundStoredViewContainerInitializers: new Set(),
     arenaCreateCalls: new Map(),
     arenaResetCalls: new Set(),
+    memoryReplaceBindings: new Set(),
+    memoryReplaceCalls: new Map(),
     threadSpawnCalls: new Map(),
     threadSpawnCaptureTransfers: new Map(),
     taskScopeSpawnCalls: new Map(),
@@ -1488,19 +1495,24 @@ export function analyze(
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/memory requires a selective import", {
             code: "Z0501",
-            helps: ["use `import { Arena } from \"std/memory\";`"],
+            helps: ["use `import { Arena, replace } from \"std/memory\";`"],
           });
         }
         for (const binding of declaration.bindings) {
-          if (binding.importedName !== "Arena") {
+          if (binding.importedName !== "Arena" && binding.importedName !== "replace") {
             throw new DiagnosticError(fileName, binding.location, `std/memory has no export ${JSON.stringify(binding.importedName)}`, {
               code: "Z0501",
-              helps: ["the bootstrap std/memory module currently exports `Arena`"],
+              helps: ["std/memory currently exports `Arena` and `replace`"],
             });
           }
           validateUserName(binding.localName, binding.location, fileName);
-          declareGlobal(globals, binding.localName, { kind: "standardType", type: "Arena" }, binding.location, fileName);
-          state.standardTypeBindings.set(binding.localName, "Arena");
+          if (binding.importedName === "replace") {
+            declareGlobal(globals, binding.localName, { kind: "memoryReplace" }, binding.location, fileName);
+            state.memoryReplaceBindings.add(binding.localName);
+          } else {
+            declareGlobal(globals, binding.localName, { kind: "standardType", type: "Arena" }, binding.location, fileName);
+            state.standardTypeBindings.set(binding.localName, "Arena");
+          }
         }
         continue;
       }
@@ -12088,7 +12100,7 @@ function inferExpressionInner(
             if (storage) {
               state.classAliasExpressionIdentities.set(
                 expression.location.offset,
-                `once:${storage.name}`,
+                new Set([`once:${storage.name}`]),
               );
             }
             return once.valueType;
@@ -13556,6 +13568,151 @@ function inferExpressionInner(
           helps: ['use `fail("reason")`'],
         });
       }
+      if (target?.kind === "memoryReplace") {
+        rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+        if (expression.arguments.length !== 2) {
+          throw new DiagnosticError(
+            fileName,
+            expression.location,
+            `replace expects 2 arguments, received ${expression.arguments.length}`,
+            {
+              code: "Z0501",
+              helps: ["use `replace(inout target, replacement)`"],
+            },
+          );
+        }
+        const targetArgument = expression.arguments[0];
+        const replacement = expression.arguments[1];
+        const capability = capabilityStoragePath(targetArgument);
+        if (!capability || capability.access !== "inout") {
+          throw new DiagnosticError(
+            fileName,
+            targetArgument.location,
+            "replace requires inout <mutable storage> for its first argument",
+            {
+              code: "Z0301",
+              notes: ["`replace` transfers the previous owner out while leaving the target initialized with its replacement"],
+              helps: ["pass mutable storage explicitly as `inout target`"],
+            },
+          );
+        }
+        const targetType = inferExpression(
+          capability.target,
+          locals,
+          globals,
+          structs,
+          enums,
+          fileName,
+          state,
+        );
+        const concreteType = String(underlyingType(targetType));
+        const displacedClassAliases = classAliasIdentitiesForExpression(
+          capability.target,
+          targetType,
+          structs,
+          state,
+        );
+        const replacementClassAliases = classAliasIdentitiesForExpression(
+          replacement,
+          targetType,
+          structs,
+          state,
+        );
+        const replacementWasLocallyContained = classAliasIdentityIsLocallyContained(
+          replacementClassAliases ?? undefined,
+          state,
+        );
+        if (containsStoredViewType(concreteType, structs, enums)) {
+          throw new DiagnosticError(
+            fileName,
+            targetArgument.location,
+            `replace cannot exchange view-bearing storage ${JSON.stringify(displayAssignableType(targetType, state))} in the first ownership tier`,
+            {
+              code: "Z0206",
+              notes: ["replacement must preserve one proven owner region across the complete stored value"],
+              helps: ["replace independently owned storage, or mutate the view-bearing value inside its owner region"],
+            },
+          );
+        }
+        if (
+          structs.get(concreteType)?.kind !== "class"
+          && containsClassReferenceStorage(concreteType, structs, enums)
+        ) {
+          throw new DiagnosticError(
+            fileName,
+            targetArgument.location,
+            `replace cannot exchange aggregate storage containing ARC class identity ${JSON.stringify(displayAssignableType(targetType, state))} in the first ownership tier`,
+            {
+              code: "Z0206",
+              notes: ["whole-aggregate replacement must transfer each nested class alias identity to the returned former owner"],
+              helps: ["replace a direct class binding, or replace the aggregate's independently owned fields"],
+            },
+          );
+        }
+        const declaration = functionTypeDeclaration("replace", {
+          parameters: [
+            { name: "target", mode: "inout", type: concreteType },
+            { name: "replacement", mode: "value", type: concreteType },
+          ],
+          returnType: concreteType,
+          errorType: null,
+          thread: "local",
+          async: false,
+        }, expression.callee.location);
+        if (
+          hasOwnershipType(concreteType, structs, enums, state)
+          && isNamedStorageExpression(replacement)
+        ) {
+          throw new DiagnosticError(
+            fileName,
+            replacement.location,
+            "replacing from an existing owner requires an explicit move",
+            {
+              code: "Z0218",
+              helps: [`write \`replace(inout ${capability.root}, move ${storageRoot(replacement)?.name ?? "replacement"})\``],
+            },
+          );
+        }
+        checkArguments(
+          declaration,
+          expression.arguments,
+          locals,
+          globals,
+          structs,
+          enums,
+          fileName,
+          expression.location,
+          state,
+        );
+        if (displacedClassAliases) {
+          state.classAliasExpressionIdentities.set(
+            expression.location.offset,
+            new Set(displacedClassAliases),
+          );
+          if (capability.fields.length === 0 && replacementClassAliases) {
+            state.classAliasIdentities.set(
+              capability.root,
+              new Set(replacementClassAliases),
+            );
+          } else if (capability.fields.length === 1) {
+            recordAggregateClassAliasFieldBinding(
+              capability.root,
+              capability.fields[0],
+              replacement,
+              targetType,
+              structs,
+              state,
+            );
+          }
+        }
+        if (replacementWasLocallyContained && replacementClassAliases) {
+          for (const identity of replacementClassAliases) {
+            state.locallyContainedClassAliases.add(identity);
+          }
+        }
+        state.memoryReplaceCalls.set(expression.location.offset, concreteType);
+        return concreteType;
+      }
       if (target?.kind === "standardFunction") {
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         state.standardFunctionReferences.set(expression.callee.location.offset, target.name);
@@ -13616,7 +13773,7 @@ function inferExpressionInner(
       if (classAliasIdentity) {
         state.classAliasExpressionIdentities.set(
           expression.location.offset,
-          classAliasIdentity,
+          new Set([classAliasIdentity]),
         );
       }
       const aggregateClassAliasFields = state.functionAggregateClassAliasFields.get(
@@ -14517,7 +14674,7 @@ function classAliasIdentitiesForExpression(
   const expressionIdentity = state.classAliasExpressionIdentities.get(
     expression.location.offset,
   );
-  if (expressionIdentity) return new Set([expressionIdentity]);
+  if (expressionIdentity) return new Set(expressionIdentity);
   if (expression.kind === "member" && !expression.optional) {
     const path = directFieldStoragePath(expression);
     const projected = path
@@ -20115,6 +20272,45 @@ function containsStoredViewType(
   return enumeration?.variants.some((variant) => (
     variant.payload
       ? containsStoredViewType(variant.payload.name, structs, enums, next)
+      : false
+  )) ?? false;
+}
+
+function containsClassReferenceStorage(
+  name: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  visiting = new Set<string>(),
+): boolean {
+  const actual = String(underlyingType(name));
+  if (structs.get(actual)?.kind === "class") return true;
+  const dynamic = parseDynamicArrayType(actual);
+  if (dynamic) {
+    return containsClassReferenceStorage(dynamic.elementType, structs, enums, visiting);
+  }
+  const array = parseFixedArrayType(actual);
+  if (array) {
+    return containsClassReferenceStorage(array.elementType, structs, enums, visiting);
+  }
+  const option = parseOptionType(actual);
+  if (option) {
+    return containsClassReferenceStorage(option.target, structs, enums, visiting);
+  }
+  const generic = parseGenericType(actual);
+  if (generic?.arguments.some((argument) => (
+    containsClassReferenceStorage(argument, structs, enums, visiting)
+  ))) return true;
+  if (visiting.has(actual)) return false;
+  const declaration = structs.get(actual);
+  const enumeration = enums.get(actual);
+  if (!declaration && !enumeration) return false;
+  const next = new Set(visiting).add(actual);
+  if (declaration?.fields.some((field) => (
+    containsClassReferenceStorage(field.type.name, structs, enums, next)
+  ))) return true;
+  return enumeration?.variants.some((variant) => (
+    variant.payload
+      ? containsClassReferenceStorage(variant.payload.name, structs, enums, next)
       : false
   )) ?? false;
 }

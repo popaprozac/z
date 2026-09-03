@@ -2853,6 +2853,77 @@ function programArenaValueTypes(
   return values;
 }
 
+function collectMemoryReplaceValueTypes(
+  in expressions: Array<LoweredExpression>,
+  inout values: Array<String>
+): void {
+  for (const expression of expressions) {
+    if (expression.kind != LoweredExpressionKind.memoryReplace) continue;
+    let present = false;
+    for (const candidate of values) {
+      if (candidate == expression.value) present = true;
+    }
+    if (!present) values.push(expression.value.copyBytes(
+      0,
+      expression.value.byteLength
+    ));
+  }
+}
+
+function programMemoryReplaceValueTypes(
+  in program: LoweredProgram
+): Array<String> {
+  let values = Array<String>();
+  for (const declaration of program.functions) {
+    collectMemoryReplaceValueTypes(
+      declaration.expressions,
+      inout values
+    );
+  }
+  for (const aggregate of program.structs) {
+    match (in aggregate.deinitializer) {
+      some(deinitializer) => collectMemoryReplaceValueTypes(
+        deinitializer.expressions,
+        inout values
+      );
+      none => {}
+    }
+  }
+  return values;
+}
+
+function appendMemoryReplaceHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  const valueTypes = programMemoryReplaceValueTypes(program);
+  for (const identity of valueTypes) {
+    const valueType = try loweredTypeForIdentity(program, identity);
+    const storage = try cType(valueType);
+    output.append("#if defined(__cplusplus)\ntemplate <typename Z_Replacement>\nstatic inline __attribute__((unused)) ");
+    output.append(storage);
+    output.append(" z_stage1_memory_replace_");
+    output.append(arenaTypeSymbol(identity));
+    output.append("(");
+    output.append(storage);
+    output.append(" *target, Z_Replacement &&replacement) {\n  ");
+    output.append(storage);
+    output.append(" previous = static_cast<");
+    output.append(storage);
+    output.append("&&>(*target);\n  *target = static_cast<Z_Replacement&&>(replacement);\n  return previous;\n}\n#else\nstatic inline __attribute__((unused)) ");
+    output.append(storage);
+    output.append(" z_stage1_memory_replace_");
+    output.append(arenaTypeSymbol(identity));
+    output.append("(");
+    output.append(storage);
+    output.append(" *target, ");
+    output.append(storage);
+    output.append(" replacement) {\n  ");
+    output.append(storage);
+    output.append(" previous = *target;\n  *target = replacement;\n  return previous;\n}\n#endif\n\n");
+  }
+}
+
 function expressionsUseArena(
   in expressions: Array<LoweredExpression>
 ): boolean {
@@ -5416,6 +5487,24 @@ function appendExpression(
     const receiver = declaration.expressions[index].children[0];
     try appendExpression(inout output, declaration, receiver);
     output.append("))");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.memoryReplace
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received malformed memory replace";
+    }
+    output.append("z_stage1_memory_replace_");
+    output.append(arenaTypeSymbol(declaration.expressions[index].value));
+    output.append("(&(");
+    const target = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, target);
+    output.append("), ");
+    const replacement = declaration.expressions[index].children[1];
+    try appendExpression(inout output, declaration, replacement);
+    output.append(")");
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.mutexValue) {
@@ -20513,6 +20602,7 @@ function emitLoweredC(
   if (program.foreignResources.length > 0) output.append("\n");
   appendWeakRuntime(inout output);
   try appendTypeDefinitions(inout output, program);
+  try appendMemoryReplaceHelpers(inout output, program);
   if (programUsesObjectiveCBlockArguments(program)) {
     appendObjCBlockArgumentRuntime(inout output);
   }

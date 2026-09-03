@@ -139,6 +139,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   Record<string, SelfHostEmitFixtureClassification>
 > = {
   "self-host-emit-borrowed-task-control-cancel.zs": focusedPositive,
+  "self-host-emit-expression-closure-template.zs": focusedPositive,
   "self-host-emit-class-field-order.zs": differential,
   "self-host-emit-class-constructor.zs": differential,
   "self-host-emit-fixed-array.zs": differential,
@@ -223,6 +224,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-async-callable-task-cancel.zs": differential,
   "self-host-emit-async-callable-task-join.zs": differential,
   "self-host-emit-task-scope-owned-capture.zs": focusedPositive,
+  "self-host-emit-task-control-owned-match.zs": focusedPositive,
   "self-host-emit-task-scope-field.zs": focusedPositive,
   "self-host-emit-task-scope-delay-method.zs": focusedPositive,
   "self-host-emit-thread-any-callable.zs": focusedPositive,

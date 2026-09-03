@@ -549,6 +549,23 @@ export function invalidateContainedClassAlias(
   }
 }
 
+export function restoreContainedClassAlias(
+  inout bindings: Array<NativeValueBinding>,
+  identity: usize
+): void {
+  if (identity == 0) return;
+  let index: usize = 0;
+  while (index < bindings.length) {
+    if (
+      bindings[index].classAliasIdentity == identity
+      && !bindings[index].classAliasContained
+    ) {
+      replaceBindingClassAliasContained(inout bindings, index, true);
+    }
+    index = index + 1;
+  }
+}
+
 export function valueBindingIsMutable(
   in bindings: Array<NativeValueBinding>,
   in name: String

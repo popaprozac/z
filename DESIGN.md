@@ -330,6 +330,27 @@ deterministic native RAII, ARC/ORC identity, arena regions, and unique manual
 allocations can all use the same ownership vocabulary without making one
 allocator the language model.
 
+Initialized storage can be exchanged without destroying its current owner via
+the selectively imported `std/memory.replace` utility:
+
+```z
+import { replace } from "std/memory";
+
+let active = Resource({ id: 1 });
+const pending = Resource({ id: 2 });
+const previous = replace(inout active, move pending);
+```
+
+The target must be mutable and initialized, the replacement must have exactly
+the same type, and a named ownership-bearing replacement requires explicit
+`move`. The old value is returned as an owner while the target stays
+initialized. Lowering is one native load, store, and return with no allocation,
+retain, or copy. This operation does not synchronize; view-bearing storage is
+rejected until its provenance can be transferred as part of the exchange.
+Direct ARC bindings transfer alias identity and local-containment evidence;
+aggregates containing nested ARC identities remain rejected until that evidence
+can move with the complete value.
+
 An arena is the owner of its region. The implemented first tier uses the same
 receiver provenance as value-struct views without adding syntax:
 

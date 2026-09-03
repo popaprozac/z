@@ -84,6 +84,7 @@ import {
   liveViewBindingForStoragePath,
   mergeViewOwners,
   invalidateContainedClassAlias,
+  restoreContainedClassAlias,
   ownerlessViewOwner,
   setExpressionViewOrigin,
   mergeBindingFlowStates,
@@ -300,6 +301,10 @@ function aggregateClassAliasFieldBindingName(
   return `__z_native_class_field_alias:${owner}\t${field}`;
 }
 
+function memoryReplaceClassAliasBindingName(offset: usize): String {
+  return `__z_native_memory_replace_alias:${offset}`;
+}
+
 function directAggregateClassAliasNodeIdentity(
   in tree: ExpressionTree,
   index: usize,
@@ -346,6 +351,16 @@ function expressionNodeClassAliasIdentity(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize
 ): usize {
+  if (tree.nodes[root].kind == ExpressionKind.callExpression) {
+    const replacementBinding = memoryReplaceClassAliasBindingName(
+      tree.nodes[root].offset
+    );
+    const replaced = valueBindingClassAlias(
+      bindings,
+      replacementBinding
+    );
+    if (replaced > 0) return replaced;
+  }
   const projected = directAggregateClassAliasNodeIdentity(
     tree,
     root,
@@ -675,6 +690,15 @@ function expressionNodeClassAliasIsContained(
   index: usize,
   in bindings: Array<NativeValueBinding>
 ): boolean {
+  if (tree.nodes[index].kind == ExpressionKind.callExpression) {
+    const replacement = memoryReplaceClassAliasBindingName(
+      tree.nodes[index].offset
+    );
+    const replacementType = valueBindingType(bindings, replacement);
+    if (replacementType.byteLength > 0) {
+      return valueBindingClassAliasIsContained(bindings, replacement);
+    }
+  }
   if (tree.nodes[index].kind == ExpressionKind.newExpression) return true;
   if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
     const name = identifierLookupName(tree.nodes[index].value);
@@ -1480,6 +1504,89 @@ function channelCallSignature(
     returnType: returnType.copyBytes(0, returnType.byteLength),
     errorType: errorType.copyBytes(0, errorType.byteLength),
   });
+}
+
+function memoryReplaceSignature(in valueType: String): ModuleFunctionSignature {
+  let parameterModes = Array<String>();
+  parameterModes.push("inout");
+  parameterModes.push("value");
+  let parameterTypes = Array<String>();
+  parameterTypes.push(valueType.copyBytes(0, valueType.byteLength));
+  parameterTypes.push(valueType.copyBytes(0, valueType.byteLength));
+  return ModuleFunctionSignature({
+    asynchronous: false,
+    executorAffinity: "",
+    threadContract: "",
+    typeParameters: Array<String>(),
+    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+    parameterModes,
+    parameterTypes,
+    viewParameter: Option<usize>.none,
+    invalidatesParameters: Array<usize>(),
+    invalidatesLifetimes: Array<String>(),
+    returnType: valueType.copyBytes(0, valueType.byteLength),
+    errorType: "",
+  });
+}
+
+function typeContainsClassReferenceStorage(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  inout visiting: Array<String>
+): boolean {
+  if (typeIsClassReference(module, modules, moduleIndex, typeName)) return true;
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      for (const argument of generic.arguments) {
+        if (typeContainsClassReferenceStorage(
+          module,
+          modules,
+          moduleIndex,
+          argument,
+          inout visiting
+        )) return true;
+      }
+    }
+    none => {}
+  }
+  for (const seen of visiting) {
+    if (seen == typeName) return false;
+  }
+  visiting.push(typeName.copyBytes(0, typeName.byteLength));
+  match (inferredTypeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => match (
+      in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature
+    ) {
+      some(signature) => {
+        for (const field of signature.fields) {
+          if (typeContainsClassReferenceStorage(
+            module,
+            modules,
+            moduleIndex,
+            field.typeName,
+            inout visiting
+          )) return true;
+        }
+        for (const variant of signature.variants) {
+          if (
+            variant.payloadType.byteLength > 0
+            && typeContainsClassReferenceStorage(
+              module,
+              modules,
+              moduleIndex,
+              variant.payloadType,
+              inout visiting
+            )
+          ) return true;
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+  return false;
 }
 
 function mutexPayloadSupported(in typeName: String): boolean {
@@ -8056,6 +8163,189 @@ function inferExpressionNodeType(
           );
         }
         return copiedString(base);
+      }
+      if (importedStandardType(
+        module,
+        base,
+        "std/memory",
+        "replace"
+      )) {
+        const arguments = callArgumentNodes(children);
+        if (arguments.length != 2) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `replace expects 2 arguments, received ${arguments.length}`,
+            node.line,
+            node.column
+          );
+        }
+        const target = arguments[0];
+        if (expressionCapabilityAccess(tree, target) != "inout") {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "replace requires inout <mutable storage> for its first argument",
+            tree.nodes[target].line,
+            tree.nodes[target].column
+          );
+        }
+        const valueType = try inferExpressionNodeType(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          target,
+          inout bindings,
+          inout evidence
+        );
+        try requireSettledExpressionType(module, tree, target, valueType);
+        let storedViewVisiting = Array<String>();
+        if (typeContainsStoredView(
+          modules,
+          moduleIndex,
+          valueType,
+          storedViewVisiting
+        )) throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `replace cannot exchange view-bearing storage ${valueType} in the first ownership tier`,
+          tree.nodes[target].line,
+          tree.nodes[target].column
+        );
+        if (!typeIsClassReference(
+          module,
+          modules,
+          moduleIndex,
+          valueType
+        )) {
+          let classStorageVisiting = Array<String>();
+          if (typeContainsClassReferenceStorage(
+            module,
+            modules,
+            moduleIndex,
+            valueType,
+            inout classStorageVisiting
+          )) throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `replace cannot exchange aggregate storage containing ARC class identity ${valueType} in the first ownership tier`,
+            tree.nodes[target].line,
+            tree.nodes[target].column
+          );
+        }
+        const replacement = arguments[1];
+        const replacementRoot = expressionStorageRootName(tree, replacement);
+        const explicitMove = tree.nodes[replacement].kind
+            == ExpressionKind.unaryExpression
+          && tree.nodes[replacement].value == "move";
+        if (
+          replacementRoot.byteLength > 0
+          && typeMovesOnOwnedUse(modules, moduleIndex, valueType)
+          && !explicitMove
+        ) throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "replacing from an existing owner requires an explicit move",
+          tree.nodes[replacement].line,
+          tree.nodes[replacement].column
+        );
+        const substitutions = Array<NativeValueBinding>();
+        const signature = memoryReplaceSignature(valueType);
+        let displacedClassIdentity: usize = 0;
+        let displacedClassContained = false;
+        let replacementClassIdentity: usize = 0;
+        let replacementClassContained = false;
+        const exchangesClassIdentity = typeIsClassReference(
+          module,
+          modules,
+          moduleIndex,
+          valueType
+        );
+        if (exchangesClassIdentity) {
+          displacedClassIdentity = expressionNodeClassAliasIdentity(
+            tree,
+            target,
+            bindings,
+            modules,
+            moduleIndex
+          );
+          displacedClassContained = expressionNodeClassAliasIsContained(
+            tree,
+            target,
+            bindings
+          );
+          replacementClassIdentity = expressionNodeClassAliasIdentity(
+            tree,
+            replacement,
+            bindings,
+            modules,
+            moduleIndex
+          );
+          replacementClassContained = expressionNodeClassAliasIsContained(
+            tree,
+            replacement,
+            bindings
+          );
+        }
+        const resultType = try inferSignatureCallType(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          calleeIndex,
+          index,
+          arguments,
+          inout bindings,
+          "",
+          "",
+          "replace",
+          signature,
+          substitutions,
+          0,
+          0,
+          "value",
+          inout evidence
+        );
+        if (exchangesClassIdentity) {
+          const resultBinding = memoryReplaceClassAliasBindingName(node.offset);
+          const existingResultType = valueBindingType(bindings, resultBinding);
+          if (existingResultType.byteLength == 0) {
+            addValueBinding(inout bindings, resultBinding, valueType);
+          }
+          setValueBindingClassAlias(
+            inout bindings,
+            resultBinding,
+            displacedClassIdentity
+          );
+          setValueBindingClassAliasContained(
+            inout bindings,
+            resultBinding,
+            displacedClassContained
+          );
+          const targetRoot = expressionStorageRootName(tree, target);
+          if (targetRoot.byteLength > 0 && projectedFieldCount(tree, target) == 0) {
+            setValueBindingClassAlias(
+              inout bindings,
+              targetRoot,
+              replacementClassIdentity
+            );
+            setValueBindingClassAliasContained(
+              inout bindings,
+              targetRoot,
+              replacementClassContained
+            );
+          }
+          if (replacementClassContained) {
+            restoreContainedClassAlias(
+              inout bindings,
+              replacementClassIdentity
+            );
+          }
+        }
+        return resultType;
       }
       let mutexBindingName = base.copyBytes(0, base.byteLength);
       match (genericTypeShape(callee)) {

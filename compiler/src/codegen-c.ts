@@ -37,6 +37,7 @@ import {
   parsePointerTypeName,
   type ForeignBlockType,
   type ForeignObjCProtocolMethod,
+  type ForeignNamedType,
   type ForeignType,
 } from "./foreign.ts";
 import {
@@ -233,6 +234,7 @@ export function generateC(
   ])];
   const explicitCopyTypes = collectExplicitCopyTypes(semanticInfo, structs, enums);
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
+  const memoryReplaceTypes = [...new Set(semanticInfo.memoryReplaceCalls.values())];
   const onceValueTypes = collectOnceValueTypes(program, semanticInfo);
   const mutexValueTypes = collectMutexValueTypes(program, semanticInfo);
   const channelValueTypes = collectChannelValueTypes(program, semanticInfo);
@@ -764,6 +766,9 @@ export function generateC(
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
+  for (const type of memoryReplaceTypes) {
+    lines.push(generateMemoryReplace(type, structs, enums, semanticInfo.foreignNamedTypes), "");
+  }
   for (const valueType of mutexValueTypes) {
     lines.push(
       `struct ${mutexStorageName(valueType)} {`,
@@ -10728,6 +10733,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return maybeRetainClass(expression, value, context);
     }
     case "call": {
+      const memoryReplace = context.semanticInfo.memoryReplaceCalls.get(expression.location.offset);
+      if (memoryReplace) {
+        return `${memoryReplaceName(memoryReplace)}(${generateCallArgument(expression.arguments[0], context)}, ${generateCallArgument(expression.arguments[1], context)})`;
+      }
       const numericConversion = context.semanticInfo.numericConversions.get(expression.location.offset);
       if (numericConversion) {
         const value = generateExpression(expression.arguments[0], context);
@@ -12944,6 +12953,33 @@ function mutexDeinitName(valueType: string): string {
 
 function mutexWithLockName(offset: number): string {
   return `z_mutex_with_lock_${offset}`;
+}
+
+function memoryReplaceName(valueType: string): string {
+  return `z_memory_replace_${nativeSymbolPart(valueType)}`;
+}
+
+function generateMemoryReplace(
+  valueType: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+): string {
+  const storage = mapType(valueType, structs, enums, foreignNamedTypes);
+  return `#if defined(__cplusplus)
+template <typename Z_Replacement>
+static Z_UNUSED_FUNCTION ${storage} ${memoryReplaceName(valueType)}(${storage} *target, Z_Replacement &&replacement) {
+  ${storage} previous = static_cast<${storage}&&>(*target);
+  *target = static_cast<Z_Replacement&&>(replacement);
+  return previous;
+}
+#else
+static Z_UNUSED_FUNCTION ${storage} ${memoryReplaceName(valueType)}(${storage} *target, ${storage} replacement) {
+  ${storage} previous = *target;
+  *target = replacement;
+  return previous;
+}
+#endif`;
 }
 
 function channelStorageName(valueType: string): string {

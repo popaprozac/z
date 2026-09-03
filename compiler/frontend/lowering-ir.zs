@@ -279,6 +279,7 @@ export enum LoweredExpressionKind {
   arenaNew,
   arenaCreate,
   arenaReset,
+  memoryReplace,
   onceEmpty,
   onceInitialize,
   onceGet,
@@ -11986,6 +11987,65 @@ function lowerExpressionContextual(
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
     ) {
+      const replaceBindingName = tree.nodes[calleeInput].value.copyBytes(
+        0,
+        tree.nodes[calleeInput].value.byteLength
+      );
+      if (isImportedStandardBinding(
+        program,
+        "std/memory",
+        "replace",
+        replaceBindingName
+      )) {
+        if (tree.nodes[index].children.length != 3) {
+          throw "native replace lowering expects exactly two arguments";
+        }
+        const valueTypeName = match (evidenceResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          index
+        )) {
+          some(name) => name;
+          none => throw "native replace lowering could not resolve its value type";
+        };
+        const targetInput = tree.nodes[index].children[1];
+        const replacementInput = tree.nodes[index].children[2];
+        const loweredTargetIndex: usize = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          targetInput,
+          inout output
+        );
+        const loweredReplacementIndex: usize = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          replacementInput,
+          valueTypeName,
+          inout output
+        );
+        const valueType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          valueTypeName
+        );
+        const valueIdentity = loweredTypeIdentity(valueType);
+        let replaceChildren = Array<usize>();
+        replaceChildren.push(loweredTargetIndex);
+        replaceChildren.push(loweredReplacementIndex);
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.memoryReplace,
+          valueIdentity,
+          move replaceChildren,
+          Array<String>()
+        );
+      }
       let arenaBindingName = tree.nodes[calleeInput].value.copyBytes(
         0,
         tree.nodes[calleeInput].value.byteLength
