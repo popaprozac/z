@@ -4975,6 +4975,25 @@ locals, stored parameters, and match payloads exactly once. An executable
 regression keeps a cleanup-bearing run lifetime live across this branch, so the
 proof covers both typed propagation and deterministic rollback.
 
+## Immutable application-context snapshots expose aggregate-copy ergonomics
+
+Zapp's readonly `ApplicationContext` combines owned strings, nested readonly
+structs, and a `readonly Array<String>`. The intended source operation—an
+explicit owned snapshot of that complete aggregate—is accepted by Stage 0's
+semantic model, but whole-aggregate and readonly-array `copy` are not yet
+executable in the fixed-point compiler. Borrowing the nested array identity out
+of a shared ARC application class is correctly rejected; that rule prevents a
+borrowed collection alias from escaping shared storage.
+
+The current framework preserves the rule by copying each string element with
+`copyBytes`, freezing a fresh array, and rebuilding the small value structs.
+This is safe and allocation-honest, but unnecessarily verbose compiler-facing
+code. A future native-copy slice should make `copy context` lower recursively
+through readonly arrays and cleanup-bearing value structs, with the same
+per-field semantics already used by Stage 0. Zapp is the regression target:
+the concise aggregate copy must produce an independent argument snapshot while
+leaving the shared application context intact.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
