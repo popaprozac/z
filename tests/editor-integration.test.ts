@@ -86,12 +86,65 @@ test("invalidates shared editor analysis when source or an imported module chang
     const future = new Date(Date.now() + 2_000);
     utimesSync(dependencyFile, future, future);
     assert.match(diagnostics(entry, entryFile)[0]?.message ?? "", /expected i32, found String/);
+    // A newly broken dependency must not blank editor information from this
+    // unchanged document while the diagnostic is being fixed.
+    assert.match(hover(entry, entryFile, entry.indexOf("value()") + 2)?.contents.value ?? "", /value\(\): i32/);
+    assert.ok(semanticTokens(entry, entryFile).data.length > 0);
 
     const repaired = entry.replace("function main(): i32", "function inspect(): String");
     assert.deepEqual(diagnostics(repaired, entryFile), []);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("keeps syntax classifications and local hover available after a semantic error", () => {
+  const source = `
+    trait Named {}
+
+    function broken(): i32 {
+      return "wrong";
+    }
+
+    function healthy<T: Named>(name: String, service: T): String {
+      const snapshot = copy name;
+      return snapshot;
+    }
+  `;
+  const fileName = resolve(projectRoot, "error-recovery-editor.zs");
+  assert.match(diagnostics(source, fileName)[0]?.message ?? "", /expected i32, found String/);
+
+  const tokens = decodeSemanticTokens(semanticTokens(source, fileName).data);
+  const tokenAt = (text: string, offset: number, type: (typeof semanticTokenTypes)[number]) => {
+    const position = positionForOffset(source, offset);
+    assert.ok(tokens.some((token) => (
+      token.line === position.line
+      && token.character === position.character
+      && token.length === text.length
+      && semanticTokenTypes[token.type] === type
+    )), `expected ${JSON.stringify(text)} at ${position.line + 1}:${position.character + 1} to remain ${type}`);
+  };
+
+  const healthyOffset = source.indexOf("healthy");
+  const typeParameterOffset = source.indexOf("T: Named");
+  const stringOffset = source.indexOf("name: String") + "name: ".length;
+  const nameOffset = source.indexOf("name: String");
+  const serviceTypeOffset = source.indexOf("service: T") + "service: ".length;
+  const copyOffset = source.indexOf("copy name");
+  const copiedNameOffset = copyOffset + "copy ".length;
+
+  tokenAt("healthy", healthyOffset, "function");
+  tokenAt("T", typeParameterOffset, "typeParameter");
+  tokenAt("String", stringOffset, "type");
+  tokenAt("name", nameOffset, "parameter");
+  tokenAt("T", serviceTypeOffset, "typeParameter");
+  tokenAt("copy", copyOffset, "keyword");
+  tokenAt("name", copiedNameOffset, "parameter");
+
+  assert.match(hover(source, fileName, healthyOffset + 2)?.contents.value ?? "", /function healthy<T: Named>/);
+  assert.match(hover(source, fileName, stringOffset + 2)?.contents.value ?? "", /owned UTF-8 value/);
+  assert.match(hover(source, fileName, nameOffset + 2)?.contents.value ?? "", /name: String/);
+  assert.match(hover(source, fileName, serviceTypeOffset)?.contents.value ?? "", /T: Named/);
 });
 
 test("highlights and explains wildcard match arms", () => {

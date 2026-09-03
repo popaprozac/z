@@ -468,6 +468,13 @@ descriptions, required-field diagnostics, and primitive shape validation.
 Definitions include Z modules plus imported project, SDK, and generated native
 headers when the toolchain reports a concrete declaration location.
 
+Editor information is error-tolerant. A semantic diagnostic does not erase the
+rest of the document: Z keeps syntax-derived highlighting and local declaration
+hover available, and an unchanged document retains its last successful rich
+semantic information when one of its dependencies becomes invalid. The
+diagnostic remains authoritative; fallback editor information is never treated
+as proof that the program compiles.
+
 The extension watches `compiler/src` and restarts its language server after
 compiler changes. Grammar or extension-host changes still require an editor
 reload. Bun must be discoverable on the editor's `PATH`; the extension also

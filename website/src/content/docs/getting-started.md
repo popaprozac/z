@@ -88,6 +88,9 @@ details.
 The repository includes a VS Code/Cursor extension with syntax highlighting,
 hover, completion, diagnostics, and a schema for `z.json`. Z is pre-alpha, so
 the extension is installed from the repository rather than a public marketplace.
+Semantic errors remain localized: syntax-derived highlighting and local hover
+survive elsewhere in the file, while unchanged documents retain their most
+recent rich semantic information if an imported dependency temporarily breaks.
 
 For current bootstrap details, testing tiers, and editor installation, use the
 [repository documentation](https://github.com/popaprozac/z/tree/main/docs).
