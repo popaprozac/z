@@ -33,7 +33,12 @@ import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { pathToFileURL } from "node:url";
 import { basename, dirname, resolve } from "node:path";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isLocalSourceModuleSpecifier, type SourceModuleInfo } from "./modules.ts";
+import {
+  isLocalSourceModuleSpecifier,
+  loadSourceModuleBatch,
+  type SourceModuleInfo,
+} from "./modules.ts";
+import { prepareProject } from "./project.ts";
 import { displayFunctionType, functionTypeName, parseFunctionType } from "./function-types.ts";
 import { displayTaskType, parseTaskType } from "./async-types.ts";
 import { parseWeakType } from "./weak-types.ts";
@@ -144,20 +149,19 @@ type LanguageAnalysisCacheEntry = {
   readonly analysis: AnalyzedSource | null;
   readonly error: unknown;
   readonly dependencies: readonly LanguageAnalysisDependency[];
-  readonly createdAt: number;
 };
 
 // Diagnostics, semantic tokens, hover, and completion all ask the same
 // question for one document version. Keep only two complete graphs because an
 // AppKit/WebKit project analysis is intentionally rich and therefore large.
 const languageAnalysisCache = new Map<string, LanguageAnalysisCacheEntry>();
+const importLanguageAnalysisCache = new Map<string, LanguageAnalysisCacheEntry>();
 const lastSuccessfulLanguageAnalyses = new Map<string, {
   readonly source: string;
   readonly analysis: AnalyzedSource;
 }>();
 const maximumCachedLanguageAnalyses = 2;
 const maximumLastSuccessfulLanguageAnalyses = 8;
-const failedLanguageAnalysisLifetime = 2_000;
 
 function languageAnalysisKey(fileName: string): string {
   try {
@@ -260,6 +264,29 @@ function failedLanguageAnalysisDependencies(
     }
   };
   inspect(source, fileName);
+  try {
+    const sourceProgram = parse(lex(source, fileName), fileName);
+    const project = prepareProject(fileName);
+    if (project.manifestPath) add(project.manifestPath);
+    if (project.generatedBuild) add(project.generatedBuild.fileName);
+    const batch = loadSourceModuleBatch(source, sourceProgram, fileName, {
+      sourceImports: project.sourceImports,
+      packages: project.packages,
+      generatedModulePackages: project.generatedModulePackages,
+      generatedCallAdapters: project.generatedBuild?.callAdapters,
+    });
+    for (const module of batch.modules) {
+      add(module.fileName);
+      addForeignAnalysisDependencies(
+        module.program,
+        module.fileName,
+        project.includeDirectories,
+        add,
+      );
+    }
+  } catch {
+    // A parse/module failure is already represented by the primary diagnostic.
+  }
   if (error instanceof DiagnosticError) {
     const diagnosticFileName = resolve(error.fileName);
     if (
@@ -310,6 +337,16 @@ function cacheLanguageAnalysis(key: string, entry: LanguageAnalysisCacheEntry): 
   }
 }
 
+function cacheImportLanguageAnalysis(key: string, entry: LanguageAnalysisCacheEntry): void {
+  importLanguageAnalysisCache.delete(key);
+  importLanguageAnalysisCache.set(key, entry);
+  while (importLanguageAnalysisCache.size > maximumLastSuccessfulLanguageAnalyses) {
+    const oldest = importLanguageAnalysisCache.keys().next().value;
+    if (oldest === undefined) break;
+    importLanguageAnalysisCache.delete(oldest);
+  }
+}
+
 function rememberSuccessfulLanguageAnalysis(
   key: string,
   source: string,
@@ -347,7 +384,6 @@ function languageAnalysis(source: string, fileName: string): AnalyzedSource {
     }
     if (
       !cached.analysis
-      && Date.now() - cached.createdAt < failedLanguageAnalysisLifetime
       && languageAnalysisDependenciesAreCurrent(cached.dependencies)
     ) {
       throw cached.error;
@@ -360,7 +396,6 @@ function languageAnalysis(source: string, fileName: string): AnalyzedSource {
       analysis,
       error: null,
       dependencies: languageAnalysisDependencies(analysis, fileName),
-      createdAt: Date.now(),
     });
     rememberSuccessfulLanguageAnalysis(key, source, analysis);
     return analysis;
@@ -370,7 +405,6 @@ function languageAnalysis(source: string, fileName: string): AnalyzedSource {
       analysis: null,
       error,
       dependencies: failedLanguageAnalysisDependencies(source, fileName, error),
-      createdAt: Date.now(),
     });
     throw error;
   }
@@ -6364,9 +6398,33 @@ function labelCompletions(source: string, fileName: string, offset: number): Com
 
 function importAnalysis(source: string, fileName: string): AnalyzedSource | null {
   const imports = [...source.matchAll(/\bimport\b[\s\S]*?;/g)].map((match) => match[0]).join("\n");
+  const probe = `${imports}\nfunction main(): i32 { return 0; }`;
+  const key = languageAnalysisKey(fileName);
+  const cached = importLanguageAnalysisCache.get(key);
+  if (
+    cached?.source === probe
+    && languageAnalysisDependenciesAreCurrent(cached.dependencies)
+  ) {
+    importLanguageAnalysisCache.delete(key);
+    importLanguageAnalysisCache.set(key, cached);
+    return cached.analysis;
+  }
   try {
-    return analyzeSource(`${imports}\nfunction main(): i32 { return 0; }`, fileName, { requireMain: false });
-  } catch {
+    const analysis = analyzeSource(probe, fileName, { requireMain: false });
+    cacheImportLanguageAnalysis(key, {
+      source: probe,
+      analysis,
+      error: null,
+      dependencies: languageAnalysisDependencies(analysis, fileName),
+    });
+    return analysis;
+  } catch (error) {
+    cacheImportLanguageAnalysis(key, {
+      source: probe,
+      analysis: null,
+      error,
+      dependencies: failedLanguageAnalysisDependencies(probe, fileName, error),
+    });
     return null;
   }
 }
@@ -6793,6 +6851,28 @@ function syntacticHover(
   }
   const imports = importAnalysis(source, fileName);
   if (imports) {
+    const memberOwner = source.slice(0, start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
+    const standardOwner = memberOwner
+      ? imports.semanticInfo.standardModuleBindings.get(memberOwner)
+      : null;
+    if (
+      (memberOwner && imports.semanticInfo.consoleBindings.has(memberOwner))
+      || standardOwner === "console"
+    ) {
+      const detail = consoleMethodDetail(name);
+      if (detail) return markdownHover(detail, source, start, end);
+    }
+    if (standardOwner === "thread" && name === "main") {
+      return markdownHover("thread.main: Executor  // main-thread execution target", source, start, end);
+    }
+    if (standardOwner === "thread" && name === "any") {
+      return markdownHover(
+        "thread.any: CallableThread  // callable may run concurrently on arbitrary registered threads",
+        source,
+        start,
+        end,
+      );
+    }
     const binding = localSourceBinding(imports, name);
     if (binding) {
       const detail = sourceExportDetail(binding.module, binding.importedName, imports.typeDisplayNames, binding.localName);
@@ -6800,6 +6880,9 @@ function syntacticHover(
     }
     if (imports.semanticInfo.standardModuleBindings.has(name)) {
       return markdownHover(`import ${name} from a Z standard-library module`, source, start, end);
+    }
+    if (imports.semanticInfo.consoleBindings.has(name)) {
+      return markdownHover("console  // typed immediate stdout/stderr logging namespace", source, start, end);
     }
     if (imports.semanticInfo.standardTypeBindings.has(name)) {
       return markdownHover(`${name}  // Z standard-library type`, source, start, end);

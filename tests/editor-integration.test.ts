@@ -91,7 +91,12 @@ test("invalidates shared editor analysis when source or an imported module chang
     assert.match(hover(entry, entryFile, entry.indexOf("value()") + 2)?.contents.value ?? "", /value\(\): i32/);
     assert.ok(semanticTokens(entry, entryFile).data.length > 0);
 
-    const repaired = entry.replace("function main(): i32", "function inspect(): String");
+    writeFileSync(dependencyFile, `export function value(): i32 { return 2; }`);
+    const repairedDependency = new Date(Date.now() + 4_000);
+    utimesSync(dependencyFile, repairedDependency, repairedDependency);
+    assert.deepEqual(diagnostics(entry, entryFile), []);
+
+    const repaired = entry.replace("function main(): i32", "function inspect(): i32");
     assert.deepEqual(diagnostics(repaired, entryFile), []);
   } finally {
     rmSync(directory, { recursive: true, force: true });
