@@ -1626,6 +1626,133 @@ function appendAsyncTailImmediateReturn(
   output.append("return;\n");
 }
 
+function appendAsyncTailTryStatement(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  in functionType: LoweredFunctionType,
+  tailExpressionIndex: usize,
+  index: usize,
+  depth: usize
+): void throws String {
+  const statement = view declaration.statements[index];
+  if (statement.labels.length < 2 || statement.labels.length > 3) {
+    throw "native async prefix received a malformed try statement";
+  }
+  const temporary = `_z_stage1_try_${index}`;
+  const attempted = match (in statement.expression) {
+    some(expression) => expression;
+    none => throw "native async prefix received a try statement without a call";
+  };
+  try appendBorrowedTemporaryInitializers(
+    inout output,
+    declaration,
+    attempted,
+    depth
+  );
+  appendIndent(inout output, depth);
+  output.append("Z_");
+  output.append(statement.name);
+  output.append(" ");
+  output.append(temporary);
+  output.append(" = ");
+  try appendExpression(inout output, declaration, attempted);
+  output.append(";\n");
+  appendBorrowedTemporaryCleanups(
+    inout output,
+    declaration,
+    attempted,
+    depth
+  );
+  appendIndent(inout output, depth);
+  output.append("if (");
+  output.append(temporary);
+  output.append(".tag == Z_");
+  output.append(statement.name);
+  output.append("Tag_failure) {\n");
+  appendIndent(inout output, depth + 1);
+  output.append("frame->result = (Z_");
+  output.append(statement.labels[1]);
+  output.append("){.tag = Z_");
+  output.append(statement.labels[1]);
+  output.append("Tag_failure, .payload.failure = ");
+  output.append(temporary);
+  output.append(".payload.failure};\n");
+  if (loweredTypeNeedsDeinit(program, functionType.returnType)) {
+    appendIndent(inout output, depth + 1);
+    output.append("frame->live_result = true;\n");
+  }
+  appendAsyncImmediateReturnScopedCleanups(
+    inout output,
+    program,
+    declaration,
+    tailExpressionIndex,
+    statement,
+    depth + 1,
+    ""
+  );
+  try appendAsyncTailMatchBindingCleanup(
+    inout output,
+    program,
+    declaration,
+    tailExpressionIndex,
+    depth + 1
+  );
+  try appendAsyncTailLocalCleanups(
+    inout output,
+    program,
+    declaration,
+    depth + 1
+  );
+  appendAsyncStoredParameterCleanups(
+    inout output,
+    program,
+    functionType,
+    depth + 1
+  );
+  appendIndent(inout output, depth + 1);
+  output.append("task->completed = true;\n");
+  appendIndent(inout output, depth + 1);
+  output.append("return;\n");
+  appendIndent(inout output, depth);
+  output.append("}\n");
+  if (statement.labels[0].byteLength == 0) return;
+  if (
+    statement.labels.length == 3
+    && statement.labels[2] == "replace"
+  ) {
+    const replacementType = match (in statement.type) {
+      some(type) => type.name.copyBytes(0, type.name.byteLength);
+      none => throw "native async prefix lost an owned try replacement type";
+    };
+    appendIndent(inout output, depth);
+    output.append("Z_");
+    output.append(replacementType);
+    output.append("_deinit(&");
+    match (in statement.secondExpression) {
+      some(target) => try appendExpression(
+        inout output,
+        declaration,
+        target
+      );
+      none => appendCBindingName(inout output, statement.labels[0]);
+    }
+    output.append(");\n");
+  }
+  appendIndent(inout output, depth);
+  match (in statement.secondExpression) {
+    some(target) => try appendExpression(
+      inout output,
+      declaration,
+      target
+    );
+    none => appendCBindingName(inout output, statement.labels[0]);
+  }
+  output.append(" = ");
+  output.append(temporary);
+  output.append(".payload.success;\n");
+}
+
 function appendAsyncTailSynchronousMatch(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -1900,7 +2027,16 @@ function appendAsyncTailPrefixStatement(
     return;
   }
   if (statement.kind == LoweredStatementKind.tryStatement) {
-    throw `native prefixed tail await in ${declaration.name} received an unsupported try`;
+    try appendAsyncTailTryStatement(
+      inout output,
+      program,
+      declaration,
+      functionType,
+      tailExpressionIndex,
+      index,
+      depth
+    );
+    return;
   }
   if (statement.kind == LoweredStatementKind.forStatement) {
     throw `native prefixed tail await in ${declaration.name} received an unsupported for`;

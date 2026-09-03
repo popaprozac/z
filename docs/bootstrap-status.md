@@ -125,6 +125,12 @@ cancellation. The same local may be introduced by
 `Result`, success resumes the suffix, failure moves the owned error into the
 parent result and skips that suffix, and cancellation continues to unwind as a
 separate structural outcome.
+A synchronous typed `try` may also appear in the frame prefix before the final
+dynamic await. Failure completes the parent task immediately, transfers the
+typed error, and destroys every live cleanup-bearing prefix local exactly once;
+success extracts the value and continues toward the suspension point. This
+lets framework code validate and publish process-wide state before attaching
+to a long-lived native event loop without flattening the validation error.
 Non-suspending prefix loops and early-return branches are executable in that
 frame as well. A final consuming enum/`Option` match may now move one selected
 owned async handler into the frame, suspend only that arm, and complete the

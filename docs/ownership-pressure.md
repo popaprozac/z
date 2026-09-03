@@ -4952,6 +4952,29 @@ is serialized on `thread.main`. General concurrent code must not treat it as an
 atomic check-then-act operation; `initialize()` and `get()` retain their strict
 traps if the state changes or is otherwise invalid.
 
+## Typed validation before an async tail suspension
+
+Zapp uses that synchronized snapshot from a synchronous throwing helper before
+its async application run loop performs a final dynamic await:
+
+```zs
+const runLifetime = ApplicationRunLifetime({
+  runState: applicationState,
+  events: this.events,
+});
+try requireApplicationPublication();
+return try await runApplicationPlatform(config, updates);
+```
+
+This exposed a fixed-point emitter boundary rather than a language-design gap:
+the heap-owned tail-await frame already retained prefix locals, but did not yet
+lower a synchronous `try` in that prefix. Native emission now evaluates the
+inner `Result` once. Success continues toward the child task; failure transfers
+the typed error to the parent task, skips the tail await, and destroys live
+locals, stored parameters, and match payloads exactly once. An executable
+regression keeps a cleanup-bearing run lifetime live across this branch, so the
+proof covers both typed propagation and deterministic rollback.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
