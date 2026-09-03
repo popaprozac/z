@@ -147,6 +147,65 @@ test("transfers direct ARC identity and local uniqueness with the owner", () => 
   }
 }, 30_000);
 
+test("replaces initialized struct fields through an inout receiver", () => {
+  const directory = mkdtempSync("/tmp/z-memory-replace-field-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { replace } from "std/memory";
+
+      struct State {
+        current: i32;
+
+        function exchange(inout this, next: i32): i32 {
+          return replace(inout this.current, next);
+        }
+      }
+
+      function main(): i32 {
+        let state = State({ current: 20 });
+        const previous = state.exchange(22);
+        return previous + state.current - 42;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    const native = spawnSync(
+      process.execPath,
+      [cli, "check", file, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(native.status, 0, native.stderr);
+
+    const nativeEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", file],
+      { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+    );
+    assert.equal(nativeEmission.status, 0, nativeEmission.stderr);
+    assert.match(
+      nativeEmission.stdout,
+      /z_stage1_memory_replace_(?:\d+_)?i32\(&\(self->current\),/,
+    );
+    const nativeExecutable = resolve(directory, "native-program");
+    const nativeCompilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", nativeExecutable],
+      { encoding: "utf8", input: nativeEmission.stdout },
+    );
+    assert.equal(nativeCompilation.status, 0, nativeCompilation.stderr);
+    const nativeExecution = spawnSync(nativeExecutable, [], { encoding: "utf8" });
+    assert.equal(nativeExecution.status, 0, nativeExecution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("moves noncopyable C++ storage through the same exchange", () => {
   const directory = mkdtempSync("/tmp/z-memory-replace-cpp-");
   const file = resolve(directory, "main.zs");

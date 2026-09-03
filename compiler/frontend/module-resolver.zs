@@ -831,7 +831,10 @@ function expressionCapabilityBindingIndex(
   if (
     kind == ExpressionKind.argumentReferenceExpression
     && tree.nodes[index].children.length == 1
-  ) return tree.nodes[index].children[0];
+  ) {
+    const child = tree.nodes[index].children[0];
+    return expressionCapabilityBindingIndex(tree, child);
+  }
   if (
     kind == ExpressionKind.memberExpression
     && tree.nodes[index].children.length == 1
@@ -850,6 +853,10 @@ function expressionDirectFieldPath(
   if (root.byteLength == 0) return "";
   let reversed = Array<String>();
   let current = index;
+  if (tree.nodes[current].kind == ExpressionKind.argumentReferenceExpression) {
+    if (tree.nodes[current].children.length != 1) return root;
+    current = tree.nodes[current].children[0];
+  }
   while (
     tree.nodes[current].kind == ExpressionKind.memberExpression
     && tree.nodes[current].children.length == 1
@@ -859,10 +866,6 @@ function expressionDirectFieldPath(
       0,
       tree.nodes[current].value.byteLength
     ));
-    current = tree.nodes[current].children[0];
-  }
-  if (tree.nodes[current].kind == ExpressionKind.argumentReferenceExpression) {
-    if (tree.nodes[current].children.length != 1) return root;
     current = tree.nodes[current].children[0];
   }
   if (
@@ -881,6 +884,10 @@ function expressionDirectFieldPath(
 function projectedFieldCount(in tree: ExpressionTree, index: usize): usize {
   let count: usize = 0;
   let current = index;
+  if (
+    tree.nodes[current].kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[current].children.length == 1
+  ) current = tree.nodes[current].children[0];
   while (
     tree.nodes[current].kind == ExpressionKind.memberExpression
     && tree.nodes[current].children.length == 1
@@ -905,6 +912,10 @@ function requireProjectedCapabilityValuePath(
   let ownerType = valueBindingType(bindings, root);
   let reversed = Array<String>();
   let current = index;
+  if (
+    tree.nodes[current].kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[current].children.length == 1
+  ) current = tree.nodes[current].children[0];
   while (
     tree.nodes[current].kind == ExpressionKind.memberExpression
     && tree.nodes[current].children.length == 1

@@ -1436,20 +1436,16 @@ function parsePrimaryTree(
     || start.kind == TokenKind.inoutKeyword
   ) {
     current = current + 1;
-    const binding = try expect(
+    const bindingNode = try parsePostfixTree(
       tokens,
       inout current,
-      TokenKind.identifier,
-      "a capability binding"
-    );
-    const bindingNode = pushExpressionNode(
+      end,
       inout nodes,
-      ExpressionKind.argumentBindingExpression,
-      binding.text.copyBytes(0, binding.text.byteLength),
-      Array<usize>(),
-      Array<String>(),
-      binding
+      inout statementNodes
     );
+    if (
+      nodes[bindingNode].kind == ExpressionKind.identifierExpression
+    ) nodes[bindingNode].kind = ExpressionKind.argumentBindingExpression;
     let children = Array<usize>();
     children.push(bindingNode);
     return pushExpressionNode(
