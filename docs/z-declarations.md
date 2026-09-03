@@ -533,6 +533,13 @@ declare module "sqlite3.h" {
 }
 ```
 
+`SQLITE_TRANSIENT` is not a plain integer macro; the header defines it as
+`((sqlite3_destructor_type)-1)`. The foreign producer preserves that explicit
+typedef cast, asks Clang for its canonical function-pointer type, and accepts
+the `fixed` fact only when it matches the hidden parameter. The macro is used
+verbatim in generated native code, but its function-pointer representation is
+not introduced as a general safe Z value.
+
 Z code supplies four arguments; this SQLite example uses `-1` for its
 NUL-terminated `String` storage:
 

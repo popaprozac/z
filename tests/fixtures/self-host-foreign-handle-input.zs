@@ -51,6 +51,7 @@ function inspectFixedAndNullOnly(): i32 throws i32 {
   const owner = native.z_owned_handle_open(42);
   if (owner == null) return -1;
   if (native.z_owned_handle_read_with_policy(in owner) != 51) return -2;
+  if (native.z_owned_handle_apply_callback_policy(in owner) != 42) return -3;
   try native.z_owned_handle_apply_policy(in owner);
   return native.z_owned_handle_has_null_tail(in owner, null);
 }

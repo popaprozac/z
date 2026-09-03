@@ -14,6 +14,7 @@ export function collectIntegerMacroConstants(
   headerDirectory: string,
   objectiveC: boolean,
   longWidth: number,
+  explicitCastTypes: ReadonlyMap<string, string> = new Map(),
 ): ReadonlyMap<string, ForeignConstant> {
   const arguments_ = [
     ...clangBaseArguments,
@@ -79,7 +80,12 @@ export function collectIntegerMacroConstants(
   }
   for (const [name, definition] of definitions) {
     const typeName = integerMacroLiteralType(definition.expression, longWidth)
-      ?? integerMacroExpressionType(name, definitions, longWidth);
+      ?? integerMacroExpressionType(name, definitions, longWidth)
+      ?? explicitlyCastIntegerMacroType(
+        name,
+        definitions,
+        explicitCastTypes,
+      );
     if (!typeName) continue;
     constants.set(name, {
       name,
@@ -93,6 +99,51 @@ export function collectIntegerMacroConstants(
     });
   }
   return constants;
+}
+
+function explicitlyCastIntegerMacroType(
+  name: string,
+  definitions: ReadonlyMap<string, { readonly expression: string }>,
+  explicitCastTypes: ReadonlyMap<string, string>,
+): string | null {
+  const definition = definitions.get(name);
+  if (!definition) return null;
+  let normalized = definition.expression.trim();
+  while (
+    normalized.startsWith("(")
+    && normalized.endsWith(")")
+    && outerParenthesesEncloseExpression(normalized)
+  ) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  const cast = /^\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(.+)$/.exec(normalized);
+  if (!cast) return null;
+  const canonicalType = explicitCastTypes.get(cast[1]);
+  if (!canonicalType) return null;
+
+  // A fixed contract may rely on a header's explicitly typed sentinel, but it
+  // must remain an integer-valued object-like macro. This admits conventions
+  // such as SQLite's ((sqlite3_destructor_type)-1) without treating arbitrary
+  // cast expressions as source-nameable Z values.
+  const definitionsByName = new Map<string, bigint>();
+  const evaluating = new Set<string>();
+  const evaluateName = (candidate: string): bigint | null => {
+    const cached = definitionsByName.get(candidate);
+    if (cached !== undefined) return cached;
+    const nested = definitions.get(candidate);
+    if (!nested || evaluating.has(candidate)) return null;
+    evaluating.add(candidate);
+    const value = evaluateIntegerMacroExpression(
+      nested.expression,
+      evaluateName,
+    );
+    evaluating.delete(candidate);
+    if (value !== null) definitionsByName.set(candidate, value);
+    return value;
+  };
+  return evaluateIntegerMacroExpression(cast[2], evaluateName) === null
+    ? null
+    : canonicalType;
 }
 
 function integerMacroExpressionType(

@@ -76,6 +76,13 @@ function userId(in option: Option<User>): i32 {
   };
 }
 
+function conditionalText(present: boolean): Option<String> {
+  const value: Option<String> = present
+    ? Option.some("z")
+    : Option.none;
+  return value;
+}
+
 function nativeOptionProbe(): i32 {
   const scalar = Option.some(42);
   const noScalar: Option<i32> = Option.none;
@@ -99,6 +106,12 @@ function nativeOptionProbe(): i32 {
   ) {
     return 3;
   }
+  const conditional = conditionalText(true);
+  const conditionalLength = match (conditional) {
+    some(value) => value.byteLength;
+    none => usize(0);
+  };
+  if (conditionalLength != 1) return 6;
 
   const noUser: Option<User> = Option.none;
   if (userId(noUser) != -1) {

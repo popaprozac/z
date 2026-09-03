@@ -513,6 +513,18 @@ function readHeader(
   );
   const imported = collectNamedTypes(root, declaration.moduleName, cPlusPlus, swiftCxxNamespace, valueContracts, fileName);
   const constants = new Map(imported.constants);
+  const explicitMacroCastTypes = new Map<string, string>();
+  visit(root, (node) => {
+    if (
+      node.kind !== "TypedefDecl"
+      || !node.name
+      || !node.type?.qualType
+    ) return;
+    explicitMacroCastTypes.set(
+      node.name,
+      node.type.desugaredQualType ?? node.type.qualType,
+    );
+  });
   const objectTypes = new Map<string, ForeignObjectType>();
   const interfaces = objectiveC
     ? collectObjCInterfaces(root, declaration.moduleName, imported.byCName, objectTypes, constants)
@@ -526,6 +538,7 @@ function readHeader(
     headerDirectory,
     objectiveC,
     targetIntegerWidths().long,
+    explicitMacroCastTypes,
   )) {
     if (!constants.has(name)) constants.set(name, constant);
   }

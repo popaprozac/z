@@ -27,6 +27,10 @@ declare module "owned-handle-native.h" {
   ): void throws _ {
     success 0;
   }
+  export function z_owned_handle_apply_callback_policy(
+    in handle: _,
+    policy: _ { fixed Z_OWNED_HANDLE_CALLBACK_POLICY; }
+  ): _;
   export function z_owned_handle_has_null_tail(
     in handle: _,
     tail: null

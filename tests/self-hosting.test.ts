@@ -3969,6 +3969,10 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
+    /present \? \(Z___z_Option_String\)\{\.tag = Z___z_Option_StringTag_some, \.payload\.some = Z_STRING_LITERAL\("z"\)\} : \(Z___z_Option_String\)\{\.tag = Z___z_Option_StringTag_none\}/,
+  );
+  assert.match(
+    optionEmission.stdout,
     /Z___z_Option_Note storedNote = .*?_z_stage1_live_note = false, note/s,
   );
   assert.match(
@@ -11854,6 +11858,10 @@ function main(): i32 {
   );
   assert.match(
     emittedHandleSource,
+    /z_owned_handle_apply_callback_policy\(owner, Z_OWNED_HANDLE_CALLBACK_POLICY\)/,
+  );
+  assert.match(
+    emittedHandleSource,
     /z_owned_handle_has_null_tail\(owner, NULL\)/,
   );
   assert.match(
@@ -11897,6 +11905,27 @@ function main(): i32 {
   assert.match(
     unknownFixedParameter.stderr,
     /unknown foreign constant "Z_OWNED_HANDLE_UNKNOWN"/,
+  );
+
+  writeFileSync(
+    handleContractPath,
+    handleContractSource.replace(
+      "fixed Z_OWNED_HANDLE_CALLBACK_POLICY;",
+      "fixed Z_OWNED_HANDLE_WRONG_CALLBACK_POLICY;",
+    ),
+  );
+  const mismatchedFixedCallbackParameter = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(mismatchedFixedCallbackParameter.status, 1);
+  assert.match(
+    mismatchedFixedCallbackParameter.stderr,
+    /fixed foreign constant "Z_OWNED_HANDLE_WRONG_CALLBACK_POLICY" has type int \(\*\)\(void \*\), expected ZOwnedHandleCallbackPolicy/,
   );
 
   writeFileSync(
@@ -12421,6 +12450,22 @@ function main(): i32 {
   assert.match(
     emittedApplicationSource,
     /z_stage1_checked_convert_i64_to_i32\(wideSigned\)/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_checked_convert_i64_to_u64\(wideSigned\)/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_checked_convert_u64_to_i64\(unsignedWide\)/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /uint64_t z_stage1_checked_convert_i64_to_u64\(int64_t value\) \{\n  if \(value < 0\) abort\(\);/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /int64_t z_stage1_checked_convert_u64_to_i64\(uint64_t value\) \{\n  if \(value > \(uint64_t\)INT64_MAX\) abort\(\);/,
   );
   assert.match(
     emittedApplicationSource,

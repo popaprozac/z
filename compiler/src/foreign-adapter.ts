@@ -16,6 +16,11 @@ import {
 } from "./foreign.ts";
 import { foreignDeclarationProtocolVersion } from "./foreign-declaration-protocol.ts";
 
+// Bump when producer semantics change without changing the ZFDCL wire shape.
+// Cached declaration evidence must be regenerated even when an older artifact
+// remains structurally decodable by the native frontend.
+const foreignDeclarationProducerRevision = 2;
+
 function adjacentContractSource(
   sourcePath: string,
   header: string,
@@ -73,7 +78,10 @@ export function writeForeignDeclarationArtifact(
     project.includeDirectories,
   );
   const cacheKey = createHash("sha256")
-    .update(`z-foreign-adapter-cache-v${foreignDeclarationProtocolVersion}`)
+    .update(
+      `z-foreign-adapter-cache-v${foreignDeclarationProtocolVersion}`
+      + `-r${foreignDeclarationProducerRevision}`,
+    )
     .update("\0")
     .update(producerFingerprint)
     .update("\0")

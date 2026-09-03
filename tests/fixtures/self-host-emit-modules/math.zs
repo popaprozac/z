@@ -23,6 +23,9 @@ export function integerParity(value: u8): i32 {
   const signed = i32(widened);
   const wideSigned = i64(signed);
   if (wideSigned != 2) return 1;
+  const unsignedWide = u64(wideSigned);
+  const signedAgain = i64(unsignedWide);
+  if (unsignedWide != 2 || signedAgain != wideSigned) return 1;
   let wideMaximum: i64 = 9223372036854775807;
   const wideReduced = (wideMaximum - i64(9)) / i64(10);
   if (wideReduced != 922337203685477579) return 1;

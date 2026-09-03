@@ -8367,9 +8367,13 @@ function loweredIntegerSourceType(
     )
   ) return Option.some(sourceType.copyBytes(0, sourceType.byteLength));
   if (
-    sourceType == "i32"
-    || (sourceType == "i64" && targetType == "i32")
+    sourceType == "i8"
+    || sourceType == "i16"
+    || sourceType == "i32"
+    || sourceType == "i64"
+    || sourceType == "isize"
     || sourceType == "u8"
+    || sourceType == "u16"
     || sourceType == "u32"
     || sourceType == "u64"
     || sourceType == "usize"
@@ -10968,16 +10972,47 @@ function lowerExpressionContextual(
       throw `native lowering did not normalize selected conditional propagation at ${tree.nodes[index].line}:${tree.nodes[index].column}`;
     }
     let children = Array<usize>();
-    for (const childInput of tree.nodes[index].children) {
-      const child = try lowerExpression(
-        program,
-        importedTypes,
-        evidence,
-        tree,
-        childInput,
-        inout output
-      );
+    const conditionInput = tree.nodes[index].children[0];
+    const condition = try lowerExpression(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      conditionInput,
+      inout output
+    );
+    children.push(condition);
+    let expectedTypeName = "";
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(name) => expectedTypeName = move name;
+      none => {}
+    }
+    let branchIndex: usize = 1;
+    while (branchIndex < tree.nodes[index].children.length) {
+      const childInput = tree.nodes[index].children[branchIndex];
+      let child: usize = 0;
+      if (expectedTypeName.byteLength > 0) {
+        child = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          childInput,
+          expectedTypeName,
+          inout output
+        );
+      } else {
+        child = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          childInput,
+          inout output
+        );
+      }
       children.push(child);
+      branchIndex = branchIndex + 1;
     }
     return pushExpression(
       inout output,
@@ -16366,6 +16401,56 @@ function lowerExpressionExpected(
         }
       }
       none => {}
+    }
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.conditionalExpression
+    && tree.nodes[index].children.length == 3
+  ) {
+    const conditionInput = tree.nodes[index].children[0];
+    const thenInput = tree.nodes[index].children[1];
+    const elseInput = tree.nodes[index].children[2];
+    if (
+      !expressionTreeContainsTry(tree, thenInput)
+      && !expressionTreeContainsTry(tree, elseInput)
+    ) {
+      const condition = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        conditionInput,
+        inout output
+      );
+      const thenValue = try lowerExpressionExpected(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        thenInput,
+        expectedTypeName,
+        inout output
+      );
+      const elseValue = try lowerExpressionExpected(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        elseInput,
+        expectedTypeName,
+        inout output
+      );
+      let children = Array<usize>();
+      children.push(condition);
+      children.push(thenValue);
+      children.push(elseValue);
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.conditionalValue,
+        "",
+        move children,
+        Array<String>()
+      );
     }
   }
   if (tree.nodes[index].kind == ExpressionKind.numberExpression) {

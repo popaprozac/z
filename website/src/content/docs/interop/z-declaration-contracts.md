@@ -147,6 +147,11 @@ The Z call omits `destructor`; generated native code inserts the verified header
 constant. This is particularly useful when one C argument determines how long
 another argument's bytes remain valid.
 
+`fixed` also supports header sentinels written as an explicitly typedef-cast
+integer expression, including SQLite's `SQLITE_TRANSIENT`. Clang canonicalizes
+the cast type and Z requires it to match the hidden native parameter; the
+function-pointer-shaped sentinel does not become a general Z value.
+
 ## Contract callbacks as one relationship
 
 Callbacks often split one logical operation across a function pointer, context

@@ -13,6 +13,11 @@ typedef struct ZOwnedChild {
 
 #define Z_OWNED_HANDLE_POLICY 9
 
+typedef void (*ZOwnedHandleCallbackPolicy)(void *);
+#define Z_OWNED_HANDLE_CALLBACK_POLICY ((ZOwnedHandleCallbackPolicy)-1)
+typedef int (*ZOwnedHandleWrongCallbackPolicy)(void *);
+#define Z_OWNED_HANDLE_WRONG_CALLBACK_POLICY ((ZOwnedHandleWrongCallbackPolicy)-1)
+
 static int z_owned_handle_closed_count = 0;
 static ZOwnedHandle z_owned_handle_default_value = { 41 };
 static ZOwnedChild z_owned_handle_default_child = { 43 };
@@ -57,6 +62,14 @@ static inline int z_owned_handle_apply_policy(
 ) {
   if (handle == NULL || policy != Z_OWNED_HANDLE_POLICY) return -1;
   return 0;
+}
+
+static inline int z_owned_handle_apply_callback_policy(
+  ZOwnedHandle *handle,
+  ZOwnedHandleCallbackPolicy policy
+) {
+  if (handle == NULL || policy != Z_OWNED_HANDLE_CALLBACK_POLICY) return -1;
+  return handle->value;
 }
 
 static inline int z_owned_handle_has_null_tail(

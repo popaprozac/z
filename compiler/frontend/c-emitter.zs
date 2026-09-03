@@ -170,6 +170,14 @@ function isFloatingTypeName(in name: String): boolean {
   return name == "f32" || name == "f64";
 }
 
+function isSignedIntegerTypeName(in name: String): boolean {
+  return name == "i8"
+    || name == "i16"
+    || name == "i32"
+    || name == "i64"
+    || name == "isize";
+}
+
 function integerTypeWidth(in name: String): usize {
   if (name == "i8" || name == "u8") return 8;
   if (name == "i16" || name == "u16") return 16;
@@ -192,12 +200,13 @@ function nativeNumericConversionRequiresCheck(
     const precision: usize = target == "f32" ? usize(24) : usize(53);
     return integerTypeWidth(source) > precision;
   }
-  return !(
-    source == "u8"
-    || (source == "i32" && target == "i64")
-    || (source == "u32" && target == "u64")
-    || (source == "usize" && target == "u64")
-  );
+  const sourceWidth = integerTypeWidth(source);
+  const targetWidth = integerTypeWidth(target);
+  const sourceSigned = isSignedIntegerTypeName(source);
+  const targetSigned = isSignedIntegerTypeName(target);
+  if (sourceSigned == targetSigned) return targetWidth < sourceWidth;
+  if (sourceSigned) return true;
+  return targetWidth <= sourceWidth;
 }
 
 function nativeCIntegerType(in name: String): String throws String {
@@ -18788,6 +18797,29 @@ function integerUpperExclusiveLiteral(in name: String): String throws String {
   throw `native numeric conversion does not support integer type ${name}`;
 }
 
+function integerMinimumMacro(in name: String): String throws String {
+  if (name == "i8") return "INT8_MIN";
+  if (name == "i16") return "INT16_MIN";
+  if (name == "i32") return "INT32_MIN";
+  if (name == "i64") return "INT64_MIN";
+  if (name == "isize") return "INTPTR_MIN";
+  throw `native numeric conversion does not support signed integer type ${name}`;
+}
+
+function integerMaximumMacro(in name: String): String throws String {
+  if (name == "i8") return "INT8_MAX";
+  if (name == "i16") return "INT16_MAX";
+  if (name == "i32") return "INT32_MAX";
+  if (name == "i64") return "INT64_MAX";
+  if (name == "isize") return "INTPTR_MAX";
+  if (name == "u8") return "UINT8_MAX";
+  if (name == "u16") return "UINT16_MAX";
+  if (name == "u32") return "UINT32_MAX";
+  if (name == "u64") return "UINT64_MAX";
+  if (name == "usize") return "SIZE_MAX";
+  throw `native numeric conversion does not support integer type ${name}`;
+}
+
 function appendCheckedFloatingConversion(
   inout output: TextBuffer,
   in source: String,
@@ -18843,20 +18875,68 @@ function appendCheckedFloatingConversion(
     output.append(")converted != value) abort();\n  return converted;\n}\n\n");
     return;
   }
-  output.append("  const ");
+  const sourceSigned = isSignedIntegerTypeName(source);
+  const targetSigned = isSignedIntegerTypeName(target);
+  const sourceWidth = integerTypeWidth(source);
+  const targetWidth = integerTypeWidth(target);
+  if (sourceSigned && !targetSigned) {
+    output.append("  if (value < 0");
+    if (sourceWidth > targetWidth) {
+      const maximum = try integerMaximumMacro(target);
+      output.append(" || value > (");
+      output.append(sourceType);
+      output.append(")");
+      output.append(maximum);
+    }
+    output.append(") abort();\n");
+  } else if (!sourceSigned && targetSigned) {
+    const maximum = try integerMaximumMacro(target);
+    output.append("  if (value > (");
+    output.append(sourceType);
+    output.append(")");
+    output.append(maximum);
+    output.append(") abort();\n");
+  } else if (sourceSigned && targetSigned) {
+    const minimum = try integerMinimumMacro(target);
+    const maximum = try integerMaximumMacro(target);
+    output.append("  if (value < (");
+    output.append(sourceType);
+    output.append(")");
+    output.append(minimum);
+    output.append(" || value > (");
+    output.append(sourceType);
+    output.append(")");
+    output.append(maximum);
+    output.append(") abort();\n");
+  } else {
+    const maximum = try integerMaximumMacro(target);
+    output.append("  if (value > (");
+    output.append(sourceType);
+    output.append(")");
+    output.append(maximum);
+    output.append(") abort();\n");
+  }
+  output.append("  return (");
   output.append(targetType);
-  output.append(" converted = (");
-  output.append(targetType);
-  output.append(")value;\n  if ((");
-  output.append(sourceType);
-  output.append(")converted != value) abort();\n  return converted;\n}\n\n");
+  output.append(")value;\n}\n\n");
 }
 
-function appendCheckedFloatingConversionRuntime(
+function appendCheckedNumericConversionRuntime(
   inout output: TextBuffer,
   in program: LoweredProgram
 ): void throws String {
   let emitted = Array<String>();
+  emitted.push("i32:u8");
+  emitted.push("usize:u8");
+  emitted.push("u32:u8");
+  emitted.push("u64:u8");
+  emitted.push("i32:u32");
+  emitted.push("u32:i32");
+  emitted.push("usize:i32");
+  emitted.push("usize:isize");
+  emitted.push("i64:i32");
+  emitted.push("i32:usize");
+  emitted.push("u64:usize");
   for (const declaration of program.functions) {
     for (const expression of declaration.expressions) {
       if (
@@ -18868,10 +18948,6 @@ function appendCheckedFloatingConversionRuntime(
         expression.labels[0].byteLength
       );
       const target = expression.value.copyBytes(0, expression.value.byteLength);
-      if (
-        !isFloatingTypeName(source)
-        && !isFloatingTypeName(target)
-      ) continue;
       if (!nativeNumericConversionRequiresCheck(source, target)) continue;
       const key = `${source}:${target}`;
       if (labelsContain(emitted, key)) continue;
@@ -20490,7 +20566,7 @@ function emitLoweredC(
   output.append("  if (value > SIZE_MAX) abort();\n");
   output.append("  return (size_t)value;\n");
   output.append("}\n\n");
-  try appendCheckedFloatingConversionRuntime(inout output, program);
+  try appendCheckedNumericConversionRuntime(inout output, program);
   appendWrappingIntegerRuntime(inout output, "i32", "int32_t");
   appendWrappingIntegerRuntime(inout output, "u8", "uint8_t");
   appendWrappingIntegerRuntime(inout output, "u32", "uint32_t");

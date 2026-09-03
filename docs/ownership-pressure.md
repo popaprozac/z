@@ -4406,16 +4406,27 @@ and borrowed `unsigned char *` text must cast to the C-string carrier before
 runtime selection, C emission, and differential fixtures now cover those
 shapes.
 
-The application also supplied useful negative evidence. SQLite's
-`SQLITE_TRANSIENT` is an expression-like C macro and does not yet enter Z's
-typed importer, so the benchmark currently passes the documented null
-destructor while keeping each Z string alive through `sqlite3_step` and
-statement finalization. This is safe but library-specific; general macro
-expressions remain importer work. Zapp's generated service codecs also do not
-yet support `Array<Note>`, so the first benchmark revision returns one typed
-page containing exact JSON for the collection. Neither boundary should be
-hidden by a shim: both are concrete pressure targets for the importer and
-generated-code layers.
+The persistent Zapp revision then made the SQLite handle application-owned:
+service startup creates the application data directory, opens one database,
+loads prior rows, and installs the owner; service shutdown drops that owner and
+closes SQLite deterministically. A second packaged launch observed the three
+rows written by the first launch and continued with IDs four and five. This is
+the first sustained evidence that application context, lifecycle, ARC-held
+native ownership, direct C calls, typed errors, collections, and generated
+WebView service dispatch compose in one Z program rather than isolated probes.
+
+That revision closed three compiler gaps instead of encoding application
+workarounds. The fixed-point numeric emitter now covers the complete integral
+conversion matrix with explicit signed/unsigned bounds; contextually typed
+generic enum construction survives conditional branches such as nullable text
+lifting into `Option<String>`; and the foreign producer retains explicitly
+typedef-cast integer sentinels for checked `fixed` facts. Consequently
+`SQLITE_TRANSIENT` is validated as the exact destructor callback type and
+inserted directly into `sqlite3_bind_text`, so SQLite copies the borrowed Z
+string bytes before the call returns. No C shim or falsely call-scoped null
+destructor contract is involved. Throwing class constructors remain outside
+the current fixed-point tier, so the private nonthrowing `NoteDatabase`
+constructor is intentionally fronted by a throwing static `open` factory.
 
 ## Zapp native-authority migration
 

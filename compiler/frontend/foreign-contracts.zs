@@ -2433,9 +2433,15 @@ function fixedConstantMatchesParameter(
   const constantType = view declarations.constants[constantIndex].typeName;
   const parameter = view declarations.parameters[parameterIndex];
   if (constantType == parameter.nativeType) return true;
+  if (compactNativeType(constantType) == compactNativeType(parameter.nativeType)) {
+    return true;
+  }
   match (in parameter.canonicalNativeType) {
     some(typeName) => {
       if (constantType == typeName) return true;
+      if (compactNativeType(constantType) == compactNativeType(typeName)) {
+        return true;
+      }
     }
     none => {}
   }
