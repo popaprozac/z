@@ -16,6 +16,7 @@
 @property(nonatomic) int32_t observed;
 + (void)invoke:(void (^ _Nonnull)(int32_t value))handler;
 + (void)invokeOnWorker:(void (^ _Nonnull)(int32_t value))handler;
++ (void)invokeObjectOnWorker:(void (^ _Nonnull)(NSString * _Nonnull value))handler;
 - (int32_t)invokeDelegate;
 - (void)prepareDelegate;
 @end
@@ -31,6 +32,16 @@
   dispatch_semaphore_t completion = dispatch_semaphore_create(0);
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     copied(42);
+    dispatch_semaphore_signal(completion);
+  });
+  dispatch_semaphore_wait(completion, DISPATCH_TIME_FOREVER);
+}
+
++ (void)invokeObjectOnWorker:(void (^ _Nonnull)(NSString * _Nonnull value))handler {
+  void (^copied)(NSString *) = [handler copy];
+  dispatch_semaphore_t completion = dispatch_semaphore_create(0);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    copied(@"native object");
     dispatch_semaphore_signal(completion);
   });
   dispatch_semaphore_wait(completion, DISPATCH_TIME_FOREVER);

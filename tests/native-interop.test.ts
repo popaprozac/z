@@ -2943,6 +2943,23 @@ test("owns arbitrary-thread native callback environments atomically and checks c
   `;
   assert.doesNotThrow(() => compileToC(borrowedTextParameter, fixture));
 
+  const objectiveCObjectParameter = `
+    import native from "objc-blocks.h";
+    function main(): i32 {
+      native.ZObjCBlockFixture.invokeObjectOnWorker(
+        move (value): void => {
+          const copied: String = value;
+          if (copied.byteLength == 0) return;
+        }
+      );
+      return 0;
+    }
+  `;
+  assert.doesNotThrow(() => compileToC(
+    objectiveCObjectParameter,
+    resolve(projectRoot, "tests/fixtures/objc-object-callback.zs"),
+  ));
+
   const storedEnvironment = `
     import callbacks from "callbacks-any-thread.h";
     function main(): i32 {

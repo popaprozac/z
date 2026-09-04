@@ -6596,7 +6596,18 @@ function validateConcurrentForeignCallbackSignature(
     // Native callback inputs are used synchronously on the invoking thread.
     // A borrowed cstring does not itself cross threads; normal borrow and
     // async-capture rules still prevent it from escaping the callback.
-    if (value.parameter && value.type === "cstring") continue;
+    // Objective-C references have the same callback-local shape: ARC keeps
+    // the argument alive for the invocation, while ordinary Z capture and
+    // aggregate-shareability checks still prevent the reference from being
+    // smuggled into unrelated cross-thread storage.
+    if (
+      value.parameter
+      && (
+        value.type === "cstring"
+        || state.foreignObjectTypes.has(value.type)
+        || state.foreignNamedTypes.get(value.type)?.kind === "object"
+      )
+    ) continue;
     const issue = shareableTypeIssue(value.type, structs, enums, state);
     if (!issue) continue;
     throw new DiagnosticError(

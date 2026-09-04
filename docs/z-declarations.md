@@ -642,6 +642,14 @@ vendor that never invokes the callback leaves the synthesized task pending
 indefinitely unless a later contract supplies a native cancellation or terminal
 completion hook.
 
+Objective-C object parameters supplied by a `thread any` block remain local to
+that native invocation. ARC keeps each argument alive while the callback runs;
+ordinary Z capture, storage, and aggregate-shareability checks still prevent
+the reference from escaping into unrelated cross-thread state. This permits
+SDK completion handlers that explicitly deliver immutable result objects on a
+background thread without treating every Objective-C class as globally
+shareable.
+
 `invoked repeatedly` means zero or more invocations. Every owner-tied callback
 connection requires it, but it is not connection-specific: a call-scoped
 visitor or sorting callback can also be invoked repeatedly.

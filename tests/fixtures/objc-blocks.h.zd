@@ -7,4 +7,13 @@ declare module "objc-blocks.h" {
       invoked once;
     }
   }
+
+  export function ZObjCBlockFixture.invokeObjectOnWorker(
+    move handler: _
+  ): _ {
+    callback handler {
+      thread any;
+      invoked once;
+    }
+  }
 }
