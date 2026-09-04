@@ -1367,7 +1367,7 @@ function collectNamedTypes(
     ) return;
     const named = resolvePotentialNamedType(node.type.qualType, [], namedTypes);
     const typeName = named?.kind === "scalar"
-      ? named.underlying
+      ? named.typeName
       : named?.kind === "enum"
         ? named.typeName
         : mapBuiltinType(node.type.desugaredQualType ?? node.type.qualType);

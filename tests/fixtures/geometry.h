@@ -65,4 +65,6 @@ static inline ZCoordinate z_area(ZCoordinate width, ZCoordinate height) {
   return width * height;
 }
 
+static const ZCount ZCountDefault = 3;
+
 #endif

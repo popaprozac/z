@@ -1976,6 +1976,20 @@ test("selectively imports C types and constants with the same aliases used by fu
   assert.equal(translateDefinition?.range.start.line, 32);
 });
 
+test("preserves scalar typedef identity for typed native constants", () => {
+  const example = resolve(projectRoot, "tests/fixtures/typed-scalar-constant.zs");
+  const source = readFileSync(example, "utf8");
+  const module = analyzeSource(source, example).foreignModules.get("geometry");
+  assert.equal(
+    module?.constants.get("ZCountDefault")?.typeName,
+    "geometry.ZCount",
+  );
+  const generated = compileToC(source, example);
+  assert.match(generated, /const ZCount amount = ZCountDefault;/);
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("imports typed object-like integer macros without textual substitution", () => {
   const example = resolve(projectRoot, "tests/fixtures/macro-constants.zs");
   const source = readFileSync(example, "utf8");
