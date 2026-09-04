@@ -5067,14 +5067,35 @@ parity and composition gap rather than a need for new ownership syntax.
 Both frontends now create one hidden Array owner before a synchronous `in`
 call, borrow that stable storage for the call, secure the result, and destroy
 the Array immediately afterward. A strict-C executable regression proves the
-allocation is reclaimed once and the callee cannot retain the pointer. Async
-borrows remain named-storage-only because their address must survive a
-suspension. Other cleanup-bearing temporary types stay conservative until each
-lowering shape has equivalent exact-once cleanup evidence.
+allocation is reclaimed once and the callee cannot retain the pointer. Other
+cleanup-bearing temporary types stay conservative until each lowering shape
+has equivalent exact-once cleanup evidence.
+
+## Direct-awaited borrowed temporaries became compiler-owned frame storage
+
+Z Notes later exposed the suspension counterpart while passing fresh
+`OpenDialogOptions` and `SaveDialogOptions` values to directly awaited
+operations. Requiring a user-authored local solely to give the temporary an
+address would have been a framework workaround, not an ownership rule worth
+teaching.
+
+For a sequential direct await, both frontends now synthesize an owner slot in
+the parent task frame. The aggregate is initialized before the child starts,
+borrowed at a stable address through suspension, and destroyed exactly once
+after child teardown. Cancellation and unfinished-frame destruction follow the
+same live-state cleanup path. An executable regression uses a cleanup-bearing
+`String` field and proves that its destructor runs once.
+
+This does not weaken concurrent borrowing. A hot child created with `task` can
+outlive the expression that starts it, so its borrowed argument still requires
+named storage inside an explicit `async scope`. The distinction follows the
+actual lifetime shape rather than adding source syntax.
 
 ## Not tested yet
 
-- child-task output and cross-thread borrows that survive suspension;
+- child-task output and cross-thread borrows that survive suspension; direct
+  await now covers one fresh cleanup-bearing aggregate input, while concurrent
+  child-task borrows remain scope-owned named storage;
 - broader retained parameter-provenanced aggregates: the one-owner synchronous
   named-struct tier now has positive, negative, native-frontend, hover,
   last-use, method, forwarding, `in` consumer, object-destructuring, and

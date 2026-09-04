@@ -188,6 +188,10 @@ Starting the stored value is hot, preserves its declared `Task<T, E>` outcome,
 and retains its captured environment until the invocation is joined or
 cancelled. A borrowed argument requires named storage inside an explicit
 `async scope`; the scope proves that implicit exit cannot outlive the owner.
+This rule applies to a hot concurrent child created with `task`. A sequential
+direct `await` may borrow a fresh aggregate constructor: Z materializes the
+temporary in the parent task frame, keeps it live through child teardown, and
+destroys it exactly once after completion or cancellation.
 
 `await task operation()` is rejected as redundant. Sequential work uses
 `await operation()`; concurrent work binds the child task and joins it after
@@ -352,9 +356,11 @@ tier supports contextual async closures through direct await and
 `task handler(...)`. A callable-backed task uses the ordinary structured-task
 lifecycle: `await` consumes its value/error join handle,
 `await task.cancel()` requests cancellation and joins cleanup, and lexical
-scope exit joins an unobserved child. Borrowed arguments must currently be
-named storage inside an explicit `async scope` so their address remains stable
-through the child suspension. Named async-function conversion remains staged.
+scope exit joins an unobserved child. Borrowed arguments of a hot `task` must
+currently be named storage inside an explicit `async scope` so their address
+remains stable through the child suspension. A direct-awaited fresh aggregate
+constructor is instead materialized in parent-frame storage for the duration of
+the child invocation. Named async-function conversion remains staged.
 
 Mutable classes, borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`, `Arena`,
 weak references, and custom Z `deinit` remain rejected. A move-only C++ RAII

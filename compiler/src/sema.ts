@@ -14258,7 +14258,19 @@ function checkArguments(
     }
     if (parameter.mode === "in") {
       const borrowedArgument = capabilityPath?.target ?? argument;
-      if (target.async && !isNamedStorageExpression(borrowedArgument)) {
+      const callAsyncContext = state.asyncCallContexts.at(-1);
+      const aggregateTemporary = argument.kind === "call"
+        && argument.callee.kind === "identifier"
+        && structs.has(argument.callee.name)
+        && argument.arguments.length === 1
+        && argument.arguments[0].kind === "objectExpression";
+      const frameMaterializedTemporary = callAsyncContext?.mode === "await"
+        && (argument.kind === "structExpression" || aggregateTemporary);
+      if (
+        target.async
+        && !isNamedStorageExpression(borrowedArgument)
+        && !frameMaterializedTemporary
+      ) {
         throw new DiagnosticError(
           fileName,
           argument.location,
@@ -14284,11 +14296,6 @@ function checkArguments(
           },
         );
       }
-      const aggregateTemporary = argument.kind === "call"
-        && argument.callee.kind === "identifier"
-        && structs.has(argument.callee.name)
-        && argument.arguments.length === 1
-        && argument.arguments[0].kind === "objectExpression";
       if (
         !isNamedStorageExpression(borrowedArgument)
         && argument.kind !== "structExpression"
@@ -14309,6 +14316,7 @@ function checkArguments(
       if (
         hasOwnershipType(borrowedActual, structs, enums, state)
         && !isNamedStorageExpression(borrowedArgument)
+        && !frameMaterializedTemporary
         && borrowedArgument.kind !== "dynamicArrayExpression"
         && argument.kind !== "template"
         && argument.kind !== "string"

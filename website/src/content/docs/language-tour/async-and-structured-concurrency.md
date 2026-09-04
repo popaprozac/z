@@ -159,8 +159,12 @@ child work should prefer unnamed `async scope` and the `task` keyword.
 :::note[Cost model]
 Suspending async functions use owned task frames. Directly completed operations
 can finish without suspension; live locals that cross an await reside in the
-frame. `task` adds child scheduling and join state. `async scope` owns its
-children and may lower statically when every child is lexical.
+frame. A fresh aggregate passed by `in` to a direct-awaited operation is
+materialized in address-stable parent-frame storage and cleaned after the child
+is torn down. `task` adds child scheduling and join state; because that hot
+child may outlive its starting expression, borrowed task arguments still use
+named storage inside an `async scope`. `async scope` owns its children and may
+lower statically when every child is lexical.
 :::
 
 :::caution[Pre-alpha composition]

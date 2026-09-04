@@ -79,6 +79,14 @@ type AwaitSite = {
   } | null;
   /** A dynamically dispatched async function value rather than a statically named frame target. */
   readonly callable?: FunctionType;
+  /** Fresh values whose immutable borrow is kept address-stable in the parent task frame. */
+  readonly borrowTemporaries?: readonly AsyncBorrowTemporary[];
+};
+
+type AsyncBorrowTemporary = {
+  readonly argumentIndex: number;
+  readonly name: string;
+  readonly type: string;
 };
 
 type SpawnSite = {
@@ -637,7 +645,7 @@ function planFunction(
     mode: AwaitSite["mode"],
     expression: Extract<Expression, { kind: "await" | "executorPlacement" }>,
   ): AwaitSite => {
-    const site = awaitSite(
+    const unresolved = awaitSite(
       mode,
       expression,
       functions,
@@ -650,6 +658,20 @@ function planFunction(
       registerPlacement,
       nativeThread,
     );
+    const borrowTemporaries = unresolved.spawn
+      ? []
+      : unresolved.call.arguments.flatMap((argument, argumentIndex) => {
+          const parameter = unresolved.target.declaration.parameters[argumentIndex];
+          if (parameter?.mode !== "in" || isAsyncNamedStorageExpression(argument)) return [];
+          const name = `__z_await_borrow_${unresolved.index}_${argumentIndex}`;
+          const type = parameter.type.name;
+          requireFrameType(type, argument.location, fileName, "async borrowed temporary", types);
+          locals.set(name, type);
+          return [{ argumentIndex, name, type }];
+        });
+    const site: AwaitSite = borrowTemporaries.length > 0
+      ? { ...unresolved, borrowTemporaries }
+      : unresolved;
     awaits.set(expression.location.offset, site);
     if (!site.intrinsic && !site.generator && !site.callable) children.set(site.index, site.target);
     return site;
@@ -4676,6 +4698,7 @@ function emitAwaitArguments(
   site: Pick<AwaitSite, "receiver" | "target" | "call"> & {
     readonly nativeThread?: boolean;
     readonly placement?: AwaitSite["placement"] | SpawnSite["placement"];
+    readonly borrowTemporaries?: readonly AsyncBorrowTemporary[];
   },
   parent: AsyncFunctionPlan,
   fileName: string,
@@ -4697,6 +4720,9 @@ function emitAwaitArguments(
   }
   arguments_.push(...site.call.arguments.map((argument, index) => {
     const parameter = site.target.declaration.parameters[index];
+    const borrowTemporary = site.borrowTemporaries?.find((temporary) => (
+      temporary.argumentIndex === index
+    ));
     const argumentType = argument.kind === "identifier"
       ? parent.locals.get(argument.name)
       : undefined;
@@ -4706,7 +4732,9 @@ function emitAwaitArguments(
       && argument.kind === "identifier"
       && argumentType
     );
-    let value = executorBoundThreadCapture && argument.kind === "identifier" && argumentType
+    let value = borrowTemporary
+      ? frameStoredValue(borrowTemporary.name, borrowTemporary.type, parent.types)
+      : executorBoundThreadCapture && argument.kind === "identifier" && argumentType
       ? parent.borrowedLocals.has(argument.name)
         ? borrowedFrameValue(argument.name, argumentType, parent.types)
         : frameStoredValue(argument.name, argumentType, parent.types)
@@ -4755,6 +4783,44 @@ function emitAwaitArguments(
       : `&(${value})`;
   }));
   return arguments_;
+}
+
+function initializeAwaitBorrowTemporaries(
+  site: AwaitSite,
+  parent: AsyncFunctionPlan,
+  fileName: string,
+): string[] {
+  return (site.borrowTemporaries ?? []).flatMap((temporary) => {
+    const argument = site.call.arguments[temporary.argumentIndex];
+    const value = emitFrameExpression(argument, parent, fileName);
+    const destination = frameStoredValue(temporary.name, temporary.type, parent.types);
+    const initialize = requiresNativeFramePlacement(temporary.type, parent.types)
+      ? `new (frame->${frameField(temporary.name)}) ${cFrameType(temporary.type, parent.types)}(${value});`
+      : `${destination} = ${value};`;
+    return [
+      initialize,
+      ...(hasFrameCleanup(temporary.type, parent.types)
+        ? [`frame->${frameLiveField(temporary.name)} = true;`]
+        : []),
+    ];
+  });
+}
+
+function cleanupAwaitBorrowTemporaries(
+  site: AwaitSite,
+  parent: AsyncFunctionPlan,
+  indent = "",
+): string[] {
+  return [...(site.borrowTemporaries ?? [])].reverse().flatMap((temporary) => {
+    if (!hasFrameCleanup(temporary.type, parent.types)) return [];
+    const value = frameStoredValue(temporary.name, temporary.type, parent.types);
+    return [
+      `${indent}if (frame->${frameLiveField(temporary.name)}) {`,
+      `${indent}  ${frameCleanup(value, temporary.type, parent.types)}`,
+      `${indent}  frame->${frameLiveField(temporary.name)} = false;`,
+      `${indent}}`,
+    ];
+  });
 }
 
 function emitFrameSliceConversion(
@@ -4835,6 +4901,7 @@ function beginAwait(
     const arguments_ = emitAwaitArguments(site, parent, fileName);
     const child = `frame->child_${site.index}`;
     return [
+      ...initializeAwaitBorrowTemporaries(site, parent, fileName),
       `${child} = (${callable}).start((${callable}).context, ${childExecutor(site, parent)}${arguments_.length ? `, ${arguments_.join(", ")}` : ""});`,
       scheduleCallableChild(site, parent, child),
       `frame->state = ${nextState};`,
@@ -4844,6 +4911,7 @@ function beginAwait(
   const target = planByKey.get(targetKey(site.target))!;
   const arguments_ = emitAwaitArguments(site, parent, fileName);
   return [
+    ...initializeAwaitBorrowTemporaries(site, parent, fileName),
     `frame->child_${site.index} = ${target.startName}(${[childExecutor(site, parent), ...arguments_].join(", ")});`,
     ...schedulePlacedChild(site, parent, `frame->child_${site.index}`),
     `frame->state = ${nextState};`,
@@ -6346,6 +6414,7 @@ function awaitCompletion(
       `  free(${child});`,
       `  frame->child_${site.index} = NULL;`,
       ...(site.spawn?.binding ? [`  frame->${frameField(site.spawn.binding)} = NULL;`] : []),
+      ...cleanupAwaitBorrowTemporaries(site, parent, "  "),
       "  frame->failed = true;",
       "  frame->cancel_children = true;",
       `  frame->state = ${finalizeStateMarker};`,
@@ -6412,6 +6481,7 @@ function awaitCompletion(
     `z_async_destroy_${targetPart(site.target)}(${child});`,
     `free(${child});`,
     `frame->child_${site.index} = NULL;`,
+    ...cleanupAwaitBorrowTemporaries(site, parent),
   );
   if (site.spawn?.binding) lines.push(`frame->${frameField(site.spawn.binding)} = NULL;`);
   if (terminal) {
@@ -6477,6 +6547,7 @@ function awaitAsyncCallableCompletion(
       `  ${child}.take_error(${child}.task, ${errorDestination});`,
       ...(hasFrameCleanup(errorType, parent.types) ? ["  frame->live_error = true;"] : []),
       ...destroyAsyncCallableInvocation(child).map((line) => `  ${line}`),
+      ...cleanupAwaitBorrowTemporaries(site, parent, "  "),
       "  frame->failed = true;",
       "  frame->cancel_children = true;",
       `  frame->state = ${finalizeStateMarker};`,
@@ -6515,7 +6586,10 @@ function awaitAsyncCallableCompletion(
   if (destination && destinationType && hasFrameCleanup(destinationType, parent.types)) {
     lines.push(`${destinationLiveFlag(destination, parent)} = true;`);
   }
-  lines.push(...destroyAsyncCallableInvocation(child));
+  lines.push(
+    ...destroyAsyncCallableInvocation(child),
+    ...cleanupAwaitBorrowTemporaries(site, parent),
+  );
   if (site.spawn?.binding) lines.push(`frame->${frameField(site.spawn.binding)} = NULL;`);
   if (terminal) {
     if (parent.declaration.errorType) lines.push("frame->failed = false;");
@@ -6937,6 +7011,31 @@ function emitPreparedFrameExpression(
         return;
       case "template":
         for (const part of candidate.parts) if (part.kind === "value") visit(part.expression);
+        {
+          const temporary = `_z_async_template_${candidate.location.offset}`;
+          prefix.push(`Z_String ${temporary} = z_string_new();`);
+          for (const part of candidate.parts) {
+            if (part.kind === "text") {
+              if (part.value) {
+                const literal = JSON.stringify(part.value);
+                prefix.push(`z_string_append_bytes(&${temporary}, ${literal}, sizeof(${literal}) - 1);`);
+              }
+              continue;
+            }
+            const valuePlan = { ...plan, expressionBindings };
+            const type = frameExpressionType(part.expression, valuePlan);
+            const value = emitFrameExpression(part.expression, valuePlan, fileName);
+            prefix.push(...renderAsyncStringValue(
+              value,
+              type,
+              temporary,
+              part.expression.location,
+              valuePlan,
+              fileName,
+            ));
+          }
+          expressionBindings.set(candidate.location.offset, temporary);
+        }
         return;
       case "unary":
         visit(candidate.operand);
@@ -7205,6 +7304,155 @@ function renderAsyncConsoleValue(
     return lines;
   }
   unsupported(fileName, location, `console formatting for ${JSON.stringify(type)} is not executable in async frames yet`);
+}
+
+function renderAsyncStringValue(
+  value: string,
+  type: string,
+  target: string,
+  location: SourceLocation,
+  plan: FrameExpressionContext,
+  fileName: string,
+): string[] {
+  const view = parseViewType(type);
+  if (view) {
+    return renderAsyncStringValue(`(*(${value}))`, view.target, target, location, plan, fileName);
+  }
+  if (["i8", "i16", "i32", "i64", "isize"].includes(type)) {
+    return [`z_string_append_signed(&${target}, (long long)(${value}));`];
+  }
+  if (["u8", "u16", "u32", "u64", "usize"].includes(type)) {
+    return [`z_string_append_unsigned(&${target}, (unsigned long long)(${value}));`];
+  }
+  if (type === "f32" || type === "f64") {
+    return [`z_string_append_float(&${target}, (double)(${value}));`];
+  }
+  if (type === "boolean") {
+    return [`z_string_append_bytes(&${target}, (${value}) ? "true" : "false", (${value}) ? 4 : 5);`];
+  }
+  if (type === "cstring") return [`z_string_append_cstring(&${target}, ${value});`];
+  if (type === "String") {
+    return [`z_string_append_bytes(&${target}, (${value}).data, (${value}).length);`];
+  }
+  if (type === "null") return [`z_string_append_bytes(&${target}, "null", 4);`];
+
+  const foreign = plan.types.semanticInfo.foreignNamedTypes.get(type);
+  if (foreign?.kind === "scalar" || foreign?.kind === "enum") {
+    return renderAsyncStringValue(value, foreign.underlying, target, location, plan, fileName);
+  }
+  if (plan.types.semanticInfo.foreignTypes.has(type)) {
+    return [`z_string_append_pointer(&${target}, (void *)(${value}));`];
+  }
+  if (foreign?.kind === "object" || type.startsWith("__z_objc:")) {
+    return [`z_string_append_bytes(&${target}, "<Objective-C object>", 20);`];
+  }
+  if (type.startsWith("__z_objc_class:")) {
+    return [`z_string_append_bytes(&${target}, "<Objective-C class>", 19);`];
+  }
+
+  const fixed = parseFixedArrayType(type);
+  const dynamic = parseDynamicArrayType(type);
+  const slice = parseSliceType(type);
+  const collection = fixed ?? dynamic ?? slice;
+  if (collection) {
+    const index = `_z_async_template_index_${location.offset}`;
+    const length = fixed ? String(fixed.length) : `((${value}).length)`;
+    const element = `((${value}).data[${index}])`;
+    return [
+      `z_string_append_bytes(&${target}, "[", 1);`,
+      `for (uintptr_t ${index} = 0; ${index} < ${length}; ${index} += 1) {`,
+      `  if (${index} > 0) z_string_append_bytes(&${target}, ", ", 2);`,
+      ...renderAsyncStringValue(
+        element,
+        collection.elementType,
+        target,
+        location,
+        plan,
+        fileName,
+      ).map((line) => indent(line, 2)),
+      "}",
+      `z_string_append_bytes(&${target}, "]", 1);`,
+    ];
+  }
+
+  const declaration = plan.types.structs.get(type);
+  if (declaration?.kind === "class") {
+    const displayName = plan.types.semanticInfo.typeDisplayNames.get(type) ?? type;
+    return [
+      `z_string_append_bytes(&${target}, ${JSON.stringify(`${displayName}@`)}, ${displayName.length + 1});`,
+      `z_string_append_pointer(&${target}, (void *)(${value}));`,
+    ];
+  }
+  const recordFields = declaration?.fields
+    ?? (foreign?.kind === "record"
+      ? foreign.fields.map((field) => ({ name: field.name, type: { name: field.typeName } }))
+      : null);
+  if (recordFields) {
+    const displayName = declaration
+      ? plan.types.semanticInfo.typeDisplayNames.get(type) ?? type
+      : foreign?.kind === "record" ? foreign.exportName : type;
+    const prefixValue = `${displayName} { `;
+    const lines = [
+      `z_string_append_bytes(&${target}, ${JSON.stringify(prefixValue)}, sizeof(${JSON.stringify(prefixValue)}) - 1);`,
+    ];
+    recordFields.forEach((field, index) => {
+      if (index > 0) lines.push(`z_string_append_bytes(&${target}, ", ", 2);`);
+      const label = `${field.name}: `;
+      lines.push(`z_string_append_bytes(&${target}, ${JSON.stringify(label)}, sizeof(${JSON.stringify(label)}) - 1);`);
+      lines.push(...renderAsyncStringValue(
+        `((${value}).${field.name})`,
+        field.type.name,
+        target,
+        location,
+        plan,
+        fileName,
+      ));
+    });
+    lines.push(`z_string_append_bytes(&${target}, " }", 2);`);
+    return lines;
+  }
+
+  const enumeration = plan.types.enums.get(type);
+  if (enumeration) {
+    const displayName = plan.types.semanticInfo.typeDisplayNames.get(type) ?? type;
+    const niche = asyncOptionNichePayload(type, plan.types);
+    if (niche) {
+      const absent = asyncOptionNicheNull(niche, plan.types);
+      const none = `${displayName}.none`;
+      const some = `${displayName}.some(`;
+      return [
+        `if (${value} == ${absent}) {`,
+        `  z_string_append_bytes(&${target}, ${JSON.stringify(none)}, sizeof(${JSON.stringify(none)}) - 1);`,
+        "} else {",
+        `  z_string_append_bytes(&${target}, ${JSON.stringify(some)}, sizeof(${JSON.stringify(some)}) - 1);`,
+        ...renderAsyncStringValue(value, niche, target, location, plan, fileName).map((line) => indent(line, 2)),
+        `  z_string_append_bytes(&${target}, ")", 1);`,
+        "}",
+      ];
+    }
+    const lines = [`switch ((${value}).tag) {`];
+    for (const variant of enumeration.variants) {
+      const label = `${displayName}.${variant.name}`;
+      lines.push(`  case ${resultTag(type, variant.name)}:`);
+      lines.push(`    z_string_append_bytes(&${target}, ${JSON.stringify(label)}, sizeof(${JSON.stringify(label)}) - 1);`);
+      if (variant.payload) {
+        lines.push(`    z_string_append_bytes(&${target}, "(", 1);`);
+        lines.push(...renderAsyncStringValue(
+          `((${value}).data.${variant.name})`,
+          variant.payload.name,
+          target,
+          location,
+          plan,
+          fileName,
+        ).map((line) => indent(line, 4)));
+        lines.push(`    z_string_append_bytes(&${target}, ")", 1);`);
+      }
+      lines.push("    break;");
+    }
+    lines.push("}");
+    return lines;
+  }
+  unsupported(fileName, location, `String interpolation for ${JSON.stringify(type)} is not executable in async frames yet`);
 }
 
 function emitFrameExpression(
@@ -8572,6 +8820,12 @@ function frameExpressionType(
     return plan.types.semanticInfo.numericLiteralTypes.get(expression.location.offset) ?? "i32";
   }
   return "i32";
+}
+
+function isAsyncNamedStorageExpression(expression: Expression): boolean {
+  if (expression.kind === "identifier" || expression.kind === "argumentReference") return true;
+  return (expression.kind === "member" || expression.kind === "index")
+    && isAsyncNamedStorageExpression(expression.object);
 }
 
 function asyncIntegerOperationName(kind: IntegerOperation["kind"], type: string): string {

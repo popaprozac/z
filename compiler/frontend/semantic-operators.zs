@@ -133,6 +133,7 @@ export function unaryOperatorType(
     if (
       !genericOwnedParameter
       && !typeHasCleanup(modules, moduleIndex, operand, visiting)
+      && !isUnresolvedExternalType(modules, moduleIndex, operand)
     ) {
       throw invalidOperator(
         module,

@@ -166,6 +166,7 @@ import {
   equivalentTypes,
   rebaseTypeName,
   semanticTypeIdentity,
+  transparentTypeLocation,
   transparentTypeName,
   typeSatisfiesTrait,
   inferredTypeSymbolLocation,
@@ -5677,7 +5678,8 @@ function inferExpressionNodeType(
       value
     );
     match (typeSymbolLocation(modules, moduleIndex, constructionType)) {
-      some(location) => {
+      some(surfaceLocation) => {
+        const location = transparentTypeLocation(modules, surfaceLocation);
         if (
           modules[location.moduleIndex].symbols[location.symbolIndex].kind
           != ModuleSymbolKind.classSymbol

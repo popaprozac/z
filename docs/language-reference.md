@@ -1338,10 +1338,12 @@ async scope {
 
 The task has the callable's exact `Task<T, E>` contract. Await transfers its
 result or typed error, `await pending.cancel()` consumes the handle after child
-cleanup, and scope exit joins an unobserved child. An `in` argument crossing the
-child suspension must currently come from named storage inside an explicit
+cleanup, and scope exit joins an unobserved child. An `in` argument captured by
+a hot child task must currently come from named storage inside an explicit
 `async scope`, keeping its address stable and its owner live through every exit.
-Named async-function conversion remains staged.
+For a sequential direct await, a fresh aggregate constructor may be passed
+directly: Z materializes an address-stable owner in the parent task frame and
+cleans it after child teardown. Named async-function conversion remains staged.
 
 The fixed-point native compiler executes completed expression closures and the
 first honest suspension shape: a void closure consisting of one direct

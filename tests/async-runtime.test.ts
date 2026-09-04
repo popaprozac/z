@@ -165,12 +165,10 @@ test("types stored async operations without starting detached work", () => {
     "const invocation = Invocation({ value: 42 });\n      return try await handler(in invocation);",
     "return try await handler(Invocation({ value: 42 }));",
   );
-  const temporaryDiagnostic = diagnostics(
+  assert.doesNotThrow(() => check(
     borrowedTemporary,
     "temporary-async-function-value-argument.zs",
-  )[0];
-  assert.equal(temporaryDiagnostic.code, "Z0704");
-  assert.match(temporaryDiagnostic.message, /requires named storage/);
+  ));
 
   const synchronous = source.replace(
     "async move (in invocation): i32 throws ServiceError =>",
@@ -183,12 +181,54 @@ test("types stored async operations without starting detached work", () => {
 
   const directory = mkdtempSync("/tmp/z-async-function-value-");
   const input = resolve(directory, "main.zs");
-  writeFileSync(input, source);
-  const artifact = compileToNative(source, input);
+  writeFileSync(input, borrowedTemporary);
+  const artifact = compileToNative(borrowedTemporary, input);
   assert.match(artifact.source, /typedef struct Z_AsyncInvocation/);
   assert.match(artifact.source, /\.start = __z_closure_call_[0-9]+_adapter/);
+  assert.match(artifact.source, /value___z_await_borrow_/);
   const execution = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
   assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+});
+
+test("materializes cleanup-bearing immutable borrow temporaries in the awaiting task frame", () => {
+  const source = `
+    import console from "std/console";
+    import { delay } from "std/time";
+
+    struct Request {
+      label: String;
+
+      deinit {
+        console.log(\`released \${this.label}\`);
+      }
+    }
+
+    async function inspect(in request: Request): i32 {
+      await delay(1);
+      return i32(request.label.byteLength);
+    }
+
+    async function main(): i32 {
+      const status = 4;
+      const description = \`request \${status}\`;
+      console.log(description);
+      return await inspect(Request({ label: "menu" })) - 4;
+    }
+  `;
+  assert.doesNotThrow(() => check(source, "async-borrowed-temporary.zs"));
+  const generated = compileToC(source, "async-borrowed-temporary.zs");
+  assert.match(generated, /value___z_await_borrow_/);
+  assert.match(generated, /live___z_await_borrow_/);
+  assert.match(generated, /Z_Request_deinit/);
+  assert.match(generated, /z_string_append_signed/);
+
+  const directory = mkdtempSync("/tmp/z-async-borrowed-temporary-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, source);
+  const execution = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.equal(execution.stdout, "request 4\nreleased menu\n");
   rmSync(directory, { recursive: true, force: true });
 });
 

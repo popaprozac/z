@@ -113,7 +113,7 @@ function visibleTypeLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
-function transparentTypeLocation(
+export function transparentTypeLocation(
   in modules: Array<ResolvedModule>,
   in location: ModuleSymbolLocation
 ): ModuleSymbolLocation {
@@ -529,11 +529,13 @@ export function rebaseTypeName(
   };
 }
 
-export function transparentTypeName(
+function transparentTypeNameAtDepth(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
-  in name: String
+  in name: String,
+  depth: usize
 ): String {
+  if (depth >= 64) return name.copyBytes(0, name.byteLength);
   return match (typeSymbolLocation(modules, moduleIndex, name)) {
     some(location) => {
       if (
@@ -542,17 +544,40 @@ export function transparentTypeName(
       ) {
         return name.copyBytes(0, name.byteLength);
       }
+      const declaredTargetLength = modules[location.moduleIndex].symbols[
+        location.symbolIndex
+      ].importedName.byteLength;
+      const declaredTarget = modules[location.moduleIndex].symbols[
+        location.symbolIndex
+      ].importedName.copyBytes(0, declaredTargetLength);
+      if (
+        location.moduleIndex == moduleIndex
+        && declaredTarget == name
+      ) return name.copyBytes(0, name.byteLength);
+      const expandedTarget = transparentTypeNameAtDepth(
+        modules,
+        location.moduleIndex,
+        declaredTarget,
+        depth + 1
+      );
       const target = rebaseTypeName(
         modules,
         location.moduleIndex,
         moduleIndex,
-        modules[location.moduleIndex].symbols[location.symbolIndex].importedName
+        expandedTarget
       );
-      if (target == name) return target;
-      return transparentTypeName(modules, moduleIndex, target);
+      return target;
     }
     none => name.copyBytes(0, name.byteLength);
   };
+}
+
+export function transparentTypeName(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in name: String
+): String {
+  return transparentTypeNameAtDepth(modules, moduleIndex, name, 0);
 }
 
 function symbolTypeIdentity(

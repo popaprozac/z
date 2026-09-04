@@ -17703,6 +17703,27 @@ test("preserves thread.main callable placement through native resolution and emi
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("preserves thread.main through re-exported callable aliases", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-imported-thread-main-alias/main.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+  assert.match(parity.stdout, /native frontend hybrid/);
+
+  const resolution = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(resolution.status, 0, resolution.stderr);
+});
+
 test("preserves throwing closure and transparent callable-alias effects natively", () => {
   const cases = [
     "examples/language/basics/throwing-function-values.zs",
@@ -17934,6 +17955,19 @@ test("defers unavailable foreign ABI semantics without inventing native diagnost
     assert.equal(authoritativeExpressions, observedExpressions, fileName);
   }
 }, 60_000);
+
+test("defers move ownership for unresolved foreign types to stage-0 metadata", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-unresolved-foreign-move.zs",
+  );
+  const result = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
 
 test("classifies unresolved foreign integer conversion evidence before native lowering", () => {
   const input = resolve(
