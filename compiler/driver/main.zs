@@ -1254,7 +1254,7 @@ function runCacheMetadata(
     "schema",
     "z-native-project-cache-v3"
   );
-  appendCacheField(inout inputs, "schema", "z-native-build-inputs-v1");
+  appendCacheField(inout inputs, "schema", "z-native-build-inputs-v2");
   if (release) {
     appendCacheField(inout output, "profile", "release");
     appendCacheField(inout inputs, "profile", "release");
@@ -1297,6 +1297,7 @@ function runCacheMetadata(
     none => appendCacheField(inout inputs, "generated-overlay", "");
   }
   const compilerPath = try process.executablePath();
+  appendCacheField(inout inputs, "compiler-path", compilerPath);
   try appendFileCacheEvidence(
     inout output,
     inout inputs,
@@ -1474,7 +1475,7 @@ function buildCacheInputsMatch(
   let offset: usize = 0;
   if (
     try buildCacheField(source, inout offset, "schema")
-    != "z-native-build-inputs-v1"
+    != "z-native-build-inputs-v2"
   ) return false;
   const expectedProfile = release ? "release" : "debug";
   if (
@@ -1503,6 +1504,10 @@ function buildCacheInputsMatch(
   if (
     try buildCacheField(source, inout offset, "generated-overlay")
     != generatedPath
+  ) return false;
+  if (
+    try buildCacheField(source, inout offset, "compiler-path")
+    != try process.executablePath()
   ) return false;
   let inputCount: usize = 0;
   while (offset < source.byteLength) {

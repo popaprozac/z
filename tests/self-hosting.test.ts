@@ -1,3 +1,4 @@
+import { chmodSync, copyFileSync } from "node:fs";
 import {
   ApiNoteConflictError,
   DiagnosticError,
@@ -10338,6 +10339,24 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(nativeLibraryBuild.stdout, /build\/libzmath\.a/);
   assert.match(nativeLibraryBuild.stdout, /build\/zmath\.h/);
+  const alternateDriver = resolve(directory, "z-native-alternate");
+  copyFileSync(driver, alternateDriver);
+  chmodSync(alternateDriver, 0o755);
+  const alternateCompilerBuild = spawnSync(
+    alternateDriver,
+    ["build"],
+    {
+      cwd: cExportProject,
+      encoding: "utf8",
+    },
+  );
+  assert.equal(
+    alternateCompilerBuild.status,
+    0,
+    alternateCompilerBuild.stderr,
+  );
+  assert.doesNotMatch(alternateCompilerBuild.stdout, /cache hit:/);
+  assert.match(alternateCompilerBuild.stdout, /build\/libzmath\.a/);
   const nativeExportSource = readFileSync(
     resolve(cExportProject, ".z-cache/build/zmath.c"),
     "utf8",

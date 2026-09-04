@@ -170,30 +170,50 @@ function inferredHiddenTypeSymbolLocation(
   in modules: Array<ResolvedModule>,
   in typeName: String
 ): Option<ModuleSymbolLocation> {
-  if (!stringStartsWith(typeName, "__z_module_")) {
+  const prefix = "__z_module_";
+  if (!stringStartsWith(typeName, prefix)) {
     return Option<ModuleSymbolLocation>.none;
   }
+  let index = prefix.byteLength;
+  const digitStart = index;
   let candidateModuleIndex: usize = 0;
-  while (candidateModuleIndex < modules.length) {
-    let candidateSymbolIndex: usize = 0;
-    while (
-      candidateSymbolIndex < modules[candidateModuleIndex].symbols.length
-    ) {
-      const symbol = view modules[candidateModuleIndex].symbols[
-        candidateSymbolIndex
-      ];
-      if (
-        isTypeSymbolKind(symbol.kind)
-        && typeName == `__z_module_${candidateModuleIndex}_${symbol.name}`
-      ) return Option.some(ModuleSymbolLocation({
-        moduleIndex: candidateModuleIndex,
-        symbolIndex: candidateSymbolIndex,
-      }));
-      candidateSymbolIndex = candidateSymbolIndex + 1;
+  let invalidModuleIndex = false;
+  while (index < typeName.byteLength) {
+    const byte = typeName.byteAt(index);
+    if (byte < 48 || byte > 57) break;
+    // A generated identity can only name a module already present in this
+    // graph. Stop accumulating once the value cannot be valid; this also keeps
+    // malformed external text from overflowing usize while parsing.
+    if (candidateModuleIndex >= modules.length) {
+      invalidModuleIndex = true;
+    } else {
+      candidateModuleIndex = candidateModuleIndex * 10 + usize(byte - 48);
     }
-    candidateModuleIndex = candidateModuleIndex + 1;
+    index = index + 1;
   }
-  return Option<ModuleSymbolLocation>.none;
+  if (
+    index == digitStart
+    || invalidModuleIndex
+    || candidateModuleIndex >= modules.length
+    || index >= typeName.byteLength
+    || typeName.byteAt(index) != 95
+    || index + 1 >= typeName.byteLength
+  ) return Option<ModuleSymbolLocation>.none;
+  const symbolName = typeName.copyBytes(index + 1, typeName.byteLength);
+  const candidateSymbolIndex = moduleSymbolIndex(
+    modules[candidateModuleIndex],
+    symbolName
+  );
+  if (
+    candidateSymbolIndex >= modules[candidateModuleIndex].symbols.length
+    || !isTypeSymbolKind(
+      modules[candidateModuleIndex].symbols[candidateSymbolIndex].kind
+    )
+  ) return Option<ModuleSymbolLocation>.none;
+  return Option.some(ModuleSymbolLocation({
+    moduleIndex: candidateModuleIndex,
+    symbolIndex: candidateSymbolIndex,
+  }));
 }
 
 function typeSymbolLocationForName(

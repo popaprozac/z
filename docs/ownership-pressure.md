@@ -5164,17 +5164,27 @@ roughly 2.03 trillion retired instructions.
 Native lowering now builds indexed type-identity sets and maps once at the
 relevant graph boundaries. The same cold build takes about 57.90 seconds and
 525 billion instructions. An early project-build cache implemented through Z's
-own filesystem, hashing, process, and move-only lock primitives then reduces an
-unchanged build to about 0.29 seconds. The cache tracks reachable Z inputs and
-Clang-produced transitive header/`.zd` dependency sidecars, so convenience does
-not weaken native dependency correctness.
+own filesystem, hashing, process, and move-only lock primitives initially
+reduced an unchanged build to about 0.29 seconds. The cache tracks reachable Z
+inputs and Clang-produced transitive header/`.zd` dependency sidecars, so
+convenience does not weaken native dependency correctness.
+
+A second application profile moved foreign-name discovery to contract-local
+indices, decodes compiler-hidden identities directly, shares imported evidence
+across generic specializations owned by the same module, and retains hidden
+lowering aliases only when checked binding, expression, or call evidence can
+observe them. The final cold build takes about 35.80 seconds, retires roughly
+310 billion instructions, and reports a 3.27 GB peak footprint. The unchanged
+cache path takes about 0.22 seconds and 12.5 MB. Its input schema now also
+requires the active compiler path and digest, preventing a live but different
+compiler binary from authorizing stale generated C.
 
 The pressure test also records the remaining limitation honestly: changing one
-source module still performs the full roughly 58-second build and retains a
-roughly 7.5 GB peak footprint. Z Notes therefore points directly at the next
-compiler architecture work—demand-driven shared imported-type evidence and
-per-module persistent frontend/lowering artifacts—rather than another surface
-language feature.
+source module still performs the full roughly 35-second build. Z Notes therefore
+points directly at the next compiler architecture work—sharing the remaining
+indexed imported-type context directly through lowering and adding per-module
+persistent frontend/lowering artifacts—rather than another surface language
+feature.
 
 ## Recursive typed JSON stays streaming and ownership-safe
 

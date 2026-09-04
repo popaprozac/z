@@ -27790,6 +27790,7 @@ function appendDeferredGenericAliasType(
 
 function appendHiddenConcreteTypeIdentities(
   in graph: ModuleGraph,
+  in requiredNames: Set<String>,
   inout types: Array<LoweredImportedType>
 ): void {
   let localIndices = Map<String, usize>();
@@ -27818,6 +27819,7 @@ function appendHiddenConcreteTypeIdentities(
         && symbol.kind != ModuleSymbolKind.enumSymbol
       ) continue;
       const identityName = `__z_module_${moduleIndex}_${symbol.name}`;
+      if (!requiredNames.has(identityName)) continue;
       if (localIndices.has(identityName)) continue;
       const privateName = emittedPrivateTypeName(moduleIndex, symbol.name);
       let source = Option<LoweredImportedType>.none;
@@ -27860,6 +27862,60 @@ function appendHiddenConcreteTypeIdentities(
   }
 }
 
+function collectRequiredHiddenTypeNames(
+  in typeName: String,
+  inout names: Set<String>
+): void {
+  if (stringStartsWith(typeName, "__z_module_")) {
+    names.add(typeName.copyBytes(0, typeName.byteLength));
+    return;
+  }
+  const nullable = nullableTargetType(typeName);
+  if (nullable.byteLength > 0) {
+    collectRequiredHiddenTypeNames(nullable, inout names);
+    return;
+  }
+  if (stringStartsWith(typeName, "view ")) {
+    const target = typeName.copyBytes(5, typeName.byteLength);
+    collectRequiredHiddenTypeNames(target, inout names);
+    return;
+  }
+  if (stringStartsWith(typeName, "readonly ")) {
+    const target = typeName.copyBytes(9, typeName.byteLength);
+    collectRequiredHiddenTypeNames(target, inout names);
+    return;
+  }
+  match (fixedArrayShape(typeName)) {
+    some(shape) => {
+      collectRequiredHiddenTypeNames(shape.elementType, inout names);
+      return;
+    }
+    none => {}
+  }
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      collectRequiredHiddenTypeNames(generic.base, inout names);
+      for (const argument of generic.arguments) {
+        collectRequiredHiddenTypeNames(argument, inout names);
+      }
+      return;
+    }
+    none => {}
+  }
+  match (nativeFunctionSignature(typeName)) {
+    some(signature) => {
+      for (const parameter of signature.parameterTypes) {
+        collectRequiredHiddenTypeNames(parameter, inout names);
+      }
+      collectRequiredHiddenTypeNames(signature.returnType, inout names);
+      if (signature.errorType.byteLength > 0) {
+        collectRequiredHiddenTypeNames(signature.errorType, inout names);
+      }
+    }
+    none => {}
+  }
+}
+
 function indexedImportedType(
   in indices: Map<String, usize>,
   in name: String,
@@ -27881,6 +27937,84 @@ function importedTypesForModule(
   moduleIndex: usize
 ): Array<LoweredImportedType> throws String {
   let types = Array<LoweredImportedType>();
+  // Inferred binding and expression evidence names the otherwise-hidden
+  // nominal identities this module can actually observe. Older lowering
+  // conservatively cloned every type from every module into every imported
+  // type table; retain the same ABI evidence only for identities present in
+  // this module's checked semantic result.
+  let requiredHiddenTypeNames = Set<String>();
+  for (const binding of graph.modules[moduleIndex].semanticEvidence
+    .bindingResolutions) {
+    for (const identity of binding.typeIdentities) {
+      if (
+        identity.targetModuleIndex >= graph.modules.length
+        || identity.targetSymbolIndex >= graph.modules[
+          identity.targetModuleIndex
+        ].symbols.length
+      ) continue;
+      const symbol = view graph.modules[identity.targetModuleIndex].symbols[
+        identity.targetSymbolIndex
+      ];
+      requiredHiddenTypeNames.add(
+        `__z_module_${identity.targetModuleIndex}_${symbol.name}`
+      );
+    }
+  }
+  for (const expression of graph.modules[moduleIndex].semanticEvidence
+    .expressionResolutions) {
+    collectRequiredHiddenTypeNames(
+      expression.typeName,
+      inout requiredHiddenTypeNames
+    );
+    collectRequiredHiddenTypeNames(
+      expression.targetName,
+      inout requiredHiddenTypeNames
+    );
+    for (const identity of expression.typeIdentities) {
+      if (
+        identity.targetModuleIndex >= graph.modules.length
+        || identity.targetSymbolIndex >= graph.modules[
+          identity.targetModuleIndex
+        ].symbols.length
+      ) continue;
+      const symbol = view graph.modules[identity.targetModuleIndex].symbols[
+        identity.targetSymbolIndex
+      ];
+      requiredHiddenTypeNames.add(
+        `__z_module_${identity.targetModuleIndex}_${symbol.name}`
+      );
+    }
+  }
+  for (const binding of graph.modules[moduleIndex].semanticEvidence
+    .bindingResolutions) {
+    collectRequiredHiddenTypeNames(
+      binding.typeName,
+      inout requiredHiddenTypeNames
+    );
+  }
+  for (const call of graph.modules[moduleIndex].semanticEvidence
+    .callResolutions) {
+    collectRequiredHiddenTypeNames(
+      call.returnType,
+      inout requiredHiddenTypeNames
+    );
+    collectRequiredHiddenTypeNames(
+      call.errorType,
+      inout requiredHiddenTypeNames
+    );
+    for (const parameter of call.parameterTypes) {
+      collectRequiredHiddenTypeNames(parameter, inout requiredHiddenTypeNames);
+    }
+    for (const argument of call.typeArguments) {
+      collectRequiredHiddenTypeNames(argument, inout requiredHiddenTypeNames);
+    }
+  }
+  // Objective-C ABI identities can enter a module through public aggregate
+  // fields even when that source file does not import the originating header.
+  // Track those canonical spellings while assembling lowering evidence so the
+  // graph-wide propagation below does not linearly rescan a growing type list
+  // for every imported interface and protocol.
+  let foreignObjCTypeNames = Set<String>();
   for (const symbol of graph.modules[moduleIndex].symbols) {
     if (
       symbol.kind != ModuleSymbolKind.classSymbol
@@ -27903,6 +28037,10 @@ function importedTypesForModule(
               0,
               signature.foreignNativeName.byteLength
             );
+        foreignObjCTypeNames.add(loweredNativeName.copyBytes(
+          0,
+          loweredNativeName.byteLength
+        ));
         types.push(LoweredImportedType({
           localName: symbol.name.copyBytes(0, symbol.name.byteLength),
           targetName: loweredNativeName.copyBytes(
@@ -27954,14 +28092,11 @@ function importedTypesForModule(
                 0,
                 signature.foreignNativeName.byteLength
               );
-          let present = false;
-          for (const type of types) {
-            if (
-              type.kind == LoweredTypeKind.foreignObjCType
-              && type.targetName == loweredNativeName
-            ) present = true;
-          }
-          if (present) continue;
+          if (foreignObjCTypeNames.has(loweredNativeName)) continue;
+          foreignObjCTypeNames.add(loweredNativeName.copyBytes(
+            0,
+            loweredNativeName.byteLength
+          ));
           types.push(LoweredImportedType({
             localName: symbol.name.copyBytes(0, symbol.name.byteLength),
             targetName: loweredNativeName.copyBytes(
@@ -28469,7 +28604,11 @@ function importedTypesForModule(
   // Callable aliases can contain compiler-only nominal spellings for types
   // that are not directly nameable by this module. Make those concrete
   // identities available before resolving transparent aliases.
-  appendHiddenConcreteTypeIdentities(graph, inout types);
+  appendHiddenConcreteTypeIdentities(
+    graph,
+    requiredHiddenTypeNames,
+    inout types
+  );
   // Visible aliases can appear inside fields and return types above without
   // being named directly by the consumer. Resolve them to a fixed point so
   // callable aliases and aliases of aliases remain available to inferred
@@ -28733,6 +28872,7 @@ function importedTypesForModule(
         && symbol.kind != ModuleSymbolKind.typeAliasSymbol
       ) continue;
       const identityName = `__z_module_${identityModuleIndex}_${symbol.name}`;
+      if (!requiredHiddenTypeNames.has(identityName)) continue;
       if (importedLocalIndices.has(identityName)) continue;
       if (symbol.kind == ModuleSymbolKind.typeAliasSymbol) {
         const aliasTarget = rebaseTypeName(
@@ -31230,11 +31370,23 @@ function lowerModulesIncludingTests(
       }
     }
   }
-  for (const use of genericMethodUses) {
-    const genericOwnerModuleIndex = use.ownerModuleIndex;
+  // Generic demands are collected at individual call sites, but their base
+  // imported-type evidence is identical for every specialization owned by the
+  // same module. Build that expensive graph-wide evidence once per owner and
+  // let subsequent specializations extend the same conservative superset.
+  let loweredGenericMethodOwners = Array<boolean>();
+  let genericMethodOwnerSlot: usize = 0;
+  while (genericMethodOwnerSlot < parsed.length) {
+    loweredGenericMethodOwners.push(false);
+    genericMethodOwnerSlot = genericMethodOwnerSlot + 1;
+  }
+  for (const firstUse of genericMethodUses) {
+    const genericOwnerModuleIndex = firstUse.ownerModuleIndex;
     if (genericOwnerModuleIndex >= parsed.length) {
       throw "native generic-method lowering lost its owner module";
     }
+    if (loweredGenericMethodOwners[genericOwnerModuleIndex]) continue;
+    loweredGenericMethodOwners[genericOwnerModuleIndex] = true;
     const importedTypesOutcome = attempt importedTypesForModule(
       parsed[genericOwnerModuleIndex].program,
       graph,
@@ -31248,54 +31400,65 @@ function lowerModulesIncludingTests(
       failure(message) => throw
         `${parsed[genericOwnerModuleIndex].path}: generic method import lowering: ${message}`;
     };
-    try appendGenericDemandArgumentTypes(
-      parsed,
-      graph,
-      structs,
-      enums,
-      privateTypeCollisionNames,
-      use.allTypeArguments,
-      use.typeArgumentModules,
-      use.typeArgumentSymbols,
-      inout importedTypes
-    );
-    try appendConcreteGenericStructs(
-      parsed[genericOwnerModuleIndex].program,
-      genericStructUses,
-      genericOwnerModuleIndex,
-      inout importedTypes,
-      inout structs
-    );
-    const genericOutcome = attempt appendDeferredGenericMethod(
-      parsed[genericOwnerModuleIndex].program,
-      parsed[genericOwnerModuleIndex].path,
-      importedTypes,
-      genericStructUses,
-      use,
-      graph.modules[genericOwnerModuleIndex].semanticEvidence,
-      privateFunctionCollisionNames,
-      privateTypeCollisionNames,
-      genericOwnerModuleIndex,
-      entryIndex,
-      inout fixedArrays,
-      inout arrays,
-      inout slices,
-      inout maps,
-      inout sets,
-      inout enums,
-      inout functions
-    );
-    match (genericOutcome) {
-      success => {}
-      failure(message) => throw
-        `${parsed[genericOwnerModuleIndex].path}: ${message}`;
+    for (const use of genericMethodUses) {
+      if (use.ownerModuleIndex != genericOwnerModuleIndex) continue;
+      try appendGenericDemandArgumentTypes(
+        parsed,
+        graph,
+        structs,
+        enums,
+        privateTypeCollisionNames,
+        use.allTypeArguments,
+        use.typeArgumentModules,
+        use.typeArgumentSymbols,
+        inout importedTypes
+      );
+      try appendConcreteGenericStructs(
+        parsed[genericOwnerModuleIndex].program,
+        genericStructUses,
+        genericOwnerModuleIndex,
+        inout importedTypes,
+        inout structs
+      );
+      const genericOutcome = attempt appendDeferredGenericMethod(
+        parsed[genericOwnerModuleIndex].program,
+        parsed[genericOwnerModuleIndex].path,
+        importedTypes,
+        genericStructUses,
+        use,
+        graph.modules[genericOwnerModuleIndex].semanticEvidence,
+        privateFunctionCollisionNames,
+        privateTypeCollisionNames,
+        genericOwnerModuleIndex,
+        entryIndex,
+        inout fixedArrays,
+        inout arrays,
+        inout slices,
+        inout maps,
+        inout sets,
+        inout enums,
+        inout functions
+      );
+      match (genericOutcome) {
+        success => {}
+        failure(message) => throw
+          `${parsed[genericOwnerModuleIndex].path}: ${message}`;
+      }
     }
   }
-  for (const use of genericFunctionUses) {
-    const genericOwnerModuleIndex = use.ownerModuleIndex;
+  let loweredGenericFunctionOwners = Array<boolean>();
+  let genericFunctionOwnerSlot: usize = 0;
+  while (genericFunctionOwnerSlot < parsed.length) {
+    loweredGenericFunctionOwners.push(false);
+    genericFunctionOwnerSlot = genericFunctionOwnerSlot + 1;
+  }
+  for (const firstUse of genericFunctionUses) {
+    const genericOwnerModuleIndex = firstUse.ownerModuleIndex;
     if (genericOwnerModuleIndex >= parsed.length) {
       throw "native generic-function lowering lost its owner module";
     }
+    if (loweredGenericFunctionOwners[genericOwnerModuleIndex]) continue;
+    loweredGenericFunctionOwners[genericOwnerModuleIndex] = true;
     const importedTypesOutcome = attempt importedTypesForModule(
       parsed[genericOwnerModuleIndex].program,
       graph,
@@ -31309,45 +31472,48 @@ function lowerModulesIncludingTests(
       failure(message) => throw
         `${parsed[genericOwnerModuleIndex].path}: generic function import lowering: ${message}`;
     };
-    try appendGenericDemandArgumentTypes(
-      parsed,
-      graph,
-      structs,
-      enums,
-      privateTypeCollisionNames,
-      use.typeArguments,
-      use.typeArgumentModules,
-      use.typeArgumentSymbols,
-      inout importedTypes
-    );
-    try appendConcreteGenericStructs(
-      parsed[genericOwnerModuleIndex].program,
-      genericStructUses,
-      genericOwnerModuleIndex,
-      inout importedTypes,
-      inout structs
-    );
-    const genericOutcome = attempt appendDeferredGenericFunction(
-      parsed[genericOwnerModuleIndex].program,
-      parsed[genericOwnerModuleIndex].path,
-      importedTypes,
-      use,
-      graph.modules[genericOwnerModuleIndex].semanticEvidence,
-      privateFunctionCollisionNames,
-      genericOwnerModuleIndex,
-      entryIndex,
-      inout fixedArrays,
-      inout arrays,
-      inout slices,
-      inout maps,
-      inout sets,
-      inout enums,
-      inout functions
-    );
-    match (genericOutcome) {
-      success => {}
-      failure(message) => throw
-        `${parsed[genericOwnerModuleIndex].path}: ${message}`;
+    for (const use of genericFunctionUses) {
+      if (use.ownerModuleIndex != genericOwnerModuleIndex) continue;
+      try appendGenericDemandArgumentTypes(
+        parsed,
+        graph,
+        structs,
+        enums,
+        privateTypeCollisionNames,
+        use.typeArguments,
+        use.typeArgumentModules,
+        use.typeArgumentSymbols,
+        inout importedTypes
+      );
+      try appendConcreteGenericStructs(
+        parsed[genericOwnerModuleIndex].program,
+        genericStructUses,
+        genericOwnerModuleIndex,
+        inout importedTypes,
+        inout structs
+      );
+      const genericOutcome = attempt appendDeferredGenericFunction(
+        parsed[genericOwnerModuleIndex].program,
+        parsed[genericOwnerModuleIndex].path,
+        importedTypes,
+        use,
+        graph.modules[genericOwnerModuleIndex].semanticEvidence,
+        privateFunctionCollisionNames,
+        genericOwnerModuleIndex,
+        entryIndex,
+        inout fixedArrays,
+        inout arrays,
+        inout slices,
+        inout maps,
+        inout sets,
+        inout enums,
+        inout functions
+      );
+      match (genericOutcome) {
+        success => {}
+        failure(message) => throw
+          `${parsed[genericOwnerModuleIndex].path}: ${message}`;
+      }
     }
   }
   rewriteNativeCExportCallTargets(inout functions);

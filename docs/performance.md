@@ -534,22 +534,36 @@ build took 179.00 seconds, peaked near 7.69 GB, and retired approximately 2.03
 trillion instructions. Indexing imported-type identity, visible-type, alias,
 and final hidden-identity lookups in native lowering reduced the same cold build
 to 57.90 seconds and approximately 525 billion instructions: 3.09 times faster
-and about 74 percent fewer instructions. Peak memory remained near 7.5 GB, so
-the cold path is improved but not yet acceptable.
+and about 74 percent fewer instructions.
+
+The next profile showed two remaining sources of repeated work: foreign names
+were rediscovered with contract-wide scans, and every generic call-site rebuilt
+the same broad imported-type evidence for its owning module. Contract-local
+indices, direct decoding of compiler-hidden nominal names, owner-grouped generic
+lowering, and demand-driven hidden identities reduced the final verified cold
+build to 35.80 seconds, approximately 310 billion instructions, and a 3.27 GB
+peak footprint. That is 5.0 times faster than the original application build,
+roughly 85 percent fewer instructions, and comfortably below the first one-minute
+DX target. Repeated measurements landed between 34.83 and 37.48 seconds.
 
 Project `build` now has an early whole-project cache boundary before module
 loading, foreign validation, semantic analysis, lowering, and Clang. Its input
 record covers the compiler executable, reachable Z modules, manifests,
 generated overlays, explicit native-library bytes, target/toolchain identity,
 and the transitive native-header and adjacent `.zd` set emitted by Clang. On the
-same machine, an unchanged Z Notes build fell from 57.90 seconds and roughly
-7.5 GB peak footprint to 0.29 seconds and roughly 14.6 MB peak footprint. Tests
+same machine, an unchanged Z Notes build fell from the final 35.80-second cold
+path and 3.27 GB peak footprint to 0.22 seconds and roughly 12.5 MB. Tests
 prove that editing either a reachable Z module or a transitively included C
 header invalidates reuse and rebuilds the artifact.
 
+Cache input schema v2 also binds an entry to the path and digest of the active Z
+compiler. Merely retaining the older compiler binary on disk is insufficient:
+a different compiler executable cannot reuse its generated native source or
+artifact. A fixed-point regression exposed and now guards this distinction.
+
 This is not incremental compilation. A one-byte source edit still pays the
-roughly 58-second cold path and its large type-evidence footprint. The next
-compiler-latency target is demand-driven/shared imported-type evidence followed
-by persistent per-module frontend and lowering artifacts. The existing `run`
-cache also remains a later emitted-C comparison and can reuse the early input
-record in a future slice.
+roughly 35-second cold path. The next compiler-latency target is sharing indexed
+imported-type evidence directly through lowering, followed by persistent
+per-module frontend and lowering artifacts. The existing `run` cache also
+remains a later emitted-C comparison and can reuse the early input record in a
+future slice.
