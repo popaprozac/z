@@ -69,6 +69,10 @@ function titleLength(in option: Option<Note>): usize {
   };
 }
 
+function missingNote(): Option<Note> {
+  return Option.none;
+}
+
 function userId(in option: Option<User>): i32 {
   return match (option) {
     some(user) => user.id;
@@ -112,6 +116,8 @@ function nativeOptionProbe(): i32 {
     none => usize(0);
   };
   if (conditionalLength != 1) return 6;
+  const missing = missingNote();
+  if (titleLength(in missing) != 0) return 7;
 
   const noUser: Option<User> = Option.none;
   if (userId(noUser) != -1) {

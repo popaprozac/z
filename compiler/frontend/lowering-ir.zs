@@ -4517,6 +4517,14 @@ function moduleTypeNeedsCleanup(
   return moduleTypeNeedsCleanupDepth(program, importedTypes, type, 0);
 }
 
+function loweredTypeSupportsCopyHelper(in type: LoweredType): boolean {
+  return type.kind == LoweredTypeKind.stringType
+    || type.kind == LoweredTypeKind.arrayType
+    || type.kind == LoweredTypeKind.fixedArrayType
+    || type.kind == LoweredTypeKind.structType
+    || type.kind == LoweredTypeKind.enumType;
+}
+
 function moduleTypeRetainsCapturedIdentity(in type: LoweredType): boolean {
   return type.kind == LoweredTypeKind.classType
     || type.kind == LoweredTypeKind.weakType
@@ -14062,13 +14070,17 @@ function lowerExpressionContextual(
                   Array<String>()
                 );
                 if (spreadMode == "copy") {
-                  if (fieldType.kind == LoweredTypeKind.stringType) {
+                  if (moduleTypeNeedsCleanup(
+                    program,
+                    importedTypes,
+                    fieldType
+                  ) && loweredTypeSupportsCopyHelper(fieldType)) {
                     let copyChildren = Array<usize>();
                     copyChildren.push(value);
                     value = pushExpression(
                       inout output,
                       LoweredExpressionKind.copyValue,
-                      "",
+                      fieldType.name,
                       copyChildren,
                       Array<String>()
                     );
@@ -14216,13 +14228,17 @@ function lowerExpressionContextual(
                   Array<String>()
                 );
                 if (spreadMode == "copy") {
-                  if (field.type.kind == LoweredTypeKind.stringType) {
+                  if (moduleTypeNeedsCleanup(
+                    program,
+                    importedTypes,
+                    field.type
+                  ) && loweredTypeSupportsCopyHelper(field.type)) {
                     let copyChildren = Array<usize>();
                     copyChildren.push(value);
                     value = pushExpression(
                       inout output,
                       LoweredExpressionKind.copyValue,
-                      "",
+                      field.type.name,
                       copyChildren,
                       Array<String>()
                     );
@@ -20201,7 +20217,10 @@ function rewritePlacedFunctionAwaitAtRoot(
       some(tree) => {
         let placement = tree.root;
         if (
-          tree.nodes[placement].kind == ExpressionKind.tryExpression
+          (
+            tree.nodes[placement].kind == ExpressionKind.tryExpression
+            || tree.nodes[placement].kind == ExpressionKind.attemptExpression
+          )
           && tree.nodes[placement].children.length == 1
         ) placement = tree.nodes[placement].children[0];
         const callInput = tree.nodes[placement].children[2];
@@ -23179,13 +23198,9 @@ function lowerStatementCore(
               directTryReturn = true;
             } else {
               let expectedTypeName = "";
-              for (const declaration of program.functions) {
-                if (declaration.name == ownerName) {
-                  expectedTypeName = declaration.returnType.name.copyBytes(
-                    0,
-                    declaration.returnType.name.byteLength
-                  );
-                }
+              match (ownerReturnTypeName(program, ownerName)) {
+                some(name) => expectedTypeName = move name;
+                none => {}
               }
               loweredValue = try lowerExpressionExpected(
                 program,

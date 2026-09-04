@@ -6777,7 +6777,10 @@ function appendTryStatement(
           declaration,
           target
         );
-        none => output.append(declaration.statements[index].labels[0]);
+        none => appendCBindingName(
+          inout output,
+          declaration.statements[index].labels[0]
+        );
       }
       output.append(");\n");
     }
@@ -6788,7 +6791,10 @@ function appendTryStatement(
         declaration,
         target
       );
-      none => output.append(declaration.statements[index].labels[0]);
+      none => appendCBindingName(
+        inout output,
+        declaration.statements[index].labels[0]
+      );
     }
     output.append(" = ");
     output.append(temporary);

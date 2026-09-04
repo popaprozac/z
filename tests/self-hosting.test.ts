@@ -17374,6 +17374,65 @@ test("propagates an owned error from an executor-placed async function local", (
   rmSync(directory, { recursive: true, force: true });
 }, 60_000);
 
+test("materializes a synchronous main-isolated error through taskification", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-sync-main-error-taskification.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z___z_Result_i32_OperationError called;/,
+  );
+  assert.match(
+    emission.stdout,
+    /frame->child\.take_result\(frame->child\.task, &called\);/,
+  );
+  assert.match(
+    emission.stdout,
+    /z_id = _z_stage1_try_\d+\.payload\.success/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-sync-main-error-taskification-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread",
+      "-",
+      "-o",
+      executable,
+    ],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(
+    execution.status,
+    0,
+    `${execution.stderr}\nsignal: ${execution.signal}\nstdout: ${execution.stdout}`,
+  );
+  rmSync(directory, { recursive: true, force: true });
+}, 60_000);
+
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(
     projectRoot,
@@ -17988,6 +18047,7 @@ hostToolchainTest("preserves first-tier struct spread capability evidence native
   writeFileSync(valid, `
     struct Label {
       value: String;
+      subtitle?: String;
     }
 
     struct Pair<T> {
@@ -18024,6 +18084,7 @@ hostToolchainTest("preserves first-tier struct spread capability evidence native
   writeFileSync(executableSource, `
     struct Label {
       value: String;
+      subtitle?: String;
     }
 
     struct Pair {
@@ -18035,15 +18096,20 @@ hostToolchainTest("preserves first-tier struct spread capability evidence native
       const baseline = Pair({ first: 20, second: 22 });
       const plain = Pair({ ...baseline, first: 21 });
       const copied = Pair({ copy ...baseline, second: 23 });
-      const copySource = Label({ value: "ready" });
+      const copySource = Label({ value: "ready", subtitle: "owned" });
       const copiedLabel = Label({ copy ...copySource });
       const label = Label({ value: "ready" });
       const moved = Label({ move ...label });
+      const copiedSubtitleLength = match (in copiedLabel.subtitle) {
+        some(subtitle) => i32(subtitle.byteLength);
+        none => 0;
+      };
       return plain.first
         + copied.second
         + i32(copiedLabel.value.byteLength)
+        + copiedSubtitleLength
         + i32(moved.value.byteLength)
-        - 54;
+        - 59;
     }
   `);
   const emitted = spawnSync(
@@ -18055,6 +18121,10 @@ hostToolchainTest("preserves first-tier struct spread capability evidence native
   assert.match(emitted.stdout, /\.first = 21, \.second = baseline\.second/);
   assert.match(emitted.stdout, /\.second = 23, \.first = baseline\.first/);
   assert.match(emitted.stdout, /\.value = z_string_copy\(copySource\.value\)/);
+  assert.match(
+    emitted.stdout,
+    /\.subtitle = z_stage1_copy___z_Option_String\(copySource\.subtitle\)/,
+  );
   assert.match(emitted.stdout, /\.value = label\.value/);
   const executable = resolve(directory, "valid");
   const compilation = spawnSync(
