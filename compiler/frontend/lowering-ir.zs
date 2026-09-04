@@ -16645,6 +16645,36 @@ function expressionProducesZString(
     none => {}
   }
   if (
+    tree.nodes[index].kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const binding = tree.nodes[index].children[0];
+    const bindingName = tree.nodes[binding].value.copyBytes(
+      0,
+      tree.nodes[binding].value.byteLength
+    );
+    const bindingOffset = tree.nodes[binding].offset;
+    match (namedValueTypeName(
+      program,
+      evidence,
+      "",
+      bindingName,
+      bindingOffset
+    )) {
+      some(typeName) => {
+        if (typeName == "String") return true;
+      }
+      none => {}
+    }
+    return expressionProducesZString(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      binding
+    );
+  }
+  if (
     tree.nodes[index].kind == ExpressionKind.unaryExpression
     && tree.nodes[index].children.length == 1
   ) {

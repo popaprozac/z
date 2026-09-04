@@ -8120,6 +8120,19 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   );
   assert.equal(typedScalarConstant.status, 0, typedScalarConstant.stderr);
 
+  if (process.platform === "darwin") {
+    const borrowedObjCString = spawnSync(
+      executable,
+      ["run", resolve(projectRoot, "tests/fixtures/objc-borrow-method.zs")],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      borrowedObjCString.status,
+      0,
+      borrowedObjCString.stderr,
+    );
+  }
+
   const version = spawnSync(executable, ["version"], { encoding: "utf8" });
   assert.equal(version.status, 0, version.stderr);
   const stage0Version = spawnSync(process.execPath, [cli, "version"], {
