@@ -587,7 +587,7 @@ These are semantic mappings, not textual rewrites:
 | Swift `@MainActor` in a `z.json`-declared Swift target | Imported automatically from the emitted symbol graph | Generated Objective-C headers erase actor isolation; Z merges the toolchain graph with the header-derived declaration |
 | Legacy native UI type or method without actor metadata | `.zd` `on thread.main` fallback or reviewed shipped API notes | The affinity enters the same FIIR field as a compiler-derived fact |
 | Objective-C/Swift static method with an escaping block | `export function Type.method(..., move completion: _)` plus `callback completion { thread ...; }` | Native block owns the Z closure under ARC; `.zd` supplies the thread guarantee absent from the header |
-| Objective-C/Swift exactly-once completion method | The escaping-block contract with `invoked once;` plus `async completion;` | Keeps the raw overload and synthesizes an infallible `async method(...): T`; zero callback values produce `void`, one cleanup-free scalar produces `T` |
+| Objective-C/Swift exactly-once completion method | The escaping-block contract with `invoked once;` plus `async completion;` | Keeps the raw overload and synthesizes an infallible `async method(...): T`; zero callback values produce `void`, one scalar or non-null Objective-C object produces `T` |
 | Objective-C/Swift value/error completion method | `async completion(value, error) { return value; throw error; }` | Names callback positions and synthesizes `async method(...): T throws E`, surfaced as `Task<T, E>` |
 
 The current Objective-C method contract tier names an existing method by class
@@ -598,9 +598,13 @@ reference must remain available after the native call. `out`, `inout`, and
 non-object method parameters remain outside this tier. Block lifetime/thread facts may be refined,
 `invoked once` identifies exact terminal delivery, and an `async` clause may
 project that terminal escaping block into a Task.
-The shorthand `async completion;` accepts zero or one cleanup-free scalar
-callback value. A conventional Objective-C/Swift completion pair can instead
-name its positions:
+The shorthand `async completion;` accepts zero callback values, one
+cleanup-free scalar callback value, or one non-null Objective-C object. An
+object result is retained by the generated task frame and released when that
+owned result is consumed or the frame is destroyed. Nullable object results
+remain on the raw callback overload until the async projection can model their
+absence explicitly. A conventional Objective-C/Swift completion pair can
+instead name its positions:
 
 ```z
 async completion(value, error) {
@@ -611,9 +615,9 @@ async completion(value, error) {
 
 This produces `Task<T, E>` while preserving the raw callback-taking overload.
 The first typed-error tier requires a static method, terminal callback
-parameter, native and block `void` returns, a cleanup-free scalar success
-value, and a nullable Objective-C error reference. Ordinary Objective-C calls
-still need no sidecar.
+parameter, native and block `void` returns, a scalar or non-null Objective-C
+success value, and a nullable Objective-C error reference. Ordinary
+Objective-C calls still need no sidecar.
 
 ## Callback cardinality
 

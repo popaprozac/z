@@ -2302,10 +2302,7 @@ function placementCaptureKind(
     if (!fromNativeThread || types.semanticInfo.shareableClasses.has(type)) return "class";
     return types.semanticInfo.aggregateExecutorAffinities.has(type) ? "executorBoundClass" : null;
   }
-  if (
-    types.semanticInfo.foreignObjectTypes.has(type)
-    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
-  ) {
+  if (isAsyncForeignObjectType(type, types)) {
     return fromNativeThread ? null : "objc";
   }
   if (
@@ -2313,7 +2310,7 @@ function placementCaptureKind(
     && (
       type === "TextBuffer"
       || parseDynamicArrayType(type)
-      || types.semanticInfo.foreignNamedTypes.has(type)
+      || asyncForeignNamedType(type, types)
       || parsePointerTypeName(type)
       || types.structs.has(type)
       || types.enums.has(type)
@@ -4475,7 +4472,7 @@ function generateAsyncCallableAdapters(
     const referenceIdentity = capture.type === "TaskScope"
       || capture.type === "TaskControl"
       || plan.types.structs.get(capture.type)?.kind === "class"
-      || plan.types.semanticInfo.foreignNamedTypes.get(capture.type)?.kind === "object";
+      || isAsyncForeignObjectType(capture.type, plan.types);
     if (capture.mode === "value" || capture.mode === "in" && referenceIdentity) return stored;
     return `&(${stored})`;
   });
@@ -5015,13 +5012,13 @@ function asyncOptionNichePayload(
 ): string | null {
   const option = parseOptionType(optionType);
   if (!option) return null;
-  if (types.semanticInfo.foreignNamedTypes.get(option.target)?.kind === "object") return option.target;
+  if (isAsyncForeignObjectType(option.target, types)) return option.target;
   const pointer = parsePointerTypeName(option.target);
   return pointer && !pointer.nullable ? option.target : null;
 }
 
 function asyncOptionNicheNull(payloadType: string, types: AsyncTypeContext): "nil" | "NULL" {
-  return types.semanticInfo.foreignNamedTypes.get(payloadType)?.kind === "object" ? "nil" : "NULL";
+  return isAsyncForeignObjectType(payloadType, types) ? "nil" : "NULL";
 }
 
 function asyncFrameZeroValue(type: string, types: AsyncTypeContext): string {
@@ -5030,10 +5027,7 @@ function asyncFrameZeroValue(type: string, types: AsyncTypeContext): string {
     || types.semanticInfo.foreignTypes.has(type)
     || parseTaskType(type)
   ) return "NULL";
-  if (
-    types.semanticInfo.foreignObjectTypes.has(type)
-    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
-  ) return "nil";
+  if (isAsyncForeignObjectType(type, types)) return "nil";
   if (scalarTypes.has(type)) return type === "boolean" ? "false" : "0";
   return `(${cFrameType(type, types)}){ 0 }`;
 }
@@ -6948,7 +6942,7 @@ function emitPreparedFrameExpression(
           const hasReferenceIdentity = capture.type === "TaskScope"
             || capture.type === "TaskControl"
             || plan.types.structs.get(capture.type)?.kind === "class"
-            || plan.types.semanticInfo.foreignNamedTypes.get(capture.type)?.kind === "object";
+            || isAsyncForeignObjectType(capture.type, plan.types);
           if (closure.owned) {
             const capturedFunction = parseFunctionType(capture.type);
             const mutex = parseMutexType(capture.type);
@@ -7336,7 +7330,7 @@ function renderAsyncStringValue(
   }
   if (type === "null") return [`z_string_append_bytes(&${target}, "null", 4);`];
 
-  const foreign = plan.types.semanticInfo.foreignNamedTypes.get(type);
+  const foreign = asyncForeignNamedType(type, plan.types);
   if (foreign?.kind === "scalar" || foreign?.kind === "enum") {
     return renderAsyncStringValue(value, foreign.underlying, target, location, plan, fileName);
   }
@@ -8285,7 +8279,7 @@ function cFrameType(type: string, types: AsyncTypeContext): string {
     return aggregate.kind === "class" ? `${name} *` : name;
   }
   if (types.enums.has(type)) return resultCName(type);
-  const foreign = types.semanticInfo.foreignNamedTypes.get(type);
+  const foreign = asyncForeignNamedType(type, types);
   if (foreign) return foreign.cName;
   const foreignPointer = types.semanticInfo.foreignTypes.get(type);
   if (foreignPointer) return foreignPointer.cName;
@@ -8412,10 +8406,40 @@ function borrowedFrameValue(name: string, type: string, types: AsyncTypeContext)
   return isFrameReferenceIdentityType(type, types) ? field : `(*${field})`;
 }
 
+function asyncImportedTypeSourceName(type: string): string {
+  return type.replace(/^__z_module_\d+_import_/, "");
+}
+
+function asyncForeignNamedType(type: string, types: AsyncTypeContext) {
+  const direct = types.semanticInfo.foreignNamedTypes.get(type);
+  if (direct) return direct;
+  const source = asyncImportedTypeSourceName(type);
+  if (source !== type) {
+    const imported = types.semanticInfo.foreignNamedTypes.get(source);
+    if (imported) return imported;
+  }
+  const display = types.semanticInfo.typeDisplayNames.get(type);
+  if (!display) return null;
+  const displayed = types.semanticInfo.foreignNamedTypes.get(display);
+  if (displayed) return displayed;
+  for (const [name, foreign] of types.semanticInfo.foreignNamedTypes) {
+    if ((types.semanticInfo.typeDisplayNames.get(name) ?? name) === display) {
+      return foreign;
+    }
+  }
+  return null;
+}
+
+function isAsyncForeignObjectType(type: string, types: AsyncTypeContext): boolean {
+  if (types.semanticInfo.foreignObjectTypes.has(type)) return true;
+  const source = asyncImportedTypeSourceName(type);
+  return types.semanticInfo.foreignObjectTypes.has(source)
+    || asyncForeignNamedType(type, types)?.kind === "object";
+}
+
 function isFrameReferenceIdentityType(type: string, types: AsyncTypeContext): boolean {
   return types.structs.get(type)?.kind === "class"
-    || types.semanticInfo.foreignObjectTypes.has(type)
-    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object";
+    || isAsyncForeignObjectType(type, types);
 }
 
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
@@ -8443,10 +8467,8 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
   if (parseSliceType(type)) return true;
   if (isDirectForeignFrameValue(type, types)) return true;
   if (types.semanticInfo.foreignTypes.has(type)) return true;
-  if (
-    types.semanticInfo.foreignObjectTypes.has(type)
-    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
-  ) return true;
+  if (isAsyncForeignObjectType(type, types)) return true;
+  if (asyncForeignNamedType(type, types)) return true;
   if (visiting.has(type)) return true;
   const aggregate = types.structs.get(type);
   if (aggregate) {
@@ -8482,10 +8504,7 @@ function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new S
   if (type === "String" || type === "TextBuffer" || type === "TaskScope" || type === "TaskControl") return true;
   if (parseOnceLifetimeType(type)) return true;
   if (parseMutexType(type)) return true;
-  if (
-    types.semanticInfo.foreignObjectTypes.has(type)
-    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
-  ) return true;
+  if (isAsyncForeignObjectType(type, types)) return true;
   if (requiresNativeFramePlacement(type, types)) return true;
   if (directForeignFrameValue(type, types)?.lifecycle.deinit) return true;
   const foreignPointer = types.semanticInfo.foreignTypes.get(type);
@@ -8544,10 +8563,7 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
   if (mutex) {
     return `${asyncMutexDeinitName(mutex.valueType)}(&(${value}));`;
   }
-  if (
-    types.semanticInfo.foreignObjectTypes.has(type)
-    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
-  ) return `${value} = nil;`;
+  if (isAsyncForeignObjectType(type, types)) return `${value} = nil;`;
   const foreignPointer = types.semanticInfo.foreignTypes.get(type);
   if (foreignPointer?.ownership === "owned" && foreignPointer.release) {
     return foreignPointer.nullable
@@ -8603,10 +8619,7 @@ function frameManagedCleanup(value: string, type: string, types: AsyncTypeContex
   if (type === "String" || type === "TextBuffer") {
     return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
   }
-  if (
-    types.semanticInfo.foreignObjectTypes.has(type)
-    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
-  ) return `${value} = nil;`;
+  if (isAsyncForeignObjectType(type, types)) return `${value} = nil;`;
   const fixedArray = parseFixedArrayType(type);
   if (fixedArray) {
     const cleanup = frameManagedCleanup(
@@ -8640,10 +8653,7 @@ function frameManagedCleanup(value: string, type: string, types: AsyncTypeContex
 function hasManagedFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (visiting.has(type) || isDirectForeignFrameValue(type, types)) return false;
   if (type === "String" || type === "TextBuffer") return true;
-  if (
-    types.semanticInfo.foreignObjectTypes.has(type)
-    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
-  ) return true;
+  if (isAsyncForeignObjectType(type, types)) return true;
   const fixedArray = parseFixedArrayType(type);
   if (fixedArray) return hasManagedFrameCleanup(fixedArray.elementType, types, visiting);
   const aggregate = types.structs.get(type);
@@ -8662,7 +8672,7 @@ function hasManagedFrameCleanup(type: string, types: AsyncTypeContext, visiting 
 }
 
 function directForeignFrameValue(type: string, types: AsyncTypeContext) {
-  const foreign = types.semanticInfo.foreignNamedTypes.get(type);
+  const foreign = asyncForeignNamedType(type, types);
   return foreign?.kind === "value" && foreign.lifecycle.move && !foreign.lifecycle.copy
     ? foreign
     : null;

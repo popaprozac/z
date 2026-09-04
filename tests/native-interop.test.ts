@@ -2960,6 +2960,31 @@ test("owns arbitrary-thread native callback environments atomically and checks c
     resolve(projectRoot, "tests/fixtures/objc-object-callback.zs"),
   ));
 
+  const completionFile = resolve(projectRoot, "tests/fixtures/objc-object-completion.zs");
+  const generatedCompletion = compileToC(
+    readFileSync(completionFile, "utf8"),
+    completionFile,
+  );
+  assert.match(generatedCompletion, /NSString \* result;/);
+  assert.match(generatedCompletion, /bool live_result;/);
+  const completion = spawnSync(
+    process.execPath,
+    [cli, "run", completionFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(completion.status, 0, completion.stderr);
+
+  const linkedCompletionFile = resolve(
+    projectRoot,
+    "tests/fixtures/objc-object-completion-main.zs",
+  );
+  const linkedCompletion = spawnSync(
+    process.execPath,
+    [cli, "run", linkedCompletionFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(linkedCompletion.status, 0, linkedCompletion.stderr);
+
   const storedEnvironment = `
     import callbacks from "callbacks-any-thread.h";
     function main(): i32 {

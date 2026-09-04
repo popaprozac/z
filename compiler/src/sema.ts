@@ -13209,17 +13209,28 @@ function inferExpressionInner(
             const result = method.asyncResultParameter === null
               ? "void"
               : String(foreignValueType(callback.parameters[method.asyncResultParameter]));
+            const resultParameter = method.asyncResultParameter === null
+              ? null
+              : callback.parameters[method.asyncResultParameter];
+            const objectiveCResult = resultParameter?.kind === "object"
+              && !resultParameter.nullable;
             if (
               result === "unknown"
-              || (result !== "void" && result !== "boolean" && !integerTypes.has(result) && !floatTypes.has(result))
+              || (
+                result !== "void"
+                && result !== "boolean"
+                && !integerTypes.has(result)
+                && !floatTypes.has(result)
+                && !objectiveCResult
+              )
             ) {
               throw new DiagnosticError(
                 fileName,
                 expression.location,
-                `the first executable async Objective-C projection tier requires a scalar callback value, found ${displayAssignableType(result, state)}`,
+                `the executable async Objective-C projection requires a non-null object or scalar callback value, found ${displayAssignableType(result, state)}`,
                 {
                   code: "Z0700",
-                  helps: ["use the raw callback overload while ownership-bearing async payload frames are implemented"],
+                  helps: ["use the raw callback overload for nullable objects or unsupported native payload shapes"],
                 },
               );
             }

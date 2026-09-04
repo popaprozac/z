@@ -5213,6 +5213,36 @@ partially constructed nested value is destroyed on failure. An executable
 menu-shaped fixture covers nested success, recursive defaults, malformed child
 objects, and non-array input in both compiler generations.
 
+## Native notification APIs require ARC task results, not callback plumbing
+
+Zapp's first application-notification manager exposed a useful async interop
+boundary. Apple's `UNUserNotificationCenter` reports its settings through an
+exactly-once arbitrary-thread completion block whose success value is a
+non-null Objective-C object. The `.zd` async projection previously accepted
+only cleanup-free scalars, which would have forced framework code to rebuild
+the callback as a channel or blocking semaphore even though Z already knew the
+callback's cardinality, thread behavior, and object ownership.
+
+The async projection now retains one non-null Objective-C completion object in
+the generated task frame and transfers that ARC identity to the awaiting Z
+owner. Frame cancellation and destruction release the object on the same
+managed path as other Objective-C async locals. Nullable object results remain
+deferred until the projection can represent absence explicitly rather than
+silently asserting non-nullness.
+
+The same application found a separate nominal-identity seam: an imported
+Objective-C flag enum carried through a private dependency module is encoded by
+the linker under a compiler-hidden module identity. Async lowering now resolves
+that identity back to its foreign declaration before selecting frame storage,
+zero values, cleanup, and C spelling. This keeps a package's internal native
+types private without making an application-level async call lose their ABI.
+
+Together these changes let the notification backend remain ordinary Z:
+`await` the native completion, inspect the returned settings object, and map
+native denial to a Z enum while reserving `throw` for operational failures. No
+framework-local global buffer, polling loop, semaphore, or detached callback
+state is required.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
