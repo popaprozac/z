@@ -5132,13 +5132,16 @@ state with `menu.state.frontendCommands.get(id)`. Stage 0 inferred the local as
 signatures when the receiver was a direct binding. A chained field receiver
 therefore failed later with an internal missing-local-type diagnostic.
 
-Native lowering now resolves the receiver type recursively and asks the same
-collection intrinsic model for the method result. An executable fixed-point
-regression reads a `Map<String, Item>` through two ARC class fields, matches the
-inferred `Option<Item>`, and emits, compiles, and runs the resulting C. This is
-important composition evidence: application architecture should be free to
-organize collection state behind managers without forcing redundant type
-annotations to compensate for compiler internals.
+Native lowering now retains transitively referenced implementation-type
+evidence, resolves the receiver recursively, and normalizes canonical lowered
+collection identities through the same intrinsic model used for source-shaped
+types. An executable fixed-point regression reads a `Map<String, Item>` through
+an exported ARC manager and its module-private state class, matches the retained
+`Option<Item>`, reads the class payload, and emits, compiles, and runs the
+resulting C. This is important composition evidence: application architecture
+should be free to hide storage behind managers without forcing redundant type
+annotations or public implementation types to compensate for compiler
+internals.
 
 ## Not tested yet
 

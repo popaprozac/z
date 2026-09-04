@@ -1,0 +1,6 @@
+{
+  "target": {
+    "name": "self-host-chained-map-package",
+    "entry": "main.zs"
+  }
+}

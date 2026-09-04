@@ -67,7 +67,10 @@ import {
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
-import { collectionMethodSignature } from "./semantic-intrinsics.zs";
+import {
+  collectionMethodSignature,
+  sourceCollectionTypeName,
+} from "./semantic-intrinsics.zs";
 import { Map, Set } from "std/collections";
 import fs from "std/fs";
 import { TextBuffer } from "std/text";
@@ -9123,22 +9126,52 @@ function staticallyResolvedExpressionTypeName(
           ownerName,
           tree,
           receiver
-        )) {
+          )) {
           some(receiverTypeName) => {
             const methodName = tree.nodes[callee].value.copyBytes(
               0,
               tree.nodes[callee].value.byteLength
             );
+            const collectionOwnerTypeName = sourceCollectionTypeName(
+              in receiverTypeName
+            );
             match (collectionMethodSignature(
-              in receiverTypeName,
+              in collectionOwnerTypeName,
               in methodName
             )) {
               some(signature) => {
                 if (signature.returnType.byteLength > 0) {
-                  return Option.some(signature.returnType.copyBytes(
+                  let returnTypeName = signature.returnType.copyBytes(
                     0,
                     signature.returnType.byteLength
-                  ));
+                  );
+                  match (genericTypeShape(collectionOwnerTypeName)) {
+                    some(collection) => if (
+                      collection.base == "Map"
+                      && collection.arguments.length == 2
+                      && methodName == "get"
+                    ) {
+                      const valueTypeName = collection.arguments[1].copyBytes(
+                        0,
+                        collection.arguments[1].byteLength
+                      );
+                      const valueType = attempt lowerModuleTypeName(
+                        program,
+                        importedTypes,
+                        valueTypeName
+                      );
+                      match (valueType) {
+                        success(lowered) => if (
+                          lowered.kind == LoweredTypeKind.classType
+                          || lowered.kind == LoweredTypeKind.foreignObjCType
+                          || lowered.kind == LoweredTypeKind.functionType
+                        ) returnTypeName = `Option<${valueTypeName}>`;
+                        failure(_) => {}
+                      }
+                    }
+                    none => {}
+                  }
+                  return Option.some(move returnTypeName);
                 }
               }
               none => {}
@@ -13278,7 +13311,9 @@ function lowerExpressionContextual(
         throw "native collection freeze lowering requires zero arguments";
       }
       const receiverInput = tree.nodes[calleeInput].children[0];
-      const receiverTypeName = match (resolvedExpressionTypeName(
+      const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
         evidence,
         tree,
         receiverInput
@@ -13327,7 +13362,13 @@ function lowerExpressionContextual(
       )
     ) {
       const receiverInput = tree.nodes[calleeInput].children[0];
-      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+      match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput
+      )) {
         some(receiverTypeName) => {
           let receiverValueTypeName = receiverTypeName.copyBytes(
             0,
@@ -13436,7 +13477,13 @@ function lowerExpressionContextual(
       )
     ) {
       const receiverInput = tree.nodes[calleeInput].children[0];
-      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+      match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput
+      )) {
         some(receiverTypeName) => {
           let receiverValueTypeName = receiverTypeName.copyBytes(
             0,
@@ -16339,7 +16386,13 @@ function lowerExpressionContextual(
     let children = Array<usize>();
     children.push(receiver);
     let labels = Array<String>();
-    match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      receiverInput
+    )) {
       some(receiverType) => {
         if (stringStartsWith(receiverType, "view ")) labels.push("view");
         else {
@@ -16360,7 +16413,13 @@ function lowerExpressionContextual(
       }
       none => {}
     }
-    match (resolvedExpressionTypeName(evidence, tree, index)) {
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      index
+    )) {
       some(resultType) => {
         if (
           stringStartsWith(resultType, "view ")
@@ -18649,7 +18708,8 @@ function rewriteLoweredMatchPayloadBinding(
   expressionStart: usize,
   statementStart: usize,
   in sourceBinding: String,
-  in emittedBinding: String
+  in emittedBinding: String,
+  pointerPayload: boolean
 ): void {
   if (
     sourceBinding.byteLength == 0
@@ -18679,6 +18739,25 @@ function rewriteLoweredMatchPayloadBinding(
         == LoweredExpressionKind.localValue
       && expressions[expressionIndex].value == sourceBinding
     ) {
+      if (pointerPayload) {
+        let useIndex = expressionStart;
+        while (useIndex < expressions.length) {
+          if (
+            expressions[useIndex].kind == LoweredExpressionKind.fieldValue
+            && expressions[useIndex].children.length == 1
+            && expressions[useIndex].children[0] == expressionIndex
+          ) {
+            let hasPointerLabel = false;
+            for (const label of expressions[useIndex].labels) {
+              if (label == "view" || label == "class") {
+                hasPointerLabel = true;
+              }
+            }
+            if (!hasPointerLabel) expressions[useIndex].labels.push("view");
+          }
+          useIndex = useIndex + 1;
+        }
+      }
       expressions[expressionIndex].value = emittedBinding.copyBytes(
         0,
         emittedBinding.byteLength
@@ -18887,13 +18966,21 @@ function lowerMatchTree(
         children.push(loweredBody);
       }
     }
+    let pointerPayload = nicheViewOption;
+    match (in payloadType) {
+      some(type) => if (type.kind == LoweredTypeKind.classType) {
+        pointerPayload = true;
+      }
+      none => {}
+    }
     rewriteLoweredMatchPayloadBinding(
       inout expressions,
       statements,
       armExpressionStart,
       armStatementStart,
       sourcePayloadBinding,
-      emittedPayloadBinding
+      emittedPayloadBinding,
+      pointerPayload
     );
     const matchBindingNeedsCleanup = match (in payloadType) {
       some(type) => !nicheViewOption && consuming
@@ -24897,13 +24984,24 @@ function lowerMainDelayMatchTree(
       inout segments,
       inout roots
     );
+    let pointerPayload = stringStartsWith(
+      enumDeclaration.name,
+      "__z_NicheViewOption_"
+    );
+    match (in payloadType) {
+      some(type) => if (type.kind == LoweredTypeKind.classType) {
+        pointerPayload = true;
+      }
+      none => {}
+    }
     rewriteLoweredMatchPayloadBinding(
       inout expressions,
       statements,
       armExpressionStart,
       armStatementStart,
       sourcePayloadBinding,
-      emittedPayloadBinding
+      emittedPayloadBinding,
+      pointerPayload
     );
     delayCount = delayCount + segments.length;
     let armChildren = Array<usize>();
@@ -28011,6 +28109,102 @@ function importedTypesForModule(
         }
       }
     }
+  }
+  // An accessible aggregate field may intentionally expose the behavior of a
+  // module-private implementation type without making that nominal type
+  // directly importable. Semantic analysis already enforces whether the field
+  // itself can be used. Preserve the transitive aggregate evidence needed to
+  // lower subsequent member access, while keeping source visibility unchanged.
+  let reachableTypeIndex: usize = 0;
+  while (reachableTypeIndex < types.length) {
+    let reachableFieldIndex: usize = 0;
+    while (reachableFieldIndex < types[reachableTypeIndex].fields.length) {
+      const reachableField = view types[reachableTypeIndex].fields[
+        reachableFieldIndex
+      ];
+      reachableFieldIndex = reachableFieldIndex + 1;
+      const reachableKind = reachableField.type.kind;
+      const reachableName = reachableField.type.name.copyBytes(
+        0,
+        reachableField.type.name.byteLength
+      );
+      if (
+        reachableKind != LoweredTypeKind.structType
+        && reachableKind != LoweredTypeKind.classType
+        && reachableKind != LoweredTypeKind.enumType
+      ) continue;
+      let present = false;
+      for (const type of types) {
+        if (
+          type.localName == reachableName
+          || type.targetName == reachableName
+        ) present = true;
+      }
+      if (present) continue;
+      if (
+        reachableKind == LoweredTypeKind.structType
+        || reachableKind == LoweredTypeKind.classType
+      ) {
+        match (loweredStructCleanup(structs, reachableName)) {
+          some(needsDeinit) => {
+            const fields = loweredStructFields(structs, reachableName);
+            types.push(LoweredImportedType({
+              localName: reachableName.copyBytes(0, reachableName.byteLength),
+              targetName: reachableName.copyBytes(0, reachableName.byteLength),
+              nativeTypeName: "",
+              kind: loweredStructIsReference(structs, reachableName)
+                ? LoweredTypeKind.classType
+                : LoweredTypeKind.structType,
+              executorBound: loweredStructExecutorBound(
+                structs,
+                reachableName
+              ),
+              threadShareable: loweredStructThreadShareable(
+                structs,
+                reachableName
+              ),
+              workerDestructible: loweredStructWorkerDestructible(
+                structs,
+                reachableName
+              ),
+              needsDeinit,
+              resourceRelease: "",
+              fields,
+              variants: Array<LoweredVariant>(),
+              payloadBearing: false,
+              underlyingType: "",
+            }));
+          }
+          none => {}
+        }
+        continue;
+      }
+      match (loweredEnumCopy(enums, reachableName)) {
+        some(declaration) => {
+          let variants = Array<LoweredVariant>();
+          for (const variant of declaration.variants) {
+            variants.push(copyLoweredVariant(variant));
+          }
+          types.push(LoweredImportedType({
+            localName: reachableName.copyBytes(0, reachableName.byteLength),
+            targetName: reachableName,
+            nativeTypeName: "",
+            kind: LoweredTypeKind.enumType,
+            executorBound: false,
+            threadShareable: false,
+            workerDestructible: !declaration.needsDeinit,
+            needsDeinit: declaration.needsDeinit,
+            resourceRelease: "",
+            fields: Array<LoweredField>(),
+            variants,
+            payloadBearing: declaration.payloadBearing,
+            underlyingType: "",
+          }));
+        }
+        none => {}
+      }
+    }
+    reachableTypeIndex = reachableTypeIndex + 1;
   }
   // Visible aliases can appear inside fields and return types above without
   // being named directly by the consumer. Resolve them to a fixed point so

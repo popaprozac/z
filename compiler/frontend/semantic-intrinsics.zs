@@ -23,6 +23,60 @@ export function numberLiteralType(in value: String): String {
   return "i32";
 }
 
+export function sourceCollectionTypeName(in name: String): String {
+  const arrayPrefix = "__z_Array_";
+  if (
+    stringStartsWith(name, arrayPrefix)
+    && name.byteLength > arrayPrefix.byteLength
+  ) {
+    const elementType = name.copyBytes(
+      arrayPrefix.byteLength,
+      name.byteLength
+    );
+    return `Array<${elementType}>`;
+  }
+  const setPrefix = "__z_Set_";
+  if (
+    stringStartsWith(name, setPrefix)
+    && name.byteLength > setPrefix.byteLength
+  ) {
+    const elementType = name.copyBytes(
+      setPrefix.byteLength,
+      name.byteLength
+    );
+    return `Set<${elementType}>`;
+  }
+  const mapPrefix = "__z_Map_";
+  if (
+    stringStartsWith(name, mapPrefix)
+    && name.byteLength > mapPrefix.byteLength + 2
+  ) {
+    let index = mapPrefix.byteLength;
+    let keyLength: usize = 0;
+    let sawDigit = false;
+    while (index < name.byteLength && name.byteAt(index) != 95) {
+      const byte = name.byteAt(index);
+      if (byte < 48 || byte > 57) {
+        return name.copyBytes(0, name.byteLength);
+      }
+      sawDigit = true;
+      keyLength = keyLength * 10 + usize(byte - 48);
+      index = index + 1;
+    }
+    const keyStart = index + 1;
+    const keyEnd = keyStart + keyLength;
+    if (
+      !sawDigit
+      || index >= name.byteLength
+      || keyEnd >= name.byteLength
+    ) return name.copyBytes(0, name.byteLength);
+    const keyType = name.copyBytes(keyStart, keyEnd);
+    const valueType = name.copyBytes(keyEnd, name.byteLength);
+    return `Map<${keyType}, ${valueType}>`;
+  }
+  return name.copyBytes(0, name.byteLength);
+}
+
 export function iterationElementType(in name: String): String {
   if (stringStartsWith(name, "view ") && name.byteLength > 5) {
     const target = name.copyBytes(5, name.byteLength);
@@ -134,6 +188,10 @@ export function collectionMethodSignature(
   ) {
     const target = ownerType.copyBytes(5, ownerType.byteLength);
     return collectionMethodSignature(target, methodName);
+  }
+  const sourceOwnerType = sourceCollectionTypeName(in ownerType);
+  if (sourceOwnerType != ownerType) {
+    return collectionMethodSignature(sourceOwnerType, methodName);
   }
   let collectionOwnerType = ownerType.copyBytes(0, ownerType.byteLength);
   let readonlyCollection = false;

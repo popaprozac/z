@@ -57,6 +57,7 @@ import {
   iterationElementType,
   iterationObjectFieldType,
   numberLiteralType,
+  sourceCollectionTypeName,
   throwingGeneratorHandleType,
 } from "./semantic-intrinsics.zs";
 import { nativeStandardCall } from "./semantic-standard-library.zs";
@@ -5120,6 +5121,7 @@ function effectiveCollectionMethodSignature(
     9,
     collectionOwnerType.byteLength
   );
+  collectionOwnerType = sourceCollectionTypeName(in collectionOwnerType);
   match (genericTypeShape(collectionOwnerType)) {
     some(mapType) => {
       if (
@@ -5135,7 +5137,7 @@ function effectiveCollectionMethodSignature(
         match (nativeFunctionSignature(transparentValue)) {
           some(_) => effective.returnType = `Option<${mapType.arguments[1]}>`;
           none => match (
-            typeSymbolLocation(modules, moduleIndex, transparentValue)
+            inferredTypeSymbolLocation(modules, moduleIndex, transparentValue)
           ) {
             some(location) => {
               if (
