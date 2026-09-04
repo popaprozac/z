@@ -390,7 +390,10 @@ function languageAnalysis(source: string, fileName: string): AnalyzedSource {
     }
   }
   try {
-    const analysis = analyzeSource(source, fileName, { requireMain: false });
+    const analysis = analyzeSource(source, fileName, {
+      requireMain: false,
+      deferUnsupportedRawSymbolValidation: true,
+    });
     cacheLanguageAnalysis(key, {
       source,
       analysis,
@@ -2242,6 +2245,12 @@ export function definition(source: string, uri: string, offset: number): Locatio
   }
   const context = safeAnalysis(source, fileName);
   if (context) {
+    const importedModule = sourceImportModuleAtOffset(
+      context,
+      source,
+      word.start
+    );
+    if (importedModule) return sourceModuleLocation(importedModule);
     const memberNamespace = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
     const namespaceImport = memberNamespace
       ? context.sourceProgram.imports.find((declaration) => (
@@ -2252,6 +2261,22 @@ export function definition(source: string, uri: string, offset: number): Locatio
       : null;
     const namespaceModule = namespaceImport ? localSourceModule(context, namespaceImport) : null;
     if (namespaceModule?.exports.has(word.text)) return sourceExportLocation(namespaceModule, word.text);
+    const directNamespaceImport = !sourceNameIsShadowed(
+      context,
+      word.text,
+      word.start,
+      fileName,
+    )
+      ? context.sourceProgram.imports.find((declaration) => (
+          !declaration.bindings
+          && declaration.moduleName === word.text
+          && localSourceModule(context, declaration)
+        ))
+      : null;
+    const directNamespaceModule = directNamespaceImport
+      ? localSourceModule(context, directNamespaceImport)
+      : null;
+    if (directNamespaceModule) return sourceModuleLocation(directNamespaceModule);
     const binding = localSourceBinding(context, word.text);
     if (binding) return sourceExportLocation(binding.module, binding.importedName);
     const native = nativeDefinition(context, source, fileName, word);
@@ -2282,6 +2307,35 @@ export function definition(source: string, uri: string, offset: number): Locatio
   if (!target) return null;
   const start = { line: target.line - 1, character: target.column - 1 };
   return { uri, range: { start, end: { line: start.line, character: start.character + word.text.length } } };
+}
+
+function sourceImportModuleAtOffset(
+  context: AnalyzedSource,
+  source: string,
+  offset: number,
+): SourceModuleInfo | null {
+  let tokens: ReturnType<typeof lex>;
+  try {
+    tokens = lex(source, context.sourceModuleBatch.entryFileName);
+  } catch {
+    return null;
+  }
+  for (let importIndex = 0; importIndex < context.sourceProgram.imports.length; importIndex += 1) {
+    const declaration = context.sourceProgram.imports[importIndex];
+    const nextOffset = context.sourceProgram.imports[importIndex + 1]?.location.offset
+      ?? source.length;
+    const header = tokens.find((token) => (
+      token.kind === "string"
+      && token.text === declaration.header
+      && token.location.offset > declaration.location.offset
+      && token.location.offset < nextOffset
+    ));
+    if (!header) continue;
+    const headerEnd = header.location.offset + declaration.header.length + 2;
+    if (offset < header.location.offset || offset >= headerEnd) continue;
+    return localSourceModule(context, declaration);
+  }
+  return null;
 }
 
 function nativeDefinition(
@@ -6404,6 +6458,14 @@ function sourceExportLocation(module: SourceModuleInfo, name: string): Location 
   }
 }
 
+function sourceModuleLocation(module: SourceModuleInfo): Location {
+  const start = { line: 0, character: 0 };
+  return {
+    uri: pathToFileURL(module.fileName).href,
+    range: { start, end: start },
+  };
+}
+
 function labelCompletions(source: string, fileName: string, offset: number): CompletionItem[] {
   const open = unmatchedOpenParen(source, offset);
   if (open < 0) return [];
@@ -6447,7 +6509,10 @@ function importAnalysis(source: string, fileName: string): AnalyzedSource | null
     return cached.analysis;
   }
   try {
-    const analysis = analyzeSource(probe, fileName, { requireMain: false });
+    const analysis = analyzeSource(probe, fileName, {
+      requireMain: false,
+      deferUnsupportedRawSymbolValidation: true,
+    });
     cacheImportLanguageAnalysis(key, {
       source: probe,
       analysis,

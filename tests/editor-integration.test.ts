@@ -423,6 +423,105 @@ test("keeps generic service methods fully classified in source and hover signatu
   }
 });
 
+test("keeps package diagnostics and definitions available past native-only async lowering", () => {
+  const directory = mkdtempSync("/tmp/z-package-editor-definition-");
+  const applicationDirectory = resolve(directory, "application");
+  const packageDirectory = resolve(directory, "zapp");
+  const packageEntry = resolve(packageDirectory, "api.zs");
+  const packageWindow = resolve(packageDirectory, "window.zs");
+  const mainFile = resolve(applicationDirectory, "main.zs");
+  const packageSource = `
+    struct ApplicationError {
+      code: i32;
+    }
+
+    function requireReady(): void throws ApplicationError {
+      return;
+    }
+
+    function nativeMarker(): i32 = raw c {
+      return 42;
+    }
+
+    export readonly class Application {
+      constructor() {}
+
+      async function run(): i32 throws ApplicationError {
+        try requireReady();
+        return nativeMarker();
+      }
+    }
+  `;
+  const windowSource = `
+    export struct WindowOptions {
+      title: String = "Zapp";
+    }
+  `;
+  const mainSource = `
+    import { Application } from "zapp";
+    import zappApi from "zapp";
+    import { WindowOptions } from "zapp/window";
+
+    function main(): i32 {
+      const app = new Application();
+      const secondApp = new zappApi.Application();
+      const options = WindowOptions();
+      return options.title.byteLength == 4 ? 0 : 1;
+    }
+  `;
+  try {
+    mkdirSync(applicationDirectory, { recursive: true });
+    mkdirSync(packageDirectory, { recursive: true });
+    writeFileSync(resolve(packageDirectory, "z.json"), JSON.stringify({
+      package: { name: "zapp", version: "0.1.0" },
+      library: {
+        entry: "api.zs",
+        exports: { "./window": "window.zs" },
+      },
+    }));
+    writeFileSync(resolve(applicationDirectory, "z.json"), JSON.stringify({
+      dependencies: { zapp: { path: "../zapp" } },
+      target: { name: "package-editor-definition", entry: "main.zs" },
+    }));
+    writeFileSync(packageEntry, packageSource);
+    writeFileSync(packageWindow, windowSource);
+    writeFileSync(mainFile, mainSource);
+
+    assert.deepEqual(diagnostics(mainSource, mainFile), []);
+    const uri = `file://${mainFile}`;
+    for (const offset of [
+      mainSource.indexOf("Application }"),
+      mainSource.indexOf("new Application") + "new ".length,
+    ]) {
+      assert.equal(definition(mainSource, uri, offset + 1)?.uri, `file://${realpathSync(packageEntry)}`);
+    }
+    assert.equal(
+      definition(mainSource, uri, mainSource.indexOf("zappApi from") + 1)?.uri,
+      `file://${realpathSync(packageEntry)}`,
+    );
+    assert.equal(
+      definition(mainSource, uri, mainSource.indexOf("zappApi.Application") + 1)?.uri,
+      `file://${realpathSync(packageEntry)}`,
+    );
+    for (const offset of [
+      mainSource.indexOf("WindowOptions }"),
+      mainSource.indexOf("WindowOptions()"),
+    ]) {
+      assert.equal(definition(mainSource, uri, offset + 1)?.uri, `file://${realpathSync(packageWindow)}`);
+    }
+    assert.equal(
+      definition(mainSource, uri, mainSource.indexOf('"zapp"') + 2)?.uri,
+      `file://${realpathSync(packageEntry)}`,
+    );
+    assert.equal(
+      definition(mainSource, uri, mainSource.indexOf('"zapp/window"') + 2)?.uri,
+      `file://${realpathSync(packageWindow)}`,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("keeps test matcher hover after earlier selective imports", () => {
   const source = `
     import { sleep } from "std/time";

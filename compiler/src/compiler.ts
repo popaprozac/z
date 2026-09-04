@@ -249,6 +249,13 @@ export type AnalysisOptions = {
     readonly fileName: string;
   }>>;
   readonly projectBuild?: ProjectBuild;
+  /**
+   * Editor analysis may defer a Stage-0 backend-only raw-symbol check when an
+   * otherwise valid async declaration is already executable by the native
+   * frontend. Semantic analysis and every check the backend can perform still
+   * run; ordinary compilation never enables this escape.
+   */
+  readonly deferUnsupportedRawSymbolValidation?: boolean;
   /** Compiler-owned second-pass evidence for versioned generated call adaptation. */
   readonly validatedGeneratedCallAdapters?: readonly ValidatedGeneratedCallAdapter[];
 };
@@ -432,18 +439,33 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
       ...program.functions,
       ...program.structs.flatMap((declaration) => declaration.methods),
     ].find((declaration) => declaration.async);
-    const asyncGenerated = asyncDeclaration ? generateAsyncC(program, fileName, semanticInfo) : null;
-    const synchronousProgram = asyncGenerated?.synchronousProgram ?? program;
-    const generatedWithoutRawBodies = [
-      generateC(synchronousProgram, fileName, semanticInfo, { omitRawNativeBodies: true }),
-      asyncGenerated?.source ?? "",
-    ].join("\n");
-    validateRawNativeGeneratedSymbolAccess(
-      program,
-      foreignModules,
-      generatedWithoutRawBodies,
-      fileName,
-    );
+    let asyncGenerated: ReturnType<typeof generateAsyncC> | null = null;
+    let deferredRawSymbolValidation = false;
+    if (asyncDeclaration) {
+      try {
+        asyncGenerated = generateAsyncC(program, fileName, semanticInfo);
+      } catch (error) {
+        if (
+          options.deferUnsupportedRawSymbolValidation
+          && error instanceof DiagnosticError
+          && error.code === "Z0700"
+        ) deferredRawSymbolValidation = true;
+        else throw error;
+      }
+    }
+    if (!deferredRawSymbolValidation) {
+      const synchronousProgram = asyncGenerated?.synchronousProgram ?? program;
+      const generatedWithoutRawBodies = [
+        generateC(synchronousProgram, fileName, semanticInfo, { omitRawNativeBodies: true }),
+        asyncGenerated?.source ?? "",
+      ].join("\n");
+      validateRawNativeGeneratedSymbolAccess(
+        program,
+        foreignModules,
+        generatedWithoutRawBodies,
+        fileName,
+      );
+    }
   }
   if (nativeFrontendFailure) throw nativeFrontendFailure;
   return {
