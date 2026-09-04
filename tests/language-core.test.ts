@@ -98,6 +98,32 @@ test("checks floating-point widths and integer-only bitwise operators", () => {
   assert.match(compileToC(variadicFloat, "variadic-float.zs"), /printf\("%\.1f", 1\.5\)/);
 });
 
+test("materializes populated Array temporaries for call-scoped borrows", () => {
+  const fixture = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-borrowed-array-temporary.zs",
+  );
+  const source = readFileSync(fixture, "utf8");
+  const generated = compileToC(source, fixture);
+  assert.match(
+    generated,
+    /Z_DynamicArray_[^ ]+ _z_argument_\d+;/,
+  );
+  assert.match(
+    generated,
+    /sum\(&\(_z_argument_\d+\)\)/,
+  );
+  assert.match(
+    generated,
+    /free\(\(_z_argument_\d+\)\.data\)/,
+  );
+
+  const result = spawnSync(process.execPath, [cli, "run", fixture], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("returns a closed Arena-owned graph bundle without letting views escape their owner", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-emit-arena-owner-bundle.zs");
   const source = readFileSync(fixture, "utf8");

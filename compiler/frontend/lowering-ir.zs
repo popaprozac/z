@@ -15300,6 +15300,28 @@ function lowerExpressionContextual(
         );
       }
       if (
+        parameterModes.length >= argument
+        && parameterModes[argument - 1] == "in"
+        && (
+          output[value].kind == LoweredExpressionKind.arrayEmpty
+          || output[value].kind == LoweredExpressionKind.arrayValue
+        )
+      ) {
+        let temporaryChildren = Array<usize>();
+        temporaryChildren.push(value);
+        const temporaryType = output[value].value.copyBytes(
+          0,
+          output[value].value.byteLength
+        );
+        value = pushExpression(
+          inout output,
+          LoweredExpressionKind.borrowedTemporary,
+          temporaryType,
+          temporaryChildren,
+          Array<String>()
+        );
+      }
+      if (
         callLabels.length >= argument
         && callLabels[argument - 1] == "in"
       ) {

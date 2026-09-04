@@ -14303,6 +14303,7 @@ function checkArguments(
         !isNamedStorageExpression(borrowedArgument)
         && argument.kind !== "structExpression"
         && !aggregateTemporary
+        && borrowedArgument.kind !== "dynamicArrayExpression"
         && argument.kind !== "template"
         && argument.kind !== "string"
         && argument.kind !== "try"
@@ -14318,6 +14319,7 @@ function checkArguments(
       if (
         hasOwnershipType(borrowedActual, structs, enums, state)
         && !isNamedStorageExpression(borrowedArgument)
+        && borrowedArgument.kind !== "dynamicArrayExpression"
         && argument.kind !== "template"
         && argument.kind !== "string"
         && argument.kind !== "try"

@@ -260,8 +260,11 @@ parameters, or owning fields. Borrowed cleanup-bearing parameters do not run
 cleanup; their owner remains responsible.
 
 The bootstrap requires `inout` to name direct initialized mutable storage.
-Immutable borrows accept stored expressions and non-cleanup struct literals;
-general temporary materialization follows later. An `out` parameter begins
+Immutable borrows accept stored expressions and non-cleanup struct literals.
+A synchronous `in` call may also borrow an inline `Array<T>(...)`: the compiler
+materializes one hidden owner for the statement, borrows it for the call, and
+destroys it immediately afterward. Other cleanup-bearing temporary shapes still
+require a named binding. An `out` parameter begins
 uninitialized and write-only, becomes readable after assignment, and must be
 initialized along every successful return path. Uninitialized typed `let`
 bindings use the same flow-sensitive analysis. Multiple `in` uses may share one

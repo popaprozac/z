@@ -3004,6 +3004,53 @@ test("emits static struct and class methods as direct native calls", () => {
   }
 }, 240_000);
 
+test("materializes populated Array temporaries for native call-scoped borrows", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-borrowed-array-temporary.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z___z_Array_i32 _z_stage1_borrow_\d+ = Z___z_Array_i32_from/,
+  );
+  assert.match(
+    emission.stdout,
+    /sum\(&\(_z_stage1_borrow_\d+\)\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z___z_Array_i32_deinit\(&_z_stage1_borrow_\d+\)/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-native-borrowed-array-temporary-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("composes native Array destructuring, zero-copy rest, and Slice parameters", () => {
   const input = resolve(
     projectRoot,

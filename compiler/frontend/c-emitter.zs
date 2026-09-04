@@ -6122,12 +6122,20 @@ function appendBorrowedTemporaryInitializers(
   ) return;
   if (
     declaration.expressions[index].value != "String"
-    || declaration.expressions[index].children.length != 1
+    && !stringStartsWith(
+      declaration.expressions[index].value,
+      "__z_Array_"
+    )
   ) {
-    throw "native C emission received an unsupported borrowed temporary";
+    throw "native C emission received an unsupported borrowed temporary type";
+  }
+  if (declaration.expressions[index].children.length != 1) {
+    throw "native C emission received a malformed borrowed temporary";
   }
   appendIndent(inout output, depth);
-  output.append("Z_String ");
+  output.append("Z_");
+  output.append(declaration.expressions[index].value);
+  output.append(" ");
   output.append(`_z_stage1_borrow_${index}`);
   output.append(" = ");
   const initializer = declaration.expressions[index].children[0];
@@ -6154,7 +6162,9 @@ function appendBorrowedTemporaryCleanups(
       == LoweredExpressionKind.borrowedTemporary
   ) {
     appendIndent(inout output, depth);
-    output.append("Z_String_deinit(&");
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_deinit(&");
     output.append(`_z_stage1_borrow_${index}`);
     output.append(");\n");
   }

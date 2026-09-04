@@ -1113,6 +1113,24 @@ callee may use the argument:
 Function declarations and function types include the same capabilities. This
 keeps callbacks and ordinary functions substitutable.
 
+An inline dynamic Array may be borrowed by a synchronous call without a
+user-authored local:
+
+```z
+function sum(in values: Array<i32>): i32 {
+  return values[0] + values[1];
+}
+
+const answer = sum(Array<i32>(20, 22));
+```
+
+Z materializes one hidden owned Array, passes a read-only pointer for the call,
+and destroys that Array immediately after the result is secured. This is a
+call-scoped convenience, not an escaping borrow or ARC allocation. Async
+borrows still require named, address-stable storage, and `inout`/`out` still
+require explicit mutable caller storage. Other cleanup-bearing temporary shapes
+must currently be bound before borrowing.
+
 For ARC classes, `inout` applies to the shared object identity rather than only
 to one variable spelling. Direct aliases are tracked without a runtime check:
 

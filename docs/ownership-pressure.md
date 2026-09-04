@@ -5040,6 +5040,29 @@ source then builds and runs its generated service bridge. This is useful
 evidence that Z's explicit ownership vocabulary remains stable while the
 compiler grows more compositional beneath it.
 
+## Populated Array temporaries now have a bounded borrow owner
+
+The Z Notes transfer-codec regression naturally wanted to write an owned
+collection directly at a read-only call boundary:
+
+```z
+const encoded = encodeNotesDocument(Array<Note>(note));
+```
+
+Stage 0 already had the statement-lowering machinery needed to materialize a
+cleanup-bearing call argument, but semantic analysis rejected the dynamic
+Array shape. The native frontend accepted it and emitted `&(rvalue)`, leaving
+Clang to report an invalid address-of operation. Both outcomes exposed one
+parity and composition gap rather than a need for new ownership syntax.
+
+Both frontends now create one hidden Array owner before a synchronous `in`
+call, borrow that stable storage for the call, secure the result, and destroy
+the Array immediately afterward. A strict-C executable regression proves the
+allocation is reclaimed once and the callee cannot retain the pointer. Async
+borrows remain named-storage-only because their address must survive a
+suspension. Other cleanup-bearing temporary types stay conservative until each
+lowering shape has equivalent exact-once cleanup evidence.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
