@@ -1980,7 +1980,7 @@ test("imports typed object-like integer macros without textual substitution", ()
   const example = resolve(projectRoot, "tests/fixtures/macro-constants.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
-  assert.match(generated, /z_checked_subtract_i32\(z_checked_add_i32\(Z_MACRO_ANSWER, Z_MACRO_NEGATIVE\), 35\)/);
+  assert.match(generated, /Z_STATIC_ANSWER/);
 
   const module = analyzeSource(source, example).foreignModules.get("macros");
   assert.equal(module?.constants.get("Z_MACRO_ANSWER")?.typeName, "i32");
@@ -1993,6 +1993,8 @@ test("imports typed object-like integer macros without textual substitution", ()
   assert.equal(module?.constants.get("Z_MACRO_EXPRESSION")?.typeName, "i32");
   assert.equal(module?.constants.get("Z_MACRO_FLAGS")?.typeName, "i32");
   assert.equal(module?.constants.get("Z_MACRO_ANSWER")?.sourceKind, "macro");
+  assert.equal(module?.constants.get("Z_STATIC_ANSWER")?.typeName, "i32");
+  assert.equal(module?.constants.get("Z_STATIC_ANSWER")?.sourceKind, "variable");
   assert.equal(module?.constants.has("Z_MACRO_TEXT"), false);
   assert.equal(module?.constants.has("Z_MACRO_FUNCTION"), false);
 
@@ -2007,6 +2009,15 @@ test("imports typed object-like integer macros without textual substitution", ()
   const answerDefinition = definition(source, `file://${example}`, answerOffset);
   assert.match(answerDefinition?.uri ?? "", /tests\/fixtures\/macro-constants\.h$/);
   assert.equal(answerDefinition?.range.start.line, 3);
+
+  const staticOffset = source.indexOf("Z_STATIC_ANSWER") + 2;
+  assert.match(
+    hover(source, example, staticOffset)?.contents.value ?? "",
+    /Z_STATIC_ANSWER: i32.*native global constant/,
+  );
+  const staticDefinition = definition(source, `file://${example}`, staticOffset);
+  assert.match(staticDefinition?.uri ?? "", /tests\/fixtures\/macro-constants\.h$/);
+  assert.equal(staticDefinition?.range.start.line, 4);
 
   const completionSource = source.replace("macros.Z_MACRO_ANSWER", "macros.Z_MACRO_A");
   const completionOffset = completionSource.indexOf("macros.Z_MACRO_A") + "macros.Z_MACRO_A".length;

@@ -3959,6 +3959,10 @@ integer-expression macros defined directly by the requested header. Clang's
 target integer rules determine their Z type, namespace and selective imports
 treat them like other native constants, and generated source preserves the
 original macro token. There is no runtime wrapper or textual expansion in Z.
+Header-defined top-level `static const` scalar values are imported through the
+same typed constant surface. This includes SDK conventions such as AppKit's
+`NSModalResponseOK`; the Clang-derived typedef or builtin scalar type is kept,
+and generated native source references the symbolic declaration directly.
 Explicitly typedef-cast integer sentinels additionally participate in checked
 `fixed` facts as described above. Function-like macros, strings, aliases, and
 general constant expressions remain outside ordinary Z values.

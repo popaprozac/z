@@ -1350,6 +1350,36 @@ function collectNamedTypes(
       });
     }
   }
+  // Header-defined scalar constants such as AppKit's
+  // `static const NSModalResponse NSModalResponseOK` are values, not enum
+  // cases or preprocessor macros. They are nevertheless safe, typed native
+  // constants: every translation unit including the header receives the same
+  // immutable definition. Keep namespace-qualified C++ variables deferred
+  // until nested foreign-constant lookup is supported.
+  visitWithNamespaces(root, (node, namespacePath) => {
+    if (
+      namespacePath.length > 0
+      || node.kind !== "VarDecl"
+      || node.storageClass !== "static"
+      || !node.name
+      || !node.type?.qualType
+      || !/^const\b/.test(node.type.qualType.trim())
+    ) return;
+    const named = resolvePotentialNamedType(node.type.qualType, [], namedTypes);
+    const typeName = named?.kind === "scalar"
+      ? named.underlying
+      : named?.kind === "enum"
+        ? named.typeName
+        : mapBuiltinType(node.type.desugaredQualType ?? node.type.qualType);
+    if (!typeName || typeName === "void" || typeName === "boolean") return;
+    constants.set(node.name, {
+      name: node.name,
+      cName: node.name,
+      typeName,
+      sourceKind: "variable",
+      metadata: foreignDeclarationMetadata(node),
+    });
+  });
   const namespaces = new Set<string>();
   for (const named of namedTypes.values()) {
     for (let depth = 1; depth <= named.namespacePath.length; depth += 1) {

@@ -2,6 +2,7 @@
 #define Z_TEST_MACRO_CONSTANTS_H
 
 #define Z_MACRO_ANSWER 42
+static const int Z_STATIC_ANSWER = 42;
 #define Z_MACRO_NEGATIVE (-7)
 #define Z_MACRO_UNSIGNED 42U
 #define Z_MACRO_WIDE 42ULL

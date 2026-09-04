@@ -329,6 +329,12 @@ preserves unlisted tag values. Where no discriminant contract exists, reading
 a member remains a local proof obligation: after checking the native API's
 discriminator, `unsafe` may copy a supported scalar or enum member.
 
+Top-level header-defined `static const` scalar values join enum cases and
+supported object-like macros as typed native constants. Z preserves the
+symbolic spelling in generated source and uses Clang's typedef/underlying type
+evidence rather than substituting an integer literal. Namespace-qualified C++
+constant variables remain a future extension of nested foreign lookup.
+
 The expression form uses Z's ordinary value-block rule: `select` supplies the
 unsafe expression's value, while `return` still exits the enclosing function.
 Only a safe result may be selected. Representable scalars and independently
