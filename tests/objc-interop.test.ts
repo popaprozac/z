@@ -173,6 +173,24 @@ hostToolchainTest("gives every Objective-C C export an autorelease pool", () => 
   assert.equal(compilation.status, 0, compilation.stderr);
 });
 
+hostToolchainTest("prefers an Objective-C class over a legacy protocol with the same name", () => {
+  if (process.platform !== "darwin") return;
+  const fileName = resolve(projectRoot, "tests/fixtures/objc-class-protocol-collision.zs");
+  const source = readFileSync(fileName, "utf8");
+  const artifact = compileToNative(source, fileName);
+
+  assert.match(artifact.source, /static NSMenuItem \* createMenuItem\(void\)/);
+  assert.match(artifact.source, /NSMenuItem \* const item = createMenuItem\(\);/);
+  assert.match(artifact.source, /\[item setTitle:@"File"\]/);
+
+  const nativeCheck = spawnSync(
+    process.execPath,
+    [cli, "check", fileName, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+}, 60_000);
+
 hostToolchainTest("keeps contextual native option literals in fixed-point parity", () => {
   if (process.platform !== "darwin") return;
   const fixture = resolve(

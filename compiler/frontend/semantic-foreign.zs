@@ -1036,6 +1036,14 @@ function attachForeignObjCTypes(
   column: usize
 ): void {
   for (const protocol of contracts.objectiveCProtocols) {
+    // Prefer a concrete Objective-C interface when an SDK also retains a
+    // legacy protocol under the same exported name. The protocol remains in
+    // the foreign contract set for explicit conformance and qualified uses.
+    let concreteInterface = false;
+    for (const interface_ of contracts.objectiveCInterfaces) {
+      if (interface_.name == protocol.name) concreteInterface = true;
+    }
+    if (concreteInterface) continue;
     const name = `${namespace}.${protocol.name}`;
     if (
       moduleSymbolIndex(modules[moduleIndex], name)

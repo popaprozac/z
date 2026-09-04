@@ -45,6 +45,16 @@ export function collectForeignHandleTypeAliases(
       canonicalBySourceName.set(sourceName, canonical);
       displayByCanonicalName.set(canonical, sourceName);
     }
+    // Some Objective-C SDKs retain a deprecated protocol with the same public
+    // spelling as its modern class (AppKit.NSMenuItem is one example). In an
+    // ordinary Z type position the concrete class is the useful, constructible
+    // type. Keep the protocol metadata available to protocol-qualified imports,
+    // but let the class own the unqualified source spelling.
+    for (const interface_ of module.interfaces.values()) {
+      const sourceName = `${module.declaration.moduleName}.${interface_.exportName}`;
+      canonicalBySourceName.set(sourceName, interface_.typeName);
+      displayByCanonicalName.set(interface_.typeName, sourceName);
+    }
     const byIdentity = new Map<string, {
       ownedNullable: string | null;
       ownedNonnull: string | null;
