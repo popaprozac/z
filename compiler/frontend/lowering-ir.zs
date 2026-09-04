@@ -3646,6 +3646,25 @@ function lowerType(in program: Program, in type: TypeReference): LoweredType thr
   return try lowerTypeName(program, type.name);
 }
 
+function compilerHiddenTypeSourceName(in name: String): String {
+  const prefix = "__z_module_";
+  if (!stringStartsWith(name, prefix)) return "";
+  let index = prefix.byteLength;
+  const digitStart = index;
+  while (index < name.byteLength) {
+    const byte = name.byteAt(index);
+    if (byte < 48 || byte > 57) break;
+    index = index + 1;
+  }
+  if (
+    index == digitStart
+    || index >= name.byteLength
+    || name.byteAt(index) != 95
+    || index + 1 >= name.byteLength
+  ) return "";
+  return name.copyBytes(index + 1, name.byteLength);
+}
+
 function lowerModuleTypeName(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -4070,10 +4089,31 @@ function lowerModuleTypeName(
   let importedIndex = importedTypes.length;
   while (importedIndex > 0) {
     importedIndex = importedIndex - 1;
-    if (
-      importedTypes[importedIndex].localName == name
-      || importedTypes[importedIndex].targetName == name
-    ) return LoweredType({
+    if (importedTypes[importedIndex].localName == name) return LoweredType({
+      kind: importedTypes[importedIndex].kind,
+      name: importedTypes[importedIndex].targetName.copyBytes(
+        0,
+        importedTypes[importedIndex].targetName.byteLength
+      ),
+    });
+  }
+  // Exact imported source names win first. If none exists, a local or
+  // intrinsic spelling must win before compatibility lookup by an imported
+  // type's target name. Hidden nominal aliases can legitimately target a
+  // declaration named `String`, `Task`, or another local spelling in a
+  // different module; treating that target as the current module's type
+  // changes ownership semantics. Conversely, checking local declarations
+  // before exact imported names loses private ABI identities in linked
+  // modules whose source names collide.
+  const local = attempt lowerTypeName(program, name);
+  match (local) {
+    success(type) => return type;
+    failure(_) => {}
+  }
+  importedIndex = importedTypes.length;
+  while (importedIndex > 0) {
+    importedIndex = importedIndex - 1;
+    if (importedTypes[importedIndex].targetName == name) return LoweredType({
       kind: importedTypes[importedIndex].kind,
       name: importedTypes[importedIndex].targetName.copyBytes(
         0,
@@ -4098,10 +4138,17 @@ function lowerModuleTypeName(
       });
     }
   }
-  const local = attempt lowerTypeName(program, name);
-  match (local) {
-    success(type) => return type;
-    failure(_) => {}
+  const hiddenSourceName = compilerHiddenTypeSourceName(name);
+  if (hiddenSourceName.byteLength > 0) {
+    const hiddenSource = attempt lowerModuleTypeName(
+      program,
+      importedTypes,
+      hiddenSourceName
+    );
+    match (hiddenSource) {
+      success(type) => return type;
+      failure(_) => {}
+    }
   }
   throw `native module lowering could not resolve type ${name} against ${program.aggregates.length} local aggregate(s), ${program.enums.length} local enum(s), and ${importedTypes.length} imported type(s)`;
 }
@@ -18493,12 +18540,26 @@ function lowerValueDestination(
     some(tree) => {
       const root = tree.root;
       if (expectedTypeName.byteLength > 0) {
+        let storageTypeName = expectedTypeName.copyBytes(
+          0,
+          expectedTypeName.byteLength
+        );
+        match (evidenceResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          root
+        )) {
+          some(actualTypeName) => storageTypeName = move actualTypeName;
+          none => {}
+        }
         value = try wrapOwnedStorage(
           program,
           importedTypes,
           tree,
           root,
-          expectedTypeName,
+          storageTypeName,
           value,
           inout expressions
         );
@@ -23598,12 +23659,26 @@ function lowerStatementCore(
                 inout expressions
               );
               if (expectedTypeName.byteLength > 0) {
+                let storageTypeName = expectedTypeName.copyBytes(
+                  0,
+                  expectedTypeName.byteLength
+                );
+                match (evidenceResolvedExpressionTypeName(
+                  program,
+                  importedTypes,
+                  evidence,
+                  tree,
+                  root
+                )) {
+                  some(actualTypeName) => storageTypeName = move actualTypeName;
+                  none => {}
+                }
                 loweredValue = try wrapOwnedStorage(
                   program,
                   importedTypes,
                   tree,
                   root,
-                  expectedTypeName,
+                  storageTypeName,
                   loweredValue,
                   inout expressions
                 );
@@ -27713,6 +27788,43 @@ function appendDeferredGenericAliasType(
   return false;
 }
 
+function appendHiddenConcreteTypeIdentities(
+  in graph: ModuleGraph,
+  inout types: Array<LoweredImportedType>
+): void {
+  let moduleIndex: usize = 0;
+  while (moduleIndex < graph.modules.length) {
+    for (const symbol of graph.modules[moduleIndex].symbols) {
+      if (
+        symbol.kind != ModuleSymbolKind.structSymbol
+        && symbol.kind != ModuleSymbolKind.classSymbol
+        && symbol.kind != ModuleSymbolKind.enumSymbol
+      ) continue;
+      const identityName = `__z_module_${moduleIndex}_${symbol.name}`;
+      let present = false;
+      for (const type of types) {
+        if (type.localName == identityName) present = true;
+      }
+      if (present) continue;
+      const privateName = emittedPrivateTypeName(moduleIndex, symbol.name);
+      let source = Option<LoweredImportedType>.none;
+      for (const type of types) {
+        if (
+          type.targetName != privateName
+          && type.targetName != symbol.name
+        ) continue;
+        source = Option.some(copyImportedTypeAlias(type, identityName));
+        if (type.targetName == privateName) break;
+      }
+      match (source) {
+        some(type) => types.push(move type);
+        none => {}
+      }
+    }
+    moduleIndex = moduleIndex + 1;
+  }
+}
+
 function importedTypesForModule(
   in program: Program,
   in graph: ModuleGraph,
@@ -28260,6 +28372,10 @@ function importedTypesForModule(
     }
     reachableTypeIndex = reachableTypeIndex + 1;
   }
+  // Callable aliases can contain compiler-only nominal spellings for types
+  // that are not directly nameable by this module. Make those concrete
+  // identities available before resolving transparent aliases.
+  appendHiddenConcreteTypeIdentities(graph, inout types);
   // Visible aliases can appear inside fields and return types above without
   // being named directly by the consumer. Resolve them to a fixed point so
   // callable aliases and aliases of aliases remain available to inferred
@@ -28491,6 +28607,7 @@ function importedTypesForModule(
         symbol.kind != ModuleSymbolKind.structSymbol
         && symbol.kind != ModuleSymbolKind.classSymbol
         && symbol.kind != ModuleSymbolKind.enumSymbol
+        && symbol.kind != ModuleSymbolKind.typeAliasSymbol
       ) continue;
       const identityName = `__z_module_${identityModuleIndex}_${symbol.name}`;
       let identityPresent = false;
@@ -28498,6 +28615,109 @@ function importedTypesForModule(
         if (type.localName == identityName) identityPresent = true;
       }
       if (identityPresent) continue;
+      if (symbol.kind == ModuleSymbolKind.typeAliasSymbol) {
+        const aliasTarget = rebaseTypeName(
+          graph.modules,
+          identityModuleIndex,
+          moduleIndex,
+          symbol.importedName
+        );
+        const loweredAlias = attempt lowerModuleTypeName(
+          program,
+          types,
+          aliasTarget
+        );
+        match (loweredAlias) {
+          success(lowered) => {
+            let fields = Array<LoweredField>();
+            let variants = Array<LoweredVariant>();
+            let payloadBearing = false;
+            let executorBound = false;
+            let threadShareable = threadShareablePrimitive(lowered.name);
+            let workerDestructible = false;
+            let needsDeinit = moduleTypeNeedsCleanup(
+              program,
+              types,
+              lowered
+            );
+            if (
+              lowered.kind == LoweredTypeKind.structType
+              || lowered.kind == LoweredTypeKind.classType
+            ) {
+              fields = loweredStructFields(structs, lowered.name);
+              executorBound = loweredStructExecutorBound(
+                structs,
+                lowered.name
+              );
+              threadShareable = loweredStructThreadShareable(
+                structs,
+                lowered.name
+              );
+              workerDestructible = loweredStructWorkerDestructible(
+                structs,
+                lowered.name
+              );
+            } else if (lowered.kind == LoweredTypeKind.enumType) {
+              match (loweredEnumCopy(enums, lowered.name)) {
+                some(declaration) => {
+                  for (const variant of declaration.variants) {
+                    variants.push(copyLoweredVariant(variant));
+                  }
+                  payloadBearing = declaration.payloadBearing;
+                  needsDeinit = declaration.needsDeinit;
+                  workerDestructible = !declaration.needsDeinit;
+                }
+                none => {}
+              }
+            } else {
+              const visiting = Array<String>();
+              executorBound = moduleTypeHasExecutorAffinity(
+                program,
+                types,
+                lowered.name,
+                visiting
+              );
+              threadShareable = moduleTypeIsThreadShareable(
+                program,
+                types,
+                aliasTarget,
+                visiting
+              );
+              workerDestructible = moduleTypeIsWorkerDestructible(
+                program,
+                types,
+                lowered.name,
+                visiting
+              );
+            }
+            types.push(LoweredImportedType({
+              localName: identityName.copyBytes(
+                0,
+                identityName.byteLength
+              ),
+              targetName: lowered.name.copyBytes(
+                0,
+                lowered.name.byteLength
+              ),
+              nativeTypeName: "",
+              kind: lowered.kind,
+              executorBound,
+              threadShareable,
+              workerDestructible,
+              needsDeinit,
+              resourceRelease: "",
+              fields,
+              variants,
+              payloadBearing,
+              underlyingType: lowered.kind == LoweredTypeKind.functionType
+                ? aliasTarget.copyBytes(0, aliasTarget.byteLength)
+                : "",
+            }));
+          }
+          failure(_) => {}
+        }
+        continue;
+      }
       const collisionName = emittedPrivateTypeName(
         identityModuleIndex,
         symbol.name

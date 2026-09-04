@@ -17819,6 +17819,35 @@ test("preserves thread.main through re-exported callable aliases", () => {
   assert.equal(resolution.status, 0, resolution.stderr);
 });
 
+test("rebases nominal identities inside imported callable and value aliases", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-imported-function-value/main.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+  assert.match(parity.stdout, /native frontend hybrid/);
+
+  const resolution = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(resolution.status, 0, resolution.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /retainBorrowedHandler/);
+});
+
 test("preserves throwing closure and transparent callable-alias effects natively", () => {
   const cases = [
     "examples/language/basics/throwing-function-values.zs",

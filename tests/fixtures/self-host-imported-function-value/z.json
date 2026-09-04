@@ -1,0 +1,10 @@
+{
+  "package": {
+    "name": "self-host-imported-function-value",
+    "version": "0.1.0"
+  },
+  "target": {
+    "name": "self-host-imported-function-value",
+    "entry": "main.zs"
+  }
+}

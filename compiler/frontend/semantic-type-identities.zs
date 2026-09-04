@@ -6,14 +6,17 @@ import {
   genericTypeShape,
   isTypeSymbolKind,
   nativeFunctionSignature,
+  nativeFunctionTypeName,
   nullableTargetType,
   qualifiedTypeBase,
   qualifiedTypeMember,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import {
+  ModuleFunctionSignature,
   ModuleTypeIdentity,
   ModuleSymbolKind,
+  ModuleTypeParameterConstraint,
   ResolvedModule,
 } from "./semantic-model.zs";
 
@@ -596,6 +599,59 @@ export function rebaseTypeName(
     some(array) => {
       const element = rebaseTypeName(modules, fromModuleIndex, toModuleIndex, array.elementType);
       return `${element}[${array.length}]`;
+    }
+    none => {}
+  }
+  match (nativeFunctionSignature(name)) {
+    some(signature) => {
+      let parameterModes = Array<String>();
+      for (const mode of signature.parameterModes) {
+        parameterModes.push(mode.copyBytes(0, mode.byteLength));
+      }
+      let parameterTypes = Array<String>();
+      for (const parameter of signature.parameterTypes) {
+        parameterTypes.push(rebaseTypeName(
+          modules,
+          fromModuleIndex,
+          toModuleIndex,
+          parameter
+        ));
+      }
+      let errorType = "";
+      if (signature.errorType.byteLength > 0) {
+        errorType = rebaseTypeName(
+          modules,
+          fromModuleIndex,
+          toModuleIndex,
+          signature.errorType
+        );
+      }
+      const rebased = ModuleFunctionSignature({
+        asynchronous: signature.asynchronous,
+        executorAffinity: signature.executorAffinity.copyBytes(
+          0,
+          signature.executorAffinity.byteLength
+        ),
+        threadContract: signature.threadContract.copyBytes(
+          0,
+          signature.threadContract.byteLength
+        ),
+        typeParameters: Array<String>(),
+        typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+        parameterModes,
+        parameterTypes,
+        viewParameter: Option<usize>.none,
+        invalidatesParameters: Array<usize>(),
+        invalidatesLifetimes: Array<String>(),
+        returnType: rebaseTypeName(
+          modules,
+          fromModuleIndex,
+          toModuleIndex,
+          signature.returnType
+        ),
+        errorType,
+      });
+      return nativeFunctionTypeName(in rebased);
     }
     none => {}
   }

@@ -667,9 +667,21 @@ export function typeMovesOnOwnedUse(
   if (nullableTarget.byteLength > 0) {
     managedType = nullableTarget.copyBytes(0, nullableTarget.byteLength);
   }
+  let transparentManagedType = transparentTypeName(
+    modules,
+    moduleIndex,
+    managedType
+  );
+  const transparentNullableTarget = nullableTargetType(transparentManagedType);
+  if (transparentNullableTarget.byteLength > 0) {
+    transparentManagedType = transparentNullableTarget.copyBytes(
+      0,
+      transparentNullableTarget.byteLength
+    );
+  }
   if (
     stringStartsWith(managedType, "Weak<")
-    || stringStartsWith(managedType, "__z_native_function:")
+    || stringStartsWith(transparentManagedType, "__z_native_function:")
   ) return false;
   match (inferredTypeSymbolLocation(modules, moduleIndex, managedType)) {
     some(location) => {
