@@ -933,7 +933,23 @@ function requireProjectedCapabilityValuePath(
     moduleIndex,
     ownerType
   );
-  if (rootIsDirectClass && !valueBindingClassAliasIsContained(bindings, root)) {
+  let stableSharedProjection = false;
+  if (rootIsDirectClass && !mutableAccess && reversed.length > 0) {
+    match (aggregateFieldShape(
+      modules,
+      moduleIndex,
+      ownerType,
+      reversed[reversed.length - 1]
+    )) {
+      some(field) => stableSharedProjection = field.readonlyField;
+      none => {}
+    }
+  }
+  if (
+    rootIsDirectClass
+    && !stableSharedProjection
+    && !valueBindingClassAliasIsContained(bindings, root)
+  ) {
     throw resolutionError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,

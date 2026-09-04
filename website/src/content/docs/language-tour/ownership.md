@@ -70,6 +70,19 @@ The compiler prevents the view from outliving or being invalidated by its
 owner. Current rules are intentionally conservative and grow only when Z can
 prove a more permissive shape safe.
 
+A direct `readonly` class field has stable storage even when the ARC class has
+other aliases, so it may be borrowed or viewed synchronously without copying:
+
+```z
+readonly class Application { menu: Menu; }
+
+const application = Application.current();
+inspect(in application.menu);
+```
+
+Mutable fields, `inout`, nested class identities, and borrows across suspension
+remain conservative.
+
 ## Deterministic cleanup and shared identity
 
 Move-only values and native resources can define `deinit` for deterministic

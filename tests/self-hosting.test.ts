@@ -16185,6 +16185,21 @@ test("rejects class-field views from identities with hidden aliases natively", (
   }
 });
 
+test("borrows readonly class fields through shared ARC identity in both semantic frontends", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-readonly-class-field-borrow.zs",
+  );
+  const stage0 = spawnSync(process.execPath, [cli, "check", input], {
+    encoding: "utf8",
+  });
+  assert.equal(stage0.status, 0, stage0.stderr);
+  const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+    encoding: "utf8",
+  });
+  assert.equal(native.status, 0, native.stderr);
+});
+
 test("tracks one canonical ARC identity through a transparent Once accessor natively", () => {
   const input = resolve(
     projectRoot,

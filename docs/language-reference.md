@@ -1457,6 +1457,20 @@ named aliases qualify. Arbitrary function results and classes created by a
 user-defined constructor do not, because aliases may have been published
 outside the lexical proof. Passing the class as an owned value, storing it, or
 move-capturing it invalidates containment for every known alias.
+A direct readonly class field is the safe exception. Any retained alias may
+borrow or view that field because no alias can replace its storage; the named
+class binding keeps the owner alive for the lexical loan. This permits shared
+application-style roots to expose stable owned value snapshots without copying:
+
+```z
+readonly class Application { menu: Menu; }
+
+const application = Application.current();
+inspect(in application.menu);
+```
+
+The exception is immutable and synchronous. `inout`, a mutable direct field,
+nested ARC-class projection, and suspension retain the conservative rules.
 A live `view document.title` blocks replacement of `title` or mutation of the
 whole `document`, while mutation of the disjoint `document.revision` field is
 safe. Known local aliases of a class share the same proof: an alias cannot

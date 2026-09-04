@@ -15931,8 +15931,12 @@ function validateProjectedCapabilityPath(
     current = current.object;
   }
   const rootIsDirectClass = structs.get(ownerType)?.kind === "class";
+  const rootDeclaration = rootIsDirectClass ? structs.get(ownerType) : null;
+  const stableSharedProjection = path.access === "in"
+    && Boolean(rootDeclaration?.fields.find((field) => field.name === path.fields[0])?.readonly);
   if (
     rootIsDirectClass
+    && !stableSharedProjection
     && !classAliasIdentityIsLocallyContained(
       classAliasIdentitiesForRoot(path.root, state),
       state,
@@ -15946,6 +15950,7 @@ function validateProjectedCapabilityPath(
         code: "Z0301",
         notes: [
           "a class returned by a function or exposed through hidden storage may have aliases outside this lexical proof",
+          "an immutable borrow through a readonly stored field is safe because aliases cannot replace that field",
           "only a fresh local class and its direct named aliases qualify in this tier",
         ],
         helps: ["use a class method that keeps mutation inside the shared owner, or create an explicitly owned snapshot"],

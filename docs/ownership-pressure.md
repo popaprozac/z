@@ -3377,6 +3377,15 @@ cannot back a class-field `view`, since the module cell is itself a hidden
 alias. Broader accessor provenance remains deferred rather than inferred from a
 return type or function name.
 
+The Zapp application-menu pressure test exposed one safe stored-owner case that
+did not require local containment. A direct readonly field of an ARC class can
+be borrowed through any retained alias: the field cannot be replaced, and the
+borrowed root keeps the class alive. Both semantic frontends now admit that
+immutable synchronous projection while continuing to reject mutable fields,
+`inout`, nested class identity, and suspension. This removed an internal owner
+table workaround from Zapp without adding syntax, copying its recursive menu
+tree, or relaxing mutation safety.
+
 The native parity work exposed an important internal modeling error in real
 compiler code: the resolver had used a view binding's ownership state to mark
 whether its owner loan remained live. A loop could therefore report that the
