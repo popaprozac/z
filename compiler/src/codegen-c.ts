@@ -9579,7 +9579,10 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
   const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
   if (niche) return generateNicheOptionMatch(statement, context, declaration, niche);
   const temporary = `_z_match_${context.matchCounter.value++}`;
-  const subject = generateExpression(statement.expression, context);
+  const subjectNeedsLowering = requiresStatementValue(statement.expression, context);
+  const subject = subjectNeedsLowering
+    ? temporary
+    : generateExpression(statement.expression, context);
   const borrowed = context.semanticInfo.borrowedMatches.has(statement.location.offset);
   let access = borrowed ? `${temporary}->` : `${temporary}.`;
   let discriminant = borrowed ? `*${temporary}` : temporary;
@@ -9600,7 +9603,20 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
       subjectStorage = `${persistentSubject} = ${subject};`;
     }
   } else {
-    subjectStorage = borrowed
+    subjectStorage = subjectNeedsLowering
+      ? `${generateLocalDeclaration(
+          type,
+          temporary,
+          true,
+          context.structs,
+          context.enums,
+          context.semanticInfo.foreignNamedTypes,
+        )};\n${generateDirectValue(
+          statement.expression,
+          context,
+          (value) => `${temporary} = ${value};`,
+        )}`
+      : borrowed
       ? parseViewType(inferredType)
         ? `const ${enumName(type)} *${temporary} = ${subject};`
         : `const ${enumName(type)} *${temporary} = &(${subject});`
@@ -9770,7 +9786,10 @@ function generateMatchExpression(
     return generateNicheOptionMatchExpression(expression, context, declaration, niche, consumeValue, consumeTerminates);
   }
   const temporary = `_z_match_${context.matchCounter.value++}`;
-  const subject = generateExpression(expression.expression, context);
+  const subjectNeedsLowering = requiresStatementValue(expression.expression, context);
+  const subject = subjectNeedsLowering
+    ? temporary
+    : generateExpression(expression.expression, context);
   const borrowed = context.semanticInfo.borrowedMatches.has(expression.location.offset);
   const access = borrowed ? `${temporary}->` : `${temporary}.`;
   const discriminant = borrowed ? `*${temporary}` : temporary;
@@ -9842,7 +9861,20 @@ function generateMatchExpression(
     const label = wildcard ? "default" : `case ${variantTag(type, variant.name)}`;
     return `  ${label}: {${binding}\n${indent(lines, 4)}\n  }`;
   }).join("\n");
-  const storage = borrowed
+  const storage = subjectNeedsLowering
+    ? `${generateLocalDeclaration(
+        type,
+        temporary,
+        true,
+        context.structs,
+        context.enums,
+        context.semanticInfo.foreignNamedTypes,
+      )};\n${generateDirectValue(
+        expression.expression,
+        context,
+        (value) => `${temporary} = ${value};`,
+      )}`
+    : borrowed
     ? parseViewType(inferredType)
       ? `const ${enumName(type)} *${temporary} = ${subject};`
       : `const ${enumName(type)} *${temporary} = &(${subject});`

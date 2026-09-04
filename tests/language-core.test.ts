@@ -1174,6 +1174,64 @@ test("passes contextual inline closures through borrowed and owned function para
   assert.equal(result.status, 0, result.stderr);
 });
 
+hostToolchainTest("lowers inline closure arguments nested inside match subjects", () => {
+  const source = `
+    struct ObserveError {
+      code: i32;
+    }
+
+    function observe(
+      in operation: (in enabled: boolean) => void
+    ): i32 throws ObserveError {
+      const enabled = true;
+      operation(in enabled);
+      return 42;
+    }
+
+    function expressionMatch(): i32 {
+      let observed = 0;
+      return match (attempt observe(
+        (in enabled: boolean): void => {
+          if (enabled) observed = 42;
+        }
+      )) {
+        success(value) => value == observed ? 0 : 1;
+        failure(_) => 2;
+      };
+    }
+
+    function statementMatch(): i32 {
+      let observed = 0;
+      match (attempt observe(
+        (in enabled: boolean): void => {
+          if (enabled) observed = 42;
+        }
+      )) {
+        success(value) => {
+          if (value == observed) return 0;
+          return 3;
+        }
+        failure(_) => return 4;
+      }
+    }
+
+    function main(): i32 {
+      const expressionStatus = expressionMatch();
+      if (expressionStatus != 0) return expressionStatus;
+      return statementMatch();
+    }
+  `;
+  const generated = compileToC(source, "inline-closure-match-subject.zs");
+  assert.match(generated, /_z_match_/);
+  assert.match(generated, /_z_argument_/);
+
+  const directory = mkdtempSync("/tmp/z-inline-closure-match-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("requires an explicit function type for cleanup-bearing move captures", () => {
   const source = `
     struct Resource {
