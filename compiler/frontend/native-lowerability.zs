@@ -79,6 +79,22 @@ function typeUsesGeneric(in name: String, in base: String): boolean {
   return stringContains(name, `${base}<`);
 }
 
+function nativeOwnerExecutorAffinity(
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in owner: String
+): String {
+  if (owner.byteLength == 0 || moduleIndex >= modules.length) return "";
+  for (const aggregate of modules[moduleIndex].program.aggregates) {
+    if (aggregate.name != owner) continue;
+    return aggregate.executorAffinity.copyBytes(
+      0,
+      aggregate.executorAffinity.byteLength
+    );
+  }
+  return "";
+}
+
 function nativeTemplateInterpolationTypeSupported(in name: String): boolean {
   return name == "String"
     || name == "view String"
@@ -440,7 +456,15 @@ function statementIsFirstTierTailAwait(
   match (in arena.nodes[index].expression) {
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
-        const awaitRoot = tree.root;
+        let awaitRoot = tree.root;
+        if (
+          (
+            tree.nodes[awaitRoot].kind == ExpressionKind.tryExpression
+            || tree.nodes[awaitRoot].kind
+              == ExpressionKind.attemptExpression
+          )
+          && tree.nodes[awaitRoot].children.length == 1
+        ) awaitRoot = tree.nodes[awaitRoot].children[0];
         if (
           tree.nodes[awaitRoot].kind != ExpressionKind.awaitExpression
           || tree.nodes[awaitRoot].children.length != 1
@@ -452,7 +476,9 @@ function statementIsFirstTierTailAwait(
         ) return false;
         const callee = tree.nodes[operation].children[0];
         return tree.nodes[callee].kind
-          == ExpressionKind.identifierExpression;
+            == ExpressionKind.identifierExpression
+          || tree.nodes[callee].kind
+            == ExpressionKind.memberExpression;
       }
       none => return false;
     }
@@ -2279,6 +2305,8 @@ function validateNativeFunction(
     declaration.asynchronous
     && declaration.name != "main"
     && declaration.executorAffinity != "thread.main"
+    && nativeOwnerExecutorAffinity(moduleIndex, modules, owner)
+      != "thread.main"
     && functionContainsSuspension(declaration)
     && !firstTierSchedulerYield
     && !firstTierTailAwait

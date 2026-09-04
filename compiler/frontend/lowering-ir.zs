@@ -16975,11 +16975,23 @@ function lowerExpressionExpected(
           throw "native callable closure lost its expression body";
         }
         let asyncSuspension = "";
+        let materializesAttemptAwait = false;
         if (closureAsynchronous) {
-          if (signature.errorType.byteLength > 0) {
-            throw "native stored async closures do not execute typed errors yet";
-          }
           if (expressionTreeContainsAwait(tree, bodyInput)) {
+            let suspensionBody = bodyInput;
+            if (
+              tree.nodes[suspensionBody].kind
+                == ExpressionKind.attemptExpression
+              && tree.nodes[suspensionBody].children.length == 1
+            ) {
+              materializesAttemptAwait = true;
+              suspensionBody = tree.nodes[suspensionBody].children[0];
+            } else if (
+              tree.nodes[suspensionBody].kind
+                == ExpressionKind.tryExpression
+            ) {
+              throw "native stored async closures do not propagate typed errors across suspension yet; use `attempt await` to materialize a Result";
+            }
             if (
               signature.returnType == "void"
               && expressionTreeIsSchedulerYieldAwait(
@@ -16989,8 +17001,11 @@ function lowerExpressionExpected(
               )
             ) asyncSuspension = "scheduler-yield";
             else if (
-              tree.nodes[bodyInput].kind == ExpressionKind.awaitExpression
-            ) asyncSuspension = "method-await";
+              tree.nodes[suspensionBody].kind
+                == ExpressionKind.awaitExpression
+            ) asyncSuspension = materializesAttemptAwait
+              ? "method-attempt-await"
+              : "method-await";
             else {
               throw "native stored async closure suspension currently supports one direct awaited method or `await scheduler.yield()` expression";
             }
@@ -17007,18 +17022,24 @@ function lowerExpressionExpected(
             Array<String>()
           );
         } else {
+          const expectedBodyType = signature.errorType.byteLength > 0
+            ? `Result<${signature.returnType}, ${signature.errorType}>`
+            : signature.returnType.copyBytes(0, signature.returnType.byteLength);
           body = try lowerExpressionExpected(
             program,
             importedTypes,
             evidence,
             tree,
             bodyInput,
-            signature.returnType,
+            expectedBodyType,
             inout output
           );
         }
         if (
-          asyncSuspension == "method-await"
+          (
+            asyncSuspension == "method-await"
+            || asyncSuspension == "method-attempt-await"
+          )
           && (
             output[body].kind != LoweredExpressionKind.asyncFunctionAwait
           )
@@ -20416,7 +20437,9 @@ function statementIsFirstTierTailAwait(
         ) return false;
         const callee = tree.nodes[operation].children[0];
         return tree.nodes[callee].kind
-          == ExpressionKind.identifierExpression;
+            == ExpressionKind.identifierExpression
+          || tree.nodes[callee].kind
+            == ExpressionKind.memberExpression;
       }
       none => return false;
     }
@@ -25294,28 +25317,46 @@ function lowerFunction(
   let mainDelayLoopSource: usize = 0;
   let mainDelayLoopPosition: usize = 0;
   let asyncSuspension = "";
+  let executorAffinity = declaration.executorAffinity.copyBytes(
+    0,
+    declaration.executorAffinity.byteLength
+  );
+  if (executorAffinity.byteLength == 0) {
+    for (const aggregate of program.aggregates) {
+      if (!semanticMethodOwnerMatches(
+        semanticOwnerName,
+        aggregate.name,
+        declaration.name
+      )) continue;
+      executorAffinity = aggregate.executorAffinity.copyBytes(
+        0,
+        aggregate.executorAffinity.byteLength
+      );
+      break;
+    }
+  }
   if (declaration.asynchronous && declaration.name != "main") {
-    const firstTierSchedulerYield = declaration.executorAffinity != "thread.main"
+    const firstTierSchedulerYield = executorAffinity != "thread.main"
       && functionUsesFirstTierSchedulerYield(program, declaration);
     const firstTierDoubleAwait = receiverName.byteLength == 0
       && functionUsesFirstTierDoubleAwait(declaration);
-    const firstTierPlacedFunctionLinear = declaration.executorAffinity
+    const firstTierPlacedFunctionLinear = executorAffinity
         != "thread.main"
       && functionUsesFirstTierPlacedFunctionLinearAwait(declaration);
-    const firstTierPlacedMethodLinear = declaration.executorAffinity
+    const firstTierPlacedMethodLinear = executorAffinity
         != "thread.main"
       && functionUsesFirstTierPlacedMethodLinearAwait(declaration);
     const firstTierLinearAwait = functionUsesFirstTierLinearAwait(declaration)
       || firstTierPlacedFunctionLinear
       || firstTierPlacedMethodLinear;
-    const firstTierPlacedMethodTail = declaration.executorAffinity
+    const firstTierPlacedMethodTail = executorAffinity
         != "thread.main"
       && functionUsesFirstTierPlacedMethodTailAwait(declaration);
-    const firstTierPlacedFunctionTail = declaration.executorAffinity
+    const firstTierPlacedFunctionTail = executorAffinity
         != "thread.main"
       && functionUsesFirstTierPlacedFunctionTailAwait(declaration);
     const firstTierTailAwait = (
-        declaration.executorAffinity != "thread.main"
+        executorAffinity != "thread.main"
         && (
         functionUsesFirstTierTailAwait(declaration)
         || firstTierPlacedMethodTail
@@ -25326,7 +25367,7 @@ function lowerFunction(
         || firstTierDoubleAwait
       )
       ) || (
-        declaration.executorAffinity == "thread.main"
+        executorAffinity == "thread.main"
         && !functionContainsMainDelayAwait(program, declaration)
         && (
           functionUsesFirstTierTailAwait(declaration)
@@ -25337,7 +25378,7 @@ function lowerFunction(
         )
       );
     if (
-      declaration.executorAffinity != "thread.main"
+      executorAffinity != "thread.main"
       && functionContainsSuspension(declaration)
       && !firstTierSchedulerYield
       && !firstTierTailAwait
@@ -25354,7 +25395,7 @@ function lowerFunction(
     }
     let position: usize = 0;
     while (
-      declaration.executorAffinity == "thread.main"
+      executorAffinity == "thread.main"
       && asyncSuspension.byteLength == 0
       && position < declaration.body.roots.length
     ) {

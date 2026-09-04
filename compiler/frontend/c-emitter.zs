@@ -672,7 +672,10 @@ function asyncMethodAwaitStartsChild(
   for (const expression of declaration.expressions) {
     if (
       expression.kind == LoweredExpressionKind.closureValue
-      && expression.value == "method-await"
+      && (
+        expression.value == "method-await"
+        || expression.value == "method-attempt-await"
+      )
       && expression.children.length > 0
       && expression.children[0] == expressionIndex
     ) return true;
@@ -9383,7 +9386,13 @@ function appendCallableHelpers(
           : Option<AsyncDoubleAwaitShape>.none;
         const directDoubleAwait = asyncSuspension == "double-await"
           && expression.kind == LoweredExpressionKind.directFunctionValue;
-        const closureMethodAwait = asyncSuspension == "method-await"
+        const closureMethodAwait = (
+            asyncSuspension == "method-await"
+            || asyncSuspension == "method-attempt-await"
+          )
+          && expression.kind == LoweredExpressionKind.closureValue;
+        const closureAttemptAwait = asyncSuspension
+            == "method-attempt-await"
           && expression.kind == LoweredExpressionKind.closureValue;
         let directMainDelayIndex = program.functions.length;
         if (expression.kind == LoweredExpressionKind.directFunctionValue) {
@@ -9428,6 +9437,31 @@ function appendCallableHelpers(
               != LoweredExpressionKind.asyncFunctionAwait
           ) throw "native captured async method closure lost its awaited body";
           closureMethodAwaitExpression = expression.children[0];
+          if (closureAttemptAwait) {
+            const resultIndex = match (loweredEnumIndex(
+              program,
+              functionType.returnType.name
+            )) {
+              some(found) => found;
+              none => throw "native stored async attempt closure lost its Result type";
+            };
+            let foundSuccess = false;
+            let foundFailure = false;
+            for (const variant of program.enums[resultIndex].variants) {
+              if (variant.name == "success") {
+                foundSuccess = true;
+              } else if (variant.name == "failure") {
+                foundFailure = true;
+                match (in variant.payload) {
+                  some(_) => {}
+                  none => throw "native stored async attempt Result failure has no payload";
+                }
+              }
+            }
+            if (!foundSuccess || !foundFailure) {
+              throw "native stored async attempt closure requires Result<T, E>";
+            }
+          }
         }
         const resultNeedsDeinit = loweredTypeNeedsDeinit(
           program,
@@ -9820,11 +9854,17 @@ function appendCallableHelpers(
             functionType,
             2
           );
-          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n");
-          if (functionType.returnType.kind == LoweredTypeKind.voidType) {
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n");
+          if (closureAttemptAwait) {
+            output.append("  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n  if (frame->child.take_result == NULL) abort();\n  frame->child.take_result(frame->child.task, &frame->result);\n");
+            if (resultNeedsDeinit) {
+              output.append("  frame->live_result = true;\n");
+            }
+          } else if (functionType.returnType.kind == LoweredTypeKind.voidType) {
+            output.append("  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n");
             output.append("  if (frame->child.take_result != NULL) frame->child.take_result(frame->child.task, NULL);\n");
           } else {
-            output.append("  if (frame->child.take_result == NULL) abort();\n  frame->child.take_result(frame->child.task, &frame->result);\n");
+            output.append("  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n  if (frame->child.take_result == NULL) abort();\n  frame->child.take_result(frame->child.task, &frame->result);\n");
             if (resultNeedsDeinit) {
               output.append("  frame->live_result = true;\n");
             }

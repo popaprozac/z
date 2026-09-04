@@ -5243,6 +5243,17 @@ native denial to a Z enum while reserving `throw` for operational failures. No
 framework-local global buffer, polling loop, semaphore, or detached callback
 state is required.
 
+Storing those backend operations exposed one more fixed-point composition seam.
+The framework intentionally erases each throwing native operation behind an
+infallible async callable that returns `Result<T, NotificationError>`; its
+expression body is simply `attempt await operation()`. Native closure lowering
+previously recognized the awaited child but rejected the surrounding `attempt`.
+The callable frame now transfers the child's existing Result storage directly,
+including its owned error, while cancellation still unwinds through the child
+frame. This adds no wrapper allocation and avoids both a nested Result and a
+framework-local status convention. Suspended `try await` propagation remains
+explicitly rejected until the stored callable can expose a true throwing ABI.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

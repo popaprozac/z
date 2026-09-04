@@ -1418,6 +1418,21 @@ The closure remains cold. Calling it starts a child frame on the caller's
 executor; its captured environment and borrowed arguments remain alive until
 the method completes or cancellation finishes unwinding the child.
 
+The expression body may retain a fallible child as an ordinary result:
+
+```z
+type Operation = async () => Result<Value, OperationError> on thread.main;
+
+const operation: Operation = async () =>
+  attempt await loadValue();
+```
+
+The stored callable is infallible at its outer boundary: invoking it produces
+one `Result<Value, OperationError>`. Its child task's existing result storage is
+transferred into the callable frame without an additional allocation or nested
+result. Suspended `try await` propagation from a stored closure remains a later
+native lowering tier.
+
 The fixed-point emitter now reuses that same frame for the first public
 callable-backed task shape inside an unnamed `async scope`. A stored
 nonthrowing void callable may start one hot `Task<void>`, borrow one named owner,
