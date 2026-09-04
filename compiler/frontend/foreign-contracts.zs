@@ -69,6 +69,7 @@ export struct RawForeignCallbackContract {
 
 export struct RawForeignTypeContract {
   name: String;
+  executorAffinity: String;
   movable: boolean;
   release: String;
   discriminantMember: String;
@@ -144,6 +145,7 @@ export struct NativeForeignTypeContract {
   discriminantMember: String;
   variants: Array<NativeForeignUnionVariant>;
   fallback: String;
+  executorAffinity: String = "";
 }
 
 export struct NativeForeignUnionVariant {
@@ -310,6 +312,21 @@ function parseQualifiedName(
     name = `${name}.${member}`;
   }
   return name;
+}
+
+function parseExecutorAffinity(
+  inout cursor: ForeignContractCursor
+): String throws String {
+  if (!atText(cursor, "on")) return "";
+  cursor.index = cursor.index + 1;
+  const affinity = try parseQualifiedName(inout cursor);
+  if (affinity != "thread.main") {
+    throw contractError(
+      cursor,
+      `foreign declaration affinity must be "thread.main", found "${affinity}"`
+    );
+  }
+  return affinity;
 }
 
 function parseInferredType(
@@ -1009,6 +1026,28 @@ function parseType(
   const line = cursor.tokens[cursor.index].line;
   const column = cursor.tokens[cursor.index].column;
   const name = try parseQualifiedName(inout cursor);
+  const executorAffinity = try parseExecutorAffinity(inout cursor);
+  if (atText(cursor, ";")) {
+    if (executorAffinity.byteLength == 0) {
+      throw contractError(
+        cursor,
+        "an affinity-only foreign type declaration requires `on thread.main`"
+      );
+    }
+    cursor.index = cursor.index + 1;
+    return RawForeignTypeContract({
+      name,
+      executorAffinity,
+      movable: false,
+      release: "",
+      discriminantMember: "",
+      variants: Array<RawForeignUnionVariant>(),
+      fallback: "",
+      fieldProjections: Array<RawForeignFieldProjection>(),
+      line,
+      column,
+    });
+  }
   try expectText(inout cursor, "{");
   let movable = false;
   let release = "";
@@ -1116,11 +1155,8 @@ function parseType(
       `foreign discriminated union "${name}" cannot also declare value lifecycle facts in the first tier`
     );
   }
-  if (
-    discriminantMember.byteLength == 0
-    && fieldProjections.length == 0
-    && (!movable || release.byteLength == 0)
-  ) {
+  const hasLifecycle = movable || release.byteLength > 0;
+  if (hasLifecycle && (!movable || release.byteLength == 0)) {
     throw contractErrorAt(
       cursor,
       line,
@@ -1128,8 +1164,22 @@ function parseType(
       `C value resource "${name}" must declare \`move;\` and \`deinit <release function>;\``
     );
   }
+  if (
+    discriminantMember.byteLength == 0
+    && fieldProjections.length == 0
+    && !hasLifecycle
+    && executorAffinity.byteLength == 0
+  ) {
+    throw contractErrorAt(
+      cursor,
+      line,
+      column,
+      `foreign type "${name}" must declare lifecycle facts, projections, a discriminant contract, or \`on thread.main\``
+    );
+  }
   return RawForeignTypeContract({
     name,
+    executorAffinity,
     movable,
     release,
     discriminantMember,
@@ -1762,7 +1812,8 @@ function normalizedForeignType(
   in declaration: RawForeignType,
   in resourceRelease: String,
   fields: Array<NativeForeignFieldContract>,
-  viewOnly: boolean
+  viewOnly: boolean,
+  in contracts: RawForeignContractSet
 ): NativeForeignTypeContract {
   let canonicalNativeName = declaration.nativeName.copyBytes(
     0,
@@ -1771,6 +1822,21 @@ function normalizedForeignType(
   match (in declaration.canonicalNativeName) {
     some(name) => canonicalNativeName = name.copyBytes(0, name.byteLength);
     none => {}
+  }
+  let executorAffinity = "";
+  for (const contract of contracts.types) {
+    if (
+      contract.executorAffinity.byteLength > 0
+      && (
+        contract.name == declaration.exportName
+        || contract.name == declaration.qualifiedName
+        || contract.name == declaration.nativeName
+        || contract.name == canonicalNativeName
+      )
+    ) executorAffinity = contract.executorAffinity.copyBytes(
+      0,
+      contract.executorAffinity.byteLength
+    );
   }
   return NativeForeignTypeContract({
     kind: declaration.kind.copyBytes(0, declaration.kind.byteLength),
@@ -1801,6 +1867,7 @@ function normalizedForeignType(
     discriminantMember: "",
     variants: Array<NativeForeignUnionVariant>(),
     fallback: "",
+    executorAffinity,
   });
 }
 
@@ -3060,8 +3127,26 @@ function normalizedObjCProperties(
   return properties;
 }
 
+function contractExecutorAffinity(
+  in contracts: RawForeignContractSet,
+  in publicName: String,
+  in nativeName: String
+): String {
+  for (const contract of contracts.types) {
+    if (
+      contract.executorAffinity.byteLength > 0
+      && (contract.name == publicName || contract.name == nativeName)
+    ) return contract.executorAffinity.copyBytes(
+      0,
+      contract.executorAffinity.byteLength
+    );
+  }
+  return "";
+}
+
 function normalizedObjCInterfaces(
-  in declarations: RawForeignModuleDeclarations
+  in declarations: RawForeignModuleDeclarations,
+  in contracts: RawForeignContractSet
 ): Array<NativeForeignObjCInterfaceContract> {
   let interfaces = Array<NativeForeignObjCInterfaceContract>();
   for (const declaration of declarations.objectiveCInterfaces) {
@@ -3077,6 +3162,14 @@ function normalizedObjCInterfaces(
         else executorAffinity = affinity.copyBytes(0, affinity.byteLength);
       }
       none => {}
+    }
+    const contractedAffinity = contractExecutorAffinity(
+      contracts,
+      declaration.exportName,
+      declaration.className
+    );
+    if (contractedAffinity.byteLength > 0) {
+      executorAffinity = contractedAffinity;
     }
     interfaces.push(NativeForeignObjCInterfaceContract({
       name: declaration.exportName.copyBytes(
@@ -3106,7 +3199,8 @@ function normalizedObjCInterfaces(
 }
 
 function normalizedObjCProtocols(
-  in declarations: RawForeignModuleDeclarations
+  in declarations: RawForeignModuleDeclarations,
+  in contracts: RawForeignContractSet
 ): Array<NativeForeignObjCProtocolContract> {
   let protocols = Array<NativeForeignObjCProtocolContract>();
   for (const declaration of declarations.objectiveCProtocols) {
@@ -3126,6 +3220,14 @@ function normalizedObjCProtocols(
         else executorAffinity = affinity.copyBytes(0, affinity.byteLength);
       }
       none => {}
+    }
+    const contractedAffinity = contractExecutorAffinity(
+      contracts,
+      declaration.exportName,
+      declaration.protocolName
+    );
+    if (contractedAffinity.byteLength > 0) {
+      executorAffinity = contractedAffinity;
     }
     protocols.push(NativeForeignObjCProtocolContract({
       name: declaration.exportName.copyBytes(
@@ -3164,7 +3266,8 @@ export function normalizeForeignContracts(
       declaration,
       "",
       Array<NativeForeignFieldContract>(),
-      false
+      false,
+      contracts
     ));
   }
   let recordAdded = true;
@@ -3215,7 +3318,8 @@ export function normalizeForeignContracts(
         fields,
         declaration.layout == "struct"
           && resourceRelease.byteLength == 0
-          && hiddenField
+          && hiddenField,
+        contracts
       ));
       recordAdded = true;
     }
@@ -4113,7 +4217,7 @@ export function normalizeForeignContracts(
     types,
     constants,
     functions,
-    objectiveCInterfaces: normalizedObjCInterfaces(declarations),
-    objectiveCProtocols: normalizedObjCProtocols(declarations),
+    objectiveCInterfaces: normalizedObjCInterfaces(declarations, contracts),
+    objectiveCProtocols: normalizedObjCProtocols(declarations, contracts),
   });
 }

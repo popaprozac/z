@@ -1758,8 +1758,23 @@ function appendAsyncTailTryStatement(
     none => appendCBindingName(inout output, statement.labels[0]);
   }
   output.append(" = ");
+  const objectiveCSuccess = match (in statement.type) {
+    some(type) => type.kind == LoweredTypeKind.foreignObjCType;
+    none => false;
+  };
+  if (objectiveCSuccess) {
+    const successType = match (in statement.type) {
+      some(type) => try cType(type);
+      none => throw "native async Objective-C try lowering lost its result type";
+    };
+    output.append("(");
+    output.append(successType);
+    output.append(")z_stage1_objc_take(&");
+  }
   output.append(temporary);
-  output.append(".payload.success;\n");
+  output.append(".payload.success");
+  if (objectiveCSuccess) output.append(")");
+  output.append(";\n");
 }
 
 function appendAsyncTailSynchronousMatch(
@@ -1872,6 +1887,16 @@ function appendAsyncTailSynchronousMatch(
         appendCBindingName(inout output, arm.labels[0]);
         output.append(" = ");
         if (loadViewValue) output.append("*(");
+        const objectiveCPayload = type.kind
+          == LoweredTypeKind.foreignObjCType;
+        if (objectiveCPayload) {
+          output.append("(");
+          output.append(payloadType);
+          output.append(")");
+          output.append(statement.matchConsumesSubject
+            ? "z_stage1_objc_take(&"
+            : "z_stage1_objc_borrow(&");
+        }
         if (statement.matchConsumesSubject) output.append(temporary);
         else match (in statement.expression) {
           some(subject) => try appendExpression(
@@ -1888,6 +1913,7 @@ function appendAsyncTailSynchronousMatch(
           } else output.append(".payload.");
           output.append(arm.name);
         }
+        if (objectiveCPayload) output.append(")");
         output.append(";\n");
       }
       none => {}
@@ -2504,9 +2530,21 @@ function appendAsyncTailDispatchStatement(
         }
         appendCBindingName(inout output, arm.labels[0]);
         output.append(" = ");
+        const objectiveCPayload = type.kind
+          == LoweredTypeKind.foreignObjCType;
+        if (objectiveCPayload) {
+          const payloadType = try cType(type);
+          output.append("(");
+          output.append(payloadType);
+          output.append(")");
+          output.append(statement.matchConsumesSubject
+            ? "z_stage1_objc_take(&"
+            : "z_stage1_objc_borrow(&");
+        }
         output.append(temporary);
         output.append(".payload.");
         output.append(arm.name);
+        if (objectiveCPayload) output.append(")");
         output.append(";\n");
         if (
           armIndex == awaitedArm
@@ -5133,6 +5171,24 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind
+      == LoweredExpressionKind.objectiveCConnection
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native Objective-C connection emission received malformed inputs";
+    }
+    output.append("z_stage1_objc_connect_");
+    output.append(declaration.expressions[index].value);
+    output.append("(");
+    const control = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, control);
+    output.append(", ");
+    const operation = declaration.expressions[index].children[1];
+    try appendExpression(inout output, declaration, operation);
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
       == LoweredExpressionKind.objectiveCRegistration
   ) {
     output.append(declaration.expressions[index].value);
@@ -6073,7 +6129,13 @@ function appendExpression(
     output.append(declaration.expressions[index].labels[0]);
     output.append(" = ");
     const payload = declaration.expressions[index].children[0];
+    if (declaration.expressions[index].objectiveCOwnedPayload) {
+      output.append("z_stage1_objc_owned(");
+    }
     try appendExpression(inout output, declaration, payload);
+    if (declaration.expressions[index].objectiveCOwnedPayload) {
+      output.append(")");
+    }
     output.append("}");
     return;
   }
@@ -6520,8 +6582,20 @@ function appendLocalStatementStorage(
     output.append(" ");
     appendCBindingName(inout output, declaration.statements[index].name);
     output.append(" = ");
+    const asyncTryObjectiveC = match (in declaration.statements[index].type) {
+      some(storageType) => storageType.kind
+        == LoweredTypeKind.foreignObjCType;
+      none => false;
+    };
+    if (asyncTryObjectiveC) {
+      output.append("(");
+      output.append(type);
+      output.append(")z_stage1_objc_take(&");
+    }
     output.append(temporary);
-    output.append(".payload.success;\n");
+    output.append(".payload.success");
+    if (asyncTryObjectiveC) output.append(")");
+    output.append(";\n");
     if (declaration.statements[index].liveFlag.byteLength > 0) {
       appendIndent(inout output, depth);
       output.append("bool ");
@@ -6586,6 +6660,11 @@ function appendLocalStatementStorage(
       && storageType.name == "ZObjCRegistration";
     none => false;
   };
+  const preciseObjCConnection = match (in declaration.statements[index].type) {
+    some(storageType) => storageType.kind == LoweredTypeKind.foreignObjCType
+      && storageType.name == "ZObjCConnection";
+    none => false;
+  };
   match (in declaration.statements[index].expression) {
     some(initializer) => try appendBorrowedTemporaryInitializers(
       inout output,
@@ -6624,7 +6703,7 @@ function appendLocalStatementStorage(
     declaration,
     declaration.statements[index].name
   );
-  if (preciseObjCRegistration) {
+  if (preciseObjCRegistration || preciseObjCConnection) {
     output.append(" __attribute__((objc_precise_lifetime");
     if (unusedLocal) output.append(", unused");
     output.append("))");
@@ -6807,8 +6886,24 @@ function appendTryStatement(
       );
     }
     output.append(" = ");
+    const tryObjectiveC = match (in declaration.statements[index].type) {
+      some(storageType) => storageType.kind
+        == LoweredTypeKind.foreignObjCType;
+      none => false;
+    };
+    if (tryObjectiveC) {
+      const successType = match (in declaration.statements[index].type) {
+        some(storageType) => try cType(storageType);
+        none => throw "native Objective-C try lowering lost its result type";
+      };
+      output.append("(");
+      output.append(successType);
+      output.append(")z_stage1_objc_take(&");
+    }
     output.append(temporary);
-    output.append(".payload.success;\n");
+    output.append(".payload.success");
+    if (tryObjectiveC) output.append(")");
+    output.append(";\n");
   }
 }
 
@@ -7396,6 +7491,16 @@ function appendStatement(
           );
           output.append(" = ");
           if (loadViewValue) output.append("*(");
+          const objectiveCPayload = type.kind
+            == LoweredTypeKind.foreignObjCType;
+          if (objectiveCPayload) {
+            output.append("(");
+            output.append(payloadType);
+            output.append(")");
+            output.append(transferredClassPayload
+              ? "z_stage1_objc_take(&"
+              : "z_stage1_objc_borrow(&");
+          }
           if (declaration.statements[index].matchConsumesSubject) {
             output.append(matchTemporary);
           } else {
@@ -7419,6 +7524,7 @@ function appendStatement(
           if (!nicheViewOption) {
             output.append(declaration.statements[arm].name);
           }
+          if (objectiveCPayload) output.append(")");
           output.append(";\n");
           if (declaration.statements[arm].liveFlag.byteLength > 0) {
             appendIndent(inout output, depth + 2);
@@ -9924,9 +10030,19 @@ function appendCallableHelpers(
             );
             output.append("    task->completed = true; return;\n  }\n  ");
             appendCBindingName(inout output, awaitedLocal.name);
-            output.append(" = _z_stage1_async_try_");
+            output.append(" = ");
+            if (awaitedType.kind == LoweredTypeKind.foreignObjCType) {
+              const awaitedStorage = try cType(awaitedType);
+              output.append("(");
+              output.append(awaitedStorage);
+              output.append(")z_stage1_objc_take(&_z_stage1_async_try_");
+            } else output.append("_z_stage1_async_try_");
             output.append(`${shape.statementIndex}`);
-            output.append(".payload.success;\n");
+            output.append(".payload.success");
+            if (awaitedType.kind == LoweredTypeKind.foreignObjCType) {
+              output.append(")");
+            }
+            output.append(";\n");
           } else {
             output.append("  frame->child.take_result(frame->child.task, &");
             appendCBindingName(inout output, awaitedLocal.name);
@@ -10817,7 +10933,13 @@ function appendCallableHelpers(
           for (const statement of expression.statements) {
             try appendStatement(inout output, owner, statement, 1);
           }
-          output.append("  return;\n");
+          if (expression.labels[2] == "throwing") {
+            output.append("  return (Z_");
+            output.append(functionType.returnType.name);
+            output.append("){ .tag = Z_");
+            output.append(functionType.returnType.name);
+            output.append("Tag_success };\n");
+          } else output.append("  return;\n");
         } else {
           output.append("  return ");
         }
@@ -16985,24 +17107,36 @@ function appendCopyHelper(
     output.append(elementStorage);
     output.append(")) abort();\n  ");
     output.append(elementStorage);
-    output.append(" *source_data = (");
+    if (elementType.kind == LoweredTypeKind.foreignObjCType) {
+      output.append(" const __strong *source_data = (");
+    } else output.append(" *source_data = (");
     output.append(elementStorage);
-    output.append(" *)source.data;\n  ");
+    if (elementType.kind == LoweredTypeKind.foreignObjCType) {
+      output.append(" const __strong *)source.data;\n  ");
+    } else output.append(" *)source.data;\n  ");
     output.append(elementStorage);
-    output.append(" *result_data = (");
+    if (elementType.kind == LoweredTypeKind.foreignObjCType) {
+      output.append(" __strong *result_data = (");
+    } else output.append(" *result_data = (");
     output.append(elementStorage);
-    output.append(" *)malloc(sizeof(");
+    if (elementType.kind == LoweredTypeKind.foreignObjCType) {
+      output.append(" __strong *)calloc(source.length, sizeof(");
+    } else output.append(" *)malloc(sizeof(");
     output.append(elementStorage);
-    output.append(") * source.length);\n");
+    if (elementType.kind == LoweredTypeKind.foreignObjCType) {
+      output.append("));\n");
+    } else output.append(") * source.length);\n");
     output.append("  if (result_data == NULL) abort();\n");
     output.append("  result.data = result_data;\n  result.length = source.length;\n  result.capacity = source.length;\n");
     output.append("  for (size_t index = 0; index < source.length; index += 1) {\n    result_data[index] = ");
-    try appendCopiedValue(
-      inout output,
-      program,
-      elementType,
-      "source_data[index]"
-    );
+    if (elementType.kind == LoweredTypeKind.foreignObjCType) {
+      output.append("source_data[index]");
+    } else try appendCopiedValue(
+        inout output,
+        program,
+        elementType,
+        "source_data[index]"
+      );
     output.append(";\n  }\n  return result;\n}\n\n");
     return;
   }
@@ -17072,12 +17206,16 @@ function appendCopyHelper(
         output.append(":\n      result.payload.");
         output.append(variant.name);
         output.append(" = ");
-        try appendCopiedValue(
-          inout output,
-          program,
-          payload,
-          `source.payload.${variant.name}`
-        );
+        if (payload.kind == LoweredTypeKind.foreignObjCType) {
+          output.append("z_stage1_objc_owned_copy(");
+          output.append(`source.payload.${variant.name}`);
+          output.append(")");
+        } else try appendCopiedValue(
+            inout output,
+            program,
+            payload,
+            `source.payload.${variant.name}`
+          );
         output.append(";\n      break;\n");
       }
       none => {}
@@ -17329,7 +17467,10 @@ function appendEnumDefinition(
     for (const item of program.enums[index].variants) {
       match (in item.payload) {
         some(type) => {
-          const payloadType = try cType(type);
+          let payloadType = "Z_ObjCOwned";
+          if (type.kind != LoweredTypeKind.foreignObjCType) {
+            payloadType = try cType(type);
+          }
           output.append("    ");
           output.append(payloadType);
           output.append(" ");
@@ -20220,6 +20361,83 @@ function appendObjCRegistration(
   output.append("];\n}\n\n");
 }
 
+function programUsesObjCConnection(in program: LoweredProgram): boolean {
+  for (const declaration of program.functions) {
+    for (const expression of declaration.expressions) {
+      if (
+        expression.kind == LoweredExpressionKind.objectiveCConnection
+      ) return true;
+    }
+  }
+  return false;
+}
+
+function programUsesObjCOwnedStorage(in program: LoweredProgram): boolean {
+  for (const declaration of program.enums) {
+    for (const variant of declaration.variants) {
+      match (in variant.payload) {
+        some(payload) => {
+          if (payload.kind == LoweredTypeKind.foreignObjCType) return true;
+        }
+        none => {}
+      }
+    }
+  }
+  return false;
+}
+
+function appendObjCOwnedStorageRuntime(inout output: TextBuffer): void {
+  output.append("extern id objc_retain(id value);\nextern void objc_release(id value);\n\n");
+  output.append("typedef struct Z_ObjCOwned {\n  __unsafe_unretained id value;\n} Z_ObjCOwned;\n\n");
+  output.append("static inline __attribute__((unused)) Z_ObjCOwned z_stage1_objc_owned(id value) {\n  return (Z_ObjCOwned){ .value = objc_retain(value) };\n}\n\n");
+  output.append("static inline __attribute__((unused)) id z_stage1_objc_borrow(const Z_ObjCOwned *value) {\n  return value == NULL ? nil : value->value;\n}\n\n");
+  output.append("static inline __attribute__((unused)) id z_stage1_objc_take(Z_ObjCOwned *value) {\n  if (value == NULL || value->value == nil) return nil;\n  id result = value->value;\n  objc_release(value->value);\n  value->value = nil;\n  return result;\n}\n\n");
+  output.append("static inline __attribute__((unused)) Z_ObjCOwned z_stage1_objc_owned_copy(Z_ObjCOwned value) {\n  return z_stage1_objc_owned(value.value);\n}\n\n");
+  output.append("static inline __attribute__((unused)) void z_stage1_objc_owned_deinit(Z_ObjCOwned *value) {\n  (void)z_stage1_objc_take(value);\n}\n\n");
+}
+
+function functionTypeUsedByObjCConnection(
+  in program: LoweredProgram,
+  in name: String
+): boolean {
+  for (const declaration of program.functions) {
+    for (const expression of declaration.expressions) {
+      if (
+        expression.kind == LoweredExpressionKind.objectiveCConnection
+        && expression.value == name
+      ) return true;
+    }
+  }
+  return false;
+}
+
+function appendObjCConnectionRuntime(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void {
+  output.append("@interface ZObjCConnection : NSObject {\n@public\n  void (*_z_call)(void *);\n  void *_z_context;\n  void (*_z_release)(void *);\n  id _z_control;\n}\n");
+  output.append("- (instancetype)initWithControl:(id)control call:(void (*)(void *))call context:(void *)context operationRelease:(void (*)(void *))operationRelease;\n");
+  output.append("- (void)z_invoke:(id)sender;\n@end\n\n");
+  output.append("@implementation ZObjCConnection\n");
+  output.append("- (instancetype)initWithControl:(id)control call:(void (*)(void *))call context:(void *)context operationRelease:(void (*)(void *))operationRelease {\n");
+  output.append("  self = [super init];\n  if (self != nil) {\n");
+  output.append("    _z_call = call;\n    _z_context = context;\n    _z_release = operationRelease;\n    _z_control = control;\n");
+  output.append("    [_z_control setTarget:self];\n    [_z_control setAction:@selector(z_invoke:)];\n  }\n  return self;\n}\n\n");
+  output.append("- (void)z_invoke:(id)sender {\n  (void)sender;\n  if (_z_call == NULL) abort();\n  _z_call(_z_context);\n}\n\n");
+  output.append("- (void)dealloc {\n  if ([_z_control target] == self) {\n    [_z_control setTarget:nil];\n    [_z_control setAction:NULL];\n  }\n  if (_z_release != NULL) _z_release(_z_context);\n}\n@end\n\n");
+  for (const functionType of program.functionTypes) {
+    if (!functionTypeUsedByObjCConnection(program, functionType.name)) {
+      continue;
+    }
+    output.append("static inline __attribute__((unused)) ZObjCConnection *z_stage1_objc_connect_");
+    output.append(functionType.name);
+    output.append("(id control, Z_");
+    output.append(functionType.name);
+    output.append(" operation) {\n");
+    output.append("  return [[ZObjCConnection alloc] initWithControl:control call:operation.call context:operation.context operationRelease:operation.release];\n}\n\n");
+  }
+}
+
 function emitLoweredC(
   in program: LoweredProgram,
   in embeddedRuntimeName: String,
@@ -20266,6 +20484,8 @@ function emitLoweredC(
   const usesArena = programUsesArena(program);
   const usesExecutorBoundClasses = programUsesExecutorBoundClasses(program);
   const usesForeignRuntimeEntry = programUsesThreadAnyForeignCallbacks(program);
+  const usesObjCConnection = programUsesObjCConnection(program);
+  const usesObjCOwnedStorage = programUsesObjCOwnedStorage(program);
   let usesObjectiveCStringFromZ = false;
   let usesObjectiveCStringToZ = false;
   let usesObjectiveCDataCopy = false;
@@ -20376,6 +20596,12 @@ function emitLoweredC(
     output.append("#if defined(_WIN32)\n#include <direct.h>\n#endif\n");
   }
   output.append("\n");
+  if (usesObjCConnection) {
+    output.append("@class ZObjCConnection;\n\n");
+  }
+  if (usesObjCOwnedStorage) {
+    appendObjCOwnedStorageRuntime(inout output);
+  }
   if (program.objectiveCRegistrations.length > 0) {
     output.append("@class ZObjCRegistration;\n\n");
   }
@@ -20869,6 +21095,9 @@ function emitLoweredC(
   if (program.foreignResources.length > 0) output.append("\n");
   appendWeakRuntime(inout output);
   try appendTypeDefinitions(inout output, program);
+  if (usesObjCConnection) {
+    appendObjCConnectionRuntime(inout output, program);
+  }
   try appendMemoryReplaceHelpers(inout output, program);
   if (programUsesObjectiveCBlockArguments(program)) {
     appendObjCBlockArgumentRuntime(inout output);
@@ -21065,9 +21294,12 @@ function emitLoweredC(
   try appendClassAndOnceRuntime(inout output, program);
   for (const declaration of program.slices) {
     const elementType = try cType(declaration.elementType);
+    const objectiveCElements = declaration.elementType.kind
+      == LoweredTypeKind.foreignObjCType;
     output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
-    output.append(" const *Z_");
+    if (objectiveCElements) output.append(" const __strong *Z_");
+    else output.append(" const *Z_");
     output.append(declaration.name);
     output.append("_at(const Z_");
     output.append(declaration.name);
@@ -21075,18 +21307,21 @@ function emitLoweredC(
     output.append("  if (index >= self->length) abort();\n");
     output.append("  return &((");
     output.append(elementType);
-    output.append(" *)self->data)[index];\n");
+    if (objectiveCElements) output.append(" __strong *)self->data)[index];\n");
+    else output.append(" *)self->data)[index];\n");
     output.append("}\n\n");
     output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
-    output.append(" const *Z_");
+    if (objectiveCElements) output.append(" const __strong *Z_");
+    else output.append(" const *Z_");
     output.append(declaration.name);
     output.append("_at_unchecked(const Z_");
     output.append(declaration.name);
     output.append(" *self, size_t index) {\n");
     output.append("  return &((");
     output.append(elementType);
-    output.append(" *)self->data)[index];\n");
+    if (objectiveCElements) output.append(" __strong *)self->data)[index];\n");
+    else output.append(" *)self->data)[index];\n");
     output.append("}\n\n");
     output.append("static inline __attribute__((unused)) Z_");
     output.append(declaration.name);
@@ -21097,7 +21332,8 @@ function emitLoweredC(
     output.append(" *self, size_t index) {\n");
     output.append("  void *data = self->data == NULL ? NULL : &((");
     output.append(elementType);
-    output.append(" *)self->data)[index];\n");
+    if (objectiveCElements) output.append(" __strong *)self->data)[index];\n");
+    else output.append(" *)self->data)[index];\n");
     output.append("  return (Z_");
     output.append(declaration.name);
     output.append("){ data, self->length - index };\n");
@@ -21148,6 +21384,8 @@ function emitLoweredC(
   }
   for (const declaration of program.arrays) {
     const elementType = try cType(declaration.elementType);
+    const objectiveCElements = declaration.elementType.kind
+      == LoweredTypeKind.foreignObjCType;
     output.append("static inline __attribute__((unused)) Z_");
     output.append(declaration.name);
     output.append(" Z_");
@@ -21159,13 +21397,32 @@ function emitLoweredC(
     output.append("  if (length > SIZE_MAX / sizeof(");
     output.append(elementType);
     output.append(")) abort();\n");
-    output.append("  void *storage = malloc(length * sizeof(");
-    output.append(elementType);
-    output.append("));\n");
+    if (objectiveCElements) {
+      output.append("  ");
+      output.append(elementType);
+      output.append(" __strong *storage = (");
+      output.append(elementType);
+      output.append(" __strong *)calloc(length, sizeof(");
+      output.append(elementType);
+      output.append("));\n");
+    } else {
+      output.append("  void *storage = malloc(length * sizeof(");
+      output.append(elementType);
+      output.append("));\n");
+    }
     output.append("  if (storage == NULL) abort();\n");
-    output.append("  memcpy(storage, values, length * sizeof(");
-    output.append(elementType);
-    output.append("));\n");
+    if (objectiveCElements) {
+      output.append("  ");
+      output.append(elementType);
+      output.append(" const __strong *source = (");
+      output.append(elementType);
+      output.append(" const __strong *)values;\n");
+      output.append("  for (size_t index = 0; index < length; index += 1) storage[index] = source[index];\n");
+    } else {
+      output.append("  memcpy(storage, values, length * sizeof(");
+      output.append(elementType);
+      output.append("));\n");
+    }
     output.append("  return (Z_");
     output.append(declaration.name);
     output.append("){ storage, length, length };\n");
@@ -21179,14 +21436,16 @@ function emitLoweredC(
     output.append(" *self, size_t index) {\n");
     output.append("  void *data = self->data == NULL ? NULL : &((");
     output.append(elementType);
-    output.append(" *)self->data)[index];\n");
+    if (objectiveCElements) output.append(" __strong *)self->data)[index];\n");
+    else output.append(" *)self->data)[index];\n");
     output.append("  return (Z_");
     output.append(declaration.sliceName);
     output.append("){ data, self->length - index };\n");
     output.append("}\n\n");
     output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
-    output.append(" const *Z_");
+    if (objectiveCElements) output.append(" const __strong *Z_");
+    else output.append(" const *Z_");
     output.append(declaration.name);
     output.append("_at(const Z_");
     output.append(declaration.name);
@@ -21194,22 +21453,26 @@ function emitLoweredC(
     output.append("  if (index >= self->length) abort();\n");
     output.append("  return &((");
     output.append(elementType);
-    output.append(" *)self->data)[index];\n");
+    if (objectiveCElements) output.append(" __strong *)self->data)[index];\n");
+    else output.append(" *)self->data)[index];\n");
     output.append("}\n\n");
     output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
-    output.append(" const *Z_");
+    if (objectiveCElements) output.append(" const __strong *Z_");
+    else output.append(" const *Z_");
     output.append(declaration.name);
     output.append("_at_unchecked(const Z_");
     output.append(declaration.name);
     output.append(" *self, size_t index) {\n");
     output.append("  return &((");
     output.append(elementType);
-    output.append(" *)self->data)[index];\n");
+    if (objectiveCElements) output.append(" __strong *)self->data)[index];\n");
+    else output.append(" *)self->data)[index];\n");
     output.append("}\n\n");
     output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
-    output.append(" *Z_");
+    if (objectiveCElements) output.append(" __strong *Z_");
+    else output.append(" *Z_");
     output.append(declaration.name);
     output.append("_at_mut(Z_");
     output.append(declaration.name);
@@ -21217,7 +21480,8 @@ function emitLoweredC(
     output.append("  if (index >= self->length) abort();\n");
     output.append("  return &((");
     output.append(elementType);
-    output.append(" *)self->data)[index];\n");
+    if (objectiveCElements) output.append(" __strong *)self->data)[index];\n");
+    else output.append(" *)self->data)[index];\n");
     output.append("}\n\n");
     output.append("static inline __attribute__((unused)) void Z_");
     output.append(declaration.name);
@@ -21235,16 +21499,37 @@ function emitLoweredC(
     output.append("    if (next > SIZE_MAX / sizeof(");
     output.append(elementType);
     output.append(")) abort();\n");
-    output.append("    void *storage = realloc(self->data, next * sizeof(");
-    output.append(elementType);
-    output.append("));\n");
-    output.append("    if (storage == NULL) abort();\n");
-    output.append("    self->data = storage;\n");
+    if (objectiveCElements) {
+      output.append("    ");
+      output.append(elementType);
+      output.append(" __strong *storage = (");
+      output.append(elementType);
+      output.append(" __strong *)calloc(next, sizeof(");
+      output.append(elementType);
+      output.append("));\n");
+      output.append("    if (storage == NULL) abort();\n");
+      output.append("    ");
+      output.append(elementType);
+      output.append(" __strong *previous = (");
+      output.append(elementType);
+      output.append(" __strong *)self->data;\n");
+      output.append("    for (size_t index = 0; index < self->length; index += 1) { storage[index] = previous[index]; previous[index] = nil; }\n");
+      output.append("    free(previous);\n");
+      output.append("    self->data = storage;\n");
+    } else {
+      output.append("    void *storage = realloc(self->data, next * sizeof(");
+      output.append(elementType);
+      output.append("));\n");
+      output.append("    if (storage == NULL) abort();\n");
+      output.append("    self->data = storage;\n");
+    }
     output.append("    self->capacity = next;\n");
     output.append("  }\n");
     output.append("  ((");
     output.append(elementType);
-    output.append(" *)self->data)[self->length] = value;\n");
+    if (objectiveCElements) {
+      output.append(" __strong *)self->data)[self->length] = value;\n");
+    } else output.append(" *)self->data)[self->length] = value;\n");
     output.append("  self->length += 1;\n");
     output.append("}\n\n");
   }
@@ -21324,7 +21609,18 @@ function emitLoweredC(
     output.append("_deinit(Z_");
     output.append(declaration.name);
     output.append(" *self) {\n");
-    if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
+    if (declaration.elementType.kind == LoweredTypeKind.foreignObjCType) {
+      const elementType = try cType(declaration.elementType);
+      output.append("  ");
+      output.append(elementType);
+      output.append(" __strong *items = (");
+      output.append(elementType);
+      output.append(" __strong *)self->data;\n");
+      output.append("  while (self->length > 0) {\n");
+      output.append("    self->length -= 1;\n");
+      output.append("    items[self->length] = nil;\n");
+      output.append("  }\n");
+    } else if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
       const elementType = try cType(declaration.elementType);
       output.append("  ");
       output.append(elementType);
@@ -21426,7 +21722,11 @@ function emitLoweredC(
         output.append(":");
         match (in variant.payload) {
           some(type) => {
-            if (loweredTypeNeedsDeinit(program, type)) {
+            if (type.kind == LoweredTypeKind.foreignObjCType) {
+              output.append("\n      z_stage1_objc_owned_deinit(&self->payload.");
+              output.append(variant.name);
+              output.append(");\n      break;\n");
+            } else if (loweredTypeNeedsDeinit(program, type)) {
               output.append("\n      Z_");
               output.append(type.name);
               if (type.kind == LoweredTypeKind.classType) {

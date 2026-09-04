@@ -5091,6 +5091,31 @@ outlive the expression that starts it, so its borrowed argument still requires
 named storage inside an explicit `async scope`. The distinction follows the
 actual lifetime shape rather than adding source syntax.
 
+## Objective-C identity now composes through native results and collections
+
+The Zapp menu backend combined several individually supported features in one
+ordinary path: a synchronous throwing Z closure imported through a callable
+alias, an `objc.connect` target/action token returned through `Result`, and an
+`Array<objc.Connection>` that owns every installed action. The fixed-point
+frontend exposed four composition gaps rather than a need for framework-local
+storage or callback shims.
+
+Native lowering now preserves `.zd` type affinity, resolves callable aliases
+through package re-exports, gives synchronous throwing closures their own
+local result context, and represents Objective-C identity explicitly inside
+tagged Z enums. Consuming `try` and `match` transfer that retained payload once;
+copy and destruction retain or release it once. Dynamic arrays of Objective-C
+identity use ARC-qualified slots, strong element assignment, and ARC-aware
+growth and teardown instead of byte copying or `realloc`.
+
+A fixed-point Objective-C regression returns an imported ARC object through a
+throwing function, extracts it with `try`, stores two objects in a dynamic
+Array, reads one, and destroys the collection. The real Z Notes application
+then builds and runs its generated service graph and AppKit menu unchanged.
+This is executable evidence for a central Z goal: safe interop abstractions
+should keep composing like ordinary Z ownership, without asking applications
+to drop into Objective-C or hand-maintain retain/release calls.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

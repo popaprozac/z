@@ -59,6 +59,9 @@ function inspectObjC(
   if (protocol.methods[0].parameters[1].typeName != "i32") return 88;
   const interface_ = view normalized.objectiveCInterfaces[1];
   if (interface_.name != "ZRegistrationOwner") return 89;
+  const affinityInterface = view normalized.objectiveCInterfaces[2];
+  if (affinityInterface.name != "ZPropertyOwner") return 134;
+  if (affinityInterface.executorAffinity != "thread.main") return 135;
   if (interface_.methods.length != 5) return 90;
   if (interface_.methods[0].selector != "addHandler:name:") return 91;
   if (interface_.methods[0].parameters[0].typeName != "id") return 92;

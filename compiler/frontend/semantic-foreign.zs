@@ -896,7 +896,10 @@ function foreignTypeSignature(
     nativeCUnderlyingType: "",
     typeParameters: Array<String>(),
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
-    executorAffinity: "",
+    executorAffinity: type.executorAffinity.copyBytes(
+      0,
+      type.executorAffinity.byteLength
+    ),
     implementedTraits: Array<String>(),
     fields,
     methods: Array<ModuleMethodSignature>(),

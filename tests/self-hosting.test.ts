@@ -8607,7 +8607,25 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "  owner: native.NativeOwner;",
         "}",
         "",
+        "function createOwnedNative(): native.NativeOwner throws i32 {",
+        "  return native.NativeOwner.sharedOwner();",
+        "}",
+        "",
+        "function inspectOwnedNativeContainers(): i32 throws i32 {",
+        "  const created = try createOwnedNative();",
+        "  let owners = Array<native.NativeOwner>();",
+        "  owners.push(created);",
+        "  owners.push(native.NativeOwner.sharedOwner());",
+        "  return owners[0].value;",
+        "}",
+        "",
         "function main(): i32 {",
+        "  const owned = attempt inspectOwnedNativeContainers();",
+        "  const ownedValue = match (owned) {",
+        "    success(value) => value;",
+        "    failure(error) => -error;",
+        "  };",
+        "  if (ownedValue != 42) return 4;",
         "  const options = native.NativeOptionFirst | native.NativeOptionSecond;",
         "  if (options == native.NativeOptionFirst) return 2;",
         "  const rect = native.native_make_rect();",
@@ -8660,6 +8678,26 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       false,
     );
     const objcEmission = readFileSync(objcEmissionPath, "utf8");
+    assert.match(
+      objcEmission,
+      /typedef struct Z_ObjCOwned \{\s+__unsafe_unretained id value;/,
+    );
+    assert.match(
+      objcEmission,
+      /\.payload\.success = z_stage1_objc_owned\(\[NativeOwner sharedOwner\]\)/,
+    );
+    assert.match(
+      objcEmission,
+      /z_stage1_objc_take\(&_z_stage1_try_\d+\.payload\.success\)/,
+    );
+    assert.match(
+      objcEmission,
+      /NativeOwner \* __strong \*storage = \(NativeOwner \* __strong \*\)calloc/,
+    );
+    assert.match(
+      objcEmission,
+      /items\[self->length\] = nil;/,
+    );
     assert.match(
       objcEmission,
       /NativeOwner \* const owner = \[NativeOwner currentOwner\]/,
@@ -9093,7 +9131,12 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   const objcContractPath = resolve(directory, "objc-registration-wire.h.zd");
   writeFileSync(
     objcContractPath,
-    'declare module "objc-registration-wire.h" {\n}\n',
+    [
+      'declare module "objc-registration-wire.h" {',
+      "  export type ZPropertyOwner on thread.main;",
+      "}",
+      "",
+    ].join("\n"),
   );
   const objcSourcePath = resolve(directory, "objc-semantic-input.zs");
   writeFileSync(

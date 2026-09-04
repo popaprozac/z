@@ -9,7 +9,7 @@ class Controller on thread.main {
   }
 }
 
-function main(): i32 on thread.main {
+async function main(): i32 on thread.main {
   const controller = new Controller({ value: 42 });
   const command = new Command({ value: 0 });
   const action: CommandAction = move (): void => {

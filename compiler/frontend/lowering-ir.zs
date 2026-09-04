@@ -263,6 +263,7 @@ export enum LoweredExpressionKind {
   objectiveCStringFromZ,
   objectiveCStringToZ,
   objectiveCProtocolAdapter,
+  objectiveCConnection,
   objectiveCRegistration,
   fieldValue,
   structValue,
@@ -345,6 +346,7 @@ export struct LoweredExpression {
   closureParameterCount: usize = 0;
   closureParameterModes: Array<String> = Array<String>();
   objectiveCBlockNativeType: String = "";
+  objectiveCOwnedPayload: boolean = false;
 }
 
 export struct LoweredMainDelaySegment {
@@ -3362,6 +3364,16 @@ function lowerTypeName(
       name: "ZObjCRegistration",
     });
   }
+  if (
+    name == "objc.Connection"
+    || name == "__z_std_objc_Connection"
+    || name == "ZObjCConnection"
+  ) {
+    return LoweredType({
+      kind: LoweredTypeKind.foreignObjCType,
+      name: "ZObjCConnection",
+    });
+  }
   if (name == "void") return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
   if (name == "boolean") {
     return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
@@ -3727,6 +3739,16 @@ function lowerModuleTypeName(
     return LoweredType({
       kind: LoweredTypeKind.foreignObjCType,
       name: "ZObjCRegistration",
+    });
+  }
+  if (
+    name == "objc.Connection"
+    || name == "__z_std_objc_Connection"
+    || name == "ZObjCConnection"
+  ) {
+    return LoweredType({
+      kind: LoweredTypeKind.foreignObjCType,
+      name: "ZObjCConnection",
     });
   }
   const nullableTarget = nullableTargetType(name);
@@ -4340,6 +4362,7 @@ function moduleEnumNeedsCleanup(
         const lowered = attempt lowerModuleType(program, importedTypes, payload);
         match (lowered) {
           success(type) => {
+            if (type.kind == LoweredTypeKind.foreignObjCType) return true;
             if (moduleTypeNeedsCleanupDepth(
               program,
               importedTypes,
@@ -4354,6 +4377,15 @@ function moduleEnumNeedsCleanup(
     }
   }
   return false;
+}
+
+function moduleEnumPayloadNeedsCleanup(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in type: LoweredType
+): boolean {
+  return type.kind == LoweredTypeKind.foreignObjCType
+    || moduleTypeNeedsCleanup(program, importedTypes, type);
 }
 
 function moduleAggregateNeedsCleanup(
@@ -5071,7 +5103,7 @@ function intrinsicOptionDeclaration(
         nativeCUnderlyingType: "",
         variants,
         payloadBearing: true,
-        needsDeinit: moduleTypeNeedsCleanup(
+        needsDeinit: moduleEnumPayloadNeedsCleanup(
           program,
           importedTypes,
           payload
@@ -5112,7 +5144,7 @@ function intrinsicOptionDeclaration(
         variants,
         payloadBearing: true,
         needsDeinit: !borrowedView
-          && moduleTypeNeedsCleanup(program, importedTypes, payload),
+          && moduleEnumPayloadNeedsCleanup(program, importedTypes, payload),
       }));
     }
     none => return Option<LoweredEnum>.none;
@@ -5164,11 +5196,11 @@ function intrinsicResultDeclaration(
         nativeCUnderlyingType: "",
         variants,
         payloadBearing: true,
-        needsDeinit: moduleTypeNeedsCleanup(
+        needsDeinit: moduleEnumPayloadNeedsCleanup(
           program,
           importedTypes,
           successType
-        ) || moduleTypeNeedsCleanup(program, importedTypes, errorType),
+        ) || moduleEnumPayloadNeedsCleanup(program, importedTypes, errorType),
       }));
     }
     none => return Option<LoweredEnum>.none;
@@ -5331,6 +5363,26 @@ function throwingFunctionResult(
     }
   }
   return Option<LoweredEnum>.none;
+}
+
+function contextualThrowingFunctionResult(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in ownerName: String,
+  resultTypeName: String
+): Option<LoweredEnum> throws String {
+  if (resultTypeName.byteLength > 0) {
+    return try intrinsicResultDeclaration(
+      program,
+      importedTypes,
+      resultTypeName
+    );
+  }
+  return try throwingFunctionResult(
+    program,
+    importedTypes,
+    ownerName
+  );
 }
 
 function requiredThrowingFunctionResult(
@@ -9056,6 +9108,27 @@ function staticallyResolvedExpressionTypeName(
       ));
     }
   }
+  if (
+    tree.nodes[index].kind == ExpressionKind.callExpression
+    && tree.nodes[index].children.length == 3
+  ) {
+    const callee = tree.nodes[index].children[0];
+    if (
+      tree.nodes[callee].kind == ExpressionKind.memberExpression
+      && tree.nodes[callee].value == "connect"
+      && tree.nodes[callee].children.length == 1
+    ) {
+      const namespace = tree.nodes[callee].children[0];
+      if (
+        tree.nodes[namespace].kind == ExpressionKind.identifierExpression
+        && isImportedStandardNamespace(
+          program,
+          "std/objc",
+          tree.nodes[namespace].value
+        )
+      ) return Option.some("objc.Connection");
+    }
+  }
   if (tree.nodes[index].kind == ExpressionKind.newExpression) {
     return Option.some(tree.nodes[index].value.copyBytes(
       0,
@@ -11566,6 +11639,71 @@ function lowerExpressionContextual(
           output[pooled].statements.push(statement);
         }
         return pooled;
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[calleeInput].value == "connect"
+      && tree.nodes[index].children.length == 3
+    ) {
+      const namespace = tree.nodes[calleeInput].children[0];
+      if (
+        tree.nodes[namespace].kind == ExpressionKind.identifierExpression
+        && isImportedStandardNamespace(
+          program,
+          "std/objc",
+          tree.nodes[namespace].value
+        )
+      ) {
+        const controlInput = tree.nodes[index].children[1];
+        const operationInput = tree.nodes[index].children[2];
+        if (tree.nodes[operationInput].kind != ExpressionKind.closureExpression) {
+          throw "native objc.connect requires one owned synchronous closure";
+        }
+        const operationTypeName = match (resolvedExpressionTypeName(
+          evidence,
+          tree,
+          operationInput
+        )) {
+          some(name) => name;
+          none => "() => void";
+        };
+        const controlExpression: usize = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          controlInput,
+          inout output
+        );
+        const operationExpression: usize = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          operationInput,
+          operationTypeName,
+          inout output
+        );
+        if (
+          output[operationExpression].kind != LoweredExpressionKind.closureValue
+          || output[operationExpression].labels.length == 0
+        ) throw "native objc.connect lost its owned closure value";
+        let children = Array<usize>();
+        children.push(controlExpression);
+        children.push(operationExpression);
+        const functionTypeName = output[operationExpression].labels[0].copyBytes(
+          0,
+          output[operationExpression].labels[0].byteLength
+        );
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.objectiveCConnection,
+          functionTypeName,
+          children,
+          Array<String>()
+        );
       }
     }
     if (
@@ -16213,20 +16351,40 @@ function moduleCallableAliasTarget(
   let depth: usize = 0;
   while (depth < 64) {
     let next = Option<String>.none;
+    let localProgress = false;
     match (localTypeAliasTarget(program, target)) {
-      some(value) => next = Option.some(move value);
-      none => {
-        for (const imported of importedTypes) {
-          if (
+      some(value) => {
+        // A package re-export can materialize a transparent local alias whose
+        // normalized target is itself. That entry proves type identity, but it
+        // does not preserve the callable signature needed to lower a closure.
+        // Fall through to the imported signature-bearing alias in that case.
+        if (value != target) {
+          next = Option.some(move value);
+          localProgress = true;
+        }
+      }
+      none => {}
+    }
+    if (!localProgress) {
+      const targetMember = qualifiedTypeMember(target);
+      for (const imported of importedTypes) {
+        if (
+          (
             imported.localName == target
-            && imported.kind == LoweredTypeKind.functionType
-            && imported.underlyingType.byteLength > 0
-          ) {
-            next = Option.some(imported.underlyingType.copyBytes(
-              0,
-              imported.underlyingType.byteLength
-            ));
-          }
+            || imported.targetName == target
+            || (
+              targetMember.byteLength > 0
+              && imported.localName == targetMember
+            )
+          )
+          && imported.kind == LoweredTypeKind.functionType
+          && imported.underlyingType.byteLength > 0
+          && imported.underlyingType != target
+        ) {
+          next = Option.some(imported.underlyingType.copyBytes(
+            0,
+            imported.underlyingType.byteLength
+          ));
         }
       }
     }
@@ -16591,9 +16749,8 @@ function lowerExpressionExpected(
           if (
             closureAsynchronous
             || signature.returnType != "void"
-            || signature.errorType.byteLength > 0
           ) {
-            throw "native block callable closures currently require a synchronous, nonthrowing void signature";
+            throw "native block callable closures currently require a synchronous void signature";
           }
           let labels = Array<String>();
           labels.push(functionType.name.copyBytes(
@@ -16604,17 +16761,22 @@ function lowerExpressionExpected(
             0,
             tree.nodes[index].value.byteLength
           ));
-          labels.push("plain");
+          labels.push(signature.errorType.byteLength > 0
+            ? "throwing"
+            : "plain");
           for (const parameterName of parameterNames) {
             labels.push(parameterName.copyBytes(
               0,
               parameterName.byteLength
             ));
           }
+          const resultTypeName = signature.errorType.byteLength > 0
+            ? `Result<void, ${signature.errorType}>`
+            : "";
           const closure = pushExpression(
             inout output,
             LoweredExpressionKind.closureValue,
-            "",
+            resultTypeName,
             Array<usize>(),
             labels
           );
@@ -17107,6 +17269,9 @@ function lowerExpressionExpected(
       }
     }
     none => {}
+  }
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) {
+    throw `native contextual closure lowering could not resolve callable signature ${expectedTypeName}`;
   }
   let contextualTypeName = "";
   match (importedValueStructIndex(importedTypes, expectedTypeName)) {
@@ -17730,11 +17895,11 @@ function awaitedResultForSuccessType(
           nativeCUnderlyingType: "",
           variants,
           payloadBearing: true,
-          needsDeinit: moduleTypeNeedsCleanup(
+          needsDeinit: moduleEnumPayloadNeedsCleanup(
             program,
             importedTypes,
             successType
-          ) || moduleTypeNeedsCleanup(program, importedTypes, errorType),
+          ) || moduleEnumPayloadNeedsCleanup(program, importedTypes, errorType),
         }));
       }
       none => {}
@@ -19081,28 +19246,31 @@ function completeNativeClosureBlocks(
       let loweredStatements = Array<usize>();
       const bodyExpressionStart = expressions.length;
       const bodyStatementStart = statements.length;
+      const closureResultTypeName = expressions[expressionIndex].value
+        .copyBytes(0, expressions[expressionIndex].value.byteLength);
       for (const source of sourceStatements) {
-        const lowered = try lowerStatement(
+        const lowered = try lowerStatementWithResult(
           program,
           importedTypes,
           evidence,
           arena,
           ownerName,
+          copy closureResultTypeName,
           source,
           inout expressions,
           inout statements
         );
         loweredStatements.push(lowered);
       }
-      // A block callable is currently guaranteed to be synchronous,
-      // nonthrowing, and void by contextual lowering above. Its `return;`
-      // statements therefore return from the callable, not from an enclosing
-      // throwing Z function whose Result shape happened to be used while the
-      // shared statement lowerer was running.
-      rewritePlainVoidClosureReturns(
-        loweredStatements,
-        inout statements
-      );
+      // A block callable owns its return context. Plain `return;` exits the
+      // callable; throwing blocks preserve the Result wrappers installed by
+      // lowerStatementWithResult so `try` and `throw` propagate locally.
+      if (closureResultTypeName.byteLength == 0) {
+        rewritePlainVoidClosureReturns(
+          loweredStatements,
+          inout statements
+        );
+      }
       let parameter: usize = 0;
       while (parameter < expressions[expressionIndex].closureParameterCount) {
         const parameterName = expressions[expressionIndex].labels[
@@ -21698,6 +21866,30 @@ function lowerStatement(
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  return try lowerStatementWithResult(
+    program,
+    importedTypes,
+    evidence,
+    arena,
+    ownerName,
+    "",
+    index,
+    inout expressions,
+    inout statements
+  );
+}
+
+function lowerStatementWithResult(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  activeResult: String,
+  index: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): usize throws String {
   let preludeRoots = Array<usize>();
   match (in arena.nodes[index].expression) {
     some(syntax) => {
@@ -21764,6 +21956,7 @@ function lowerStatement(
       evidence,
       arena,
       ownerName,
+      copy activeResult,
       index,
       inout expressions,
       inout statements
@@ -21775,6 +21968,7 @@ function lowerStatement(
     evidence,
     arena,
     ownerName,
+    copy activeResult,
     index,
     inout expressions,
     inout statements
@@ -21820,6 +22014,7 @@ function lowerStatementCore(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
+  activeResult: String,
   index: usize,
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
@@ -22420,10 +22615,11 @@ function lowerStatementCore(
                 messageInput,
                 inout expressions
               );
-              const resultOutcome = try throwingFunctionResult(
+              const resultOutcome = try contextualThrowingFunctionResult(
                 program,
                 importedTypes,
-                ownerName
+                ownerName,
+                copy activeResult
               );
               const result = match (resultOutcome) {
                 some(declaration) => declaration;
@@ -22660,10 +22856,11 @@ function lowerStatementCore(
               some(declaration) => declaration;
               none => throw "native assignment try lowering requires one direct throwing function call";
             };
-            const outerResult = try throwingFunctionResult(
+            const outerResult = try contextualThrowingFunctionResult(
               program,
               importedTypes,
-              ownerName
+              ownerName,
+              copy activeResult
             );
             const outer = match (outerResult) {
               some(declaration) => declaration;
@@ -22814,10 +23011,11 @@ function lowerStatementCore(
                   none => {}
                 }
               }
-              const outerResult = try throwingFunctionResult(
+              const outerResult = try contextualThrowingFunctionResult(
                 program,
                 importedTypes,
-                ownerName
+                ownerName,
+                copy activeResult
               );
               const outer = match (outerResult) {
                 some(declaration) => declaration;
@@ -22881,10 +23079,11 @@ function lowerStatementCore(
               && tree.nodes[root].children.length == 1
             ) {
               const attempted = tree.nodes[root].children[0];
-              const outerResult = try throwingFunctionResult(
+              const outerResult = try contextualThrowingFunctionResult(
                 program,
                 importedTypes,
-                ownerName
+                ownerName,
+                copy activeResult
               );
               const outer = match (outerResult) {
                 some(declaration) => declaration;
@@ -23366,10 +23565,11 @@ function lowerStatementCore(
         arena.nodes[index].kind == StatementKind.returnStatement
         || arena.nodes[index].kind == StatementKind.throwStatement
       ) {
-        const result = try throwingFunctionResult(
+        const result = try contextualThrowingFunctionResult(
           program,
           importedTypes,
-          ownerName
+          ownerName,
+          copy activeResult
         );
         match (in result) {
           some(declaration) => {
@@ -23410,10 +23610,11 @@ function lowerStatementCore(
     arena.nodes[index].kind == StatementKind.returnStatement
     && expressionMissing
   ) {
-    const result = try throwingFunctionResult(
+    const result = try contextualThrowingFunctionResult(
       program,
       importedTypes,
-      ownerName
+      ownerName,
+      copy activeResult
     );
     match (in result) {
       some(declaration) => {
@@ -23560,12 +23761,13 @@ function lowerStatementCore(
   }
   let children = Array<usize>();
   for (const child of arena.nodes[index].children) {
-    const loweredChild = try lowerStatement(
+    const loweredChild = try lowerStatementWithResult(
       program,
       importedTypes,
       evidence,
       arena,
       ownerName,
+      copy activeResult,
       child,
       inout expressions,
       inout statements
@@ -27775,7 +27977,13 @@ function importedTypesForModule(
         if (symbol.kind != ModuleSymbolKind.typeAliasSymbol) continue;
         let present = false;
         for (const type of types) {
-          if (type.localName == symbol.name) present = true;
+          if (
+            type.localName == symbol.name
+            && (
+              type.kind != LoweredTypeKind.functionType
+              || type.underlyingType.byteLength > 0
+            )
+          ) present = true;
         }
         if (present) continue;
         const aliasTarget = rebaseTypeName(
@@ -28889,7 +29097,7 @@ function appendLoweredProgram(
     if (aggregate.kind == DeclarationKind.classDeclaration) {
       match (in aggregate.constructorDeclaration) {
         some(source) => {
-          const loweredInitializer = try lowerConstructor(
+          let loweredInitializer = try lowerConstructor(
             program,
             importedTypes,
             evidence,
@@ -28897,6 +29105,10 @@ function appendLoweredProgram(
             aggregate.name,
             emittedName,
             source
+          );
+          annotateObjectiveCEnumPayloadsInFunction(
+            enums,
+            inout loweredInitializer
           );
           initializer = Option.some(move loweredInitializer);
         }
@@ -28914,6 +29126,7 @@ function appendLoweredProgram(
           source.body
         );
         body.name = `${emittedName}.deinit`;
+        annotateObjectiveCEnumPayloadsInFunction(enums, inout body);
         deinitializer = Option.some(move body);
       }
       none => {}
@@ -29141,6 +29354,10 @@ function appendLoweredProgram(
           use.emittedName,
           source
         );
+        annotateObjectiveCEnumPayloadsInFunction(
+          enums,
+          inout loweredInitializer
+        );
         rewritePrivateCallTargets(
           program,
           privateFunctionCollisionNames,
@@ -29187,6 +29404,10 @@ function appendLoweredProgram(
           source.body
         );
         loweredDeinitializer.name = `${use.emittedName}.deinit`;
+        annotateObjectiveCEnumPayloadsInFunction(
+          enums,
+          inout loweredDeinitializer
+        );
         rewritePrivateCallTargets(
           program,
           privateFunctionCollisionNames,
@@ -29927,6 +30148,85 @@ function appendDeferredGenericFunction(
   functions.push(move loweredFunction);
 }
 
+function annotateObjectiveCEnumPayloadsInFunction(
+  in enums: Array<LoweredEnum>,
+  inout declaration: LoweredFunction
+): void {
+  let expressionIndex: usize = 0;
+  while (expressionIndex < declaration.expressions.length) {
+    if (
+      declaration.expressions[expressionIndex].kind
+        == LoweredExpressionKind.enumPayloadValue
+      && declaration.expressions[expressionIndex].labels.length > 0
+    ) {
+      for (const enumeration of enums) {
+        if (
+          enumeration.name
+            != declaration.expressions[expressionIndex].value
+        ) continue;
+        for (const variant of enumeration.variants) {
+          if (
+            variant.name
+              != declaration.expressions[expressionIndex].labels[0]
+          ) continue;
+          match (in variant.payload) {
+            some(payload) => {
+              if (payload.kind == LoweredTypeKind.foreignObjCType) {
+                declaration.expressions[expressionIndex]
+                  .objectiveCOwnedPayload = true;
+              }
+            }
+            none => {}
+          }
+        }
+      }
+    }
+    expressionIndex = expressionIndex + 1;
+  }
+}
+
+function annotateObjectiveCEnumPayloads(
+  in enums: Array<LoweredEnum>,
+  inout functions: Array<LoweredFunction>
+): void {
+  let functionIndex: usize = 0;
+  while (functionIndex < functions.length) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < functions[functionIndex].expressions.length) {
+      if (
+        functions[functionIndex].expressions[expressionIndex].kind
+          == LoweredExpressionKind.enumPayloadValue
+        && functions[functionIndex].expressions[expressionIndex].labels.length
+          > 0
+      ) {
+        for (const enumeration of enums) {
+          if (
+            enumeration.name
+              != functions[functionIndex].expressions[expressionIndex].value
+          ) continue;
+          for (const variant of enumeration.variants) {
+            if (
+              variant.name
+                != functions[functionIndex].expressions[expressionIndex].labels[0]
+            ) continue;
+            match (in variant.payload) {
+              some(payload) => {
+                if (payload.kind == LoweredTypeKind.foreignObjCType) {
+                  functions[functionIndex].expressions[expressionIndex]
+                    .objectiveCOwnedPayload = true;
+                }
+              }
+              none => {}
+            }
+          }
+        }
+      }
+      expressionIndex = expressionIndex + 1;
+    }
+    functionIndex = functionIndex + 1;
+  }
+}
+
 function lowerProgramUnchecked(
   in program: Program,
   in evidence: ModuleSemanticEvidence
@@ -29983,6 +30283,7 @@ function lowerProgramUnchecked(
     inout functions
   );
   rewriteNativeCExportCallTargets(inout functions);
+  annotateObjectiveCEnumPayloads(enums, inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
@@ -30319,6 +30620,7 @@ function lowerModulesIncludingTests(
     }
   }
   rewriteNativeCExportCallTargets(inout functions);
+  annotateObjectiveCEnumPayloads(enums, inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
