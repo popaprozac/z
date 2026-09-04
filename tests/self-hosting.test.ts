@@ -17904,7 +17904,9 @@ test("defers unavailable foreign ABI semantics without inventing native diagnost
     "examples/interop/c/foreign-types.zs",
     "examples/interop/c/selective-declarations.zs",
     "examples/interop/objc/desktop-ownership/main.zs",
+    "examples/interop/objc/protocol-adapter.zs",
     "examples/interop/objc/target-action.zs",
+    "tests/fixtures/self-host-foreign-nullable-widening.zs",
   ];
   for (const fileName of cases) {
     const input = resolve(projectRoot, fileName);

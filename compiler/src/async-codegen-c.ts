@@ -1442,8 +1442,8 @@ function planFunction(
             recordNestedAwaits(operation.expression.expression, operation.source);
           }
           recordAwait(operation.mode, operation.expression);
-        } else if (nativeThread && statement.initializer.kind === "try") {
-          validateThreadTryCall(statement.initializer.expression, fileName, types);
+        } else if (statement.initializer.kind === "try") {
+          validateSynchronousTryCall(statement.initializer.expression, fileName, types);
           validateFrameExpression(statement.initializer.expression, locals, fileName, types, suspensions);
         } else if (statement.initializer.kind === "matchExpression") {
           recordNestedAwaits(statement.initializer);
@@ -1497,8 +1497,8 @@ function planFunction(
         } else if (statement.expression?.kind === "matchExpression") {
           recordNestedAwaits(statement.expression);
           validateAsyncMatchExpression(statement.expression, locals, fileName, types, suspensions);
-        } else if (nativeThread && statement.expression?.kind === "try") {
-          validateThreadTryCall(statement.expression.expression, fileName, types);
+        } else if (statement.expression?.kind === "try") {
+          validateSynchronousTryCall(statement.expression.expression, fileName, types);
           validateFrameExpression(statement.expression.expression, locals, fileName, types, suspensions);
         } else if (statement.expression) {
           recordNestedAwaits(statement.expression);
@@ -1567,6 +1567,11 @@ function planFunction(
             recordNestedAwaits(operation.expression.expression, operation.source);
           }
           recordAwait(operation.mode, operation.expression);
+          continue;
+        }
+        if (statement.expression.kind === "try") {
+          validateSynchronousTryCall(statement.expression.expression, fileName, types);
+          validateFrameExpression(statement.expression.expression, locals, fileName, types, suspensions);
           continue;
         }
         if (statement.expression.kind === "call") {
@@ -5647,8 +5652,8 @@ function generatePoll(
           ),
         );
         state += 1;
-      } else if (plan.nativeThread && initializer.kind === "try") {
-        cases.push(caseBlock(state, emitThreadTryBinding(
+      } else if (initializer.kind === "try") {
+        cases.push(caseBlock(state, emitSynchronousTryBinding(
           initializer.expression,
           plan,
           fileName,
@@ -5820,8 +5825,8 @@ function generatePoll(
           true,
           state + 1,
         )));
-      } else if (plan.nativeThread && statement.expression?.kind === "try") {
-        cases.push(caseBlock(state, emitThreadTryReturn(statement.expression.expression, plan, fileName, state)));
+      } else if (statement.expression?.kind === "try") {
+        cases.push(caseBlock(state, emitSynchronousTryReturn(statement.expression.expression, plan, fileName, state)));
       } else {
         const completion: string[] = [];
         const prepared = statement.expression
@@ -5908,6 +5913,17 @@ function generatePoll(
       }
       const operation = awaitOperation(statement.expression)!;
       if (!operation) {
+        if (statement.expression.kind === "try") {
+          cases.push(caseBlock(state, emitSynchronousTryDiscard(
+            statement.expression.expression,
+            plan,
+            fileName,
+            state,
+            state + 1,
+          )));
+          state += 1;
+          continue;
+        }
         const prepared = emitPreparedFrameExpression(statement.expression, plan, fileName);
         cases.push(caseBlock(state, [
           ...prepared.prefix,
@@ -7748,35 +7764,63 @@ function emitFrameExpressionInner(
   }
 }
 
-function validateThreadTryCall(
+function sameAsyncSourceLocation(left: SourceLocation, right: SourceLocation): boolean {
+  return left.offset === right.offset
+    && (left.fileName ?? "") === (right.fileName ?? "");
+}
+
+function synchronousTryCallDeclaration(
+  expression: Expression,
+  fileName: string,
+  types: AsyncTypeContext,
+): FunctionDeclaration {
+  if (expression.kind !== "call") {
+    unsupported(
+      fileName,
+      expression.location,
+      "async-frame `try` currently requires a direct synchronous throwing function or method call",
+      "bind a direct `try operation()` first, then use that binding in a surrounding expression",
+    );
+  }
+  const method = types.semanticInfo.methodCallResolutions.find((candidate) => (
+    sameAsyncSourceLocation(candidate.location, expression.location)
+  ))?.declaration;
+  const resolvedFunction = types.semanticInfo.functionCallResolutions.find((candidate) => (
+    sameAsyncSourceLocation(candidate.location, expression.location)
+  ))?.declaration;
+  const directFunction = expression.callee.kind === "identifier"
+    ? types.functions.get(expression.callee.name)
+    : null;
+  const declaration = method ?? resolvedFunction ?? directFunction;
+  if (!declaration || declaration.async || !declaration.errorType) {
+    unsupported(
+      fileName,
+      expression.location,
+      "async-frame `try` currently requires a direct synchronous throwing function or method call",
+      "call `function operation(...): T throws E` or a throwing synchronous method directly beneath `try`",
+    );
+  }
+  return declaration;
+}
+
+function validateSynchronousTryCall(
   expression: Expression,
   fileName: string,
   types: AsyncTypeContext,
 ): void {
-  if (
-    expression.kind !== "call"
-    || expression.callee.kind !== "identifier"
-    || !types.functions.get(expression.callee.name)?.errorType
-  ) {
-    unsupported(
-      fileName,
-      expression.location,
-      "thread worker `try` currently requires a direct synchronous throwing function call",
-      "call a named `function operation(...): T throws E` directly beneath `try`",
-    );
-  }
+  synchronousTryCallDeclaration(expression, fileName, types);
 }
 
-function emitThreadTryReturn(
+function emitSynchronousTryReturn(
   expression: Expression,
   plan: AsyncFunctionPlan,
   fileName: string,
   state: number,
 ): string[] {
-  return emitThreadTryOperation(expression, plan, fileName, state, null, finalizeStateMarker);
+  return emitSynchronousTryOperation(expression, plan, fileName, state, "return", null, finalizeStateMarker);
 }
 
-function emitThreadTryBinding(
+function emitSynchronousTryBinding(
   expression: Expression,
   plan: AsyncFunctionPlan,
   fileName: string,
@@ -7784,24 +7828,34 @@ function emitThreadTryBinding(
   binding: string,
   nextState: number,
 ): string[] {
-  return emitThreadTryOperation(expression, plan, fileName, state, binding, String(nextState));
+  return emitSynchronousTryOperation(expression, plan, fileName, state, "binding", binding, String(nextState));
 }
 
-function emitThreadTryOperation(
+function emitSynchronousTryDiscard(
   expression: Expression,
   plan: AsyncFunctionPlan,
   fileName: string,
   state: number,
+  nextState: number,
+): string[] {
+  return emitSynchronousTryOperation(expression, plan, fileName, state, "discard", null, String(nextState));
+}
+
+function emitSynchronousTryOperation(
+  expression: Expression,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+  state: number,
+  destinationKind: "binding" | "return" | "discard",
   binding: string | null,
   successState: string,
 ): string[] {
-  validateThreadTryCall(expression, fileName, plan.types);
+  const declaration = synchronousTryCallDeclaration(expression, fileName, plan.types);
   const call = expression as CallExpression;
-  const declaration = plan.types.functions.get((call.callee as Extract<Expression, { kind: "identifier" }>).name)!;
   const successType = declaration.returnType.name;
   const errorType = declaration.errorType!.name;
   const resultType = resultTypeName(successType, errorType);
-  const temporary = `_z_thread_try_${state}`;
+  const temporary = `_z_sync_try_${state}`;
   const errorPayload = requiresNativeFramePlacement(errorType, plan.types)
     ? `std::move(${temporary}.data.failure)`
     : `${temporary}.data.failure`;
@@ -7819,15 +7873,28 @@ function emitThreadTryOperation(
     "}",
   ];
   if (successType !== "void") {
-    const destination = binding ? `frame->${frameField(binding)}` : "frame->result";
     const successPayload = requiresNativeFramePlacement(successType, plan.types)
       ? `std::move(${temporary}.data.success)`
       : `${temporary}.data.success`;
-    lines.push(requiresNativeFramePlacement(successType, plan.types)
-      ? `new (${destination}) ${cFrameType(successType, plan.types)}(${successPayload});`
-      : `${destination} = ${successPayload};`);
-    if (hasFrameCleanup(successType, plan.types)) {
-      lines.push(binding ? `frame->${frameLiveField(binding)} = true;` : "frame->live_result = true;");
+    if (destinationKind === "discard") {
+      if (hasFrameCleanup(successType, plan.types)) {
+        lines.push(frameCleanup(`${temporary}.data.success`, successType, plan.types));
+        if (requiresNativeFramePlacement(resultType, plan.types)) {
+          lines.push(`${temporary}.tag = ${resultTag(resultType, "invalid")};`);
+        }
+      }
+    } else {
+      const destination = destinationKind === "binding"
+        ? `frame->${frameField(binding!)}`
+        : "frame->result";
+      lines.push(requiresNativeFramePlacement(successType, plan.types)
+        ? `new (${destination}) ${cFrameType(successType, plan.types)}(${successPayload});`
+        : `${destination} = ${successPayload};`);
+      if (hasFrameCleanup(successType, plan.types)) {
+        lines.push(destinationKind === "binding"
+          ? `frame->${frameLiveField(binding!)} = true;`
+          : "frame->live_result = true;");
+      }
     }
   }
   lines.push(

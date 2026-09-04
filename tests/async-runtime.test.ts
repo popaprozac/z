@@ -3007,8 +3007,8 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
   assert.match(artifact.source, /struct Z_AsyncFrame___z_thread_job_/);
   assert.match(artifact.source, /bool failed;\n\s+Z_WorkError error;/);
   assert.match(artifact.source, /bool live_error;/);
-  assert.match(artifact.source, /Z_Result_i32_WorkError _z_thread_try_\d+ = calculate\(/);
-  assert.match(artifact.source, /frame->error = _z_thread_try_\d+\.data\.failure/);
+  assert.match(artifact.source, /Z_Result_i32_WorkError _z_sync_try_\d+ = calculate\(/);
+  assert.match(artifact.source, /frame->error = _z_sync_try_\d+\.data\.failure/);
   assert.match(artifact.source, /frame->live_error = true/);
   assert.match(artifact.source, /child_\d+->live_error = false/);
   assert.match(artifact.source, /if \(frame->live_error\)/);
@@ -3113,7 +3113,7 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
     }
   `);
   const nativeTryGenerated = compileToNative(readFileSync(nativeTryFile, "utf8"), nativeTryFile).source;
-  assert.match(nativeTryGenerated, /new \(frame->value_value\) zcpp::UniqueValue\(std::move\(_z_thread_try_\d+\.data\.success\)\)/);
+  assert.match(nativeTryGenerated, /new \(frame->value_value\) zcpp::UniqueValue\(std::move\(_z_sync_try_\d+\.data\.success\)\)/);
   const nativeTryResult = spawnSync(process.execPath, [cli, "run", nativeTryFile], { encoding: "utf8" });
   assert.equal(nativeTryResult.status, 0, nativeTryResult.stderr);
 
@@ -3161,6 +3161,40 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
     { encoding: "utf8" },
   );
   assert.equal(synchronousEmbeddedTryResult.status, 0, synchronousEmbeddedTryResult.stderr);
+
+  const asyncSynchronousTry = `
+    struct WorkError { code: i32; }
+    struct Calculator {
+      function prepare(shouldFail: boolean): void throws WorkError {
+        if (shouldFail) throw WorkError({ code: 1 });
+      }
+      function calculate(value: i32, shouldFail: boolean): i32 throws WorkError {
+        if (shouldFail) throw WorkError({ code: value });
+        return value;
+      }
+    }
+    async function operation(shouldFail: boolean): i32 throws WorkError {
+      const calculator = Calculator();
+      try calculator.prepare(false);
+      const value = try calculator.calculate(41, false);
+      return try calculator.calculate(value + 1, shouldFail);
+    }
+    async function main(): i32 {
+      const completed = attempt await operation(false);
+      return match (completed) {
+        success(value) => value - 42;
+        failure(error) => error.code;
+      };
+    }
+  `;
+  const asyncSynchronousTryFile = resolve(directory, "async-synchronous-try.zs");
+  writeFileSync(asyncSynchronousTryFile, asyncSynchronousTry);
+  const asyncSynchronousTryResult = spawnSync(
+    process.execPath,
+    [cli, "run", asyncSynchronousTryFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(asyncSynchronousTryResult.status, 0, asyncSynchronousTryResult.stderr);
 
   const nestedTryAwait = `
     import { thread } from "std/thread";

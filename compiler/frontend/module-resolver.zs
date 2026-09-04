@@ -8919,6 +8919,10 @@ function inferExpressionNodeType(
             namespaceName,
             "std/objc"
           )
+          // The hybrid source batch does not carry Clang protocol metadata
+          // yet. Defer this call to Stage 0 just like other unavailable
+          // foreign ABI semantics instead of inventing a native rejection.
+          && hasNativeObjCRegistrationMetadata(modules)
         ) return try inferObjCAdapter(
           module,
           modules,

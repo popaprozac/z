@@ -325,6 +325,16 @@ export function requireExpressionType(
     || actual == "__z_never"
     || equivalentTypes(modules, moduleIndex, expected, actual)
   ) return;
+  const nullableExpectedTarget = nullableTargetType(expected);
+  if (
+    nullableExpectedTarget.byteLength > 0
+    && equivalentTypes(
+      modules,
+      moduleIndex,
+      nullableExpectedTarget,
+      actual
+    )
+  ) return;
   if (nativeObjectiveCReferenceAssignable(
     modules,
     moduleIndex,
