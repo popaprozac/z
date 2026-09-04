@@ -5005,6 +5005,41 @@ per-field semantics already used by Stage 0. Zapp is the regression target:
 the concise aggregate copy must produce an independent argument snapshot while
 leaving the shared application context intact.
 
+## Persistent CRUD composed imported options, copy spread, and placed errors
+
+Adding edit, archive, and delete to Zapp's application-owned SQLite notes
+service combined several individually-supported features in one ordinary
+application path. The source uses an imported cleanup-bearing `Note`, returns
+`Option<Note>` from a class method, copies a note with an optional `String`
+field through `copy ...existing`, translates SQLite status failures into a
+typed `NoteMutationError`, and taskifies the main-isolated method for WebView
+delivery.
+
+That composition exposed four fixed-point implementation gaps rather than new
+language rules:
+
+- contextual return lowering consulted only top-level functions, so
+  `Option.none` in a class method could survive into generated C as the source
+  spelling; return-type lookup now covers methods through the same nominal
+  owner helper;
+- copy spread deep-copied `String` fields but not cleanup-bearing aggregate and
+  enum fields such as `Option<String>`; it now calls the existing specialized
+  copy helper for every supported cleanup-bearing value field;
+- executor-placement rewriting unwrapped `try` but not `attempt`, so
+  `attempt await on thread.main ...` could index the wrapper as if it were the
+  placement expression; both error operators now preserve the same placed
+  call shape;
+- a successful local `try` binding named `id` was declared with its escaped C
+  name but assigned with its raw source name; try emission now uses the
+  canonical binding-name emitter at both sites.
+
+Executable regressions cover an imported `Option<Note>.none`, copied optional
+owned storage, a synchronous throwing main-isolated call materialized through
+`attempt await`, and a C-reserved `id` success binding. The unchanged Zapp
+source then builds and runs its generated service bridge. This is useful
+evidence that Z's explicit ownership vocabulary remains stable while the
+compiler grows more compositional beneath it.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
