@@ -5143,6 +5143,23 @@ should be free to hide storage behind managers without forcing redundant type
 annotations or public implementation types to compensate for compiler
 internals.
 
+## Recursive typed JSON stays streaming and ownership-safe
+
+Zapp's application-menu bridge needs a recursive wire shape: a menu owns an
+array of items, and each item may own another array of items. The original
+derived `json.decode<T>` tier stopped at `Array<String>`, which made this a
+general language composition boundary rather than a framework concern.
+
+Stage 0 and the fixed-point compiler now generate one typed object decoder for
+every reachable value struct, declare those helpers before their definitions,
+and stream nested objects and `Array<Struct>` elements directly into their
+final Z storage. Self-recursive arrays therefore work without a dynamic JSON
+tree or framework-local flattening. Defaults remain fresh per decoded value;
+missing and duplicate fields retain their precise diagnostics; and every
+partially constructed nested value is destroyed on failure. An executable
+menu-shaped fixture covers nested success, recursive defaults, malformed child
+objects, and non-array input in both compiler generations.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

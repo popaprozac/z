@@ -6023,7 +6023,9 @@ function derivedJsonStruct(
     const location = intrinsic.requestLocation;
     throw new DiagnosticError(location.fileName ?? "<source>", location, message, {
       notes: [
-        "derived JSON codecs currently support ordinary value structs containing String, boolean, integer, and Array<String> fields",
+        intrinsic.kind === "jsonDecode"
+          ? "derived JSON decoding supports ordinary value structs containing String, boolean, integer, nested value structs, and arrays of those structs"
+          : "derived JSON encoding currently supports ordinary value structs containing String, boolean, integer, and Array<String> fields",
         "use json.parse/json.stringify for a dynamic JSON tree while the derived type surface expands",
       ],
     });
@@ -6031,26 +6033,68 @@ function derivedJsonStruct(
   if (!target || target.kind !== "struct") {
     return fail(`json.${intrinsic.kind === "jsonDecode" ? "decode" : "encode"} requires an ordinary value struct, received ${JSON.stringify(targetName)}`);
   }
-  if (target.constructor) fail(`cannot derive JSON for ${JSON.stringify(targetName)} because it defines a constructor`);
-  if (target.deinitializer) fail(`cannot derive JSON for ${JSON.stringify(targetName)} because it defines deinit`);
-  for (const field of target.fields) {
-    if (field.optional) {
-      fail(`cannot derive JSON for ${JSON.stringify(targetName)} because optional field ${JSON.stringify(field.name)} is not supported yet`);
+  const visited = new Set<string>();
+  const validate = (candidate: StructDeclaration): void => {
+    if (visited.has(candidate.name)) return;
+    visited.add(candidate.name);
+    if (candidate.constructor) fail(`cannot derive JSON for ${JSON.stringify(candidate.name)} because it defines a constructor`);
+    if (candidate.deinitializer) fail(`cannot derive JSON for ${JSON.stringify(candidate.name)} because it defines deinit`);
+    for (const field of candidate.fields) {
+      if (field.optional) {
+        fail(`cannot derive JSON for ${JSON.stringify(candidate.name)} because optional field ${JSON.stringify(field.name)} is not supported yet`);
+      }
+      if (field.visibility === "private") {
+        fail(`cannot derive JSON for ${JSON.stringify(candidate.name)} because field ${JSON.stringify(field.name)} is private`);
+      }
+      if (
+        field.type.name === "String"
+        || field.type.name === "boolean"
+        || parseDynamicArrayType(field.type.name)?.elementType === "String"
+        || field.type.name in derivedJsonUnsignedLimits
+        || field.type.name in derivedJsonSignedLimits
+      ) continue;
+      if (intrinsic.kind === "jsonDecode") {
+        const dynamic = parseDynamicArrayType(field.type.name);
+        const nestedName = dynamic?.elementType ?? field.type.name;
+        const nested = context.structs.get(nestedName);
+        if (nested?.kind === "struct") {
+          validate(nested);
+          continue;
+        }
+      }
+      fail(`cannot derive JSON for ${JSON.stringify(candidate.name)} because field ${JSON.stringify(field.name)} has unsupported type ${JSON.stringify(field.type.name)}`);
     }
-    if (field.visibility === "private") {
-      fail(`cannot derive JSON for ${JSON.stringify(targetName)} because field ${JSON.stringify(field.name)} is private`);
-    }
-    if (
-      field.type.name !== "String"
-      && field.type.name !== "boolean"
-      && parseDynamicArrayType(field.type.name)?.elementType !== "String"
-      && !(field.type.name in derivedJsonUnsignedLimits)
-      && !(field.type.name in derivedJsonSignedLimits)
-    ) {
-      fail(`cannot derive JSON for ${JSON.stringify(targetName)} because field ${JSON.stringify(field.name)} has unsupported type ${JSON.stringify(field.type.name)}`);
-    }
-  }
+  };
+  validate(target);
   return target;
+}
+
+function derivedJsonDecodeStructs(
+  target: StructDeclaration,
+  context: GenerationContext,
+): StructDeclaration[] {
+  const result: StructDeclaration[] = [];
+  const visited = new Set<string>();
+  const collect = (candidate: StructDeclaration): void => {
+    if (visited.has(candidate.name)) return;
+    visited.add(candidate.name);
+    result.push(candidate);
+    for (const field of candidate.fields) {
+      const dynamic = parseDynamicArrayType(field.type.name);
+      const nestedName = dynamic?.elementType ?? field.type.name;
+      const nested = context.structs.get(nestedName);
+      if (nested?.kind === "struct") collect(nested);
+    }
+  };
+  collect(target);
+  return result;
+}
+
+function derivedJsonDecodeHelperName(
+  declaration: FunctionDeclaration,
+  target: StructDeclaration,
+): string {
+  return `z_json_derived_decode_${nativeSymbolPart(declaration.name)}_${nativeSymbolPart(target.name)}`;
 }
 
 function derivedJsonStringLiteral(value: string): string {
@@ -6068,8 +6112,10 @@ function derivedJsonDefault(
 }
 
 function derivedJsonDecodeField(
+  declaration: FunctionDeclaration,
   owner: StructDeclaration,
   field: StructDeclaration["fields"][number],
+  context: GenerationContext,
 ): string[] {
   const destination = `value.${field.name}`;
   const failure = [
@@ -6077,50 +6123,73 @@ function derivedJsonDecodeField(
     "      key_live = false;",
     "      goto _z_json_failure;",
   ];
+  const resetDefault = field.defaultValue
+    && hasSemanticCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo)
+    ? [
+        `    ${generateValueCleanup(destination, field.type.name, null, context)}`,
+        `    ${destination} = (${mapType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)}){0};`,
+      ]
+    : [];
   if (field.type.name === "String") {
     return [
-      ...(field.defaultValue
-        ? [
-            `    if (${destination}.capacity > 0) free((void *)${destination}.data);`,
-            `    ${destination} = z_string_new();`,
-          ]
-        : []),
-      `    if (!z_json_derived_string(&reader, &${destination})) {`,
+      ...resetDefault,
+      `    if (!z_json_derived_string(reader, &${destination})) {`,
       ...failure,
       "    }",
     ];
   }
   const dynamicArray = parseDynamicArrayType(field.type.name);
-  if (dynamicArray?.elementType === "String") {
+  if (dynamicArray) {
+    const nested = context.structs.get(dynamicArray.elementType);
+    const parseItem = dynamicArray.elementType === "String"
+      ? [
+          "        Z_String _z_json_item = z_string_new();",
+          "        if (!z_json_derived_string(reader, &_z_json_item)) {",
+          ...failure.map((line) => `  ${line}`),
+          "        }",
+        ]
+      : [
+          `        ${structName(dynamicArray.elementType)} _z_json_item = {0};`,
+          `        if (!${derivedJsonDecodeHelperName(declaration, nested!)}(reader, &_z_json_item)) {`,
+          ...failure.map((line) => `  ${line}`),
+          "        }",
+        ];
     return [
-      `    if (!z_json_derived_expect(&reader, '[', "expected JSON array")) {`,
+      ...resetDefault,
+      `    if (!z_json_derived_expect(reader, '[', "expected JSON array")) {`,
       ...failure,
       "    }",
-      "    z_json_derived_whitespace(&reader);",
-      "    if (reader.offset < reader.length && reader.data[reader.offset] == ']') {",
-      "      (void)z_json_derived_advance(&reader);",
+      "    z_json_derived_whitespace(reader);",
+      "    if (reader->offset < reader->length && reader->data[reader->offset] == ']') {",
+      "      (void)z_json_derived_advance(reader);",
       "    } else {",
       "      while (true) {",
-      "        Z_String _z_json_item = z_string_new();",
-      "        if (!z_json_derived_string(&reader, &_z_json_item)) {",
-      ...failure.map((line) => `  ${line}`),
-      "        }",
+      ...parseItem,
       `        ${dynamicArrayPushName(field.type.name)}(&${destination}, _z_json_item);`,
-      "        z_json_derived_whitespace(&reader);",
-      "        if (reader.offset < reader.length && reader.data[reader.offset] == ']') {",
-      "          (void)z_json_derived_advance(&reader);",
+      "        z_json_derived_whitespace(reader);",
+      "        if (reader->offset < reader->length && reader->data[reader->offset] == ']') {",
+      "          (void)z_json_derived_advance(reader);",
       "          break;",
       "        }",
-      "        if (!z_json_derived_expect(&reader, ',', \"expected ',' or ']' in JSON array\")) {",
+      "        if (!z_json_derived_expect(reader, ',', \"expected ',' or ']' in JSON array\")) {",
       ...failure.map((line) => `  ${line}`),
       "        }",
       "      }",
       "    }",
     ];
   }
+  const nested = context.structs.get(field.type.name);
+  if (nested?.kind === "struct") {
+    return [
+      ...resetDefault,
+      `    if (!${derivedJsonDecodeHelperName(declaration, nested)}(reader, &${destination})) {`,
+      ...failure,
+      "    }",
+    ];
+  }
   if (field.type.name === "boolean") {
     return [
-      `    if (!z_json_derived_boolean(&reader, &${destination})) {`,
+      `    if (!z_json_derived_boolean(reader, &${destination})) {`,
       ...failure,
       "    }",
     ];
@@ -6130,14 +6199,14 @@ function derivedJsonDecodeField(
     const rangeCheck = unsignedLimit
       ? [
           `    if (_z_json_unsigned > ${unsignedLimit}) {`,
-          `      (void)z_json_derived_fail(&reader, ${cTestNameLiteral(`JSON integer for ${owner.name}.${field.name} is out of range`)});`,
+          `      (void)z_json_derived_fail(reader, ${cTestNameLiteral(`JSON integer for ${owner.name}.${field.name} is out of range`)});`,
           ...failure,
           "    }",
         ]
       : [];
     return [
       "    uint64_t _z_json_unsigned = 0;",
-      "    if (!z_json_derived_u64(&reader, &_z_json_unsigned)) {",
+      "    if (!z_json_derived_u64(reader, &_z_json_unsigned)) {",
       ...failure,
       "    }",
       ...rangeCheck,
@@ -6148,19 +6217,101 @@ function derivedJsonDecodeField(
   const rangeCheck = signedLimits
     ? [
         `    if (_z_json_signed < ${signedLimits[0]} || _z_json_signed > ${signedLimits[1]}) {`,
-        `      (void)z_json_derived_fail(&reader, ${cTestNameLiteral(`JSON integer for ${owner.name}.${field.name} is out of range`)});`,
+        `      (void)z_json_derived_fail(reader, ${cTestNameLiteral(`JSON integer for ${owner.name}.${field.name} is out of range`)});`,
         ...failure,
         "    }",
       ]
     : [];
   return [
     "    int64_t _z_json_signed = 0;",
-    "    if (!z_json_derived_i64(&reader, &_z_json_signed)) {",
+    "    if (!z_json_derived_i64(reader, &_z_json_signed)) {",
     ...failure,
     "    }",
     ...rangeCheck,
     `    ${destination} = (${mapType(field.type.name, new Map(), new Map())})_z_json_signed;`,
   ];
+}
+
+function generateDerivedJsonDecodeHelper(
+  declaration: FunctionDeclaration,
+  target: StructDeclaration,
+  context: GenerationContext,
+): string {
+  const targetC = structName(target.name);
+  const defaults = target.fields
+    .filter((field) => field.defaultValue)
+    .map((field) => `  value.${cBindingName(field.name)} = ${derivedJsonDefault(field, context)};`);
+  const seen = target.fields.map((field) => `  bool seen_${nativeSymbolPart(field.name)} = false;`);
+  const branches = target.fields.map((field, index) => {
+    const lead = index === 0 ? "if" : "else if";
+    const seenName = `seen_${nativeSymbolPart(field.name)}`;
+    return [
+      `  ${lead} (z_string_equal(key, ${derivedJsonStringLiteral(field.name)})) {`,
+      `    if (${seenName}) {`,
+      `      (void)z_json_derived_fail(reader, ${cTestNameLiteral(`duplicate JSON field ${field.name}`)});`,
+      "      if (key_live && key.capacity > 0) free((void *)key.data);",
+      "      key_live = false;",
+      "      goto _z_json_failure;",
+      "    }",
+      `    ${seenName} = true;`,
+      ...derivedJsonDecodeField(declaration, target, field, context),
+      "  }",
+    ].join("\n");
+  });
+  const required = target.fields
+    .filter((field) => !field.defaultValue && !field.optional)
+    .flatMap((field) => [
+      `  if (!seen_${nativeSymbolPart(field.name)}) {`,
+      `    (void)z_json_derived_fail(reader, ${cTestNameLiteral(`missing required JSON field ${field.name}`)});`,
+      "    goto _z_json_failure;",
+      "  }",
+    ]);
+  const cleanup = hasSemanticCleanupType(target.name, context.structs, context.enums, context.semanticInfo)
+    ? `  ${deinitName(target.name)}(&value);`
+    : "";
+  return `static bool ${derivedJsonDecodeHelperName(declaration, target)}(Z_JsonDerivedReader *reader, ${targetC} *decoded) {
+  ${targetC} value = {0};
+  Z_String key = z_string_new();
+  bool key_live = false;
+${seen.join("\n")}
+${defaults.join("\n")}
+  if (!z_json_derived_expect(reader, '{', "expected JSON object")) goto _z_json_failure;
+  z_json_derived_whitespace(reader);
+  if (reader->offset < reader->length && reader->data[reader->offset] == '}') {
+    (void)z_json_derived_advance(reader);
+  } else {
+    while (true) {
+      if (!z_json_derived_string(reader, &key)) goto _z_json_failure;
+      key_live = true;
+      if (!z_json_derived_expect(reader, ':', "expected ':' after JSON object key")) goto _z_json_failure;
+${branches.join("\n")}
+  else {
+    if (!z_json_derived_skip(reader, 1u)) {
+      if (key_live && key.capacity > 0) free((void *)key.data);
+      key_live = false;
+      goto _z_json_failure;
+    }
+  }
+      if (key_live && key.capacity > 0) free((void *)key.data);
+      key = z_string_new();
+      key_live = false;
+      z_json_derived_whitespace(reader);
+      if (reader->offset < reader->length && reader->data[reader->offset] == '}') {
+        (void)z_json_derived_advance(reader);
+        break;
+      }
+      if (!z_json_derived_expect(reader, ',', "expected ',' or '}' in JSON object")) goto _z_json_failure;
+    }
+  }
+${required.join("\n")}
+  *decoded = value;
+  return true;
+
+_z_json_failure:
+  if (key_live && key.capacity > 0) free((void *)key.data);
+${cleanup}
+  return false;
+}`;
 }
 
 function generateDerivedJsonDecode(
@@ -6179,38 +6330,21 @@ function generateDerivedJsonDecode(
   const resultC = enumName(result);
   const errorC = structName(declaration.errorType!.name);
   const targetC = structName(target.name);
-  const defaults = target.fields
-    .filter((field) => field.defaultValue)
-    .map((field) => `  value.${cBindingName(field.name)} = ${derivedJsonDefault(field, context)};`);
-  const seen = target.fields.map((field) => `  bool seen_${nativeSymbolPart(field.name)} = false;`);
-  const branches = target.fields.map((field, index) => {
-    const lead = index === 0 ? "if" : "else if";
-    const seenName = `seen_${nativeSymbolPart(field.name)}`;
-    return [
-      `  ${lead} (z_string_equal(key, ${derivedJsonStringLiteral(field.name)})) {`,
-      `    if (${seenName}) {`,
-      `      (void)z_json_derived_fail(&reader, ${cTestNameLiteral(`duplicate JSON field ${field.name}`)});`,
-      "      if (key_live && key.capacity > 0) free((void *)key.data);",
-      "      key_live = false;",
-      "      goto _z_json_failure;",
-      "    }",
-      `    ${seenName} = true;`,
-      ...derivedJsonDecodeField(target, field),
-      "  }",
-    ].join("\n");
-  });
-  const required = target.fields
-    .filter((field) => !field.defaultValue && !field.optional)
-    .flatMap((field) => [
-      `  if (!seen_${nativeSymbolPart(field.name)}) {`,
-      `    (void)z_json_derived_fail(&reader, ${cTestNameLiteral(`missing required JSON field ${field.name}`)});`,
-      "    goto _z_json_failure;",
-      "  }",
-    ]);
+  const reachable = derivedJsonDecodeStructs(target, context);
+  const prototypes = reachable.map((candidate) => (
+    `static bool ${derivedJsonDecodeHelperName(declaration, candidate)}(Z_JsonDerivedReader *reader, ${structName(candidate.name)} *decoded);`
+  )).join("\n");
+  const helpers = reachable.map((candidate) => (
+    generateDerivedJsonDecodeHelper(declaration, candidate, context)
+  )).join("\n\n");
   const cleanup = hasSemanticCleanupType(target.name, context.structs, context.enums, context.semanticInfo)
     ? `  ${deinitName(target.name)}(&value);`
     : "";
-  return `${signature} {
+  return `${prototypes}
+
+${helpers}
+
+${signature} {
   (void)source;
   Z_JsonDerivedReader reader = {
     .data = source->data != NULL ? source->data : "",
@@ -6221,45 +6355,13 @@ function generateDerivedJsonDecode(
     .message = NULL
   };
   ${targetC} value = {0};
-  Z_String key = z_string_new();
-  bool key_live = false;
-${seen.join("\n")}
-${defaults.join("\n")}
-  if (!z_json_derived_expect(&reader, '{', "expected JSON object")) goto _z_json_failure;
-  z_json_derived_whitespace(&reader);
-  if (reader.offset < reader.length && reader.data[reader.offset] == '}') {
-    (void)z_json_derived_advance(&reader);
-  } else {
-    while (true) {
-      if (!z_json_derived_string(&reader, &key)) goto _z_json_failure;
-      key_live = true;
-      if (!z_json_derived_expect(&reader, ':', "expected ':' after JSON object key")) goto _z_json_failure;
-${branches.join("\n")}
-  else {
-    if (!z_json_derived_skip(&reader, 1u)) {
-      if (key_live && key.capacity > 0) free((void *)key.data);
-      key_live = false;
-      goto _z_json_failure;
-    }
-  }
-      if (key_live && key.capacity > 0) free((void *)key.data);
-      key = z_string_new();
-      key_live = false;
-      z_json_derived_whitespace(&reader);
-      if (reader.offset < reader.length && reader.data[reader.offset] == '}') {
-        (void)z_json_derived_advance(&reader);
-        break;
-      }
-      if (!z_json_derived_expect(&reader, ',', "expected ',' or '}' in JSON object")) goto _z_json_failure;
-    }
-  }
-  if (!z_json_derived_finish(&reader)) goto _z_json_failure;
-${required.join("\n")}
+  if (!${derivedJsonDecodeHelperName(declaration, target)}(&reader, &value)) goto _z_json_failure;
+  if (!z_json_derived_finish(&reader)) goto _z_json_value_failure;
   return (${resultC}){ .tag = ${variantTag(result, "success")}, .data = { .success = value } };
 
-_z_json_failure:
-  if (key_live && key.capacity > 0) free((void *)key.data);
+_z_json_value_failure:
 ${cleanup}
+_z_json_failure: ;
   const char *_z_json_message = reader.message != NULL ? reader.message : "invalid JSON";
   return (${resultC}){
     .tag = ${variantTag(result, "failure")},

@@ -2972,18 +2972,20 @@ function readUser(in source: String): User throws json.JsonError {
 }
 ```
 
-The first derived tier supports public, non-optional `String`, `boolean`, signed
-or unsigned integer, and `Array<String>` fields. It parses integers directly into their requested Z
-width, so even `u64.max` does not require a dynamic intermediate value.
+The derived encoder supports public, non-optional `String`, `boolean`, signed
+or unsigned integer, and `Array<String>` fields. The decoder additionally
+supports nested value structs and `Array<Struct>` fields, including recursive
+trees whose recursion passes through an array. Both parse integers directly
+into their requested Z width, so even `u64.max` does not require a dynamic intermediate value.
 Missing fields with defaults evaluate those defaults; other missing fields
 throw `JsonError`. Unknown fields are skipped recursively, duplicate known
 fields are rejected, names match exactly, and encoding follows declaration
 order. Classes, custom constructors or `deinit`, optional or floating-point
-fields, nested typed aggregates, other collections, `Option`, and field-name policies remain later
-derived-codec tiers. `json.parse` / `json.stringify` remain the implemented
-dynamic route for those shapes. Stage 0 and the fixed-point native compiler
-materialize the same direct streaming codecs without an intermediate dynamic
-JSON tree.
+fields, other collections, `Option`, and field-name policies remain later
+derived-codec tiers. Encoding nested typed aggregates also remains staged.
+`json.parse` / `json.stringify` remain the implemented dynamic route for those
+shapes. Stage 0 and the fixed-point native compiler materialize the same direct
+streaming codecs without an intermediate dynamic JSON tree.
 
 ## Files, processes, and program arguments
 

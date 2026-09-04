@@ -145,13 +145,14 @@ defaults; other missing fields fail. Unknown fields are skipped recursively,
 duplicate known fields are rejected, and encoding follows declaration order.
 
 :::caution[Current typed-codec boundary]
-The first derived tier supports public, non-optional `String`, `boolean`, signed
-or unsigned integer, and `Array<String>` fields in ordinary value structs.
-Stage 0 and the fixed-point compiler emit direct streaming codecs without an
-intermediate dynamic tree. Optional values, floating point, nested typed
-aggregates, other collections, classes, custom
-constructors, and custom field-name policies remain later tiers. Dynamic
-`json.parse` and `json.stringify` cover broader JSON shapes today.
+The derived encoder supports public, non-optional `String`, `boolean`, signed
+or unsigned integer, and `Array<String>` fields in ordinary value structs. The
+decoder also accepts nested value structs and `Array<Struct>` fields, including
+recursive trees through arrays. Stage 0 and the fixed-point compiler emit
+direct streaming codecs without an intermediate dynamic tree. Optional values,
+floating point, other collections, classes, custom constructors, custom
+field-name policies, and encoding nested typed aggregates remain later tiers.
+Dynamic `json.parse` and `json.stringify` cover broader JSON shapes today.
 :::
 
 :::note[Cost model]

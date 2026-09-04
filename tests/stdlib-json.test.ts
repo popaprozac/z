@@ -38,6 +38,14 @@ test("derives exact typed JSON codecs for ordinary value structs", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("derives streaming JSON decoders for nested and recursive value structs", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/std-json-recursive.zs");
+  const result = spawnSync(process.execPath, [cli, "run", fixture], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("rejects unsupported derived JSON field types at the codec request", () => {
   const fileName = resolve(projectRoot, "tests/fixtures/std-json-unsupported.zs");
   assert.throws(
