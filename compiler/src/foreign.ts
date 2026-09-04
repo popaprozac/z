@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
@@ -272,12 +272,61 @@ export function resolveForeignFunctionDeclarationStream(
   return encodeForeignFunctionDeclarationStream(resolved.header.declarations);
 }
 
+export interface ForeignDeclarationFingerprint {
+  readonly value: string;
+  readonly dependencies: readonly string[];
+}
+
+function parseClangDependencies(
+  source: string,
+  includeDirectories: readonly string[],
+): readonly string[] {
+  const separator = source.indexOf(":");
+  if (separator < 0) return [];
+  const body = source
+    .slice(separator + 1)
+    .replace(/\\\r?\n/g, " ");
+  const tokens: string[] = [];
+  let current = "";
+  let escaped = false;
+  for (const character of body) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (current.length > 0) tokens.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  if (current.length > 0) tokens.push(current);
+  return [...new Set(tokens.flatMap((path) => {
+    if (path === "/dev/null") return [];
+    const candidates = path.startsWith("/")
+      ? [path]
+      : [
+          ...includeDirectories.map((directory) => resolve(directory, path)),
+          resolve(path),
+        ];
+    const found = candidates.find((candidate) => existsSync(candidate));
+    return found ? [resolve(found)] : [];
+  }))];
+}
+
 export function fingerprintForeignFunctionDeclarations(
   declaration: ImportDeclaration,
   fileName: string,
   projectIncludeDirectories: readonly string[] = [],
   deploymentTarget: DeploymentTarget | null = null,
-): string {
+  dependencyOutputPath?: string,
+): ForeignDeclarationFingerprint {
   const sourceDirectory = resolve(dirname(fileName));
   const includeDirectories = [
     ...new Set([
@@ -315,9 +364,18 @@ export function fingerprintForeignFunctionDeclarations(
     "/dev/null",
   ];
   const command = objectiveC ? "xcrun" : "clang";
-  const commandArguments = objectiveC
+  const fingerprintArguments = objectiveC
     ? ["clang", ...clangArguments]
     : clangArguments;
+  const commandArguments = dependencyOutputPath
+    ? [
+        ...fingerprintArguments.slice(0, -1),
+        "-MD",
+        "-MF",
+        dependencyOutputPath,
+        fingerprintArguments[fingerprintArguments.length - 1]!,
+      ]
+    : fingerprintArguments;
   const result = runWithBufferedStdoutOrSpill(
     command,
     commandArguments,
@@ -341,13 +399,21 @@ export function fingerprintForeignFunctionDeclarations(
       `could not fingerprint header ${JSON.stringify(declaration.header)}: ${detail}`,
     );
   }
-  return createHash("sha256")
+  const value = createHash("sha256")
     .update(command)
     .update("\0")
-    .update(commandArguments.join("\0"))
+    .update(fingerprintArguments.join("\0"))
     .update("\0")
     .update(result.stdout)
     .digest("hex");
+  const dependencies = dependencyOutputPath && existsSync(dependencyOutputPath)
+    ? parseClangDependencies(
+        readFileSync(dependencyOutputPath, "utf8"),
+        includeDirectories,
+      )
+    : [];
+  if (dependencyOutputPath) rmSync(dependencyOutputPath, { force: true });
+  return { value, dependencies };
 }
 
 function resolveImportedHeaders(

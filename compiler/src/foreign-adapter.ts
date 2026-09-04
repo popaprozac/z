@@ -21,11 +21,11 @@ import { foreignDeclarationProtocolVersion } from "./foreign-declaration-protoco
 // remains structurally decodable by the native frontend.
 const foreignDeclarationProducerRevision = 4;
 
-function adjacentContractSource(
+function adjacentContract(
   sourcePath: string,
   header: string,
   includeDirectories: readonly string[],
-): string {
+): { readonly path: string | null; readonly source: string } {
   const directories = [
     dirname(sourcePath),
     ...includeDirectories,
@@ -41,7 +41,10 @@ function adjacentContractSource(
       candidates.indexOf(candidate) === index && existsSync(candidate)
     ),
   );
-  return contractPath ? readFileSync(contractPath, "utf8") : "";
+  return {
+    path: contractPath ?? null,
+    source: contractPath ? readFileSync(contractPath, "utf8") : "",
+  };
 }
 
 function writeAtomic(path: string, contents: string): void {
@@ -71,8 +74,9 @@ export function writeForeignDeclarationArtifact(
     sourcePath,
     project.includeDirectories,
     project.deploymentTarget,
+    `${resolve(outputArgument)}.deps.make`,
   );
-  const contractSource = adjacentContractSource(
+  const contract = adjacentContract(
     sourcePath,
     header,
     project.includeDirectories,
@@ -83,12 +87,22 @@ export function writeForeignDeclarationArtifact(
       + `-r${foreignDeclarationProducerRevision}`,
     )
     .update("\0")
-    .update(producerFingerprint)
+    .update(producerFingerprint.value)
     .update("\0")
-    .update(contractSource)
+    .update(contract.source)
     .digest("hex");
   const outputPath = resolve(outputArgument);
   const metadataPath = `${outputPath}.meta`;
+  const dependencyPath = `${outputPath}.deps`;
+  const dependencies = [
+    ...producerFingerprint.dependencies,
+    ...(contract.path ? [resolve(contract.path)] : []),
+  ];
+  const dependencySource = dependencies.length > 0
+    ? `${dependencies.join("\0")}\0`
+    : "";
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeAtomic(dependencyPath, dependencySource);
   const expectedProtocolPrefix =
     `ZFDCL${foreignDeclarationProtocolVersion.toString(16).padStart(16, "0")}\n`;
   if (
@@ -104,7 +118,6 @@ export function writeForeignDeclarationArtifact(
     project.includeDirectories,
     project.deploymentTarget,
   );
-  mkdirSync(dirname(outputPath), { recursive: true });
   writeAtomic(outputPath, stream);
   writeAtomic(metadataPath, `${cacheKey}\n`);
 }

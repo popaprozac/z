@@ -11382,6 +11382,47 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.ok(statSync(cachedForeignApplication).mtimeMs > 0);
 
+  const firstForeignBuild = spawnSync(
+    driver,
+    ["build", foreignProject],
+    { encoding: "utf8", env: foreignAdapterEnvironment },
+  );
+  assert.equal(firstForeignBuild.status, 0, firstForeignBuild.stderr);
+  assert.match(firstForeignBuild.stdout, /build\/foreign-project/);
+  const builtForeignApplication = resolve(
+    foreignProject,
+    "build/foreign-project",
+  );
+  utimesSync(builtForeignApplication, 0, 0);
+  const cachedForeignBuild = spawnSync(
+    driver,
+    ["build", foreignProject],
+    { encoding: "utf8", env: foreignAdapterEnvironment },
+  );
+  assert.equal(cachedForeignBuild.status, 0, cachedForeignBuild.stderr);
+  assert.match(
+    cachedForeignBuild.stdout,
+    /cache hit: reused build\/foreign-project/,
+  );
+  assert.equal(statSync(builtForeignApplication).mtimeMs, 0);
+
+  writeFileSync(
+    foreignProjectDependency,
+    `${readFileSync(foreignProjectDependency, "utf8")}\n`,
+  );
+  const headerInvalidatedForeignBuild = spawnSync(
+    driver,
+    ["build", foreignProject],
+    { encoding: "utf8", env: foreignAdapterEnvironment },
+  );
+  assert.equal(
+    headerInvalidatedForeignBuild.status,
+    0,
+    headerInvalidatedForeignBuild.stderr,
+  );
+  assert.doesNotMatch(headerInvalidatedForeignBuild.stdout, /cache hit:/);
+  assert.ok(statSync(builtForeignApplication).mtimeMs > 0);
+
   const headerOnlyProject = resolve(directory, "header-only-project");
   mkdirSync(headerOnlyProject);
   const headerOnlyDependency = resolve(
@@ -13076,6 +13117,39 @@ function main(): i32 {
     manifestProject,
     "build/manifest-application",
   );
+  utimesSync(builtManifestApplication, 0, 0);
+  const cachedManifestProjectBuild = spawnSync(
+    driver,
+    ["build", resolve(manifestProject, "z.json")],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    cachedManifestProjectBuild.status,
+    0,
+    cachedManifestProjectBuild.stderr,
+  );
+  assert.match(
+    cachedManifestProjectBuild.stdout,
+    /cache hit: reused build\/manifest-application/,
+  );
+  assert.equal(statSync(builtManifestApplication).mtimeMs, 0);
+  const manifestValueSource = resolve(manifestProject, "value.zs");
+  writeFileSync(
+    manifestValueSource,
+    `${readFileSync(manifestValueSource, "utf8")}\n`,
+  );
+  const invalidatedManifestProjectBuild = spawnSync(
+    driver,
+    ["build", resolve(manifestProject, "z.json")],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    invalidatedManifestProjectBuild.status,
+    0,
+    invalidatedManifestProjectBuild.stderr,
+  );
+  assert.doesNotMatch(invalidatedManifestProjectBuild.stdout, /cache hit:/);
+  assert.ok(statSync(builtManifestApplication).mtimeMs > 0);
   const builtManifestExecution = spawnSync(
     builtManifestApplication,
     [],

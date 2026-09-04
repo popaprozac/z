@@ -74,13 +74,22 @@ exactly resolved archive, import library, or dynamic library contributes its
 canonical path and SHA-256 digest to the executable identity. The digest is
 implemented in ordinary Z over `fs.readBytes`, and a regression proves that
 unchanged archive bytes hit while rebuilding the archive invalidates. If a
-library cannot be found in those directories or more than one supported
-spelling exists in the selected directory, reuse fails closed and the driver
-reports a cache bypass. System-search-path libraries therefore conservatively
-relink until target-aware toolchain resolution is modeled. The native frontend
-still loads, checks, and emits the graph on a cache hit; incremental parse and
-semantic reuse are a later layer. The current debug profile uses Clang `-O0`;
-`--release` uses `-O2 -DNDEBUG`.
+library has multiple supported spellings in the selected directory, reuse
+fails closed and the driver reports a cache bypass. A library left to the
+system/toolchain search path contributes its logical linker name alongside the
+Clang target identity; a failed link never publishes reusable metadata.
+
+Project `build` has an earlier cache boundary than `run`. After resolving only
+the entry, manifest, generated overlay, profile, and target identity, it checks
+an atomic input record before loading or checking the module graph. That record
+hashes the compiler executable, every reachable Z source and manifest, the
+generated overlay, explicitly resolved native libraries, and the complete
+transitive header and adjacent `.zd` dependency set reported by the foreign
+adapter. A valid record with all expected output artifacts returns immediately;
+changing any recorded input performs the complete build and replaces the record
+only after successful publication. This is whole-project reuse rather than
+incremental compilation: a changed source still reloads and rebuilds the graph.
+The current debug profile uses Clang `-O0`; `--release` uses `-O2 -DNDEBUG`.
 
 For the first function-only scalar/status tier, the driver discovers the same
 optional adjacent or include-directory `.zd` shapes as Stage 0, prefers the

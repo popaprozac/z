@@ -92,6 +92,7 @@ function inspectObjC(
   foreignModules.push(NativeForeignModuleContract({
     modulePath: sourcePath.copyBytes(0, sourcePath.byteLength),
     cacheKey: "objc-fixture",
+    dependencyPath: "",
     contracts: normalized,
   }));
   const graphOutcome = attempt resolveParsedModulesWithForeignContracts(
@@ -322,6 +323,7 @@ function inspect(
   foreignModules.push(NativeForeignModuleContract({
     modulePath: sourcePath.copyBytes(0, sourcePath.byteLength),
     cacheKey: "fixture",
+    dependencyPath: "",
     contracts: normalized,
   }));
   const graphOutcome = attempt resolveParsedModulesWithForeignContracts(

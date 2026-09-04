@@ -525,3 +525,31 @@ were source offsets from an unrelated five-byte source correction. This cache
 does not skip adapter freshness validation and does not yet deduplicate the
 large on-disk artifacts. Persistent canonical ZFDCL storage and cheaper
 cross-process dependency validation remain follow-up work.
+
+## Z Notes native build latency checkpoint
+
+A 2026-09-04 profile used the generated native core of the real Z Notes
+application rather than a reduced compiler fixture. The original cold release
+build took 179.00 seconds, peaked near 7.69 GB, and retired approximately 2.03
+trillion instructions. Indexing imported-type identity, visible-type, alias,
+and final hidden-identity lookups in native lowering reduced the same cold build
+to 57.90 seconds and approximately 525 billion instructions: 3.09 times faster
+and about 74 percent fewer instructions. Peak memory remained near 7.5 GB, so
+the cold path is improved but not yet acceptable.
+
+Project `build` now has an early whole-project cache boundary before module
+loading, foreign validation, semantic analysis, lowering, and Clang. Its input
+record covers the compiler executable, reachable Z modules, manifests,
+generated overlays, explicit native-library bytes, target/toolchain identity,
+and the transitive native-header and adjacent `.zd` set emitted by Clang. On the
+same machine, an unchanged Z Notes build fell from 57.90 seconds and roughly
+7.5 GB peak footprint to 0.29 seconds and roughly 14.6 MB peak footprint. Tests
+prove that editing either a reachable Z module or a transitively included C
+header invalidates reuse and rebuilds the artifact.
+
+This is not incremental compilation. A one-byte source edit still pays the
+roughly 58-second cold path and its large type-evidence footprint. The next
+compiler-latency target is demand-driven/shared imported-type evidence followed
+by persistent per-module frontend and lowering artifacts. The existing `run`
+cache also remains a later emitted-C comparison and can reuse the early input
+record in a future slice.

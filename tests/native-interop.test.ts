@@ -114,8 +114,13 @@ test("regenerates cached foreign declarations after a protocol upgrade", () => {
   const directory = mkdtempSync("/tmp/z-foreign-adapter-protocol-");
   const sourcePath = resolve(directory, "main.zs");
   const headerPath = resolve(directory, "native.h");
+  const dependencyPath = resolve(directory, "native-dependency.h");
   const artifactPath = resolve(directory, "native.zfdcl");
-  writeFileSync(headerPath, "int z_native_value(void);\n");
+  writeFileSync(dependencyPath, "#define Z_NATIVE_VALUE 42\n");
+  writeFileSync(
+    headerPath,
+    '#include "native-dependency.h"\nint z_native_value(void);\n',
+  );
   writeFileSync(
     sourcePath,
     'import native from "./native.h";\nfunction main(): i32 { return native.z_native_value(); }\n',
@@ -124,6 +129,11 @@ test("regenerates cached foreign declarations after a protocol upgrade", () => {
   writeForeignDeclarationArtifact(sourcePath, "./native.h", artifactPath);
   const current = readFileSync(artifactPath, "utf8");
   assert.match(current, /^ZFDCL000000000000000d\n/);
+  const dependencies = readFileSync(`${artifactPath}.deps`, "utf8")
+    .split("\0")
+    .filter(Boolean);
+  assert.ok(dependencies.includes(headerPath));
+  assert.ok(dependencies.includes(dependencyPath));
 
   writeFileSync(
     artifactPath,

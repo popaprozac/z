@@ -325,6 +325,7 @@ export function loadForeignModuleContract(
       return NativeForeignModuleContract({
         modulePath: modulePath.copyBytes(0, modulePath.byteLength),
         cacheKey: producerCacheKey,
+        dependencyPath: `${artifactPath}.deps`,
         contracts: sharedContracts[sharedIndex],
       });
     }
@@ -363,6 +364,7 @@ export function loadForeignModuleContract(
   return NativeForeignModuleContract({
     modulePath: modulePath.copyBytes(0, modulePath.byteLength),
     cacheKey: producerCacheKey,
+    dependencyPath: `${artifactPath}.deps`,
     contracts: normalized,
   });
 }

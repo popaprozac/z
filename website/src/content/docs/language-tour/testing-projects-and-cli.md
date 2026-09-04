@@ -160,6 +160,14 @@ then invokes the platform native toolchain. Release performance should be
 judged from `--release` output, not the deliberately debuggable default build.
 :::
 
+Project `z build` also records a content-addressed whole-project input set. An
+unchanged build can reuse its published executable or library before loading
+the module graph. The record covers the compiler, reachable Z source,
+manifests, generated overlays, explicit native-library bytes, and transitive
+foreign headers and `.zd` contracts. Changing a recorded dependency performs a
+complete build; persistent per-module incremental compilation remains future
+work.
+
 For compiler-development test tiers, timeouts, sanitizers, and CI organization,
 see the maintained [testing reference](https://github.com/popaprozac/z/blob/main/docs/testing.md).
 

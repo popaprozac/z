@@ -43,6 +43,7 @@ import {
 export struct NativeForeignModuleContract {
   modulePath: String;
   cacheKey: String;
+  dependencyPath: String;
   contracts: NativeForeignContractSet;
 }
 

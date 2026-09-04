@@ -5152,6 +5152,30 @@ composition evidence: application architecture should be free to hide storage
 behind managers without forcing redundant type annotations or public
 implementation types to compensate for compiler internals.
 
+## Real application builds exposed quadratic imported-type lowering
+
+The generated Z Notes native core made a compiler cost visible that small
+language fixtures did not: lowering repeatedly scanned broad imported-type,
+visible-type, alias, and hidden-identity collections. The application combines
+AppKit, WebKit, generated service dispatch, JSON, async work, and Zapp's manager
+graph, so those linear scans multiplied into a 179-second release build and
+roughly 2.03 trillion retired instructions.
+
+Native lowering now builds indexed type-identity sets and maps once at the
+relevant graph boundaries. The same cold build takes about 57.90 seconds and
+525 billion instructions. An early project-build cache implemented through Z's
+own filesystem, hashing, process, and move-only lock primitives then reduces an
+unchanged build to about 0.29 seconds. The cache tracks reachable Z inputs and
+Clang-produced transitive header/`.zd` dependency sidecars, so convenience does
+not weaken native dependency correctness.
+
+The pressure test also records the remaining limitation honestly: changing one
+source module still performs the full roughly 58-second build and retains a
+roughly 7.5 GB peak footprint. Z Notes therefore points directly at the next
+compiler architecture work—demand-driven shared imported-type evidence and
+per-module persistent frontend/lowering artifacts—rather than another surface
+language feature.
+
 ## Recursive typed JSON stays streaming and ownership-safe
 
 Zapp's application-menu bridge needs a recursive wire shape: a menu owns an

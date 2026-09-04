@@ -27792,6 +27792,23 @@ function appendHiddenConcreteTypeIdentities(
   in graph: ModuleGraph,
   inout types: Array<LoweredImportedType>
 ): void {
+  let localIndices = Map<String, usize>();
+  let targetIndices = Map<String, usize>();
+  let typeIndex: usize = 0;
+  while (typeIndex < types.length) {
+    const type = view types[typeIndex];
+    localIndices.set(
+      type.localName.copyBytes(0, type.localName.byteLength),
+      typeIndex
+    );
+    // The former scan kept the last ordinary target match while allowing a
+    // private emitted spelling to win explicitly below.
+    targetIndices.set(
+      type.targetName.copyBytes(0, type.targetName.byteLength),
+      typeIndex
+    );
+    typeIndex = typeIndex + 1;
+  }
   let moduleIndex: usize = 0;
   while (moduleIndex < graph.modules.length) {
     for (const symbol of graph.modules[moduleIndex].symbols) {
@@ -27801,27 +27818,57 @@ function appendHiddenConcreteTypeIdentities(
         && symbol.kind != ModuleSymbolKind.enumSymbol
       ) continue;
       const identityName = `__z_module_${moduleIndex}_${symbol.name}`;
-      let present = false;
-      for (const type of types) {
-        if (type.localName == identityName) present = true;
-      }
-      if (present) continue;
+      if (localIndices.has(identityName)) continue;
       const privateName = emittedPrivateTypeName(moduleIndex, symbol.name);
       let source = Option<LoweredImportedType>.none;
-      for (const type of types) {
-        if (
-          type.targetName != privateName
-          && type.targetName != symbol.name
-        ) continue;
-        source = Option.some(copyImportedTypeAlias(type, identityName));
-        if (type.targetName == privateName) break;
+      let sourceIndex = indexedImportedType(
+        targetIndices,
+        privateName,
+        types.length
+      );
+      if (sourceIndex >= types.length) {
+        sourceIndex = indexedImportedType(
+          targetIndices,
+          symbol.name,
+          types.length
+        );
+      }
+      if (sourceIndex < types.length) {
+        source = Option.some(copyImportedTypeAlias(
+          types[sourceIndex],
+          identityName
+        ));
       }
       match (source) {
-        some(type) => types.push(move type);
+        some(type) => {
+          const addedIndex = types.length;
+          const targetName = type.targetName.copyBytes(
+            0,
+            type.targetName.byteLength
+          );
+          types.push(move type);
+          localIndices.set(
+            identityName.copyBytes(0, identityName.byteLength),
+            addedIndex
+          );
+          targetIndices.set(move targetName, addedIndex);
+        }
         none => {}
       }
     }
     moduleIndex = moduleIndex + 1;
+  }
+}
+
+function indexedImportedType(
+  in indices: Map<String, usize>,
+  in name: String,
+  missing: usize
+): usize {
+  const found = indices.get(name);
+  match (in found) {
+    some(index) => return index;
+    none => return missing;
   }
 }
 
@@ -28227,6 +28274,17 @@ function importedTypesForModule(
   // function signature without a second explicit type import in the consuming
   // module. Keep their canonical lowered identity available for inferred locals
   // and intrinsic containers.
+  let availableTypeNames = Set<String>();
+  for (const type of types) {
+    availableTypeNames.add(type.localName.copyBytes(
+      0,
+      type.localName.byteLength
+    ));
+    availableTypeNames.add(type.targetName.copyBytes(
+      0,
+      type.targetName.byteLength
+    ));
+  }
   for (const candidateModule of graph.modules) {
     for (const symbol of candidateModule.symbols) {
       if (
@@ -28238,14 +28296,7 @@ function importedTypesForModule(
             == graph.modules[moduleIndex].packageIdentity
         )
       ) continue;
-      let present = false;
-      for (const type of types) {
-        if (
-          type.localName == symbol.name
-          || type.targetName == symbol.name
-        ) present = true;
-      }
-      if (present) continue;
+      if (availableTypeNames.has(symbol.name)) continue;
       if (
         symbol.kind == ModuleSymbolKind.structSymbol
         || symbol.kind == ModuleSymbolKind.classSymbol
@@ -28279,6 +28330,10 @@ function importedTypesForModule(
               payloadBearing: false,
               underlyingType: "",
             }));
+            availableTypeNames.add(symbol.name.copyBytes(
+              0,
+              symbol.name.byteLength
+            ));
           }
           none => {}
         }
@@ -28304,6 +28359,10 @@ function importedTypesForModule(
               payloadBearing: declaration.payloadBearing,
               underlyingType: "",
             }));
+            availableTypeNames.add(symbol.name.copyBytes(
+              0,
+              symbol.name.byteLength
+            ));
           }
           none => {}
         }
@@ -28333,14 +28392,7 @@ function importedTypesForModule(
         && reachableKind != LoweredTypeKind.classType
         && reachableKind != LoweredTypeKind.enumType
       ) continue;
-      let present = false;
-      for (const type of types) {
-        if (
-          type.localName == reachableName
-          || type.targetName == reachableName
-        ) present = true;
-      }
-      if (present) continue;
+      if (availableTypeNames.has(reachableName)) continue;
       if (
         reachableKind == LoweredTypeKind.structType
         || reachableKind == LoweredTypeKind.classType
@@ -28374,6 +28426,10 @@ function importedTypesForModule(
               payloadBearing: false,
               underlyingType: "",
             }));
+            availableTypeNames.add(reachableName.copyBytes(
+              0,
+              reachableName.byteLength
+            ));
           }
           none => {}
         }
@@ -28387,7 +28443,7 @@ function importedTypesForModule(
           }
           types.push(LoweredImportedType({
             localName: reachableName.copyBytes(0, reachableName.byteLength),
-            targetName: reachableName,
+            targetName: reachableName.copyBytes(0, reachableName.byteLength),
             nativeTypeName: "",
             kind: LoweredTypeKind.enumType,
             executorBound: false,
@@ -28400,6 +28456,10 @@ function importedTypesForModule(
             payloadBearing: declaration.payloadBearing,
             underlyingType: "",
           }));
+          availableTypeNames.add(reachableName.copyBytes(
+            0,
+            reachableName.byteLength
+          ));
         }
         none => {}
       }
@@ -28414,6 +28474,16 @@ function importedTypesForModule(
   // being named directly by the consumer. Resolve them to a fixed point so
   // callable aliases and aliases of aliases remain available to inferred
   // native lowering without redundant source imports.
+  let resolvedAliasNames = Set<String>();
+  for (const type of types) {
+    if (
+      type.kind != LoweredTypeKind.functionType
+      || type.underlyingType.byteLength > 0
+    ) resolvedAliasNames.add(type.localName.copyBytes(
+      0,
+      type.localName.byteLength
+    ));
+  }
   let addedPublicAlias = true;
   while (addedPublicAlias) {
     addedPublicAlias = false;
@@ -28432,17 +28502,7 @@ function importedTypesForModule(
           )
         ) continue;
         if (symbol.kind != ModuleSymbolKind.typeAliasSymbol) continue;
-        let present = false;
-        for (const type of types) {
-          if (
-            type.localName == symbol.name
-            && (
-              type.kind != LoweredTypeKind.functionType
-              || type.underlyingType.byteLength > 0
-            )
-          ) present = true;
-        }
-        if (present) continue;
+        if (resolvedAliasNames.has(symbol.name)) continue;
         const aliasTarget = rebaseTypeName(
           graph.modules,
           aliasModuleIndex,
@@ -28499,6 +28559,10 @@ function importedTypesForModule(
                 ? aliasTarget.copyBytes(0, aliasTarget.byteLength)
                 : "",
             }));
+            resolvedAliasNames.add(symbol.name.copyBytes(
+              0,
+              symbol.name.byteLength
+            ));
             addedPublicAlias = true;
           }
           failure(_) => {}
@@ -28634,6 +28698,31 @@ function importedTypesForModule(
   // concrete type is reachable through another module but is not directly
   // nameable in this source file. Alias that identity to the already lowered
   // ABI type; semantic analysis remains responsible for source visibility.
+  //
+  // Keep first-match indices for the two lookups below. The earlier linear
+  // scans made this fixed-point evidence pass quadratic in the number of
+  // imported types for every module. Large applications such as Zapp expose
+  // thousands of identities here, so rebuilding those scans dominated native
+  // lowering without adding any semantic information.
+  let importedLocalIndices = Map<String, usize>();
+  let importedTargetIndices = Map<String, usize>();
+  let importedTypeIndex: usize = 0;
+  while (importedTypeIndex < types.length) {
+    const imported = view types[importedTypeIndex];
+    if (!importedLocalIndices.has(imported.localName)) {
+      importedLocalIndices.set(
+        imported.localName.copyBytes(0, imported.localName.byteLength),
+        importedTypeIndex
+      );
+    }
+    if (!importedTargetIndices.has(imported.targetName)) {
+      importedTargetIndices.set(
+        imported.targetName.copyBytes(0, imported.targetName.byteLength),
+        importedTypeIndex
+      );
+    }
+    importedTypeIndex = importedTypeIndex + 1;
+  }
   let identityModuleIndex: usize = 0;
   while (identityModuleIndex < graph.modules.length) {
     for (const symbol of graph.modules[identityModuleIndex].symbols) {
@@ -28644,11 +28733,7 @@ function importedTypesForModule(
         && symbol.kind != ModuleSymbolKind.typeAliasSymbol
       ) continue;
       const identityName = `__z_module_${identityModuleIndex}_${symbol.name}`;
-      let identityPresent = false;
-      for (const type of types) {
-        if (type.localName == identityName) identityPresent = true;
-      }
-      if (identityPresent) continue;
+      if (importedLocalIndices.has(identityName)) continue;
       if (symbol.kind == ModuleSymbolKind.typeAliasSymbol) {
         const aliasTarget = rebaseTypeName(
           graph.modules,
@@ -28724,6 +28809,7 @@ function importedTypesForModule(
                 visiting
               );
             }
+            const addedIndex = types.length;
             types.push(LoweredImportedType({
               localName: identityName.copyBytes(
                 0,
@@ -28747,6 +28833,16 @@ function importedTypesForModule(
                 ? aliasTarget.copyBytes(0, aliasTarget.byteLength)
                 : "",
             }));
+            importedLocalIndices.set(
+              identityName.copyBytes(0, identityName.byteLength),
+              addedIndex
+            );
+            if (!importedTargetIndices.has(lowered.name)) {
+              importedTargetIndices.set(
+                lowered.name.copyBytes(0, lowered.name.byteLength),
+                addedIndex
+              );
+            }
           }
           failure(_) => {}
         }
@@ -28757,35 +28853,52 @@ function importedTypesForModule(
         symbol.name
       );
       let collisionSource = Option<LoweredImportedType>.none;
-      for (const type of types) {
-        if (type.targetName == collisionName) {
-          collisionSource = Option.some(copyImportedTypeAlias(
-            type,
-            identityName
-          ));
-          break;
-        }
+      const collisionIndex = indexedImportedType(
+        importedTargetIndices,
+        collisionName,
+        types.length
+      );
+      if (collisionIndex < types.length) {
+        collisionSource = Option.some(copyImportedTypeAlias(
+          types[collisionIndex],
+          identityName
+        ));
       }
       let addedCollision = false;
       match (collisionSource) {
         some(type) => {
+          const addedIndex = types.length;
           types.push(move type);
+          importedLocalIndices.set(
+            identityName.copyBytes(0, identityName.byteLength),
+            addedIndex
+          );
           addedCollision = true;
         }
         none => {}
       }
       if (addedCollision) continue;
       let sourceType = Option<LoweredImportedType>.none;
-      for (const type of types) {
-        if (type.targetName != symbol.name) continue;
+      const sourceIndex = indexedImportedType(
+        importedTargetIndices,
+        symbol.name,
+        types.length
+      );
+      if (sourceIndex < types.length) {
         sourceType = Option.some(copyImportedTypeAlias(
-          type,
+          types[sourceIndex],
           identityName
         ));
-        break;
       }
       match (sourceType) {
-        some(type) => types.push(move type);
+        some(type) => {
+          const addedIndex = types.length;
+          types.push(move type);
+          importedLocalIndices.set(
+            identityName.copyBytes(0, identityName.byteLength),
+            addedIndex
+          );
+        }
         none => {}
       }
     }

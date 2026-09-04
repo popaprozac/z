@@ -70,6 +70,7 @@ struct NativeProject {
 
 struct RunCacheMetadata {
   value: String;
+  inputs: String;
   reusable: boolean;
 }
 
@@ -1033,21 +1034,67 @@ function buildManifestProject(
   if (!input.projectMode) {
     throw "project build expects a directory or z.json manifest; use `z build <entry.zs> <output>` for the compatibility file build";
   }
-  const project = try loadProject(input.entryPath, generatedPath);
-  if (!project.config.targetConfigured) {
+  const canonicalEntry = try fs.realPath(input.entryPath);
+  let preliminaryConfig = try loadProjectConfig(canonicalEntry);
+  match (in generatedPath) {
+    some(path) => try applyGeneratedBuildOverlay(inout preliminaryConfig, path);
+    none => {}
+  }
+  if (!preliminaryConfig.targetConfigured) {
     throw "z build requires a configured target; this manifest declares only a source library";
   }
+  const targetName = match (in preliminaryConfig.targetName) {
+    some(name) => name.copyBytes(0, name.byteLength);
+    none => throw "z build requires a named target";
+  };
+  const cacheDirectory = normalizedModulePath(
+    `${preliminaryConfig.directory}/.z-cache/build`
+  );
+  try fs.createDirectories(cacheDirectory);
+  const metadataPath = `${cacheDirectory}/${targetName}.build.meta`;
+  const cacheLock = try fs.lock(`${cacheDirectory}/${targetName}.build.lock`);
+  const toolchainIdentity = try loadToolchainIdentity(cacheDirectory);
+  if (try buildCacheMatches(
+    preliminaryConfig,
+    canonicalEntry,
+    targetName,
+    generatedPath,
+    release,
+    toolchainIdentity,
+    metadataPath
+  )) {
+    console.log(`cache hit: reused build/${targetName}`);
+    cacheLock.unlock();
+    return 0;
+  }
+  const project = try loadProject(input.entryPath, generatedPath);
   try validateExecutableEntry(project, false);
+  const cacheMetadata = try runCacheMetadata(
+    project,
+    toolchainIdentity,
+    release,
+    generatedPath
+  );
+  if (!cacheMetadata.reusable) {
+    console.log(
+      "cache bypass: could not resolve every configured native library unambiguously"
+    );
+  }
+  let exitCode = 0;
   if (project.config.targetKind == "executable") {
-    return try buildExecutableTarget(project, release);
+    exitCode = try buildExecutableTarget(project, release);
+  } else if (project.config.targetKind == "static-library") {
+    exitCode = try buildStaticLibrary(project, release);
+  } else if (project.config.targetKind == "shared-library") {
+    exitCode = try buildSharedLibrary(project, release);
+  } else {
+    throw `unsupported project target kind "${project.config.targetKind}"`;
   }
-  if (project.config.targetKind == "static-library") {
-    return try buildStaticLibrary(project, release);
+  if (exitCode == 0 && cacheMetadata.reusable) {
+    try publishBuildCache(metadataPath, cacheMetadata.inputs);
   }
-  if (project.config.targetKind == "shared-library") {
-    return try buildSharedLibrary(project, release);
-  }
-  throw `unsupported project target kind "${project.config.targetKind}"`;
+  cacheLock.unlock();
+  return exitCode;
 }
 
 function appendCacheField(
@@ -1061,10 +1108,40 @@ function appendCacheField(
   output.appendAscii(0);
 }
 
+function appendCacheInput(
+  inout output: TextBuffer,
+  in path: String,
+  in digest: String
+): void {
+  appendCacheField(inout output, "input", path);
+  appendCacheField(inout output, "input-sha256", digest);
+}
+
+function appendFileCacheEvidence(
+  inout metadata: TextBuffer,
+  inout inputs: TextBuffer,
+  inout recorded: Set<String>,
+  in label: String,
+  in path: String
+): void throws String {
+  if (recorded.has(path)) return;
+  recorded.add(path.copyBytes(0, path.byteLength));
+  const bytes = try fs.readBytes(path);
+  const digest = sha256(bytes);
+  appendCacheField(inout metadata, label, path);
+  appendCacheField(inout metadata, `${label}-sha256`, digest);
+  appendCacheInput(inout inputs, path, digest);
+}
+
+struct NativeLibraryResolution {
+  path: String;
+  ambiguous: boolean;
+}
+
 function resolvedNativeLibrary(
   in config: NativeProjectConfig,
   in library: String
-): Option<String> {
+): NativeLibraryResolution {
   for (const directory of config.linkDirectories) {
     let candidates = Array<String>();
     candidates.push(`${directory}/lib${library}.tbd`);
@@ -1077,34 +1154,88 @@ function resolvedNativeLibrary(
     let selected = "";
     for (const candidate of candidates) {
       if (!fs.exists(candidate) || fs.isDirectory(candidate)) continue;
-      if (selected.byteLength > 0) return Option<String>.none;
+      if (selected.byteLength > 0) {
+        return NativeLibraryResolution({ path: "", ambiguous: true });
+      }
       selected = copy candidate;
     }
-    if (selected.byteLength > 0) return Option.some(selected);
+    if (selected.byteLength > 0) {
+      return NativeLibraryResolution({ path: selected, ambiguous: false });
+    }
   }
-  return Option<String>.none;
+  return NativeLibraryResolution({ path: "", ambiguous: false });
 }
 
 function appendNativeLibraryEvidence(
   in project: NativeProject,
-  inout output: TextBuffer
+  inout output: TextBuffer,
+  inout inputs: TextBuffer,
+  inout recordedInputs: Set<String>
 ): boolean throws String {
   for (const library of project.config.linkLibraries) {
-    const path = match (resolvedNativeLibrary(
+    const resolution = resolvedNativeLibrary(
       project.config,
       library
-    )) {
-      some(path) => path;
-      none => return false;
-    };
-    const bytes = try fs.readBytes(path);
-    const digest = sha256(bytes);
-    appendCacheField(inout output, "native-library", path);
-    appendCacheField(
-      inout output,
-      "native-library-sha256",
-      digest
     );
+    if (resolution.ambiguous) return false;
+    if (resolution.path.byteLength == 0) {
+      // Toolchain-search libraries such as macOS sqlite3 and compression do
+      // not have a stable project-local path to hash. Their logical linker
+      // name composes with the Clang fingerprint above. A missing library can
+      // never publish a cache entry because the initial link still must pass.
+      appendCacheField(
+        inout output,
+        "native-library-toolchain-search",
+        library
+      );
+      continue;
+    }
+    const path = copy resolution.path;
+    try appendFileCacheEvidence(
+      inout output,
+      inout inputs,
+      inout recordedInputs,
+      "native-library",
+      path
+    );
+  }
+  return true;
+}
+
+function appendForeignDependencyEvidence(
+  in project: NativeProject,
+  inout output: TextBuffer,
+  inout inputs: TextBuffer,
+  inout recordedInputs: Set<String>
+): boolean throws String {
+  for (const foreignModule of project.foreignModules) {
+    if (
+      foreignModule.dependencyPath.byteLength == 0
+      || !fs.exists(foreignModule.dependencyPath)
+    ) return false;
+    const dependencies = try fs.readText(foreignModule.dependencyPath);
+    let start: usize = 0;
+    let index: usize = 0;
+    while (index < dependencies.byteLength) {
+      if (dependencies.byteAt(index) != 0) {
+        index = index + 1;
+        continue;
+      }
+      if (index > start) {
+        const path = dependencies.copyBytes(start, index);
+        if (!fs.exists(path) || fs.isDirectory(path)) return false;
+        try appendFileCacheEvidence(
+          inout output,
+          inout inputs,
+          inout recordedInputs,
+          "foreign-dependency",
+          path
+        );
+      }
+      start = index + 1;
+      index = index + 1;
+    }
+    if (start != dependencies.byteLength) return false;
   }
   return true;
 }
@@ -1112,25 +1243,66 @@ function appendNativeLibraryEvidence(
 function runCacheMetadata(
   in project: NativeProject,
   in toolchainIdentity: String,
-  release: boolean
+  release: boolean,
+  in generatedPath: Option<String>
 ): RunCacheMetadata throws String {
   let output = TextBuffer();
+  let inputs = TextBuffer();
+  let recordedInputs = Set<String>();
   appendCacheField(
     inout output,
     "schema",
-    "z-native-run-cache-v1"
+    "z-native-project-cache-v3"
   );
+  appendCacheField(inout inputs, "schema", "z-native-build-inputs-v1");
   if (release) {
     appendCacheField(inout output, "profile", "release");
+    appendCacheField(inout inputs, "profile", "release");
   } else {
     appendCacheField(inout output, "profile", "debug");
+    appendCacheField(inout inputs, "profile", "debug");
   }
   appendCacheField(inout output, "entry", project.entryPath);
   appendCacheField(inout output, "directory", project.config.directory);
+  appendCacheField(inout output, "target-kind", project.config.targetKind);
+  appendCacheField(inout inputs, "entry", project.entryPath);
+  appendCacheField(inout inputs, "directory", project.config.directory);
+  appendCacheField(inout inputs, "target-kind", project.config.targetKind);
+  match (in project.config.targetName) {
+    some(name) => {
+      appendCacheField(inout output, "target-name", name);
+      appendCacheField(inout inputs, "target-name", name);
+    }
+    none => {
+      appendCacheField(inout output, "target-name", "");
+      appendCacheField(inout inputs, "target-name", "");
+    }
+  }
+  match (in project.config.runtimeInitializer) {
+    some(name) => appendCacheField(inout output, "runtime-initialize", name);
+    none => appendCacheField(inout output, "runtime-initialize", "");
+  }
   appendCacheField(
     inout output,
     "toolchain",
     toolchainIdentity
+  );
+  appendCacheField(inout inputs, "toolchain", toolchainIdentity);
+  match (in generatedPath) {
+    some(path) => appendCacheField(
+      inout inputs,
+      "generated-overlay",
+      try fs.realPath(path)
+    );
+    none => appendCacheField(inout inputs, "generated-overlay", "");
+  }
+  const compilerPath = try process.executablePath();
+  try appendFileCacheEvidence(
+    inout output,
+    inout inputs,
+    inout recordedInputs,
+    "compiler",
+    compilerPath
   );
   match (in project.config.platform) {
     some(platform) => appendCacheField(
@@ -1168,6 +1340,51 @@ function runCacheMetadata(
   for (const framework of project.config.linkFrameworks) {
     appendCacheField(inout output, "link-framework", framework);
   }
+  match (in project.config.manifestPath) {
+    some(path) => {
+      try appendFileCacheEvidence(
+        inout output,
+        inout inputs,
+        inout recordedInputs,
+        "manifest",
+        path
+      );
+    }
+    none => {}
+  }
+  for (const identity of project.config.packageIdentities) {
+    try appendFileCacheEvidence(
+      inout output,
+      inout inputs,
+      inout recordedInputs,
+      "manifest",
+      identity.id
+    );
+  }
+  match (in generatedPath) {
+    some(path) => {
+      const canonical = try fs.realPath(path);
+      try appendFileCacheEvidence(
+        inout output,
+        inout inputs,
+        inout recordedInputs,
+        "generated-overlay",
+        canonical
+      );
+    }
+    none => {
+      appendCacheField(inout output, "generated-overlay", "");
+    }
+  }
+  for (const module of project.modules) {
+    try appendFileCacheEvidence(
+      inout output,
+      inout inputs,
+      inout recordedInputs,
+      "module",
+      module.path
+    );
+  }
   for (const foreignModule of project.foreignModules) {
     appendCacheField(
       inout output,
@@ -1180,14 +1397,174 @@ function runCacheMetadata(
       foreignModule.cacheKey
     );
   }
-  const reusable = try appendNativeLibraryEvidence(
+  const librariesReusable = try appendNativeLibraryEvidence(
     project,
-    inout output
+    inout output,
+    inout inputs,
+    inout recordedInputs
+  );
+  const foreignReusable = try appendForeignDependencyEvidence(
+    project,
+    inout output,
+    inout inputs,
+    inout recordedInputs
   );
   return RunCacheMetadata({
     value: output.finish(),
-    reusable,
+    inputs: inputs.finish(),
+    reusable: librariesReusable && foreignReusable,
   });
+}
+
+function buildArtifactsPresent(
+  in config: NativeProjectConfig,
+  in targetName: String
+): boolean {
+  const outputDirectory = normalizedModulePath(`${config.directory}/build`);
+  if (config.targetKind == "executable") {
+    return fs.exists(`${outputDirectory}/${targetName}`);
+  }
+  const headerPath = `${outputDirectory}/${targetName}.h`;
+  if (!fs.exists(headerPath)) return false;
+  if (config.targetKind == "static-library") {
+    return fs.exists(`${outputDirectory}/lib${targetName}.a`);
+  }
+  if (config.targetKind == "shared-library") {
+    const prefix = sharedLibraryPrefix(config);
+    const extension = sharedLibraryExtension(config);
+    return fs.exists(`${outputDirectory}/${prefix}${targetName}${extension}`);
+  }
+  return false;
+}
+
+function buildCacheToken(
+  in source: String,
+  inout offset: usize
+): String throws String {
+  if (offset >= source.byteLength) throw "truncated build cache metadata";
+  const start = offset;
+  while (offset < source.byteLength && source.byteAt(offset) != 0) {
+    offset = offset + 1;
+  }
+  if (offset >= source.byteLength) throw "truncated build cache metadata";
+  const token = source.copyBytes(start, offset);
+  offset = offset + 1;
+  return token;
+}
+
+function buildCacheField(
+  in source: String,
+  inout offset: usize,
+  in expectedName: String
+): String throws String {
+  const name = try buildCacheToken(source, inout offset);
+  if (name != expectedName) throw "unexpected build cache metadata field";
+  return try buildCacheToken(source, inout offset);
+}
+
+function buildCacheInputsMatch(
+  in source: String,
+  in config: NativeProjectConfig,
+  in entryPath: String,
+  in targetName: String,
+  in generatedPath: String,
+  release: boolean,
+  in toolchainIdentity: String
+): boolean throws String {
+  let offset: usize = 0;
+  if (
+    try buildCacheField(source, inout offset, "schema")
+    != "z-native-build-inputs-v1"
+  ) return false;
+  const expectedProfile = release ? "release" : "debug";
+  if (
+    try buildCacheField(source, inout offset, "profile")
+    != expectedProfile
+  ) return false;
+  if (
+    try buildCacheField(source, inout offset, "entry") != entryPath
+  ) return false;
+  if (
+    try buildCacheField(source, inout offset, "directory")
+    != config.directory
+  ) return false;
+  if (
+    try buildCacheField(source, inout offset, "target-kind")
+    != config.targetKind
+  ) return false;
+  if (
+    try buildCacheField(source, inout offset, "target-name")
+    != targetName
+  ) return false;
+  if (
+    try buildCacheField(source, inout offset, "toolchain")
+    != toolchainIdentity
+  ) return false;
+  if (
+    try buildCacheField(source, inout offset, "generated-overlay")
+    != generatedPath
+  ) return false;
+  let inputCount: usize = 0;
+  while (offset < source.byteLength) {
+    const path = try buildCacheField(source, inout offset, "input");
+    const expectedDigest = try buildCacheField(
+      source,
+      inout offset,
+      "input-sha256"
+    );
+    if (!fs.exists(path) || fs.isDirectory(path)) return false;
+    const bytes = try fs.readBytes(path);
+    if (sha256(bytes) != expectedDigest) return false;
+    inputCount = inputCount + 1;
+  }
+  return inputCount > 0;
+}
+
+function buildCacheMatches(
+  in config: NativeProjectConfig,
+  in entryPath: String,
+  in targetName: String,
+  in generatedPath: Option<String>,
+  release: boolean,
+  in toolchainIdentity: String,
+  in metadataPath: String
+): boolean throws String {
+  if (
+    !buildArtifactsPresent(config, targetName)
+    || !fs.exists(metadataPath)
+  ) return false;
+  let canonicalGeneratedPath = "";
+  match (in generatedPath) {
+    some(path) => canonicalGeneratedPath = try fs.realPath(path);
+    none => {}
+  }
+  const cached = attempt fs.readText(metadataPath);
+  const source = match (cached) {
+    success(found) => found;
+    failure(_) => return false;
+  };
+  const matched = attempt buildCacheInputsMatch(
+    source,
+    config,
+    entryPath,
+    targetName,
+    canonicalGeneratedPath,
+    release,
+    toolchainIdentity
+  );
+  return match (matched) {
+    success(value) => value;
+    failure(_) => false;
+  };
+}
+
+function publishBuildCache(
+  in metadataPath: String,
+  in metadata: String
+): void throws String {
+  const pendingPath = `${metadataPath}.pending`;
+  try fs.writeText(pendingPath, metadata);
+  try fs.replace(pendingPath, metadataPath);
 }
 
 function loadToolchainIdentity(
@@ -1272,7 +1649,8 @@ function runProject(
   const cacheMetadata = try runCacheMetadata(
     project,
     toolchainIdentity,
-    release
+    release,
+    generatedPath
   );
   const cacheSupported = cacheMetadata.reusable;
   const metadata = copy cacheMetadata.value;
