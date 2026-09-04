@@ -5744,10 +5744,18 @@ function inferExpressionNodeType(
                       != modules[location.moduleIndex].packageIdentity
                   )
                 ) {
+                  const className = modules[location.moduleIndex].symbols[
+                    location.symbolIndex
+                  ].name.copyBytes(
+                    0,
+                    modules[location.moduleIndex].symbols[
+                      location.symbolIndex
+                    ].name.byteLength
+                  );
                   throw resolutionError(
                     ModuleResolveErrorKind.unknownMember,
                     module.path,
-                    `constructor for class "${value}" is internal to its package`,
+                    `constructor for class "${className}" is internal to its package`,
                     node.line,
                     node.column
                   );
@@ -9181,6 +9189,9 @@ function inferExpressionNodeType(
             tree.nodes[receiverIndex].column
           );
         }
+      }
+      if (stringStartsWith(ownerType, "view ")) {
+        ownerType = ownerType.copyBytes(5, ownerType.byteLength);
       }
       let staticMethod = false;
       if (ownerType.byteLength == 0) {

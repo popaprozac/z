@@ -163,11 +163,45 @@ function unqualifiedTypeSymbolLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
+function inferredHiddenTypeSymbolLocation(
+  in modules: Array<ResolvedModule>,
+  in typeName: String
+): Option<ModuleSymbolLocation> {
+  if (!stringStartsWith(typeName, "__z_module_")) {
+    return Option<ModuleSymbolLocation>.none;
+  }
+  let candidateModuleIndex: usize = 0;
+  while (candidateModuleIndex < modules.length) {
+    let candidateSymbolIndex: usize = 0;
+    while (
+      candidateSymbolIndex < modules[candidateModuleIndex].symbols.length
+    ) {
+      const symbol = view modules[candidateModuleIndex].symbols[
+        candidateSymbolIndex
+      ];
+      if (
+        isTypeSymbolKind(symbol.kind)
+        && typeName == `__z_module_${candidateModuleIndex}_${symbol.name}`
+      ) return Option.some(ModuleSymbolLocation({
+        moduleIndex: candidateModuleIndex,
+        symbolIndex: candidateSymbolIndex,
+      }));
+      candidateSymbolIndex = candidateSymbolIndex + 1;
+    }
+    candidateModuleIndex = candidateModuleIndex + 1;
+  }
+  return Option<ModuleSymbolLocation>.none;
+}
+
 function typeSymbolLocationForName(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
   in typeName: String
 ): Option<ModuleSymbolLocation> {
+  match (inferredHiddenTypeSymbolLocation(modules, typeName)) {
+    some(location) => return Option.some(location);
+    none => {}
+  }
   const member = qualifiedTypeMember(typeName);
   if (member.byteLength == 0) {
     return unqualifiedTypeSymbolLocation(modules, moduleIndex, typeName);
@@ -210,6 +244,75 @@ export function typeSymbolLocation(
   return match (genericTypeBaseName(sourceType)) {
     some(base) => typeSymbolLocationForName(modules, moduleIndex, base);
     none => typeSymbolLocationForName(modules, moduleIndex, sourceType);
+  };
+}
+
+export function sourceTypeDisplayName(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in name: String
+): String {
+  const nullable = nullableTargetType(name);
+  if (nullable.byteLength > 0) {
+    const displayed = sourceTypeDisplayName(modules, moduleIndex, nullable);
+    return `${displayed} | null`;
+  }
+  if (stringStartsWith(name, "view ")) {
+    const target = name.copyBytes(5, name.byteLength);
+    const displayed = sourceTypeDisplayName(modules, moduleIndex, target);
+    return `view ${displayed}`;
+  }
+  if (stringStartsWith(name, "readonly ")) {
+    const target = name.copyBytes(9, name.byteLength);
+    const displayed = sourceTypeDisplayName(modules, moduleIndex, target);
+    return `readonly ${displayed}`;
+  }
+  match (fixedArrayShape(name)) {
+    some(array) => {
+      const element = sourceTypeDisplayName(
+        modules,
+        moduleIndex,
+        array.elementType
+      );
+      return `${element}[${array.length}]`;
+    }
+    none => {}
+  }
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      let output = TextBuffer();
+      const base = sourceTypeDisplayName(
+        modules,
+        moduleIndex,
+        generic.base
+      );
+      output.append(base);
+      output.append("<");
+      let index: usize = 0;
+      while (index < generic.arguments.length) {
+        if (index > 0) output.append(", ");
+        const argument = sourceTypeDisplayName(
+          modules,
+          moduleIndex,
+          generic.arguments[index]
+        );
+        output.append(argument);
+        index = index + 1;
+      }
+      output.append(">");
+      return output.finish();
+    }
+    none => {}
+  }
+  return match (inferredHiddenTypeSymbolLocation(modules, name)) {
+    some(location) => modules[location.moduleIndex].symbols[
+      location.symbolIndex
+    ].name.copyBytes(
+      0,
+      modules[location.moduleIndex].symbols[location.symbolIndex]
+        .name.byteLength
+    );
+    none => name.copyBytes(0, name.byteLength);
   };
 }
 
@@ -465,7 +568,7 @@ function localTypeSpelling(
     }
     symbolIndex = symbolIndex + 1;
   }
-  return targetName;
+  return `__z_module_${location.moduleIndex}_${targetName}`;
 }
 
 export function rebaseTypeName(

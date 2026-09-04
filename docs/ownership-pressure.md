@@ -5135,13 +5135,22 @@ therefore failed later with an internal missing-local-type diagnostic.
 Native lowering now retains transitively referenced implementation-type
 evidence, resolves the receiver recursively, and normalizes canonical lowered
 collection identities through the same intrinsic model used for source-shaped
-types. An executable fixed-point regression reads a `Map<String, Item>` through
-an exported ARC manager and its module-private state class, matches the retained
-`Option<Item>`, reads the class payload, and emits, compiles, and runs the
-resulting C. This is important composition evidence: application architecture
-should be free to hide storage behind managers without forcing redundant type
-annotations or public implementation types to compensate for compiler
-internals.
+types. Inferred types that cannot be named directly by the consuming source now
+carry a compiler-only module-qualified nominal identity, so another field or
+method access cannot accidentally lose the originating type or conflate it with
+a same-named declaration. Returning an ARC class alias from a borrowed
+`Option<T>` payload also retains that identity before the temporary enum owner
+is destroyed.
+
+An executable fixed-point regression reads a readonly `Map<String, Item>`
+through an exported ARC manager, its module-private state class, and a
+transitively imported item class. It matches the retained `Option<Item>`, calls
+an internal immutable method through both statement and value-producing match
+arms, returns one borrowed payload as a new owned alias, and verifies the
+generated retain before compiling and running the C. This is important
+composition evidence: application architecture should be free to hide storage
+behind managers without forcing redundant type annotations or public
+implementation types to compensate for compiler internals.
 
 ## Recursive typed JSON stays streaming and ownership-safe
 

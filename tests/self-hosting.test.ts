@@ -682,6 +682,8 @@ test("infers chained collection method results during native lowering", () => {
     { encoding: "utf8" },
   );
   assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /Z_Item_retain\(_z_stage1_match_payload_/);
+  assert.match(emission.stdout, /Z_Item_read\(_z_stage1_match_payload_/);
 
   const directory = mkdtempSync("/tmp/z-native-chained-map-get-");
   const executable = resolve(directory, "program");

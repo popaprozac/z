@@ -6,6 +6,7 @@ import {
 } from "./semantic-flow-state.zs";
 import {
   equivalentTypes,
+  sourceTypeDisplayName,
   typeSatisfiesTrait,
 } from "./semantic-type-identities.zs";
 import { substituteGenericType } from "./semantic-type-ownership.zs";
@@ -283,11 +284,21 @@ export function requireGenericConstraints(
         constraint.traitName
       )
     ) continue;
+    const displayedArgument = sourceTypeDisplayName(
+      modules,
+      moduleIndex,
+      argument
+    );
+    const displayedTrait = sourceTypeDisplayName(
+      modules,
+      moduleIndex,
+      constraint.traitName
+    );
     throw genericCallError(
       module,
       tree,
       index,
-      `${argument} does not satisfy ${constraint.traitName} for ${constraint.parameter} in "${functionName}"`
+      `${displayedArgument} does not satisfy ${displayedTrait} for ${constraint.parameter} in "${functionName}"`
     );
   }
 }

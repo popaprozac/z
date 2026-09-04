@@ -18492,12 +18492,24 @@ function lowerValueDestination(
   match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
-      value = wrapImplicitOwnedTransfer(
-        tree,
-        root,
-        value,
-        inout expressions
-      );
+      if (expectedTypeName.byteLength > 0) {
+        value = try wrapOwnedStorage(
+          program,
+          importedTypes,
+          tree,
+          root,
+          expectedTypeName,
+          value,
+          inout expressions
+        );
+      } else {
+        value = wrapImplicitOwnedTransfer(
+          tree,
+          root,
+          value,
+          inout expressions
+        );
+      }
     }
     none => {}
   }
@@ -23585,12 +23597,24 @@ function lowerStatementCore(
                 expectedTypeName,
                 inout expressions
               );
-              loweredValue = wrapImplicitOwnedTransfer(
-                tree,
-                root,
-                loweredValue,
-                inout expressions
-              );
+              if (expectedTypeName.byteLength > 0) {
+                loweredValue = try wrapOwnedStorage(
+                  program,
+                  importedTypes,
+                  tree,
+                  root,
+                  expectedTypeName,
+                  loweredValue,
+                  inout expressions
+                );
+              } else {
+                loweredValue = wrapImplicitOwnedTransfer(
+                  tree,
+                  root,
+                  loweredValue,
+                  inout expressions
+                );
+              }
               if (
                 tree.nodes[root].kind == ExpressionKind.memberExpression
                 && sourceExpressionRootsInThis(tree, root)
@@ -26522,6 +26546,36 @@ function collectIntrinsicTypeName(
   inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
+  if (stringStartsWith(name, "readonly ")) {
+    const target = name.copyBytes(9, name.byteLength);
+    try collectIntrinsicTypeName(
+      program,
+      importedTypes,
+      target,
+      inout fixedArrays,
+      inout arrays,
+      inout slices,
+      inout maps,
+      inout sets,
+      inout enums
+    );
+    return;
+  }
+  if (stringStartsWith(name, "view ")) {
+    const target = name.copyBytes(5, name.byteLength);
+    try collectIntrinsicTypeName(
+      program,
+      importedTypes,
+      target,
+      inout fixedArrays,
+      inout arrays,
+      inout slices,
+      inout maps,
+      inout sets,
+      inout enums
+    );
+    return;
+  }
   for (const aggregate of program.aggregates) {
     for (const parameter of aggregate.typeParameters) {
       if (
@@ -28425,6 +28479,63 @@ function importedTypesForModule(
       payloadBearing: false,
       underlyingType: "",
     }));
+  }
+  // Inferred values may carry a compiler-only nominal identity when their
+  // concrete type is reachable through another module but is not directly
+  // nameable in this source file. Alias that identity to the already lowered
+  // ABI type; semantic analysis remains responsible for source visibility.
+  let identityModuleIndex: usize = 0;
+  while (identityModuleIndex < graph.modules.length) {
+    for (const symbol of graph.modules[identityModuleIndex].symbols) {
+      if (
+        symbol.kind != ModuleSymbolKind.structSymbol
+        && symbol.kind != ModuleSymbolKind.classSymbol
+        && symbol.kind != ModuleSymbolKind.enumSymbol
+      ) continue;
+      const identityName = `__z_module_${identityModuleIndex}_${symbol.name}`;
+      let identityPresent = false;
+      for (const type of types) {
+        if (type.localName == identityName) identityPresent = true;
+      }
+      if (identityPresent) continue;
+      const collisionName = emittedPrivateTypeName(
+        identityModuleIndex,
+        symbol.name
+      );
+      let collisionSource = Option<LoweredImportedType>.none;
+      for (const type of types) {
+        if (type.targetName == collisionName) {
+          collisionSource = Option.some(copyImportedTypeAlias(
+            type,
+            identityName
+          ));
+          break;
+        }
+      }
+      let addedCollision = false;
+      match (collisionSource) {
+        some(type) => {
+          types.push(move type);
+          addedCollision = true;
+        }
+        none => {}
+      }
+      if (addedCollision) continue;
+      let sourceType = Option<LoweredImportedType>.none;
+      for (const type of types) {
+        if (type.targetName != symbol.name) continue;
+        sourceType = Option.some(copyImportedTypeAlias(
+          type,
+          identityName
+        ));
+        break;
+      }
+      match (sourceType) {
+        some(type) => types.push(move type);
+        none => {}
+      }
+    }
+    identityModuleIndex = identityModuleIndex + 1;
   }
   return types;
 }

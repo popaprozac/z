@@ -1,12 +1,9 @@
 import { Map } from "std/collections";
 import { thread } from "std/thread";
-
-export class Item on thread.main {
-  value: i32;
-}
+import { Item } from "./item.zs";
 
 class Registry on thread.main {
-  values: Map<String, Item>;
+  values: readonly Map<String, Item>;
 }
 
 export readonly class Owner on thread.main {
@@ -17,6 +14,14 @@ export function createOwner(): Owner on thread.main {
   let values = Map<String, Item>();
   values.set("answer", new Item({ value: 42 }));
   return new Owner({
-    registry: new Registry({ values }),
+    registry: new Registry({ values: values.freeze() }),
   });
+}
+
+export function existingItem(in owner: Owner): Item on thread.main {
+  const found = owner.registry.values.get("answer");
+  return match (in found) {
+    some(item) => item;
+    none => new Item({ value: 0 });
+  };
 }

@@ -20,6 +20,7 @@ import {
 } from "./module-symbols.zs";
 import {
   rebaseTypeName,
+  sourceTypeDisplayName,
   typeSatisfiesTrait,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
@@ -337,10 +338,20 @@ function validateGenericTypeConstraints(
         requiredTrait
       )
     ) continue;
+    const displayedArgument = sourceTypeDisplayName(
+      modules,
+      moduleIndex,
+      argument
+    );
+    const displayedTrait = sourceTypeDisplayName(
+      modules,
+      moduleIndex,
+      requiredTrait
+    );
     throw validationError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,
-      `${argument} does not satisfy ${requiredTrait} for ${constraint.parameter} in "${generic.base}"`,
+      `${displayedArgument} does not satisfy ${displayedTrait} for ${constraint.parameter} in "${generic.base}"`,
       line,
       column
     );
