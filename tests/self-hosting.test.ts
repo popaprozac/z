@@ -8112,6 +8112,13 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   );
   assert.equal(existsSync(foreignAdapter), true);
 
+  const typedScalarConstant = spawnSync(
+    executable,
+    ["run", resolve(projectRoot, "tests/fixtures/typed-scalar-constant.zs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(typedScalarConstant.status, 0, typedScalarConstant.stderr);
+
   const version = spawnSync(executable, ["version"], { encoding: "utf8" });
   assert.equal(version.status, 0, version.stderr);
   const stage0Version = spawnSync(process.execPath, [cli, "version"], {

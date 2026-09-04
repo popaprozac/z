@@ -71,11 +71,11 @@ function isVerifiedForeignNominalType(
   return false;
 }
 
-function isVerifiedForeignNumericType(
+function verifiedForeignNumericUnderlyingType(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
   in typeName: String
-): boolean {
+): String {
   match (typeSymbolLocation(modules, moduleIndex, typeName)) {
     some(location) => {
       match (
@@ -83,18 +83,38 @@ function isVerifiedForeignNumericType(
           location.symbolIndex
         ].typeSignature
       ) {
-        some(signature) => return (
-            signature.foreignKind != "enum"
-            || signature.foreignFlags
-          )
-          && signature.foreignNativeName.byteLength > 0
-          && isNumericTypeName(signature.foreignUnderlyingType);
+        some(signature) => {
+          if (
+            (
+              signature.foreignKind != "enum"
+              || signature.foreignFlags
+            )
+            && signature.foreignNativeName.byteLength > 0
+            && isNumericTypeName(signature.foreignUnderlyingType)
+          ) return signature.foreignUnderlyingType.copyBytes(
+            0,
+            signature.foreignUnderlyingType.byteLength
+          );
+        }
         none => {}
       }
     }
     none => {}
   }
-  return false;
+  return "";
+}
+
+function isVerifiedForeignNumericType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  const underlying = verifiedForeignNumericUnderlyingType(
+    modules,
+    moduleIndex,
+    typeName
+  );
+  return underlying.byteLength > 0;
 }
 
 function nativeFunctionSignaturesCompatible(
@@ -363,6 +383,22 @@ export function requireExpressionType(
     && isNumericTypeName(actual)
     && isContextualNumericLiteral(tree, index)
   ) return;
+  if (isNumericTypeName(expected)) {
+    const actualUnderlying = verifiedForeignNumericUnderlyingType(
+      modules,
+      moduleIndex,
+      actual
+    );
+    if (actualUnderlying == expected) return;
+  }
+  if (isNumericTypeName(actual)) {
+    const expectedUnderlying = verifiedForeignNumericUnderlyingType(
+      modules,
+      moduleIndex,
+      expected
+    );
+    if (expectedUnderlying == actual) return;
+  }
   if (
     isVerifiedForeignNumericType(modules, moduleIndex, expected)
     && isNumericTypeName(actual)

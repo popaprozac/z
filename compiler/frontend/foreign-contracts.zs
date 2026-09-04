@@ -3261,7 +3261,10 @@ export function normalizeForeignContracts(
   }
   let types = Array<NativeForeignTypeContract>();
   for (const declaration of declarations.types) {
-    if (declaration.kind != "enum") continue;
+    if (
+      declaration.kind != "enum"
+      && declaration.kind != "scalar"
+    ) continue;
     types.push(normalizedForeignType(
       declaration,
       "",
@@ -3334,7 +3337,10 @@ export function normalizeForeignContracts(
     let typeIndex: usize = 0;
     while (typeIndex < declarations.types.length) {
       if (
-        declarations.types[typeIndex].kind == "enum"
+        (
+          declarations.types[typeIndex].kind == "enum"
+          || declarations.types[typeIndex].kind == "scalar"
+        )
         && declaration.typeName == declarations.types[typeIndex].typeName
       ) {
         typeName = declarations.types[typeIndex].exportName.copyBytes(

@@ -28021,6 +28021,40 @@ function importedTypesForModule(
             }));
           } else if (
             symbol.kind == ModuleSymbolKind.structSymbol
+            && signature.foreignKind == "scalar"
+            && signature.foreignNativeName.byteLength > 0
+            && signature.foreignUnderlyingType.byteLength > 0
+          ) {
+            // Named native scalar typedefs retain their source identity for
+            // diagnostics and hover, but lower through the same ABI shape as
+            // a payload-free foreign enum: the typedef spelling plus its
+            // verified primitive representation.
+            types.push(LoweredImportedType({
+              localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+              targetName: signature.foreignNativeName.copyBytes(
+                0,
+                signature.foreignNativeName.byteLength
+              ),
+              nativeTypeName: signature.foreignNativeName.copyBytes(
+                0,
+                signature.foreignNativeName.byteLength
+              ),
+              kind: LoweredTypeKind.foreignEnumType,
+              executorBound: false,
+              threadShareable: false,
+              workerDestructible: false,
+              needsDeinit: false,
+              resourceRelease: "",
+              fields: Array<LoweredField>(),
+              variants: Array<LoweredVariant>(),
+              payloadBearing: false,
+              underlyingType: signature.foreignUnderlyingType.copyBytes(
+                0,
+                signature.foreignUnderlyingType.byteLength
+              ),
+            }));
+          } else if (
+            symbol.kind == ModuleSymbolKind.structSymbol
             && signature.foreignKind == "handle"
             && signature.foreignNativeName.byteLength > 0
           ) {

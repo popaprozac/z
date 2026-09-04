@@ -1986,6 +1986,7 @@ test("preserves scalar typedef identity for typed native constants", () => {
   );
   const generated = compileToC(source, example);
   assert.match(generated, /const ZCount amount = ZCountDefault;/);
+  assert.match(generated, /const int64_t widened = .*ZCountDefault/);
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 });
