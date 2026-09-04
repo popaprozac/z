@@ -8913,7 +8913,10 @@ function frameField(name: string): string {
 }
 
 function frameLiveField(name: string): string {
-  return `live_${nativePart(name)}`;
+  const part = nativePart(name);
+  return part === "result" || part === "error"
+    ? `live_value_${part}`
+    : `live_${part}`;
 }
 
 function nestedAwaitField(offset: number): string {

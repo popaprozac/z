@@ -383,6 +383,48 @@ test("moves and destroys cleanup-bearing errors through async task frames", () =
   assert.equal(nativeResult.status, 0, nativeResult.stderr);
 });
 
+test("keeps async result and error bookkeeping distinct from same-named locals", () => {
+  const directory = mkdtempSync("/tmp/z-async-frame-symbols-");
+  const example = resolve(directory, "main.zs");
+  writeFileSync(example, `
+    struct RequestError {
+      message: String;
+    }
+
+    async function resolveLabel(shouldFail: boolean): String throws RequestError {
+      const result: String = "ready";
+      const error = RequestError({ message: "failed" });
+      if (shouldFail) {
+        throw move error;
+      }
+      return move result;
+    }
+
+    async function main(): i32 {
+      const failed = attempt await resolveLabel(true);
+      const succeeded = attempt await resolveLabel(false);
+      const failureCode = match (failed) {
+        success(value) => value.byteLength;
+        failure(error) => error.message.byteLength;
+      };
+      const successCode = match (succeeded) {
+        success(result) => result.byteLength;
+        failure(error) => error.message.byteLength;
+      };
+      return i32(failureCode + successCode) - 11;
+    }
+  `);
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /bool live_result;/);
+  assert.match(generated, /bool live_error;/);
+  assert.match(generated, /bool live_value_result;/);
+  assert.match(generated, /bool live_value_error;/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("moves owned structs and retains ARC classes across async task frames", () => {
   const example = resolve(projectRoot, "examples/async/async-ownership.zs");
   const source = readFileSync(example, "utf8");
