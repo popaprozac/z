@@ -18221,6 +18221,7 @@ function lowerValueDestination(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
+  sourceStatementIndex: usize,
   in expression: ExpressionSyntax,
   returnValue: boolean,
   in valueBinding: String,
@@ -18237,6 +18238,7 @@ function lowerValueDestination(
           evidence,
           arena,
           ownerName,
+          sourceStatementIndex,
           tree,
           root,
           returnValue,
@@ -18486,6 +18488,7 @@ function lowerValueArmStatement(
             evidence,
             arena,
             ownerName,
+            index,
             tree,
             root,
             returnValue,
@@ -18525,6 +18528,7 @@ function lowerValueArmStatement(
         evidence,
         arena,
         ownerName,
+        index,
         expression,
         returnValue,
         valueBinding,
@@ -18649,6 +18653,7 @@ function lowerMatchTree(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
+  sourceStatementIndex: usize,
   in tree: ExpressionTree,
   root: usize,
   returnValueArms: boolean,
@@ -18663,6 +18668,7 @@ function lowerMatchTree(
     throw "native match lowering received a malformed match expression";
   }
   const subjectInput = tree.nodes[root].children[0];
+  const subjectStart = expressions.length;
   const subject = try lowerExpression(
     program,
     importedTypes,
@@ -18670,6 +18676,17 @@ function lowerMatchTree(
     tree,
     subjectInput,
     inout expressions
+  );
+  try completeNativeClosureBlocks(
+    program,
+    importedTypes,
+    evidence,
+    arena,
+    ownerName,
+    sourceStatementIndex,
+    subjectStart,
+    inout expressions,
+    inout statements
   );
   const foreignPlan = foreignUnionMatchEvidence(evidence, tree, root);
   const declaration = match (in foreignPlan) {
@@ -23217,6 +23234,7 @@ function lowerStatementCore(
                 evidence,
                 arena,
                 ownerName,
+                index,
                 tree,
                 root,
                 arena.nodes[index].kind == StatementKind.returnStatement,

@@ -5116,6 +5116,14 @@ This is executable evidence for a central Z goal: safe interop abstractions
 should keep composing like ordinary Z ownership, without asking applications
 to drop into Objective-C or hand-maintain retain/release calls.
 
+The standalone menu test also placed an escaping closure inside the subject of
+a value-producing `match`. Native lowering previously completed block closures
+only along ordinary expression-statement paths, so the still-raw statement
+indices were later mistaken for lowered match-arm indices. Match lowering now
+completes its subject before lowering any arm; a fixed-point regression keeps
+an early-return failure arm beside the captured callback so this ordering bug
+cannot return.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
