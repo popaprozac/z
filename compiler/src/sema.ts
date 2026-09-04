@@ -18139,6 +18139,50 @@ function checkObjCArguments(
     ) {
       throw new DiagnosticError(fileName, argument.location, `Objective-C selector ${JSON.stringify(target.selector)} uses unsupported parameter type ${JSON.stringify(parameter.type.cName)}`);
     }
+    if (argument.kind === "argumentReference") {
+      if (parameter.access !== argument.access) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          parameter.access === "in"
+            ? `Objective-C selector ${JSON.stringify(target.selector)} expects an in borrow for parameter ${index + 1}, found ${argument.access}`
+            : `${argument.access} requires a checked Objective-C method capability contract`,
+          {
+            code: "Z0300",
+            helps: parameter.access === "in"
+              ? [`pass the stored value as \`in ${argument.name}\``]
+              : ["describe the parameter with `in` in an adjacent .zd file when the native method borrows it"],
+          },
+        );
+      }
+      const stored = locals.get(argument.name);
+      if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+      if (initializationState(stored) !== "initialized") {
+        throw new DiagnosticError(fileName, argument.location, `in argument ${JSON.stringify(argument.name)} must be initialized before the call`);
+      }
+      if (ownershipState(stored) !== "available") {
+        throw movedValueError(
+          fileName,
+          { name: argument.name, location: argument.location },
+          state,
+          ownershipState(stored) === "maybeMoved",
+        );
+      }
+      requireObjCAssignable(
+        parameter.type,
+        underlyingType(stored),
+        argument,
+        structs,
+        enums,
+        fileName,
+        state,
+        target.selector,
+      );
+      state.foreignArgumentAccesses.set(argument.location.offset, "in");
+      state.expressionTypes.set(argument.location.offset, String(underlyingType(stored)));
+      state.expressionTypes.set(argument.nameLocation.offset, String(underlyingType(stored)));
+      continue;
+    }
     const contextual = contextualObjCStringType(parameter.type, argument, state);
     let actual: ValueType;
     if (parameter.type.kind === "block" && argument.kind === "closure") {

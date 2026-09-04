@@ -180,6 +180,7 @@ export struct NativeForeignObjCAvailabilityContract {
 
 export struct NativeForeignObjCParameterContract {
   name: String;
+  capability: String;
   typeName: String;
   nativeType: String;
   protocols: Array<String>;
@@ -1970,6 +1971,26 @@ function findRawFunction(
   throw `Z declaration names unknown foreign function "${name}"`;
 }
 
+function rawObjCMethodContractExists(
+  in declarations: RawForeignModuleDeclarations,
+  in contract: RawForeignFunctionContract
+): boolean {
+  for (const interface_ of declarations.objectiveCInterfaces) {
+    let methodOffset: usize = 0;
+    while (methodOffset < interface_.methodCount) {
+      const method = view declarations.objectiveCMethods[
+        interface_.methodStart + methodOffset
+      ];
+      if (
+        contract.name == `${interface_.exportName}.${method.baseName}`
+        && contract.parameters.length == method.parameterCount
+      ) return true;
+      methodOffset = methodOffset + 1;
+    }
+  }
+  return false;
+}
+
 function validateResourceContracts(
   in contracts: RawForeignContractSet,
   in declarations: RawForeignModuleDeclarations,
@@ -2321,6 +2342,7 @@ function collectOwnedHandleTypes(
   inout types: Array<NativeForeignTypeContract>
 ): void throws String {
   for (const contract of contracts.functions) {
+    if (rawObjCMethodContractExists(declarations, contract)) continue;
     const functionIndex = try findRawFunction(declarations, contract.name);
     if (declarations.functions[functionIndex].overloadCount != 1) {
       throw `native Z declaration handle tier requires exactly one overload for "${contract.name}"`;
@@ -2407,6 +2429,7 @@ function collectBorrowedHandleTypes(
   inout types: Array<NativeForeignTypeContract>
 ): void throws String {
   for (const contract of contracts.functions) {
+    if (rawObjCMethodContractExists(declarations, contract)) continue;
     if (contract.resultOwnership != "borrowed") continue;
     const functionIndex = try findRawFunction(declarations, contract.name);
     if (declarations.functions[functionIndex].overloadCount != 1) {
@@ -2911,7 +2934,8 @@ function normalizedObjCPropertyAvailability(
 
 function normalizedObjCParameter(
   in declarations: RawForeignModuleDeclarations,
-  in parameter: RawForeignObjCParameter
+  in parameter: RawForeignObjCParameter,
+  in capability: String
 ): NativeForeignObjCParameterContract {
   let name = `argument${parameter.parameterIndex + 1}`;
   match (in parameter.name) {
@@ -2929,6 +2953,7 @@ function normalizedObjCParameter(
   }
   return NativeForeignObjCParameterContract({
     name,
+    capability: capability.copyBytes(0, capability.byteLength),
     typeName: relativeObjCTypeName(declarations, parameter.typeName),
     nativeType: parameter.nativeType.copyBytes(
       0,
@@ -2938,20 +2963,46 @@ function normalizedObjCParameter(
   });
 }
 
+function objcMethodParameterCapability(
+  in contracts: RawForeignContractSet,
+  in method: RawForeignObjCMethod,
+  in ownerType: String,
+  parameterIndex: usize
+): String {
+  for (const contract of contracts.functions) {
+    if (
+      contract.name != `${ownerType}.${method.baseName}`
+      || contract.parameters.length != method.parameterCount
+    ) continue;
+    const parameter = view contract.parameters[parameterIndex];
+    if (parameter.capability == "in") return "in";
+    return "value";
+  }
+  return "value";
+}
+
 function normalizedObjCMethod(
   in declarations: RawForeignModuleDeclarations,
   in method: RawForeignObjCMethod,
-  in ownerType: String
+  in ownerType: String,
+  in contracts: RawForeignContractSet
 ): NativeForeignObjCMethodContract {
   let parameters = Array<NativeForeignObjCParameterContract>();
   let representable = method.returnTypeName.byteLength > 0;
   let parameterIndex: usize = 0;
   while (parameterIndex < method.parameterCount) {
+    const capability = objcMethodParameterCapability(
+      contracts,
+      method,
+      ownerType,
+      parameterIndex
+    );
     const parameter = normalizedObjCParameter(
       declarations,
       declarations.objectiveCParameters[
         method.parameterStart + parameterIndex
-      ]
+      ],
+      in capability
     );
     if (parameter.typeName.byteLength == 0) representable = false;
     parameters.push(move parameter);
@@ -3007,7 +3058,8 @@ function normalizedObjCMethods(
   in declarations: RawForeignModuleDeclarations,
   methodStart: usize,
   methodCount: usize,
-  in ownerType: String
+  in ownerType: String,
+  in contracts: RawForeignContractSet
 ): Array<NativeForeignObjCMethodContract> {
   let methods = Array<NativeForeignObjCMethodContract>();
   let methodIndex: usize = 0;
@@ -3015,7 +3067,8 @@ function normalizedObjCMethods(
     methods.push(normalizedObjCMethod(
       declarations,
       declarations.objectiveCMethods[methodStart + methodIndex],
-      ownerType
+      ownerType,
+      contracts
     ));
     methodIndex = methodIndex + 1;
   }
@@ -3157,7 +3210,8 @@ function normalizedObjCInterfaces(
         declarations,
         declaration.methodStart,
         declaration.methodCount,
-        declaration.exportName
+        declaration.exportName,
+        contracts
       ),
       properties: normalizedObjCProperties(
         declarations,
@@ -3215,7 +3269,8 @@ function normalizedObjCProtocols(
         declarations,
         declaration.methodStart,
         declaration.methodCount,
-        declaration.exportName
+        declaration.exportName,
+        contracts
       ),
     }));
   }
@@ -3357,6 +3412,7 @@ export function normalizeForeignContracts(
   );
   let functions = Array<NativeForeignFunctionContract>();
   for (const contract of contracts.functions) {
+    if (rawObjCMethodContractExists(declarations, contract)) continue;
     const functionIndex = try findRawFunction(declarations, contract.name);
     if (declarations.functions[functionIndex].overloadCount != 1) {
       throw `native Z declaration scalar tier requires exactly one overload for "${contract.name}"`;

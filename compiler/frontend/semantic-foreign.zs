@@ -195,7 +195,10 @@ function objcMethodSignature(
   let parameterIndex: usize = 0;
   while (parameterIndex < method.parameters.length) {
     const parameter = view method.parameters[parameterIndex];
-    parameterModes.push("value");
+    parameterModes.push(parameter.capability.copyBytes(
+      0,
+      parameter.capability.byteLength
+    ));
     parameterTypes.push(localObjCTypeName(
       contracts,
       indices,

@@ -895,14 +895,19 @@ function applyObjCMethodApiNotes(
           asyncErrorParameter: note.async?.errorParameter ?? method.asyncErrorParameter,
           parameters: method.parameters.map((parameter, index) => {
             const parameterNote = note.parameters?.[String(index)];
-            if (parameter.type.kind !== "block" || !parameterNote?.callback) return parameter;
+            if (!parameterNote) return parameter;
             return {
               ...parameter,
-              type: {
-                ...parameter.type,
-                thread: parameterNote.callback.thread ?? null,
-                cardinality: parameterNote.callback.cardinality ?? null,
-              },
+              ...(parameterNote.access ? { access: parameterNote.access } : {}),
+              ...(parameter.type.kind === "block" && parameterNote.callback
+                ? {
+                    type: {
+                      ...parameter.type,
+                      thread: parameterNote.callback.thread ?? null,
+                      cardinality: parameterNote.callback.cardinality ?? null,
+                    },
+                  }
+                : {}),
             };
           }),
         };

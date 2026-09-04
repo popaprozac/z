@@ -581,7 +581,7 @@ These are semantic mappings, not textual rewrites:
 | C++ `T &` | `inout value: _` | Mutable borrowed value |
 | C++ `T &&` | `move value: _` with value lifecycle contract | Consumed unique owner |
 | C++ RAII value | `export type` with `copy` or `move`, and `deinit` | Deterministic Z-owned native storage |
-| Objective-C object/method/property/protocol | Usually no `.zd` entry | Clang supplies ARC identity, nullability, selectors, blocks, and protocol metadata directly |
+| Objective-C object/method/property/protocol | Usually no `.zd` entry; use `in value: _` when a method's object parameter must explicitly borrow caller-owned Z storage | Clang supplies ARC identity, nullability, selectors, blocks, and protocol metadata directly; the contract can add a checked call-scoped object borrow |
 | Concrete Objective-C object in a free C function | `in object: _` | Clang supplies the exact class and nullability; `.zd` supplies the explicit call-scoped borrow, with direct ARC-reference ABI lowering |
 | Clang `swift_attr("@UIActor")` / `swift_attr("@MainActor")` | Imported automatically | Z exposes `on thread.main` in hover and enforces the same executor boundary |
 | Swift `@MainActor` in a `z.json`-declared Swift target | Imported automatically from the emitted symbol graph | Generated Objective-C headers erase actor isolation; Z merges the toolchain graph with the header-derived declaration |
@@ -590,9 +590,12 @@ These are semantic mappings, not textual rewrites:
 | Objective-C/Swift exactly-once completion method | The escaping-block contract with `invoked once;` plus `async completion;` | Keeps the raw overload and synthesizes an infallible `async method(...): T`; zero callback values produce `void`, one cleanup-free scalar produces `T` |
 | Objective-C/Swift value/error completion method | `async completion(value, error) { return value; throw error; }` | Names callback positions and synthesizes `async method(...): T throws E`, surfaced as `Task<T, E>` |
 
-The current Objective-C method contract tier names an existing static method by
-class and base name; it does not redeclare or rename selectors. Parameter names
-disambiguate the imported selector. Block lifetime/thread facts may be refined,
+The current Objective-C method contract tier names an existing method by class
+and base name; it does not redeclare or rename selectors. Parameter names
+disambiguate the imported selector. An `in` object parameter supplies a checked
+call-scoped borrow, which is useful when an owned Z `String` or Objective-C
+reference must remain available after the native call. `out`, `inout`, and
+non-object method parameters remain outside this tier. Block lifetime/thread facts may be refined,
 `invoked once` identifies exact terminal delivery, and an `async` clause may
 project that terminal escaping block into a Task.
 The shorthand `async completion;` accepts zero or one cleanup-free scalar

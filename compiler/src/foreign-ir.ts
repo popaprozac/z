@@ -303,6 +303,8 @@ export type ForeignReferenceType = {
 export type ForeignParameter = {
   readonly name: string | null;
   readonly type: ForeignType;
+  /** Optional checked call-site capability supplied by an adjacent declaration contract. */
+  readonly access?: "in" | "out" | "inout";
   /** Objective-C protocol qualifiers carried by an `id<...>` parameter. */
   readonly protocols?: readonly string[];
   /** A header constant that must appear at this source argument position. */

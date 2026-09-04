@@ -147,6 +147,29 @@ hostToolchainTest("keeps Objective-C object parameters in native declaration par
   assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
 }, 30_000);
 
+hostToolchainTest("borrows Objective-C object method parameters through checked declaration contracts", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "tests/fixtures/objc-borrow-method.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+
+  assert.match(
+    artifact.source,
+    /\[ZObjCBorrowMethodFixture echo:z_nsstring_from_string\(\(\*value\)\)\]/,
+  );
+  assert.match(artifact.source, /\(text\)\.length/);
+
+  const execution = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+
+  const nativeCheck = spawnSync(
+    process.execPath,
+    [cli, "check", example, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+}, 30_000);
+
 hostToolchainTest("gives every Objective-C C export an autorelease pool", () => {
   if (process.platform !== "darwin") return;
   const source = `

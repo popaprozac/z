@@ -11526,10 +11526,19 @@ function generateCallArgument(expression: Expression, context: GenerationContext
   if (capabilityTarget) {
     return `&(${generateExpression(capabilityTarget, context)})`;
   }
+  const foreignAccess = context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset);
+  if (
+    foreignAccess === "in"
+    && expression.kind === "argumentReference"
+    && context.semanticInfo.objcStringsToNative.has(expression.location.offset)
+  ) {
+    const stored = generateStoredValue(expression.name, context);
+    return `z_nsstring_from_string(${stored})`;
+  }
   const value = generateExpression(expression, context);
   if (context.semanticInfo.objcBlockArguments.has(expression.location.offset)) return value;
   const nativeIn = nativeAccess === "in";
-  const foreignIn = context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in";
+  const foreignIn = foreignAccess === "in";
   if (nativeIn && expression.kind === "argumentReference") return value;
   if (foreignIn && expression.kind === "argumentReference") return value;
   if (

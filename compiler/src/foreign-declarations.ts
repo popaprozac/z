@@ -2375,7 +2375,7 @@ function objectiveCMethodApiNote(
     throw new DiagnosticError(
       fileName,
       contract.returnLocation,
-      "the first Objective-C method contract tier refines block parameters only",
+      "the first Objective-C method contract tier refines parameter borrows, block callbacks, and executor affinity only",
       { code: "Z0801" },
     );
   }
@@ -2402,11 +2402,15 @@ function objectiveCMethodApiNote(
           { code: "Z0801" },
         );
       }
+      if (parameter.mode === "in" && native.type.kind === "object") {
+        parameters[String(index)] = { access: "in" };
+        continue;
+      }
       if (parameter.mode !== "value") {
         throw new DiagnosticError(
           fileName,
           parameter.location,
-          `non-block Objective-C parameter ${JSON.stringify(parameter.name)} cannot use ${parameter.mode} in this contract tier`,
+          `Objective-C parameter ${JSON.stringify(parameter.name)} cannot use ${parameter.mode} with native type ${JSON.stringify(native.type.cName)}`,
           { code: "Z0801" },
         );
       }

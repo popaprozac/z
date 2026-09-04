@@ -1,0 +1,5 @@
+declare module "objc-borrow-method.h" {
+  export function ZObjCBorrowMethodFixture.echo(
+    in value: _
+  ): _;
+}
