@@ -5124,6 +5124,22 @@ completes its subject before lowering any arm; a fixed-point regression keeps
 an early-return failure arm beside the captured callback so this ordering bug
 cannot return.
 
+## Chained collection results retain their inferred native type
+
+The Zapp frontend-menu bridge looked up commands through application-owned
+state with `menu.state.frontendCommands.get(id)`. Stage 0 inferred the local as
+`Option<Command>`, but fixed-point lowering only recovered collection method
+signatures when the receiver was a direct binding. A chained field receiver
+therefore failed later with an internal missing-local-type diagnostic.
+
+Native lowering now resolves the receiver type recursively and asks the same
+collection intrinsic model for the method result. An executable fixed-point
+regression reads a `Map<String, Item>` through two ARC class fields, matches the
+inferred `Option<Item>`, and emits, compiles, and runs the resulting C. This is
+important composition evidence: application architecture should be free to
+organize collection state behind managers without forcing redundant type
+annotations to compensate for compiler internals.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

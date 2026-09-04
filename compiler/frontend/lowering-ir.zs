@@ -67,6 +67,7 @@ import {
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
+import { collectionMethodSignature } from "./semantic-intrinsics.zs";
 import { Map, Set } from "std/collections";
 import fs from "std/fs";
 import { TextBuffer } from "std/text";
@@ -9106,6 +9107,46 @@ function staticallyResolvedExpressionTypeName(
         0,
         resolution.returnType.byteLength
       ));
+    }
+    if (tree.nodes[index].children.length > 0) {
+      const callee = tree.nodes[index].children[0];
+      if (
+        tree.nodes[callee].kind == ExpressionKind.memberExpression
+        && tree.nodes[callee].children.length == 1
+      ) {
+        const receiver = tree.nodes[callee].children[0];
+        match (staticallyResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          arena,
+          ownerName,
+          tree,
+          receiver
+        )) {
+          some(receiverTypeName) => {
+            const methodName = tree.nodes[callee].value.copyBytes(
+              0,
+              tree.nodes[callee].value.byteLength
+            );
+            match (collectionMethodSignature(
+              in receiverTypeName,
+              in methodName
+            )) {
+              some(signature) => {
+                if (signature.returnType.byteLength > 0) {
+                  return Option.some(signature.returnType.copyBytes(
+                    0,
+                    signature.returnType.byteLength
+                  ));
+                }
+              }
+              none => {}
+            }
+          }
+          none => {}
+        }
+      }
     }
   }
   if (

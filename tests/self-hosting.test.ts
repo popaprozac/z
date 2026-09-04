@@ -671,6 +671,30 @@ test("preserves local views through native lowering and C emission", () => {
   assert.equal(execution.status, 0, execution.stderr);
 }, 20_000);
 
+test("infers chained collection method results during native lowering", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-chained-map-get.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-chained-map-get-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+}, 20_000);
+
 test("tracks direct local view loans by fixed-layout field path natively", () => {
   const directory = mkdtempSync("/tmp/z-native-local-view-path-");
   const input = resolve(directory, "main.zs");
