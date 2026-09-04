@@ -12038,7 +12038,7 @@ function appendAsyncMethodAwaitHelpers(
         owner,
         expressionIndex
       );
-      output.append("_task *)task);\n}\n\nstatic Z_AsyncInvocation ");
+      output.append("_task *)task);\n}\n\nstatic __attribute__((unused)) Z_AsyncInvocation ");
       appendAsyncCallableAwaitHelperName(
         inout output,
         owner,

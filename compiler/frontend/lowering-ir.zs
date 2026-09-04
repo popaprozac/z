@@ -20570,7 +20570,14 @@ function statementIsFirstTierAwaitLocal(
   return match (in arena.nodes[index].expression) {
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
-        const root = tree.root;
+        let root = tree.root;
+        // `attempt await` keeps the child's Result as the local value. No
+        // propagation rewrite is required; the linear task frame receives
+        // and owns the complete Result after the child finishes.
+        if (
+          tree.nodes[root].kind == ExpressionKind.attemptExpression
+          && tree.nodes[root].children.length == 1
+        ) root = tree.nodes[root].children[0];
         if (
           tree.nodes[root].kind != ExpressionKind.awaitExpression
           || tree.nodes[root].children.length != 1

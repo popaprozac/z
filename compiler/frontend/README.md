@@ -189,7 +189,9 @@ recursive path.
   typed task failures, nested `try await`, first-tier checked foreign calls,
   C exports, and embedded-runtime entry points. Its bounded main-executor
   suspension tier uses one heap-owned invocation frame for top-level linear
-  segments and one top-level `if`, consuming `match`, or `while`. The `while`
+  segments—including locals that materialize a throwing child's complete
+  `Result<T, E>` through `attempt await`—and one top-level `if`, consuming
+  `match`, or `while`. The `while`
   form preserves per-iteration cleanup, `break`, `continue`, `return`, `throw`,
   direct synchronous `try`, and cancellation. Suspending `for`, nested
   structured suspension, `try await` inside the placed loop, dynamic delays,

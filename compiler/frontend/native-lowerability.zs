@@ -982,7 +982,14 @@ function statementIsFirstTierAwaitLocal(
   return match (in arena.nodes[index].expression) {
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
-        const root = tree.root;
+        let root = tree.root;
+        // `attempt` materializes the awaited Result in the local rather than
+        // propagating it.  The native linear frame already stores that Result
+        // verbatim, so this has the same suspension shape as a bare await.
+        if (
+          tree.nodes[root].kind == ExpressionKind.attemptExpression
+          && tree.nodes[root].children.length == 1
+        ) root = tree.nodes[root].children[0];
         if (
           tree.nodes[root].kind != ExpressionKind.awaitExpression
           || tree.nodes[root].children.length != 1
@@ -1157,12 +1164,15 @@ function functionHasFirstTierTailAwaitStorage(
     )
   ) return false;
   match (in declaration.errorType) {
-    some(_) => if (!functionUsesFirstTierPlacedAsyncLinearAwait(
-      moduleIndex,
-      modules,
-      graph,
-      declaration
-    )) return false;
+    some(_) => if (
+      !functionUsesFirstTierLinearAwait(declaration)
+      && !functionUsesFirstTierPlacedAsyncLinearAwait(
+        moduleIndex,
+        modules,
+        graph,
+        declaration
+      )
+    ) return false;
     none => {}
   }
   if (owner.byteLength > 0) {
