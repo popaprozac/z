@@ -3128,8 +3128,39 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
       return try await task;
     }
   `;
-  const embeddedTryDiagnostic = diagnostics(embeddedTry, "thread-embedded-try.zs")[0];
-  assert.match(embeddedTryDiagnostic.message, /try must be the direct value of a binding/);
+  const embeddedTryFile = resolve(directory, "thread-embedded-try.zs");
+  writeFileSync(embeddedTryFile, embeddedTry);
+  const embeddedTryResult = spawnSync(
+    process.execPath,
+    [cli, "run", embeddedTryFile],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(embeddedTryResult.status, 0);
+  assert.match(embeddedTryResult.stderr, /embedded synchronous `try` expression is not executable in an async frame yet/);
+
+  const synchronousEmbeddedTry = `
+    struct WorkError { code: i32; }
+    function calculate(): i32 throws WorkError { return 41; }
+    function consume(value: i32): i32 { return value; }
+    function operation(): i32 throws WorkError {
+      return consume(try calculate());
+    }
+    function main(): i32 {
+      const result = attempt operation();
+      return match (result) {
+        success(value) => value - 41;
+        failure(error) => error.code;
+      };
+    }
+  `;
+  const synchronousEmbeddedTryFile = resolve(directory, "synchronous-embedded-try.zs");
+  writeFileSync(synchronousEmbeddedTryFile, synchronousEmbeddedTry);
+  const synchronousEmbeddedTryResult = spawnSync(
+    process.execPath,
+    [cli, "run", synchronousEmbeddedTryFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(synchronousEmbeddedTryResult.status, 0, synchronousEmbeddedTryResult.stderr);
 
   const nestedTryAwait = `
     import { thread } from "std/thread";

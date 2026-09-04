@@ -1045,10 +1045,26 @@ function attachForeignObjCTypes(
     }
     if (concreteInterface) continue;
     const name = `${namespace}.${protocol.name}`;
-    if (
-      moduleSymbolIndex(modules[moduleIndex], name)
-        < modules[moduleIndex].symbols.length
-    ) continue;
+    const existingProtocol = moduleSymbolIndex(modules[moduleIndex], name);
+    if (existingProtocol < modules[moduleIndex].symbols.length) {
+      modules[moduleIndex].symbols[existingProtocol].kind =
+        ModuleSymbolKind.traitSymbol;
+      modules[moduleIndex].symbols[existingProtocol].importedName =
+        protocol.nativeName.copyBytes(0, protocol.nativeName.byteLength);
+      modules[moduleIndex].symbols[existingProtocol].valueType = "";
+      modules[moduleIndex].symbols[existingProtocol].typeSignature =
+        Option<ModuleTypeSignature>.some(objcProtocolTypeSignature(
+          protocol,
+          contracts,
+          namespace
+        ));
+      modules[moduleIndex].symbols[existingProtocol].foreignHeader =
+        contracts.moduleSpecifier.copyBytes(
+          0,
+          contracts.moduleSpecifier.byteLength
+        );
+      continue;
+    }
     modules[moduleIndex].symbols.push(ModuleSymbol({
       name,
       kind: ModuleSymbolKind.traitSymbol,
@@ -1080,10 +1096,29 @@ function attachForeignObjCTypes(
   }
   for (const interface_ of contracts.objectiveCInterfaces) {
     const name = `${namespace}.${interface_.name}`;
-    if (
-      moduleSymbolIndex(modules[moduleIndex], name)
-        < modules[moduleIndex].symbols.length
-    ) continue;
+    const existingInterface = moduleSymbolIndex(modules[moduleIndex], name);
+    if (existingInterface < modules[moduleIndex].symbols.length) {
+      modules[moduleIndex].symbols[existingInterface].kind =
+        ModuleSymbolKind.classSymbol;
+      modules[moduleIndex].symbols[existingInterface].importedName =
+        interface_.nativeName.copyBytes(
+          0,
+          interface_.nativeName.byteLength
+        );
+      modules[moduleIndex].symbols[existingInterface].valueType = "";
+      modules[moduleIndex].symbols[existingInterface].typeSignature =
+        Option<ModuleTypeSignature>.some(objcInterfaceTypeSignature(
+          interface_,
+          contracts,
+          namespace
+        ));
+      modules[moduleIndex].symbols[existingInterface].foreignHeader =
+        contracts.moduleSpecifier.copyBytes(
+          0,
+          contracts.moduleSpecifier.byteLength
+        );
+      continue;
+    }
     modules[moduleIndex].symbols.push(ModuleSymbol({
       name,
       kind: ModuleSymbolKind.classSymbol,

@@ -181,7 +181,7 @@ hostToolchainTest("prefers an Objective-C class over a legacy protocol with the 
 
   assert.match(artifact.source, /static NSMenuItem \* createMenuItem\(void\)/);
   assert.match(artifact.source, /NSMenuItem \* const item = createMenuItem\(\);/);
-  assert.match(artifact.source, /\[item setTitle:@"File"\]/);
+  assert.match(artifact.source, /\[item setTitle:z_nsstring_from_string\(\(definition\)\.title\)\]/);
 
   const nativeCheck = spawnSync(
     process.execPath,

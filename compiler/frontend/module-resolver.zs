@@ -3938,7 +3938,7 @@ function isNativeObjectiveCObjectType(
   let target = typeName.copyBytes(0, typeName.byteLength);
   if (nullableTarget.byteLength > 0) target = nullableTarget;
   if (target == "id") return true;
-  return match (typeSymbolLocation(modules, moduleIndex, target)) {
+  return match (inferredTypeSymbolLocation(modules, moduleIndex, target)) {
     some(location) => {
       const symbol = view modules[location.moduleIndex]
         .symbols[location.symbolIndex];
@@ -11552,6 +11552,7 @@ function inferStatement(
     let assignmentBinding = "";
     let assignmentFieldOwner = "";
     let assignmentFieldName = "";
+    let assignmentObjectiveCProperty = false;
     match (in arena.nodes[index].expression) {
       some(target) => {
         match (in target.tree) {
@@ -11616,6 +11617,11 @@ function inferStatement(
                 inout bindings,
                 inout evidence
               );
+              assignmentObjectiveCProperty = isNativeObjectiveCObjectType(
+                modules,
+                moduleIndex,
+                receiverType
+              );
               const memberName = identifierLookupName(tree.nodes[root].value);
               if (tree.nodes[receiverIndex].kind == ExpressionKind.identifierExpression) {
                 assignmentFieldOwner = identifierLookupName(
@@ -11628,6 +11634,22 @@ function inferStatement(
               }
               match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
                 some(field) => {
+                  if (
+                    field.objectiveCGetter.byteLength > 0
+                    || field.objectiveCSetter.byteLength > 0
+                  ) {
+                    assignmentObjectiveCProperty = true;
+                  }
+                  match (in modules[field.ownerModuleIndex].symbols[
+                    field.ownerSymbolIndex
+                  ].typeSignature) {
+                    some(signature) => {
+                      if (signature.foreignKind == "objcInterface") {
+                        assignmentObjectiveCProperty = true;
+                      }
+                    }
+                    none => {}
+                  }
                   const constructorType = valueBindingType(
                     bindings,
                     "__z_native_constructor_type"
@@ -11705,14 +11727,22 @@ function inferStatement(
             none => {}
           }
         }
-        try consumeOwnedExpressionSyntax(
-          module,
-          modules,
-          moduleIndex,
-          value,
-          consumedType,
-          inout bindings
-        );
+        // When native resolution cannot classify a foreign destination, Stage
+        // 0 remains authoritative for its setter and ownership semantics. Do
+        // not invent an owned transfer solely from the right-hand side.
+        if (
+          expected.byteLength > 0
+          && !assignmentObjectiveCProperty
+        ) {
+          try consumeOwnedExpressionSyntax(
+            module,
+            modules,
+            moduleIndex,
+            value,
+            consumedType,
+            inout bindings
+          );
+        }
         if (
           assignmentBinding.byteLength > 0
           && typeIsClassReference(module, modules, moduleIndex, consumedType)

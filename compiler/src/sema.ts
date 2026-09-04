@@ -10328,16 +10328,6 @@ function inferExpressionInner(
       return result;
     }
     case "try": {
-      if (
-        expression.expression.kind !== "await"
-        && expression.expression.kind !== "executorPlacement"
-      ) {
-        throw new DiagnosticError(
-          fileName,
-          expression.location,
-          "try must be the direct value of a binding, return, or expression statement",
-        );
-      }
       const owner = state.activeFunction;
       if (!owner) {
         throw new DiagnosticError(fileName, expression.location, "try requires an enclosing throwing function");
