@@ -22,6 +22,7 @@ import {
   nativeFunctionTypeName,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
+import { Map } from "std/collections";
 import { TextBuffer } from "std/text";
 
 // Native .zd slice: inferred scalar/record, value-resource, opaque-handle,
@@ -1345,58 +1346,42 @@ function isCharacterPointerReturn(
   };
 }
 
+function indexedForeignType(
+  in indices: Map<String, usize>,
+  in name: String,
+  missing: usize
+): usize {
+  const found = indices.get(name);
+  return match (in found) {
+    some(index) => index;
+    none => missing;
+  };
+}
+
 function foreignEnumTypeIndex(
   in declarations: RawForeignModuleDeclarations,
   in nativeType: String
 ): Option<usize> {
-  let index: usize = 0;
-  while (index < declarations.types.length) {
-    if (
-      declarations.types[index].kind == "enum"
-      && (
-        nativeType == declarations.types[index].nativeName
-        || nativeType == declarations.types[index].exportName
-        || nativeType == declarations.types[index].qualifiedName
-      )
-    ) return Option<usize>.some(index);
-    index = index + 1;
-  }
-  return Option<usize>.none;
-}
-
-function recordValueSpelling(in name: String, tagged: boolean): String {
-  if (!tagged) return name.copyBytes(0, name.byteLength);
-  let output = TextBuffer();
-  output.append("struct ");
-  output.append(name);
-  return output.finish();
+  const index = indexedForeignType(
+    declarations.enumTypeIndices,
+    nativeType,
+    declarations.types.length
+  );
+  if (index >= declarations.types.length) return Option<usize>.none;
+  return Option.some(index);
 }
 
 function foreignRecordTypeIndex(
   in declarations: RawForeignModuleDeclarations,
   in nativeType: String
 ): Option<usize> {
-  let index: usize = 0;
-  while (index < declarations.types.length) {
-    if (declarations.types[index].kind != "record") {
-      index = index + 1;
-      continue;
-    }
-    const nativeName = view declarations.types[index].nativeName;
-    const exportName = view declarations.types[index].exportName;
-    const taggedNative = recordValueSpelling(nativeName, true);
-    const taggedExport = recordValueSpelling(exportName, true);
-    if (
-      nativeType == nativeName
-      || nativeType == exportName
-      || nativeType == declarations.types[index].qualifiedName
-      || nativeType == declarations.types[index].typeName
-      || nativeType == taggedNative
-      || nativeType == taggedExport
-    ) return Option<usize>.some(index);
-    index = index + 1;
-  }
-  return Option<usize>.none;
+  const index = indexedForeignType(
+    declarations.recordTypeIndices,
+    nativeType,
+    declarations.types.length
+  );
+  if (index >= declarations.types.length) return Option<usize>.none;
+  return Option.some(index);
 }
 
 struct RawRecordPointer {
@@ -1404,54 +1389,31 @@ struct RawRecordPointer {
   mutablePointer: boolean;
 }
 
-function recordPointerSpelling(
-  in name: String,
-  constant: boolean,
-  tagged: boolean
-): String {
-  let output = TextBuffer();
-  if (constant) output.append("const ");
-  if (tagged) output.append("struct ");
-  output.append(name);
-  output.append(" *");
-  return output.finish();
-}
-
 function rawRecordPointer(
   in declarations: RawForeignModuleDeclarations,
   in nativeType: String
 ): Option<RawRecordPointer> {
-  let index: usize = 0;
-  while (index < declarations.types.length) {
-    if (declarations.types[index].kind != "record") {
-      index = index + 1;
-      continue;
-    }
-    const nativeName = view declarations.types[index].nativeName;
-    const exportName = view declarations.types[index].exportName;
-    const mutableNative = recordPointerSpelling(nativeName, false, false);
-    const mutableExport = recordPointerSpelling(exportName, false, false);
-    const mutableTagged = recordPointerSpelling(nativeName, false, true);
-    if (
-      nativeType == mutableNative
-      || nativeType == mutableExport
-      || nativeType == mutableTagged
-    ) return Option.some(RawRecordPointer({
-      typeIndex: index,
+  const mutableIndex = indexedForeignType(
+    declarations.mutableRecordPointerIndices,
+    nativeType,
+    declarations.types.length
+  );
+  if (mutableIndex < declarations.types.length) {
+    return Option.some(RawRecordPointer({
+      typeIndex: mutableIndex,
       mutablePointer: true,
     }));
-    const constNative = recordPointerSpelling(nativeName, true, false);
-    const constExport = recordPointerSpelling(exportName, true, false);
-    const constTagged = recordPointerSpelling(nativeName, true, true);
-    if (
-      nativeType == constNative
-      || nativeType == constExport
-      || nativeType == constTagged
-    ) return Option.some(RawRecordPointer({
-      typeIndex: index,
+  }
+  const constIndex = indexedForeignType(
+    declarations.constRecordPointerIndices,
+    nativeType,
+    declarations.types.length
+  );
+  if (constIndex < declarations.types.length) {
+    return Option.some(RawRecordPointer({
+      typeIndex: constIndex,
       mutablePointer: false,
     }));
-    index = index + 1;
   }
   return Option<RawRecordPointer>.none;
 }
@@ -1478,16 +1440,15 @@ function scalarTypeNameWithCanonical(
     success(typeName) => return typeName;
     failure(_) => {}
   }
-  for (const declaration of declarations.types) {
-    if (
-      declaration.kind == "scalar"
-      && (
-        nativeType == declaration.nativeName
-        || nativeType == declaration.exportName
-        || nativeType == declaration.qualifiedName
-        || nativeType == declaration.typeName
-      )
-    ) return try scalarTypeName(declaration.underlyingType);
+  const scalarIndex = indexedForeignType(
+    declarations.scalarTypeIndices,
+    nativeType,
+    declarations.types.length
+  );
+  if (scalarIndex < declarations.types.length) {
+    return try scalarTypeName(
+      declarations.types[scalarIndex].underlyingType
+    );
   }
   match (in canonicalNativeType) {
     some(typeName) => return try scalarTypeName(typeName);
@@ -1728,13 +1689,21 @@ function foreignObjCValueTypeName(
   in nativeType: String
 ): Option<String> {
   const compact = compactNativeType(nativeType);
-  for (const interface_ of declarations.objectiveCInterfaces) {
-    const pointerPrefix = `${interface_.className}*`;
-    if (!stringStartsWith(compact, pointerPrefix)) continue;
-    const qualifiers = compact.copyBytes(
-      pointerPrefix.byteLength,
-      compact.byteLength
-    );
+  let pointer: usize = 0;
+  while (pointer < compact.byteLength && compact.byteAt(pointer) != 42) {
+    pointer = pointer + 1;
+  }
+  if (pointer == 0 || pointer >= compact.byteLength) {
+    return Option<String>.none;
+  }
+  const className = compact.copyBytes(0, pointer);
+  const interfaceIndex = indexedForeignType(
+    declarations.objectiveCInterfaceIndices,
+    className,
+    declarations.objectiveCInterfaces.length
+  );
+  if (interfaceIndex < declarations.objectiveCInterfaces.length) {
+    const qualifiers = compact.copyBytes(pointer + 1, compact.byteLength);
     if (
       qualifiers.byteLength > 0
       && qualifiers != "__strong"
@@ -1751,10 +1720,12 @@ function foreignObjCValueTypeName(
       && qualifiers != "__unsafe_unretained_Nullable"
       && qualifiers != "__autoreleasing_Nonnull"
       && qualifiers != "__autoreleasing_Nullable"
-    ) continue;
-    const typeName = interface_.exportName.copyBytes(
+    ) return Option<String>.none;
+    const typeName = declarations.objectiveCInterfaces[
+      interfaceIndex
+    ].exportName.copyBytes(
       0,
-      interface_.exportName.byteLength
+      declarations.objectiveCInterfaces[interfaceIndex].exportName.byteLength
     );
     if (stringContainsBytes(qualifiers, "Nullable")) {
       return Option.some(`${typeName} | null`);

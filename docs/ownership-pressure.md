@@ -5180,11 +5180,21 @@ requires the active compiler path and digest, preventing a live but different
 compiler binary from authorizing stale generated C.
 
 The pressure test also records the remaining limitation honestly: changing one
-source module still performs the full roughly 35-second build. Z Notes therefore
-points directly at the next compiler architecture work—sharing the remaining
-indexed imported-type context directly through lowering and adding per-module
-persistent frontend/lowering artifacts—rather than another surface language
-feature.
+source module still performs a full build. A follow-up profile found that fresh
+foreign adapter output was not the same thing as cheap native consumption:
+normalization still performed graph-wide linear searches for every foreign value
+type. Building exact raw declaration indices during decoding reduced the same
+cold release build from 35.80 seconds to 19.62 seconds, from roughly 310 billion
+to 89.1 billion retired instructions, and from about 3.27 GB to 1.78 GB peak
+memory. Foreign project loading fell from 11.15 to 0.47 seconds of sampled
+compiler CPU without weakening `.zd` validation or alias identity.
+
+Z Notes now points directly at the next compiler architecture work—sharing the
+remaining imported-type context directly through lowering and splitting the
+monolithic generated C translation unit into independently compilable
+artifacts. Persisting parsed ASTs first would target only about one second of the
+measured build and would add a large invalidation surface before addressing the
+dominant costs.
 
 ## Recursive typed JSON stays streaming and ownership-safe
 

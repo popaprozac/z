@@ -3,6 +3,8 @@
 // Text fields are length-prefixed UTF-8 rather than delimiter escaped, so the
 // decoder can preserve arbitrary names while walking one bounded stream.
 
+import { Map } from "std/collections";
+
 export struct RawForeignAvailability {
   functionIndex: usize;
   overloadIndex: usize;
@@ -240,6 +242,12 @@ export struct RawForeignModuleDeclarations {
   objectiveCProperties: Array<RawForeignObjCProperty>;
   objectiveCPropertyProtocols: Array<String>;
   objectiveCPropertyAvailability: Array<RawForeignObjCPropertyAvailability>;
+  enumTypeIndices: Map<String, usize>;
+  recordTypeIndices: Map<String, usize>;
+  scalarTypeIndices: Map<String, usize>;
+  mutableRecordPointerIndices: Map<String, usize>;
+  constRecordPointerIndices: Map<String, usize>;
+  objectiveCInterfaceIndices: Map<String, usize>;
 }
 
 struct ForeignWireCursor {
@@ -273,7 +281,142 @@ function emptyRawForeignModule(): RawForeignModuleDeclarations {
     objectiveCPropertyProtocols: Array<String>(),
     objectiveCPropertyAvailability:
       Array<RawForeignObjCPropertyAvailability>(),
+    enumTypeIndices: Map<String, usize>(),
+    recordTypeIndices: Map<String, usize>(),
+    scalarTypeIndices: Map<String, usize>(),
+    mutableRecordPointerIndices: Map<String, usize>(),
+    constRecordPointerIndices: Map<String, usize>(),
+    objectiveCInterfaceIndices: Map<String, usize>(),
   });
+}
+
+function indexName(
+  inout indices: Map<String, usize>,
+  in name: String,
+  index: usize
+): void {
+  if (name.byteLength == 0 || indices.has(name)) return;
+  indices.set(copy name, index);
+}
+
+function indexedRecordValueName(in name: String): String {
+  return `struct ${name}`;
+}
+
+function indexedRecordPointerName(
+  in name: String,
+  constant: boolean,
+  tagged: boolean
+): String {
+  let prefix = "";
+  if (constant) prefix = "const ";
+  const tag = tagged ? "struct " : "";
+  return `${prefix}${tag}${name} *`;
+}
+
+function buildForeignTypeIndices(
+  inout module: RawForeignModuleDeclarations
+): void {
+  let index: usize = 0;
+  while (index < module.types.length) {
+    const kind = copy module.types[index].kind;
+    const nativeName = copy module.types[index].nativeName;
+    const exportName = copy module.types[index].exportName;
+    const qualifiedName = copy module.types[index].qualifiedName;
+    const typeName = copy module.types[index].typeName;
+    if (kind == "enum") {
+      indexName(inout module.enumTypeIndices, nativeName, index);
+      indexName(inout module.enumTypeIndices, exportName, index);
+      indexName(inout module.enumTypeIndices, qualifiedName, index);
+    } else if (kind == "scalar") {
+      indexName(inout module.scalarTypeIndices, nativeName, index);
+      indexName(inout module.scalarTypeIndices, exportName, index);
+      indexName(inout module.scalarTypeIndices, qualifiedName, index);
+      indexName(inout module.scalarTypeIndices, typeName, index);
+    } else if (kind == "record") {
+      indexName(inout module.recordTypeIndices, nativeName, index);
+      indexName(inout module.recordTypeIndices, exportName, index);
+      indexName(inout module.recordTypeIndices, qualifiedName, index);
+      indexName(inout module.recordTypeIndices, typeName, index);
+      const taggedNative = indexedRecordValueName(nativeName);
+      const taggedExport = indexedRecordValueName(exportName);
+      indexName(inout module.recordTypeIndices, taggedNative, index);
+      indexName(inout module.recordTypeIndices, taggedExport, index);
+
+      const mutableNative = indexedRecordPointerName(
+        nativeName,
+        false,
+        false
+      );
+      const mutableExport = indexedRecordPointerName(
+        exportName,
+        false,
+        false
+      );
+      const mutableTagged = indexedRecordPointerName(
+        nativeName,
+        false,
+        true
+      );
+      indexName(
+        inout module.mutableRecordPointerIndices,
+        mutableNative,
+        index
+      );
+      indexName(
+        inout module.mutableRecordPointerIndices,
+        mutableExport,
+        index
+      );
+      indexName(
+        inout module.mutableRecordPointerIndices,
+        mutableTagged,
+        index
+      );
+
+      const constNative = indexedRecordPointerName(
+        nativeName,
+        true,
+        false
+      );
+      const constExport = indexedRecordPointerName(
+        exportName,
+        true,
+        false
+      );
+      const constTagged = indexedRecordPointerName(
+        nativeName,
+        true,
+        true
+      );
+      indexName(
+        inout module.constRecordPointerIndices,
+        constNative,
+        index
+      );
+      indexName(
+        inout module.constRecordPointerIndices,
+        constExport,
+        index
+      );
+      indexName(
+        inout module.constRecordPointerIndices,
+        constTagged,
+        index
+      );
+    }
+    index = index + 1;
+  }
+  index = 0;
+  while (index < module.objectiveCInterfaces.length) {
+    const className = copy module.objectiveCInterfaces[index].className;
+    indexName(
+      inout module.objectiveCInterfaceIndices,
+      className,
+      index
+    );
+    index = index + 1;
+  }
 }
 
 function hexValue(byte: u8): usize throws String {
@@ -1226,6 +1369,7 @@ export function decodeRawForeignDeclarations(
         throw "foreign declaration stream contains records after end";
       }
       try validateCompletedModule(module);
+      buildForeignTypeIndices(inout module);
       return module;
     } else {
       throw "foreign declaration stream contains an unknown record";

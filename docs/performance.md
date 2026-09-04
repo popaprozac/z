@@ -561,9 +561,29 @@ compiler. Merely retaining the older compiler binary on disk is insufficient:
 a different compiler executable cannot reuse its generated native source or
 artifact. A fixed-point regression exposed and now guards this distinction.
 
-This is not incremental compilation. A one-byte source edit still pays the
-roughly 35-second cold path. The next compiler-latency target is sharing indexed
-imported-type evidence directly through lowering, followed by persistent
-per-module frontend and lowering artifacts. The existing `run` cache also
-remains a later emitted-C comparison and can reuse the early input record in a
-future slice.
+One more application profile made the remaining foreign-import cost precise.
+Although the native adapter artifact was already fresh, normalization repeatedly
+searched the complete Clang type and Objective-C interface collections for each
+parameter, field, and result. Raw declaration decoding now constructs canonical
+enum, scalar, record-value, record-pointer, and Objective-C interface indices
+once. Contract normalization consumes those indices without changing which
+source spellings, aliases, qualifiers, or ABI facts are accepted.
+
+The same real Z Notes cold release build subsequently took 19.62 seconds,
+retired approximately 89.1 billion instructions, and peaked near 1.78 GB: 1.82
+times faster than the preceding 35.80-second checkpoint, about 71 percent fewer
+instructions, and roughly 46 percent less peak memory. Compared with the original
+179-second application build, this is a 9.1-times reduction. A post-change Time
+Profiler trace attributed only 0.47 seconds of sampled compiler CPU to foreign
+module loading, down from 11.15 seconds. Native lowering now dominates compiler
+CPU at about 5.45 seconds, while Clang compilation/linking accounts for most of
+the remaining wall time.
+
+This is still not incremental compilation. A one-byte source edit pays the full
+cold path, now about 20 seconds on this machine. The measured next boundaries
+are sharing imported-type evidence directly through lowering and splitting the
+monolithic generated translation unit into independently compilable artifacts.
+A persistent AST cache alone would save little: parsing and project loading are
+now about one second, while cross-module generic lowering and Clang remain the
+dominant work. The existing `run` cache also remains a later emitted-C comparison
+and can reuse the early input record in a future slice.
