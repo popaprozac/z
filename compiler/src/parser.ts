@@ -39,6 +39,14 @@ export function parse(tokens: Token[], fileName: string): Program {
     if (at(kind)) return take();
     throw new DiagnosticError(fileName, peek().location, `expected ${description}, found ${tokenDescription(peek())}`);
   };
+  const expectEnumVariantName = (): Token => {
+    if (at("identifier") || at("on")) return take();
+    throw new DiagnosticError(
+      fileName,
+      peek().location,
+      `expected an enum variant name, found ${tokenDescription(peek())}`,
+    );
+  };
   const expectTypeGreater = (): Token => {
     if (at("greater")) return take();
     if (at("shiftRight")) {
@@ -885,7 +893,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     expect("leftBrace", "`{`");
     const arms = [];
     while (!at("rightBrace") && !at("eof")) {
-      const variantToken = expect("identifier", "a variant name");
+      const variantToken = expectEnumVariantName();
       let bindingToken: Token | null = null;
       let objectBindings = null;
       if (match("leftParen")) {
@@ -1384,7 +1392,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     expect("leftBrace", "`{`");
     const variants = [];
     while (!at("rightBrace") && !at("eof")) {
-      const variant = expect("identifier", "a variant name");
+      const variant = expectEnumVariantName();
       const payload = at("identifier") ? parseType() : null;
       variants.push({ name: variant.text, payload, location: variant.location });
       if (!match("comma")) break;

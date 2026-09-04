@@ -412,6 +412,19 @@ function expectKind(
   current = current + 1;
 }
 
+function expectEnumVariantName(
+  in tokens: Array<Token>,
+  inout current: usize
+): Token throws ParserError {
+  const token = snapshot(tokens[current]);
+  if (
+    token.kind != TokenKind.identifier
+    && token.kind != TokenKind.onKeyword
+  ) throw fail(token, `expected an enum variant name, found ${token.text}`);
+  current = current + 1;
+  return token;
+}
+
 function takeIf(in tokens: Array<Token>, inout current: usize, kind: TokenKind): boolean {
   if (tokens[current].kind != kind) return false;
   current = current + 1;
@@ -931,8 +944,7 @@ function parseMatchTree(
   try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after the match subject");
   try expectKind(tokens, inout current, TokenKind.leftBrace, "`{` starting match arms");
   while (tokens[current].kind != TokenKind.rightBrace && tokens[current].kind != TokenKind.eof) {
-    const variant = snapshot(tokens[current]);
-    try expectKind(tokens, inout current, TokenKind.identifier, "a variant name");
+    const variant = try expectEnumVariantName(tokens, inout current);
     let patternKind = "none";
     let patternChildren = Array<usize>();
     if (takeIf(tokens, inout current, TokenKind.leftParen)) {
@@ -3670,7 +3682,7 @@ function parseEnumDeclaration(
   try expectKind(tokens, inout current, TokenKind.leftBrace, `the body of ${name.text}`);
   let variants = Array<EnumVariant>();
   while (tokens[current].kind != TokenKind.rightBrace && tokens[current].kind != TokenKind.eof) {
-    const variant = try expect(tokens, inout current, TokenKind.identifier, "an enum variant name");
+    const variant = try expectEnumVariantName(tokens, inout current);
     let payload = Option<TypeReference>.none;
     if (tokens[current].kind == TokenKind.identifier) {
       const parsed = try parseType(tokens, inout current, inout pendingGreater);

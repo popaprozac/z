@@ -3112,6 +3112,30 @@ test("highlights view capabilities and enum variants contextually", () => {
     && semanticTokenTypes[token.type] === "enumMember"));
 });
 
+test("allows contextual on as an enum variant and match arm", () => {
+  const source = `
+    enum CommandState {
+      off,
+      on,
+      mixed,
+    }
+
+    function value(state: CommandState): i32 {
+      return match (state) {
+        off => 0;
+        on => 1;
+        mixed => -1;
+      };
+    }
+
+    function main(): i32 {
+      return value(CommandState.on) - 1;
+    }
+  `;
+  const generated = compileToC(source, "contextual-enum-variant.zs");
+  assert.match(generated, /CommandState_on/);
+});
+
 test("materializes explicit Result type annotations independently of throwing-call discovery", () => {
   const source = `
     function inspect(result: Result<i32, String>): i32 {

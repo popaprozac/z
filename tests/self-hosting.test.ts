@@ -16636,6 +16636,19 @@ test("does not consume contextual payload-free generic enum variants", () => {
   }
 });
 
+test("parses contextual enum variant names with native frontend parity", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-contextual-enum-variant.zs",
+  );
+  const result = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("compares native function values by capability and type, not parameter names", () => {
   const input = resolve(projectRoot, "examples/language/basics/function-values.zs");
   const result = spawnSync(
