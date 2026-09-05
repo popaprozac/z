@@ -1389,6 +1389,17 @@ function appendAsyncTailLocalCleanups(
       some(found) => copy found;
       none => throw "native prefixed tail await received an untyped local";
     };
+    if (type.kind == LoweredTypeKind.foreignObjCType) {
+      appendIndent(inout output, depth);
+      output.append("z_stage1_objc_store_strong((void *)&");
+      appendAsyncFrameBindingName(
+        inout output,
+        declaration,
+        statement.name
+      );
+      output.append(", nil);\n");
+      continue;
+    }
     if (!loweredTypeNeedsDeinit(program, type)) continue;
     appendIndent(inout output, depth);
     output.append("if (");
@@ -1428,6 +1439,20 @@ function appendAsyncTailMatchBindingCleanup(
     some(found) => copy found;
     none => return;
   };
+  if (type.kind == LoweredTypeKind.foreignObjCType) {
+    if (arm.labels.length != 1) {
+      throw "native matched tail await requires one payload binding";
+    }
+    appendIndent(inout output, depth);
+    output.append("z_stage1_objc_store_strong((void *)&");
+    appendAsyncFrameBindingName(
+      inout output,
+      declaration,
+      arm.labels[0]
+    );
+    output.append(", nil);\n");
+    return;
+  }
   if (!loweredTypeNeedsDeinit(program, type)) return;
   if (arm.labels.length != 1) {
     throw "native matched tail await requires one payload binding";
@@ -12139,7 +12164,7 @@ function appendAsyncObjectiveCMethodAwaitHelper(
   const hasError = errorParameter < callbackParameterTypes.length;
   const directObjectiveCResult = !hasError
     && functionType.returnType.kind == LoweredTypeKind.foreignObjCType;
-  const resultNeedsDeinit = loweredTypeNeedsDeinit(
+  const resultNeedsDeinit = directObjectiveCResult || loweredTypeNeedsDeinit(
     program,
     functionType.returnType
   );
@@ -12315,11 +12340,7 @@ function appendAsyncObjectiveCMethodAwaitHelper(
     if (resultNeedsDeinit) output.append(" || !frame->live_result");
     output.append(") abort();\n");
     if (directObjectiveCResult) {
-      output.append("  ");
-      output.append(returnType);
-      output.append(" result = (");
-      output.append(returnType);
-      output.append(")z_stage1_objc_take(&frame->result);\n  memcpy(destination, (const void *)&result, sizeof(result))");
+      output.append("  z_stage1_objc_store_strong(destination, z_stage1_objc_take(&frame->result))");
     } else {
       output.append("  *( (");
       output.append(returnType);
@@ -12434,7 +12455,9 @@ function appendAsyncObjectiveCMethodAwaitHelper(
   if (functionType.returnType.kind != LoweredTypeKind.voidType) {
     output.append("  ");
     output.append(returnType);
-    output.append(" result;\n  invocation.take_result(invocation.task, &result);\n");
+    output.append(" result");
+    if (directObjectiveCResult) output.append(" = nil");
+    output.append(";\n  invocation.take_result(invocation.task, &result);\n");
   } else output.append("  invocation.take_result(invocation.task, NULL);\n");
   output.append("  invocation.destroy(invocation.task);\n  z_stage1_async_executor_destroy_external(&executor);\n");
   if (functionType.returnType.kind != LoweredTypeKind.voidType) {
@@ -21554,11 +21577,12 @@ function programUsesObjectiveCAsyncCompletion(
 }
 
 function appendObjCOwnedStorageRuntime(inout output: TextBuffer): void {
-  output.append("extern id objc_retain(id value);\nextern void objc_release(id value);\n\n");
+  output.append("extern id objc_retain(id value);\nextern void objc_release(id value);\nextern void objc_storeStrong(id __strong *location, id value);\n\n");
   output.append("typedef struct Z_ObjCOwned {\n  __unsafe_unretained id value;\n} Z_ObjCOwned;\n\n");
   output.append("static inline __attribute__((unused)) Z_ObjCOwned z_stage1_objc_owned(id value) {\n  return (Z_ObjCOwned){ .value = objc_retain(value) };\n}\n\n");
   output.append("static inline __attribute__((unused)) id z_stage1_objc_borrow(const Z_ObjCOwned *value) {\n  return value == NULL ? nil : value->value;\n}\n\n");
   output.append("static inline __attribute__((unused)) id z_stage1_objc_take(Z_ObjCOwned *value) {\n  if (value == NULL || value->value == nil) return nil;\n  id result = value->value;\n  objc_release(value->value);\n  value->value = nil;\n  return result;\n}\n\n");
+  output.append("static inline __attribute__((unused)) void z_stage1_objc_store_strong(void *destination, id value) {\n  if (destination == NULL) abort();\n  objc_storeStrong((id __strong *)destination, value);\n}\n\n");
   output.append("static inline __attribute__((unused)) Z_ObjCOwned z_stage1_objc_owned_copy(Z_ObjCOwned value) {\n  return z_stage1_objc_owned(value.value);\n}\n\n");
   output.append("static inline __attribute__((unused)) void z_stage1_objc_owned_deinit(Z_ObjCOwned *value) {\n  (void)z_stage1_objc_take(value);\n}\n\n");
 }

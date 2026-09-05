@@ -9210,6 +9210,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     + (ZRegistrationOwner * _Nullable)maybeOwner;
     - (void)fetchValue:(void (^ _Nonnull)(int))completionHandler;
     - (void)fetchValueOrError:(void (^ _Nonnull)(int, id _Nullable))completionHandler;
+    - (void)fetchOwner:(void (^ _Nonnull)(ZRegistrationOwner * _Nonnull))completionHandler;
     @end
 
     @interface ZPropertyOwner
@@ -9303,6 +9304,13 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
       "      return value;",
       "      throw error;",
       "    }",
+      "  }",
+      "  export function ZRegistrationOwner.fetchOwner(move completionHandler: _): _ {",
+      "    callback completionHandler {",
+      "      thread any;",
+      "      invoked once;",
+      "    }",
+      "    async completionHandler;",
       "  }",
       "}",
       "",
@@ -9528,6 +9536,97 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     objcNullableGuardCompilation.status,
     0,
     objcNullableGuardCompilation.stderr,
+  );
+  const objcAsyncObjectSourcePath = resolve(
+    directory,
+    "objc-async-object-input.zs",
+  );
+  writeFileSync(
+    objcAsyncObjectSourcePath,
+    [
+      'import native from "objc-registration-wire.h";',
+      'import { thread } from "std/thread";',
+      "",
+      "type OwnerOperation = async () => i32 on thread.main;",
+      "",
+      "async function compareOwners(): i32 on thread.main {",
+      "  const owner = native.ZRegistrationOwner.sharedOwner();",
+      "  const received = await owner.fetchOwner();",
+      "  return owner.compareOwner(received);",
+      "}",
+      "",
+      "function ownerOperation(): OwnerOperation on thread.main {",
+      "  const operation: OwnerOperation = async () => await compareOwners();",
+      "  return operation;",
+      "}",
+      "",
+      "async function main(): i32 on thread.main {",
+      "  const operation = ownerOperation();",
+      "  return await operation();",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const objcAsyncObjectEmissionPath = resolve(
+    directory,
+    "objc-async-object.m",
+  );
+  const objcAsyncObjectExecution = spawnSync(
+    contractExecutable,
+    [
+      objcPath,
+      objcContractPath,
+      objcAsyncObjectSourcePath,
+      "objc-direct",
+      objcAsyncObjectEmissionPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    objcAsyncObjectExecution.status,
+    0,
+    objcAsyncObjectExecution.stderr,
+  );
+  const objcAsyncObjectEmission = readFileSync(
+    objcAsyncObjectEmissionPath,
+    "utf8",
+  );
+  assert.match(
+    objcAsyncObjectEmission,
+    /extern void objc_storeStrong\(id __strong \*location, id value\)/,
+  );
+  assert.match(
+    objcAsyncObjectEmission,
+    /z_stage1_objc_store_strong\(destination, z_stage1_objc_take\(&frame->result\)\)/,
+  );
+  assert.match(
+    objcAsyncObjectEmission,
+    /z_stage1_objc_store_strong\(\(void \*\)&_z_stage1_frame_binding_received, nil\)/,
+  );
+  assert.doesNotMatch(
+    objcAsyncObjectEmission,
+    /memcpy\(destination, \(const void \*\)&result, sizeof\(result\)\)/,
+  );
+  const objcAsyncObjectCompilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "objective-c",
+      "-fobjc-arc",
+      "-fsyntax-only",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-include",
+      objcRuntimeStub,
+      objcAsyncObjectEmissionPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    objcAsyncObjectCompilation.status,
+    0,
+    objcAsyncObjectCompilation.stderr,
   );
   const objcProtocolNegativePath = resolve(
     directory,

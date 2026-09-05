@@ -5261,8 +5261,14 @@ native `.zd` reader now carries both shorthand `async completion;` and named
 direct Objective-C messages synthesize heap-owned task frames rather than
 falling back to handwritten callbacks. Objective-C receiver spellings are
 normalized to pointer ABI types, and ARC object results leave type-erased task
-storage through a local plus `memcpy`, avoiding an illegal ARC pointer-to-pointer
-conversion while preserving one ownership transfer.
+storage through an ARC-aware strong store. A raw `memcpy` initially appeared to
+avoid an illegal ARC pointer-to-pointer conversion, but it bypassed the retain
+on the awaiting frame's destination: the callback temporary was released and
+left a dangling object that crashed on its first message. Generated async frame
+cleanup now clears every Objective-C local with the same strong-store primitive,
+so completion, cancellation, and destruction each preserve exactly one ARC
+ownership transition. The executable Z Notes smoke checks notification status
+in two windows to keep that real callback path under regression coverage.
 
 Suspended Z locals no longer become source-named C preprocessor macros. A local
 named `response`, for example, previously rewrote an unrelated `.response`

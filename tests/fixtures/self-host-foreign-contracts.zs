@@ -62,7 +62,7 @@ function inspectObjC(
   const affinityInterface = view normalized.objectiveCInterfaces[2];
   if (affinityInterface.name != "ZPropertyOwner") return 134;
   if (affinityInterface.executorAffinity != "thread.main") return 135;
-  if (interface_.methods.length != 7) return 90;
+  if (interface_.methods.length != 8) return 90;
   if (interface_.methods[0].selector != "addHandler:name:") return 91;
   if (interface_.methods[0].parameters[0].typeName != "id") return 92;
   if (interface_.methods[0].parameters[0].protocols.length != 1) return 93;
@@ -98,6 +98,12 @@ function inspectObjC(
   match (in throwingAsync.asyncErrorParameter) {
     some(index) => if (index != 1) return 147;
     none => return 148;
+  }
+  const objectAsync = view interface_.methods[7];
+  if (objectAsync.name != "fetchOwner") return 149;
+  match (in objectAsync.asyncResultParameter) {
+    some(index) => if (index != 0) return 150;
+    none => return 151;
   }
 
   const source = try fs.readText(sourcePath);
@@ -172,7 +178,11 @@ function inspectObjC(
     return 0;
   }
   if (emittedPath.byteLength > 0) {
-    if (graph.modules[0].semanticEvidence.callResolutions.length == 3) {
+    if (
+      graph.modules[0].semanticEvidence.callResolutions.length == 3
+      && graph.modules[0].semanticEvidence.callResolutions[0]
+        .objectiveCSelector == "maybeOwner"
+    ) {
       const firstMaybe = view graph.modules[0]
         .semanticEvidence.callResolutions[0];
       const secondMaybe = view graph.modules[0]
@@ -182,6 +192,26 @@ function inspectObjC(
       if (firstMaybe.objectiveCSelector != "maybeOwner") return 131;
       if (secondMaybe.objectiveCSelector != "maybeOwner") return 132;
       if (comparison.objectiveCSelector != "compareOwner:") return 133;
+      const emitted = try emitModulesC(modules, graph);
+      try fs.writeText(emittedPath, emitted);
+      return 0;
+    }
+    let foundSharedOwner = false;
+    let foundFetchOwner = false;
+    let foundCompareOwner = false;
+    for (
+      const resolution
+      of graph.modules[0].semanticEvidence.callResolutions
+    ) {
+      if (resolution.objectiveCSelector == "sharedOwner") {
+        foundSharedOwner = true;
+      } else if (resolution.objectiveCSelector == "fetchOwner:") {
+        foundFetchOwner = true;
+      } else if (resolution.objectiveCSelector == "compareOwner:") {
+        foundCompareOwner = true;
+      }
+    }
+    if (foundSharedOwner && foundFetchOwner && foundCompareOwner) {
       const emitted = try emitModulesC(modules, graph);
       try fs.writeText(emittedPath, emitted);
       return 0;
