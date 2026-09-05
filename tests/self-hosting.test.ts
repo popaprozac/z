@@ -8397,6 +8397,8 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     assert.equal(
       objectiveCStringRun.stdout.split("\n").slice(1).join("\n"),
       "round trip=answer=42\n"
+        + "property=answer=42\n"
+        + "scheme=https\n"
         + "nullable=answer=42\n"
         + "narrowed=yes\n"
         + "embedded=a\0b\n",

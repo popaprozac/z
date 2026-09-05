@@ -16,6 +16,14 @@ function main(): i32 {
   if (!descriptionKey.isEqualToString("NSLocalizedDescription")) return 3;
   const roundTrip: String = nativeComputed;
   console.log(`round trip=${roundTrip}`);
+  const propertyRoundTrip: String = nativeComputed.lowercaseString;
+  console.log(`property=${propertyRoundTrip}`);
+  const parsedURL = Foundation.NSURL.URLWithString("HTTPS://example.com");
+  if (parsedURL == null) return 4;
+  const parsedScheme = parsedURL.scheme;
+  if (parsedScheme == null) return 4;
+  const schemeRoundTrip: String = parsedScheme.lowercaseString;
+  console.log(`scheme=${schemeRoundTrip}`);
 
   // Objective-C class identities are global even when independent imported
   // headers surface the same NSString declaration under different namespaces.
