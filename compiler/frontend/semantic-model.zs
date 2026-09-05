@@ -186,6 +186,9 @@ export struct ModuleCallResolution {
   objectiveCReceiverNativeType: String = "";
   objectiveCNativeReturnType: String = "";
   objectiveCParameterNativeTypes: Array<String> = Array<String>();
+  objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
+  objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
+  objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
 }
 
 export struct ModuleForeignArgument {

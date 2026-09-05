@@ -62,7 +62,7 @@ function inspectObjC(
   const affinityInterface = view normalized.objectiveCInterfaces[2];
   if (affinityInterface.name != "ZPropertyOwner") return 134;
   if (affinityInterface.executorAffinity != "thread.main") return 135;
-  if (interface_.methods.length != 5) return 90;
+  if (interface_.methods.length != 7) return 90;
   if (interface_.methods[0].selector != "addHandler:name:") return 91;
   if (interface_.methods[0].parameters[0].typeName != "id") return 92;
   if (interface_.methods[0].parameters[0].protocols.length != 1) return 93;
@@ -71,6 +71,34 @@ function inspectObjC(
       != "ZRegistrationHandler"
   ) return 94;
   if (interface_.methods[0].parameters[1].typeName != "cstring") return 95;
+  const infallibleAsync = view interface_.methods[5];
+  if (infallibleAsync.name != "fetchValue") return 136;
+  match (in infallibleAsync.asyncCallbackParameter) {
+    some(index) => if (index != 0) return 137;
+    none => return 138;
+  }
+  match (in infallibleAsync.asyncResultParameter) {
+    some(index) => if (index != 0) return 139;
+    none => return 140;
+  }
+  match (in infallibleAsync.asyncErrorParameter) {
+    some(_) => return 141;
+    none => {}
+  }
+  const throwingAsync = view interface_.methods[6];
+  if (throwingAsync.name != "fetchValueOrError") return 142;
+  match (in throwingAsync.asyncCallbackParameter) {
+    some(index) => if (index != 0) return 143;
+    none => return 144;
+  }
+  match (in throwingAsync.asyncResultParameter) {
+    some(index) => if (index != 0) return 145;
+    none => return 146;
+  }
+  match (in throwingAsync.asyncErrorParameter) {
+    some(index) => if (index != 1) return 147;
+    none => return 148;
+  }
 
   const source = try fs.readText(sourcePath);
   const moduleSource = ModuleSource({

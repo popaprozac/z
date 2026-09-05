@@ -89,6 +89,9 @@ export struct NativeMethodCallShape {
   objectiveCNativeReturnType: String;
   objectiveCParameterNativeTypes: Array<String>;
   objectiveCParameterProtocols: Array<ModuleObjCParameterProtocolSignature>;
+  objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
+  objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
+  objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
 }
 
 function objcSelectorLabelAt(in selector: String, target: usize): String {
@@ -834,6 +837,12 @@ export function methodCallShape(
               ),
               objectiveCParameterNativeTypes: nativeParameterTypes,
               objectiveCParameterProtocols: nativeParameterProtocols,
+              objectiveCAsyncCallbackParameter:
+                method.objectiveCAsyncCallbackParameter,
+              objectiveCAsyncResultParameter:
+                method.objectiveCAsyncResultParameter,
+              objectiveCAsyncErrorParameter:
+                method.objectiveCAsyncErrorParameter,
             });
             matched = Option<NativeMethodCallShape>.some(move shape);
             matchCount = matchCount + 1;

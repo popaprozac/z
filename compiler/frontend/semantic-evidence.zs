@@ -462,6 +462,9 @@ export function recordObjCCallFacts(
   in receiverNativeType: String,
   in returnNativeType: String,
   in parameterNativeTypes: Array<String>,
+  asyncCallbackParameter: Option<usize>,
+  asyncResultParameter: Option<usize>,
+  asyncErrorParameter: Option<usize>,
   inout evidence: ModuleSemanticEvidence
 ): void {
   const resolutionIndex = callResolutionIndex(
@@ -490,6 +493,12 @@ export function recordObjCCallFacts(
             typeName.byteLength
           ));
       }
+      evidence.callResolutions[resolutionIndex]
+        .objectiveCAsyncCallbackParameter = asyncCallbackParameter;
+      evidence.callResolutions[resolutionIndex]
+        .objectiveCAsyncResultParameter = asyncResultParameter;
+      evidence.callResolutions[resolutionIndex]
+        .objectiveCAsyncErrorParameter = asyncErrorParameter;
       return;
     }
   }

@@ -5254,6 +5254,28 @@ frame. This adds no wrapper allocation and avoids both a nested Result and a
 framework-local status convention. Suspended `try await` propagation remains
 explicitly rejected until the stored callable can expose a true throwing ABI.
 
+Running that manager inside the complete Z Notes application then exposed four
+fixed-point code-generation seams that isolated fixtures had not combined. The
+native `.zd` reader now carries both shorthand `async completion;` and named
+`async completion(value, error) { ... }` projections into semantic evidence;
+direct Objective-C messages synthesize heap-owned task frames rather than
+falling back to handwritten callbacks. Objective-C receiver spellings are
+normalized to pointer ABI types, and ARC object results leave type-erased task
+storage through a local plus `memcpy`, avoiding an illegal ARC pointer-to-pointer
+conversion while preserving one ownership transfer.
+
+Suspended Z locals no longer become source-named C preprocessor macros. A local
+named `response`, for example, previously rewrote an unrelated `.response`
+field token throughout generated C. Frame storage now uses compiler-private
+binding aliases consistently in polling, cancellation, match-payload cleanup,
+and destroy paths. An executable regression keeps a `title` local alive across
+an await while reading `request.title`, proving that ordinary Z names and field
+names remain independent after lowering. Finally, a throwing async `main`
+retains its typed `Result` in an internal entry and exposes the required C
+`int main` wrapper, destroying either payload exactly once. The complete Z
+Notes smoke now reaches native notification status, permission, and delivery
+routes without global callback storage or a blocking semaphore.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

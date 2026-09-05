@@ -33,6 +33,7 @@ import {
   moduleResolutionError,
 } from "./semantic-model.zs";
 import {
+  nativeFunctionSignature,
   nullableTargetType,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
@@ -195,16 +196,23 @@ function objcMethodSignature(
   let parameterIndex: usize = 0;
   while (parameterIndex < method.parameters.length) {
     const parameter = view method.parameters[parameterIndex];
-    parameterModes.push(parameter.capability.copyBytes(
-      0,
-      parameter.capability.byteLength
-    ));
-    parameterTypes.push(localObjCTypeName(
-      contracts,
-      indices,
-      namespace,
-      parameter.typeName
-    ));
+    let projectedCallback = false;
+    match (method.asyncCallbackParameter) {
+      some(index) => projectedCallback = index == parameterIndex;
+      none => {}
+    }
+    if (!projectedCallback) {
+      parameterModes.push(parameter.capability.copyBytes(
+        0,
+        parameter.capability.byteLength
+      ));
+      parameterTypes.push(localObjCTypeName(
+        contracts,
+        indices,
+        namespace,
+        parameter.typeName
+      ));
+    }
     parameterNativeTypes.push(parameter.nativeType.copyBytes(
       0,
       parameter.nativeType.byteLength
@@ -221,13 +229,70 @@ function objcMethodSignature(
   for (const item of method.availability) {
     availability.push(objcAvailabilitySignature(item));
   }
+  let asynchronous = false;
+  let returnType = localObjCTypeName(
+    contracts,
+    indices,
+    namespace,
+    method.returnType
+  );
+  let errorType = "";
+  match (method.asyncCallbackParameter) {
+    some(callbackIndex) => {
+      if (callbackIndex < method.parameters.length) {
+        match (nativeFunctionSignature(
+          method.parameters[callbackIndex].typeName
+        )) {
+          some(callback) => {
+            asynchronous = true;
+            returnType = "void";
+            match (method.asyncResultParameter) {
+              some(resultIndex) => if (
+                resultIndex < callback.parameterTypes.length
+              ) returnType = localObjCTypeName(
+                contracts,
+                indices,
+                namespace,
+                callback.parameterTypes[resultIndex]
+              );
+              none => {}
+            }
+            match (method.asyncErrorParameter) {
+              some(errorIndex) => if (
+                errorIndex < callback.parameterTypes.length
+              ) {
+                const nativeError = nullableTargetType(
+                  callback.parameterTypes[errorIndex]
+                );
+                const projectedError = nativeError.byteLength > 0
+                  ? nativeError.copyBytes(0, nativeError.byteLength)
+                  : callback.parameterTypes[errorIndex].copyBytes(
+                      0,
+                      callback.parameterTypes[errorIndex].byteLength
+                    );
+                errorType = localObjCTypeName(
+                  contracts,
+                  indices,
+                  namespace,
+                  projectedError
+                );
+              }
+              none => {}
+            }
+          }
+          none => {}
+        }
+      }
+    }
+    none => {}
+  }
   return ModuleMethodSignature({
     name: method.name.copyBytes(0, method.name.byteLength),
     staticMethod: !method.instance,
     visibility: "public",
     receiverMode: "in",
     signature: ModuleFunctionSignature({
-      asynchronous: false,
+      asynchronous,
       executorAffinity: method.executorAffinity.copyBytes(
         0,
         method.executorAffinity.byteLength
@@ -240,13 +305,8 @@ function objcMethodSignature(
       viewParameter: Option<usize>.none,
       invalidatesParameters: Array<usize>(),
       invalidatesLifetimes: Array<String>(),
-      returnType: localObjCTypeName(
-        contracts,
-        indices,
-        namespace,
-        method.returnType
-      ),
-      errorType: "",
+      returnType,
+      errorType,
     }),
     objectiveCSelector: method.selector.copyBytes(
       0,

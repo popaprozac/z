@@ -47,6 +47,10 @@ export struct RawForeignFunctionContract {
   name: String;
   parameters: Array<RawForeignContractParameter>;
   callbacks: Array<RawForeignCallbackContract>;
+  asyncCallback: String = "";
+  asyncBindings: Array<String> = Array<String>();
+  asyncReturnBinding: String = "";
+  asyncThrowBinding: String = "";
   returnKind: String;
   returnNullable: boolean;
   successValues: Array<String>;
@@ -585,6 +589,10 @@ function parseFunction(
   let invalidates = Array<String>();
   let resultRelease = "";
   let callbacks = Array<RawForeignCallbackContract>();
+  let asyncCallback = "";
+  let asyncBindings = Array<String>();
+  let asyncReturnBinding = "";
+  let asyncThrowBinding = "";
   if (atText(cursor, "void")) {
     returnKind = "status";
     cursor.index = cursor.index + 1;
@@ -637,6 +645,91 @@ function parseFunction(
           cursor.tokens[cursor.index].text.byteLength
         );
         cursor.index = cursor.index + 1;
+        if (fact == "async") {
+          if (asyncCallback.byteLength > 0) {
+            throw contractError(
+              cursor,
+              `foreign function "${name}" cannot declare more than one async callback`
+            );
+          }
+          asyncCallback = try expectIdentifier(
+            inout cursor,
+            "a terminal callback parameter name after async"
+          );
+          if (atText(cursor, ";")) {
+            cursor.index = cursor.index + 1;
+            continue;
+          }
+          try expectText(inout cursor, "(");
+          if (!atText(cursor, ")")) {
+            asyncBindings.push(try expectIdentifier(
+              inout cursor,
+              "an async callback value binding"
+            ));
+            while (atText(cursor, ",")) {
+              cursor.index = cursor.index + 1;
+              const binding = try expectIdentifier(
+                inout cursor,
+                "an async callback value binding"
+              );
+              for (const existing of asyncBindings) {
+                if (existing == binding) {
+                  throw contractError(
+                    cursor,
+                    `async callback binding "${binding}" cannot be declared more than once`
+                  );
+                }
+              }
+              asyncBindings.push(binding);
+            }
+          }
+          try expectText(inout cursor, ")");
+          try expectText(inout cursor, "{");
+          while (!atText(cursor, "}")) {
+            const projection = cursor.tokens[cursor.index].text.copyBytes(
+              0,
+              cursor.tokens[cursor.index].text.byteLength
+            );
+            cursor.index = cursor.index + 1;
+            if (projection == "return") {
+              if (asyncReturnBinding.byteLength > 0) {
+                throw contractError(
+                  cursor,
+                  "an async callback projection cannot declare more than one return binding"
+                );
+              }
+              asyncReturnBinding = try expectIdentifier(
+                inout cursor,
+                "an async callback binding after return"
+              );
+            } else if (projection == "throw") {
+              if (asyncThrowBinding.byteLength > 0) {
+                throw contractError(
+                  cursor,
+                  "an async callback projection cannot declare more than one throw binding"
+                );
+              }
+              asyncThrowBinding = try expectIdentifier(
+                inout cursor,
+                "an async callback binding after throw"
+              );
+            } else {
+              throw contractError(
+                cursor,
+                `expected "return" or "throw" in async callback projection, found "${projection}"`
+              );
+            }
+            try expectText(inout cursor, ";");
+          }
+          try expectText(inout cursor, "}");
+          if (asyncThrowBinding.byteLength == 0) {
+            throw contractError(
+              cursor,
+              "an expanded async callback projection requires throw <binding>; use async <callback>; for an infallible callback"
+            );
+          }
+          continue;
+        }
         if (fact == "callback") {
           const callbackLine = cursor.tokens[cursor.index].line;
           const callbackColumn = cursor.tokens[cursor.index].column;
@@ -695,9 +788,6 @@ function parseFunction(
             try expectText(inout cursor, ";");
           }
           try expectText(inout cursor, "}");
-          if (context.byteLength == 0) {
-            throw contractError(cursor, `C callback "${callbackParameter}" requires a named native context parameter`);
-          }
           if (cardinality.byteLength == 0) {
             throw contractError(cursor, `callback "${callbackParameter}" requires explicit invocation cardinality`);
           }
@@ -754,6 +844,61 @@ function parseFunction(
         try expectText(inout cursor, ";");
       }
       try expectText(inout cursor, "}");
+      for (const callback of callbacks) {
+        if (
+          callback.context.byteLength == 0
+          && callback.parameter != asyncCallback
+        ) {
+          throw contractErrorAt(
+            cursor,
+            callback.line,
+            callback.column,
+            `C callback "${callback.parameter}" requires a named native context parameter`
+          );
+        }
+      }
+      if (asyncCallback.byteLength > 0) {
+        let declared = false;
+        for (const callback of callbacks) {
+          if (callback.parameter == asyncCallback) declared = true;
+        }
+        if (!declared) {
+          throw contractErrorAt(
+            cursor,
+            line,
+            column,
+            `async callback "${asyncCallback}" must name a declared Objective-C block callback`
+          );
+        }
+        if (asyncReturnBinding.byteLength > 0) {
+          let found = false;
+          for (const binding of asyncBindings) {
+            if (binding == asyncReturnBinding) found = true;
+          }
+          if (!found) {
+            throw contractErrorAt(
+              cursor,
+              line,
+              column,
+              `return names unknown async callback binding "${asyncReturnBinding}"`
+            );
+          }
+        }
+        if (asyncThrowBinding.byteLength > 0) {
+          let found = false;
+          for (const binding of asyncBindings) {
+            if (binding == asyncThrowBinding) found = true;
+          }
+          if (!found) {
+            throw contractErrorAt(
+              cursor,
+              line,
+              column,
+              `throw names unknown async callback binding "${asyncThrowBinding}"`
+            );
+          }
+        }
+      }
       if (
         resultOwnership.byteLength == 0
         && resultRelease.byteLength == 0
@@ -866,6 +1011,10 @@ function parseFunction(
     name,
     parameters,
     callbacks,
+    asyncCallback,
+    asyncBindings,
+    asyncReturnBinding,
+    asyncThrowBinding,
     returnKind,
     returnNullable,
     successValues,
@@ -2986,7 +3135,7 @@ function normalizedObjCMethod(
   in method: RawForeignObjCMethod,
   in ownerType: String,
   in contracts: RawForeignContractSet
-): NativeForeignObjCMethodContract {
+): NativeForeignObjCMethodContract throws String {
   let parameters = Array<NativeForeignObjCParameterContract>();
   let representable = method.returnTypeName.byteLength > 0;
   let parameterIndex: usize = 0;
@@ -3025,6 +3174,142 @@ function normalizedObjCMethod(
   if (method.returnsInstanceType) {
     returnType = ownerType.copyBytes(0, ownerType.byteLength);
   }
+  let asyncCallbackParameter = method.asyncCallbackParameter;
+  let asyncResultParameter = method.asyncResultParameter;
+  let asyncErrorParameter = method.asyncErrorParameter;
+  for (const contract of contracts.functions) {
+    if (
+      contract.name != `${ownerType}.${method.baseName}`
+      || contract.parameters.length != method.parameterCount
+      || contract.asyncCallback.byteLength == 0
+    ) continue;
+    let callbackIndex = method.parameterCount;
+    let contractParameterIndex: usize = 0;
+    while (contractParameterIndex < contract.parameters.length) {
+      if (
+        contract.parameters[contractParameterIndex].name
+          == contract.asyncCallback
+      ) {
+        callbackIndex = contractParameterIndex;
+        break;
+      }
+      contractParameterIndex = contractParameterIndex + 1;
+    }
+    if (callbackIndex >= method.parameterCount) {
+      throw `async contract names unknown callback parameter "${contract.asyncCallback}" on "${contract.name}"`;
+    }
+    if (callbackIndex + 1 != method.parameterCount) {
+      throw `async callback "${contract.asyncCallback}" must be the terminal native parameter in the first projection tier`;
+    }
+    if (contract.parameters[callbackIndex].capability != "move") {
+      throw `async callback "${contract.asyncCallback}" must be an escaping move block`;
+    }
+    let callbackContractIndex = contract.callbacks.length;
+    let callbackCandidate: usize = 0;
+    while (callbackCandidate < contract.callbacks.length) {
+      if (
+        contract.callbacks[callbackCandidate].parameter
+          == contract.asyncCallback
+      ) {
+        callbackContractIndex = callbackCandidate;
+        break;
+      }
+      callbackCandidate = callbackCandidate + 1;
+    }
+    if (callbackContractIndex >= contract.callbacks.length) {
+      throw `async callback "${contract.asyncCallback}" must name a declared Objective-C block callback`;
+    }
+    const callbackContract = view contract.callbacks[callbackContractIndex];
+    if (
+      callbackContract.thread != "caller"
+      && callbackContract.thread != "any"
+    ) {
+      throw `async callback "${contract.asyncCallback}" requires a caller or any thread guarantee`;
+    }
+    if (callbackContract.cardinality != "once") {
+      throw `async callback "${contract.asyncCallback}" requires invoked once`;
+    }
+    if (method.returnTypeName != "void") {
+      throw `an async Objective-C projection currently requires ${contract.name} to return void`;
+    }
+    const rawCallbackParameter = view declarations.objectiveCParameters[
+      method.parameterStart + callbackIndex
+    ];
+    const callbackSignature = match (nativeFunctionSignature(
+      rawCallbackParameter.typeName
+    )) {
+      some(signature) => signature;
+      none => throw `async callback "${contract.asyncCallback}" must name an Objective-C block parameter`;
+    };
+    if (callbackSignature.returnType != "void") {
+      throw `an async Objective-C projection currently requires its callback to return void`;
+    }
+    const expanded = contract.asyncBindings.length > 0;
+    if (
+      !expanded
+      && callbackSignature.parameterTypes.length > 1
+    ) {
+      throw `an async Objective-C projection currently supports zero or one callback value, found ${callbackSignature.parameterTypes.length}`;
+    }
+    if (
+      expanded
+      && callbackSignature.parameterTypes.length
+        != contract.asyncBindings.length
+    ) {
+      throw `async callback projection declares ${contract.asyncBindings.length} bindings, but the native block receives ${callbackSignature.parameterTypes.length}`;
+    }
+    let resultIndex = callbackSignature.parameterTypes.length;
+    if (!expanded && callbackSignature.parameterTypes.length == 1) {
+      resultIndex = 0;
+    } else if (contract.asyncReturnBinding.byteLength > 0) {
+      let bindingIndex: usize = 0;
+      while (bindingIndex < contract.asyncBindings.length) {
+        if (
+          contract.asyncBindings[bindingIndex]
+            == contract.asyncReturnBinding
+        ) {
+          resultIndex = bindingIndex;
+          break;
+        }
+        bindingIndex = bindingIndex + 1;
+      }
+    }
+    let errorIndex = callbackSignature.parameterTypes.length;
+    if (contract.asyncThrowBinding.byteLength > 0) {
+      let bindingIndex: usize = 0;
+      while (bindingIndex < contract.asyncBindings.length) {
+        if (
+          contract.asyncBindings[bindingIndex]
+            == contract.asyncThrowBinding
+        ) {
+          errorIndex = bindingIndex;
+          break;
+        }
+        bindingIndex = bindingIndex + 1;
+      }
+    }
+    if (
+      resultIndex < callbackSignature.parameterTypes.length
+      && resultIndex == errorIndex
+    ) {
+      throw "the same async callback binding cannot be both returned and thrown";
+    }
+    if (errorIndex < callbackSignature.parameterTypes.length) {
+      const errorType = view callbackSignature.parameterTypes[errorIndex];
+      if (!stringStartsWith(errorType, "__z_objc:nullable:")) {
+        throw `the first typed async projection tier requires a nullable Objective-C error reference, found "${errorType}"`;
+      }
+    }
+    asyncCallbackParameter = Option.some(callbackIndex);
+    asyncResultParameter = resultIndex
+        < callbackSignature.parameterTypes.length
+      ? Option.some(resultIndex)
+      : Option<usize>.none;
+    asyncErrorParameter = errorIndex
+        < callbackSignature.parameterTypes.length
+      ? Option.some(errorIndex)
+      : Option<usize>.none;
+  }
   let executorAffinity = "";
   match (in method.executorAffinity) {
     some(affinity) => {
@@ -3047,9 +3332,9 @@ function normalizedObjCMethod(
     executorAffinity,
     parameters,
     availability,
-    asyncCallbackParameter: method.asyncCallbackParameter,
-    asyncResultParameter: method.asyncResultParameter,
-    asyncErrorParameter: method.asyncErrorParameter,
+    asyncCallbackParameter,
+    asyncResultParameter,
+    asyncErrorParameter,
     representable,
   });
 }
@@ -3060,11 +3345,11 @@ function normalizedObjCMethods(
   methodCount: usize,
   in ownerType: String,
   in contracts: RawForeignContractSet
-): Array<NativeForeignObjCMethodContract> {
+): Array<NativeForeignObjCMethodContract> throws String {
   let methods = Array<NativeForeignObjCMethodContract>();
   let methodIndex: usize = 0;
   while (methodIndex < methodCount) {
-    methods.push(normalizedObjCMethod(
+    methods.push(try normalizedObjCMethod(
       declarations,
       declarations.objectiveCMethods[methodStart + methodIndex],
       ownerType,
@@ -3171,7 +3456,7 @@ function contractExecutorAffinity(
 function normalizedObjCInterfaces(
   in declarations: RawForeignModuleDeclarations,
   in contracts: RawForeignContractSet
-): Array<NativeForeignObjCInterfaceContract> {
+): Array<NativeForeignObjCInterfaceContract> throws String {
   let interfaces = Array<NativeForeignObjCInterfaceContract>();
   for (const declaration of declarations.objectiveCInterfaces) {
     let superName = "";
@@ -3206,7 +3491,7 @@ function normalizedObjCInterfaces(
       ),
       superName,
       executorAffinity,
-      methods: normalizedObjCMethods(
+      methods: try normalizedObjCMethods(
         declarations,
         declaration.methodStart,
         declaration.methodCount,
@@ -3226,7 +3511,7 @@ function normalizedObjCInterfaces(
 function normalizedObjCProtocols(
   in declarations: RawForeignModuleDeclarations,
   in contracts: RawForeignContractSet
-): Array<NativeForeignObjCProtocolContract> {
+): Array<NativeForeignObjCProtocolContract> throws String {
   let protocols = Array<NativeForeignObjCProtocolContract>();
   for (const declaration of declarations.objectiveCProtocols) {
     let inherited = Array<String>();
@@ -3265,7 +3550,7 @@ function normalizedObjCProtocols(
       ),
       inherited,
       executorAffinity,
-      methods: normalizedObjCMethods(
+      methods: try normalizedObjCMethods(
         declarations,
         declaration.methodStart,
         declaration.methodCount,
@@ -4242,6 +4527,14 @@ export function normalizeForeignContracts(
       failure(_) => {}
     }
   }
+  const objectiveCInterfaces = try normalizedObjCInterfaces(
+    declarations,
+    contracts
+  );
+  const objectiveCProtocols = try normalizedObjCProtocols(
+    declarations,
+    contracts
+  );
   return new NativeForeignContractSet({
     moduleSpecifier: contracts.moduleSpecifier.copyBytes(
       0,
@@ -4250,7 +4543,7 @@ export function normalizeForeignContracts(
     types,
     constants,
     functions,
-    objectiveCInterfaces: normalizedObjCInterfaces(declarations, contracts),
-    objectiveCProtocols: normalizedObjCProtocols(declarations, contracts),
+    objectiveCInterfaces,
+    objectiveCProtocols,
   });
 }

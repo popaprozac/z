@@ -3,6 +3,7 @@ import {
   NativeOwnershipState,
   NativeValueBinding,
   arenaBundleMoveIsAllowed,
+  expressionCopiesObjectiveCString,
   liveViewBindingForOwner,
   setValueBindingOwnership,
   valueBindingType,
@@ -128,6 +129,9 @@ export function consumeOwnedExpressionNode(
   force: boolean,
   inout bindings: Array<NativeValueBinding>
 ): void throws ModuleResolveError {
+  // Contextual NSString -> String conversion creates fresh owned Z storage.
+  // The source Objective-C reference is observed, not moved out of its owner.
+  if (expressionCopiesObjectiveCString(bindings, tree.nodes[index].offset)) return;
   if (!force && !typeMovesOnOwnedUse(modules, moduleIndex, typeName)) return;
   const kind = tree.nodes[index].kind;
   if (

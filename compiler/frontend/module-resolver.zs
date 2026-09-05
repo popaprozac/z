@@ -85,6 +85,7 @@ import {
   liveViewBindingForStoragePath,
   mergeViewOwners,
   invalidateContainedClassAlias,
+  markObjectiveCStringCopy,
   restoreContainedClassAlias,
   ownerlessViewOwner,
   setExpressionViewOrigin,
@@ -128,6 +129,7 @@ import {
 } from "./semantic-expression-ownership.zs";
 import {
   isContextualNumericLiteral,
+  isNativeObjectiveCStringType,
   requireExpressionSyntaxType,
   requireExpressionType,
 } from "./semantic-expression-types.zs";
@@ -3238,6 +3240,9 @@ function recordResolvedObjCCallFacts(
     receiverNativeType,
     method.objectiveCNativeReturnType,
     method.objectiveCParameterNativeTypes,
+    method.objectiveCAsyncCallbackParameter,
+    method.objectiveCAsyncResultParameter,
+    method.objectiveCAsyncErrorParameter,
     inout evidence
   );
 }
@@ -4038,6 +4043,10 @@ function inferExpressionNodeTypeExpected(
     tree.nodes[index].offset
   );
   copyBindingFlowStates(inout bindings, expressionBindings);
+  if (
+    expectedType == "String"
+    && isNativeObjectiveCStringType(modules, moduleIndex, inferred)
+  ) markObjectiveCStringCopy(inout bindings, tree.nodes[index].offset);
   if (viewOwner.byteLength > 0) {
     setExpressionViewOrigin(
       inout bindings,
@@ -10966,6 +10975,10 @@ function inferExpressionTypeExpected(
         tree.nodes[root].offset
       );
       copyBindingFlowStates(inout bindings, expressionBindings);
+      if (
+        expectedType == "String"
+        && isNativeObjectiveCStringType(modules, moduleIndex, inferred)
+      ) markObjectiveCStringCopy(inout bindings, tree.nodes[root].offset);
       if (viewOwner.byteLength > 0) {
         setExpressionViewOrigin(
           inout bindings,

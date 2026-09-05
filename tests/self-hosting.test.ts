@@ -1705,7 +1705,7 @@ test("preserves owned requests and typed errors across a placed async service ca
     );
     assert.match(
       emission.stdout,
-      /frame->child\.take_result\(frame->child\.task, &called\);/,
+      /frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_called\);/,
     );
     assert.match(
       emission.stdout,
@@ -1870,11 +1870,17 @@ test("keeps a cleanup-bearing method local alive across a dynamic child", () => 
     assert.equal(emission.status, 0, emission.stderr);
     assert.match(emission.stdout, /Z_Request forwarded;/);
     assert.match(emission.stdout, /bool _z_stage1_live_forwarded;/);
-    assert.match(emission.stdout, /#define forwarded \(frame->forwarded\)/);
-    assert.match(emission.stdout, /_start\([^\n]*&\(forwarded\)\)/);
     assert.match(
       emission.stdout,
-      /if \(_z_stage1_live_forwarded\) \{ Z_Request_deinit\(&forwarded\); _z_stage1_live_forwarded = false; \}/,
+      /#define _z_stage1_frame_binding_forwarded \(frame->forwarded\)/,
+    );
+    assert.match(
+      emission.stdout,
+      /_start\([^\n]*&\(_z_stage1_frame_binding_forwarded\)\)/,
+    );
+    assert.match(
+      emission.stdout,
+      /if \(_z_stage1_live_forwarded\) \{ Z_Request_deinit\(&_z_stage1_frame_binding_forwarded\); _z_stage1_live_forwarded = false; \}/,
     );
     const compilation = spawnSync(
       "clang",
@@ -2089,11 +2095,11 @@ test("continues a free-function frame after an awaited method result", () => {
     );
     assert.match(
       emission.stdout,
-      /take_result\(frame->child\.task, &loaded\);[\s\S]*frame->_z_resume_state = 2;/,
+      /take_result\(frame->child\.task, &_z_stage1_frame_binding_loaded\);[\s\S]*frame->_z_resume_state = 2;/,
     );
     assert.match(
       emission.stdout,
-      /frame->_z_resume_state = 2;[\s\S]*frame->result = \([^;]*loaded\);/,
+      /frame->_z_resume_state = 2;[\s\S]*frame->result = \([^;]*_z_stage1_frame_binding_loaded\);/,
     );
     const compilation = spawnSync(
       "clang",
@@ -2174,11 +2180,11 @@ test("resumes a reusable function through two awaited children", () => {
     assert.match(emission.stdout, /uint32_t _z_resume_state;[\s\S]*Z_String loaded;[\s\S]*Z_String separator;[\s\S]*Z_String decorated;[\s\S]*Z_AsyncInvocation child;/);
     assert.match(
       emission.stdout,
-      /frame->_z_resume_state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &loaded\);[\s\S]*frame->_z_resume_state = 2;/,
+      /frame->_z_resume_state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_loaded\);[\s\S]*frame->_z_resume_state = 2;/,
     );
     assert.match(
       emission.stdout,
-      /frame->_z_resume_state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &decorated\);[\s\S]*frame->_z_resume_state = 3;/,
+      /frame->_z_resume_state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_decorated\);[\s\S]*frame->_z_resume_state = 3;/,
     );
     const compilation = spawnSync(
       "clang",
@@ -2220,7 +2226,7 @@ test("routes a service result before publishing it on the main executor", () => 
     );
     assert.match(
       emission.stdout,
-      /frame->_z_resume_state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &routed\);[\s\S]*frame->_z_resume_state = 2;/,
+      /frame->_z_resume_state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_routed\);[\s\S]*frame->_z_resume_state = 2;/,
     );
     assert.match(
       emission.stdout,
@@ -2228,7 +2234,7 @@ test("routes a service result before publishing it on the main executor", () => 
     );
     assert.match(
       emission.stdout,
-      /frame->_z_resume_state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &published\);[\s\S]*frame->_z_resume_state = 3;/,
+      /frame->_z_resume_state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_published\);[\s\S]*frame->_z_resume_state = 3;/,
     );
     const compilation = spawnSync(
       "clang",
@@ -5772,7 +5778,7 @@ test("propagates an owned worker failure through native try await", () => {
     const wrapped = `${emission.stdout}
 #undef main
 int main(void) {
-  Z___z_Result_i32_OwnedError result = z_entry();
+  Z___z_Result_i32_OwnedError result = z_stage1_main_result();
   if (result.tag != Z___z_Result_i32_OwnedErrorTag_failure) {
     Z___z_Result_i32_OwnedError_deinit(&result);
     return 1;
@@ -5832,7 +5838,7 @@ int main(void) {
     const positionsWrapped = `${positionsEmission.stdout}
 #undef main
 int main(void) {
-  Z___z_Result_i32_WorkError result = z_entry();
+  Z___z_Result_i32_WorkError result = z_stage1_main_result();
   if (result.tag != Z___z_Result_i32_WorkErrorTag_success) {
     Z___z_Result_i32_WorkError_deinit(&result);
     return 1;
@@ -5908,7 +5914,7 @@ int main(void) {
     const nestedWrapped = `${nestedEmission.stdout}
 #undef main
 int main(void) {
-  Z___z_Result_i32_WorkError result = z_entry();
+  Z___z_Result_i32_WorkError result = z_stage1_main_result();
   if (result.tag != Z___z_Result_i32_WorkErrorTag_success) {
     Z___z_Result_i32_WorkError_deinit(&result);
     return 1;
@@ -5959,7 +5965,7 @@ int main(void) {
     const nestedFailureWrapped = `${nestedFailureEmission.stdout}
 #undef main
 int main(void) {
-  Z___z_Result_i32_WorkError result = z_entry();
+  Z___z_Result_i32_WorkError result = z_stage1_main_result();
   if (result.tag != Z___z_Result_i32_WorkErrorTag_failure) {
     Z___z_Result_i32_WorkError_deinit(&result);
     return 1;
@@ -9202,6 +9208,8 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     - (int)compareOwner:(ZRegistrationOwner *)other;
     + (ZRegistrationOwner *)sharedOwner;
     + (ZRegistrationOwner * _Nullable)maybeOwner;
+    - (void)fetchValue:(void (^ _Nonnull)(int))completionHandler;
+    - (void)fetchValueOrError:(void (^ _Nonnull)(int, id _Nullable))completionHandler;
     @end
 
     @interface ZPropertyOwner
@@ -9279,6 +9287,23 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     [
       'declare module "objc-registration-wire.h" {',
       "  export type ZPropertyOwner on thread.main;",
+      "  export function ZRegistrationOwner.fetchValue(move completionHandler: _): _ {",
+      "    callback completionHandler {",
+      "      thread any;",
+      "      invoked once;",
+      "    }",
+      "    async completionHandler;",
+      "  }",
+      "  export function ZRegistrationOwner.fetchValueOrError(move completionHandler: _): _ {",
+      "    callback completionHandler {",
+      "      thread any;",
+      "      invoked once;",
+      "    }",
+      "    async completionHandler(value, error) {",
+      "      return value;",
+      "      throw error;",
+      "    }",
+      "  }",
       "}",
       "",
     ].join("\n"),
@@ -17771,6 +17796,65 @@ test("propagates an owned error from an executor-placed async function local", (
   rmSync(directory, { recursive: true, force: true });
 }, 60_000);
 
+test("lowers Result aliases, explicit Option fields, and a throwing async main", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-result-alias-main-throws.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /switch \(_z_stage1_match_\d+\.tag\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /\.body = \(Z___z_Option_String\)\{\.tag = Z___z_Option_StringTag_some/,
+  );
+  assert.match(
+    emission.stdout,
+    /static __attribute__\(\(unused\)\) Z___z_Result_i32_WorkError z_stage1_main_result\(void\)/,
+  );
+  assert.match(emission.stdout, /int main\(void\)/);
+
+  const directory = mkdtempSync("/tmp/z-async-result-alias-main-throws-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread",
+      "-",
+      "-o",
+      executable,
+    ],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(
+    execution.status,
+    0,
+    `${execution.stderr}\nsignal: ${execution.signal}\nstdout: ${execution.stdout}`,
+  );
+  rmSync(directory, { recursive: true, force: true });
+}, 60_000);
+
 test("materializes a synchronous main-isolated error through taskification", () => {
   const input = resolve(
     projectRoot,
@@ -17795,7 +17879,7 @@ test("materializes a synchronous main-isolated error through taskification", () 
   );
   assert.match(
     emission.stdout,
-    /frame->child\.take_result\(frame->child\.task, &called\);/,
+    /frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_called\);/,
   );
   assert.match(
     emission.stdout,

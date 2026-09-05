@@ -203,7 +203,7 @@ function compatibleSliceTypes(
   };
 }
 
-function isNativeObjectiveCStringType(
+export function isNativeObjectiveCStringType(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
   in typeName: String

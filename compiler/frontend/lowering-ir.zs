@@ -350,7 +350,11 @@ export struct LoweredExpression {
   closureParameterCount: usize = 0;
   closureParameterModes: Array<String> = Array<String>();
   objectiveCBlockNativeType: String = "";
+  objectiveCReceiverNativeType: String = "";
   objectiveCOwnedPayload: boolean = false;
+  objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
+  objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
+  objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
 }
 
 export struct LoweredMainDelaySegment {
@@ -476,6 +480,7 @@ export struct LoweredFunction {
   roots: Array<usize>;
   fallthroughCleanups: Array<LoweredCleanup>;
   liveFlags: Array<LoweredLiveFlag>;
+  asyncFrameBindings: Array<String> = Array<String>();
 }
 
 export struct LoweredForeignFunction {
@@ -5286,7 +5291,44 @@ function intrinsicEnumDeclaration(
     some(declaration) => return Option.some(move declaration);
     none => {}
   }
-  return try intrinsicResultDeclaration(program, importedTypes, name);
+  const directResult = try intrinsicResultDeclaration(
+    program,
+    importedTypes,
+    name
+  );
+  match (directResult) {
+    some(declaration) => return Option.some(move declaration);
+    none => {}
+  }
+  // Inferred locals retain the emitted Result identity rather than the source
+  // alias spelling. Recover the declaration from a transparent local alias;
+  // decoding the emitted name itself would be ambiguous for nominal types
+  // that contain underscores.
+  for (const alias of program.typeAliases) {
+    match (genericTypeShape(alias.target.name)) {
+      some(generic) => {
+        if (generic.base != "Result" || generic.arguments.length != 2) {
+          continue;
+        }
+        const result = try intrinsicResultDeclaration(
+          program,
+          importedTypes,
+          alias.target.name
+        );
+        match (result) {
+          some(declaration) => if (
+            alias.name == name
+            || declaration.name == name
+          ) {
+            return Option.some(move declaration);
+          }
+          none => {}
+        }
+      }
+      none => {}
+    }
+  }
+  return Option<LoweredEnum>.none;
 }
 
 function semanticMethodOwnerName(
@@ -7189,6 +7231,205 @@ function nativeTypeIsObjectiveCBlock(in typeName: String): boolean {
   return false;
 }
 
+function lowerObjectiveCMessageCall(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  if (
+    tree.nodes[index].kind != ExpressionKind.callExpression
+    || tree.nodes[index].children.length == 0
+  ) throw "native Objective-C lowering requires a call";
+  const calleeInput = tree.nodes[index].children[0];
+  const objectiveCSelector = resolvedObjectiveCSelector(
+    evidence,
+    tree,
+    index
+  );
+  const callKind = resolvedCallKind(evidence, tree, index);
+  if (
+    objectiveCSelector.byteLength == 0
+    || (callKind != "method" && callKind != "staticMethod")
+    || tree.nodes[calleeInput].kind != ExpressionKind.memberExpression
+    || tree.nodes[calleeInput].children.length != 1
+  ) throw "native Objective-C lowering lost its resolved message call";
+  let children = Array<usize>();
+  let labels = Array<String>();
+  if (callKind == "staticMethod") {
+    const receiverNativeType = resolvedObjectiveCReceiverNativeType(
+      evidence,
+      tree,
+      index
+    );
+    if (receiverNativeType.byteLength == 0) {
+      throw "native Objective-C lowering lost its class receiver";
+    }
+    children.push(pushExpression(
+      inout output,
+      LoweredExpressionKind.localValue,
+      receiverNativeType,
+      Array<usize>(),
+      Array<String>()
+    ));
+    labels.push("class");
+  } else {
+    const receiverInput = tree.nodes[calleeInput].children[0];
+    const receiver = try lowerExpression(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      receiverInput,
+      inout output
+    );
+    children.push(receiver);
+    labels.push("instance");
+  }
+  const parameterModes = resolvedCallParameterModes(
+    program,
+    evidence,
+    tree,
+    index
+  );
+  const parameterTypes = resolvedCallParameterTypes(
+    program,
+    evidence,
+    tree,
+    index
+  );
+  const parameterNativeTypes = resolvedObjectiveCParameterNativeTypes(
+    evidence,
+    tree,
+    index
+  );
+  let argument: usize = 1;
+  while (argument < tree.nodes[index].children.length) {
+    const argumentInput = tree.nodes[index].children[argument];
+    let value: usize = 0;
+    if (parameterTypes.length >= argument) {
+      value = try lowerExpressionExpected(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput,
+        parameterTypes[argument - 1],
+        inout output
+      );
+    } else {
+      value = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput,
+        inout output
+      );
+    }
+    if (
+      parameterTypes.length >= argument
+      && parameterNativeTypes.length >= argument
+      && nativeTypeIsObjectiveCBlock(
+        parameterNativeTypes[argument - 1]
+      )
+    ) {
+      const parameterType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        parameterTypes[argument - 1]
+      );
+      if (parameterType.kind != LoweredTypeKind.functionType) {
+        throw "native Objective-C block lowering lost its callable type";
+      }
+      output[value].objectiveCBlockNativeType =
+        parameterNativeTypes[argument - 1].copyBytes(
+          0,
+          parameterNativeTypes[argument - 1].byteLength
+        );
+    }
+    if (
+      parameterModes.length >= argument
+      && parameterModes[argument - 1] == "value"
+    ) {
+      if (parameterTypes.length >= argument) {
+        value = try wrapOwnedStorage(
+          program,
+          importedTypes,
+          tree,
+          argumentInput,
+          parameterTypes[argument - 1],
+          value,
+          inout output
+        );
+      } else {
+        value = wrapImplicitOwnedTransfer(
+          tree,
+          argumentInput,
+          value,
+          inout output
+        );
+      }
+    }
+    if (
+      parameterModes.length >= argument
+      && (
+        parameterModes[argument - 1] == "inout"
+        || parameterModes[argument - 1] == "out"
+      )
+    ) markMutableStorage(inout output, value);
+    if (
+      parameterTypes.length >= argument
+      && parameterTypes[argument - 1] == "cstring"
+    ) {
+      let requiresProjection = output[value].kind
+        == LoweredExpressionKind.stringValue
+        || tree.nodes[argumentInput].kind == ExpressionKind.stringExpression
+        || tree.nodes[argumentInput].kind == ExpressionKind.templateExpression;
+      match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput
+      )) {
+        some(argumentType) => {
+          if (argumentType == "String") requiresProjection = true;
+        }
+        none => {}
+      }
+      if (requiresProjection) {
+        let projectionChildren = Array<usize>();
+        projectionChildren.push(value);
+        value = pushExpression(
+          inout output,
+          LoweredExpressionKind.cstringProjection,
+          "cstring",
+          projectionChildren,
+          Array<String>()
+        );
+      }
+    }
+    children.push(value);
+    labels.push(parameterModes.length >= argument
+      ? parameterModes[argument - 1].copyBytes(
+        0,
+        parameterModes[argument - 1].byteLength
+      )
+      : "value");
+    argument = argument + 1;
+  }
+  return pushExpression(
+    inout output,
+    LoweredExpressionKind.objectiveCMessageCall,
+    objectiveCSelector,
+    children,
+    labels
+  );
+}
+
 function resolvedGenericMethodSuffix(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -8608,6 +8849,7 @@ function importedEnumDeclaration(
   in name: String
 ): Option<LoweredEnum> {
   const qualifiedMember = qualifiedTypeMember(name);
+  let fallback = Option<usize>.none;
   let importedIndex = importedTypes.length;
   while (importedIndex > 0) {
     importedIndex = importedIndex - 1;
@@ -8625,6 +8867,13 @@ function importedEnumDeclaration(
         )
       )
     ) continue;
+    if (!importedTypes[importedIndex].payloadBearing) {
+      match (fallback) {
+        some(_) => {}
+        none => fallback = Option.some(importedIndex);
+      }
+      continue;
+    }
     let variants = Array<LoweredVariant>();
     for (const variant of importedTypes[importedIndex].variants) {
       variants.push(copyLoweredVariant(variant));
@@ -8640,6 +8889,26 @@ function importedEnumDeclaration(
       payloadBearing: importedTypes[importedIndex].payloadBearing,
       needsDeinit: importedTypes[importedIndex].needsDeinit,
     }));
+  }
+  match (fallback) {
+    some(index) => {
+      let variants = Array<LoweredVariant>();
+      for (const variant of importedTypes[index].variants) {
+        variants.push(copyLoweredVariant(variant));
+      }
+      return Option.some(LoweredEnum({
+        name: importedTypes[index].targetName.copyBytes(
+          0,
+          importedTypes[index].targetName.byteLength
+        ),
+        nativeCName: "",
+        nativeCUnderlyingType: "",
+        variants,
+        payloadBearing: importedTypes[index].payloadBearing,
+        needsDeinit: importedTypes[index].needsDeinit,
+      }));
+    }
+    none => {}
   }
   return Option<LoweredEnum>.none;
 }
@@ -9995,6 +10264,55 @@ function lowerAsyncMethodTailCall(
     importedTypes,
     receiverTypeName
   );
+  const resolutionIndex = resolvedCallResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex < evidence.callResolutions.length) {
+    const resolution = view evidence.callResolutions[resolutionIndex];
+    match (resolution.objectiveCAsyncCallbackParameter) {
+      some(callbackParameter) => if (
+        resolution.objectiveCSelector.byteLength > 0
+        && receiverType.kind == LoweredTypeKind.foreignObjCType
+      ) {
+        const lowered = try lowerObjectiveCMessageCall(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          index,
+          inout output
+        );
+        if (
+          output[lowered].kind
+            != LoweredExpressionKind.objectiveCMessageCall
+          || callbackParameter
+            >= resolution.objectiveCParameterNativeTypes.length
+        ) throw "native async Objective-C lowering lost its projected method shape";
+        output[lowered].objectiveCBlockNativeType =
+          resolution.objectiveCParameterNativeTypes[callbackParameter]
+            .copyBytes(
+              0,
+              resolution.objectiveCParameterNativeTypes[callbackParameter]
+                .byteLength
+            );
+        output[lowered].objectiveCReceiverNativeType =
+          resolution.objectiveCReceiverNativeType.copyBytes(
+            0,
+            resolution.objectiveCReceiverNativeType.byteLength
+          );
+        output[lowered].objectiveCAsyncCallbackParameter =
+          resolution.objectiveCAsyncCallbackParameter;
+        output[lowered].objectiveCAsyncResultParameter =
+          resolution.objectiveCAsyncResultParameter;
+        output[lowered].objectiveCAsyncErrorParameter =
+          resolution.objectiveCAsyncErrorParameter;
+        return lowered;
+      }
+      none => {}
+    }
+  }
   if (
     receiverType.kind != LoweredTypeKind.structType
     && receiverType.kind != LoweredTypeKind.classType
@@ -11517,7 +11835,13 @@ function lowerExpressionContextual(
         }
       }
       let callableTypeName = "";
-      match (resolvedExpressionTypeName(evidence, tree, callableInput)) {
+      match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        callableInput
+      )) {
         some(name) => callableTypeName = move name;
         none => {}
       }
@@ -16699,6 +17023,30 @@ function lowerExpressionExpected(
   in expectedTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  match (intrinsicOptionPayloadName(expectedTypeName)) {
+    some(payload) => return try lowerExpressionExpected(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      index,
+      `Option<${payload}>`,
+      inout output
+    );
+    none => {}
+  }
+  match (intrinsicViewOptionPayloadName(expectedTypeName)) {
+    some(payload) => return try lowerExpressionExpected(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      index,
+      `Option<view ${payload}>`,
+      inout output
+    );
+    none => {}
+  }
   let expectedIsObjectiveCString = false;
   if (expectedTypeName.byteLength > 0) {
     let expectedObjectiveCTypeName = expectedTypeName.copyBytes(
@@ -17553,13 +17901,24 @@ function lowerOptionalFieldExpression(
   inout output: Array<LoweredExpression>
 ): usize throws String {
   if (isExplicitOptionExpression(evidence, tree, index)) {
+    let contextualOptionName = expectedTypeName.copyBytes(
+      0,
+      expectedTypeName.byteLength
+    );
+    match (intrinsicOptionPayloadName(expectedTypeName)) {
+      some(payload) => contextualOptionName = `Option<${payload}>`;
+      none => match (intrinsicViewOptionPayloadName(expectedTypeName)) {
+        some(payload) => contextualOptionName = `Option<view ${payload}>`;
+        none => {}
+      }
+    }
     return try lowerExpressionExpected(
       program,
       importedTypes,
       evidence,
       tree,
       index,
-      expectedTypeName,
+      contextualOptionName,
       inout output
     );
   }
@@ -21019,6 +21378,33 @@ function functionUsesFirstTierMatchedTailAwait(
       declaration.body,
       tail
     );
+}
+
+function functionUsesFirstTierBranchedTailAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length < 2) return false;
+  let awaitCount: usize = 0;
+  for (const root of declaration.body.roots) {
+    const kind = declaration.body.nodes[root].kind;
+    if (
+      kind != StatementKind.ifStatement
+      && kind != StatementKind.returnStatement
+    ) return false;
+    if (statementContainsNestedLoopOrMatch(
+      declaration.body,
+      root
+    )) return false;
+    if (!statementUsesOnlyFirstTierTailAwaitSuspension(
+      declaration.body,
+      root
+    )) return false;
+    awaitCount = awaitCount + statementFirstTierTailAwaitCount(
+      declaration.body,
+      root
+    );
+  }
+  return awaitCount > 1;
 }
 
 function statementIsFirstTierAwaitLocal(
@@ -25363,6 +25749,10 @@ function lowerFunction(
         || firstTierPlacedFunctionTail
         || functionUsesFirstTierPrefixedTailAwait(declaration)
         || functionUsesFirstTierMatchedTailAwait(declaration)
+        || (
+          receiverName.byteLength == 0
+          && functionUsesFirstTierBranchedTailAwait(declaration)
+        )
         || firstTierLinearAwait
         || firstTierDoubleAwait
       )
@@ -25373,6 +25763,10 @@ function lowerFunction(
           functionUsesFirstTierTailAwait(declaration)
           || functionUsesFirstTierPrefixedTailAwait(declaration)
           || functionUsesFirstTierMatchedTailAwait(declaration)
+          || (
+            receiverName.byteLength == 0
+            && functionUsesFirstTierBranchedTailAwait(declaration)
+          )
           || firstTierLinearAwait
           || firstTierDoubleAwait
         )
@@ -27215,6 +27609,23 @@ function collectIntrinsicEnums(
       inout enums
     );
   }
+  for (const alias of program.typeAliases) {
+    if (typeContainsGenericParameter(
+      alias.target.name,
+      unsettledTypeParameters
+    )) continue;
+    try collectIntrinsicTypeName(
+      program,
+      importedTypes,
+      alias.target.name,
+      inout fixedArrays,
+      inout arrays,
+      inout slices,
+      inout maps,
+      inout sets,
+      inout enums
+    );
+  }
   for (const aggregate of program.aggregates) {
     // Generic aggregate storage and bodies are collected after each concrete
     // demand substitutes its type parameters. Attempting to materialize an
@@ -27293,6 +27704,40 @@ function collectIntrinsicEnums(
       inout sets,
       inout enums
     );
+  }
+}
+
+function appendIntrinsicEnumImportedTypes(
+  in enums: Array<LoweredEnum>,
+  inout importedTypes: Array<LoweredImportedType>
+): void {
+  for (const declaration of enums) {
+    if (!stringStartsWith(declaration.name, "__z_Result_")) continue;
+    let variants = Array<LoweredVariant>();
+    for (const variant of declaration.variants) {
+      variants.push(copyLoweredVariant(variant));
+    }
+    importedTypes.push(LoweredImportedType({
+      localName: declaration.name.copyBytes(
+        0,
+        declaration.name.byteLength
+      ),
+      targetName: declaration.name.copyBytes(
+        0,
+        declaration.name.byteLength
+      ),
+      nativeTypeName: "",
+      kind: LoweredTypeKind.enumType,
+      executorBound: false,
+      threadShareable: false,
+      workerDestructible: !declaration.needsDeinit,
+      needsDeinit: declaration.needsDeinit,
+      resourceRelease: "",
+      fields: Array<LoweredField>(),
+      variants,
+      payloadBearing: declaration.payloadBearing,
+      underlyingType: "",
+    }));
   }
 }
 
@@ -29908,6 +30353,10 @@ function appendLoweredProgram(
     inout sets,
     inout enums
   );
+  // Result<T, E> lowers to a collision-safe intrinsic enum name. Preserve its
+  // variants in the same lookup table as imported/source enums so a local
+  // inferred as that emitted identity can still be matched with payloads.
+  appendIntrinsicEnumImportedTypes(enums, inout importedTypes);
   for (const declaration of program.enums) {
     const emittedName = privateTypeNeedsMangle(
       program,

@@ -264,6 +264,33 @@ export function expressionViewOrigin(
   return valueBindingType(bindings, bindingName);
 }
 
+function objectiveCStringCopyBindingName(offset: usize): String {
+  return `__z_native_objc_string_copy_${offset}`;
+}
+
+export function markObjectiveCStringCopy(
+  inout bindings: Array<NativeValueBinding>,
+  offset: usize
+): void {
+  const name = objectiveCStringCopyBindingName(offset);
+  addValueBinding(
+    inout bindings,
+    name,
+    "copy"
+  );
+}
+
+export function expressionCopiesObjectiveCString(
+  in bindings: Array<NativeValueBinding>,
+  offset: usize
+): boolean {
+  const name = objectiveCStringCopyBindingName(offset);
+  return valueBindingType(
+    bindings,
+    name
+  ) == "copy";
+}
+
 function arenaBundleMoveBindingName(offset: usize): String {
   return `__z_native_arena_bundle_move_${offset}`;
 }
