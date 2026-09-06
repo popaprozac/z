@@ -21497,6 +21497,11 @@ function functionUsesFirstTierBranchedTailAwait(
   if (declaration.body.roots.length < 2) return false;
   let awaitCount: usize = 0;
   for (const root of declaration.body.roots) {
+    // A branched tail call may be preceded or separated by ordinary
+    // synchronous work. The tail dispatcher already preserves those roots
+    // in its owned frame; only roots that actually suspend need the stricter
+    // terminal-if/return shape below.
+    if (!statementContainsSuspension(declaration.body, root)) continue;
     const kind = declaration.body.nodes[root].kind;
     if (
       kind != StatementKind.ifStatement

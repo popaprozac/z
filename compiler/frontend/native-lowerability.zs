@@ -998,6 +998,49 @@ function functionUsesFirstTierMatchedTailAwait(
     );
 }
 
+function statementContainsNestedLoopOrMatch(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (
+    arena.nodes[index].kind == StatementKind.whileStatement
+    || arena.nodes[index].kind == StatementKind.forStatement
+    || arena.nodes[index].kind == StatementKind.matchStatement
+  ) return true;
+  for (const child of arena.nodes[index].children) {
+    if (statementContainsNestedLoopOrMatch(arena, child)) return true;
+  }
+  return false;
+}
+
+function functionUsesFirstTierBranchedTailAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length < 2) return false;
+  let awaitCount: usize = 0;
+  for (const root of declaration.body.roots) {
+    if (!statementContainsSuspension(declaration.body, root)) continue;
+    const kind = declaration.body.nodes[root].kind;
+    if (
+      kind != StatementKind.ifStatement
+      && kind != StatementKind.returnStatement
+    ) return false;
+    if (statementContainsNestedLoopOrMatch(
+      declaration.body,
+      root
+    )) return false;
+    if (!statementUsesOnlyFirstTierTailAwaitSuspension(
+      declaration.body,
+      root
+    )) return false;
+    awaitCount = awaitCount + statementFirstTierTailAwaitCount(
+      declaration.body,
+      root
+    );
+  }
+  return awaitCount > 1;
+}
+
 function statementIsFirstTierAwaitLocal(
   in arena: StatementArena,
   index: usize
@@ -1177,6 +1220,10 @@ function functionHasFirstTierTailAwaitStorage(
       )
       && !functionUsesFirstTierPrefixedTailAwait(declaration)
       && !functionUsesFirstTierMatchedTailAwait(declaration)
+      && !(
+        owner.byteLength == 0
+        && functionUsesFirstTierBranchedTailAwait(declaration)
+      )
       && !functionUsesFirstTierLinearAwait(declaration)
       && !(
         owner.byteLength == 0
