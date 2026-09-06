@@ -5917,12 +5917,12 @@ function cleanupMoveIndex(
   for (const expression of expressions) {
     if (
       expression.kind != LoweredExpressionKind.threadSpawn
-      || expression.labels.length < 5
-      || (expression.labels.length - 5) % 2 != 0
+      || expression.labels.length < 6
+      || (expression.labels.length - 6) % 2 != 0
     ) continue;
     let captureChild: usize = 0;
     if (expression.labels[0] == "expression") captureChild = 1;
-    let captureLabel: usize = 5;
+    let captureLabel: usize = 6;
     let captureIndex: usize = 0;
     while (captureLabel + 1 < expression.labels.length) {
       if (
@@ -12477,9 +12477,6 @@ function lowerExpressionContextual(
           importedTypes,
           resultTypeName
         );
-        if (resultType.kind == LoweredTypeKind.voidType) {
-          throw "native thread.spawn lowering currently requires a non-void result";
-        }
         const resultPath = Array<String>();
         if (!moduleTypeIsWorkerDestructible(
           program,
@@ -12609,6 +12606,10 @@ function lowerExpressionContextual(
         labels.push(tree.nodes[closureInput].value.copyBytes(
           0,
           tree.nodes[closureInput].value.byteLength
+        ));
+        labels.push(resultTypeName.copyBytes(
+          0,
+          resultTypeName.byteLength
         ));
         for (const capture of captures) {
           labels.push(capture.name.copyBytes(
@@ -19771,11 +19772,11 @@ function resolveThreadCaptureBindingOffsets(
   inout expressions: Array<LoweredExpression>
 ): void throws String {
   if (
-    expressions[expressionIndex].labels.length < 5
-    || (expressions[expressionIndex].labels.length - 5) % 2 != 0
+    expressions[expressionIndex].labels.length < 6
+    || (expressions[expressionIndex].labels.length - 6) % 2 != 0
   ) throw "native thread.spawn lowering lost its capture evidence";
   if (expressions[expressionIndex].captureBindingOffsets.length > 0) return;
-  let captureLabel: usize = 5;
+  let captureLabel: usize = 6;
   while (captureLabel + 1 < expressions[expressionIndex].labels.length) {
     const name = expressions[expressionIndex].labels[captureLabel].copyBytes(
       0,
@@ -20109,10 +20110,40 @@ function completeNativeClosureBlocks(
             statements[workerStatement].kind
               == LoweredStatementKind.returnStatement
           ) {
-            const returned = match (in statements[workerStatement].expression) {
-              some(value) => value;
-              none => throw "native fallible worker lowering requires an explicit return value";
-            };
+            let returned = expressions.length;
+            let payloadFreeSuccess = false;
+            match (statements[workerStatement].expression) {
+              some(value) => returned = value;
+              none => {
+                if (
+                  expressions[expressionIndex].labels.length < 6
+                  || expressions[expressionIndex].labels[5] != "void"
+                  || loweredStatementHasLabel(
+                    statements[workerStatement],
+                    "throw"
+                  )
+                ) {
+                  throw "native fallible worker lowering requires an explicit return value";
+                }
+                let successLabels = Array<String>();
+                successLabels.push("success");
+                successLabels.push("tagged");
+                const success = pushExpression(
+                  inout expressions,
+                  LoweredExpressionKind.enumValue,
+                  resultName,
+                  Array<usize>(),
+                  move successLabels
+                );
+                returned = success;
+                payloadFreeSuccess = true;
+              }
+            }
+            if (payloadFreeSuccess) {
+              statements[workerStatement].expression = Option.some(returned);
+              workerStatement = workerStatement + 1;
+              continue;
+            }
             if (
               expressions[returned].kind
                 == LoweredExpressionKind.threadMainCall
@@ -20153,6 +20184,41 @@ function completeNativeClosureBlocks(
             statements[workerStatement].expression = Option.some(wrapped);
           }
           workerStatement = workerStatement + 1;
+        }
+        if (
+          expressions[expressionIndex].labels.length >= 6
+          && expressions[expressionIndex].labels[5] == "void"
+          && sequenceFallsThrough(arena, sourceStatements)
+        ) {
+          let successLabels = Array<String>();
+          successLabels.push("success");
+          successLabels.push("tagged");
+          const success = pushExpression(
+            inout expressions,
+            LoweredExpressionKind.enumValue,
+            resultName,
+            Array<usize>(),
+            move successLabels
+          );
+          const implicitReturn = statements.length;
+          statements.push(LoweredStatement({
+            kind: LoweredStatementKind.returnStatement,
+            mutableBinding: false,
+            name: "",
+            type: Option.some(LoweredType({
+              kind: LoweredTypeKind.enumType,
+              name: resultName.copyBytes(0, resultName.byteLength),
+            })),
+            expression: Option.some(success),
+            secondExpression: Option<usize>.none,
+            children: Array<usize>(),
+            cleanups: Array<LoweredCleanup>(),
+            liveFlag: "",
+            labels: Array<String>(),
+            matchConsumesSubject: false,
+            matchBindingNeedsCleanup: false,
+          }));
+          loweredStatements.push(implicitReturn);
         }
       }
       let workerReturnType = LoweredType({
@@ -20216,7 +20282,7 @@ function completeNativeClosureBlocks(
         bodyStatementStart,
         captureUseOffset
       );
-      if (expressions[expressionIndex].labels.length < 5) {
+      if (expressions[expressionIndex].labels.length < 6) {
         throw "native thread.spawn lowering lost its capture mode";
       }
       try validateOwnedThreadCaptures(

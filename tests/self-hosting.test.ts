@@ -1716,6 +1716,78 @@ test("joins a native worker task from an async class method", () => {
   }
 }, 240_000);
 
+test("joins a fallible void native worker task from an async class method", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-method-thread-await-void.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-method-thread-await-void-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /frame->child = z_stage1_async_thread_await_Task___z_Result_void_WriteError_start/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
+test("joins a non-throwing void native worker task", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-thread-void.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-thread-void-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("preserves owned requests and typed errors across a placed async service call", () => {
   const input = resolve(
     projectRoot,

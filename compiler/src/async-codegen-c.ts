@@ -8015,11 +8015,16 @@ function sameAsyncSourceLocation(left: SourceLocation, right: SourceLocation): b
     && (left.fileName ?? "") === (right.fileName ?? "");
 }
 
+type SynchronousTryCallSignature = {
+  readonly returnType: string;
+  readonly errorType: string;
+};
+
 function synchronousTryCallDeclaration(
   expression: Expression,
   fileName: string,
   types: AsyncTypeContext,
-): FunctionDeclaration {
+): SynchronousTryCallSignature {
   if (expression.kind !== "call") {
     unsupported(
       fileName,
@@ -8038,15 +8043,30 @@ function synchronousTryCallDeclaration(
     ? types.functions.get(expression.callee.name)
     : null;
   const declaration = method ?? resolvedFunction ?? directFunction;
-  if (!declaration || declaration.async || !declaration.errorType) {
-    unsupported(
-      fileName,
-      expression.location,
-      "async-frame `try` currently requires a direct synchronous throwing function or method call",
-      "call `function operation(...): T throws E` or a throwing synchronous method directly beneath `try`",
-    );
+  if (declaration && !declaration.async && declaration.errorType) {
+    return {
+      returnType: declaration.returnType.name,
+      errorType: declaration.errorType.name,
+    };
   }
-  return declaration;
+  const standardName = types.semanticInfo.standardFunctionReferences.get(
+    expression.callee.location.offset,
+  );
+  if (standardName) {
+    const standard = standardFunctionSignature(standardName);
+    if (!standard.async && standard.errorType) {
+      return {
+        returnType: standard.returnType,
+        errorType: standard.errorType,
+      };
+    }
+  }
+  unsupported(
+    fileName,
+    expression.location,
+    "async-frame `try` currently requires a direct synchronous throwing function or method call",
+    "call `function operation(...): T throws E` or a throwing synchronous method directly beneath `try`",
+  );
 }
 
 function validateSynchronousTryCall(
@@ -8098,8 +8118,8 @@ function emitSynchronousTryOperation(
 ): string[] {
   const declaration = synchronousTryCallDeclaration(expression, fileName, plan.types);
   const call = expression as CallExpression;
-  const successType = declaration.returnType.name;
-  const errorType = declaration.errorType!.name;
+  const successType = declaration.returnType;
+  const errorType = declaration.errorType;
   const resultType = resultTypeName(successType, errorType);
   const temporary = `_z_sync_try_${state}`;
   const errorPayload = requiresNativeFramePlacement(errorType, plan.types)

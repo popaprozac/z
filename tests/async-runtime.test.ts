@@ -2738,6 +2738,41 @@ test("runs synchronous calls and typed console output inside async frames", () =
   assert.equal(result.stderr, "debug false\n");
 });
 
+test("runs throwing standard filesystem calls inside native worker frames", () => {
+  const directory = mkdtempSync("/tmp/z-async-worker-fs-");
+  const fileName = resolve(directory, "main.zs");
+  const outputPath = resolve(directory, "worker.txt");
+  const source = `
+    import fs from "std/fs";
+    import { thread } from "std/thread";
+
+    async function main(): i32 throws String {
+      const path = ${JSON.stringify(outputPath)};
+      const contents = "written off main";
+      const worker = thread.spawn(move (): void throws String => {
+        try fs.writeText(path, contents);
+      });
+      const written = attempt await worker;
+      match (written) {
+        success => {}
+        failure(error) => throw error;
+      }
+      const loaded = try fs.readText(${JSON.stringify(outputPath)});
+      return loaded == "written off main" ? 0 : 1;
+    }
+  `;
+  writeFileSync(fileName, source);
+  try {
+    const artifact = compileToNative(source, fileName);
+    assert.match(artifact.source, /z_fs_write_text/);
+    assert.match(artifact.source, /z_fs_read_text/);
+    const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("runs cleanup-free owned work on an explicit native thread", () => {
   const example = resolve(projectRoot, "examples/async/thread-spawn.zs");
   const source = readFileSync(example, "utf8");
