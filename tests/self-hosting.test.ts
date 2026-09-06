@@ -2350,6 +2350,52 @@ test("resumes a reusable function through two awaited children", () => {
   }
 }, 240_000);
 
+test("resumes a class method through two awaited children", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-double-await-method.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-double-await-method-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /uint32_t _z_resume_state;[\s\S]*int32_t first;[\s\S]*int32_t second;[\s\S]*Z_AsyncInvocation child;/,
+    );
+    assert.match(
+      emission.stdout,
+      /frame->_z_resume_state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_first\);[\s\S]*frame->_z_resume_state = 2;/,
+    );
+    assert.match(
+      emission.stdout,
+      /frame->_z_resume_state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_second\);[\s\S]*frame->_z_resume_state = 3;/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("routes a service result before publishing it on the main executor", () => {
   const input = resolve(
     projectRoot,

@@ -1225,14 +1225,11 @@ function functionHasFirstTierTailAwaitStorage(
         && functionUsesFirstTierBranchedTailAwait(declaration)
       )
       && !functionUsesFirstTierLinearAwait(declaration)
-      && !(
-        owner.byteLength == 0
-        && functionUsesFirstTierDoubleAwaitWithTaskifiablePlacements(
-          moduleIndex,
-          modules,
-          graph,
-          declaration
-        )
+      && !functionUsesFirstTierDoubleAwaitWithTaskifiablePlacements(
+        moduleIndex,
+        modules,
+        graph,
+        declaration
       )
     )
   ) return false;

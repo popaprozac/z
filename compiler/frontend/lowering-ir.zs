@@ -25847,8 +25847,9 @@ function lowerFunction(
   if (declaration.asynchronous && declaration.name != "main") {
     const firstTierSchedulerYield = executorAffinity != "thread.main"
       && functionUsesFirstTierSchedulerYield(program, declaration);
-    const firstTierDoubleAwait = receiverName.byteLength == 0
-      && functionUsesFirstTierDoubleAwait(declaration);
+    const firstTierDoubleAwait = functionUsesFirstTierDoubleAwait(
+      declaration
+    );
     const firstTierPlacedFunctionLinear = executorAffinity
         != "thread.main"
       && functionUsesFirstTierPlacedFunctionLinearAwait(declaration);
