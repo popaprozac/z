@@ -642,7 +642,10 @@ function asyncTailAwaitShape(
       while (candidate < declaration.expressions.length) {
         const expression = view declaration.expressions[candidate];
         if (
-          expression.kind == LoweredExpressionKind.asyncFunctionAwait
+          (
+            expression.kind == LoweredExpressionKind.asyncFunctionAwait
+            || expression.kind == LoweredExpressionKind.threadAwait
+          )
           && expression.children.length > 0
         ) {
           awaitIndex = candidate;
@@ -681,7 +684,9 @@ function asyncLinearAwaitShape(
           match (in statement.expression) {
             some(expressionIndex) => if (
               declaration.expressions[expressionIndex].kind
-                == LoweredExpressionKind.asyncFunctionAwait
+                  == LoweredExpressionKind.asyncFunctionAwait
+              || declaration.expressions[expressionIndex].kind
+                  == LoweredExpressionKind.threadAwait
             ) {
               match (found) {
                 some(_) => return Option<AsyncLinearAwaitShape>.none;
@@ -730,7 +735,9 @@ function asyncDoubleAwaitShape(
           match (in statement.expression) {
             some(expressionIndex) => if (
               declaration.expressions[expressionIndex].kind
-                == LoweredExpressionKind.asyncFunctionAwait
+                  == LoweredExpressionKind.asyncFunctionAwait
+              || declaration.expressions[expressionIndex].kind
+                  == LoweredExpressionKind.threadAwait
             ) {
               if (firstStatementIndex >= declaration.statements.length) {
                 firstStatementIndex = statementIndex;
@@ -776,8 +783,12 @@ function asyncMethodAwaitStartsChild(
   match (asyncTailAwaitShape(program, declaration.name)) {
     some(_) => if (
       declaration.asyncSuspension == "tail-await"
-      && declaration.expressions[expressionIndex].kind
-        == LoweredExpressionKind.asyncFunctionAwait
+      && (
+        declaration.expressions[expressionIndex].kind
+            == LoweredExpressionKind.asyncFunctionAwait
+        || declaration.expressions[expressionIndex].kind
+            == LoweredExpressionKind.threadAwait
+      )
     ) return true;
     none => {}
   }
@@ -819,7 +830,10 @@ function loweredExpressionContainsAsyncAwait(
   index: usize
 ): boolean {
   const expression = view declaration.expressions[index];
-  if (expression.kind == LoweredExpressionKind.asyncFunctionAwait) {
+  if (
+    expression.kind == LoweredExpressionKind.asyncFunctionAwait
+    || expression.kind == LoweredExpressionKind.threadAwait
+  ) {
     return true;
   }
   for (const child of expression.children) {
@@ -2459,6 +2473,24 @@ function appendAsyncTailChildStart(
 ): void throws String {
   appendIndent(inout output, depth);
   output.append("frame->child = ");
+  if (tailAwait.kind == LoweredExpressionKind.threadAwait) {
+    if (tailAwait.children.length != 1) {
+      throw "native async child start received a malformed thread await";
+    }
+    const taskName = try awaitedTaskName(
+      declaration,
+      tailExpressionIndex
+    );
+    output.append("z_stage1_async_thread_await_");
+    output.append(taskName);
+    output.append("_start(task->executor, &(");
+    try appendExpression(
+      inout output,
+      declaration,
+      tailAwait.children[0]
+    );
+    output.append(")");
+  } else {
   const methodAwait = tailAwait.labels.length > 0
     && tailAwait.labels[0] == "method";
   if (methodAwait) {
@@ -2533,6 +2565,7 @@ function appendAsyncTailChildStart(
       );
       argument = argument + 1;
     }
+  }
   }
   output.append(");\n");
   appendIndent(inout output, depth);
@@ -2627,7 +2660,9 @@ function appendAsyncTailDispatchStatement(
     match (in statement.expression) {
       some(expression) => if (
         declaration.expressions[expression].kind
-          == LoweredExpressionKind.asyncFunctionAwait
+            == LoweredExpressionKind.asyncFunctionAwait
+        || declaration.expressions[expression].kind
+            == LoweredExpressionKind.threadAwait
       ) {
         match (asyncTailAwaitMatchArm(
           declaration,
@@ -9289,7 +9324,10 @@ function appendPersistentAsyncParentDriver(
     output.append("  z_stage1_process_argv = argv;\n");
   }
   output.append("  Z_AsyncExecutor executor = {0};\n  ");
-  if (programUsesObjectiveCAsyncCompletion(program)) {
+  if (
+    programUsesObjectiveCAsyncCompletion(program)
+    || programUsesAsyncThreadAwait(program)
+  ) {
     output.append("z_stage1_async_executor_init_external(&executor);\n  ");
   }
   appendPersistentAsyncParentName(inout output, declaration);
@@ -9305,7 +9343,10 @@ function appendPersistentAsyncParentDriver(
   if (resultNeedsDeinit) output.append("frame->live_result = false;\n  ");
   appendPersistentAsyncParentName(inout output, declaration);
   output.append("_destroy(frame);\n  ");
-  if (programUsesObjectiveCAsyncCompletion(program)) {
+  if (
+    programUsesObjectiveCAsyncCompletion(program)
+    || programUsesAsyncThreadAwait(program)
+  ) {
     output.append("z_stage1_async_executor_destroy_external(&executor);\n  ");
   }
   output.append("return result;\n}\n\n");
@@ -11876,8 +11917,10 @@ function appendAsyncCallableRuntime(
   const usesTaskScope = programUsesTaskScope(program);
   const usesDelay = programUsesMainDelay(program);
   const usesExternalCompletion =
-    programUsesObjectiveCAsyncCompletion(program);
+    programUsesObjectiveCAsyncCompletion(program)
+    || programUsesAsyncThreadAwait(program);
   if (usesTaskScope) required = true;
+  if (programUsesAsyncThreadAwait(program)) required = true;
   if (!required) return;
   if (usesTaskScope) {
     output.append("#if defined(__cplusplus)\n#define Z_STAGE1_THREAD_LOCAL thread_local\n#else\n#define Z_STAGE1_THREAD_LOCAL _Thread_local\n#endif\n");
@@ -11891,8 +11934,8 @@ function appendAsyncCallableRuntime(
   if (usesExternalCompletion) {
     output.append("static void z_stage1_async_external_lock(Z_AsyncExecutor *executor) {\n#if defined(_WIN32)\n  EnterCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_mutex_lock(&executor->external_mutex) != 0) abort();\n#endif\n}\n\n");
     output.append("static void z_stage1_async_external_unlock(Z_AsyncExecutor *executor) {\n#if defined(_WIN32)\n  LeaveCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_mutex_unlock(&executor->external_mutex) != 0) abort();\n#endif\n}\n\n");
-    output.append("static void z_stage1_async_executor_init_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL) abort();\n  executor->external_completions = NULL;\n  executor->active_external_callbacks = 0;\n#if defined(_WIN32)\n  InitializeCriticalSection(&executor->external_mutex);\n  InitializeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_mutex_init(&executor->external_mutex, NULL) != 0) abort();\n  if (pthread_cond_init(&executor->external_condition, NULL) != 0) abort();\n#endif\n}\n\n");
-    output.append("static void z_stage1_async_executor_destroy_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL || executor->external_completions != NULL || executor->active_external_callbacks != 0) abort();\n#if defined(_WIN32)\n  DeleteCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_cond_destroy(&executor->external_condition) != 0) abort();\n  if (pthread_mutex_destroy(&executor->external_mutex) != 0) abort();\n#endif\n}\n\n");
+    output.append("static __attribute__((unused)) void z_stage1_async_executor_init_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL) abort();\n  executor->external_completions = NULL;\n  executor->active_external_callbacks = 0;\n#if defined(_WIN32)\n  InitializeCriticalSection(&executor->external_mutex);\n  InitializeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_mutex_init(&executor->external_mutex, NULL) != 0) abort();\n  if (pthread_cond_init(&executor->external_condition, NULL) != 0) abort();\n#endif\n}\n\n");
+    output.append("static __attribute__((unused)) void z_stage1_async_executor_destroy_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL || executor->external_completions != NULL || executor->active_external_callbacks != 0) abort();\n#if defined(_WIN32)\n  DeleteCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_cond_destroy(&executor->external_condition) != 0) abort();\n  if (pthread_mutex_destroy(&executor->external_mutex) != 0) abort();\n#endif\n}\n\n");
     output.append("static void z_stage1_async_begin_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL || task->external_completion) abort();\n  task->external_completion = true;\n  z_stage1_async_external_lock(task->executor);\n  task->executor->active_external_callbacks += 1;\n  z_stage1_async_external_unlock(task->executor);\n}\n\n");
     output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL) abort();\n  Z_AsyncExecutor *executor = task->executor;\n  z_stage1_async_external_lock(executor);\n  if (!task->external_completion || task->completion_queued || executor->active_external_callbacks == 0) abort();\n  executor->active_external_callbacks -= 1;\n  task->cancelled = task->cancellation_requested;\n  task->completed = true;\n  task->completion_queued = true;\n  task->completion_next = executor->external_completions;\n  executor->external_completions = task;\n#if defined(_WIN32)\n  WakeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_cond_signal(&executor->external_condition) != 0) abort();\n#endif\n  z_stage1_async_external_unlock(executor);\n}\n\n");
   }
@@ -12064,7 +12107,10 @@ function appendAsyncCallableAwaitHelpers(
         parameter = parameter + 1;
       }
       output.append(") {\n  Z_AsyncExecutor executor = {0};\n  ");
-      if (programUsesObjectiveCAsyncCompletion(program)) {
+      if (
+        programUsesObjectiveCAsyncCompletion(program)
+        || programUsesAsyncThreadAwait(program)
+      ) {
         output.append("z_stage1_async_executor_init_external(&executor);\n  ");
       }
       output.append("Z_AsyncAwaiter awaiter = {0};\n  Z_AsyncInvocation invocation = Z_");
@@ -12098,7 +12144,10 @@ function appendAsyncCallableAwaitHelpers(
       }
       output.append("  if (invocation.destroy != NULL) invocation.destroy(invocation.task);\n");
       output.append("  if (invocation.release_context != NULL) invocation.release_context(invocation.callable_context);\n");
-      if (programUsesObjectiveCAsyncCompletion(program)) {
+      if (
+        programUsesObjectiveCAsyncCompletion(program)
+        || programUsesAsyncThreadAwait(program)
+      ) {
         output.append("  z_stage1_async_executor_destroy_external(&executor);\n");
       }
       if (functionType.returnType.kind != LoweredTypeKind.voidType) {
@@ -12566,6 +12615,15 @@ function appendAsyncMethodAwaitHelpers(
         some(_) => directTailAwait = true;
         none => {}
       }
+      const linearAwaitShape = asyncLinearAwaitShape(
+        program,
+        method.value
+      );
+      let directLinearAwait = false;
+      match (linearAwaitShape) {
+        some(_) => directLinearAwait = true;
+        none => {}
+      }
       let delayMethodIndex = program.functions.length;
       let delayCandidateIndex: usize = 0;
       while (delayCandidateIndex < program.functions.length) {
@@ -12904,6 +12962,17 @@ function appendAsyncMethodAwaitHelpers(
           shape.expressionIndex
         );
         output.append("  Z_AsyncInvocation child;\n");
+      } else if (directLinearAwait) {
+        const shape = match (linearAwaitShape) {
+          some(found) => found;
+          none => throw "native linear-await method lost its lowered shape";
+        };
+        try appendAsyncTailLocalFields(
+          inout output,
+          program,
+          program.functions[shape.functionIndex]
+        );
+        output.append("  Z_AsyncInvocation child;\n");
       }
       if (!delaySuspendingMethod) {
         output.append("} ");
@@ -13151,6 +13220,300 @@ function appendAsyncMethodAwaitHelpers(
           }
           output.append("#undef self\n\n");
         }
+      } else if (directLinearAwait) {
+        const shape = match (linearAwaitShape) {
+          some(found) => found;
+          none => throw "native linear-await method lost its lowered shape";
+        };
+        const linearDeclaration = try asyncFrameDeclaration(
+          program,
+          program.functions[shape.functionIndex],
+          Option<usize>.none
+        );
+        const linearAwait = view linearDeclaration.expressions[
+          shape.expressionIndex
+        ];
+        const awaitedLocal = view linearDeclaration.statements[
+          shape.statementIndex
+        ];
+        const awaitedType = match (in awaitedLocal.type) {
+          some(found) => copy found;
+          none => throw "native linear await method lost its result type";
+        };
+        const propagatesTry = awaitedLocal.labels.length == 3
+          && awaitedLocal.labels[0] == "async-try";
+        if (
+          awaitedLocal.labels.length > 0
+          && !propagatesTry
+        ) throw "native linear await method received malformed try metadata";
+        let innerResult = "";
+        let outerResult = "";
+        if (propagatesTry) {
+          innerResult = awaitedLocal.labels[1].copyBytes(
+            0,
+            awaitedLocal.labels[1].byteLength
+          );
+          outerResult = awaitedLocal.labels[2].copyBytes(
+            0,
+            awaitedLocal.labels[2].byteLength
+          );
+          if (
+            functionType.returnType.kind != LoweredTypeKind.enumType
+            || functionType.returnType.name != outerResult
+          ) throw "native linear try await method lost its propagated result type";
+        }
+        let receiverLiveFlag = "";
+        if (consumingStructReceiver) {
+          for (const flag of linearDeclaration.liveFlags) {
+            if (flag.parameter && flag.owner == "this") {
+              receiverLiveFlag = flag.name.copyBytes(
+                0,
+                flag.name.byteLength
+              );
+            }
+          }
+          output.append("#define self (frame->receiver)\n");
+          if (receiverLiveFlag.byteLength > 0) {
+            output.append("#define ");
+            appendCBindingName(inout output, receiverLiveFlag);
+            output.append(" (frame->live_receiver)\n");
+          }
+          output.append("\n");
+        }
+        try appendAsyncTailLocalMacros(
+          inout output,
+          program,
+          linearDeclaration
+        );
+        try appendAsyncStoredParameterMacros(
+          inout output,
+          linearDeclaration,
+          functionType
+        );
+        output.append("static void ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_release_child(");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n}\n\nstatic void ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_cancel(Z_AsyncTask *task) {\n  ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *frame = (");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *)task;\n  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n}\n\nstatic void ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_poll(Z_AsyncTask *task) {\n  ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *frame = (");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *)task;\n");
+        if (classReceiver) {
+          output.append("  Z_");
+          output.append(receiverType);
+          output.append(" *self __attribute__((unused)) = frame->receiver;\n");
+        }
+        let aliasParameter: usize = 0;
+        while (aliasParameter < functionType.parameters.length) {
+          if (aliasParameter >= linearDeclaration.parameters.length) {
+            throw "native linear-await method lost its parameter identity";
+          }
+          output.append("  ");
+          try appendCallableParameterDeclaration(
+            inout output,
+            functionType.parameters[aliasParameter],
+            linearDeclaration.parameters[aliasParameter].name
+          );
+          output.append(" __attribute__((unused)) = frame->argument");
+          output.append(`${aliasParameter}`);
+          output.append(";\n");
+          aliasParameter = aliasParameter + 1;
+        }
+        output.append("  if (task->cancellation_requested && frame->_z_resume_state == 0) {\n");
+        try appendAsyncTailLocalCleanups(
+          inout output,
+          program,
+          linearDeclaration,
+          2
+        );
+        appendAsyncStoredParameterCleanups(
+          inout output,
+          program,
+          functionType,
+          2
+        );
+        output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->_z_resume_state == 0) {\n");
+        let prefix: usize = 0;
+        while (prefix < shape.rootPosition) {
+          const prefixRoot = linearDeclaration.roots[prefix];
+          try appendAsyncTailPrefixStatement(
+            inout output,
+            program,
+            linearDeclaration,
+            functionType,
+            shape.expressionIndex,
+            prefixRoot,
+            2
+          );
+          prefix = prefix + 1;
+        }
+        const noClosureParameterNames = Array<String>();
+        try appendAsyncTailChildStart(
+          inout output,
+          program,
+          linearDeclaration,
+          functionType,
+          noClosureParameterNames,
+          linearAwait,
+          shape.expressionIndex,
+          1,
+          2
+        );
+        output.append("  }\n  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_release_child(frame);\n");
+        try appendAsyncTailLocalCleanups(
+          inout output,
+          program,
+          linearDeclaration,
+          2
+        );
+        appendAsyncStoredParameterCleanups(
+          inout output,
+          program,
+          functionType,
+          2
+        );
+        output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n  if (frame->child.take_result == NULL) abort();\n");
+        if (propagatesTry) {
+          output.append("  Z_");
+          output.append(innerResult);
+          output.append(" _z_stage1_async_try_");
+          output.append(`${shape.statementIndex}`);
+          output.append(";\n  frame->child.take_result(frame->child.task, &_z_stage1_async_try_");
+          output.append(`${shape.statementIndex}`);
+          output.append(");\n  if (_z_stage1_async_try_");
+          output.append(`${shape.statementIndex}`);
+          output.append(".tag == Z_");
+          output.append(innerResult);
+          output.append("Tag_failure) {\n    frame->result = (Z_");
+          output.append(outerResult);
+          output.append("){.tag = Z_");
+          output.append(outerResult);
+          output.append("Tag_failure, .payload.failure = _z_stage1_async_try_");
+          output.append(`${shape.statementIndex}`);
+          output.append(".payload.failure};\n");
+          if (resultNeedsDeinit) output.append("    frame->live_result = true;\n");
+          output.append("    ");
+          appendAsyncCallableAwaitHelperName(
+            inout output,
+            owner,
+            expressionIndex
+          );
+          output.append("_release_child(frame);\n");
+          try appendAsyncTailLocalCleanups(
+            inout output,
+            program,
+            linearDeclaration,
+            2
+          );
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            2
+          );
+          output.append("    task->completed = true; return;\n  }\n  ");
+          appendAsyncFrameBindingName(
+            inout output,
+            linearDeclaration,
+            awaitedLocal.name
+          );
+          output.append(" = _z_stage1_async_try_");
+          output.append(`${shape.statementIndex}`);
+          output.append(".payload.success;\n");
+        } else {
+          output.append("  frame->child.take_result(frame->child.task, &");
+          appendAsyncFrameBindingName(
+            inout output,
+            linearDeclaration,
+            awaitedLocal.name
+          );
+          output.append(");\n");
+        }
+        if (loweredTypeNeedsDeinit(program, awaitedType)) {
+          if (awaitedLocal.liveFlag.byteLength == 0) {
+            throw "native linear await method lost its result cleanup guard";
+          }
+          output.append("  ");
+          appendCBindingName(inout output, awaitedLocal.liveFlag);
+          output.append(" = true;\n");
+        }
+        output.append("  ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_release_child(frame);\n  frame->_z_resume_state = 2;\n");
+        let suffix = shape.rootPosition + 1;
+        while (suffix < linearDeclaration.roots.length) {
+          const suffixRoot = linearDeclaration.roots[suffix];
+          try appendAsyncTailPrefixStatement(
+            inout output,
+            program,
+            linearDeclaration,
+            functionType,
+            shape.expressionIndex,
+            suffixRoot,
+            1
+          );
+          suffix = suffix + 1;
+        }
+        output.append("  task->completed = true;\n}\n\n");
+        if (consumingStructReceiver) {
+          if (receiverLiveFlag.byteLength > 0) {
+            output.append("#undef ");
+            appendCBindingName(inout output, receiverLiveFlag);
+            output.append("\n");
+          }
+          output.append("#undef self\n\n");
+        }
       } else if (!delaySuspendingMethod) {
         output.append("static void ");
       appendAsyncCallableAwaitHelperName(
@@ -13233,6 +13596,35 @@ function appendAsyncMethodAwaitHelpers(
           destroyDeclaration,
           destroyShape.expressionIndex,
           1
+        );
+        try appendAsyncTailLocalCleanups(
+          inout output,
+          program,
+          destroyDeclaration,
+          1
+        );
+        appendAsyncStoredParameterCleanups(
+          inout output,
+          program,
+          functionType,
+          1
+        );
+      } else if (directLinearAwait) {
+        output.append("  ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_release_child(frame);\n");
+        const destroyShape = match (linearAwaitShape) {
+          some(found) => found;
+          none => throw "native linear-await method lost its lowered shape";
+        };
+        const destroyDeclaration = try asyncFrameDeclaration(
+          program,
+          program.functions[destroyShape.functionIndex],
+          Option<usize>.none
         );
         try appendAsyncTailLocalCleanups(
           inout output,
@@ -13374,7 +13766,11 @@ function appendAsyncMethodAwaitHelpers(
       if (consumingStructReceiver) {
         output.append("  frame->live_receiver = true;\n");
       }
-      if (directTailAwait || delaySuspendingMethod) {
+      if (
+        directTailAwait
+        || directLinearAwait
+        || delaySuspendingMethod
+      ) {
         output.append("  frame->task.request_cancel = ");
         appendAsyncCallableAwaitHelperName(
           inout output,
@@ -13382,7 +13778,7 @@ function appendAsyncMethodAwaitHelpers(
           expressionIndex
         );
         output.append("_cancel;\n");
-        if (directTailAwait) {
+        if (directTailAwait || directLinearAwait) {
           output.append("  frame->child = (Z_AsyncInvocation){0};\n");
         }
       }
@@ -13459,7 +13855,10 @@ function appendAsyncMethodAwaitHelpers(
         parameter = parameter + 1;
       }
       output.append(") {\n  Z_AsyncExecutor executor = {0};\n  ");
-      if (programUsesObjectiveCAsyncCompletion(program)) {
+      if (
+        programUsesObjectiveCAsyncCompletion(program)
+        || programUsesAsyncThreadAwait(program)
+      ) {
         output.append("z_stage1_async_executor_init_external(&executor);\n  ");
       }
       appendAsyncCallableAwaitHelperName(
@@ -13489,7 +13888,11 @@ function appendAsyncMethodAwaitHelpers(
       if (consumingStructReceiver) {
         output.append("  frame->live_receiver = true;\n");
       }
-      if (directTailAwait || delaySuspendingMethod) {
+      if (
+        directTailAwait
+        || directLinearAwait
+        || delaySuspendingMethod
+      ) {
         output.append("  frame->task.request_cancel = ");
         appendAsyncCallableAwaitHelperName(
           inout output,
@@ -13497,7 +13900,7 @@ function appendAsyncMethodAwaitHelpers(
           expressionIndex
         );
         output.append("_cancel;\n");
-        if (directTailAwait) {
+        if (directTailAwait || directLinearAwait) {
           output.append("  frame->child = (Z_AsyncInvocation){0};\n");
         }
       }
@@ -13542,7 +13945,10 @@ function appendAsyncMethodAwaitHelpers(
         expressionIndex
       );
       output.append("_destroy(frame);\n");
-      if (programUsesObjectiveCAsyncCompletion(program)) {
+      if (
+        programUsesObjectiveCAsyncCompletion(program)
+        || programUsesAsyncThreadAwait(program)
+      ) {
         output.append("  z_stage1_async_executor_destroy_external(&executor);\n");
       }
       if (functionType.returnType.kind != LoweredTypeKind.voidType) {
@@ -13586,6 +13992,20 @@ function appendAsyncMethodAwaitHelpers(
           program,
           program.functions[undefShape.functionIndex],
           undefShape.expressionIndex
+        );
+        appendAsyncStoredParameterMacroUndefs(
+          inout output,
+          program.functions[undefShape.functionIndex]
+        );
+      } else if (directLinearAwait) {
+        const undefShape = match (linearAwaitShape) {
+          some(found) => found;
+          none => throw "native linear-await method lost its lowered shape";
+        };
+        try appendAsyncTailLocalMacroUndefs(
+          inout output,
+          program,
+          program.functions[undefShape.functionIndex]
         );
         appendAsyncStoredParameterMacroUndefs(
           inout output,
@@ -13933,6 +14353,7 @@ function appendThreadTaskRuntime(
 ): void throws String {
   const taskNames = programTaskTypeNames(program);
   const usesMainDelay = programUsesMainDelay(program);
+  const usesAsyncThreadAwait = programUsesAsyncThreadAwait(program);
   for (const taskName of taskNames) {
     const resultType = try taskResultType(program, taskName);
     const nativeResultType = try cType(resultType);
@@ -13994,13 +14415,25 @@ function appendThreadTaskRuntime(
     output.append(taskName);
     output.append("_complete(Z_");
     output.append(taskName);
-    output.append("Storage *storage) {\n  Z_");
+    output.append("Storage *storage) {\n");
+    if (usesAsyncThreadAwait) {
+      output.append("  Z_AsyncTask *async_waiter = NULL;\n");
+    }
+    output.append("  Z_");
     output.append(taskName);
-    output.append("_lock(storage);\n  storage->finished = true;\n  Z_");
+    output.append("_lock(storage);\n  storage->finished = true;\n");
+    if (usesAsyncThreadAwait) {
+      output.append("  async_waiter = storage->async_waiter;\n  storage->async_waiter = NULL;\n");
+    }
+    output.append("  Z_");
     output.append(taskName);
     output.append("_wake(storage);\n  Z_");
     output.append(taskName);
-    output.append("_unlock(storage);\n}\n\n");
+    output.append("_unlock(storage);\n");
+    if (usesAsyncThreadAwait) {
+      output.append("  if (async_waiter != NULL) z_stage1_async_report_external_completion(async_waiter);\n");
+    }
+    output.append("}\n\n");
     output.append("static void Z_");
     output.append(taskName);
     output.append("_join(Z_");
@@ -14078,6 +14511,91 @@ function appendThreadTaskRuntime(
     output.append("_unlock(storage);\n  Z_");
     output.append(taskName);
     output.append("_deinit(task);\n}\n\n");
+    if (usesAsyncThreadAwait) {
+      output.append("typedef struct z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_task {\n  Z_AsyncTask task;\n  Z_");
+      output.append(taskName);
+      output.append(" *worker;\n} z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_task;\n\nstatic void z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_request_cancel(Z_AsyncTask *task) {\n  z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_task *frame = (z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_task *)task;\n  if (frame->worker == NULL || frame->worker->storage == NULL) return;\n  Z_");
+      output.append(taskName);
+      output.append("Storage *storage = frame->worker->storage;\n  Z_");
+      output.append(taskName);
+      output.append("_lock(storage);\n  storage->cancellation_requested = true;\n  Z_");
+      output.append(taskName);
+      output.append("_wake(storage);\n  Z_");
+      output.append(taskName);
+      output.append("_unlock(storage);\n}\n\nstatic void z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_poll(Z_AsyncTask *task) {\n  z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_task *frame = (z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_task *)task;\n  if (frame->worker == NULL || frame->worker->storage == NULL) abort();\n  Z_");
+      output.append(taskName);
+      output.append("Storage *storage = frame->worker->storage;\n  if (task->cancellation_requested) z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_request_cancel(task);\n  Z_");
+      output.append(taskName);
+      output.append("_lock(storage);\n  if (storage->finished) {\n    const bool cancelled = task->cancellation_requested || storage->continuation_cancelled;\n    Z_");
+      output.append(taskName);
+      output.append("_unlock(storage);\n    task->cancelled = cancelled;\n    task->completed = true;\n    return;\n  }\n  if (storage->async_waiter != NULL) abort();\n  z_stage1_async_begin_external_completion(task);\n  storage->async_waiter = task;\n  Z_");
+      output.append(taskName);
+      output.append("_unlock(storage);\n}\n\nstatic bool z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_failed(Z_AsyncTask *task) { (void)task; return false; }\n\nstatic void z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_take_result(Z_AsyncTask *task, void *destination) {\n  z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_task *frame = (z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_task *)task;\n");
+      if (resultType.kind == LoweredTypeKind.voidType) {
+        output.append("  (void)destination;\n  Z_");
+        output.append(taskName);
+        output.append("_await(frame->worker);\n");
+      } else {
+        output.append("  if (destination == NULL) abort();\n  *( (");
+        output.append(nativeResultType);
+        output.append(" *)destination) = Z_");
+        output.append(taskName);
+        output.append("_await(frame->worker);\n");
+      }
+      output.append("}\n\nstatic void z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_take_error(Z_AsyncTask *task, void *destination) { (void)task; (void)destination; }\n\nstatic void z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_destroy(Z_AsyncTask *task) {\n  if (task == NULL) return;\n  free((z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_task *)task);\n}\n\nstatic __attribute__((unused)) Z_AsyncInvocation z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_start(Z_AsyncExecutor *executor, Z_");
+      output.append(taskName);
+      output.append(" *worker) {\n  if (executor == NULL || worker == NULL || worker->storage == NULL) abort();\n  z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_task *frame = (z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_task *)calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.poll = z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_poll;\n  frame->task.request_cancel = z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_request_cancel;\n  frame->task.executor = executor;\n  frame->worker = worker;\n  return (Z_AsyncInvocation){ .task = &frame->task, .failed = z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_failed, .take_result = z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_take_result, .take_error = z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_take_error, .destroy = z_stage1_async_thread_await_");
+      output.append(taskName);
+      output.append("_destroy, .callable_context = NULL, .release_context = NULL };\n}\n\n");
+    }
   }
 }
 
@@ -16749,6 +17267,60 @@ function threadSpawnOwnsCapture(
     == LoweredExpressionKind.moveValue;
 }
 
+function appendThreadSpawnPrototypes(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  let emitted = false;
+  for (const declaration of program.functions) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < declaration.expressions.length) {
+      const expression = view declaration.expressions[expressionIndex];
+      if (expression.kind != LoweredExpressionKind.threadSpawn) {
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      if (
+        expression.labels.length < 5
+        || (expression.labels.length - 5) % 2 != 0
+      ) throw "native C emission received malformed thread.spawn evidence";
+      const taskName = expression.value.copyBytes(
+        0,
+        expression.value.byteLength
+      );
+      output.append("static Z_");
+      output.append(taskName);
+      output.append(" ");
+      appendThreadSpawnHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("(");
+      let captureLabel: usize = 5;
+      while (captureLabel + 1 < expression.labels.length) {
+        if (captureLabel > 5) output.append(", ");
+        const captureType = try loweredTypeForIdentity(
+          program,
+          expression.labels[captureLabel + 1]
+        );
+        output.append(try cType(captureType));
+        output.append(" ");
+        appendCBindingName(
+          inout output,
+          expression.labels[captureLabel]
+        );
+        captureLabel = captureLabel + 2;
+      }
+      if (captureLabel == 5) output.append("void");
+      output.append(");\n");
+      emitted = true;
+      expressionIndex = expressionIndex + 1;
+    }
+  }
+  if (emitted) output.append("\n");
+}
+
 function appendThreadSpawnHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -18852,8 +19424,10 @@ function appendTypeDefinitions(
   const taskNames = programTaskTypeNames(program);
   const usesTaskScope = programUsesTaskScope(program);
   const usesAsyncDelay = programUsesMainDelay(program);
+  const usesAsyncThreadAwait = programUsesAsyncThreadAwait(program);
   const usesExternalCompletion =
-    programUsesObjectiveCAsyncCompletion(program);
+    programUsesObjectiveCAsyncCompletion(program)
+    || usesAsyncThreadAwait;
   if (taskNames.length > 0) {
     output.append("typedef void (*Z_MainThreadRequest)(void *context);\n\n");
   }
@@ -18861,7 +19435,11 @@ function appendTypeDefinitions(
   for (const declaration of program.functionTypes) {
     if (declaration.asynchronous) usesAsyncFunctionType = true;
   }
-  if (usesAsyncFunctionType || usesTaskScope) {
+  if (
+    usesAsyncFunctionType
+    || usesTaskScope
+    || usesAsyncThreadAwait
+  ) {
     output.append("typedef struct Z_AsyncTask Z_AsyncTask;\n");
     output.append("typedef struct Z_AsyncExecutor Z_AsyncExecutor;\n");
     output.append("struct Z_AsyncTask {\n");
@@ -18904,6 +19482,10 @@ function appendTypeDefinitions(
     output.append("  void *callable_context;\n");
     output.append("  void (*release_context)(void *context);\n");
     output.append("} Z_AsyncInvocation;\n\n");
+    if (usesExternalCompletion) {
+      output.append("static void z_stage1_async_begin_external_completion(Z_AsyncTask *task);\n");
+      output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task);\n\n");
+    }
   }
   if (usesTaskScope) {
     output.append("typedef struct Z_TaskScopeJob Z_TaskScopeJob;\n");
@@ -19208,7 +19790,11 @@ function appendTypeDefinitions(
     const nativeResultType = try cType(resultType);
     output.append("struct Z_");
     output.append(taskName);
-    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool result_live;\n  bool cancellation_requested;\n  bool continuation_cancelled;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n  void *context;\n  ");
+    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool result_live;\n  bool cancellation_requested;\n  bool continuation_cancelled;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n");
+    if (usesAsyncThreadAwait) {
+      output.append("  Z_AsyncTask *async_waiter;\n");
+    }
+    output.append("  void *context;\n  ");
     if (resultType.kind != LoweredTypeKind.voidType) {
       output.append(nativeResultType);
       output.append(" result;\n};\n\n");
@@ -21594,6 +22180,20 @@ function programUsesObjectiveCAsyncCompletion(
   return false;
 }
 
+function programUsesAsyncThreadAwait(
+  in program: LoweredProgram
+): boolean {
+  for (const declaration of program.functions) {
+    if (!declaration.asynchronous) continue;
+    for (const expression of declaration.expressions) {
+      if (
+        expression.kind == LoweredExpressionKind.threadAwait
+      ) return true;
+    }
+  }
+  return false;
+}
+
 function appendObjCOwnedStorageRuntime(inout output: TextBuffer): void {
   output.append("extern id objc_retain(id value);\nextern void objc_release(id value);\nextern void objc_storeStrong(id __strong *location, id value);\n\n");
   output.append("typedef struct Z_ObjCOwned {\n  __unsafe_unretained id value;\n} Z_ObjCOwned;\n\n");
@@ -22789,6 +23389,7 @@ function emitLoweredC(
   appendAsyncCallableRuntime(inout output, program);
   appendTaskScopeRuntime(inout output, program);
   try appendDirectCallableValuePrototypes(inout output, program);
+  try appendThreadSpawnPrototypes(inout output, program);
   try appendTaskScopeScheduleHelpers(inout output, program);
   try appendAsyncMethodAwaitStartPrototypes(inout output, program);
   try appendCallableHelpers(inout output, program);

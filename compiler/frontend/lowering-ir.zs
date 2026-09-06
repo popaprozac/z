@@ -21475,6 +21475,13 @@ function statementIsFirstTierAwaitLocal(
           || tree.nodes[root].children.length != 1
         ) return false;
         const operation = tree.nodes[root].children[0];
+        // A started Task<T, E> is itself awaitable. Recognize a local task
+        // binding alongside a direct async call so an ordinary async function
+        // or method can start native work, retain its frame, and join it later.
+        if (
+          tree.nodes[operation].kind == ExpressionKind.identifierExpression
+          || tree.nodes[operation].kind == ExpressionKind.memberExpression
+        ) return true;
         if (
           tree.nodes[operation].kind != ExpressionKind.callExpression
           || tree.nodes[operation].children.length == 0
