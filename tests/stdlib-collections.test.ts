@@ -2234,6 +2234,120 @@ test("moves Array storage and destroys initialized owned elements in reverse ord
   assert.throws(() => compileToC(movedArray, "dynamic-array-owner-move.zs"), /use of moved value "first"/);
 });
 
+test("clears dynamic Arrays with deterministic cleanup while retaining capacity", () => {
+  const directory = mkdtempSync("/tmp/z-array-clear-");
+  const input = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import console from "std/console";
+
+      struct Resource {
+        id: i32;
+        deinit { console.log(\`drop=\${this.id}\`); }
+      }
+
+      function main(): i32 {
+        let values = Array<Resource>(Resource({ id: 1 }), Resource({ id: 2 }));
+        const capacity: usize = values.capacity;
+        values.clear();
+        if (values.length != 0 || values.capacity != capacity) return 1;
+        values.push(Resource({ id: 3 }));
+        return values.length == 1 ? 0 : 2;
+      }
+    `;
+    writeFileSync(input, source);
+    const generated = compileToC(source, input);
+    assert.match(generated, /DynamicArray_.*_clear\(&\(values\)\)/);
+    assert.match(generated, /while \(self->length > 0\).*self->length -= 1/s);
+    assert.doesNotMatch(
+      generated.match(/static .*DynamicArray_.*_clear[\s\S]*?\n\}/)?.[0] ?? "",
+      /free\(self->data\)/,
+    );
+
+    const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "drop=2\ndrop=1\ndrop=3\n");
+
+    const asyncSource = `
+      async function main(): i32 {
+        let values = Array<i32>(20, 22);
+        const capacity: usize = values.capacity;
+        values.clear();
+        if (values.length != 0 || values.capacity != capacity) return 1;
+        values.push(42);
+        return values[0] - 42;
+      }
+    `;
+    const asyncGenerated = compileToC(asyncSource, "dynamic-array-clear-async.zs");
+    assert.match(asyncGenerated, /DynamicArray_.*_clear\(&\(frame->value_values\)\)/);
+    const asyncInput = resolve(directory, "async.zs");
+    writeFileSync(asyncInput, asyncSource);
+    const asyncResult = spawnSync(process.execPath, [cli, "run", asyncInput], { encoding: "utf8" });
+    assert.equal(asyncResult.status, 0, asyncResult.stderr);
+
+    const immutable = source.replace("let values =", "const values =");
+    assert.throws(
+      () => compileToC(immutable, "dynamic-array-clear-const.zs"),
+      /Array\.clear requires addressable let storage/,
+    );
+
+    const wrongArity = source.replace("values.clear();", "values.clear(1);");
+    assert.throws(
+      () => compileToC(wrongArity, "dynamic-array-clear-arity.zs"),
+      /"clear" expects 0 arguments, received 1/,
+    );
+
+    const liveView = `
+      function main(): i32 {
+        let values = Array<i32>(42);
+        const first = view values[0];
+        values.clear();
+        return first;
+      }
+    `;
+    assert.match(
+      diagnostics(liveView, "dynamic-array-clear-live-view.zs")[0]?.message ?? "",
+      /cannot mutate "values" while view/,
+    );
+
+    const iteration = `
+      function main(): i32 {
+        let values = Array<i32>(42);
+        for (const value of values) {
+          values.clear();
+        }
+        return 0;
+      }
+    `;
+    const iterationDiagnostic = diagnostics(iteration, "dynamic-array-clear-iteration.zs")[0];
+    assert.equal(iterationDiagnostic?.code, "Z0311");
+    assert.match(iterationDiagnostic?.message ?? "", /cannot structurally mutate Array "values"/);
+
+    const arenaProvenance = `
+      import { Arena } from "std/memory";
+      struct Item { value: i32; }
+      struct Link { item: view Item; }
+      function main(): i32 {
+        let firstArena = Arena();
+        let secondArena = Arena();
+        const first = firstArena.create(Item({ value: 1 }));
+        const second = secondArena.create(Item({ value: 2 }));
+        let links = Array<Link>();
+        links.push(Link({ item: first }));
+        links.clear();
+        links.push(Link({ item: second }));
+        return 0;
+      }
+    `;
+    assert.match(
+      diagnostics(arenaProvenance, "dynamic-array-clear-arena.zs")[0]?.message ?? "",
+      /already carries provenance from another Arena/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("checks Array mutation, element types, and partial moves", () => {
   const empty = `
     function main(): i32 { const values = Array<i32>(); return 0; }
@@ -2284,6 +2398,7 @@ test("exposes Array members and source-level types to editor services", () => {
   assert.equal(items.find((item) => item.label === "length")?.detail, "usize");
   assert.equal(items.find((item) => item.label === "capacity")?.detail, "usize");
   assert.match(items.find((item) => item.label === "push")?.detail ?? "", /push\(value: i32\): void/);
+  assert.match(items.find((item) => item.label === "clear")?.detail ?? "", /destroys all elements and retains capacity/);
   assert.match(items.find((item) => item.label === "freeze")?.detail ?? "", /readonly Array<i32>.*without copying/);
 
   const valid = source.replace("      values.;", "      values.push(1);");
@@ -2291,6 +2406,9 @@ test("exposes Array members and source-level types to editor services", () => {
   assert.match(hover(valid, "dynamic-array-editor.zs", declaration + 1)?.contents.value ?? "", /values: Array<i32>/);
   const push = valid.indexOf("push(1)");
   assert.match(hover(valid, "dynamic-array-editor.zs", push + 1)?.contents.value ?? "", /push\(value: i32\): void/);
+  const clearSource = source.replace("      values.;", "      values.clear();");
+  const clear = clearSource.indexOf("clear()") + 1;
+  assert.match(hover(clearSource, "dynamic-array-editor.zs", clear)?.contents.value ?? "", /destroys all elements and retains capacity/);
 });
 
 test("owns Map keys and values with optional views and deterministic removal", () => {
@@ -3749,11 +3867,11 @@ test("freezes owned collections into type-position readonly storage without copy
 
     const readonlyArrayMutation = source.replace(
       "return frozenRoutes.has(\"ready\")",
-      "frozenValues.push(3);\n        return frozenRoutes.has(\"ready\")",
+      "frozenValues.clear();\n        return frozenRoutes.has(\"ready\")",
     );
     assert.match(
       diagnostics(readonlyArrayMutation, file)[0]?.message ?? "",
-      /readonly Array has no mutating method "push"/,
+      /readonly Array has no mutating method "clear"/,
     );
 
     const unsupported = `function inspect(value: readonly i32): i32 { return value; }`;

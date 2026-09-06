@@ -900,7 +900,7 @@ export function inferGenericCalls(
         if (dynamicArray && (expression.property === "length" || expression.property === "capacity")) {
           return { expression: { ...expression, object: object.expression }, type: "usize" };
         }
-        if (dynamicArray && expression.property === "push") {
+        if (dynamicArray && (expression.property === "push" || expression.property === "clear")) {
           return { expression: { ...expression, object: object.expression }, type: "void" };
         }
         const map = object.type ? parseMapType(object.type) : null;

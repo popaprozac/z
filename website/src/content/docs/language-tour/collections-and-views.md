@@ -41,6 +41,11 @@ The one-argument form contains one element; it does not mean “reserve this muc
 capacity.” Arguments enter the array in source order under the same ownership
 rules as `push`.
 
+`values.clear()` destroys every live element immediately in reverse order and
+sets `length` to zero. The backing allocation and `capacity` remain available
+for later `push` calls. Clearing requires mutable `let` storage and is rejected
+while an element view or `for...of` borrow is live.
+
 Both shapes expose `.length` and checked indexing. A growable array may allocate
 when it expands. Moving the whole array transfers its buffer; an indexed owned
 element is borrowed rather than moved out, because extraction would leave a

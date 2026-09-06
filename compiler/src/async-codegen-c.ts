@@ -7921,6 +7921,10 @@ function emitFrameExpressionInner(
           }
           if (expression.callee.property === "finish") return receiver;
         }
+        if (parseDynamicArrayType(receiverType) && expression.callee.property === "clear") {
+          const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+          return `${dynamicArrayClearName(receiverType)}(&(${receiver}))`;
+        }
         if (parseDynamicArrayType(receiverType) && expression.callee.property === "push") {
           const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
           const argument = emitFrameExpression(expression.arguments[0], plan, fileName);
@@ -8709,6 +8713,10 @@ function requiresNativeFramePlacement(
 
 function dynamicArrayPushName(type: string): string {
   return `Z_DynamicArray_${asyncNativeSymbolPart(writableTypeName(type))}_push`;
+}
+
+function dynamicArrayClearName(type: string): string {
+  return `Z_DynamicArray_${asyncNativeSymbolPart(writableTypeName(type))}_clear`;
 }
 
 function asyncMapMethodName(type: string, method: string): string {

@@ -313,6 +313,7 @@ export enum LoweredExpressionKind {
   arrayMutableIndex,
   arraySlice,
   arrayPush,
+  arrayClear,
   mapEmpty,
   mapLength,
   mapHas,
@@ -13948,6 +13949,50 @@ function lowerExpressionContextual(
               receiverType.name,
               children,
               labels
+            );
+          }
+        }
+        none => {}
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].value == "clear"
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[index].children.length == 1
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput
+      )) {
+        some(receiverTypeName) => {
+          const receiverType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            receiverTypeName
+          );
+          if (receiverType.kind == LoweredTypeKind.arrayType) {
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            markMutableStorage(inout output, receiver);
+            let children = Array<usize>();
+            children.push(receiver);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.arrayClear,
+              receiverType.name,
+              children,
+              Array<String>()
             );
           }
         }

@@ -897,6 +897,10 @@ export function generateC(
     lines.push("");
   }
 
+  for (const type of dynamicArrayTypes) {
+    lines.push(generateDynamicArrayClear(type, structs, enums, semanticInfo), "");
+  }
+
   for (const valueType of onceValueTypes) {
     lines.push(generateOnceRuntime(valueType, structs, enums, semanticInfo), "");
   }
@@ -4033,7 +4037,11 @@ function generateOwnedEnvironmentCleanup(
   if (foreign?.ownership === "owned") {
     return foreign.nullable ? `if (${value} != NULL) ${foreign.release}(${value});` : `${foreign.release}(${value});`;
   }
-  if (semanticInfo.foreignNamedTypes.get(type)?.kind === "object") return `${value} = nil;`;
+  const foreignNamed = semanticInfo.foreignNamedTypes.get(type);
+  if (foreignNamed?.kind === "record" && foreignNamed.resource) {
+    return `${foreignNamed.resource.release}(${value});`;
+  }
+  if (foreignNamed?.kind === "object") return `${value} = nil;`;
   const declaration = structs.get(type);
   if (declaration?.kind === "class") return `${releaseName(type)}(${value});`;
   if (declaration && hasSemanticCleanupType(type, structs, enums, semanticInfo)) return `${deinitName(type)}(&(${value}));`;
@@ -4864,6 +4872,45 @@ function generateDynamicArrayPush(
   }
   self->data[self->length] = value;
   self->length += 1;
+}`;
+}
+
+function generateDynamicArrayClear(
+  name: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const dynamic = parseDynamicArrayType(name)!;
+  const arrayType = dynamicArrayName(name);
+  const element = "self->data[self->length]";
+  const cleanup = hasSemanticCleanupType(dynamic.elementType, structs, enums, semanticInfo)
+    ? generateOwnedEnvironmentCleanup(
+        element,
+        dynamic.elementType,
+        structs,
+        enums,
+        semanticInfo,
+        { value: 0 },
+      )
+    : "";
+  const destroy = requiresNativeMove(
+    dynamic.elementType,
+    structs,
+    enums,
+    semanticInfo.foreignNamedTypes,
+  ) ? `std::destroy_at(&${element});` : "";
+  const body = [cleanup, destroy].filter(Boolean).join("\n");
+  if (!body) {
+    return `static Z_UNUSED_FUNCTION void ${dynamicArrayClearName(name)}(${arrayType} *self) {
+  self->length = 0;
+}`;
+  }
+  return `static Z_UNUSED_FUNCTION void ${dynamicArrayClearName(name)}(${arrayType} *self) {
+  while (self->length > 0) {
+    self->length -= 1;
+${indent(body, 4)}
+  }
 }`;
 }
 
@@ -11303,6 +11350,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
             return generateExpression(expression.callee.object, context);
           }
           const receiver = generateExpression(expression.callee.object, context);
+          if (expression.callee.property === "clear") {
+            return `${dynamicArrayClearName(receiverValueType)}(&(${receiver}))`;
+          }
           const argument = generateCallArgument(expression.arguments[0], context);
           return `${dynamicArrayPushName(receiverValueType)}(&(${receiver}), ${argument})`;
         }
@@ -13285,6 +13335,10 @@ function generatorDeinitName(name: string): string {
 
 function dynamicArrayPushName(name: string): string {
   return `${dynamicArrayName(name)}_push`;
+}
+
+function dynamicArrayClearName(name: string): string {
+  return `${dynamicArrayName(name)}_clear`;
 }
 
 function mapMethodName(name: string, method: string): string {

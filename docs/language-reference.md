@@ -1983,6 +1983,11 @@ live element into the new allocation, destroys the old elements, and releases
 the old allocation. An indexed element is borrowed rather than extractable;
 moving the whole array transfers its buffer without relocating its elements.
 
+`clear()` destroys every live element immediately in reverse order and sets
+`length` to zero while retaining the allocation and `capacity` for reuse. It
+requires addressable mutable `let` storage and is unavailable through
+`readonly Array<T>`, a live element view, or an active `for...of` borrow.
+
 A completed collection can permanently surrender mutation without copying its
 allocation:
 

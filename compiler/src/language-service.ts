@@ -2101,6 +2101,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         const element = dynamic.elementType;
         return markdownHover(`push(value: ${displayType(element, context.typeDisplayNames)}): void`, source, word.start, word.end);
       }
+      if (!dynamic.readonly && word.text === "clear") {
+        return markdownHover(
+          "clear(): void  // destroys all elements and retains capacity",
+          source,
+          word.start,
+          word.end,
+        );
+      }
       if (!dynamic.readonly && word.text === "freeze") {
         return markdownHover(
           `freeze(): readonly Array<${displayType(dynamic.elementType, context.typeDisplayNames)}>  // consumes without copying`,
@@ -5936,6 +5944,11 @@ function memberCompletions(
           kind: completionKinds.method,
           detail: `push(value: ${displayType(dynamic.elementType, context.typeDisplayNames)}): void`,
           insertText: "push()",
+        }, {
+          label: "clear",
+          kind: completionKinds.method,
+          detail: "clear(): void  // destroys all elements and retains capacity",
+          insertText: "clear()",
         }, {
           label: "freeze",
           kind: completionKinds.method,

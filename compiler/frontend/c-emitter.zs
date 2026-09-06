@@ -4673,6 +4673,24 @@ function appendExpression(
     return;
   }
   if (
+    declaration.expressions[index].kind == LoweredExpressionKind.arrayClear
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed Array.clear";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_clear(&(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
+    );
+    output.append("))");
+    return;
+  }
+  if (
     declaration.expressions[index].kind == LoweredExpressionKind.mapEmpty
   ) {
     output.append("(Z_");
@@ -22729,6 +22747,41 @@ function emitLoweredC(
       output.append(" __strong *)self->data)[self->length] = value;\n");
     } else output.append(" *)self->data)[self->length] = value;\n");
     output.append("  self->length += 1;\n");
+    output.append("}\n\n");
+    output.append("static inline __attribute__((unused)) void Z_");
+    output.append(declaration.name);
+    output.append("_clear(Z_");
+    output.append(declaration.name);
+    output.append(" *self) {\n");
+    if (declaration.elementType.kind == LoweredTypeKind.foreignObjCType) {
+      output.append("  ");
+      output.append(elementType);
+      output.append(" __strong *items = (");
+      output.append(elementType);
+      output.append(" __strong *)self->data;\n");
+      output.append("  while (self->length > 0) {\n");
+      output.append("    self->length -= 1;\n");
+      output.append("    items[self->length] = nil;\n");
+      output.append("  }\n");
+    } else if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
+      output.append("  ");
+      output.append(elementType);
+      output.append(" *items = (");
+      output.append(elementType);
+      output.append(" *)self->data;\n");
+      output.append("  while (self->length > 0) {\n");
+      output.append("    self->length -= 1;\n");
+      output.append("    Z_");
+      output.append(declaration.elementType.name);
+      if (declaration.elementType.kind == LoweredTypeKind.classType) {
+        output.append("_release(items[self->length]);\n");
+      } else {
+        output.append("_deinit(&items[self->length]);\n");
+      }
+      output.append("  }\n");
+    } else {
+      output.append("  self->length = 0;\n");
+    }
     output.append("}\n\n");
   }
   try appendMapRuntime(inout output, program);

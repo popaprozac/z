@@ -376,6 +376,8 @@ export function collectionMethodSignature(
       parameterModes.push("value");
       parameterTypes.push(elementType);
       returnType = "void";
+    } else if (!readonlyCollection && methodName == "clear") {
+      returnType = "void";
     } else if (!readonlyCollection && methodName == "freeze") {
       returnType = `readonly ${collectionOwnerType}`;
     }
@@ -530,7 +532,7 @@ export function collectionMethodMutates(
   }
   return match (genericTypeShape(ownerType)) {
     some(generic) => generic.base == "Array"
-      ? methodName == "push"
+      ? methodName == "push" || methodName == "clear"
       : generic.base == "Map"
       ? methodName == "set"
         || methodName == "remove"

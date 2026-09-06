@@ -3156,6 +3156,43 @@ test("materializes populated Array temporaries for native call-scoped borrows", 
   }
 }, 240_000);
 
+test("clears dynamic Arrays through native semantic and emission parity", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-array-clear.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /Z___z_Array_Resource_clear\(&\(self->values\)\)/);
+  assert.match(emission.stdout, /while \(self->length > 0\).*Z_Resource_deinit/s);
+
+  const directory = mkdtempSync("/tmp/z-native-array-clear-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("composes native Array destructuring, zero-copy rest, and Slice parameters", () => {
   const input = resolve(
     projectRoot,

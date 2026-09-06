@@ -5282,6 +5282,30 @@ retains its typed `Result` in an internal entry and exposes the required C
 Notes smoke now reaches native notification status, permission, and delivery
 routes without global callback storage or a blocking semaphore.
 
+## A framework teardown path exposed a native collection parity hole
+
+Zapp's application-owned filesystem authority needed to revoke every granted
+path when the application stopped. The natural spelling was
+`this.grants.clear()`. Stage 0 rejected that absent API, while the native
+frontend accepted the member call without a collection signature and emitted
+literal `self->grants.clear()` into C. The generated translation unit then
+failed in Clang, far past the semantic boundary where Z should have resolved or
+rejected the operation.
+
+`Array<T>.clear()` is now a first-class operation in both frontends. It destroys
+all live elements immediately in reverse order, sets length to zero, retains
+the backing capacity, and conservatively preserves established same-Arena
+provenance just like `Map.clear()` and `Set.clear()`. The unified mutation rules
+reject clearing immutable, frozen, actively viewed, or iterated storage. Native lowering records a
+dedicated `arrayClear` expression rather than letting a recognized intrinsic
+fall through to ordinary member emission. A fixed-point executable fixture
+keeps semantic acceptance, cleanup-aware C emission, retained capacity, and
+reuse under regression coverage.
+
+The broader lesson is that native semantic evidence must be authoritative for
+every accepted intrinsic member. An absent intrinsic signature must never be
+allowed to survive as a source-language-looking member call in generated C.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

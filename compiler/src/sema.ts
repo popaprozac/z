@@ -12980,7 +12980,11 @@ function inferExpressionInner(
         const dynamic = parseDynamicArrayType(receiverValueType);
         if (dynamic) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
-          if (expression.callee.property !== "push" && expression.callee.property !== "freeze") {
+          if (
+            expression.callee.property !== "push"
+            && expression.callee.property !== "clear"
+            && expression.callee.property !== "freeze"
+          ) {
             throw new DiagnosticError(fileName, expression.callee.location, `Array has no method ${JSON.stringify(expression.callee.property)}`);
           }
           if (dynamic.readonly) {
@@ -13000,8 +13004,14 @@ function inferExpressionInner(
             consumeOwnedValue(expression.callee.object, receiverValueType, locals, structs, enums, fileName, state);
             return readonlyTypeName(receiverValueType);
           }
-          if (expression.arguments.length !== 1) {
-            throw new DiagnosticError(fileName, expression.location, `"push" expects 1 argument, received ${expression.arguments.length}`);
+          const clearing = expression.callee.property === "clear";
+          const expectedArguments = clearing ? 0 : 1;
+          if (expression.arguments.length !== expectedArguments) {
+            throw new DiagnosticError(
+              fileName,
+              expression.location,
+              `${JSON.stringify(expression.callee.property)} expects ${expectedArguments} argument${expectedArguments === 1 ? "" : "s"}, received ${expression.arguments.length}`,
+            );
           }
           const readonlyField = readonlyFieldOnPath(expression.callee.object, structs, state);
           if (readonlyField) {
@@ -13023,12 +13033,23 @@ function inferExpressionInner(
                   code: "Z0311",
                   length: expression.callee.property.length,
                   labels: [{ location: iteration, message: "iteration borrow begins here", length: 3 }],
-                  notes: ["Array.push may reallocate storage and invalidate the element currently being visited"],
-                  helps: ["finish the loop before pushing, or iterate a separate snapshot"],
+                  notes: [clearing
+                    ? "Array.clear destroys the element currently being visited"
+                    : "Array.push may reallocate storage and invalidate the element currently being visited"],
+                  helps: [clearing
+                    ? "finish the loop before clearing the Array"
+                    : "finish the loop before pushing, or iterate a separate snapshot"],
                 },
               );
             }
-            throw new DiagnosticError(fileName, expression.callee.object.location, "Array.push requires addressable let storage");
+            throw new DiagnosticError(
+              fileName,
+              expression.callee.object.location,
+              `Array.${expression.callee.property} requires addressable let storage`,
+            );
+          }
+          if (clearing) {
+            return "void";
           }
           const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
           requireAssignable(dynamic.elementType, actual, expression.arguments[0], fileName, structs, enums, state);
