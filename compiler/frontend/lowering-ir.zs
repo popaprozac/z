@@ -20081,13 +20081,18 @@ function completeNativeClosureBlocks(
       let loweredStatements = Array<usize>();
       const bodyExpressionStart = expressions.length;
       const bodyStatementStart = statements.length;
+      const workerResultName = expressions[expressionIndex].labels[3]
+        .byteLength > 0
+        ? `Result<${expressions[expressionIndex].labels[5]}, ${expressions[expressionIndex].labels[3]}>`
+        : "";
       for (const source of sourceStatements) {
-        const lowered = try lowerStatement(
+        const lowered = try lowerStatementWithResult(
           program,
           importedTypes,
           evidence,
           arena,
           ownerName,
+          copy workerResultName,
           source,
           inout expressions,
           inout statements
@@ -20144,11 +20149,30 @@ function completeNativeClosureBlocks(
               workerStatement = workerStatement + 1;
               continue;
             }
+            if (loweredStatementHasLabel(
+              statements[workerStatement],
+              "direct-try"
+            )) {
+              workerStatement = workerStatement + 1;
+              continue;
+            }
             if (
               expressions[returned].kind
                 == LoweredExpressionKind.threadMainCall
               && expressions[returned].labels.length > 0
               && expressions[returned].labels[0] == resultName
+            ) {
+              workerStatement = workerStatement + 1;
+              continue;
+            }
+            if (
+              (
+                expressions[returned].kind
+                  == LoweredExpressionKind.enumPayloadValue
+                || expressions[returned].kind
+                  == LoweredExpressionKind.enumValue
+              )
+              && expressions[returned].value == resultName
             ) {
               workerStatement = workerStatement + 1;
               continue;
@@ -24126,10 +24150,10 @@ function lowerStatementCore(
   }
   let objectiveCSetter = "";
   let expression = Option<usize>.none;
+  let directTryReturn = false;
   match (in arena.nodes[index].expression) {
     some(source) => {
       const expressionStart = expressions.length;
-      let directTryReturn = false;
       let loweredValue: usize = 0;
       let loweredDirectly = false;
       match (in source.tree) {
@@ -24588,6 +24612,7 @@ function lowerStatementCore(
   if (arena.nodes[index].kind == StatementKind.throwStatement) {
     labels.push("throw");
   }
+  if (directTryReturn) labels.push("direct-try");
   if (arena.nodes[index].kind == StatementKind.forStatement) {
     match (in arena.nodes[index].expression) {
       some(iterable) => match (in iterable.tree) {
@@ -25773,20 +25798,13 @@ function ensureMainFrameLocalLiveFlags(
   inout statements: Array<LoweredStatement>,
   inout liveFlags: Array<LoweredLiveFlag>
 ): void {
-  const resultPrefix = "__z_Result_";
   for (const root of roots) {
     if (
       statements[root].kind != LoweredStatementKind.localStatement
       || statements[root].liveFlag.byteLength > 0
     ) continue;
     const frameLocalNeedsCleanup = match (in statements[root].type) {
-      some(type) => moduleTypeNeedsCleanup(program, importedTypes, type)
-        || (
-          type.kind == LoweredTypeKind.enumType
-          && type.name.byteLength >= resultPrefix.byteLength
-          && type.name.copyBytes(0, resultPrefix.byteLength)
-            == resultPrefix
-        );
+      some(type) => moduleTypeNeedsCleanup(program, importedTypes, type);
       none => false;
     };
     if (!frameLocalNeedsCleanup) continue;

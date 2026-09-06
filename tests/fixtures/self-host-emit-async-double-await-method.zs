@@ -1,5 +1,9 @@
 import { scheduler } from "std/async";
 
+function persist(total: i32): void throws i32 {
+  if (total != 42) throw total;
+}
+
 readonly class Source {
   async function value(input: i32): i32 {
     await scheduler.yield();
@@ -16,7 +20,11 @@ readonly class Calculator {
     for (const value of values) {
       total = total + value;
     }
-    return total;
+    const stored = attempt persist(total);
+    return match (stored) {
+      success => total;
+      failure(_) => -1;
+    };
   }
 }
 

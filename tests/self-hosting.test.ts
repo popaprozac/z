@@ -1754,6 +1754,48 @@ test("joins a fallible void native worker task from an async class method", () =
   }
 }, 240_000);
 
+test("keeps typed worker try propagation inside the worker result context", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-thread-worker-result-context.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-worker-result-context-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.doesNotMatch(
+      emission.stdout,
+      /\.payload\.success = loadText\(/,
+    );
+    assert.doesNotMatch(
+      emission.stdout,
+      /Z___z_Result_void_FileError _z_stage1_failure/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("joins a non-throwing void native worker task", () => {
   const input = resolve(
     projectRoot,
