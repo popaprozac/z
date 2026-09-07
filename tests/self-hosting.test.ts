@@ -8680,12 +8680,23 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     );
     assert.match(
       protocolSource,
-      /int32_t z_id, id<WKURLSchemeHandler> adapter/,
+      /int32_t _z_init_id, id<WKURLSchemeHandler> _z_init_adapter/,
     );
     assert.match(
       protocolSource,
       /z_stage1_objc_adapt_[0-9_]+\(handler\)/,
     );
+
+    const projectedBorrowFixture = resolve(
+      projectRoot,
+      "tests/fixtures/objc-projected-borrow.zs",
+    );
+    const projectedBorrowRun = spawnSync(executable, ["run", projectedBorrowFixture], {
+      encoding: "utf8", timeout: 60_000,
+    });
+    assert.equal(projectedBorrowRun.status, 0, projectedBorrowRun.stderr);
+    assert.equal(projectedBorrowRun.stdout.split("\n").filter((line) => line.startsWith("released ")).join("\n"),
+      "released 4\nreleased 4");
 
     const objectiveCStringFixture = resolve(
       projectRoot,

@@ -19726,7 +19726,19 @@ function appendEnumDefinition(
     output.append(program.enums[index].name);
     output.append(" {\n  Z_");
     output.append(program.enums[index].name);
-    output.append("Tag tag;\n  union {\n");
+    let strongPayload = false;
+    for (const item of program.enums[index].variants) {
+      match (in item.payload) {
+        some(type) => {
+          if (
+            type.kind != LoweredTypeKind.foreignObjCType
+            && typeContainsObjectiveCStrongSlot(program, type)
+          ) strongPayload = true;
+        }
+        none => {}
+      }
+    }
+    output.append(strongPayload ? "Tag tag;\n  struct {\n" : "Tag tag;\n  union {\n");
     for (const item of program.enums[index].variants) {
       match (in item.payload) {
         some(type) => {
@@ -19748,6 +19760,54 @@ function appendEnumDefinition(
     output.append(";\n\n");
   }
   enumStates[index] = 2;
+}
+
+// Clang ARC cannot copy or destroy a union containing a strong object slot,
+// including one nested inside a by-value Z struct or another enum. Direct
+// Objective-C enum payloads use the trivial Z_ObjCOwned wrapper instead.
+// By-value cycles are rejected while emitting the layout dependencies before
+// this walk; reference identities and borrowed views do not recurse.
+function typeContainsObjectiveCStrongSlot(
+  in program: LoweredProgram,
+  in type: LoweredType
+): boolean {
+  if (type.kind == LoweredTypeKind.foreignObjCType) return true;
+  if (isNicheViewOption(type.name)) return false;
+  if (
+    type.kind != LoweredTypeKind.structType
+    && type.kind != LoweredTypeKind.enumType
+    && type.kind != LoweredTypeKind.fixedArrayType
+  ) return false;
+  match (loweredStructIndex(program, type.name)) {
+    some(index) => {
+      if (program.structs[index].referenceType) return false;
+      for (const field of program.structs[index].fields) {
+        if (!field.borrowedView && typeContainsObjectiveCStrongSlot(program, field.type)) return true;
+      }
+    }
+    none => {}
+  }
+  match (loweredEnumIndex(program, type.name)) {
+    some(index) => {
+      for (const variant of program.enums[index].variants) {
+        match (in variant.payload) {
+          some(payload) => {
+            if (
+              payload.kind != LoweredTypeKind.foreignObjCType
+              && typeContainsObjectiveCStrongSlot(program, payload)
+            ) return true;
+          }
+          none => {}
+        }
+      }
+    }
+    none => {}
+  }
+  match (loweredFixedArrayIndex(program, type.name)) {
+    some(index) => return typeContainsObjectiveCStrongSlot(program, program.fixedArrays[index].elementType);
+    none => {}
+  }
+  return false;
 }
 
 function appendStructDefinition(

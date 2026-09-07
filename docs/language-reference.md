@@ -3642,10 +3642,22 @@ The supported language tags are `c`, `cpp`, and `objc`. A raw function may
 retain an `on thread.main` declaration. The first tier rejects `async`,
 `throws`, generics, raw methods, `move` operands, and Z-owned representations.
 Boundary types are currently ABI-stable scalars, `cstring`, and imported native
-types. Embedded source cannot reference compiler-owned names beginning with
-`Z_` or `_z_`; those names are an unstable implementation detail until raw
-helpers move into separate translation units. Native compile errors point to
-the original `.zs` body.
+types. An `in` Objective-C reference passes the object pointer itself, including
+when the caller borrows a stored reference with `in resource.file` or
+`in this.file` in `deinit`. It does not pass a pointer to the ARC storage slot.
+Scalar/value borrows and writable capabilities still use the appropriate
+storage address. This does not permit projecting through arbitrary Objective-C
+properties or relax the restrictions on hidden Z class alias identity.
+Owned structs containing these references can be returned through `Option`
+and throwing results. For nested ARC-bearing value payloads, both compilers
+use separate payload slots instead of a C union, which Clang ARC cannot safely
+copy or destroy. This is inline storage, not an additional heap allocation;
+multiple alternatives can require more space than a union.
+
+Embedded source cannot reference compiler-owned private symbols. Legitimate
+native symbols such as zlib's `Z_OK` remain usable; sharing a vendor prefix does
+not by itself make a name compiler-owned. Native compile errors point to the
+original `.zs` body.
 
 A project may explicitly configure `target.platform` and
 `target.minimumVersion` together in `z.json`. The target is compile-time project

@@ -196,6 +196,24 @@ hostToolchainTest("gives every Objective-C C export an autorelease pool", () => 
   assert.equal(compilation.status, 0, compilation.stderr);
 });
 
+hostToolchainTest("passes projected Objective-C in borrows as references, including nested fields and deinit", () => {
+  if (process.platform !== "darwin") return;
+  const fileName = resolve(projectRoot, "tests/fixtures/objc-projected-borrow.zs");
+  const source = readFileSync(fileName, "utf8");
+  const artifact = compileToNative(source, fileName);
+  assert.match(artifact.source, /nativeLength\(self->text\)/);
+  assert.doesNotMatch(artifact.source, /nativeLength\(&/);
+  assert.match(artifact.source, /increment\(&\(/);
+  assert.match(artifact.source, /readCount\(&\(/);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released 4\nreleased 4\n");
+  const nativeCheck = spawnSync(process.execPath, [cli, "check", fileName, "--native-frontend"], {
+    encoding: "utf8", timeout: 120_000,
+  });
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+}, 180_000);
+
 hostToolchainTest("prefers an Objective-C class over a legacy protocol with the same name", () => {
   if (process.platform !== "darwin") return;
   const fileName = resolve(projectRoot, "tests/fixtures/objc-class-protocol-collision.zs");

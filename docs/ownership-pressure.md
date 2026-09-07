@@ -5386,6 +5386,41 @@ received the same audit.
 Cross-process arbitration and transport remain Zapp work after this codec and
 hygiene checkpoint.
 
+## Zapp primary-instance lease: borrowed native fields during cleanup
+
+The private macOS primary lease stores an `NSFileHandle` in a move-only Z
+struct. Its `deinit` passes `in this.file` to a narrow raw Objective-C close
+function. Stage 0 accepted that source but emitted `NSFileHandle **` for an
+`NSFileHandle *` parameter: projected capability arguments bypassed the
+reference-versus-value ABI distinction used for direct bindings. Codegen now
+uses that same distinction for stored field paths. The native checker also
+stops treating an immutable imported Objective-C reference as a hidden Z class
+identity; the Z-class and writable-projection restrictions remain unchanged.
+
+Returning the lease as `Option<Resource>` through a throwing function then
+exposed a native-emitter layout mismatch: a C union cannot contain an aggregate
+with strong Objective-C fields under ARC. The native emitter now uses separate
+payload slots for that recursive by-value shape, as Stage 0 already does.
+Ordinary Z-only enums retain union storage; direct Objective-C enum payloads
+keep their existing explicit-owner representation. This adds no heap box, but
+multiple payload slots can occupy more space than a union. Pointer-like class
+identity and niche view options do not trigger recursive layout expansion.
+
+`objc-projected-borrow.zs` covers a local field, a nested field through an `in`
+owner, destructor cleanup, scalar `in`/`inout` address controls, and nested
+Option/Result success, absence, and error paths with exact cleanup output. The Zapp
+multi-process regression then tests the real resource lifetime: same-process
+scope release, contention, independent identities, normal exit, process death,
+simultaneous launches, and unsafe-path rejection. The lease itself performs no
+polling and retains no running thread. Cross-process launch forwarding is still
+separate work; acquiring a lease is not delivery of an application event.
+
+Two additional audit leads surfaced while isolating this regression: an
+entry-module function named `read` collides with POSIX `read` after importing
+Foundation, and native parity checking of an integer `console.log` argument
+inside `deinit` reports the String-only import signature. Neither is fixed by
+this projected-borrow checkpoint; keep them as focused compiler follow-ups.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

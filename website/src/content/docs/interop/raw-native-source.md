@@ -84,6 +84,19 @@ function activateNative(): i32 on thread.main = raw objc {
 The supported tags are `c`, `cpp`, and `objc`. Async, throwing, generic, and
 method raw bodies remain outside the current tier.
 
+For an `in` Objective-C reference, the native parameter is the object pointer,
+not a pointer to its ARC storage slot. This remains true for a stored-reference
+argument such as `in resource.file` or `in this.file` during `deinit`. Scalar
+and value borrows still pass storage addresses. This fixes a representation
+boundary; it does not allow arbitrary native property projections or change Z
+class aliasing rules.
+
+Owned Z structs containing Objective-C references also compose with `Option`
+and throwing results. Both compiler paths choose ARC-compatible payload
+storage: nested strong-reference payloads use separate slots rather than an
+illegal C union. This requires no heap box, though an enum with multiple such
+payload alternatives can be larger than a union.
+
 Stage 0 and the fixed-point native compiler preserve the body verbatim, map
 native diagnostics back to this `.zs` location, and include native headers
 explicitly imported by the containing module. A header remains available even

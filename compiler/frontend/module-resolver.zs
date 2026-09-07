@@ -1014,7 +1014,13 @@ function requireProjectedCapabilityValuePath(
       }
     }
   }
-  if (typeIsClassReference(module, modules, moduleIndex, ownerType)) {
+  if (
+    typeIsClassReference(module, modules, moduleIndex, ownerType)
+    && (
+      mutableAccess
+      || !isNativeObjectiveCObjectType(modules, moduleIndex, ownerType)
+    )
+  ) {
     throw resolutionError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,

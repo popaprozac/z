@@ -11692,7 +11692,14 @@ function generateCallArgument(expression: Expression, context: GenerationContext
     ? capabilityStorageTargetExpression(expression)
     : null;
   if (capabilityTarget) {
-    return `&(${generateExpression(capabilityTarget, context)})`;
+    const value = generateExpression(capabilityTarget, context);
+    // A projected `in` argument follows the same ABI as a direct binding:
+    // reference identities are already pointers, while value borrows and
+    // writable capabilities pass the address of their storage.
+    return nativeAccess === "in"
+      && inParameterUsesStoredValue(inferExpressionType(capabilityTarget, context), context)
+      ? value
+      : `&(${value})`;
   }
   const foreignAccess = context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset);
   if (
