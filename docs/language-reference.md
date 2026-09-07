@@ -387,6 +387,15 @@ function snapshot(in state: Mutex<RuntimeState>): RuntimeState {
 }
 ```
 
+Owned results also work in the native compiler: for example,
+`state.withLock((in value): String => copy value.title)` releases the lock
+before handing the independent String to its caller. An `inout` callback may
+similarly return ownership taken from protected storage using an operation
+such as `remove` or `replace`; that is not a borrowed reference escaping.
+Throwing callbacks preserve the error payload and unlock before `try` or
+`attempt` handles it. Consuming an ownership-bearing outer capture inside the
+callback is not supported yet, even with a `move` closure.
+
 Declaring the local binding `const` fixes the mutex identity; it does not
 freeze its payload. Mutation remains available only inside an `inout` callback.
 `Mutex<T>` therefore provides controlled interior mutability without changing

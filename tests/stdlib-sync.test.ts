@@ -6,12 +6,43 @@ import {
   diagnostics,
   hover,
   mkdtempSync,
+  projectRoot,
+  readFileSync,
   resolve,
   rmSync,
   spawnSync,
   test,
   writeFileSync,
 } from "./support/bootstrap.ts";
+
+test("preserves owned Mutex results, callback effects, and exactly-once cleanup", () => {
+  const file = resolve(projectRoot, "tests/fixtures/self-host-emit-mutex-owned-result.zs");
+  const source = readFileSync(file, "utf8");
+  assert.deepEqual(diagnostics(source, file), []);
+  const generated = compileToC(source, file);
+  // The inferred Array result must use its checked type rather than the
+  // fallback i32 used for an unrecognized method call.
+  assert.match(generated, /Z_DynamicArray_\w+ names = z_mutex_with_lock_/);
+  const result = spawnSync(process.execPath, [cli, "run", file], {
+    encoding: "utf8",
+    timeout: 30_000,
+    killSignal: "SIGKILL",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, [
+    "released parcel first",
+    "released parcel temporary",
+    "released error unavailable",
+    "released parcel temporary",
+    "released error ready",
+    "released error ready",
+    "released parcel propagated",
+    "released error ready",
+    "released snapshot ready",
+    "released parcel remaining",
+    "",
+  ].join("\n"));
+}, 60_000);
 
 test("reads and mutates Mutex values through scoped synchronous closures", () => {
   const directory = mkdtempSync("/tmp/z-mutex-scoped-access-");

@@ -11317,24 +11317,6 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'Map value type "String" is not executable in the native compiler yet; only cleanup-free scalar values are supported',
     },
     {
-      name: "mutex-cleanup-bearing-result",
-      source: [
-        'import { Mutex } from "std/sync";',
-        "struct State { count: i32; }",
-        "function main(): i32 {",
-        "  const state = Mutex(State({ count: 40 }));",
-        '  const label = state.withLock((in value): String => "locked");',
-        "  return i32(label.byteLength) - 6;",
-        "}",
-        "",
-      ].join("\n"),
-      line: 5,
-      column: 23,
-      marker: "^^^^^^^^",
-      code: "Z1000",
-      summary: 'Mutex.withLock result type "String" is not executable in the native compiler yet; only cleanup-free results are supported',
-    },
-    {
       name: "thread-ownership-bearing-capture",
       source: [
         'import { thread } from "std/thread";',
@@ -11430,6 +11412,7 @@ test("compiles a multi-module Z application through the standalone native driver
     "tests/fixtures/self-host-emit-enum.zs",
     "tests/fixtures/self-host-emit-thread-task.zs",
     "tests/fixtures/self-host-emit-mutex-field.zs",
+    "tests/fixtures/self-host-emit-mutex-owned-result.zs",
   ]) {
     const positive = spawnSync(
       driver,

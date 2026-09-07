@@ -5421,6 +5421,46 @@ Foundation, and native parity checking of an integer `console.log` argument
 inside `deinit` reports the String-only import signature. Neither is fixed by
 this projected-borrow checkpoint; keep them as focused compiler follow-ups.
 
+## Zapp launch admission: ownership across a scoped lock
+
+Preparing cross-process secondary-launch forwarding exposed two different
+boundaries. One synchronized, process-local activation inbox must share the
+existing 64-pending-request budget with OS activation; admitting a launch is
+not executing its listener. A producer must be able to enqueue owned argument
+data, while the main executor takes an independently owned request out and
+invokes app code after releasing the mutex.
+
+The result half was already valid Z but rejected by native lowerability. It
+now uses the existing scoped helper and cleanup planner for String snapshots,
+Array results, ARC identity, and owned Option/Result payloads. The helper's
+return type comes from the resolved callback signature, not the success-only
+expression evidence under `try`. Callback return/throw lowering carries its
+own error context rather than inheriting the enclosing function's effects.
+The lock is released before either outcome reaches the caller.
+
+The differential `self-host-emit-mutex-owned-result.zs` fixture tests exact
+destruction on transfer, absence, failure, a locally propagated error, and final
+Mutex teardown. It also tests ordinary Result-valued callbacks separately from
+throwing callbacks, plus a side-effecting void expression body. That last case
+caught a Stage-0 bug which discarded the expression while constructing an
+empty success Result. Inferred Array results exposed another Stage-0 gap:
+codegen guessed `i32` instead of using the checked Mutex call result. Both are
+fixed without changing source semantics.
+
+No new wrapper allocation is added to the native scoped-lock call: the helper
+returns the owned result by value and the caller owns its existing cleanup.
+Explicit String copying and construction of an Array or ARC object still carry
+their ordinary allocation costs; this is not a zero-allocation claim for every
+callback.
+
+The admission half remains open and needs a design check-in: `withLock` invokes
+one synchronous, nonescaping callback, but its captures are currently checked
+as reusable. Consequently an owned captured request cannot be moved into the
+protected queue even with `move (...) => ...`. Extending this known-once call
+site is distinct from allowing an arbitrary reusable closure to consume its
+environment. The Zapp inbox refactor is not shipped until that boundary and its
+native cleanup are settled; the public activation API is unchanged.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

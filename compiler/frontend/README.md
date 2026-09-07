@@ -360,9 +360,13 @@ language and Stage-0 compiler remain generic; these diagnostics describe only
 the fixed-point compiler runtime that is being grown under bootstrap pressure.
 The same resolved operand evidence now reports non-`String` explicit `copy`
 operations at the keyword; `copy String` remains the implemented native path.
-Graph ownership facts now also classify cleanup-bearing `Mutex.withLock`
-results at the call. Cleanup-free results keep the existing native scoped-lock
-path; independently owned results remain valid Z and await native lowering.
+Native `Mutex.withLock` now returns independently owned values through the
+scoped-lock helper. Callback results retain their complete `Result<T, E>` ABI
+when throwing, independently of the enclosing function; normal return and
+typed failure unlock before the caller receives the value. String snapshots,
+Arrays, ARC results, and owned Option/Result payloads have differential cleanup
+coverage. Borrowed/view results and suspension remain rejected, and consuming
+ownership-bearing callback captures remain a separate pending slice.
 Expression-bodied `thread.spawn` closures now identify inferred local captures
 before lowering as well. Direct owned `String` transfer and shareable ARC class
 retention remain executable; recursively ownership-bearing value captures stop

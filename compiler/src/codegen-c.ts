@@ -9467,10 +9467,13 @@ function generateValueCleanup(
 
 function generateSuccessReturn(value: string, context: GenerationContext, view = false): string {
   const cleanup = generateCleanup(context.cleanupScopes, context);
-  if (context.owner.returnType.name === "void" && context.owner.errorType) {
-    const result = resultTypeName("void", context.owner.errorType.name);
-    const returned = `return ${generateCompilerVariantConstruction(result, "success", null, context)};`;
-    return cleanup ? `${cleanup}\n${returned}` : returned;
+  if (context.owner.returnType.name === "void") {
+    const returned = context.owner.errorType
+      ? `return ${generateCompilerVariantConstruction(resultTypeName("void", context.owner.errorType.name), "success", null, context)};`
+      : "return;";
+    // An expression-bodied closure (or `return voidOperation()`) still has
+    // to evaluate its expression before releasing locals and returning.
+    return `(void)(${value});\n${cleanup ? `${cleanup}\n` : ""}${returned}`;
   }
   if (view) {
     const returned = `return &(${value});`;
@@ -12827,6 +12830,12 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
   }
   const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
   if (integerOperation) return integerOperation.type;
+  const mutexWithLock = context.semanticInfo.mutexWithLockCalls.get(expression.location.offset);
+  if (mutexWithLock) {
+    return mutexWithLock.errorType
+      ? resultTypeName(mutexWithLock.returnType, mutexWithLock.errorType)
+      : mutexWithLock.returnType;
+  }
   const analyzedType = context.semanticInfo.expressionTypes.get(expression.location.offset);
   if (analyzedType && (
     Object.hasOwn(primitiveTypeNames, analyzedType)

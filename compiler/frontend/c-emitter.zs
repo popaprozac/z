@@ -18234,8 +18234,8 @@ function appendMutexWithLockHelpers(
       }
       if (
         expression.children.length == 0
-        || expression.labels.length < 4
-        || (expression.labels.length - 4) % 2 != 0
+        || expression.labels.length < 6
+        || (expression.labels.length - 6) % 2 != 0
       ) throw "native C emission received malformed Mutex.withLock evidence";
       const resultType = try loweredTypeForIdentity(
         program,
@@ -18259,7 +18259,7 @@ function appendMutexWithLockHelpers(
         output.append(nativeValueType);
         output.append(" *");
         appendCBindingName(inout output, expression.labels[0]);
-        let captureLabel: usize = 4;
+        let captureLabel: usize = 6;
         while (captureLabel + 1 < expression.labels.length) {
           const captureType = try loweredTypeForIdentity(
             program,
@@ -18295,7 +18295,7 @@ function appendMutexWithLockHelpers(
       output.append("(Z_");
       output.append(expression.value);
       output.append(" mutex");
-      let captureLabel: usize = 4;
+      let captureLabel: usize = 6;
       while (captureLabel + 1 < expression.labels.length) {
         const captureType = try loweredTypeForIdentity(
           program,
@@ -18323,6 +18323,11 @@ function appendMutexWithLockHelpers(
         appendCBindingName(inout output, expression.labels[0]);
         output.append(" = &mutex.storage->value;\n");
       }
+      if (expression.labels[3] == "expression-void-success") {
+        output.append("  ");
+        try appendExpression(inout output, declaration, expression.children[1]);
+        output.append(";\n");
+      }
       if (resultType.kind != LoweredTypeKind.voidType) {
         output.append("  ");
         output.append(nativeResultType);
@@ -18335,7 +18340,7 @@ function appendMutexWithLockHelpers(
           expressionIndex
         );
         output.append("_body(&mutex.storage->value");
-        captureLabel = 4;
+        captureLabel = 6;
         while (captureLabel + 1 < expression.labels.length) {
           output.append(", ");
           appendCBindingName(
@@ -18345,6 +18350,12 @@ function appendMutexWithLockHelpers(
           captureLabel = captureLabel + 2;
         }
         output.append(")");
+      } else if (expression.labels[3] == "expression-void-success") {
+        output.append("(");
+        output.append(nativeResultType);
+        output.append("){ .tag = ");
+        output.append(nativeResultType);
+        output.append("Tag_success }");
       } else {
         try appendExpression(
           inout output,

@@ -112,6 +112,10 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-result.zs" },
   { entry: "tests/fixtures/self-host-emit-throwing-method.zs" },
   { entry: "tests/fixtures/self-host-emit-mutex-field.zs" },
+  {
+    entry: "tests/fixtures/self-host-emit-mutex-owned-result.zs",
+    expectedStdout: "released parcel first\nreleased parcel temporary\nreleased error unavailable\nreleased parcel temporary\nreleased error ready\nreleased error ready\nreleased parcel propagated\nreleased error ready\nreleased snapshot ready\nreleased parcel remaining\n",
+  },
   { entry: "tests/fixtures/self-host-emit-thread-task.zs" },
   { entry: "tests/fixtures/self-host-emit-thread-owned-capture-consume.zs" },
   { entry: "tests/fixtures/self-host-emit-thread-shared-capture.zs" },
@@ -199,6 +203,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-match-try.zs": focusedPositive,
   "self-host-emit-move.zs": focusedPositive,
   "self-host-emit-mutex-field.zs": differential,
+  "self-host-emit-mutex-owned-result.zs": differential,
   "self-host-emit-nested-value-match.zs": focusedPositive,
   "self-host-emit-option.zs": differential,
   "self-host-emit-module-enum-constructor.zs": differential,

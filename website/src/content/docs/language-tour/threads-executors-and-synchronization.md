@@ -229,6 +229,24 @@ returned, stored, captured by escaping work, or held across `await`.
 The mutex is non-reentrant. A typed throw releases the lock normally and does
 not poison it.
 
+Independently owned results may leave the critical section:
+
+```z
+struct DocumentState {
+  title: String;
+}
+
+function snapshot(in state: Mutex<DocumentState>): String {
+  return state.withLock((in value): String => copy value.title);
+}
+```
+
+The caller owns the snapshot after the lock is released. Stage 0 and the native
+compiler also preserve owned Array, Option, Result, and ARC results, including
+typed failure cleanup. This does not permit a `view` of protected storage to
+escape. Transferring an owned outer capture into a lock callback remains a
+separate compiler capability; a `move` closure does not enable that today.
+
 ## Explicit application roots with `Once<T>`
 
 `Once<T>` publishes one application-lifetime ARC identity without adding

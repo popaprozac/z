@@ -1942,35 +1942,6 @@ function validateNativeExpressionTree(
       }
       if (
         callee.kind == ExpressionKind.memberExpression
-        && callee.value == "withLock"
-      ) {
-        const resultType = resolvedExpressionType(
-          graph,
-          moduleIndex,
-          tree,
-          index
-        );
-        if (resultType.byteLength > 0 && moduleIndex < graph.modules.length) {
-          let visiting = Array<String>();
-          if (typeHasCleanup(
-            graph.modules,
-            moduleIndex,
-            resultType,
-            visiting
-          )) {
-            throw loweringBoundary(
-              path,
-              "Z1000",
-              `Mutex.withLock result type "${resultType}" is not executable in the native compiler yet; only cleanup-free results are supported`,
-              callee.line,
-              callee.column,
-              8
-            );
-          }
-        }
-      }
-      if (
-        callee.kind == ExpressionKind.memberExpression
         && callee.optionalAccess
         && callee.value != "byteAt"
       ) {

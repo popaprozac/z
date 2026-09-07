@@ -13155,32 +13155,33 @@ function lowerExpressionContextual(
             if (parameterMode != "in" && parameterMode != "inout") {
               throw "native Mutex.withLock closure parameters require `in` or `inout`";
             }
-            const resultTypeName = match (
+            const callbackTypeName = match (
               evidenceResolvedExpressionTypeName(
                 program,
                 importedTypes,
                 evidence,
                 tree,
-                index
+                closureInput
               )
             ) {
               some(name) => name;
-              none => tree.nodes[closureInput].labels[0].copyBytes(
-                0,
-                tree.nodes[closureInput].labels[0].byteLength
-              );
+              none => throw "native Mutex.withLock lowering requires a resolved callback signature";
             };
-            if (resultTypeName.byteLength == 0) {
-              throw "native Mutex.withLock lowering could not resolve its result type";
-            }
+            const callbackSignature = match (nativeFunctionSignature(callbackTypeName)) {
+              some(signature) => signature;
+              none => throw "native Mutex.withLock lowering received an invalid callback signature";
+            };
+            // The call's expression evidence can be the success type under
+            // `try`. The helper itself always returns the callback's complete
+            // ABI value, including Result when the callback throws.
+            const resultTypeName = callbackSignature.errorType.byteLength > 0
+              ? `Result<${callbackSignature.returnType}, ${callbackSignature.errorType}>`
+              : copy callbackSignature.returnType;
             const resultType = try lowerModuleTypeName(
               program,
               importedTypes,
               resultTypeName
             );
-            if (moduleTypeNeedsCleanup(program, importedTypes, resultType)) {
-              throw "native Mutex.withLock lowering currently requires a cleanup-free result";
-            }
             const receiver = try lowerExpression(
               program,
               importedTypes,
@@ -13201,16 +13202,36 @@ function lowerExpressionContextual(
             let children = Array<usize>();
             children.push(receiver);
             let captures = Array<LoweredClosureCapture>();
+            let expressionVoidSuccess = false;
             if (bodyKind == "expression") {
               const bodyStart = output.length;
-              const body = try lowerExpression(
+              // A tail `try` forwards the complete callback Result. A plain
+              // expression in a throwing callback supplies only its success.
+              const tailTry = tree.nodes[bodyInput].kind == ExpressionKind.tryExpression
+                && tree.nodes[bodyInput].children.length == 1;
+              const input = tailTry ? tree.nodes[bodyInput].children[0] : bodyInput;
+              let body = try lowerExpression(
                 program,
                 importedTypes,
                 evidence,
                 tree,
-                bodyInput,
+                input,
                 inout output
               );
+              expressionVoidSuccess = callbackSignature.errorType.byteLength > 0
+                && callbackSignature.returnType == "void" && !tailTry;
+              if (
+                callbackSignature.errorType.byteLength > 0
+                && !tailTry && !expressionVoidSuccess
+              ) {
+                body = pushExpression(
+                  inout output,
+                  LoweredExpressionKind.enumPayloadValue,
+                  resultType.name,
+                  Array<usize>(body),
+                  Array<String>("success")
+                );
+              }
               const noStatements = Array<LoweredStatement>();
               captures = try collectMutexClosureCaptures(
                 program,
@@ -13248,7 +13269,11 @@ function lowerExpressionContextual(
               parameterMode.byteLength
             ));
             labels.push(loweredTypeIdentity(resultType));
-            labels.push(bodyKind.copyBytes(0, bodyKind.byteLength));
+            labels.push(expressionVoidSuccess
+              ? "expression-void-success"
+              : bodyKind.copyBytes(0, bodyKind.byteLength));
+            labels.push(copy callbackSignature.returnType);
+            labels.push(copy callbackSignature.errorType);
             for (const capture of captures) {
               labels.push(capture.name.copyBytes(
                 0,
@@ -18267,6 +18292,42 @@ function directThrowingCallResult(
   const intrinsicCallee = tree.nodes[index].children[0];
   if (
     tree.nodes[intrinsicCallee].kind == ExpressionKind.memberExpression
+    && tree.nodes[intrinsicCallee].value == "withLock"
+    && tree.nodes[intrinsicCallee].children.length == 1
+    && tree.nodes[index].children.length == 2
+  ) {
+    const receiver = tree.nodes[intrinsicCallee].children[0];
+    const operation = tree.nodes[index].children[1];
+    const receiverType = match (evidenceResolvedExpressionTypeName(
+      program, importedTypes, evidence, tree, receiver
+    )) {
+      some(name) => name;
+      none => "";
+    };
+    match (genericTypeShape(receiverType)) {
+      some(shape) => if (shape.base == "Mutex" && shape.arguments.length == 1) {
+        const callbackType = match (evidenceResolvedExpressionTypeName(
+          program, importedTypes, evidence, tree, operation
+        )) {
+          some(name) => name;
+          none => "";
+        };
+        match (nativeFunctionSignature(callbackType)) {
+          some(signature) => if (signature.errorType.byteLength > 0) {
+            return try intrinsicResultDeclaration(
+              program,
+              importedTypes,
+              `Result<${signature.returnType}, ${signature.errorType}>`
+            );
+          }
+          none => {}
+        }
+      }
+      none => {}
+    }
+  }
+  if (
+    tree.nodes[intrinsicCallee].kind == ExpressionKind.memberExpression
     && tree.nodes[intrinsicCallee].value == "pool"
     && tree.nodes[intrinsicCallee].children.length == 1
     && tree.nodes[index].children.length == 2
@@ -20558,7 +20619,7 @@ function completeNativeClosureBlocks(
     if (
       expressions[expressionIndex].kind
         != LoweredExpressionKind.mutexWithLock
-      || expressions[expressionIndex].labels.length < 4
+      || expressions[expressionIndex].labels.length < 6
       || expressions[expressionIndex].labels[3] != "block"
     ) {
       expressionIndex = expressionIndex + 1;
@@ -20571,13 +20632,19 @@ function completeNativeClosureBlocks(
     let loweredStatements = Array<usize>();
     const bodyExpressionStart = expressions.length;
     const bodyStatementStart = statements.length;
+    const callbackReturnType = copy expressions[expressionIndex].labels[4];
+    const callbackErrorType = copy expressions[expressionIndex].labels[5];
+    const callbackResult = callbackErrorType.byteLength > 0
+      ? `Result<${callbackReturnType}, ${callbackErrorType}>`
+      : "void";
     for (const source of sourceStatements) {
-      const lowered = try lowerStatement(
+      const lowered = try lowerStatementWithResult(
         program,
         importedTypes,
         evidence,
         arena,
         ownerName,
+        copy callbackResult,
         source,
         inout expressions,
         inout statements
