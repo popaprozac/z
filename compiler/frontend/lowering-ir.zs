@@ -7675,27 +7675,21 @@ function collectForeignLowering(
   inout headers: Array<String>,
   inout functions: Array<LoweredForeignFunction>
 ): void throws String {
-  let containsRawFunction = false;
-  for (const declaration of program.functions) {
-    if (declaration.rawLanguage.byteLength > 0) {
-      containsRawFunction = true;
-      break;
-    }
-  }
-  if (containsRawFunction) {
-    for (const declaration of program.imports) {
-      if (
-        !stringEndsWithBytes(declaration.header, ".h")
-        && !stringEndsWithBytes(declaration.header, ".hh")
-        && !stringEndsWithBytes(declaration.header, ".hpp")
-      ) continue;
-      try requireSafeForeignHeader(declaration.header);
-      if (!containsString(headers, declaration.header)) {
-        headers.push(declaration.header.copyBytes(
-          0,
-          declaration.header.byteLength
-        ));
-      }
+  // Emitted signatures and aggregate fields can name foreign types without
+  // making a foreign call. Keep each module's declared headers, just as Stage
+  // 0 does; call-resolution evidence alone is not a complete dependency set.
+  for (const declaration of program.imports) {
+    if (
+      !stringEndsWithBytes(declaration.header, ".h")
+      && !stringEndsWithBytes(declaration.header, ".hh")
+      && !stringEndsWithBytes(declaration.header, ".hpp")
+    ) continue;
+    try requireSafeForeignHeader(declaration.header);
+    if (!containsString(headers, declaration.header)) {
+      headers.push(declaration.header.copyBytes(
+        0,
+        declaration.header.byteLength
+      ));
     }
   }
   for (const resolution of evidence.callResolutions) {
@@ -15378,11 +15372,9 @@ function lowerExpressionContextual(
       while (argument < tree.nodes[index].children.length) {
         const argumentInput = tree.nodes[index].children[argument];
         let value: usize = 0;
-        if (
-          parameterTypes.length >= argument
-          && tree.nodes[argumentInput].kind
-            == ExpressionKind.closureExpression
-        ) value = try lowerExpressionExpected(
+        // Method arguments need the same contextual lowering as ordinary
+        // calls, including named callbacks and other expected-type values.
+        if (parameterTypes.length >= argument) value = try lowerExpressionExpected(
           program,
           importedTypes,
           evidence,
@@ -17094,6 +17086,7 @@ function lowerExpressionExpected(
     none => {}
   }
   let expectedIsObjectiveCString = false;
+  let expectedCallableIdentity = "";
   if (expectedTypeName.byteLength > 0) {
     let expectedObjectiveCTypeName = expectedTypeName.copyBytes(
       0,
@@ -17111,6 +17104,12 @@ function lowerExpressionExpected(
     expectedIsObjectiveCString = expectedType.kind
       == LoweredTypeKind.foreignObjCType
       && expectedType.name == "NSString";
+    if (expectedType.kind == LoweredTypeKind.functionType) {
+      expectedCallableIdentity = expectedType.name.copyBytes(
+        0,
+        expectedType.name.byteLength
+      );
+    }
   }
   if (expectedIsObjectiveCString) {
     const sourceIsString = expressionProducesZString(
@@ -17262,6 +17261,51 @@ function lowerExpressionExpected(
       }
       none => {}
     }
+  }
+  // Imported methods can expose an already-lowered callable identity rather
+  // than its source alias. Named functions need only that identity to create
+  // the callable wrapper; parsing an unavailable alias is unnecessary.
+  if (
+    expectedCallableIdentity.byteLength > 0
+    && tree.nodes[index].kind == ExpressionKind.identifierExpression
+  ) {
+    const bindingName = tree.nodes[index].value.copyBytes(
+      0,
+      tree.nodes[index].value.byteLength
+    );
+    match (namedValueTypeName(
+      program,
+      evidence,
+      "",
+      bindingName,
+      tree.nodes[index].offset
+    )) {
+      some(_) => {
+        const local = try lowerExpression(
+          program, importedTypes, evidence, tree, index, inout output
+        );
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.retainValue,
+          expectedCallableIdentity,
+          Array<usize>(local),
+          Array<String>()
+        );
+      }
+      none => {}
+    }
+    let target = copy bindingName;
+    match (importedCallTarget(program, target)) {
+      some(imported) => target = move imported;
+      none => {}
+    }
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.directFunctionValue,
+      target,
+      Array<usize>(),
+      Array<String>(move expectedCallableIdentity)
+    );
   }
   const callableTypeName = moduleCallableAliasTarget(
     program,
@@ -17585,60 +17629,6 @@ function lowerExpressionExpected(
           }));
         }
         return closure;
-      }
-      if (
-        tree.nodes[index].kind == ExpressionKind.identifierExpression
-      ) {
-        const bindingName = tree.nodes[index].value.copyBytes(
-          0,
-          tree.nodes[index].value.byteLength
-        );
-        const bindingOffset = tree.nodes[index].offset;
-        match (namedValueTypeName(
-          program,
-          evidence,
-          "",
-          bindingName,
-          bindingOffset
-        )) {
-          some(_) => {
-            const local = try lowerExpression(
-              program,
-              importedTypes,
-              evidence,
-              tree,
-              index,
-              inout output
-            );
-            let retainedChildren = Array<usize>();
-            retainedChildren.push(local);
-            return pushExpression(
-              inout output,
-              LoweredExpressionKind.retainValue,
-              functionType.name,
-              retainedChildren,
-              Array<String>()
-            );
-          }
-          none => {}
-        }
-        let target = bindingName.copyBytes(0, bindingName.byteLength);
-        match (importedCallTarget(program, target)) {
-          some(imported) => target = move imported;
-          none => {}
-        }
-        let labels = Array<String>();
-        labels.push(functionType.name.copyBytes(
-          0,
-          functionType.name.byteLength
-        ));
-        return pushExpression(
-          inout output,
-          LoweredExpressionKind.directFunctionValue,
-          target,
-          Array<usize>(),
-          labels
-        );
       }
       if (expressionBorrowsStoredReference(tree, index)) {
         const borrowed = try lowerExpression(

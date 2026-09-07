@@ -419,6 +419,9 @@ Clang-produced `ZFDCL` artifact, and normalizes inferred scalar, decimal
 integer-status, and recursively copyable record value/pointer contracts before
 native semantic analysis. Header-derived types, constants, records, plain
 value-ABI functions, and Objective-C declarations require no empty sidecar;
+native emission retains module-local header imports even when only an emitted
+signature or field mentions a foreign type, with no foreign call to carry that
+dependency in the call-resolution evidence;
 C functions needing semantic facts remain unavailable at their use sites. The same path now normalizes owned nullable pointer
 results and status-gated `out T**` handles, including deterministic failure
 cleanup, nullable flow narrowing, `Option.fromNullable`, explicit `move` to the
@@ -763,7 +766,10 @@ resulting method specialization by semantic identity.
 
 The fixed-point C emitter now represents an ordinary callable as a typed call
 pointer, context pointer, and retain/release hooks. Direct named functions use a
-static context-free handle. Capturing expression closures allocate one shared
+static context-free handle. Method arguments apply the same expected-type
+lowering as ordinary calls, including named callbacks whose callable alias is
+private to another module; no intermediate annotated binding is required.
+Capturing expression closures allocate one shared
 environment, destroy cleanup-bearing captures on final release, and preserve a
 typed `throws E` channel through `Result<T, E>`. Function-valued `Map` insertion,
 lookup, replacement, removal, clearing, and destruction use those same hooks;

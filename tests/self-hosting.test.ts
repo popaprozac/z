@@ -11930,6 +11930,18 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.ok(statSync(builtForeignApplication).mtimeMs > 0);
 
   const headerOnlyProject = resolve(directory, "header-only-project");
+  const callableMethodContext = spawnSync(driver, [
+    "run",
+    resolve(projectRoot, "tests/fixtures/self-host-callable-method-context/main.zs"),
+  ], { encoding: "utf8", env: foreignAdapterEnvironment });
+  assert.equal(callableMethodContext.status, 0, callableMethodContext.stderr);
+  assert.match(callableMethodContext.stdout, /compiled 2 Z modules/);
+  const signatureOnly = spawnSync(driver, [
+    "run",
+    resolve(projectRoot, "tests/fixtures/self-host-signature-header/main.zs"),
+  ], { encoding: "utf8", env: foreignAdapterEnvironment });
+  assert.equal(signatureOnly.status, 0, signatureOnly.stderr);
+  assert.match(signatureOnly.stdout, /compiled 2 Z modules/);
   mkdirSync(headerOnlyProject);
   const headerOnlyDependency = resolve(
     headerOnlyProject,

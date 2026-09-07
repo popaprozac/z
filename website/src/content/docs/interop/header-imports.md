@@ -43,6 +43,10 @@ import {
 Both forms refer to the same header-derived declarations. The import shape does
 not introduce a wrapper function, runtime namespace object, or dispatch table.
 
+Each module's imported headers also remain available in generated native source
+when their types appear only in signatures or fields. You do not need a dummy
+native call or a duplicate import in the entry module to make those types compile.
+
 ## Configure where implementation comes from
 
 Importing a header describes the API. Linking selects the native implementation:
