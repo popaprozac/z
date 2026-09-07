@@ -1515,6 +1515,36 @@ test("stores, calls, and propagates throwing function values", () => {
   );
 });
 
+test("keeps match-pattern ownership separate from shadowed outer bindings", () => {
+  const source = `
+    function main(): i32 {
+      const value: String = "outer";
+      const selected = match (Option<String>.some("inner")) {
+        some(value) => value;
+        none => return 1;
+      };
+      match (Option<String>.some("again")) {
+        some(value) => { const consumed = move value; }
+        none => {}
+      }
+      if (value != "outer" || selected != "inner") return 2;
+      return 0;
+    }
+  `;
+  assert.doesNotThrow(() => compileToC(source, "match-pattern-shadowing.zs"));
+  assert.throws(() => check(`
+    function main(): i32 {
+      const value = Option<String>.some("owned subject");
+      const selected = match (value) {
+        some(value) => value;
+        none => return 1;
+      };
+      match (value) { some(_) => {} none => {} }
+      return 0;
+    }
+  `, "match-consumed-subject-shadowing.zs"), /use of moved value "value"/);
+});
+
 test("names existing types through transparent aliases", () => {
   const example = resolve(projectRoot, "examples/language/types/type-aliases/main.zs");
   const operations = resolve(projectRoot, "examples/language/types/type-aliases/operations.zs");

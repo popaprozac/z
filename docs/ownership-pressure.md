@@ -5326,9 +5326,49 @@ versioned launch envelope. It exposed two independent composition gaps.
 The fixtures `self-host-emit-readonly-field-iteration.zs` and
 `std-json-nested-encode.zs` cover readonly Array/Map iteration, explicit String
 snapshots, recursive readonly trees, exact round trips, and use after encoding.
-The public event must not be flattened merely to satisfy the compiler. JSON
-`Option<T>` mapping is the next semantic decision; cross-process arbitration
-and transport remain Zapp work after this upstream checkpoint.
+The public event must not be flattened merely to satisfy the compiler. Derived
+JSON now supports `Option<T>` fields around the supported payload types: null
+is none, non-null is some, and omission requires an explicit default. Decoding
+releases a cleanup-bearing default before replacing it; malformed payloads and
+later field failures destroy partial owned data. Encoding borrows the payload
+and adds only the tag branch. Nested Options remain rejected because null
+cannot distinguish none from some(none).
+
+`std-json-option.zs` covers exact-width integers, readonly arrays, nested owned
+structs, default replacement, required keys, duplicates, and malformed partial
+payloads through both compilers. It also exposed generic inference losing a
+match-arm binding's type after selection. Arm-result inference now uses the
+same lexical payload environment as the arm body; the dedicated
+`self-host-emit-match-generic-inference.zs` fixture checks shadowing too.
+Native match lowering also resolves transparent local aliases before selecting
+the intrinsic enum layout, so `type Name = Option<String>` works in the same
+codec and match paths as its target.
+
+The unsupported-codec diagnostic path exposed a native cleanup defect:
+`match (try operation())` hoists the owned success value, but cleanup planning
+had not recognized its transfer into the consuming match. An early throw then
+destroyed both the selected payload and the already-consumed temporary. The
+handoff now applies to statement, returned, and local-value matches, while
+earlier try failures retain their own cleanup obligations. The differential
+fixture `self-host-emit-try-match-cleanup.zs` checks exact destruction counts on
+fallthrough, return, and throw, with stored borrowing as a non-consuming control.
+It also verifies that a local initialized through a hoisted try retains its
+own cleanup registration after the normalization block, including a resource
+constructed from a throwing field expression.
+That control uncovered a separate Stage 0 name-shadowing defect: early-exit
+cleanup of an outer owner could resolve through its same-named arm payload,
+and inner payloads inherited the outer ownership flag. Match generation now
+captures the outer cleanup storage before entering an arm and gives pattern
+bindings independent flags and parameter modes. The same fixture checks
+borrowed statement/value matches and an owned payload selected past a shadowed
+outer resource, including exact destruction of both owners.
+
+One independent backend hygiene gap remains an explicit follow-up before more
+framework features: Z fields named `signed` or `unsigned` are emitted as C
+keywords. An upstream field-name escaping pass must preserve JSON keys and
+foreign ABI members. This does not warrant a Zapp-specific codec rule.
+Cross-process arbitration and transport remain Zapp work after this codec and
+hygiene checkpoint.
 
 ## Not tested yet
 

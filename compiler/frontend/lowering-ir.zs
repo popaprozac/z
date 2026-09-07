@@ -3076,7 +3076,7 @@ function localTypeAliasTarget(
   return Option<String>.none;
 }
 
-function loweredTypeIdentity(in type: LoweredType): String {
+export function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.booleanType) return "boolean";
   if (type.kind == LoweredTypeKind.i8Type) return "i8";
@@ -6594,8 +6594,21 @@ function planCleanupSequence(
     const sourceIndex = sourceRoots[rootIndex];
     const loweredIndex = loweredRoots[rootIndex];
     if (arena.nodes[sourceIndex].kind == StatementKind.variableStatement) {
+      // Hoisting try expressions wraps the declaration in a normalized block.
+      // The final local still owns the initialized result after that prelude;
+      // its type and live flag must not be lost at the wrapper boundary.
+      let localIndex = loweredIndex;
+      while (
+        statements[localIndex].kind == LoweredStatementKind.blockStatement
+        && loweredStatementHasLabel(statements[localIndex], "nested-try-normalized")
+        && statements[localIndex].children.length > 0
+      ) {
+        localIndex = statements[localIndex].children[
+          statements[localIndex].children.length - 1
+        ];
+      }
       let localType = Option<LoweredType>.none;
-      match (in statements[loweredIndex].type) {
+      match (in statements[localIndex].type) {
         some(type) => localType = Option.some(LoweredType({
           kind: type.kind,
           name: type.name.copyBytes(0, type.name.byteLength),
@@ -6636,7 +6649,7 @@ function planCleanupSequence(
               && (forceMoveLiveGuards || moveIndex.hasControlFlow)
             ) {
               guard = ownerLiveFlag(arena.nodes[sourceIndex].name);
-              statements[loweredIndex].liveFlag = guard.copyBytes(
+              statements[localIndex].liveFlag = guard.copyBytes(
                 0,
                 guard.byteLength
               );
@@ -18729,7 +18742,18 @@ function matchEnumDeclaration(
     tree,
     subjectInput
   )) {
-    some(name) => {
+    some(subjectName) => {
+      let name = move subjectName;
+      // A transparent source alias may name an intrinsic enum without a
+      // separate enum declaration. Match the resolved payload identity.
+      let aliasDepth: usize = 0;
+      while (aliasDepth < program.typeAliases.length) {
+        match (localTypeAliasTarget(program, name)) {
+          some(target) => name = move target;
+          none => break;
+        }
+        aliasDepth = aliasDepth + 1;
+      }
       resolvedSubjectName = name.copyBytes(0, name.byteLength);
       const intrinsic = try intrinsicEnumDeclaration(
         program,
@@ -22632,6 +22656,29 @@ function loweredStatementDirectlyTransfersBinding(
 ): boolean {
   let value = Option<usize>.none;
   if (statements[index].kind == LoweredStatementKind.localStatement) {
+    match (in statements[index].expression) {
+      some(expression) => value = Option.some(expression);
+      none => {}
+    }
+    // Value-producing matches are stored under their destination local.
+    // The subject still transfers to the match before any arm can exit.
+    if (
+      statements[index].children.length == 1
+      && statements[statements[index].children[0]].kind
+        == LoweredStatementKind.matchStatement
+    ) {
+      const matchStatement = statements[index].children[0];
+      return loweredStatementDirectlyTransfersBinding(
+        expressions,
+        statements,
+        matchStatement,
+        name
+      );
+    }
+  } else if (
+    statements[index].kind == LoweredStatementKind.matchStatement
+    && statements[index].matchConsumesSubject
+  ) {
     match (in statements[index].expression) {
       some(expression) => value = Option.some(expression);
       none => {}

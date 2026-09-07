@@ -25,6 +25,7 @@ import {
   lowerModules,
   lowerProgram,
   lowerTestModules,
+  loweredTypeIdentity,
 } from "./lowering-ir.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import { Program } from "./parser.zs";
@@ -8397,6 +8398,31 @@ function appendDerivedJsonRuntime(inout output: TextBuffer): void {
   output.append("  z_string_append_bytes(output, \"\\\"\", 1);\n}\n\n");
 }
 
+function derivedJsonOptionPayload(
+  in program: LoweredProgram,
+  in type: LoweredType
+): Option<LoweredType> throws String {
+  if (
+    type.kind != LoweredTypeKind.enumType
+    || !stringStartsWith(type.name, "__z_Option_")
+  ) return Option<LoweredType>.none;
+  const index = match (loweredEnumIndex(program, type.name)) {
+    some(value) => value;
+    none => throw "native derived JSON lost Option declaration";
+  };
+  for (const variant of program.enums[index].variants) {
+    if (variant.name != "some") continue;
+    match (in variant.payload) {
+      some(payload) => return Option.some(LoweredType({
+        kind: payload.kind,
+        name: copy payload.name,
+      }));
+      none => {}
+    }
+  }
+  throw "native derived JSON lost Option payload";
+}
+
 function collectDerivedJsonDecodeStructs(
   in program: LoweredProgram,
   index: usize,
@@ -8404,24 +8430,33 @@ function collectDerivedJsonDecodeStructs(
 ): void throws String {
   if (containsUsize(structs, index)) return;
   if (program.structs[index].referenceType) {
-    throw `native jsonDecode cannot derive a class codec for ${program.structs[index].name}`;
+    throw `native derived JSON cannot derive a class codec for ${program.structs[index].name}`;
   }
   structs.push(index);
   for (const field of program.structs[index].fields) {
     if (field.optionalField) {
-      throw `native jsonDecode does not support optional field ${program.structs[index].name}.${field.name} yet`;
+      throw `native derived JSON does not support optional field ${program.structs[index].name}.${field.name} yet`;
     }
-    if (field.type.kind == LoweredTypeKind.arrayType) {
-      const arrayIndex = match (loweredArrayIndex(program, field.type.name)) {
+    const option = try derivedJsonOptionPayload(program, field.type);
+    const type = match (option) {
+      some(payload) => payload;
+      none => LoweredType({ kind: field.type.kind, name: copy field.type.name });
+    };
+    match (try derivedJsonOptionPayload(program, type)) {
+      some(_) => throw "native derived JSON cannot encode nested Option values: JSON null cannot distinguish none from some(none)";
+      none => {}
+    }
+    if (type.kind == LoweredTypeKind.arrayType) {
+      const arrayIndex = match (loweredArrayIndex(program, type.name)) {
         some(value) => value;
-        none => throw `native jsonDecode lost Array field ${program.structs[index].name}.${field.name}`;
+        none => throw `native derived JSON lost Array field ${program.structs[index].name}.${field.name}`;
       };
       const element = view program.arrays[arrayIndex].elementType;
       if (element.kind == LoweredTypeKind.stringType) continue;
       if (element.kind == LoweredTypeKind.structType) {
         const nestedIndex = match (loweredStructIndex(program, element.name)) {
           some(value) => value;
-          none => throw `native jsonDecode lost nested Array element ${element.name}`;
+          none => throw `native derived JSON lost nested Array element ${element.name}`;
         };
         try collectDerivedJsonDecodeStructs(
           program,
@@ -8430,12 +8465,13 @@ function collectDerivedJsonDecodeStructs(
         );
         continue;
       }
-      throw `native jsonDecode does not support Array element type ${element.name}`;
+      const elementName = loweredTypeIdentity(element);
+      throw `native derived JSON does not support Array element type ${elementName}`;
     }
-    if (field.type.kind == LoweredTypeKind.structType) {
-      const nestedIndex = match (loweredStructIndex(program, field.type.name)) {
+    if (type.kind == LoweredTypeKind.structType) {
+      const nestedIndex = match (loweredStructIndex(program, type.name)) {
         some(value) => value;
-        none => throw `native jsonDecode lost nested struct ${field.type.name}`;
+        none => throw `native derived JSON lost nested struct ${type.name}`;
       };
       try collectDerivedJsonDecodeStructs(
         program,
@@ -8445,19 +8481,22 @@ function collectDerivedJsonDecodeStructs(
       continue;
     }
     if (
-      field.type.kind != LoweredTypeKind.stringType
-      && field.type.kind != LoweredTypeKind.booleanType
-      && field.type.kind != LoweredTypeKind.i8Type
-      && field.type.kind != LoweredTypeKind.i16Type
-      && field.type.kind != LoweredTypeKind.i32Type
-      && field.type.kind != LoweredTypeKind.i64Type
-      && field.type.kind != LoweredTypeKind.isizeType
-      && field.type.kind != LoweredTypeKind.u8Type
-      && field.type.kind != LoweredTypeKind.u16Type
-      && field.type.kind != LoweredTypeKind.u32Type
-      && field.type.kind != LoweredTypeKind.u64Type
-      && field.type.kind != LoweredTypeKind.usizeType
-    ) throw `native jsonDecode does not support field type ${field.type.name}`;
+      type.kind != LoweredTypeKind.stringType
+      && type.kind != LoweredTypeKind.booleanType
+      && type.kind != LoweredTypeKind.i8Type
+      && type.kind != LoweredTypeKind.i16Type
+      && type.kind != LoweredTypeKind.i32Type
+      && type.kind != LoweredTypeKind.i64Type
+      && type.kind != LoweredTypeKind.isizeType
+      && type.kind != LoweredTypeKind.u8Type
+      && type.kind != LoweredTypeKind.u16Type
+      && type.kind != LoweredTypeKind.u32Type
+      && type.kind != LoweredTypeKind.u64Type
+      && type.kind != LoweredTypeKind.usizeType
+    ) {
+      const typeName = loweredTypeIdentity(type);
+      throw `native derived JSON does not support field type ${typeName}`;
+    }
   }
 }
 
@@ -8484,44 +8523,8 @@ function derivedJsonTargetStructIndex(
   if (program.structs[index].referenceType) {
     throw `native ${declaration.compilerIntrinsic} cannot derive a class codec for ${targetName}`;
   }
-  if (
-    declaration.compilerIntrinsic == "jsonDecode"
-    || declaration.compilerIntrinsic == "jsonEncode"
-  ) {
-    let reachable = Array<usize>();
-    try collectDerivedJsonDecodeStructs(program, index, inout reachable);
-    return index;
-  }
-  for (const field of program.structs[index].fields) {
-    if (field.optionalField) {
-      throw `native ${declaration.compilerIntrinsic} does not support optional field ${targetName}.${field.name} yet`;
-    }
-    if (field.type.kind == LoweredTypeKind.arrayType) {
-      const arrayIndex = match (loweredArrayIndex(program, field.type.name)) {
-        some(value) => value;
-        none => throw `native ${declaration.compilerIntrinsic} lost Array field ${targetName}.${field.name}`;
-      };
-      if (
-        program.arrays[arrayIndex].elementType.kind
-          != LoweredTypeKind.stringType
-      ) throw `native ${declaration.compilerIntrinsic} only supports Array<String> fields in this tier`;
-      continue;
-    }
-    if (
-      field.type.kind != LoweredTypeKind.stringType
-      && field.type.kind != LoweredTypeKind.booleanType
-      && field.type.kind != LoweredTypeKind.i8Type
-      && field.type.kind != LoweredTypeKind.i16Type
-      && field.type.kind != LoweredTypeKind.i32Type
-      && field.type.kind != LoweredTypeKind.i64Type
-      && field.type.kind != LoweredTypeKind.isizeType
-      && field.type.kind != LoweredTypeKind.u8Type
-      && field.type.kind != LoweredTypeKind.u16Type
-      && field.type.kind != LoweredTypeKind.u32Type
-      && field.type.kind != LoweredTypeKind.u64Type
-      && field.type.kind != LoweredTypeKind.usizeType
-    ) throw `native ${declaration.compilerIntrinsic} does not support field type ${field.type.name}`;
-  }
+  let reachable = Array<usize>();
+  try collectDerivedJsonDecodeStructs(program, index, inout reachable);
   return index;
 }
 
@@ -8673,13 +8676,33 @@ function appendDerivedJsonDecode(
         output.append(field.type.name);
         output.append("){0};\n");
       }
-      if (field.type.kind == LoweredTypeKind.stringType) {
+      const option = try derivedJsonOptionPayload(program, field.type);
+      let optional = false;
+      let storageField = copy field.name;
+      const type = match (option) {
+        some(payload) => {
+          optional = true;
+          storageField = `${field.name}.payload.some`;
+          output.append("        z_json_derived_whitespace(reader); if (reader->offset < reader->length && reader->data[reader->offset] == 'n') { value.");
+          output.append(field.name);
+          output.append(".tag = Z_");
+          output.append(field.type.name);
+          output.append("Tag_none; if (!z_json_derived_literal(reader, \"null\")) goto _z_json_key_failure; } else { value.");
+          output.append(field.name);
+          output.append(".tag = Z_");
+          output.append(field.type.name);
+          output.append("Tag_some;\n");
+          select payload;
+        }
+        none => LoweredType({ kind: field.type.kind, name: copy field.type.name });
+      };
+      if (type.kind == LoweredTypeKind.stringType) {
         output.append("        if (!z_json_derived_string(reader, &value.");
-        output.append(field.name);
+        output.append(storageField);
         output.append(")) goto _z_json_key_failure;\n");
-      } else if (field.type.kind == LoweredTypeKind.arrayType) {
+      } else if (type.kind == LoweredTypeKind.arrayType) {
         const arrayIndex = match (
-          loweredArrayIndex(program, field.type.name)
+          loweredArrayIndex(program, type.name)
         ) {
           some(value) => value;
           none => throw `native jsonDecode lost Array field ${reachableTarget.name}.${field.name}`;
@@ -8689,9 +8712,9 @@ function appendDerivedJsonDecode(
         output.append("        z_json_derived_whitespace(reader); if (reader->offset < reader->length && reader->data[reader->offset] == ']') { (void)z_json_derived_advance(reader); } else { while (true) {\n");
         if (element.kind == LoweredTypeKind.stringType) {
           output.append("          Z_String _z_json_item = { NULL, 0, 0 }; if (!z_json_derived_string(reader, &_z_json_item)) goto _z_json_key_failure; Z_");
-          output.append(field.type.name);
+          output.append(type.name);
           output.append("_push(&value.");
-          output.append(field.name);
+          output.append(storageField);
           output.append(", _z_json_item);\n");
         } else {
           output.append("          Z_");
@@ -8701,34 +8724,34 @@ function appendDerivedJsonDecode(
           output.append("_");
           appendCBindingName(inout output, element.name);
           output.append("(reader, &_z_json_item)) goto _z_json_key_failure; Z_");
-          output.append(field.type.name);
+          output.append(type.name);
           output.append("_push(&value.");
-          output.append(field.name);
+          output.append(storageField);
           output.append(", _z_json_item);\n");
         }
         output.append("          z_json_derived_whitespace(reader); if (reader->offset < reader->length && reader->data[reader->offset] == ']') { (void)z_json_derived_advance(reader); break; } if (!z_json_derived_expect(reader, ',', \"expected ',' or ']' in JSON array\")) goto _z_json_key_failure; } }\n");
-      } else if (field.type.kind == LoweredTypeKind.structType) {
+      } else if (type.kind == LoweredTypeKind.structType) {
         output.append("        if (!z_json_derived_decode_");
         appendCBindingName(inout output, declaration.name);
         output.append("_");
-        appendCBindingName(inout output, field.type.name);
+        appendCBindingName(inout output, type.name);
         output.append("(reader, &value.");
-        output.append(field.name);
+        output.append(storageField);
         output.append(")) goto _z_json_key_failure;\n");
-      } else if (field.type.kind == LoweredTypeKind.booleanType) {
+      } else if (type.kind == LoweredTypeKind.booleanType) {
         output.append("        if (!z_json_derived_boolean(reader, &value.");
-        output.append(field.name);
+        output.append(storageField);
         output.append(")) goto _z_json_key_failure;\n");
       } else if (
-        field.type.kind == LoweredTypeKind.u8Type
-        || field.type.kind == LoweredTypeKind.u16Type
-        || field.type.kind == LoweredTypeKind.u32Type
-        || field.type.kind == LoweredTypeKind.u64Type
-        || field.type.kind == LoweredTypeKind.usizeType
+        type.kind == LoweredTypeKind.u8Type
+        || type.kind == LoweredTypeKind.u16Type
+        || type.kind == LoweredTypeKind.u32Type
+        || type.kind == LoweredTypeKind.u64Type
+        || type.kind == LoweredTypeKind.usizeType
       ) {
-        const storage = try cType(field.type);
+        const storage = try cType(type);
         output.append("        uint64_t _z_json_unsigned = 0; if (!z_json_derived_u64(reader, &_z_json_unsigned)) goto _z_json_key_failure;\n");
-        const limit = derivedJsonUnsignedLimit(field.type);
+        const limit = derivedJsonUnsignedLimit(type);
         if (limit.byteLength > 0) {
           output.append("        if (_z_json_unsigned > ");
           output.append(limit);
@@ -8740,15 +8763,15 @@ function appendDerivedJsonDecode(
           output.append("); goto _z_json_key_failure; }\n");
         }
         output.append("        value.");
-        output.append(field.name);
+        output.append(storageField);
         output.append(" = (");
         output.append(storage);
         output.append(")_z_json_unsigned;\n");
       } else {
-        const storage = try cType(field.type);
+        const storage = try cType(type);
         output.append("        int64_t _z_json_signed = 0; if (!z_json_derived_i64(reader, &_z_json_signed)) goto _z_json_key_failure;\n");
-        const minimum = derivedJsonSignedMinimum(field.type);
-        const maximum = derivedJsonSignedMaximum(field.type);
+        const minimum = derivedJsonSignedMinimum(type);
+        const maximum = derivedJsonSignedMaximum(type);
         if (minimum.byteLength > 0) {
           output.append("        if (_z_json_signed < ");
           output.append(minimum);
@@ -8762,11 +8785,12 @@ function appendDerivedJsonDecode(
           output.append("); goto _z_json_key_failure; }\n");
         }
         output.append("        value.");
-        output.append(field.name);
+        output.append(storageField);
         output.append(" = (");
         output.append(storage);
         output.append(")_z_json_signed;\n");
       }
+      if (optional) output.append("      }\n");
       output.append("      }\n");
       fieldIndex = fieldIndex + 1;
     }
@@ -8861,19 +8885,35 @@ function appendDerivedJsonEncode(
       output.append(", ");
       output.append(`${prefix.byteLength}`);
       output.append(");\n");
-      if (field.type.kind == LoweredTypeKind.stringType) {
+      const option = try derivedJsonOptionPayload(program, field.type);
+      let optional = false;
+      let storageField = copy field.name;
+      const type = match (option) {
+        some(payload) => {
+          optional = true;
+          storageField = `${field.name}.payload.some`;
+          output.append("  if ((*value).");
+          output.append(field.name);
+          output.append(".tag == Z_");
+          output.append(field.type.name);
+          output.append("Tag_none) { z_string_append_bytes(output, \"null\", 4); } else {\n");
+          select payload;
+        }
+        none => LoweredType({ kind: field.type.kind, name: copy field.type.name });
+      };
+      if (type.kind == LoweredTypeKind.stringType) {
         output.append("  z_json_derived_append_string(output, (*value).");
-        output.append(field.name);
+        output.append(storageField);
         output.append(");\n");
-      } else if (field.type.kind == LoweredTypeKind.arrayType) {
-        const arrayIndex = match (loweredArrayIndex(program, field.type.name)) {
+      } else if (type.kind == LoweredTypeKind.arrayType) {
+        const arrayIndex = match (loweredArrayIndex(program, type.name)) {
           some(value) => value;
           none => throw `native jsonEncode lost Array field ${target.name}.${field.name}`;
         };
         const element = view program.arrays[arrayIndex].elementType;
         const elementC = try cType(element);
         output.append("  z_string_append_bytes(output, \"[\", 1); for (size_t _z_json_index = 0; _z_json_index < (*value).");
-        output.append(field.name);
+        output.append(storageField);
         output.append(".length; _z_json_index += 1) { if (_z_json_index > 0) z_string_append_bytes(output, \",\", 1); ");
         if (element.kind == LoweredTypeKind.stringType) {
           output.append("z_json_derived_append_string(output, ((Z_String *)(*value).");
@@ -8881,35 +8921,36 @@ function appendDerivedJsonEncode(
           output.append(derivedJsonEncodeHelperName(declaration, element.name));
           output.append(`(output, &((${elementC} *)(*value).`);
         }
-        output.append(field.name);
+        output.append(storageField);
         output.append(".data)[_z_json_index]); } z_string_append_bytes(output, \"]\", 1);\n");
-      } else if (field.type.kind == LoweredTypeKind.structType) {
+      } else if (type.kind == LoweredTypeKind.structType) {
         output.append("  ");
-        output.append(derivedJsonEncodeHelperName(declaration, field.type.name));
+        output.append(derivedJsonEncodeHelperName(declaration, type.name));
         output.append("(output, &(*value).");
-        output.append(field.name);
+        output.append(storageField);
         output.append(");\n");
-      } else if (field.type.kind == LoweredTypeKind.booleanType) {
+      } else if (type.kind == LoweredTypeKind.booleanType) {
         output.append("  z_string_append_bytes(output, (*value).");
-        output.append(field.name);
+        output.append(storageField);
         output.append(" ? \"true\" : \"false\", (*value).");
-        output.append(field.name);
+        output.append(storageField);
         output.append(" ? 4 : 5);\n");
       } else if (
-        field.type.kind == LoweredTypeKind.u8Type
-        || field.type.kind == LoweredTypeKind.u16Type
-        || field.type.kind == LoweredTypeKind.u32Type
-        || field.type.kind == LoweredTypeKind.u64Type
-        || field.type.kind == LoweredTypeKind.usizeType
+        type.kind == LoweredTypeKind.u8Type
+        || type.kind == LoweredTypeKind.u16Type
+        || type.kind == LoweredTypeKind.u32Type
+        || type.kind == LoweredTypeKind.u64Type
+        || type.kind == LoweredTypeKind.usizeType
       ) {
         output.append("  z_string_append_unsigned_decimal(output, (uint64_t)(*value).");
-        output.append(field.name);
+        output.append(storageField);
         output.append(");\n");
       } else {
         output.append("  { const int64_t _z_json_signed = (int64_t)(*value).");
-        output.append(field.name);
+        output.append(storageField);
         output.append("; if (_z_json_signed < 0) { z_string_append_bytes(output, \"-\", 1); z_string_append_unsigned_decimal(output, (uint64_t)(-(_z_json_signed + 1)) + 1u); } else z_string_append_unsigned_decimal(output, (uint64_t)_z_json_signed); }\n");
       }
+      if (optional) output.append("  }\n");
       index = index + 1;
     }
     output.append("  z_string_append_bytes(output, \"}\", 1);\n}\n\n");

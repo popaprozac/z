@@ -1028,7 +1028,15 @@ export function inferGenericCalls(
           expectedType,
           attemptedSuccessType,
         ));
-        return { expression: { ...expression, expression: matched.expression, arms }, type: armValueType(arms, environment) };
+        let type: string | null = null;
+        for (const arm of arms) {
+          type = armValueType(
+            [arm],
+            matchArmEnvironment(arm, environment, matched.type, attemptedSuccessType),
+          );
+          if (type !== null) break;
+        }
+        return { expression: { ...expression, expression: matched.expression, arms }, type };
       }
       case "ifExpression": {
         const condition = rewriteExpression(expression.condition, environment);
@@ -1609,14 +1617,12 @@ export function inferGenericCalls(
     }
   };
 
-  const rewriteArm = (
+  const matchArmEnvironment = (
     arm: MatchArm,
     environment: Environment,
     matchedType: string | null,
-    returnType: string | null = null,
-    selectedType: string | null = null,
     attemptedSuccessType: string | null = null,
-  ): MatchArm => {
+  ): Environment => {
     const armEnvironment = new Map(environment);
     if (arm.binding && matchedType) {
       const variant = enums.get(matchedType)?.variants.find((item) => item.name === arm.variantName);
@@ -1634,6 +1640,18 @@ export function inferGenericCalls(
         if (field) armEnvironment.set(fieldBinding.bindingName, field.type.name);
       }
     }
+    return armEnvironment;
+  };
+
+  const rewriteArm = (
+    arm: MatchArm,
+    environment: Environment,
+    matchedType: string | null,
+    returnType: string | null = null,
+    selectedType: string | null = null,
+    attemptedSuccessType: string | null = null,
+  ): MatchArm => {
+    const armEnvironment = matchArmEnvironment(arm, environment, matchedType, attemptedSuccessType);
     return { ...arm, body: rewriteStatement(arm.body, armEnvironment, returnType, selectedType) };
   };
 

@@ -5783,6 +5783,7 @@ function analyzeStatement(
         }
         if (!statementStopsFlow(arm.body)) {
           if (borrowedRoot && borrowedRootType) armLocals.set(borrowedRoot.name, borrowedRootType);
+          restorePatternOuterBindings(locals, armLocals, patternNames);
           continuing.push(armLocals);
           continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
           continuingLoans.push(snapshotAccessLoanState(state));
@@ -7480,6 +7481,7 @@ function inferMatchExpression(
     }
     if (armType !== "never") {
       if (borrowedRoot && borrowedRootType) armLocals.set(borrowedRoot.name, borrowedRootType);
+      restorePatternOuterBindings(locals, armLocals, patternNames);
       continuing.push(armLocals);
       continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
       continuingLoans.push(snapshotAccessLoanState(state));
@@ -16197,6 +16199,21 @@ function requireOutParametersInitialized(
         helps: [`initialize ${JSON.stringify(parameter.name)} in every branch that can return successfully`],
       });
     }
+  }
+}
+
+function restorePatternOuterBindings(
+  outer: ReadonlyMap<string, ValueType>,
+  arm: Map<string, ValueType>,
+  names: readonly string[],
+): void {
+  // Pattern bindings have their own lexical identity. Their moves and types
+  // cannot flow into a shadowed outer binding at the branch join. `outer`
+  // already includes consumption of the match subject itself.
+  for (const name of names) {
+    const previous = outer.get(name);
+    if (previous !== undefined) arm.set(name, previous);
+    else arm.delete(name);
   }
 }
 

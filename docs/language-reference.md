@@ -2974,8 +2974,8 @@ nesting, and throws `JsonError` with zero-based byte `offset` plus one-based
 `line` and `column`. `stringify` emits compact JSON and borrows the complete
 value graph while retaining each number's original spelling.
 
-For application data, Stage 0 can derive a codec directly from an ordinary Z
-value struct:
+For application data, Stage 0 and the native compiler derive a codec directly
+from an ordinary Z value struct:
 
 ```z
 struct User {
@@ -2995,13 +2995,27 @@ function readUser(in source: String): User throws json.JsonError {
 The derived encoder and decoder support public, non-optional `String`,
 `boolean`, signed or unsigned integer, nested value structs, and arrays of
 strings or those structs, including `readonly Array<T>` and recursive trees
-whose recursion passes through an array. The decoder parses integers directly
+whose recursion passes through an array. `Option<T>` fields can wrap any of
+those supported field types. JSON `null` maps to `none`; a non-null value maps
+to `some(value)`. Encoding a `none` field writes `null`, rather than omitting
+the key. Missing fields are still errors unless the field declares a default:
+
+```z
+struct Request {
+  directory: Option<String>; // required key; null is allowed
+  label: Option<String> = Option<String>.none; // omission uses this default
+}
+```
+
+Nested `Option<Option<T>>` is rejected because JSON `null` cannot distinguish
+`none` from `some(none)`. Arrays of Options remain a later codec tier; arrays of
+structs that contain Option fields are supported. The decoder parses integers directly
 into their requested Z width, so even `u64.max` does not require a dynamic intermediate value.
 Missing fields with defaults evaluate those defaults; other missing fields
 throw `JsonError`. Unknown fields are skipped recursively, duplicate known
 fields are rejected, names match exactly, and encoding follows declaration
-order. Classes, custom constructors or `deinit`, optional or floating-point
-fields, other collections, `Option`, and field-name policies remain later
+order. Classes, custom constructors or `deinit`, optional property syntax (`?`),
+floating-point fields, other collections, and field-name policies remain later
 derived-codec tiers.
 `json.parse` / `json.stringify` remain the implemented dynamic route for those
 shapes. Stage 0 and the fixed-point native compiler materialize the same direct

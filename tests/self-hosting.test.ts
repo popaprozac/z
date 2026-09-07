@@ -3715,6 +3715,33 @@ test("derives typed JSON codecs through the native Z AST", () => {
   rmSync(directory, { recursive: true, force: true });
 }, 120_000);
 
+test("rejects ambiguous and unsupported Option JSON codecs natively", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-json-option-negative-");
+  const input = resolve(directory, "main.zs");
+  try {
+    for (const [type, message] of [
+      ["Option<Option<String>>", /JSON null cannot distinguish none from some\(none\)/],
+      ["Option<f64>", /does not support field type f64/],
+      ["Array<Option<String>>", /does not support Array element type/],
+    ] as const) {
+      writeFileSync(input, `
+        import json from "std/json";
+        struct Value { value: ${type}; }
+        function encode(in value: Value): String { return json.encode(in value); }
+        function main(): i32 { return 0; }
+      `);
+      const emission = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8",
+        timeout: 120000,
+      });
+      assert.equal(emission.status, 1, emission.stderr);
+      assert.match(emission.stderr, message);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("emits nested value-producing matches through the native Z AST", () => {
   const input = resolve(
     projectRoot,

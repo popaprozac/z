@@ -144,14 +144,27 @@ through an imprecise `f64`. Missing fields with defaults evaluate those
 defaults; other missing fields fail. Unknown fields are skipped recursively,
 duplicate known fields are rejected, and encoding follows declaration order.
 
+`Option<T>` fields use JSON `null` for `none` and a non-null JSON value for
+`some(value)`. Encoding `none` writes the key with a `null` value; it does not
+omit the key. Missing fields still require a declared default:
+
+```zs
+struct Request {
+  directory: Option<String>; // required key; accepts null
+  label: Option<String> = Option<String>.none; // may be omitted
+}
+```
+
 :::caution[Current typed-codec boundary]
 The derived encoder and decoder support public, non-optional `String`,
 `boolean`, signed or unsigned integer, nested value structs, and arrays of
 strings or those structs. Readonly arrays and recursive trees through arrays
-are supported too. Stage 0 and the fixed-point compiler emit
-direct streaming codecs without an intermediate dynamic tree. Optional values,
-floating point, other collections, classes, custom constructors, custom
-field-name policies remain later tiers.
+are supported too, as are `Option<T>` fields wrapping those supported types.
+Stage 0 and the fixed-point compiler emit direct streaming codecs without an
+intermediate dynamic tree. Optional property syntax (`?`), arrays of Options,
+floating point, other collections, classes, custom constructors, and custom
+field-name policies remain later tiers. Nested `Option<Option<T>>` is rejected:
+JSON `null` cannot distinguish `none` from `some(none)`.
 Dynamic `json.parse` and `json.stringify` cover broader JSON shapes today.
 :::
 

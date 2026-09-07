@@ -89,6 +89,31 @@ test("rejects unsupported derived JSON field types at the codec request", () => 
   );
 });
 
+test("derives Option fields with explicit nulls, required presence, and defaults", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/std-json-option.zs");
+  const result = spawnSync(process.execPath, [cli, "run", fixture], {
+    encoding: "utf8",
+    timeout: 60000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("rejects ambiguous nested Options and unsupported Option payload codecs", () => {
+  for (const [type, message] of [
+    ["Option<Option<String>>", /JSON null cannot distinguish none from some\(none\)/],
+    ["Option<f64>", /unsupported type/],
+    ["Array<Option<String>>", /unsupported type/],
+  ] as const) {
+    const source = `
+      import json from "std/json";
+      struct Value { value: ${type}; }
+      function encode(in value: Value): String { return json.encode(in value); }
+      function main(): i32 { return 0; }
+    `;
+    assert.throws(() => compileToC(source, "unsupported-option-json.zs"), message);
+  }
+});
+
 test("reports JSON syntax failures with source positions", () => {
   const directory = mkdtempSync("/tmp/z-stdlib-json-errors-");
   const input = resolve(directory, "main.zs");

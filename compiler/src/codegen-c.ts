@@ -2,6 +2,7 @@ import type {
   Expression,
   EnumDeclaration,
   FunctionDeclaration,
+  MatchArm,
   Program,
   Statement,
   StructDeclaration,
@@ -230,9 +231,10 @@ export function generateC(
         if (visited.has(candidate.name)) return;
         visited.add(candidate.name);
         for (const field of candidate.fields) {
-          const dynamic = parseDynamicArrayType(field.type.name);
-          if (dynamic) arrays.add(writableTypeName(field.type.name));
-          const nested = structs.get(dynamic?.elementType ?? field.type.name);
+          const typeName = parseOptionType(field.type.name)?.target ?? field.type.name;
+          const dynamic = parseDynamicArrayType(typeName);
+          if (dynamic) arrays.add(writableTypeName(typeName));
+          const nested = structs.get(dynamic?.elementType ?? typeName);
           if (nested?.kind === "struct") collect(nested);
         }
       };
@@ -6082,7 +6084,7 @@ function derivedJsonStruct(
     const location = intrinsic.requestLocation;
     throw new DiagnosticError(location.fileName ?? "<source>", location, message, {
       notes: [
-        "derived JSON codecs support ordinary value structs containing String, boolean, integer, nested value structs, and arrays of strings or those structs, including readonly arrays",
+        "derived JSON codecs support ordinary value structs containing String, boolean, integer, nested value structs, arrays of strings or those structs, and Option fields wrapping those types",
         "use json.parse/json.stringify for a dynamic JSON tree while the derived type surface expands",
       ],
     });
@@ -6103,15 +6105,19 @@ function derivedJsonStruct(
       if (field.visibility === "private") {
         fail(`cannot derive JSON for ${JSON.stringify(candidate.name)} because field ${JSON.stringify(field.name)} is private`);
       }
+      const typeName = parseOptionType(field.type.name)?.target ?? field.type.name;
+      if (parseOptionType(typeName)) {
+        fail(`cannot derive JSON for ${JSON.stringify(candidate.name)} because field ${JSON.stringify(field.name)} contains nested Option values: JSON null cannot distinguish none from some(none)`);
+      }
       if (
-        field.type.name === "String"
-        || field.type.name === "boolean"
-        || parseDynamicArrayType(field.type.name)?.elementType === "String"
-        || field.type.name in derivedJsonUnsignedLimits
-        || field.type.name in derivedJsonSignedLimits
+        typeName === "String"
+        || typeName === "boolean"
+        || parseDynamicArrayType(typeName)?.elementType === "String"
+        || typeName in derivedJsonUnsignedLimits
+        || typeName in derivedJsonSignedLimits
       ) continue;
-      const dynamic = parseDynamicArrayType(field.type.name);
-      const nestedName = dynamic?.elementType ?? field.type.name;
+      const dynamic = parseDynamicArrayType(typeName);
+      const nestedName = dynamic?.elementType ?? typeName;
       const nested = context.structs.get(nestedName);
       if (nested?.kind === "struct") {
         validate(nested);
@@ -6135,8 +6141,9 @@ function derivedJsonDecodeStructs(
     visited.add(candidate.name);
     result.push(candidate);
     for (const field of candidate.fields) {
-      const dynamic = parseDynamicArrayType(field.type.name);
-      const nestedName = dynamic?.elementType ?? field.type.name;
+      const typeName = parseOptionType(field.type.name)?.target ?? field.type.name;
+      const dynamic = parseDynamicArrayType(typeName);
+      const nestedName = dynamic?.elementType ?? typeName;
       const nested = context.structs.get(nestedName);
       if (nested?.kind === "struct") collect(nested);
     }
@@ -6171,8 +6178,8 @@ function derivedJsonDecodeField(
   owner: StructDeclaration,
   field: StructDeclaration["fields"][number],
   context: GenerationContext,
+  destination = `value.${field.name}`,
 ): string[] {
-  const destination = `value.${field.name}`;
   const failure = [
     "      if (key_live && key.capacity > 0) free((void *)key.data);",
     "      key_live = false;",
@@ -6185,6 +6192,23 @@ function derivedJsonDecodeField(
         `    ${destination} = (${mapType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)}){0};`,
       ]
     : [];
+  const option = parseOptionType(field.type.name);
+  if (option) {
+    const payloadField = { ...field, type: { ...field.type, name: option.target }, defaultValue: undefined };
+    return [
+      ...resetDefault,
+      "    z_json_derived_whitespace(reader);",
+      "    if (reader->offset < reader->length && reader->data[reader->offset] == 'n') {",
+      `      ${destination}.tag = ${variantTag(field.type.name, "none")};`,
+      "      if (!z_json_derived_literal(reader, \"null\")) {",
+      ...failure,
+      "      }",
+      "    } else {",
+      `      ${destination}.tag = ${variantTag(field.type.name, "some")};`,
+      ...derivedJsonDecodeField(declaration, owner, payloadField, context, `${destination}.data.some`),
+      "    }",
+    ];
+  }
   if (field.type.name === "String") {
     return [
       ...resetDefault,
@@ -6434,8 +6458,17 @@ function derivedJsonEncodeField(
   field: StructDeclaration["fields"][number],
   declaration: FunctionDeclaration,
   context: GenerationContext,
+  value = `(*value).${field.name}`,
 ): string {
-  const value = `(*value).${field.name}`;
+  const option = parseOptionType(field.type.name);
+  if (option) {
+    const payloadField = { ...field, type: { ...field.type, name: option.target } };
+    return `  if (${value}.tag == ${variantTag(field.type.name, "none")}) {
+    z_string_append_bytes(output, "null", 4u);
+  } else {
+${derivedJsonEncodeField(payloadField, declaration, context, `${value}.data.some`)}
+  }`;
+  }
   if (field.type.name === "String") return `  z_json_derived_append_string(output, ${value});`;
   const dynamicArray = parseDynamicArrayType(field.type.name);
   if (dynamicArray) {
@@ -9677,8 +9710,8 @@ function generateForeignUnionMatch(
     const armContext: GenerationContext = {
       ...context,
       localTypes: armTypes,
-      parameterModes: new Map(context.parameterModes),
-      liveFlags: new Map(context.liveFlags),
+      parameterModes: matchArmBindings(context.parameterModes, arm),
+      liveFlags: matchArmBindings(context.liveFlags, arm),
       cleanupScopes: [...context.cleanupScopes, []],
     };
     let binding = "";
@@ -9722,8 +9755,8 @@ function generateForeignUnionMatchExpression(
     const armContext: GenerationContext = {
       ...context,
       localTypes: armTypes,
-      parameterModes: new Map(context.parameterModes),
-      liveFlags: new Map(context.liveFlags),
+      parameterModes: matchArmBindings(context.parameterModes, arm),
+      liveFlags: matchArmBindings(context.liveFlags, arm),
       cleanupScopes: [...context.cleanupScopes, []],
     };
     let binding = "";
@@ -9750,7 +9783,48 @@ function generateForeignUnionMatchExpression(
   return `${storage}\nswitch (${temporary}->${plan.discriminantMember}) {\n${arms}\n}`;
 }
 
+function matchPatternNames(arm: MatchArm): string[] {
+  return [
+    ...(arm.binding ? [arm.binding] : []),
+    ...(arm.objectBindings ?? []).map((binding) => binding.bindingName),
+  ];
+}
+
+function matchArmBindings<T>(bindings: ReadonlyMap<string, T>, arm: MatchArm): Map<string, T> {
+  const local = new Map(bindings);
+  for (const name of matchPatternNames(arm)) local.delete(name);
+  return local;
+}
+
+function preserveMatchCleanupStorage(
+  arms: readonly MatchArm[],
+  context: GenerationContext,
+): { preamble: string; context: GenerationContext } {
+  const shadowed = new Set(arms.flatMap(matchPatternNames));
+  const declarations: string[] = [];
+  const cleanupScopes = context.cleanupScopes.map((scope) => scope.map((local) => {
+    if (!shadowed.has(local.name) || local.value) return local;
+    const storage = generateStoredValue(local.name, context);
+    // Cleanup belongs to the outer storage, not to a same-named arm payload.
+    // Frame storage already has a stable address; ordinary C locals need an
+    // address captured before entering the shadowing case block.
+    if (context.generatorFrame) return { ...local, value: storage };
+    const alias = `_z_match_owner_${context.valueCounter.value++}`;
+    declarations.push(`__typeof__(${storage}) * const ${alias} = &(${storage});`, `(void)${alias};`);
+    return { ...local, value: `(*${alias})` };
+  }));
+  return {
+    preamble: declarations.length ? `${declarations.join("\n")}\n` : "",
+    context: { ...context, cleanupScopes },
+  };
+}
+
 function generateMatch(statement: Extract<Statement, { kind: "match" }>, context: GenerationContext): string {
+  const scoped = preserveMatchCleanupStorage(statement.arms, context);
+  return scoped.preamble + generateMatchCore(statement, scoped.context);
+}
+
+function generateMatchCore(statement: Extract<Statement, { kind: "match" }>, context: GenerationContext): string {
   const foreignUnion = context.semanticInfo.foreignUnionMatches.get(statement.location.offset);
   if (foreignUnion) return generateForeignUnionMatch(statement, foreignUnion, context);
   const inferredType = inferExpressionType(statement.expression, context);
@@ -9811,7 +9885,7 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
       ? { name: "_", payload: null, location: arm.location }
       : declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
-    const armModes = new Map(context.parameterModes);
+    const armModes = matchArmBindings(context.parameterModes, arm);
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
     const payloadDeclaration = variant.payload ? context.structs.get(variant.payload.name) : null;
     for (const fieldBinding of arm.objectBindings ?? []) {
@@ -9830,7 +9904,7 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
       ...context,
       localTypes: armTypes,
       parameterModes: armModes,
-      liveFlags: new Map(context.liveFlags),
+      liveFlags: matchArmBindings(context.liveFlags, arm),
       cleanupScopes: [...context.cleanupScopes, []],
     };
     let binding = "";
@@ -9948,6 +10022,18 @@ function generateMatchExpression(
   consumeValue: (value: string, context: GenerationContext) => string,
   consumeTerminates: boolean,
 ): string {
+  const scoped = preserveMatchCleanupStorage(expression.arms, context);
+  return scoped.preamble + generateMatchExpressionCore(
+    expression, scoped.context, consumeValue, consumeTerminates,
+  );
+}
+
+function generateMatchExpressionCore(
+  expression: Extract<Expression, { kind: "matchExpression" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+  consumeTerminates: boolean,
+): string {
   const foreignUnion = context.semanticInfo.foreignUnionMatches.get(expression.location.offset);
   if (foreignUnion) {
     return generateForeignUnionMatchExpression(
@@ -9979,7 +10065,7 @@ function generateMatchExpression(
       ? { name: "_", payload: null, location: arm.location }
       : declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
-    const armModes = new Map(context.parameterModes);
+    const armModes = matchArmBindings(context.parameterModes, arm);
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
     const payloadDeclaration = variant.payload ? context.structs.get(variant.payload.name) : null;
     for (const fieldBinding of arm.objectBindings ?? []) {
@@ -9998,7 +10084,7 @@ function generateMatchExpression(
       ...context,
       localTypes: armTypes,
       parameterModes: armModes,
-      liveFlags: new Map(context.liveFlags),
+      liveFlags: matchArmBindings(context.liveFlags, arm),
       cleanupScopes: [...context.cleanupScopes, []],
     };
     let binding = variant.payload && arm.binding
@@ -10114,7 +10200,7 @@ function generateNicheOptionMatch(
   const none = statement.arms.find((arm) => arm.variantName === "none") ?? wildcard!;
   const renderArm = (arm: typeof some, present: boolean): string => {
     const localTypes = new Map(context.localTypes);
-    const parameterModes = new Map(context.parameterModes);
+    const parameterModes = matchArmBindings(context.parameterModes, arm);
     if (present && arm.binding) localTypes.set(arm.binding, payloadType);
     const payloadBorrowed = borrowed && cleanupBearing;
     if (present && arm.binding && payloadBorrowed) parameterModes.set(arm.binding, "in");
@@ -10122,7 +10208,7 @@ function generateNicheOptionMatch(
       ...context,
       localTypes,
       parameterModes,
-      liveFlags: new Map(context.liveFlags),
+      liveFlags: matchArmBindings(context.liveFlags, arm),
       cleanupScopes: [...context.cleanupScopes, []],
     };
     let binding = "";
@@ -10205,7 +10291,7 @@ function generateNicheOptionMatchExpression(
   const none = expression.arms.find((arm) => arm.variantName === "none") ?? wildcard!;
   const renderArm = (arm: typeof some, present: boolean): string => {
     const localTypes = new Map(context.localTypes);
-    const parameterModes = new Map(context.parameterModes);
+    const parameterModes = matchArmBindings(context.parameterModes, arm);
     if (present && arm.binding) localTypes.set(arm.binding, payloadType);
     const payloadBorrowed = borrowed && cleanupBearing;
     if (present && arm.binding && payloadBorrowed) parameterModes.set(arm.binding, "in");
@@ -10213,7 +10299,7 @@ function generateNicheOptionMatchExpression(
       ...context,
       localTypes,
       parameterModes,
-      liveFlags: new Map(context.liveFlags),
+      liveFlags: matchArmBindings(context.liveFlags, arm),
       cleanupScopes: [...context.cleanupScopes, []],
     };
     let binding = present && arm.binding
