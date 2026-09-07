@@ -5306,6 +5306,30 @@ The broader lesson is that native semantic evidence must be authoritative for
 every accepted intrinsic member. An absent intrinsic signature must never be
 allowed to survive as a source-language-looking member call in generated C.
 
+## Secondary launch snapshots: readonly collections and derived JSON
+
+Zapp's second-instance event is an immutable value snapshot: a readonly Array
+of argument Strings and an optional owned working directory, nested inside a
+versioned launch envelope. It exposed two independent composition gaps.
+
+- Native `for of` inference did not strip the readonly collection qualifier,
+  losing the loop element type and then failing explicit `copy` inside the
+  loop. Indexed String copies from readonly fields had the same qualifier
+  mismatch. Collection mutability is a capability, not a different element
+  layout; semantic evidence and lowering now agree on that distinction.
+- Derived JSON decoding already handled nested value structs, but encoding
+  rejected those same values. Readonly-only arrays also missed their decoder
+  allocation helpers. Both compiler paths now traverse the reachable codec
+  graph, build collection storage during decoding, and encode nested values
+  directly into one output buffer while borrowing the original owners.
+
+The fixtures `self-host-emit-readonly-field-iteration.zs` and
+`std-json-nested-encode.zs` cover readonly Array/Map iteration, explicit String
+snapshots, recursive readonly trees, exact round trips, and use after encoding.
+The public event must not be flattened merely to satisfy the compiler. JSON
+`Option<T>` mapping is the next semantic decision; cross-process arbitration
+and transport remain Zapp work after this upstream checkpoint.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

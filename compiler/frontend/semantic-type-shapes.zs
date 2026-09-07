@@ -143,6 +143,10 @@ export function stringStartsWith(in value: String, in prefix: String): boolean {
 }
 
 export function arrayElementType(in name: String): String {
+  if (stringStartsWith(name, "readonly ") && name.byteLength > 9) {
+    const target = name.copyBytes(9, name.byteLength);
+    return arrayElementType(target);
+  }
   if (stringStartsWith(name, "view ") && name.byteLength > 5) {
     const target = name.copyBytes(5, name.byteLength);
     return arrayElementType(target);

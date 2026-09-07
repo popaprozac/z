@@ -223,9 +223,21 @@ export function generateC(
     ...program.functions.flatMap((declaration) => {
       if (declaration.compilerIntrinsic?.kind !== "jsonDecode") return [];
       const target = structs.get(declaration.returnType.name);
-      return target?.fields
-        .map((field) => field.type.name)
-        .filter((name) => parseDynamicArrayType(name)) ?? [];
+      if (!target) return [];
+      const arrays = new Set<string>();
+      const visited = new Set<string>();
+      const collect = (candidate: StructDeclaration): void => {
+        if (visited.has(candidate.name)) return;
+        visited.add(candidate.name);
+        for (const field of candidate.fields) {
+          const dynamic = parseDynamicArrayType(field.type.name);
+          if (dynamic) arrays.add(writableTypeName(field.type.name));
+          const nested = structs.get(dynamic?.elementType ?? field.type.name);
+          if (nested?.kind === "struct") collect(nested);
+        }
+      };
+      collect(target);
+      return [...arrays];
     }),
     ...mapTypes.map((name) => {
       const map = parseMapType(name)!;
@@ -6070,9 +6082,7 @@ function derivedJsonStruct(
     const location = intrinsic.requestLocation;
     throw new DiagnosticError(location.fileName ?? "<source>", location, message, {
       notes: [
-        intrinsic.kind === "jsonDecode"
-          ? "derived JSON decoding supports ordinary value structs containing String, boolean, integer, nested value structs, and arrays of those structs"
-          : "derived JSON encoding currently supports ordinary value structs containing String, boolean, integer, and Array<String> fields",
+        "derived JSON codecs support ordinary value structs containing String, boolean, integer, nested value structs, and arrays of strings or those structs, including readonly arrays",
         "use json.parse/json.stringify for a dynamic JSON tree while the derived type surface expands",
       ],
     });
@@ -6100,14 +6110,12 @@ function derivedJsonStruct(
         || field.type.name in derivedJsonUnsignedLimits
         || field.type.name in derivedJsonSignedLimits
       ) continue;
-      if (intrinsic.kind === "jsonDecode") {
-        const dynamic = parseDynamicArrayType(field.type.name);
-        const nestedName = dynamic?.elementType ?? field.type.name;
-        const nested = context.structs.get(nestedName);
-        if (nested?.kind === "struct") {
-          validate(nested);
-          continue;
-        }
+      const dynamic = parseDynamicArrayType(field.type.name);
+      const nestedName = dynamic?.elementType ?? field.type.name;
+      const nested = context.structs.get(nestedName);
+      if (nested?.kind === "struct") {
+        validate(nested);
+        continue;
       }
       fail(`cannot derive JSON for ${JSON.stringify(candidate.name)} because field ${JSON.stringify(field.name)} has unsupported type ${JSON.stringify(field.type.name)}`);
     }
@@ -6424,25 +6432,39 @@ _z_json_failure: ;
 
 function derivedJsonEncodeField(
   field: StructDeclaration["fields"][number],
+  declaration: FunctionDeclaration,
+  context: GenerationContext,
 ): string {
   const value = `(*value).${field.name}`;
-  if (field.type.name === "String") return `  z_json_derived_append_string(&output, ${value});`;
+  if (field.type.name === "String") return `  z_json_derived_append_string(output, ${value});`;
   const dynamicArray = parseDynamicArrayType(field.type.name);
-  if (dynamicArray?.elementType === "String") {
-    return `  z_string_append_bytes(&output, "[", 1u);
+  if (dynamicArray) {
+    const item = `((${mapType(dynamicArray.elementType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} *)${value}.data)[_z_json_index]`;
+    const appendItem = dynamicArray.elementType === "String"
+      ? `z_json_derived_append_string(output, ${item});`
+      : `${derivedJsonEncodeHelperName(declaration, context.structs.get(dynamicArray.elementType)!)}(output, &${item});`;
+    return `  z_string_append_bytes(output, "[", 1u);
   for (uintptr_t _z_json_index = 0; _z_json_index < ${value}.length; _z_json_index += 1u) {
-    if (_z_json_index > 0) z_string_append_bytes(&output, ",", 1u);
-    z_json_derived_append_string(&output, ((Z_String *)${value}.data)[_z_json_index]);
+    if (_z_json_index > 0) z_string_append_bytes(output, ",", 1u);
+    ${appendItem}
   }
-  z_string_append_bytes(&output, "]", 1u);`;
+  z_string_append_bytes(output, "]", 1u);`;
+  }
+  const nested = context.structs.get(field.type.name);
+  if (nested?.kind === "struct") {
+    return `  ${derivedJsonEncodeHelperName(declaration, nested)}(output, &${value});`;
   }
   if (field.type.name === "boolean") {
-    return `  z_string_append_bytes(&output, ${value} ? "true" : "false", ${value} ? 4u : 5u);`;
+    return `  z_string_append_bytes(output, ${value} ? "true" : "false", ${value} ? 4u : 5u);`;
   }
   if (field.type.name in derivedJsonUnsignedLimits) {
-    return `  z_string_append_unsigned(&output, (unsigned long long)${value});`;
+    return `  z_string_append_unsigned(output, (unsigned long long)${value});`;
   }
-  return `  z_string_append_signed(&output, (long long)${value});`;
+  return `  z_string_append_signed(output, (long long)${value});`;
+}
+
+function derivedJsonEncodeHelperName(declaration: FunctionDeclaration, target: StructDeclaration): string {
+  return `z_json_derived_encode_${nativeSymbolPart(declaration.name)}_${nativeSymbolPart(target.name)}`;
 }
 
 function generateDerivedJsonEncode(
@@ -6457,20 +6479,29 @@ function generateDerivedJsonEncode(
     null,
     context.semanticInfo.foreignNamedTypes,
   );
-  const fields = target.fields.flatMap((field, index) => {
-    const prefix = `${index === 0 ? "" : ","}${JSON.stringify(field.name)}:`;
-    const literal = cTestNameLiteral(prefix);
-    return [
-      `  z_string_append_bytes(&output, ${literal}, ${Buffer.byteLength(prefix, "utf8")}u);`,
-      derivedJsonEncodeField(field),
-    ];
-  });
-  return `${signature} {
+  const reachable = derivedJsonDecodeStructs(target, context);
+  const prototypes = reachable.map(candidate =>
+    `static void ${derivedJsonEncodeHelperName(declaration, candidate)}(Z_String *output, const ${structName(candidate.name)} *value);`
+  ).join("\n");
+  const helpers = reachable.map(candidate => {
+    const fields = candidate.fields.flatMap((field, index) => {
+      const prefix = `${index === 0 ? "" : ","}${JSON.stringify(field.name)}:`;
+      const literal = cTestNameLiteral(prefix);
+      return [
+        `  z_string_append_bytes(output, ${literal}, ${Buffer.byteLength(prefix, "utf8")}u);`,
+        derivedJsonEncodeField(field, declaration, context),
+      ];
+    });
+    return `static void ${derivedJsonEncodeHelperName(declaration, candidate)}(Z_String *output, const ${structName(candidate.name)} *value) {
   (void)value;
-  Z_String output = z_string_new();
-  z_string_append_bytes(&output, "{", 1u);
+  z_string_append_bytes(output, "{", 1u);
 ${fields.join("\n")}
-  z_string_append_bytes(&output, "}", 1u);
+  z_string_append_bytes(output, "}", 1u);
+}`;
+  }).join("\n\n");
+  return `${prototypes}\n\n${helpers}\n\n${signature} {
+  Z_String output = z_string_new();
+  ${derivedJsonEncodeHelperName(declaration, target)}(&output, value);
   return output;
 }`;
 }

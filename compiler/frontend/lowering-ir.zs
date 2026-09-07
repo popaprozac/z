@@ -9901,7 +9901,14 @@ function staticallyResolvedExpressionTypeName(
       tree,
       receiver
     )) {
-      some(receiverTypeName) => {
+      some(resolvedReceiverTypeName) => {
+        let receiverTypeName = move resolvedReceiverTypeName;
+        if (stringStartsWith(receiverTypeName, "view ")) {
+          receiverTypeName = receiverTypeName.copyBytes(5, receiverTypeName.byteLength);
+        }
+        if (stringStartsWith(receiverTypeName, "readonly ")) {
+          receiverTypeName = receiverTypeName.copyBytes(9, receiverTypeName.byteLength);
+        }
         match (genericTypeShape(receiverTypeName)) {
           some(generic) => {
             if (
@@ -10015,7 +10022,14 @@ function evidenceResolvedExpressionTypeName(
       tree,
       receiver
     )) {
-      some(receiverTypeName) => {
+      some(resolvedReceiverTypeName) => {
+        let receiverTypeName = move resolvedReceiverTypeName;
+        if (stringStartsWith(receiverTypeName, "view ")) {
+          receiverTypeName = receiverTypeName.copyBytes(5, receiverTypeName.byteLength);
+        }
+        if (stringStartsWith(receiverTypeName, "readonly ")) {
+          receiverTypeName = receiverTypeName.copyBytes(9, receiverTypeName.byteLength);
+        }
         match (genericTypeShape(receiverTypeName)) {
           some(generic) => {
             if (
@@ -24652,6 +24666,12 @@ function lowerStatementCore(
           ) {
             typeName = typeName.copyBytes(5, typeName.byteLength);
             viewIterable = true;
+          }
+          // Readonly changes mutation authority, not the iterable's element
+          // layout. Normalize before recovering an element type from a field
+          // expression without a separately recorded loop-binding type.
+          if (stringStartsWith(typeName, "readonly ")) {
+            typeName = typeName.copyBytes(9, typeName.byteLength);
           }
           const iterableType = try lowerModuleTypeName(
             program,

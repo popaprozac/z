@@ -8484,7 +8484,10 @@ function derivedJsonTargetStructIndex(
   if (program.structs[index].referenceType) {
     throw `native ${declaration.compilerIntrinsic} cannot derive a class codec for ${targetName}`;
   }
-  if (declaration.compilerIntrinsic == "jsonDecode") {
+  if (
+    declaration.compilerIntrinsic == "jsonDecode"
+    || declaration.compilerIntrinsic == "jsonEncode"
+  ) {
     let reachable = Array<usize>();
     try collectDerivedJsonDecodeStructs(program, index, inout reachable);
     return index;
@@ -8828,57 +8831,105 @@ function appendDerivedJsonEncode(
   processArguments: boolean
 ): void throws String {
   const structIndex = try derivedJsonTargetStructIndex(program, declaration);
-  const target = view program.structs[structIndex];
-  try appendFunctionSignature(inout output, declaration, processArguments);
-  output.append(" {\n  (void)value;\n  Z_String output = { NULL, 0, 0 };\n  z_string_append_bytes(&output, \"{\", 1);\n");
-  let index: usize = 0;
-  while (index < target.fields.length) {
-    const field = view target.fields[index];
-    let prefixBuffer = TextBuffer();
-    if (index > 0) prefixBuffer.append(",");
-    prefixBuffer.append("\"");
-    prefixBuffer.append(field.name);
-    prefixBuffer.append("\":");
-    const prefix = prefixBuffer.finish();
-    output.append("  z_string_append_bytes(&output, ");
-    appendCStringLiteral(inout output, prefix);
-    output.append(", ");
-    output.append(`${prefix.byteLength}`);
-    output.append(");\n");
-    if (field.type.kind == LoweredTypeKind.stringType) {
-      output.append("  z_json_derived_append_string(&output, (*value).");
-      output.append(field.name);
-      output.append(");\n");
-    } else if (field.type.kind == LoweredTypeKind.arrayType) {
-      output.append("  z_string_append_bytes(&output, \"[\", 1); for (size_t _z_json_index = 0; _z_json_index < (*value).");
-      output.append(field.name);
-      output.append(".length; _z_json_index += 1) { if (_z_json_index > 0) z_string_append_bytes(&output, \",\", 1); z_json_derived_append_string(&output, ((Z_String *)(*value).");
-      output.append(field.name);
-      output.append(".data)[_z_json_index]); } z_string_append_bytes(&output, \"]\", 1);\n");
-    } else if (field.type.kind == LoweredTypeKind.booleanType) {
-      output.append("  z_string_append_bytes(&output, (*value).");
-      output.append(field.name);
-      output.append(" ? \"true\" : \"false\", (*value).");
-      output.append(field.name);
-      output.append(" ? 4 : 5);\n");
-    } else if (
-      field.type.kind == LoweredTypeKind.u8Type
-      || field.type.kind == LoweredTypeKind.u16Type
-      || field.type.kind == LoweredTypeKind.u32Type
-      || field.type.kind == LoweredTypeKind.u64Type
-      || field.type.kind == LoweredTypeKind.usizeType
-    ) {
-      output.append("  z_string_append_unsigned_decimal(&output, (uint64_t)(*value).");
-      output.append(field.name);
-      output.append(");\n");
-    } else {
-      output.append("  { const int64_t _z_json_signed = (int64_t)(*value).");
-      output.append(field.name);
-      output.append("; if (_z_json_signed < 0) { z_string_append_bytes(&output, \"-\", 1); z_string_append_unsigned_decimal(&output, (uint64_t)(-(_z_json_signed + 1)) + 1u); } else z_string_append_unsigned_decimal(&output, (uint64_t)_z_json_signed); }\n");
-    }
-    index = index + 1;
+  let reachable = Array<usize>();
+  try collectDerivedJsonDecodeStructs(program, structIndex, inout reachable);
+  for (const reachableIndex of reachable) {
+    output.append("static void ");
+    output.append(derivedJsonEncodeHelperName(declaration, program.structs[reachableIndex].name));
+    output.append("(Z_String *output, const Z_");
+    output.append(program.structs[reachableIndex].name);
+    output.append(" *value);\n");
   }
-  output.append("  z_string_append_bytes(&output, \"}\", 1);\n  return output;\n}\n\n");
+  for (const reachableIndex of reachable) {
+    const target = view program.structs[reachableIndex];
+    output.append("static void ");
+    output.append(derivedJsonEncodeHelperName(declaration, target.name));
+    output.append("(Z_String *output, const Z_");
+    output.append(target.name);
+    output.append(" *value) {\n  (void)value;\n  z_string_append_bytes(output, \"{\", 1);\n");
+    let index: usize = 0;
+    while (index < target.fields.length) {
+      const field = view target.fields[index];
+      let prefixBuffer = TextBuffer();
+      if (index > 0) prefixBuffer.append(",");
+      prefixBuffer.append("\"");
+      prefixBuffer.append(field.name);
+      prefixBuffer.append("\":");
+      const prefix = prefixBuffer.finish();
+      output.append("  z_string_append_bytes(output, ");
+      appendCStringLiteral(inout output, prefix);
+      output.append(", ");
+      output.append(`${prefix.byteLength}`);
+      output.append(");\n");
+      if (field.type.kind == LoweredTypeKind.stringType) {
+        output.append("  z_json_derived_append_string(output, (*value).");
+        output.append(field.name);
+        output.append(");\n");
+      } else if (field.type.kind == LoweredTypeKind.arrayType) {
+        const arrayIndex = match (loweredArrayIndex(program, field.type.name)) {
+          some(value) => value;
+          none => throw `native jsonEncode lost Array field ${target.name}.${field.name}`;
+        };
+        const element = view program.arrays[arrayIndex].elementType;
+        const elementC = try cType(element);
+        output.append("  z_string_append_bytes(output, \"[\", 1); for (size_t _z_json_index = 0; _z_json_index < (*value).");
+        output.append(field.name);
+        output.append(".length; _z_json_index += 1) { if (_z_json_index > 0) z_string_append_bytes(output, \",\", 1); ");
+        if (element.kind == LoweredTypeKind.stringType) {
+          output.append("z_json_derived_append_string(output, ((Z_String *)(*value).");
+        } else {
+          output.append(derivedJsonEncodeHelperName(declaration, element.name));
+          output.append(`(output, &((${elementC} *)(*value).`);
+        }
+        output.append(field.name);
+        output.append(".data)[_z_json_index]); } z_string_append_bytes(output, \"]\", 1);\n");
+      } else if (field.type.kind == LoweredTypeKind.structType) {
+        output.append("  ");
+        output.append(derivedJsonEncodeHelperName(declaration, field.type.name));
+        output.append("(output, &(*value).");
+        output.append(field.name);
+        output.append(");\n");
+      } else if (field.type.kind == LoweredTypeKind.booleanType) {
+        output.append("  z_string_append_bytes(output, (*value).");
+        output.append(field.name);
+        output.append(" ? \"true\" : \"false\", (*value).");
+        output.append(field.name);
+        output.append(" ? 4 : 5);\n");
+      } else if (
+        field.type.kind == LoweredTypeKind.u8Type
+        || field.type.kind == LoweredTypeKind.u16Type
+        || field.type.kind == LoweredTypeKind.u32Type
+        || field.type.kind == LoweredTypeKind.u64Type
+        || field.type.kind == LoweredTypeKind.usizeType
+      ) {
+        output.append("  z_string_append_unsigned_decimal(output, (uint64_t)(*value).");
+        output.append(field.name);
+        output.append(");\n");
+      } else {
+        output.append("  { const int64_t _z_json_signed = (int64_t)(*value).");
+        output.append(field.name);
+        output.append("; if (_z_json_signed < 0) { z_string_append_bytes(output, \"-\", 1); z_string_append_unsigned_decimal(output, (uint64_t)(-(_z_json_signed + 1)) + 1u); } else z_string_append_unsigned_decimal(output, (uint64_t)_z_json_signed); }\n");
+      }
+      index = index + 1;
+    }
+    output.append("  z_string_append_bytes(output, \"}\", 1);\n}\n\n");
+  }
+  try appendFunctionSignature(inout output, declaration, processArguments);
+  output.append(" {\n  Z_String output = { NULL, 0, 0 };\n  ");
+  output.append(derivedJsonEncodeHelperName(declaration, program.structs[structIndex].name));
+  output.append("(&output, value);\n  return output;\n}\n\n");
+}
+
+function derivedJsonEncodeHelperName(
+  in declaration: LoweredFunction,
+  in target: String
+): String {
+  let name = TextBuffer();
+  name.append("z_json_derived_encode_");
+  appendCBindingName(inout name, declaration.name);
+  name.append("_");
+  appendCBindingName(inout name, target);
+  return name.finish();
 }
 
 function appendFunctionTail(

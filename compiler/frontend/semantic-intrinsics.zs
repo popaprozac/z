@@ -78,6 +78,10 @@ export function sourceCollectionTypeName(in name: String): String {
 }
 
 export function iterationElementType(in name: String): String {
+  if (stringStartsWith(name, "readonly ") && name.byteLength > 9) {
+    const target = name.copyBytes(9, name.byteLength);
+    return iterationElementType(target);
+  }
   if (stringStartsWith(name, "view ") && name.byteLength > 5) {
     const target = name.copyBytes(5, name.byteLength);
     return iterationElementType(target);
@@ -113,6 +117,10 @@ export function iterationObjectFieldType(
   in iterableType: String,
   in fieldName: String
 ): String {
+  if (stringStartsWith(iterableType, "readonly ") && iterableType.byteLength > 9) {
+    const target = iterableType.copyBytes(9, iterableType.byteLength);
+    return iterationObjectFieldType(modules, moduleIndex, target, fieldName);
+  }
   if (
     stringStartsWith(iterableType, "view ")
     && iterableType.byteLength > 5
