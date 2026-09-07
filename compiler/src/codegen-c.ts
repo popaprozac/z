@@ -8,6 +8,7 @@ import type {
   StructDeclaration,
 } from "./ast.ts";
 import { resultTypeName } from "./results.ts";
+import { cFamilyReservedIdentifiers } from "./c-identifiers.ts";
 import {
   displayArrayType,
   dynamicArrayTypeName,
@@ -2342,7 +2343,7 @@ export function generateCHeader(
   const structDeclarations = reachableStructs.map((declaration) => {
     const name = declaration.nativeLayout!.name;
     const fields = declaration.fields.map((field) => (
-      `  ${nativeExportCType(field.type.name, structs, enums)} ${field.name};`
+      `  ${nativeExportCType(field.type.name, structs, enums)} ${cFieldName(field.name)};`
     )).join("\n");
     return `typedef struct ${name} {\n${fields}\n} ${name};`;
   });
@@ -2628,7 +2629,7 @@ function generateExplicitCopy(
   if (declaration?.kind === "struct") {
     if (declaration.fields.length === 0) return `${signature} { return source; }`;
     const fields = declaration.fields.map((field) => (
-      `.${field.name} = ${explicitCopyValue(`source.${field.name}`, field.type.name, structs, enums)}`
+      `.${cFieldName(field.name)} = ${explicitCopyValue(`source.${cFieldName(field.name)}`, field.type.name, structs, enums)}`
     ));
     return `${signature} {
   return (${mapType(type, structs, enums, foreignNamedTypes)}){ ${fields.join(", ")} };
@@ -2671,7 +2672,7 @@ function generateStruct(
         const qualifier = foreignNamedTypes.get(field.type.name)?.kind === "object"
           ? "__strong "
           : "";
-        return `  ${qualifier}${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name};`;
+        return `  ${qualifier}${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${cFieldName(field.name)};`;
       },
     ),
   ];
@@ -5437,7 +5438,7 @@ function generateClassConstructorSignature(
       return `${type} ${cBindingName(parameter.name)}`;
     })
     : declaration.fields.map((field) => (
-      `${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${cBindingName(field.name)}`
+      `${mapType(field.type.name, structs, enums, foreignNamedTypes)} _z_init_${field.name}`
     ));
   const result = declaration.constructor?.errorType
     ? mapType(resultTypeName(declaration.name, declaration.constructor.errorType.name), structs, enums, foreignNamedTypes)
@@ -5464,7 +5465,7 @@ function generateClassLifecycle(
   if (self == NULL) abort();
   self->_z_refcount = 1;
   self->_z_weak = NULL;
-${declaration.fields.map((field) => `  self->${field.name} = ${cBindingName(field.name)};`).join("\n")}
+${declaration.fields.map((field) => `  self->${cFieldName(field.name)} = _z_init_${field.name};`).join("\n")}
   return self;
 }`;
   const retain = atomicArc
@@ -5587,7 +5588,7 @@ function generateUserClassConstructor(
       && semanticInfo.foreignNamedTypes.get(field.type.name)?.kind !== "object") return [];
     const liveFlag = nextLiveFlag(`field_${field.name}`, liveFlagCounter);
     fieldFlags.set(field.name, liveFlag);
-    return [{ name: field.name, value: `self->${field.name}`, type: field.type.name, liveFlag }];
+    return [{ name: field.name, value: `self->${cFieldName(field.name)}`, type: field.type.name, liveFlag }];
   });
   const context: GenerationContext = {
     structs,
@@ -6178,7 +6179,7 @@ function derivedJsonDecodeField(
   owner: StructDeclaration,
   field: StructDeclaration["fields"][number],
   context: GenerationContext,
-  destination = `value.${field.name}`,
+  destination = `value.${cFieldName(field.name)}`,
 ): string[] {
   const failure = [
     "      if (key_live && key.capacity > 0) free((void *)key.data);",
@@ -6319,7 +6320,7 @@ function generateDerivedJsonDecodeHelper(
   const targetC = structName(target.name);
   const defaults = target.fields
     .filter((field) => field.defaultValue)
-    .map((field) => `  value.${cBindingName(field.name)} = ${derivedJsonDefault(field, context)};`);
+    .map((field) => `  value.${cFieldName(field.name)} = ${derivedJsonDefault(field, context)};`);
   const seen = target.fields.map((field) => `  bool seen_${nativeSymbolPart(field.name)} = false;`);
   const branches = target.fields.map((field, index) => {
     const lead = index === 0 ? "if" : "else if";
@@ -6458,7 +6459,7 @@ function derivedJsonEncodeField(
   field: StructDeclaration["fields"][number],
   declaration: FunctionDeclaration,
   context: GenerationContext,
-  value = `(*value).${field.name}`,
+  value = `(*value).${cFieldName(field.name)}`,
 ): string {
   const option = parseOptionType(field.type.name);
   if (option) {
@@ -6760,7 +6761,7 @@ function generateDeinit(
   ];
   for (const field of cleanupFields) {
     if (hasSemanticCleanupType(field.type.name, structs, enums, semanticInfo)) {
-      body.push(indent(generateValueCleanup(`self->${field.name}`, field.type.name, null, context), 2));
+      body.push(indent(generateValueCleanup(`self->${cFieldName(field.name)}`, field.type.name, null, context), 2));
     }
   }
   return `Z_UNUSED_FUNCTION static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self) {\n${body.join("\n")}\n}`;
@@ -7468,7 +7469,7 @@ function renderConsoleValue(
     recordFields.forEach((field, index) => {
       if (index > 0) lines.push(`fputs(", ", ${stream});`);
       lines.push(`fputs(${JSON.stringify(`${field.name}: `)}, ${stream});`);
-      lines.push(...renderConsoleValue(`(${value}).${field.name}`, field.type.name, stream, context));
+      lines.push(...renderConsoleValue(`(${value}).${declaration ? cFieldName(field.name) : field.name}`, field.type.name, stream, context));
     });
     lines.push(`fputs(" }", ${stream});`);
     return lines;
@@ -7613,7 +7614,7 @@ function renderStringValue(
       if (index > 0) lines.push(`z_string_append_bytes(&${target}, ", ", 2);`);
       const label = `${field.name}: `;
       lines.push(`z_string_append_bytes(&${target}, ${JSON.stringify(label)}, sizeof(${JSON.stringify(label)}) - 1);`);
-      lines.push(...renderStringValue(`(${value}).${field.name}`, field.type.name, target, context));
+      lines.push(...renderStringValue(`(${value}).${declaration ? cFieldName(field.name) : field.name}`, field.type.name, target, context));
     });
     lines.push(`z_string_append_bytes(&${target}, " }", 2);`);
     return lines;
@@ -7705,9 +7706,9 @@ function generateObjectDestructure(
         valueContext.enums,
         valueContext.semanticInfo.foreignNamedTypes,
       );
-      lines.push(`${local} = ${temporary}.${field.name};`);
+      lines.push(`${local} = ${temporary}.${cFieldName(field.name)};`);
       if (hasCleanupType(field.type.name, valueContext.structs, valueContext.enums, valueContext.semanticInfo.foreignTypes)) {
-        lines.push(`${temporary}.${field.name} = ${mapZeroValue(field.type.name, valueContext.structs, valueContext.enums, valueContext.semanticInfo.foreignNamedTypes)};`);
+        lines.push(`${temporary}.${cFieldName(field.name)} = ${mapZeroValue(field.type.name, valueContext.structs, valueContext.enums, valueContext.semanticInfo.foreignNamedTypes)};`);
         lines.push(`bool ${ensureLiveFlag(binding.bindingName, valueContext)} = true;`);
       }
     }
@@ -7871,7 +7872,7 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
     }
     for (const binding of statement.objectBindings ?? []) {
       const field = elementOwner!.fields.find((candidate) => candidate.name === binding.fieldName)!;
-      const fieldValue = `((${item}).${field.name})`;
+      const fieldValue = `((${item}).${cFieldName(field.name)})`;
       const borrowedField = borrowedElement
         && hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes);
       const frameFieldName = `_z_for_binding_${binding.bindingLocation.offset}`;
@@ -7928,7 +7929,7 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
   for (const binding of context.generatorFrame ? [] : statement.objectBindings ?? []) {
     const field = elementOwner!.fields.find((candidate) => candidate.name === binding.fieldName)!;
     const fieldType = mapType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
-    const fieldValue = `((${item}).${field.name})`;
+    const fieldValue = `((${item}).${cFieldName(field.name)})`;
     const borrowedField = borrowedElement
       && hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes);
     bindingDeclarations.push(borrowedField
@@ -8045,7 +8046,7 @@ function generateIteratorFor(
       const field = elementOwner.fields.find((candidate) => candidate.name === binding.fieldName)!;
       loopTypes.set(binding.bindingName, field.type.name);
       bindingDeclarations.push(
-        `${generateLocalDeclaration(field.type.name, binding.bindingName, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${hidden}.${field.name};`,
+        `${generateLocalDeclaration(field.type.name, binding.bindingName, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${hidden}.${cFieldName(field.name)};`,
         `(void)${cBindingName(binding.bindingName)};`,
       );
     }
@@ -8919,15 +8920,15 @@ function generateStructSpreadValue(
     const retained = new Map(plan.retained.map((field) => [field.name, field]));
     const fields = declaration.fields.map((field) => {
       const overridden = overrides.get(field.name);
-      if (overridden) return `.${field.name} = ${overridden}`;
+      if (overridden) return `.${cFieldName(field.name)} = ${overridden}`;
       const spread = retained.get(field.name);
       if (!spread) throw new Error(`missing retained spread field ${JSON.stringify(field.name)}`);
-      const value = `(${source}).${field.name}`;
-      if (spread.action === "retain") return `.${field.name} = ${retainName(spread.type)}(${value})`;
+      const value = `(${source}).${cFieldName(field.name)}`;
+      if (spread.action === "retain") return `.${cFieldName(field.name)} = ${retainName(spread.type)}(${value})`;
       if (spread.action === "copy") {
-        return `.${field.name} = ${explicitCopyValue(value, spread.type, context.structs, context.enums)}`;
+        return `.${cFieldName(field.name)} = ${explicitCopyValue(value, spread.type, context.structs, context.enums)}`;
       }
-      return `.${field.name} = ${value}`;
+      return `.${cFieldName(field.name)} = ${value}`;
     });
     const temporary = `_z_spread_${context.valueCounter.value++}`;
     lines.push(
@@ -8938,7 +8939,7 @@ function generateStructSpreadValue(
     if (plan.mode === "move") {
       for (const field of [...plan.overridden].reverse()) {
         if (!hasSemanticCleanupType(field.type, context.structs, context.enums, context.semanticInfo)) continue;
-        lines.push(generateValueCleanup(`(${source}).${field.name}`, field.type, null, context));
+        lines.push(generateValueCleanup(`(${source}).${cFieldName(field.name)}`, field.type, null, context));
       }
       const liveFlag = context.liveFlags.get(plan.sourceName);
       if (!liveFlag) throw new Error(`missing ownership flag for moved spread source ${JSON.stringify(plan.sourceName)}`);
@@ -9249,18 +9250,18 @@ function generateAssignmentTarget(expression: Expression, context: GenerationCon
   if (expression.kind === "identifier") return generateStoredValue(expression.name, context);
   if (expression.kind === "member") {
     if (expression.object.kind === "identifier" && expression.object.name === "this") {
-      if (context.receiver?.kind === "class" || context.owner.receiverMode !== "move") return `self->${expression.property}`;
-      return `self.${expression.property}`;
+      if (context.receiver?.kind === "class" || context.owner.receiverMode !== "move") return `self->${cFieldName(expression.property)}`;
+      return `self.${cFieldName(expression.property)}`;
     }
     const ownerType = inferExpressionType(expression.object, context);
-    const owner = context.structs.get(ownerType);
+    const owner = context.structs.get(parseViewType(ownerType)?.target ?? ownerType);
     const access = owner?.kind === "class" ? "->" : ".";
     const object = expression.object.kind === "identifier"
       || expression.object.kind === "member"
       || expression.object.kind === "index"
       ? generateAssignmentTarget(expression.object, context)
       : generateExpression(expression.object, context);
-    return `(${object})${access}${expression.property}`;
+    return `(${object})${access}${owner ? cFieldName(expression.property) : expression.property}`;
   }
   if (expression.kind === "index") {
     const ownerType = inferExpressionType(expression.object, context);
@@ -9952,7 +9953,7 @@ function generateMatchCore(statement: Extract<Statement, { kind: "match" }>, con
             context,
             `_z_match_binding_${fieldBinding.bindingLocation.offset}`,
             field.type.name,
-            `${hiddenAccess}${field.name}`,
+            `${hiddenAccess}${cFieldName(field.name)}`,
             fieldBorrowed,
           );
           storageOverrides.set(fieldBinding.bindingName, persistent.storage);
@@ -9986,7 +9987,7 @@ function generateMatchCore(statement: Extract<Statement, { kind: "match" }>, con
           const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
           const fieldBorrowed = hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes)
             || requiresNativeMove(field.type.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
-          binding += `\n    ${generateMatchBinding(field.type.name, fieldBinding.bindingName, `${hiddenAccess}${field.name}`, fieldBorrowed, context)}`;
+          binding += `\n    ${generateMatchBinding(field.type.name, fieldBinding.bindingName, `${hiddenAccess}${cFieldName(field.name)}`, fieldBorrowed, context)}`;
           binding += `\n    (void)${cBindingName(fieldBinding.bindingName)};`;
         }
         if (!borrowedPayload && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
@@ -10103,7 +10104,7 @@ function generateMatchExpressionCore(
         const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
         const fieldBorrowed = hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes)
           || requiresNativeMove(field.type.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
-        binding += `\n    ${generateMatchBinding(field.type.name, fieldBinding.bindingName, `${hiddenAccess}${field.name}`, fieldBorrowed, context)}`;
+        binding += `\n    ${generateMatchBinding(field.type.name, fieldBinding.bindingName, `${hiddenAccess}${cFieldName(field.name)}`, fieldBorrowed, context)}`;
         binding += `\n    (void)${cBindingName(fieldBinding.bindingName)};`;
       }
       if (!borrowedPayload && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
@@ -10558,7 +10559,7 @@ function generateObjectExpressionAs(
     return `${constructorName(typeName)}(${fields.join(", ")})`;
   }
   const fields = expression.fields
-    .map((field) => `.${field.name} = ${generateExpression(field.expression, context)}`)
+    .map((field) => `.${declaration ? cFieldName(field.name) : field.name} = ${generateExpression(field.expression, context)}`)
     .join(", ");
   const mapped = context.semanticInfo.foreignNamedTypes.has(typeName)
     ? mapType(typeName, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
@@ -10890,7 +10891,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         return `${constructorName(declaration.name)}(${fields.join(", ")})`;
       }
       const fields = expression.fields
-        .map((field) => `.${field.name} = ${generateExpression(field.expression, context)}`)
+        .map((field) => `.${declaration ? cFieldName(field.name) : field.name} = ${generateExpression(field.expression, context)}`)
         .join(", ");
       const type = expression.typeName.includes(".")
         ? mapType(expression.typeName, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
@@ -11024,10 +11025,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (isForeignMember(expression, context)) return expression.property;
       if (expression.object.kind === "identifier" && expression.object.name === "this") {
         const value = context.receiver?.kind === "class"
-          ? `self->${expression.property}`
+          ? `self->${cFieldName(expression.property)}`
           : context.owner.receiverMode === "move"
-          ? `self.${expression.property}`
-          : `self->${expression.property}`;
+          ? `self.${cFieldName(expression.property)}`
+          : `self->${cFieldName(expression.property)}`;
         if (context.semanticInfo.movedExpressions.has(expression.location.offset)) {
           const liveFlag = context.liveFlags.get("this");
           if (!liveFlag) {
@@ -11048,7 +11049,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       const owner = context.structs.get(ownerValueType);
       const access = ownerView || owner?.kind === "class" ? "->" : ".";
-      const value = `(${generateExpression(expression.object, context)})${access}${expression.property}`;
+      const value = `(${generateExpression(expression.object, context)})${access}${owner ? cFieldName(expression.property) : expression.property}`;
       if (
         context.semanticInfo.movedExpressions.has(expression.location.offset)
         && context.owner.receiverMode === "move"
@@ -13531,6 +13532,12 @@ const cReservedWords = new Set(`
 
 export function cBindingName(name: string): string {
   return cReservedWords.has(name) ? `z_${name}` : name;
+}
+
+/** Z-owned aggregate storage only: never apply this to imported ABI fields or JSON keys. */
+export function cFieldName(name: string): string {
+  // Source declarations already reject _z_; generated storage cannot collide with them.
+  return cFamilyReservedIdentifiers.has(name) ? `_z_field_${name}` : name;
 }
 
 function cFunctionName(name: string): string {

@@ -55,6 +55,16 @@ import type {
   ImportDeclaration,
 } from "./support/bootstrap.ts";
 
+test("preserves keyword-named fields through async frames and generator destructuring", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/field-hygiene-async.zs");
+  for (const args of [["run", fixture], ["check", fixture, "--native-frontend"]]) {
+    const result = spawnSync(process.execPath, [cli, ...args], {
+      encoding: "utf8", timeout: 60000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+  }
+});
+
 test("runs cold synchronous generators with deterministic suspended-frame cleanup", () => {
   const example = resolve(projectRoot, "examples/language/control-flow/generators.zs");
   const source = readFileSync(example, "utf8");

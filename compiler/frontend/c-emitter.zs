@@ -280,6 +280,41 @@ function appendCBindingName(
   output.append(name);
 }
 
+// Z-owned storage only; imported ABI fields and JSON wire keys keep their spelling.
+function appendCFieldName(inout output: TextBuffer, in name: String): void {
+  if (
+    (isCReservedWord(name) && name != "Class" && name != "SEL" && name != "id")
+    || name == "and" || name == "and_eq" || name == "asm"
+    || name == "atomic_cancel" || name == "atomic_commit" || name == "atomic_noexcept"
+    || name == "bitand" || name == "bitor" || name == "catch"
+    || name == "char8_t" || name == "char16_t" || name == "char32_t" || name == "class"
+    || name == "compl" || name == "concept" || name == "consteval"
+    || name == "constexpr" || name == "constinit" || name == "const_cast"
+    || name == "co_await" || name == "co_return" || name == "co_yield"
+    || name == "decltype" || name == "delete" || name == "dynamic_cast"
+    || name == "explicit" || name == "export" || name == "friend"
+    || name == "mutable" || name == "namespace" || name == "new"
+    || name == "noexcept" || name == "not" || name == "not_eq"
+    || name == "nullptr" || name == "operator" || name == "or" || name == "or_eq"
+    || name == "private" || name == "protected" || name == "public"
+    || name == "reflexpr" || name == "reinterpret_cast" || name == "requires"
+    || name == "static_cast" || name == "synchronized" || name == "template"
+    || name == "this" || name == "throw" || name == "try"
+    || name == "typeid" || name == "typename" || name == "using"
+    || name == "virtual" || name == "wchar_t" || name == "xor" || name == "xor_eq"
+    || name == "final" || name == "import" || name == "module" || name == "override"
+    || name == "typeof" || name == "typeof_unqual" || name == "_BitInt"
+    || name == "_Decimal32" || name == "_Decimal64" || name == "_Decimal128"
+  ) output.append("_z_field_");
+  output.append(name);
+}
+
+function cFieldName(in name: String): String {
+  let output = TextBuffer();
+  appendCFieldName(inout output, name);
+  return output.finish();
+}
+
 function appendMutexWithLockHelperName(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -3733,7 +3768,7 @@ function appendClassFinalizationBody(
     ) {
       appendIndent(inout output, depth);
       output.append("self->");
-      output.append(aggregate.fields[cleanup].name);
+      appendCFieldName(inout output, aggregate.fields[cleanup].name);
       output.append(" = nil;\n");
       continue;
     }
@@ -3745,11 +3780,11 @@ function appendClassFinalizationBody(
     output.append(aggregate.fields[cleanup].type.name);
     if (aggregate.fields[cleanup].type.kind == LoweredTypeKind.classType) {
       output.append("_release(self->");
-      output.append(aggregate.fields[cleanup].name);
+      appendCFieldName(inout output, aggregate.fields[cleanup].name);
       output.append(");\n");
     } else {
       output.append("_deinit(&self->");
-      output.append(aggregate.fields[cleanup].name);
+      appendCFieldName(inout output, aggregate.fields[cleanup].name);
       output.append(");\n");
     }
   }
@@ -3869,7 +3904,8 @@ function appendClassAndOnceRuntime(
           const fieldType = try cType(aggregate.fields[field].type);
           output.append(fieldType);
           output.append(" ");
-          appendCBindingName(inout output, aggregate.fields[field].name);
+          output.append("_z_init_");
+          output.append(aggregate.fields[field].name);
           field = field + 1;
         }
         if (aggregate.fields.length == 0) output.append("void");
@@ -3905,9 +3941,10 @@ function appendClassAndOnceRuntime(
     } else {
       for (const item of aggregate.fields) {
         output.append("  self->");
-        output.append(item.name);
+        appendCFieldName(inout output, item.name);
         output.append(" = ");
-        appendCBindingName(inout output, item.name);
+        output.append("_z_init_");
+        output.append(item.name);
         output.append(";\n");
       }
     }
@@ -6378,7 +6415,7 @@ function appendExpression(
       }
       if (valueReceiver) output.append("self.");
       else output.append("self->");
-      output.append(declaration.expressions[index].value);
+      appendCFieldName(inout output, declaration.expressions[index].value);
       return;
     }
     if (
@@ -6390,12 +6427,16 @@ function appendExpression(
     ) {
       try appendExpression(inout output, declaration, receiver);
       output.append("->");
-      output.append(declaration.expressions[index].value);
+      if (labelsContain(declaration.expressions[index].labels, "foreignField")) {
+        output.append(declaration.expressions[index].value);
+      } else appendCFieldName(inout output, declaration.expressions[index].value);
       return;
     }
     try appendExpression(inout output, declaration, receiver);
     output.append(".");
-    output.append(declaration.expressions[index].value);
+    if (labelsContain(declaration.expressions[index].labels, "foreignField")) {
+      output.append(declaration.expressions[index].value);
+    } else appendCFieldName(inout output, declaration.expressions[index].value);
     return;
   }
   if (
@@ -6439,7 +6480,7 @@ function appendExpression(
           spreadSourceExpression
         );
         output.append(".");
-        output.append(override.name);
+        appendCFieldName(inout output, override.name);
         output.append("); ");
       } else {
         output.append("Z_");
@@ -6451,7 +6492,7 @@ function appendExpression(
           spreadSourceExpression
         );
         output.append(".");
-        output.append(override.name);
+        appendCFieldName(inout output, override.name);
         output.append(")); ");
       }
     }
@@ -6485,7 +6526,9 @@ function appendExpression(
     while (field < declaration.expressions[index].children.length) {
       if (field > 0) output.append(", ");
       output.append(".");
-      output.append(declaration.expressions[index].labels[field]);
+      if (declaration.expressions[index].kind == LoweredExpressionKind.foreignStructValue) {
+        output.append(declaration.expressions[index].labels[field]);
+      } else appendCFieldName(inout output, declaration.expressions[index].labels[field]);
       output.append(" = ");
       const value = declaration.expressions[index].children[field];
       try appendExpression(inout output, declaration, value);
@@ -8633,11 +8676,11 @@ function appendDerivedJsonDecode(
     output.append(" value = {0};\n  Z_String key = { NULL, 0, 0 };\n  bool key_live = false;\n");
     for (const field of reachableTarget.fields) {
       output.append("  bool seen_");
-      output.append(field.name);
+      appendCFieldName(inout output, field.name);
       output.append(" = false;\n");
       if (field.defaultTarget.byteLength > 0) {
         output.append("  value.");
-        output.append(field.name);
+        appendCFieldName(inout output, field.name);
         output.append(" = ");
         output.append(field.defaultTarget);
         output.append("();\n");
@@ -8653,14 +8696,14 @@ function appendDerivedJsonDecode(
       output.append("z_string_equal(key, Z_STRING_LITERAL(");
       appendCStringLiteral(inout output, field.name);
       output.append("))) {\n        if (seen_");
-      output.append(field.name);
+      appendCFieldName(inout output, field.name);
       output.append(") { (void)z_json_derived_fail(reader, ");
       appendCStringLiteral(
         inout output,
         `duplicate JSON field ${field.name}`
       );
       output.append("); goto _z_json_key_failure; }\n        seen_");
-      output.append(field.name);
+      appendCFieldName(inout output, field.name);
       output.append(" = true;\n");
       if (
         field.defaultTarget.byteLength > 0
@@ -8669,26 +8712,26 @@ function appendDerivedJsonDecode(
         output.append("        Z_");
         output.append(field.type.name);
         output.append("_deinit(&value.");
-        output.append(field.name);
+        appendCFieldName(inout output, field.name);
         output.append("); value.");
-        output.append(field.name);
+        appendCFieldName(inout output, field.name);
         output.append(" = (Z_");
         output.append(field.type.name);
         output.append("){0};\n");
       }
       const option = try derivedJsonOptionPayload(program, field.type);
       let optional = false;
-      let storageField = copy field.name;
+      let storageField = cFieldName(field.name);
       const type = match (option) {
         some(payload) => {
           optional = true;
-          storageField = `${field.name}.payload.some`;
+          storageField = `${storageField}.payload.some`;
           output.append("        z_json_derived_whitespace(reader); if (reader->offset < reader->length && reader->data[reader->offset] == 'n') { value.");
-          output.append(field.name);
+          appendCFieldName(inout output, field.name);
           output.append(".tag = Z_");
           output.append(field.type.name);
           output.append("Tag_none; if (!z_json_derived_literal(reader, \"null\")) goto _z_json_key_failure; } else { value.");
-          output.append(field.name);
+          appendCFieldName(inout output, field.name);
           output.append(".tag = Z_");
           output.append(field.type.name);
           output.append("Tag_some;\n");
@@ -8802,7 +8845,7 @@ function appendDerivedJsonDecode(
     for (const field of reachableTarget.fields) {
       if (field.defaultTarget.byteLength > 0) continue;
       output.append("  if (!seen_");
-      output.append(field.name);
+      appendCFieldName(inout output, field.name);
       output.append(") { (void)z_json_derived_fail(reader, ");
       appendCStringLiteral(
         inout output,
@@ -8887,13 +8930,13 @@ function appendDerivedJsonEncode(
       output.append(");\n");
       const option = try derivedJsonOptionPayload(program, field.type);
       let optional = false;
-      let storageField = copy field.name;
+      let storageField = cFieldName(field.name);
       const type = match (option) {
         some(payload) => {
           optional = true;
-          storageField = `${field.name}.payload.some`;
+          storageField = `${storageField}.payload.some`;
           output.append("  if ((*value).");
-          output.append(field.name);
+          appendCFieldName(inout output, field.name);
           output.append(".tag == Z_");
           output.append(field.type.name);
           output.append("Tag_none) { z_string_append_bytes(output, \"null\", 4); } else {\n");
@@ -19376,12 +19419,7 @@ function appendCopyHelper(
     let fieldIndex: usize = 0;
     while (fieldIndex < program.structs[index].fields.length) {
       if (fieldIndex > 0) output.append(", ");
-      const fieldName = program.structs[index].fields[
-        fieldIndex
-      ].name.copyBytes(
-        0,
-        program.structs[index].fields[fieldIndex].name.byteLength
-      );
+      const fieldName = cFieldName(program.structs[index].fields[fieldIndex].name);
       const fieldType = LoweredType({
         kind: program.structs[index].fields[fieldIndex].type.kind,
         name: program.structs[index].fields[fieldIndex].type.name.copyBytes(
@@ -19788,7 +19826,7 @@ function appendStructDefinition(
       && field.type.kind != LoweredTypeKind.cstringType
     ) output.append(" const *");
     output.append(" ");
-    output.append(field.name);
+    appendCFieldName(inout output, field.name);
     output.append(";\n");
   }
   if (nativeCName.byteLength > 0) {
@@ -24107,7 +24145,7 @@ function emitLoweredC(
             == LoweredTypeKind.foreignObjCType
         ) {
           output.append("  self->");
-          output.append(aggregate.fields[fieldIndex].name);
+          appendCFieldName(inout output, aggregate.fields[fieldIndex].name);
           output.append(" = nil;\n");
           continue;
         }
@@ -24119,11 +24157,11 @@ function emitLoweredC(
               == LoweredTypeKind.classType
           ) {
             output.append("_release(self->");
-            output.append(aggregate.fields[fieldIndex].name);
+            appendCFieldName(inout output, aggregate.fields[fieldIndex].name);
             output.append(");\n");
           } else {
             output.append("_deinit(&self->");
-            output.append(aggregate.fields[fieldIndex].name);
+            appendCFieldName(inout output, aggregate.fields[fieldIndex].name);
             output.append(");\n");
           }
         }
@@ -24134,7 +24172,7 @@ function emitLoweredC(
         if (aggregate.fields[fieldIndex].type.name != "Arena") continue;
         if (loweredTypeNeedsDeinit(program, aggregate.fields[fieldIndex].type)) {
           output.append("  Z_Arena_deinit(&self->");
-          output.append(aggregate.fields[fieldIndex].name);
+          appendCFieldName(inout output, aggregate.fields[fieldIndex].name);
           output.append(");\n");
         }
       }
@@ -24316,7 +24354,7 @@ function appendNativeCHeaderType(
       const fieldType = try nativeCExportType(program, field.type);
       output.append(fieldType);
       output.append(" ");
-      output.append(field.name);
+      appendCFieldName(inout output, field.name);
       output.append(";\n");
     }
     output.append("} ");

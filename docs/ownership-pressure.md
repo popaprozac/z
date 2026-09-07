@@ -5363,10 +5363,26 @@ bindings independent flags and parameter modes. The same fixture checks
 borrowed statement/value matches and an owned payload selected past a shadowed
 outer resource, including exact destruction of both owners.
 
-One independent backend hygiene gap remains an explicit follow-up before more
-framework features: Z fields named `signed` or `unsigned` are emitted as C
-keywords. An upstream field-name escaping pass must preserve JSON keys and
-foreign ABI members. This does not warrant a Zapp-specific codec rule.
+The codec probe also exposed a backend hygiene gap: ordinary Z fields named
+`signed` or `unsigned` were emitted as C keywords. Both emitters now select
+compiler-reserved storage names without changing source names or JSON keys.
+The same mapping covers declarations, construction, copy/spread, field access,
+destructuring, cleanup, and the async-frame emitter. Implicit class-constructor
+parameters use their own generated namespace, avoiding collisions between
+`signed`, `z_signed`, and the constructor's `self` local. This adds no runtime
+work or storage, and requires no new source syntax.
+
+Imported native fields retain their exact ABI spelling; explicit `export c`
+layouts retain their existing public-identifier validation. The differential
+`self-host-emit-field-hygiene.zs` probe checks exact JSON output, defaults,
+Option payloads, owned copies, class identity, and valid public C fields.
+`field-hygiene-async.zs` covers suspension and generator/loop destructuring;
+`field-hygiene-foreign.zs` uses a real C field named `template`, which must not
+be renamed just because it is reserved in C++. This is a compiler fix, not a
+Zapp-specific codec rule. The checkpoint is limited to aggregate fields, not
+a claim that every local, enum payload, or foreign macro naming shape has
+received the same audit.
+
 Cross-process arbitration and transport remain Zapp work after this codec and
 hygiene checkpoint.
 

@@ -82,6 +82,11 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-readonly-field-iteration.zs" },
   { entry: "tests/fixtures/std-json-nested-encode.zs" },
   { entry: "tests/fixtures/std-json-option.zs", expectedStatus: 0 },
+  {
+    entry: "tests/fixtures/self-host-emit-field-hygiene.zs",
+    expectedStatus: 0,
+    expectedStdout: '{"signed":-42,"unsigned":42,"z_signed":8,"z_field_signed":6,"template":"kept"}\n',
+  },
   { entry: "tests/fixtures/self-host-emit-match-generic-inference.zs", expectedStatus: 0 },
   {
     entry: "tests/fixtures/self-host-emit-try-match-cleanup.zs",
@@ -182,6 +187,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-readonly-field-iteration.zs": differential,
   "self-host-emit-match-generic-inference.zs": differential,
   "self-host-emit-try-match-cleanup.zs": differential,
+  "self-host-emit-field-hygiene.zs": differential,
   "self-host-emit-control-flow.zs": differential,
   "self-host-emit-custom-map-key.zs": differential,
   "self-host-emit-custom-set-key.zs": differential,

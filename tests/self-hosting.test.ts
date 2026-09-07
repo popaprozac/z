@@ -12431,6 +12431,24 @@ function main(): i32 {
   assert.match(emittedRecordSource, /z_read\(&\(point\)\)/);
   assert.match(emittedRecordSource, /z_reset\(&\(point\)\)/);
 
+  // Imported C fields keep their ABI spelling even when the name is a C++ keyword.
+  const fieldHygieneSource = resolve(recordProject, "field-hygiene.zs");
+  writeFileSync(fieldHygieneSource, readFileSync(
+    resolve(projectRoot, "tests/fixtures/field-hygiene-foreign.zs"), "utf8",
+  ));
+  writeFileSync(resolve(recordProject, "field-hygiene.h"), readFileSync(
+    resolve(projectRoot, "tests/fixtures/field-hygiene.h"), "utf8",
+  ));
+  const fieldHygieneRun = spawnSync(driver, ["run", fieldHygieneSource], {
+    encoding: "utf8", env: foreignAdapterEnvironment,
+  });
+  assert.equal(fieldHygieneRun.status, 0, fieldHygieneRun.stderr);
+  const emittedFieldHygiene = readFileSync(
+    resolve(recordProject, ".z-cache/run/program.c"), "utf8",
+  );
+  assert.match(emittedFieldHygiene, /\.template/);
+  assert.doesNotMatch(emittedFieldHygiene, /\._z_field_template/);
+
   const resourceProject = resolve(directory, "foreign-resource-project");
   mkdirSync(resourceProject);
   const resourceSource = resolve(resourceProject, "main.zs");

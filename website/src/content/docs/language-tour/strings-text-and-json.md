@@ -143,6 +143,9 @@ Integers decode directly into the requested width, so a `u64` ID does not pass
 through an imprecise `f64`. Missing fields with defaults evaluate those
 defaults; other missing fields fail. Unknown fields are skipped recursively,
 duplicate known fields are rejected, and encoding follows declaration order.
+JSON keys retain the declared Z field names, including names such as `signed`
+or `unsigned` that need an internal spelling change in generated C. That
+backend-only change adds no runtime conversion or storage.
 
 `Option<T>` fields use JSON `null` for `none` and a non-null JSON value for
 `some(value)`. Encoding `none` writes the key with a `null` value; it does not

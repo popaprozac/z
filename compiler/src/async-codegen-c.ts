@@ -36,6 +36,7 @@ import type { ClosureInfo, IntegerOperation, ObjCCallInfo, SemanticInfo, ThreadT
 import {
   closureAdapterName,
   cBindingName,
+  cFieldName,
   closureEnvironmentName,
   closureEnvironmentReleaseName,
   closureEnvironmentRetainName,
@@ -4988,7 +4989,7 @@ function emitAsyncForBranch(
     lines.push(assignPersistentBorrowedBinding(
       binding.bindingName,
       field.type.name,
-      `((${item}).${field.name})`,
+      `((${item}).${cFieldName(field.name)})`,
       plan,
     ));
   }
@@ -5141,7 +5142,7 @@ function emitAsyncForComplete(
   for (const binding of site.statement.objectBindings ?? []) {
     const field = elementDeclaration!.fields.find((candidate) => candidate.name === binding.fieldName)!;
     const destination = frameStoredValue(binding.bindingName, field.type.name, plan.types);
-    const source = `((${element}).${field.name})`;
+    const source = `((${element}).${cFieldName(field.name)})`;
     if (requiresNativeFramePlacement(field.type.name, plan.types)) {
       lines.push(`new (frame->${frameField(binding.bindingName)}) ${cFrameType(field.type.name, plan.types)}(std::move(${source}));`);
     } else {
@@ -5318,7 +5319,7 @@ function emitAsyncMatchBinding(
     lines.push(assignPersistentBorrowedBinding(
       binding.bindingName,
       field.type.name,
-      `((${payload})${access}${field.name})`,
+      `((${payload})${access}${cFieldName(field.name)})`,
       plan,
     ));
   }
@@ -6817,7 +6818,7 @@ function asyncMatchArmContext(
       locals.set(fieldBinding.bindingName, field.type.name);
       bindings.set(
         fieldBinding.bindingName,
-        `(((${subject}).data.${variant.name})${access}${field.name})`,
+        `(((${subject}).data.${variant.name})${access}${cFieldName(field.name)})`,
       );
     }
   }
@@ -7267,7 +7268,7 @@ function renderAsyncConsoleValue(
     declaration.fields.forEach((field, index) => {
       if (index > 0) lines.push(`fputs(", ", ${stream});`);
       lines.push(`fputs(${JSON.stringify(`${field.name}: `)}, ${stream});`);
-      lines.push(...renderAsyncConsoleValue(`(${value}).${field.name}`, field.type.name, stream, location, plan, fileName));
+      lines.push(...renderAsyncConsoleValue(`(${value}).${cFieldName(field.name)}`, field.type.name, stream, location, plan, fileName));
     });
     lines.push(`fputs(" }", ${stream});`);
     return lines;
@@ -7394,7 +7395,7 @@ function renderAsyncStringValue(
       const label = `${field.name}: `;
       lines.push(`z_string_append_bytes(&${target}, ${JSON.stringify(label)}, sizeof(${JSON.stringify(label)}) - 1);`);
       lines.push(...renderAsyncStringValue(
-        `((${value}).${field.name})`,
+        `((${value}).${declaration ? cFieldName(field.name) : field.name})`,
         field.type.name,
         target,
         location,
@@ -7695,7 +7696,8 @@ function emitFrameExpressionInner(
         return `((${value}).values.length)`;
       }
       const access = ownerView || plan.types.structs.get(ownerValueType)?.kind === "class" ? "->" : ".";
-      const value = `((${emitFrameExpression(expression.object, plan, fileName)})${access}${expression.property})`;
+      const property = plan.types.structs.has(ownerValueType) ? cFieldName(expression.property) : expression.property;
+      const value = `((${emitFrameExpression(expression.object, plan, fileName)})${access}${property})`;
       const type = frameExpressionType(expression, plan);
       if (
         plan.types.semanticInfo.managedCopies.has(expression.location.offset)
@@ -8248,7 +8250,7 @@ function emitStructValue(
   }
   const provided = new Map(fields.map((field) => [field.name, field.expression]));
   const initialized = declaration.fields.map((field) => (
-    `.${field.name} = ${emitFrameExpression(provided.get(field.name)!, plan, fileName)}`
+    `.${cFieldName(field.name)} = ${emitFrameExpression(provided.get(field.name)!, plan, fileName)}`
   ));
   return `(${cFrameType(type, plan.types)}){ ${initialized.join(", ")} }`;
 }

@@ -1,3 +1,5 @@
+import { cFieldName } from "../compiler/src/codegen-c.ts";
+import { cFamilyReservedIdentifiers } from "../compiler/src/c-identifiers.ts";
 import {
   ApiNoteConflictError,
   DiagnosticError,
@@ -49,6 +51,22 @@ import {
   utimesSync,
   writeFileSync,
 } from "./support/bootstrap.ts";
+
+test("keeps field storage spelling consistent across C backends without changing public C rules", () => {
+  const source = readFileSync(resolve(projectRoot, "compiler/frontend/c-emitter.zs"), "utf8");
+  const bindingPolicy = source.split("function isCReservedWord(")[1]!.split("function appendCBindingName(")[0]!;
+  const fieldPolicy = source.split("function appendCFieldName(")[1]!.split("function cFieldName(")[0]!;
+  const nativeWords = new Set([...`${bindingPolicy}\n${fieldPolicy}`.matchAll(/name == "([^"]+)"/g)]
+    .map((match) => match[1]!)
+    .filter((name) => !["Class", "SEL", "id"].includes(name)));
+  assert.deepEqual([...nativeWords].sort(), [...cFamilyReservedIdentifiers].sort());
+  for (const name of nativeWords) assert.equal(cFieldName(name), `_z_field_${name}`);
+  for (const name of ["id", "Class", "SEL", "self", "z_signed", "z_field_signed"]) {
+    assert.equal(cFieldName(name), name);
+  }
+  assert.throws(() => compileToC("struct Item { _z_field_signed: i32; }", "reserved-field.zs"), /reserved for compiler-generated storage/);
+  assert.throws(() => compileToC("export c struct Item { signed: i32; }", "public-field.zs"), /not a valid public C identifier/);
+});
 import type {
   ForeignFunctionDeclaration,
   ForeignModuleDeclarations,

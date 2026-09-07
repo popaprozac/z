@@ -56,6 +56,17 @@ import type {
   ImportDeclaration,
 } from "./support/bootstrap.ts";
 
+test("keeps imported C field spellings separate from Z aggregate storage names", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/field-hygiene-foreign.zs");
+  const generated = compileToC(readFileSync(fixture, "utf8"), fixture);
+  assert.match(generated, /\.template/);
+  assert.doesNotMatch(generated, /\._z_field_template/);
+  const result = spawnSync(process.execPath, [cli, "run", fixture], {
+    encoding: "utf8", timeout: 60000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("captures machine-readable compiler output beyond the former 64 MiB pipe ceiling", () => {
   const mebibytes = 65;
   const result = runWithBufferedStdoutOrSpill(process.execPath, [

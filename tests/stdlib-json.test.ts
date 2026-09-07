@@ -38,6 +38,15 @@ test("derives exact typed JSON codecs for ordinary value structs", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("escapes native keyword fields without changing JSON keys or colliding with user names", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/self-host-emit-field-hygiene.zs");
+  const result = spawnSync(process.execPath, [cli, "run", fixture], {
+    encoding: "utf8", timeout: 60000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '{"signed":-42,"unsigned":42,"z_signed":8,"z_field_signed":6,"template":"kept"}\n');
+});
+
 test("derives streaming JSON decoders for nested and recursive value structs", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/std-json-recursive.zs");
   const result = spawnSync(process.execPath, [cli, "run", fixture], {

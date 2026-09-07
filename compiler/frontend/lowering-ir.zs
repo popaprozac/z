@@ -16831,7 +16831,7 @@ function lowerExpressionContextual(
     )) {
       some(receiverType) => {
         if (stringStartsWith(receiverType, "view ")) labels.push("view");
-        else {
+        {
           const loweredReceiver = attempt lowerModuleTypeName(
             program,
             importedTypes,
@@ -16841,6 +16841,9 @@ function lowerExpressionContextual(
             success(type) => {
               if (type.kind == LoweredTypeKind.classType) {
                 labels.push("class");
+              }
+              if (type.kind == LoweredTypeKind.foreignStructType) {
+                labels.push("foreignField");
               }
             }
             failure(_) => {}

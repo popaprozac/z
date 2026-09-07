@@ -3014,7 +3014,9 @@ into their requested Z width, so even `u64.max` does not require a dynamic inter
 Missing fields with defaults evaluate those defaults; other missing fields
 throw `JsonError`. Unknown fields are skipped recursively, duplicate known
 fields are rejected, names match exactly, and encoding follows declaration
-order. Classes, custom constructors or `deinit`, optional property syntax (`?`),
+order. Source field names remain the JSON keys even when generated C must use
+an internal name for fields such as `signed` or `unsigned`; that spelling change
+adds no runtime work. Classes, custom constructors or `deinit`, optional property syntax (`?`),
 floating-point fields, other collections, and field-name policies remain later
 derived-codec tiers.
 `json.parse` / `json.stringify` remain the implemented dynamic route for those
