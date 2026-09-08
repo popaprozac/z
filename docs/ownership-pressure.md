@@ -5847,6 +5847,30 @@ but remains compile-only. Next: main-host wakeup placement and cancellation/join
 integration, then startup/readiness. Automatic secondary-instance forwarding is
 not enabled by this checkpoint, and no new language syntax or Zapp API was added.
 
+## Full Z Notes build gate after the yielding-match checkpoint
+
+The 2026-09-08 performance sweep reproduced a native code-generation regression
+at Z `53ec87f` against Zapp `d89bb92`. Both release build attempts failed with
+undeclared `_z_stage1_live__z_stage1_match_payload_*` ownership flags. The real
+application exercises older async match paths as well as the new yielding-loop
+tier: an owned match payload enters an awaited child, and an owned error payload
+is transferred into a returned aggregate. One path has an existing async frame
+guard with a different name; another references a guard without declaring it.
+The separate 85-module `z check` succeeds, so lowering-only checks are not enough
+to certify native executable composition.
+
+Keep this as an upstream correctness gate: align lowered cleanup ownership with
+each emitter's lexical/frame guard, add reduced execution/cleanup regressions,
+then build the full application. Do not work around it in Zapp or edit generated
+native source. The prior reduced yield-frame results remain valid but do not
+establish whole-application correctness.
+
+The launch-listener main-host placement/cancellation/join checkpoint above is
+paused for this performance sweep, not replaced. `docs/performance.md` records
+the measured duplicate dispatcher check, nondeterministic worker archive input,
+foreign-adapter waits, and imported-type lowering costs, plus the proposed order
+for resolving them before returning to listener integration.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -587,3 +587,129 @@ A persistent AST cache alone would save little: parsing and project loading are
 now about one second, while cross-module generic lowering and Clang remain the
 dominant work. The existing `run` cache also remains a later emitted-C comparison
 and can reuse the early input record in a future slice.
+
+## Z Notes end-to-end build sweep — 2026-09-08
+
+This checkpoint measures the real Zapp build pipeline, not only `z build`.
+The host was an Apple M4 Pro with 24 GiB RAM, macOS 26.4 arm64, Apple Clang
+17.0.0, and Bun 1.3.14. Source revisions: Z `53ec87f`, Zapp `d89bb92`.
+The native driver was the current fixed-point `.z-cache/bootstrap/z`.
+
+The build-only probe called the same config loader, service preflight, Vite
+production build, and `compileNative` functions as `spikes/z-notes/run.ts`.
+It did not launch the application, open a WebView, or touch application data.
+It observed subprocess wall times with unchanged compiler arguments and bounded
+each child process group to 180 seconds. The second invocation used identical
+source, configuration, and release settings. Existing caches were not purged:
+"first invocation" is not a clean-room cold build.
+
+| Stage | First invocation | Unchanged repeat |
+| --- | ---: | ---: |
+| Load Zapp config | 0.004 s | 0.003 s |
+| Checked service metadata, including worker protocol | 8.79 s | 0.21 s |
+| `bunx vite build`, including launcher | 2.20 s | 1.51 s |
+| Compile worker bridge and create archive | 0.50 s | 0.41 s |
+| Separate generated-dispatcher `z check` | 16.23 s | 17.00 s |
+| Main `z build --release`, **failed** | 19.34 s | 19.24 s |
+| Total until failure, including other staging | **47.20 s** | **38.51 s** |
+
+These are single-run observations, not medians. The build failed during Clang
+validation of generated Objective-C. **They are not successful build or launch
+times**, and do not include completed native optimization/linking, bundling,
+signing, or application startup. No current warm-build latency improvement is
+claimed. The successful 0.22-second native cache-hit result above is historical,
+not revalidated for today's full application. No Go, Bun-based framework, or
+Tauri comparison was run in this sweep.
+
+### Immediate correctness gate
+
+The current native compiler emits references to undeclared
+`_z_stage1_live__z_stage1_match_payload_*` flags in ordinary async match paths.
+The application reproduces both a moved match payload passed to an awaited
+child and an owned error payload returned inside another aggregate. The former
+has an existing `_z_stage1_async_live_*` frame guard but references a different
+name; the latter references a guard with no declaration. The same five Clang
+diagnostics occurred in both builds. The generated dispatcher check passes
+because it lowers the program without compiling the emitted native source.
+
+Fix these upstream and add reduced regression coverage for existing async
+lowering paths before using the full application to certify performance or
+resuming listener integration. Do not patch generated C or weaken ownership
+guards to make a timing run pass.
+
+### Confirmed unchanged-build costs
+
+1. **Worker archive instability defeats compiler reuse.** Comparing the current
+   bytes of 1,647 recorded cache-input paths across the repeat found only
+   `libzapp_worker_zjs.a` changed. `zapp_worker_zjs.o` was byte-identical. The
+   archive member headers contain timestamps; `stageZApplicationWorkerRuntime`
+   recompiles the object and invokes `ar rcs` on every build. Z correctly hashes
+   explicit native-library bytes, so this unnecessary archive change is enough
+   to invalidate a previously successful input record. The failed native build
+   is independently unable to publish a new successful cache record. Preserve
+   native dependency checking; cache the bridge by its real inputs and produce
+   deterministic archives, rather than excluding the archive from the key.
+2. **The dispatcher check repeats broad compiler work.** It checks 85 Z modules
+   and includes full native lowering. The subsequent application build includes
+   the generated dispatcher through the registration overlay, checking/lowering
+   the graph again. Prefer one authoritative checked build, with negative tests
+   proving malformed generated dispatch/overlays still fail. If the separate
+   check remains useful for standalone tooling, cache its complete inputs.
+   Removing this duplicate pass targets about 16–17 seconds in this workload;
+   that is measured redundant work, not a verified end-to-end speedup yet.
+3. **Dev and release share one native cache slot.** Both stage into
+   `.zapp/z-native-core` and use the same target/cache metadata path. Z correctly
+   distinguishes the build profile, and the generated WebView/assets differ,
+   so switching modes invalidates the other mode's last entry. Separate
+   profile/config artifact namespaces are a follow-up. This observation is from
+   source inspection; the sweep did not time mode switching.
+4. **Smaller work still happens on every invocation.** Worker-protocol metadata
+   is recollected even after service metadata reuse. Vite itself reported only
+   133–148 ms, while the `bunx` launcher also performed dependency resolution.
+   Workspace staging removes and recopies source, and generated metadata is
+   rewritten. Content-preserving staging and a resolved local Vite executable
+   are lower-priority opportunities after the expensive duplicate work.
+
+### Native compiler hotspots
+
+A separate bounded stack sample of the passing 85-module dispatcher check took
+17.64 seconds under instrumentation. Of 7,444 main-thread samples, 3,001 were
+at `__wait4` under foreign-adapter process calls (about 40%); 3,393 were under
+`lowerModules` (about 46%), predominantly `importedTypesForModule`, type-name
+lowering, set lookups, string construction, and copying. These are sampled
+stack proportions including blocked time, **not CPU percentages or precise
+phase durations**. The native parent sample does not resolve where its adapter
+children spend their own time.
+
+The evidence reinforces two compiler targets: avoid redundant foreign-adapter
+invocations using validated canonical input/dependency evidence, and share/index
+imported-type information instead of repeatedly constructing broad per-module
+copies. Preserve aliases, `.zd` contracts, header dependencies, target settings,
+and compiler identity in reuse decisions. A parser rewrite is not the first
+performance lever indicated by this profile.
+
+### Agreed work remains queued; performance sequence proposed
+
+The paused functional checkpoint remains **main-host wakeup placement and
+cancellation/join integration for the lifecycle-owned launch listener**, followed
+by startup/readiness. The endpoint/inbox probe remains compile-only; automatic
+secondary-instance forwarding is still disabled. See the matching continuation
+in Zapp's `docs/application-activation.md` and Z's ownership-pressure log.
+
+Before returning there, the proposed performance sequence is:
+
+1. Close the native async match/live-guard regression and compile the real app.
+2. Make worker artifacts stable and eliminate redundant generated checking
+   while preserving rejection tests; remeasure unchanged release and dev builds.
+3. Separate profile caches; measure frontend-only, one-Z-file, contract/header,
+   and compiler-change invalidation separately.
+4. Profile/cache foreign-adapter work and reduce imported-type lowering copies.
+5. Only then design module/object-level incremental code generation and native
+   compilation to reduce genuine source-change rebuilds. Do not trade runtime
+   optimization or ownership checks for an apparently faster release build.
+
+An unchanged build should validate inputs and reuse artifacts, not lower 85
+modules again. This is a tooling/compiler implementation goal, not a proposed
+change to Z syntax or application semantics. Complete build, bundle, launch,
+memory, and changed-source numbers remain to be measured after the correctness
+gate closes.
