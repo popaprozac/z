@@ -14,7 +14,7 @@ import {
   TypeReference,
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
-import { functionUsesYieldFrame } from "./async-yield-shape.zs";
+import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -2265,8 +2265,15 @@ function nativeYieldFrameStorageSupported(
       if (generic.base != "Array" && generic.base != "Option"
         && generic.base != "Result" && generic.base != "Mutex"
         && generic.base != "Map") return false;
+      let argumentIndex: usize = 0;
       for (const argument of generic.arguments) {
+        // Result<void, E> has a payload-free success variant, not a void slot.
+        if (generic.base == "Result" && argumentIndex == 0 && argument == "void") {
+          argumentIndex = argumentIndex + 1;
+          continue;
+        }
         if (!nativeYieldFrameStorageSupported(graph, moduleIndex, argument, visiting)) return false;
+        argumentIndex = argumentIndex + 1;
       }
       return true;
     }
@@ -2327,6 +2334,16 @@ function validateNativeFunction(
     && !(declaration.name != "main" && firstTierSchedulerYield)
     && functionUsesYieldFrame(modules[parsedModule].program, declaration);
   if (yieldFrame) {
+    match (in declaration.errorType) {
+      some(error) => {
+        const visiting = Array<String>();
+        if (!nativeYieldFrameStorageSupported(graph, moduleIndex, error.name, visiting)) {
+          throw loweringBoundary(path, "Z0700", "native yield-frame error requires supported owned frame storage",
+            declaration.line, declaration.column, 5);
+        }
+      }
+      none => {}
+    }
     for (const parameter of declaration.parameters) {
       const visiting = Array<String>();
       if (!nativeYieldFrameStorageSupported(graph, moduleIndex, parameter.type.name, visiting)) {
@@ -2379,6 +2396,19 @@ function validateNativeFunction(
     declaration,
     owner
   );
+  if (!yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
+    && parsedModule < modules.length) {
+    let index: usize = 0;
+    while (index < declaration.body.nodes.length) {
+      if (isFrameSchedulerYield(modules[parsedModule].program, declaration.body, index)) {
+        const statement = view declaration.body.nodes[index];
+        throw loweringBoundary(path, "Z0700",
+          "scheduler.yield() in this function requires unsupported native frame composition; use root owned locals and standalone direct child awaits in the current tier",
+          statement.line, statement.column, 5);
+      }
+      index = index + 1;
+    }
+  }
   if (
     functionUsesFirstTierPlacedAsyncFunctionTailAwaitSyntax(declaration)
     && !functionUsesFirstTierPlacedAsyncFunctionTailAwait(

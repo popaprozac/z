@@ -5734,6 +5734,68 @@ startup/readiness and cancellation/join integration. Borrowed parameters,
 broader foreign storage, nested source-local declarations, and declaration
 placement remain outside this yield tier. No public Zapp API changed.
 
+### Child joins and typed errors in native yield frames
+
+The next listener reduction composes ordinary named child calls with the
+existing executor-local heap frame. `async-yield-child.zs` keeps a parent
+endpoint alive while an owned request enters a yielding child, receives an
+`i32` or a cleanup-bearing typed error, and propagates that error with `try`.
+It also materializes Results in root frame locals with `attempt`, repeats
+child awaits and synchronous `try` calls inside a loop, awaits void completion,
+receives an owned struct from an immediate child, and returns an awaited child
+value. The source still contains an explicit `scheduler.yield()` to select
+this general frame tier; child-only loop admission is not implied.
+
+No second error channel was introduced. A throwing child returns the existing
+owned `Result<T, E>` through the invocation's `take_result` operation. Success
+transfers to the parent binding; failure transfers to the parent's Result;
+discarded success and unclaimed failure are destroyed. Two lowerer omissions
+surfaced: `Result<void, E>` must treat success as payload-free storage, and a
+statement-form `try await` must derive the Result from its checked callee when
+there is no value-binding type to consult. Neither needs new source syntax.
+
+The parent holds one active child invocation and installs itself as that
+child's waiter. It returns to the executor rather than running a synchronous
+child driver. Parent cancellation forwards to the active child and joins it
+before releasing parent storage. Child-only cancellation propagates as
+cancellation, not as `throws E`. Dropping an active parent also joins the child
+before freeing its waiter. Bounded UBSan probes cover cold drop, before child
+creation, child suspension, an error produced but not consumed, propagated
+unclaimed errors, and owned child results before/after transfer. The executor
+queue must be empty after each case.
+
+Foundation error payloads additionally exercise Clang ARC, including plain
+wrappers without a Z `deinit`. Heap result slots need explicit strong-slot
+clearing after either unclaimed cleanup or result transfer. Non-trivial
+temporary Result values also need statement-local C scopes: jumping past a
+compound literal with ARC fields is invalid even when the corresponding Z
+ownership plan is sound. Descriptor and weak-reference probes test resource
+closure and actual object deallocation separately. This found the same
+strong-slot omission in the older ordinary callable-task wrapper used by a
+single-yield child: its parameter and result aliases must also clear before
+`free`, even though those fields have no Z cleanup guard. Fixing only the new
+parent frame would leave the child's error object retained.
+
+Cost model: the parent allocates one frame, and child calls use the existing
+invocation allocation strategy. Child-aware frames carry one invocation slot;
+yield-only frames do not acquire that slot. There is no allocation per yield
+or per loop iteration except work explicitly done by that iteration, including
+starting a child. This is composition evidence, not a new benchmark speedup.
+
+Remaining boundaries are explicit: borrowed child parameters, method/placed
+awaits in this loop frame, nested awaited expressions, awaited destructuring
+initializers, and nested source-local declarations. Rejected compositions must
+not fall through to a blocking child helper. An unrelated native compiler
+pressure point was also observed while writing its storage check: a temporary
+`Array<String>()` borrowed inside a negated conditional call can lose its C
+temporary declaration. Naming that checker work buffer kept this change
+bounded; the conditional temporary-lowering gap remains follow-up work.
+
+Next: pressure-test the actual listener's receive-error handling and main-host
+wakeup shape against these remaining boundaries, then restore startup/readiness
+and cancellation/join integration. No automatic listener or public Zapp API is
+enabled by the reduced compiler tests.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -124,6 +124,44 @@ int main(void) {
   if (!z_stage1_async_drive_one(&executor) || !absent.task->completed || absent.task->cancelled) return 9;
   absent.destroy(absent.task);
   if (executor.head != NULL || executor.tail != NULL) return 8;
+  // An error with only Clang ARC storage (no Z deinit) must be released both
+  // when unclaimed and after transfer out of the child and parent frames.
+  for (int phase = 0; phase < 3; ++phase) {
+    Z_AsyncInvocation invocation;
+    int fd;
+    __weak NSFileHandle *owner;
+    @autoreleasepool {
+      NSFileHandle *file = openHandle();
+      owner = file;
+      fd = file.fileDescriptor;
+      invocation = _z_stage1_yield_joinNative_start(&executor, (Z_NativeOwner){ .file = file });
+    }
+    z_stage1_async_enqueue(&executor, invocation.task);
+    // Leave the failed child's owned result pending at the parent join.
+    for (int tick = 0; tick < 4; ++tick) {
+      if (!z_stage1_async_drive_one(&executor)) return 15;
+    }
+    if (phase == 0) {
+      z_stage1_async_request_cancel(invocation.task);
+      if (!z_stage1_async_drive_one(&executor) || !invocation.task->cancelled) return 16;
+      invocation.destroy(invocation.task);
+    } else {
+      if (!z_stage1_async_drive_one(&executor) || !invocation.task->completed) return 17;
+      if (phase == 1) invocation.destroy(invocation.task);
+      else {
+        __typeof__(((_z_stage1_yield_joinNative *)invocation.task)->result) result = {0};
+        invocation.take_result(invocation.task, &result);
+        invocation.destroy(invocation.task);
+        if (descriptor_closed(fd) || owner == nil) return 18;
+        result = (__typeof__(result)){0};
+      }
+    }
+    if (!descriptor_closed(fd) || owner != nil) {
+      fprintf(stderr, "native error phase %d retained fd=%d object=%p\\n", phase, fd, owner);
+      return 19;
+    }
+    if (executor.head != NULL || executor.tail != NULL) return 20;
+  }
   return 0;
 }`;
     execute(harness, resolve(directory, "cancellation-ubsan"),

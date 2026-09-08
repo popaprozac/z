@@ -60,6 +60,28 @@ function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): bo
   return true;
 }
 
+function frameExpressionIsSupported(in tree: ExpressionTree, index: usize): boolean {
+  let root = index;
+  if ((tree.nodes[root].kind == ExpressionKind.tryExpression
+    || tree.nodes[root].kind == ExpressionKind.attemptExpression)
+    && tree.nodes[root].children.length == 1) root = tree.nodes[root].children[0];
+  if (tree.nodes[root].kind != ExpressionKind.awaitExpression) {
+    return frameExpressionIsSynchronous(tree, root);
+  }
+  if (tree.nodes[root].children.length != 1) return false;
+  const call = tree.nodes[root].children[0];
+  if (tree.nodes[call].kind != ExpressionKind.callExpression
+    || tree.nodes[call].children.length == 0) return false;
+  const callee = tree.nodes[call].children[0];
+  // First child tier: a named function, with already checked owned arguments.
+  // Method/placed calls and arbitrary expression normalization remain separate.
+  if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) return false;
+  for (const child of tree.nodes[call].children) {
+    if (!frameExpressionIsSynchronous(tree, child)) return false;
+  }
+  return true;
+}
+
 function frameStatementIsSupported(
   in program: Program, in arena: StatementArena, index: usize, nested: boolean
 ): boolean {
@@ -71,6 +93,7 @@ function frameStatementIsSupported(
     if (nested || arena.nodes[index].arrayBindings.length != 0) return false;
     match (in arena.nodes[index].expression) { some(_) => {} none => return false; }
   } else if (kind != StatementKind.returnStatement
+    && kind != StatementKind.throwStatement
     && kind != StatementKind.expressionStatement
     && kind != StatementKind.assignmentStatement
     && kind != StatementKind.ifStatement
@@ -82,7 +105,10 @@ function frameStatementIsSupported(
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
         const root = tree.root;
-        if (!frameExpressionIsSynchronous(tree, root)) return false;
+        if (kind == StatementKind.ifStatement || kind == StatementKind.whileStatement
+          || kind == StatementKind.throwStatement || kind == StatementKind.destructureStatement) {
+          if (!frameExpressionIsSynchronous(tree, root)) return false;
+        } else if (!frameExpressionIsSupported(tree, root)) return false;
       }
       none => return false;
     }
@@ -113,7 +139,6 @@ export function functionUsesYieldFrame(
     // storage and join proof, and are a separate executable tier.
     if (parameter.mode != ParameterMode.value) return false;
   }
-  match (in declaration.errorType) { some(_) => return false; none => {} }
   if (declaration.returnType.name != "void"
     && declaration.returnType.name != "i32") return false;
   let yields = false;

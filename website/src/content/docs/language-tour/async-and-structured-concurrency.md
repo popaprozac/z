@@ -177,12 +177,16 @@ branch/loop locals still need that explicit lexical scope; borrowed-view and
 array patterns in async frames are not yet executable. The fixed-point native
 compiler now executes root Z-owned patterns across `scheduler.yield()`, including
 yields in nested `if`/`while` statements. This tier supports owned Z-value
-parameters in non-throwing `void`/`i32` functions without explicit declaration
+parameters in `void`/`i32` functions, including supported typed errors, without explicit declaration
 affinity. Inputs enter the cold frame before its body runs, including cleanup
 if it is dropped or cancelled before entry. Mutex-backed state and Objective-C
 references can also live in these frames, with explicit strong-slot cleanup.
-Scoped `withLock` callbacks release their lock before the next yield. Borrowed
-parameters, other foreign storage, child awaits, and nested source-local declarations
+Scoped `withLock` callbacks release their lock before the next yield. Direct
+named child calls with owned value arguments can be awaited, including repeatedly
+in loops; root locals can own their results. `try` propagates the child's error
+and `attempt` keeps its `Result`. Cancellation joins the active child before
+releasing parent storage. Borrowed parameters, method/placed awaits, nested
+awaited expressions, other foreign storage, and nested source-local declarations
 remain separate composition work. These are implementation boundaries, not
 new ownership rules. A successful `check` alone is not proof that an advanced
 frame shape can be emitted and run. Check the

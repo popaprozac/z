@@ -660,7 +660,7 @@ root or directly inside an explicit `async scope`. A scope inside a branch or
 loop joins its children before destroying these fields. Borrowed-view and
 positional array patterns in async frames remain deferred. The fixed-point
 native compiler now executes root Z-owned patterns across standalone
-`scheduler.yield()` in non-throwing `void`/`i32` functions without explicit
+`scheduler.yield()` in `void`/`i32` functions (with supported typed errors) without explicit
 declaration affinity, including yields inside `if`/`while` statements and owned
 Z-value parameters. Those inputs belong to the cold invocation before its body
 runs and are cleaned even if it is dropped or cancelled before entry. Passing
@@ -669,9 +669,13 @@ The frame also holds Mutex-backed state and Objective-C references, directly or
 inside supported Z aggregates. `withLock` remains synchronous: the lock is
 released before a subsequent yield. Heap-frame destruction explicitly clears
 Clang strong slots, even in wrappers without a Z `deinit`.
-That tier does not yet combine these patterns with awaited producers, child
-awaits, borrowed parameters, other foreign storage, or nested source-local
-declarations. These are lowering limits, not different destructuring semantics.
+The same frame can await direct named children with owned value arguments, store
+their owned results in root locals, and propagate or materialize typed errors
+using `try`/`attempt`. Cancellation joins the active child before releasing the
+parent's owners. Destructuring an awaited producer directly, borrowed child
+parameters, method/placed awaits, nested awaited expressions, other foreign
+storage, and nested source-local declarations remain outside this tier. These
+are lowering limits, not different destructuring semantics.
 
 Fixed arrays, `Array<T>`, and `Slice<T>` support positional local patterns:
 

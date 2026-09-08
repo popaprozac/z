@@ -18331,6 +18331,15 @@ function directThrowingCallResult(
       }
       none => {}
     }
+    // Statement-form `try await operation()` may discard its success value,
+    // so expression evidence need not contain that value's type. Fall back to
+    // the checked callee signature only after consulting exact Task evidence.
+    match (try directThrowingCallResult(
+      program, importedTypes, evidence, tree, task, ownerName
+    )) {
+      some(result) => return Option.some(move result);
+      none => {}
+    }
     match (resolvedExpressionTypeName(evidence, tree, index)) {
       some(successTypeName) => {
         const outer = try throwingFunctionResult(

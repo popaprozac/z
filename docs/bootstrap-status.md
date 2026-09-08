@@ -1159,7 +1159,7 @@ The immediate consumer-driven prerequisite is Zapp's lifecycle-owned launch
 listener, before enabling automatic secondary-instance forwarding. Its reduced
 `async-launch-listener.zs` and `async-launch-owned-destructure.zs` fixtures now
 execute through both compiler paths. The native executor-local yield frame
-supports non-throwing `void`/`i32` helpers without explicit declaration affinity,
+supports `void`/`i32` helpers, including supported typed errors, without explicit declaration affinity,
 owned Z-value parameters, root initialized Z-owned locals/destructuring, and
 `scheduler.yield()` inside nested `if`/`while` control flow. Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
@@ -1170,8 +1170,16 @@ frame also supports Mutex-backed state and Objective-C references, including
 nullable references, plain wrappers, and nested lease/endpoint aggregates.
 Explicit frame cleanup releases Clang strong slots as well as Z owners; bounded
 descriptor tests cover cold drop and cancellation. Scoped `withLock` callbacks
-finish before yielding. Child-await/error composition remains a listener
-prerequisite; the reductions do not establish that integration. The broader
+finish before yielding. These frames also await direct named children with owned
+value arguments, including repeated calls in loops, void completion, owned child
+results, `try` propagation, and `attempt`-materialized Results. An active child
+is joined before canceled parent storage is released. Typed errors travel through
+the existing owned `Result<T, E>` representation, including payload-free
+`Result<void, E>` success. Cancellation and unclaimed-result tests cover both Z
+destructors and Clang strong fields. Borrowed child arguments, method/placed
+awaits, nested awaited expressions, and nested source locals remain separate
+yield-frame boundaries. The frame still requires an explicit `scheduler.yield()`;
+these reductions do not establish the actual listener integration. The broader
 `async-owned-destructure.zs` probe covers explicit copy/move, awaited producers,
 scoped child borrows, errors, and cancellation before or after initialization.
 Cleanup-bearing branch/loop locals still require an explicit `async scope`,
