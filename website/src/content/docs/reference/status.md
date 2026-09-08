@@ -145,9 +145,11 @@ production or compatibility-sensitive use.
   now survive native-header private-name mangling across modules, including
   aliased internal async imports. The channel-based readiness/startup probe
   passes both compilers under UBSan. Automatic application forwarding remains
-  gated on full startup/lifetime integration: a main-bound function combining
-  an early awaited return with a later awaited local still exceeds the native
-  frame-composition tier. Direct
+  gated on full startup/lifetime integration. Early terminal awaited returns
+  now compose with one later awaited local in native function and supported
+  method frames, including owned results and cancellation cleanup. Both paths
+  reuse one child-invocation slot; branch-local storage across suspension and
+  additional continuation suspensions remain staged. Direct
   timer awaits in native `main` still require a future resumable entry frame;
   that boundary now reports `Z0700` at the await.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`

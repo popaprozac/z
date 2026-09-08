@@ -1216,6 +1216,17 @@ startup/lifetime integration. Direct timer awaits in native `main` remain a
 separate resumable-entry-frame gap, diagnosed as `Z0700` rather than an internal
 unnamed-Task error. See the [integration evidence](ownership-pressure.md#real-launch-endpoint-inbox-and-main-host-integration-2026-09-08).
 
+The native linear-await frame now also accepts early terminal awaited returns
+before its single awaited local. The early path completes the parent directly;
+the continuing path initializes the local and resumes the remaining synchronous
+body. Both paths share one child invocation slot. Root-owned inputs, locals,
+success/error results, and supported class-method frames retain their existing
+cleanup rules. UBSan regressions cover both paths and cancellation/cold drop;
+generated local fields are namespaced so `result` cannot collide with runtime
+storage. Nested branch-local storage across an early await and additional
+continuation suspensions remain explicit boundaries. This is an upstream
+composition prerequisite, not proof that Zapp's full startup wrapper is enabled.
+
 Continue focused self-hosting work in this order:
 
 1. Continue decomposing the former 8,980-line `module-resolver.zs` without

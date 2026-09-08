@@ -6198,6 +6198,56 @@ TaskScope joins. Do not work around this with a synchronous wrapper or a new
 framework API. The saved Application.run patch remains unapplied; normal Zapp
 startup is unchanged until the full application gate passes.
 
+### Early awaited returns and continuing owned frames (2026-09-08)
+
+The minimized startup shape above now executes through both compilers. Native
+admission and lowering recognize early terminal child awaits before one later
+awaited local. The early branch uses a distinct resume state to complete the
+parent; it cannot fall through and initialize the later local. Both branches
+reuse the existing child invocation slot, with no additional frame allocation
+or result wrapper introduced by this composition.
+
+`tests/fixtures/async-linear-tail.zs` covers owned `Message` inputs/results,
+owned typed failures, root guards created before and after the branch, a
+genuinely yielding child chain, and the corresponding class-method frame path.
+Both successful and failed outcomes execute in Stage 0 and native output under
+UBSan. A native driver checks 72 cold-drop, cancellation, completed-result, and
+active-destruction cases across both paths. It counts input destruction and
+checks exact guard output and an empty executor queue after every case. Child
+storage is joined/destroyed before parent-owned inputs are released.
+
+The probe also exposed a generated field collision: a user local named `result`
+shared the runtime result member's spelling. Frame locals and matched payload
+fields now have their own generated prefix, including their macro targets.
+Existing frame tests continue to assert the distinct generated storage.
+
+This is deliberately not general async normalization. In this tier, nested
+branch locals that would need storage across an early suspension are rejected, as are early
+awaits followed by more than one awaited local. The diagnostic identifies the
+continuation-frame boundary instead of suggesting `await delay`. Wrapped or
+computed terminal awaits cannot silently use the direct-child completion path;
+direct children must have the parent's exact result representation. Throwing
+yielding method bodies and arbitrary owned yield-frame return types remain
+their earlier separate boundaries.
+
+Next is the saved Application.run integration's owned outcome plus native-thread
+and TaskScope cancellation/join composition. Passing this reduced frame fixture
+does not enable automatic secondary-instance forwarding; the full application
+and real-process teardown gate must still pass.
+
+The rebuilt fixed-point driver passes all eight production-shaped Zapp startup
+process cases under UBSan alongside Stage 0. Retrying the complete application
+finds the remaining join boundary. Adding `await updates.cancel()` after the
+awaited local in the minimized startup function is sufficient to reproduce it:
+Stage 0 runs successfully, while native admission reports `Z0700`. The full
+wrapper additionally cancels/joins its native listener and another TaskScope.
+Its saved patch remains unapplied. Extend these continuations using checked
+TaskScope/Task receiver identity, not a blanket exception for `.cancel()` calls.
+
+Final checkpoint: all 210 tests in the self-hosting tier pass on a frozen
+compiler snapshot; the standalone compiler reaches a fixed point. The restored
+normal Z Notes smoke and both Zapp TypeScript check projects also pass.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

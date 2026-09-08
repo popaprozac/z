@@ -749,6 +749,42 @@ function asyncLinearAwaitShape(
   return Option<AsyncLinearAwaitShape>.none;
 }
 
+function appendAsyncLinearEarlyTailCompletion(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  in functionType: LoweredFunctionType,
+  in shape: AsyncLinearAwaitShape
+): void throws String {
+  let hasEarlyAwait = false;
+  let prefix: usize = 0;
+  while (prefix < shape.rootPosition) {
+    const root = declaration.roots[prefix];
+    if (loweredStatementContainsAsyncAwait(declaration, root)) {
+      hasEarlyAwait = true;
+    }
+    prefix = prefix + 1;
+  }
+  if (!hasEarlyAwait) return;
+  // State 1 resumes the awaited-local path, state 2 runs its synchronous
+  // continuation, and state 3 finishes an early terminal child instead.
+  // No second child slot or new allocation is needed for mutually exclusive
+  // paths. Destroy the joined child before releasing any parent-owned inputs.
+  output.append("  if (frame->_z_resume_state == 3) {\n    if (frame->child.task == NULL || !frame->child.task->completed) abort();\n    bool _z_early_cancelled = task->cancellation_requested || frame->child.task->cancelled;\n    if (!_z_early_cancelled) {\n      if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n");
+  if (functionType.returnType.kind == LoweredTypeKind.voidType) {
+    output.append("      if (frame->child.take_result != NULL) frame->child.take_result(frame->child.task, NULL);\n");
+  } else {
+    output.append("      if (frame->child.take_result == NULL) abort();\n      frame->child.take_result(frame->child.task, &frame->result);\n");
+    if (loweredTypeNeedsDeinit(program, functionType.returnType)) {
+      output.append("      frame->live_result = true;\n");
+    }
+  }
+  output.append("    }\n    z_stage1_async_remove_queued(frame->child.task);\n    if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n    if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n    frame->child = (Z_AsyncInvocation){0};\n");
+  try appendAsyncTailLocalCleanups(inout output, program, declaration, 2);
+  appendAsyncStoredParameterCleanups(inout output, program, functionType, 2);
+  output.append("    task->cancelled = _z_early_cancelled;\n    task->completed = true;\n    return;\n  }\n");
+}
+
 function asyncDoubleAwaitShape(
   in program: LoweredProgram,
   in name: String
@@ -832,7 +868,18 @@ function asyncMethodAwaitStartsChild(
     none => {}
   }
   match (asyncLinearAwaitShape(program, declaration.name)) {
-    some(shape) => return shape.expressionIndex == expressionIndex;
+    some(shape) => {
+      if (shape.expressionIndex == expressionIndex) return true;
+      let prefix: usize = 0;
+      while (prefix < shape.rootPosition) {
+        const root = declaration.roots[prefix];
+        if (loweredStatementContainsExpression(
+          declaration, root, expressionIndex
+        )) return true;
+        prefix = prefix + 1;
+      }
+      return false;
+    }
     none => {}
   }
   match (asyncDoubleAwaitShape(program, declaration.name)) {
@@ -1147,7 +1194,7 @@ function appendAsyncTailLocalFields(
     const localCType = try cType(type);
     output.append("  ");
     output.append(localCType);
-    output.append(" ");
+    output.append(" _z_local_");
     appendCBindingName(inout output, statement.name);
     output.append(";\n");
     if (loweredTypeNeedsDeinit(program, type)) {
@@ -1186,7 +1233,7 @@ function appendAsyncTailMatchBindingField(
   const bindingCType = try cType(type);
   output.append("  ");
   output.append(bindingCType);
-  output.append(" ");
+  output.append(" _z_local_");
   appendCBindingName(inout output, arm.labels[0]);
   output.append(";\n");
   if (loweredTypeNeedsDeinit(program, type)) {
@@ -1227,7 +1274,7 @@ function appendAsyncTailLocalMacros(
     output.append("#define ");
     output.append("_z_stage1_frame_binding_");
     appendCBindingName(inout output, statement.name);
-    output.append(" (frame->");
+    output.append(" (frame->_z_local_");
     appendCBindingName(inout output, statement.name);
     output.append(")\n");
     if (loweredTypeNeedsDeinit(program, type)) {
@@ -1262,7 +1309,7 @@ function appendAsyncTailMatchBindingMacro(
   output.append("#define ");
   output.append("_z_stage1_frame_binding_");
   appendCBindingName(inout output, arm.labels[0]);
-  output.append(" (frame->");
+  output.append(" (frame->_z_local_");
   appendCBindingName(inout output, arm.labels[0]);
   output.append(")\n");
   match (in arm.type) {
@@ -2746,6 +2793,22 @@ function appendAsyncTailDispatchStatement(
           none => {}
         }
         const noClosureParameterNames = Array<String>();
+        let waitingState: usize = 1;
+        if (declaration.asyncSuspension == "linear-await") {
+          if (declaration.expressions[expression].kind == LoweredExpressionKind.asyncFunctionAwait) {
+            let childType = "";
+            for (const candidate of program.functionTypes) {
+              if (candidate.name == declaration.expressions[expression].value) {
+                childType = try cType(candidate.returnType);
+              }
+            }
+            const parentType = try cType(functionType.returnType);
+            if (childType != parentType) {
+              throw `native early awaited return in ${declaration.name} requires the child's exact result representation`;
+            }
+          }
+          waitingState = 3;
+        }
         try appendAsyncTailChildStart(
           inout output,
           program,
@@ -2754,12 +2817,18 @@ function appendAsyncTailDispatchStatement(
           noClosureParameterNames,
           declaration.expressions[expression],
           expression,
-          1,
+          waitingState,
           depth
         );
         return;
       }
       none => {}
+    }
+    if (
+      declaration.asyncSuspension == "linear-await"
+      && loweredStatementContainsAsyncAwait(declaration, index)
+    ) {
+      throw `native early awaited return in ${declaration.name} requires a direct terminal child, not a wrapped or computed await`;
     }
     try appendAsyncTailImmediateReturn(
       inout output,
@@ -2833,7 +2902,10 @@ function appendAsyncTailDispatchStatement(
     output.append("}\n");
     return;
   }
-  if (statement.kind != LoweredStatementKind.matchStatement) {
+  if (
+    statement.kind != LoweredStatementKind.matchStatement
+    || !loweredStatementContainsAsyncAwait(declaration, index)
+  ) {
     try appendAsyncTailPrefixStatement(
       inout output,
       program,
@@ -11615,11 +11687,12 @@ function appendCallableHelpers(
           let prefix: usize = 0;
           while (prefix < shape.rootPosition) {
             const prefixRoot = linearDeclaration.roots[prefix];
-            try appendAsyncTailPrefixStatement(
+            try appendAsyncTailDispatchStatement(
               inout output,
               program,
               linearDeclaration,
               functionType,
+              linearAwait,
               shape.expressionIndex,
               prefixRoot,
               2
@@ -11637,7 +11710,11 @@ function appendCallableHelpers(
             1,
             2
           );
-          output.append("  }\n  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+          output.append("  }\n");
+          try appendAsyncLinearEarlyTailCompletion(
+            inout output, program, linearDeclaration, functionType, shape
+          );
+          output.append("  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(frame);\n");
           try appendAsyncTailLocalCleanups(
@@ -14362,11 +14439,12 @@ function appendAsyncMethodAwaitHelpers(
         let prefix: usize = 0;
         while (prefix < shape.rootPosition) {
           const prefixRoot = linearDeclaration.roots[prefix];
-          try appendAsyncTailPrefixStatement(
+          try appendAsyncTailDispatchStatement(
             inout output,
             program,
             linearDeclaration,
             functionType,
+            linearAwait,
             shape.expressionIndex,
             prefixRoot,
             2
@@ -14385,7 +14463,11 @@ function appendAsyncMethodAwaitHelpers(
           1,
           2
         );
-        output.append("  }\n  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+        output.append("  }\n");
+        try appendAsyncLinearEarlyTailCompletion(
+          inout output, program, linearDeclaration, functionType, shape
+        );
+        output.append("  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
         appendAsyncCallableAwaitHelperName(
           inout output,
           owner,

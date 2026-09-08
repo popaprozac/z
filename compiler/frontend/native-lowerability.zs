@@ -1127,6 +1127,15 @@ function statementIsFirstTierAwaitLocal(
   };
 }
 
+function statementContainsLexicalFrameLocal(in arena: StatementArena, index: usize): boolean {
+  const kind = arena.nodes[index].kind;
+  if (kind == StatementKind.variableStatement || kind == StatementKind.destructureStatement) return true;
+  for (const child of arena.nodes[index].children) {
+    if (statementContainsLexicalFrameLocal(arena, child)) return true;
+  }
+  return false;
+}
+
 function functionUsesFirstTierLinearAwait(
   in declaration: FunctionDeclaration
 ): boolean {
@@ -1134,6 +1143,15 @@ function functionUsesFirstTierLinearAwait(
   let awaitCount: usize = 0;
   for (const root of declaration.body.roots) {
     if (!statementContainsSuspension(declaration.body, root)) continue;
+    if (awaitCount == 0) {
+      const kind = declaration.body.nodes[root].kind;
+      if (
+        (kind == StatementKind.ifStatement || kind == StatementKind.returnStatement)
+        && !statementContainsNestedLoopOrMatch(declaration.body, root)
+        && !statementContainsLexicalFrameLocal(declaration.body, root)
+        && statementUsesOnlyFirstTierTailAwaitSuspension(declaration.body, root)
+      ) continue;
+    }
     if (!statementIsFirstTierAwaitLocal(
       declaration.body,
       root
@@ -2520,6 +2538,23 @@ function validateNativeFunction(
     declaration,
     owner
   );
+  if (declaration.asynchronous && declaration.name != "main"
+    && !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait) {
+    let earlierTerminalAwait = false;
+    for (const root of declaration.body.roots) {
+      if (earlierTerminalAwait && statementIsFirstTierAwaitLocal(declaration.body, root)) {
+        const statement = view declaration.body.nodes[root];
+        throw loweringBoundary(path, "Z0700",
+          "native async frame composition supports early terminal awaits followed by one awaited local; this combination requires a broader continuation frame",
+          statement.line, statement.column, 5);
+      }
+      const kind = declaration.body.nodes[root].kind;
+      if ((kind == StatementKind.ifStatement || kind == StatementKind.returnStatement)
+        && statementFirstTierTailAwaitCount(declaration.body, root) > 0) {
+        earlierTerminalAwait = true;
+      }
+    }
+  }
   if (!yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
     && parsedModule < modules.length) {
     let index: usize = 0;

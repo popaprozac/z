@@ -1856,7 +1856,7 @@ test("preserves owned requests and typed errors across a placed async service ca
     assert.equal(emission.status, 0, emission.stderr);
     assert.match(
       emission.stdout,
-      /Z___z_Result_String_ServiceError called;/,
+      /Z___z_Result_String_ServiceError _z_local_called;/,
     );
     assert.match(emission.stdout, /Z_AsyncInvocation child;/);
     assert.match(
@@ -2028,11 +2028,11 @@ test("keeps a cleanup-bearing method local alive across a dynamic child", () => 
       { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
     assert.equal(emission.status, 0, emission.stderr);
-    assert.match(emission.stdout, /Z_Request forwarded;/);
+    assert.match(emission.stdout, /Z_Request _z_local_forwarded;/);
     assert.match(emission.stdout, /bool _z_stage1_live_forwarded;/);
     assert.match(
       emission.stdout,
-      /#define _z_stage1_frame_binding_forwarded \(frame->forwarded\)/,
+      /#define _z_stage1_frame_binding_forwarded \(frame->_z_local_forwarded\)/,
     );
     assert.match(
       emission.stdout,
@@ -2160,7 +2160,7 @@ test("preserves synchronous work around branched tail awaits", () => {
       { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
     assert.equal(emission.status, 0, emission.stderr);
-    assert.match(emission.stdout, /frame->permission/);
+    assert.match(emission.stdout, /frame->_z_local_permission/);
     assert.match(emission.stdout, /frame->child\.task->waiter = task;/);
     const compilation = spawnSync(
       "clang",
@@ -2244,7 +2244,7 @@ test("moves a matched async handler into a free-function frame", () => {
       { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
     assert.equal(emission.status, 0, emission.stderr);
-    assert.match(emission.stdout, /Z_Request forwarded;/);
+    assert.match(emission.stdout, /Z_Request _z_local_forwarded;/);
     assert.match(emission.stdout, /bool _z_stage1_async_live_/);
     assert.match(
       emission.stdout,
@@ -2284,7 +2284,7 @@ test("continues a free-function frame after an awaited method result", () => {
       { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
     assert.equal(emission.status, 0, emission.stderr);
-    assert.match(emission.stdout, /Z_String loaded;/);
+    assert.match(emission.stdout, /Z_String _z_local_loaded;/);
     assert.match(
       emission.stdout,
       /_start_invocation\(task->executor, source, &\(\(\*request\)\)\)/,
@@ -2373,7 +2373,7 @@ test("resumes a reusable function through two awaited children", () => {
       { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
     assert.equal(emission.status, 0, emission.stderr);
-    assert.match(emission.stdout, /uint32_t _z_resume_state;[\s\S]*Z_String loaded;[\s\S]*Z_String separator;[\s\S]*Z_String decorated;[\s\S]*Z_AsyncInvocation child;/);
+    assert.match(emission.stdout, /uint32_t _z_resume_state;[\s\S]*Z_String _z_local_loaded;[\s\S]*Z_String _z_local_separator;[\s\S]*Z_String _z_local_decorated;[\s\S]*Z_AsyncInvocation child;/);
     assert.match(
       emission.stdout,
       /frame->_z_resume_state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_loaded\);[\s\S]*frame->_z_resume_state = 2;/,
@@ -2418,7 +2418,7 @@ test("resumes a class method through two awaited children", () => {
     assert.equal(emission.status, 0, emission.stderr);
     assert.match(
       emission.stdout,
-      /uint32_t _z_resume_state;[\s\S]*int32_t first;[\s\S]*int32_t second;[\s\S]*Z_AsyncInvocation child;/,
+      /uint32_t _z_resume_state;[\s\S]*int32_t _z_local_first;[\s\S]*int32_t _z_local_second;[\s\S]*Z_AsyncInvocation child;/,
     );
     assert.match(
       emission.stdout,
@@ -2464,7 +2464,7 @@ test("routes a service result before publishing it on the main executor", () => 
     assert.equal(emission.status, 0, emission.stderr);
     assert.match(
       emission.stdout,
-      /uint32_t _z_resume_state;[\s\S]*Z_RoutedResponse routed;[\s\S]*Z_PublishedResponse published;[\s\S]*Z_AsyncInvocation child;/,
+      /uint32_t _z_resume_state;[\s\S]*Z_RoutedResponse _z_local_routed;[\s\S]*Z_PublishedResponse _z_local_published;[\s\S]*Z_AsyncInvocation child;/,
     );
     assert.match(
       emission.stdout,
@@ -18271,7 +18271,7 @@ test("keeps an async local named state distinct from resume storage", () => {
   );
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(emission.stdout, /uint32_t _z_resume_state;/);
-  assert.match(emission.stdout, /Z_RunState \* state;/);
+  assert.match(emission.stdout, /Z_RunState \* _z_local_state;/);
   assert.doesNotMatch(emission.stdout, /uint32_t state;/);
 
   const directory = mkdtempSync("/tmp/z-async-local-state-");
@@ -18443,7 +18443,7 @@ test("materializes a synchronous main-isolated error through taskification", () 
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(
     emission.stdout,
-    /Z___z_Result_i32_OperationError called;/,
+    /Z___z_Result_i32_OperationError _z_local_called;/,
   );
   assert.match(
     emission.stdout,

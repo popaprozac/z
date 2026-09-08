@@ -22022,6 +22022,15 @@ function statementIsFirstTierAwaitLocal(
   };
 }
 
+function statementContainsLexicalFrameLocal(in arena: StatementArena, index: usize): boolean {
+  const kind = arena.nodes[index].kind;
+  if (kind == StatementKind.variableStatement || kind == StatementKind.destructureStatement) return true;
+  for (const child of arena.nodes[index].children) {
+    if (statementContainsLexicalFrameLocal(arena, child)) return true;
+  }
+  return false;
+}
+
 function functionUsesFirstTierLinearAwait(
   in declaration: FunctionDeclaration
 ): boolean {
@@ -22029,6 +22038,17 @@ function functionUsesFirstTierLinearAwait(
   let awaitCount: usize = 0;
   for (const root of declaration.body.roots) {
     if (!statementContainsSuspension(declaration.body, root)) continue;
+    // An early terminal await chooses the parent's final result. It does not
+    // initialize the later awaited local or resume through that continuation.
+    if (awaitCount == 0) {
+      const kind = declaration.body.nodes[root].kind;
+      if (
+        (kind == StatementKind.ifStatement || kind == StatementKind.returnStatement)
+        && !statementContainsNestedLoopOrMatch(declaration.body, root)
+        && !statementContainsLexicalFrameLocal(declaration.body, root)
+        && statementUsesOnlyFirstTierTailAwaitSuspension(declaration.body, root)
+      ) continue;
+    }
     if (!statementIsFirstTierAwaitLocal(
       declaration.body,
       root
