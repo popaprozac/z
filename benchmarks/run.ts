@@ -73,6 +73,7 @@ const nimCompiler = process.env.Z_NIM
 const samples = positiveInteger(process.env.Z_BENCH_SAMPLES, 9);
 const warmups = positiveInteger(process.env.Z_BENCH_WARMUPS, 2);
 const scale = positiveNumber(process.env.Z_BENCH_SCALE, 1);
+const timeoutMilliseconds = positiveInteger(process.env.Z_BENCH_TIMEOUT_MS, 180_000);
 
 const caseDefinitions: readonly Case[] = [
   {
@@ -284,10 +285,16 @@ const report = renderReport(results, hyperfine);
 const reportPath = join(
   benchmarkRoot,
   "results",
-  process.env.Z_BENCH_REPORT ?? "checkpoint-1-macos-arm64.md",
+  process.env.Z_BENCH_REPORT ?? `checkpoint-${new Date().toISOString().slice(0, 10)}-${process.platform}-${process.arch}.md`,
 );
 mkdirSync(dirname(reportPath), { recursive: true });
 writeFileSync(reportPath, report);
+writeFileSync(reportPath.replace(/\.md$/, "") + ".json", JSON.stringify({
+  generatedAt: new Date().toISOString(), samples, warmups, scale,
+  revision: run("git", ["rev-parse", "HEAD"]).stdout.trim(),
+  dirty: run("git", ["status", "--porcelain"]).stdout.trim().length > 0,
+  results, hyperfine,
+}, null, 2) + "\n");
 console.log(`\nwrote ${reportPath}`);
 console.log(report);
 
@@ -526,6 +533,8 @@ function run(
     env: environment,
     encoding: "utf8",
     maxBuffer: 128 * 1024 * 1024,
+    timeout: timeoutMilliseconds,
+    killSignal: "SIGKILL",
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -569,7 +578,7 @@ function renderReport(
 ): string {
   const activeCases = new Set(results_.map((result) => result.definition.id));
   const channelOnly = [...activeCases].every((id) => id.startsWith("channel-"));
-  const title = channelOnly ? "Z channel performance checkpoint" : "Z performance checkpoint 1";
+  const title = channelOnly ? "Z channel performance checkpoint" : "Z performance checkpoint";
   const generatedAt = new Date().toISOString();
   const clangVersion = firstLine(run("clang", ["--version"]).stdout);
   const rustVersion = firstLine(run("rustc", ["--version"]).stdout);
@@ -658,7 +667,10 @@ ${compilationRows}
 | --- | --- |
 ${semanticRows}
 
-## Generated-code classification
+## Generated-code classification from prior inspection
+
+These are the established code-shape observations for these fixtures, not a
+new assembly audit performed automatically by this timing harness.
 
 | Area | Finding | Classification |
 | --- | --- | --- |
@@ -673,9 +685,9 @@ and C/C++ translation units; other languages report \`—\` until they have
 equivalent allocator-level counters. Swift is not part of this portable-kernel
 checkpoint.
 
-The `channel-thread` row deliberately compares Z's suspending producer with
+The channel-thread row deliberately compares Z's suspending producer with
 the same blocking native handoff used by the synchronous control. It isolates
-the current async task-frame cost; `channel-thread-sync` is the semantics-matched
+the current async task-frame cost; channel-thread-sync is the semantics-matched
 native ceiling comparison.
 
 This tests Z's current ceiling through generated C/C++ and Clang, not the
@@ -685,7 +697,8 @@ as a frontend-only comparison.
 
 The generated C and optimized assembly used for inspection are reproducible in
 \`benchmarks/.build/<case>/z-generated.c\` and \`*.s\`; the build directory is
-not committed. Ratios near 1.0 confirm equivalent lowering for that workload.
+not committed. Ratios near 1.0 are consistent with equivalent performance for
+that workload; confirming equivalent lowering requires inspecting the code.
 Larger ratios must be classified as an intentional safety/ownership cost,
 current compiler overhead, or a benchmark mismatch before becoming a language
 performance claim.

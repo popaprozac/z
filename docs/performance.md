@@ -20,8 +20,8 @@ Run it with:
 bun run bench
 ```
 
-The latest machine-specific report is
-[`checkpoint-1-macos-arm64.md`](../benchmarks/results/checkpoint-1-macos-arm64.md).
+The latest machine-specific runtime report is
+[`checkpoint-2026-09-08-macos-arm64.md`](../benchmarks/results/checkpoint-2026-09-08-macos-arm64.md).
 It separates runtime, allocation counts where equivalent instrumentation
 exists, compilation time, binary size, whole-process Hyperfine measurements,
 and generated-code findings.
@@ -758,3 +758,86 @@ next material compiler target. This is a tooling/compiler implementation goal,
 not a proposed change to Z syntax or application semantics. Clean-cache builds,
 interactive dev launch, memory, and the wider invalidation matrix remain to be
 measured separately.
+
+## Compiler and runtime benchmark refresh — 2026-09-08
+
+The reproducible suite now includes `benchmarks/build-latency.ts`, independent
+of Zapp. It builds identical 24-module projects (16 helper functions per module)
+through Stage 0 and the fixed-point native driver. Three trials alternate
+driver order. Each source/header mutation changes the executed checksum, so a
+fast stale executable cannot pass. Every native unchanged run must report an
+input-cache hit; source/header/profile changes must miss. Process groups have
+180-second watchdogs and only probe-owned temporary directories are removed.
+
+Measured on the Apple M4 Pro development host, using compiler source revision
+`e9a9608` with benchmark-harness edits. Debug builds use `-O0`, release builds
+`-O2 -DNDEBUG`; bootstrap and executable validation are outside the timing.
+Normal desktop/background services were active, but compiler test processes
+were stopped before the measured runs. Fresh project caches still share warm
+host filesystem/toolchain caches and are not clean-machine builds.
+
+| Build scenario | Stage-0 median | Native median |
+| --- | ---: | ---: |
+| Fresh project cache | 316 ms | 317 ms |
+| Unchanged debug build | 309 ms | 50 ms |
+| One module changed | 302 ms | 182 ms |
+| Transitive C header changed | 303 ms | 245 ms |
+| Switch debug → release | 296 ms | 181 ms |
+| Unchanged release build | 292 ms | 53 ms |
+| Return release → debug | 302 ms | 169 ms |
+
+The [complete matrix](../benchmarks/results/build-latency-2026-09-08.md)
+and [raw trials](../benchmarks/results/build-latency-2026-09-08.json) include
+min/max, toolchains, checksums, cache outcomes, and binary sizes. This synthetic
+workload shows roughly sixfold faster native no-op builds, but **does not**
+predict 50-ms Z Notes rebuilds or prove universally faster native cold builds.
+Source changes still rebuild the whole graph. Switching back to debug misses
+despite a previous successful debug build, confirming the remaining
+profile-specific artifact-cache opportunity. The real Z Notes boundary and
+its 24–32-second recompilation cost remain documented above.
+
+The full runtime suite was rerun separately: nine samples after two warmups,
+all nine workloads and applicable C/C++/Rust/Zig/Nim/Go references, at the
+existing runtime `-O3 -DNDEBUG` profile. All checksums passed. The harness now
+also preserves raw samples and allocation records in adjacent JSON rather than
+only Markdown medians, and bounds compiler/native subprocess execution.
+
+| Runtime probe | Z / native control duration | Observation |
+| --- | ---: | --- |
+| Arithmetic | 1.008× C | Same inspected hot-loop instructions; no allocation |
+| Imported C call | 1.007× C | One direct call per iteration in optimized assembly |
+| Dynamic array | 1.028× C | Matching growth allocation counts; checked indexing |
+| Struct ownership | 0.995× C++ | One drop call per iteration after optimization |
+| Structured task pair | 1.013× direct Z await | Same frame allocation count in both paths |
+| Native thread create/join | 0.931× C | OS scheduling noise; larger Z task storage remains |
+| Same-thread channel | 1.078× C | Two fixed Z allocations; no per-message ring allocation |
+| Async producer channel | 1.188× blocking C | Different scheduling semantics; one task frame per send |
+| Synchronous channel | 1.007× C | Four fixed allocations; semantics-matched native control |
+
+See [the runtime report](../benchmarks/results/checkpoint-2026-09-08-macos-arm64.md)
+and [raw samples](../benchmarks/results/checkpoint-2026-09-08-macos-arm64.json).
+Most absolute kernel times are higher than July's report, including C controls;
+that is not evidence of a Z compiler regression by itself. Arithmetic, direct
+C calls, and deterministic cleanup retain their expected low-overhead shapes.
+The other assembly-classification rows in the generated report remain prior
+inspection notes, not automatically re-proven claims.
+
+One concrete memory change deserves tracking: the async-pair probe still makes
+100,001 balanced allocations but now requests 10,400,192 bytes, versus about
+8.8 MB in July: **104 versus 88 bytes per ready-task frame**, plus one root
+frame. Inspection against the earlier emitter finds two additional,
+unconditional executor pointers in the shared task header (`completion_executor`
+and `native_executor`), accounting for that 16-byte increase on this host.
+The thread probe also
+shows increased frame storage. These are requested allocation bytes, not peak
+resident memory, and the change is not attributed to this turn's native
+TaskScope fix (these runtime probes emit through Stage 0). Audit shared task
+header growth and consider feature-specific/cold fields before adding further
+per-task state. Async channel frame reuse/pooling remains the highest-volume
+known allocation target; the channel's synchronous ring path is already near C.
+
+Next benchmark expansion should cover header/.zd/overlay/compiler invalidation,
+SDK-heavy graphs, peak memory, native-emitter runtime parity, ARC identity,
+Map/Set, and generators. Keep compile latency, runtime, and allocation costs
+separate. No claim about beating all contemporary languages follows from these
+small workloads.

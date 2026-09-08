@@ -1,0 +1,564 @@
+{
+  "generatedAt": "2026-09-08T15:33:04.827Z",
+  "revision": "e9a960857816edf86e9da6243a10467341dbe6f0",
+  "dirty": true,
+  "system": {
+    "platform": "darwin",
+    "release": "25.4.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro"
+  },
+  "toolchains": {
+    "bun": "1.3.14",
+    "native": "z 0.1.0-dev revision 2026-08-31.1 compiler-api 2",
+    "clang": "Apple clang version 17.0.0 (clang-1700.4.4.1)\nTarget: arm64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+  },
+  "workload": {
+    "modules": 24,
+    "functionsPerModule": 16,
+    "trials": 3
+  },
+  "boundary": "Wall time of z build only. Executable/checksum validation excluded. Fresh project caches; warm host filesystem/toolchain. Debug O0; release O2. No GUI or Zapp prerequisites.",
+  "measurements": [
+    {
+      "trial": 1,
+      "driver": "stage0",
+      "scenario": "fresh-project-cache",
+      "seconds": 0.44739712499999995,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 8067
+    },
+    {
+      "trial": 1,
+      "driver": "stage0",
+      "scenario": "unchanged",
+      "seconds": 0.301210834,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 8067
+    },
+    {
+      "trial": 1,
+      "driver": "stage0",
+      "scenario": "one-module-change",
+      "seconds": 0.2975207499999999,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9067
+    },
+    {
+      "trial": 1,
+      "driver": "stage0",
+      "scenario": "source-unchanged",
+      "seconds": 0.30265750000000025,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9067
+    },
+    {
+      "trial": 1,
+      "driver": "stage0",
+      "scenario": "transitive-header-change",
+      "seconds": 0.29799675000000025,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 1,
+      "driver": "stage0",
+      "scenario": "header-unchanged",
+      "seconds": 0.307833208,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 1,
+      "driver": "stage0",
+      "scenario": "switch-to-release",
+      "seconds": 0.2973735000000001,
+      "cacheHit": false,
+      "binaryBytes": 33560,
+      "checksum": 9071
+    },
+    {
+      "trial": 1,
+      "driver": "stage0",
+      "scenario": "release-unchanged",
+      "seconds": 0.3089870410000003,
+      "cacheHit": false,
+      "binaryBytes": 33560,
+      "checksum": 9071
+    },
+    {
+      "trial": 1,
+      "driver": "stage0",
+      "scenario": "return-to-debug",
+      "seconds": 0.30189708299999984,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 1,
+      "driver": "stage0",
+      "scenario": "debug-unchanged",
+      "seconds": 0.30798354199999994,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 1,
+      "driver": "native",
+      "scenario": "fresh-project-cache",
+      "seconds": 0.3234728750000004,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 8067
+    },
+    {
+      "trial": 1,
+      "driver": "native",
+      "scenario": "unchanged",
+      "seconds": 0.04937854200000038,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 8067
+    },
+    {
+      "trial": 1,
+      "driver": "native",
+      "scenario": "one-module-change",
+      "seconds": 0.1816260830000001,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 9067
+    },
+    {
+      "trial": 1,
+      "driver": "native",
+      "scenario": "source-unchanged",
+      "seconds": 0.05731720800000039,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 9067
+    },
+    {
+      "trial": 1,
+      "driver": "native",
+      "scenario": "transitive-header-change",
+      "seconds": 0.24652179199999955,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    },
+    {
+      "trial": 1,
+      "driver": "native",
+      "scenario": "header-unchanged",
+      "seconds": 0.05086904099999993,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    },
+    {
+      "trial": 1,
+      "driver": "native",
+      "scenario": "switch-to-release",
+      "seconds": 0.180519542,
+      "cacheHit": false,
+      "binaryBytes": 33960,
+      "checksum": 9071
+    },
+    {
+      "trial": 1,
+      "driver": "native",
+      "scenario": "release-unchanged",
+      "seconds": 0.05299333300000035,
+      "cacheHit": true,
+      "binaryBytes": 33960,
+      "checksum": 9071
+    },
+    {
+      "trial": 1,
+      "driver": "native",
+      "scenario": "return-to-debug",
+      "seconds": 0.17884708299999966,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    },
+    {
+      "trial": 1,
+      "driver": "native",
+      "scenario": "debug-unchanged",
+      "seconds": 0.054022166000000656,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "native",
+      "scenario": "fresh-project-cache",
+      "seconds": 0.23010583300000145,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 8067
+    },
+    {
+      "trial": 2,
+      "driver": "native",
+      "scenario": "unchanged",
+      "seconds": 0.049847749999999,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 8067
+    },
+    {
+      "trial": 2,
+      "driver": "native",
+      "scenario": "one-module-change",
+      "seconds": 0.17899745799999983,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 9067
+    },
+    {
+      "trial": 2,
+      "driver": "native",
+      "scenario": "source-unchanged",
+      "seconds": 0.051734375,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 9067
+    },
+    {
+      "trial": 2,
+      "driver": "native",
+      "scenario": "transitive-header-change",
+      "seconds": 0.24085479099999976,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "native",
+      "scenario": "header-unchanged",
+      "seconds": 0.04915816699999959,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "native",
+      "scenario": "switch-to-release",
+      "seconds": 0.18129837500000032,
+      "cacheHit": false,
+      "binaryBytes": 33960,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "native",
+      "scenario": "release-unchanged",
+      "seconds": 0.05353666599999997,
+      "cacheHit": true,
+      "binaryBytes": 33960,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "native",
+      "scenario": "return-to-debug",
+      "seconds": 0.1688412499999995,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "native",
+      "scenario": "debug-unchanged",
+      "seconds": 0.05170175000000017,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "stage0",
+      "scenario": "fresh-project-cache",
+      "seconds": 0.3004595420000005,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 8067
+    },
+    {
+      "trial": 2,
+      "driver": "stage0",
+      "scenario": "unchanged",
+      "seconds": 0.3091822499999998,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 8067
+    },
+    {
+      "trial": 2,
+      "driver": "stage0",
+      "scenario": "one-module-change",
+      "seconds": 0.3117324580000004,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9067
+    },
+    {
+      "trial": 2,
+      "driver": "stage0",
+      "scenario": "source-unchanged",
+      "seconds": 0.30198512499999924,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9067
+    },
+    {
+      "trial": 2,
+      "driver": "stage0",
+      "scenario": "transitive-header-change",
+      "seconds": 0.3460604579999999,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "stage0",
+      "scenario": "header-unchanged",
+      "seconds": 0.30089041600000016,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "stage0",
+      "scenario": "switch-to-release",
+      "seconds": 0.29555529100000055,
+      "cacheHit": false,
+      "binaryBytes": 33560,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "stage0",
+      "scenario": "release-unchanged",
+      "seconds": 0.292136708,
+      "cacheHit": false,
+      "binaryBytes": 33560,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "stage0",
+      "scenario": "return-to-debug",
+      "seconds": 0.3077354999999989,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 2,
+      "driver": "stage0",
+      "scenario": "debug-unchanged",
+      "seconds": 0.30769445900000025,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "stage0",
+      "scenario": "fresh-project-cache",
+      "seconds": 0.3155472499999996,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 8067
+    },
+    {
+      "trial": 3,
+      "driver": "stage0",
+      "scenario": "unchanged",
+      "seconds": 0.3221235000000015,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 8067
+    },
+    {
+      "trial": 3,
+      "driver": "stage0",
+      "scenario": "one-module-change",
+      "seconds": 0.3015463750000017,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9067
+    },
+    {
+      "trial": 3,
+      "driver": "stage0",
+      "scenario": "source-unchanged",
+      "seconds": 0.31025254100000166,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9067
+    },
+    {
+      "trial": 3,
+      "driver": "stage0",
+      "scenario": "transitive-header-change",
+      "seconds": 0.3026434169999993,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "stage0",
+      "scenario": "header-unchanged",
+      "seconds": 0.3037798330000005,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "stage0",
+      "scenario": "switch-to-release",
+      "seconds": 0.2920458749999998,
+      "cacheHit": false,
+      "binaryBytes": 33560,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "stage0",
+      "scenario": "release-unchanged",
+      "seconds": 0.288952916000002,
+      "cacheHit": false,
+      "binaryBytes": 33560,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "stage0",
+      "scenario": "return-to-debug",
+      "seconds": 0.2980325419999972,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "stage0",
+      "scenario": "debug-unchanged",
+      "seconds": 0.3085065829999985,
+      "cacheHit": false,
+      "binaryBytes": 92584,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "native",
+      "scenario": "fresh-project-cache",
+      "seconds": 0.31688366700000187,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 8067
+    },
+    {
+      "trial": 3,
+      "driver": "native",
+      "scenario": "unchanged",
+      "seconds": 0.05122124999999869,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 8067
+    },
+    {
+      "trial": 3,
+      "driver": "native",
+      "scenario": "one-module-change",
+      "seconds": 0.19641958400000295,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 9067
+    },
+    {
+      "trial": 3,
+      "driver": "native",
+      "scenario": "source-unchanged",
+      "seconds": 0.04941249999999855,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 9067
+    },
+    {
+      "trial": 3,
+      "driver": "native",
+      "scenario": "transitive-header-change",
+      "seconds": 0.2447939579999984,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "native",
+      "scenario": "header-unchanged",
+      "seconds": 0.046422957999999195,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "native",
+      "scenario": "switch-to-release",
+      "seconds": 0.1883928330000017,
+      "cacheHit": false,
+      "binaryBytes": 33960,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "native",
+      "scenario": "release-unchanged",
+      "seconds": 0.046781000000002675,
+      "cacheHit": true,
+      "binaryBytes": 33960,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "native",
+      "scenario": "return-to-debug",
+      "seconds": 0.16759183299999858,
+      "cacheHit": false,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    },
+    {
+      "trial": 3,
+      "driver": "native",
+      "scenario": "debug-unchanged",
+      "seconds": 0.04823837500000081,
+      "cacheHit": true,
+      "binaryBytes": 66120,
+      "checksum": 9071
+    }
+  ]
+}

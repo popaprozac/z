@@ -63,6 +63,12 @@ These repository documents will move into fully navigable website reference
 pages incrementally. Linking the maintained sources now avoids publishing a
 second stale copy during that migration.
 
+The [September 8 benchmark refresh](https://github.com/popaprozac/z/blob/main/docs/performance.md#compiler-and-runtime-benchmark-refresh--2026-09-08)
+includes separate compiler build-latency and release-runtime suites. The build
+matrix distinguishes fresh project caches, unchanged rebuilds, source/header
+changes, and profile switches; runtime results include raw samples and allocation
+counts. These are workload-specific measurements, not universal speed claims.
+
 ## Design rationale
 
 [`DESIGN.md`](https://github.com/popaprozac/z/blob/main/DESIGN.md) records the

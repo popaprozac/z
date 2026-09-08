@@ -1,0 +1,1164 @@
+{
+  "generatedAt": "2026-09-08T15:37:03.818Z",
+  "samples": 9,
+  "warmups": 2,
+  "scale": 1,
+  "revision": "e9a960857816edf86e9da6243a10467341dbe6f0",
+  "dirty": true,
+  "results": [
+    {
+      "definition": {
+        "id": "arithmetic",
+        "iterations": 50000000,
+        "reference": "reference.c",
+        "referenceLanguage": "c",
+        "additionalVariants": [
+          {
+            "id": "rust",
+            "source": "reference.rs"
+          },
+          {
+            "id": "zig",
+            "source": "reference.zig"
+          },
+          {
+            "id": "nim",
+            "source": "reference.nim"
+          }
+        ],
+        "semantics": "u64 wrapping arithmetic in a runtime-sized loop"
+      },
+      "zEmitMilliseconds": 145.830625,
+      "z": {
+        "id": "z",
+        "compileMilliseconds": 161.47112500000003,
+        "binaryBytes": 34464,
+        "strippedBinaryBytes": 34392,
+        "samples": [
+          49422709,
+          50328750,
+          49824666,
+          49024833,
+          48799000,
+          49746083,
+          48712542,
+          51347167,
+          50467917
+        ],
+        "medianNanoseconds": 49746083,
+        "minimumNanoseconds": 48712542,
+        "checksum": "1421581077767472021",
+        "allocations": 0,
+        "frees": 0,
+        "requestedBytes": 0,
+        "allocationsMeasured": true
+      },
+      "reference": {
+        "id": "c",
+        "compileMilliseconds": 57.97358299999996,
+        "binaryBytes": 34464,
+        "strippedBinaryBytes": 34392,
+        "samples": [
+          48512708,
+          50683709,
+          49253209,
+          49359333,
+          50053125,
+          48571208,
+          49794500,
+          50093417,
+          48104292
+        ],
+        "medianNanoseconds": 49359333,
+        "minimumNanoseconds": 48104292,
+        "checksum": "1421581077767472021",
+        "allocations": 0,
+        "frees": 0,
+        "requestedBytes": 0,
+        "allocationsMeasured": true
+      },
+      "additional": [
+        {
+          "id": "rust",
+          "compileMilliseconds": 1808.7737079999997,
+          "binaryBytes": 460808,
+          "strippedBinaryBytes": 371888,
+          "samples": [
+            49395333,
+            49994042,
+            49542167,
+            49381125,
+            50028875,
+            48749708,
+            49125458,
+            49823459,
+            48149667
+          ],
+          "medianNanoseconds": 49395333,
+          "minimumNanoseconds": 48149667,
+          "checksum": "1421581077767472021",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "zig",
+          "compileMilliseconds": 7856.613667,
+          "binaryBytes": 454064,
+          "strippedBinaryBytes": 386032,
+          "samples": [
+            50529041,
+            50624125,
+            50769250,
+            51283167,
+            51727667,
+            51030209,
+            50291375,
+            51148500,
+            50327667
+          ],
+          "medianNanoseconds": 50769250,
+          "minimumNanoseconds": 50291375,
+          "checksum": "1421581077767472021",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "nim",
+          "compileMilliseconds": 995.8158750000002,
+          "binaryBytes": 74288,
+          "strippedBinaryBytes": 68384,
+          "samples": [
+            50572917,
+            50601959,
+            51232708,
+            51118583,
+            50792500,
+            51169666,
+            51098583,
+            50828792,
+            51069125
+          ],
+          "medianNanoseconds": 51069125,
+          "minimumNanoseconds": 50572917,
+          "checksum": "1421581077767472021",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        }
+      ]
+    },
+    {
+      "definition": {
+        "id": "direct-c-call",
+        "iterations": 30000000,
+        "reference": "reference.c",
+        "referenceLanguage": "c",
+        "additionalVariants": [
+          {
+            "id": "rust",
+            "source": "reference.rs"
+          },
+          {
+            "id": "zig",
+            "source": "reference.zig"
+          },
+          {
+            "id": "nim",
+            "source": "reference.nim"
+          }
+        ],
+        "semantics": "one non-inlined imported C call per iteration"
+      },
+      "zEmitMilliseconds": 141.33374999999796,
+      "z": {
+        "id": "z",
+        "compileMilliseconds": 66.89112499999828,
+        "binaryBytes": 34464,
+        "strippedBinaryBytes": 34392,
+        "samples": [
+          23132417,
+          22763875,
+          22749541,
+          22561333,
+          22943750,
+          22759833,
+          22962250,
+          22668083,
+          22523459
+        ],
+        "medianNanoseconds": 22759833,
+        "minimumNanoseconds": 22523459,
+        "checksum": "15187642477153162922",
+        "allocations": 0,
+        "frees": 0,
+        "requestedBytes": 0,
+        "allocationsMeasured": true
+      },
+      "reference": {
+        "id": "c",
+        "compileMilliseconds": 57.974459000000934,
+        "binaryBytes": 34464,
+        "strippedBinaryBytes": 34392,
+        "samples": [
+          22611083,
+          22593375,
+          22823708,
+          22672958,
+          22612583,
+          22649000,
+          22703000,
+          22535917,
+          22568541
+        ],
+        "medianNanoseconds": 22612583,
+        "minimumNanoseconds": 22535917,
+        "checksum": "15187642477153162922",
+        "allocations": 0,
+        "frees": 0,
+        "requestedBytes": 0,
+        "allocationsMeasured": true
+      },
+      "additional": [
+        {
+          "id": "rust",
+          "compileMilliseconds": 563.9476670000004,
+          "binaryBytes": 460856,
+          "strippedBinaryBytes": 371936,
+          "samples": [
+            23105500,
+            22863917,
+            22739833,
+            22919167,
+            22983667,
+            22874375,
+            22953084,
+            22769417,
+            22848459
+          ],
+          "medianNanoseconds": 22874375,
+          "minimumNanoseconds": 22739833,
+          "checksum": "15187642477153162922",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "zig",
+          "compileMilliseconds": 4572.7959169999995,
+          "binaryBytes": 454096,
+          "strippedBinaryBytes": 386064,
+          "samples": [
+            24933542,
+            23218167,
+            23202209,
+            23513125,
+            23574625,
+            23165292,
+            22733625,
+            23142083,
+            22896500
+          ],
+          "medianNanoseconds": 23202209,
+          "minimumNanoseconds": 22733625,
+          "checksum": "15187642477153162922",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "nim",
+          "compileMilliseconds": 396.09054200000537,
+          "binaryBytes": 74288,
+          "strippedBinaryBytes": 68384,
+          "samples": [
+            23395042,
+            23046000,
+            22728125,
+            22689917,
+            22747333,
+            22824208,
+            22762000,
+            22730875,
+            22640750
+          ],
+          "medianNanoseconds": 22747333,
+          "minimumNanoseconds": 22640750,
+          "checksum": "15187642477153162922",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        }
+      ]
+    },
+    {
+      "definition": {
+        "id": "dynamic-array",
+        "iterations": 5000000,
+        "reference": "reference.c",
+        "referenceLanguage": "c",
+        "additionalVariants": [
+          {
+            "id": "rust",
+            "source": "reference.rs"
+          },
+          {
+            "id": "zig",
+            "source": "reference.zig"
+          },
+          {
+            "id": "nim",
+            "source": "reference.nim"
+          }
+        ],
+        "semantics": "native dynamic sequence growth, checked indexing, scan, and cleanup"
+      },
+      "zEmitMilliseconds": 140.49779099999432,
+      "z": {
+        "id": "z",
+        "compileMilliseconds": 75.05179199999839,
+        "binaryBytes": 34464,
+        "strippedBinaryBytes": 34392,
+        "samples": [
+          6368167,
+          6074542,
+          5638791,
+          5450500,
+          5283125,
+          5045875,
+          4722167,
+          4856208,
+          4860625
+        ],
+        "medianNanoseconds": 5283125,
+        "minimumNanoseconds": 4722167,
+        "checksum": "12499997500000",
+        "allocations": 22,
+        "frees": 1,
+        "requestedBytes": 134217696,
+        "allocationsMeasured": true
+      },
+      "reference": {
+        "id": "c",
+        "compileMilliseconds": 62.82837499999732,
+        "binaryBytes": 34464,
+        "strippedBinaryBytes": 34392,
+        "samples": [
+          6595625,
+          6426500,
+          5965000,
+          5331334,
+          4990542,
+          4958417,
+          4797709,
+          5140167,
+          4671750
+        ],
+        "medianNanoseconds": 5140167,
+        "minimumNanoseconds": 4671750,
+        "checksum": "12499997500000",
+        "allocations": 22,
+        "frees": 1,
+        "requestedBytes": 134217696,
+        "allocationsMeasured": true
+      },
+      "additional": [
+        {
+          "id": "rust",
+          "compileMilliseconds": 159.16425000000163,
+          "binaryBytes": 461144,
+          "strippedBinaryBytes": 371904,
+          "samples": [
+            9658208,
+            6871667,
+            6168208,
+            6347334,
+            6253917,
+            6363125,
+            6197584,
+            6190916,
+            6186541
+          ],
+          "medianNanoseconds": 6253917,
+          "minimumNanoseconds": 6168208,
+          "checksum": "12499997500000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "zig",
+          "compileMilliseconds": 4584.7098750000005,
+          "binaryBytes": 453872,
+          "strippedBinaryBytes": 386096,
+          "samples": [
+            8343375,
+            9136458,
+            7479250,
+            7604000,
+            7012791,
+            6596541,
+            6625958,
+            6444667,
+            6580958
+          ],
+          "medianNanoseconds": 7012791,
+          "minimumNanoseconds": 6444667,
+          "checksum": "12499997500000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "nim",
+          "compileMilliseconds": 349.6319169999988,
+          "binaryBytes": 74400,
+          "strippedBinaryBytes": 68384,
+          "samples": [
+            23928834,
+            22282541,
+            22878333,
+            22004167,
+            22111125,
+            21699917,
+            21689667,
+            21845333,
+            21498750
+          ],
+          "medianNanoseconds": 22004167,
+          "minimumNanoseconds": 21498750,
+          "checksum": "12499997500000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        }
+      ]
+    },
+    {
+      "definition": {
+        "id": "struct-ownership",
+        "iterations": 20000000,
+        "reference": "reference.cpp",
+        "referenceLanguage": "c++",
+        "additionalVariants": [
+          {
+            "id": "rust",
+            "source": "reference.rs"
+          },
+          {
+            "id": "zig",
+            "source": "reference.zig"
+          },
+          {
+            "id": "nim",
+            "source": "reference.nim"
+          }
+        ],
+        "semantics": "unique value transfer and exactly-once deterministic destruction"
+      },
+      "zEmitMilliseconds": 142.6477920000034,
+      "z": {
+        "id": "z",
+        "compileMilliseconds": 64.43074999999953,
+        "binaryBytes": 34464,
+        "strippedBinaryBytes": 34392,
+        "samples": [
+          15996958,
+          15570833,
+          15205375,
+          15522708,
+          15265667,
+          15305042,
+          15273000,
+          15353625,
+          15551541
+        ],
+        "medianNanoseconds": 15353625,
+        "minimumNanoseconds": 15205375,
+        "checksum": "199999990000000",
+        "allocations": 0,
+        "frees": 0,
+        "requestedBytes": 0,
+        "allocationsMeasured": true
+      },
+      "reference": {
+        "id": "c++",
+        "compileMilliseconds": 143.09095800000068,
+        "binaryBytes": 34464,
+        "strippedBinaryBytes": 34400,
+        "samples": [
+          17402417,
+          15746541,
+          15385583,
+          15346958,
+          15429750,
+          15322250,
+          15358500,
+          15454167,
+          15428917
+        ],
+        "medianNanoseconds": 15428917,
+        "minimumNanoseconds": 15322250,
+        "checksum": "199999990000000",
+        "allocations": 0,
+        "frees": 0,
+        "requestedBytes": 0,
+        "allocationsMeasured": true
+      },
+      "additional": [
+        {
+          "id": "rust",
+          "compileMilliseconds": 86.43875000000116,
+          "binaryBytes": 460856,
+          "strippedBinaryBytes": 371936,
+          "samples": [
+            19749291,
+            16995250,
+            15778583,
+            15081708,
+            15603208,
+            15189208,
+            15242167,
+            15296833,
+            15113959
+          ],
+          "medianNanoseconds": 15296833,
+          "minimumNanoseconds": 15081708,
+          "checksum": "199999990000000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "zig",
+          "compileMilliseconds": 4539.9127919999955,
+          "binaryBytes": 454112,
+          "strippedBinaryBytes": 386064,
+          "samples": [
+            17368959,
+            15752708,
+            15503417,
+            15512208,
+            15276625,
+            15168041,
+            15325333,
+            15193625,
+            15387583
+          ],
+          "medianNanoseconds": 15387583,
+          "minimumNanoseconds": 15168041,
+          "checksum": "199999990000000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "nim",
+          "compileMilliseconds": 378.45429100000183,
+          "binaryBytes": 74720,
+          "strippedBinaryBytes": 68384,
+          "samples": [
+            30741250,
+            30565000,
+            30749750,
+            30654167,
+            31014375,
+            30862417,
+            31249625,
+            30443209,
+            30872875
+          ],
+          "medianNanoseconds": 30749750,
+          "minimumNanoseconds": 30443209,
+          "checksum": "199999990000000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        }
+      ]
+    },
+    {
+      "definition": {
+        "id": "async-task-pair",
+        "iterations": 100000,
+        "reference": "reference.zs",
+        "referenceLanguage": "z",
+        "semantics": "two hot structured child tasks versus two direct awaits in the same Z async runtime"
+      },
+      "zEmitMilliseconds": 143.61420799999905,
+      "z": {
+        "id": "z",
+        "compileMilliseconds": 77.79562500001339,
+        "binaryBytes": 34544,
+        "strippedBinaryBytes": 34408,
+        "samples": [
+          4563666,
+          4402750,
+          3641333,
+          3238875,
+          3446333,
+          3325875,
+          2936333,
+          3029000,
+          2929042
+        ],
+        "medianNanoseconds": 3325875,
+        "minimumNanoseconds": 2929042,
+        "checksum": "4999950000",
+        "allocations": 100001,
+        "frees": 100001,
+        "requestedBytes": 10400192,
+        "allocationsMeasured": true
+      },
+      "reference": {
+        "id": "z-direct-await",
+        "compileMilliseconds": 77.06512500000827,
+        "binaryBytes": 34560,
+        "strippedBinaryBytes": 34424,
+        "samples": [
+          3853875,
+          3328041,
+          3148042,
+          3413833,
+          3283833,
+          3302041,
+          3202875,
+          3157417,
+          2918334
+        ],
+        "medianNanoseconds": 3283833,
+        "minimumNanoseconds": 2918334,
+        "checksum": "4999950000",
+        "allocations": 100001,
+        "frees": 100001,
+        "requestedBytes": 10400176,
+        "allocationsMeasured": true
+      },
+      "additional": []
+    },
+    {
+      "definition": {
+        "id": "native-thread",
+        "iterations": 1000,
+        "reference": "reference.c",
+        "referenceLanguage": "c",
+        "additionalVariants": [
+          {
+            "id": "rust",
+            "source": "reference.rs"
+          },
+          {
+            "id": "zig",
+            "source": "reference.zig"
+          }
+        ],
+        "semantics": "one OS thread creation, one owned result transfer, and one join per iteration",
+        "linkArguments": [
+          "-pthread"
+        ]
+      },
+      "zEmitMilliseconds": 151.90874999998778,
+      "z": {
+        "id": "z",
+        "compileMilliseconds": 90.6043750000099,
+        "binaryBytes": 35648,
+        "strippedBinaryBytes": 35224,
+        "samples": [
+          15796417,
+          14619583,
+          13985458,
+          21097958,
+          13388666,
+          13380875,
+          13518042,
+          13902375,
+          13895959
+        ],
+        "medianNanoseconds": 13902375,
+        "minimumNanoseconds": 13380875,
+        "checksum": "499500",
+        "allocations": 1001,
+        "frees": 1001,
+        "requestedBytes": 136208,
+        "allocationsMeasured": true
+      },
+      "reference": {
+        "id": "c",
+        "compileMilliseconds": 75.58341600000858,
+        "binaryBytes": 34624,
+        "strippedBinaryBytes": 34520,
+        "samples": [
+          17414458,
+          14929083,
+          14604042,
+          14748584,
+          18435584,
+          14664750,
+          14553250,
+          23877583,
+          25005292
+        ],
+        "medianNanoseconds": 14929083,
+        "minimumNanoseconds": 14553250,
+        "checksum": "499500",
+        "allocations": 1000,
+        "frees": 1000,
+        "requestedBytes": 16000,
+        "allocationsMeasured": true
+      },
+      "additional": [
+        {
+          "id": "rust",
+          "compileMilliseconds": 738.4244159999944,
+          "binaryBytes": 469960,
+          "strippedBinaryBytes": 374960,
+          "samples": [
+            32746458,
+            25891834,
+            23263917,
+            26771500,
+            24397250,
+            19267584,
+            25982000,
+            25418667,
+            17747500
+          ],
+          "medianNanoseconds": 25418667,
+          "minimumNanoseconds": 17747500,
+          "checksum": "499500",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "zig",
+          "compileMilliseconds": 4523.315875,
+          "binaryBytes": 454304,
+          "strippedBinaryBytes": 386080,
+          "samples": [
+            22972416,
+            21241333,
+            21729500,
+            21298375,
+            22069334,
+            21338750,
+            21886209,
+            20172959,
+            17771708
+          ],
+          "medianNanoseconds": 21338750,
+          "minimumNanoseconds": 17771708,
+          "checksum": "499500",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        }
+      ]
+    },
+    {
+      "definition": {
+        "id": "channel-local",
+        "iterations": 2000000,
+        "reference": "reference.c",
+        "referenceLanguage": "c",
+        "additionalVariants": [
+          {
+            "id": "rust",
+            "source": "reference.rs"
+          },
+          {
+            "id": "go",
+            "source": "reference.go"
+          }
+        ],
+        "semantics": "one capacity-1 channel send followed by one receive on the same thread",
+        "linkArguments": [
+          "-pthread"
+        ]
+      },
+      "zEmitMilliseconds": 152.1059580000001,
+      "z": {
+        "id": "z",
+        "compileMilliseconds": 88.91224999999395,
+        "binaryBytes": 35264,
+        "strippedBinaryBytes": 35032,
+        "samples": [
+          20574042,
+          18896416,
+          18843375,
+          18684292,
+          18653291,
+          18719417,
+          18911959,
+          18992459,
+          18817000
+        ],
+        "medianNanoseconds": 18843375,
+        "minimumNanoseconds": 18653291,
+        "checksum": "1999999000000",
+        "allocations": 2,
+        "frees": 2,
+        "requestedBytes": 264,
+        "allocationsMeasured": true
+      },
+      "reference": {
+        "id": "c",
+        "compileMilliseconds": 68.01924999999756,
+        "binaryBytes": 35152,
+        "strippedBinaryBytes": 35080,
+        "samples": [
+          19757959,
+          17994292,
+          17479875,
+          17391333,
+          17408292,
+          17876417,
+          17369000,
+          17734084,
+          17458459
+        ],
+        "medianNanoseconds": 17479875,
+        "minimumNanoseconds": 17369000,
+        "checksum": "1999999000000",
+        "allocations": 0,
+        "frees": 0,
+        "requestedBytes": 0,
+        "allocationsMeasured": true
+      },
+      "additional": [
+        {
+          "id": "rust",
+          "compileMilliseconds": 900.416167000003,
+          "binaryBytes": 468792,
+          "strippedBinaryBytes": 374656,
+          "samples": [
+            14874542,
+            14928958,
+            14826834,
+            14742625,
+            14376833,
+            14461875,
+            14918625,
+            14547083,
+            14433583
+          ],
+          "medianNanoseconds": 14742625,
+          "minimumNanoseconds": 14376833,
+          "checksum": "1999999000000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "go",
+          "compileMilliseconds": 1860.5755419999914,
+          "binaryBytes": 1572658,
+          "strippedBinaryBytes": 1572696,
+          "samples": [
+            32435458,
+            33262000,
+            32972125,
+            32328250,
+            31352041,
+            31169375,
+            31127125,
+            31761792,
+            30992583
+          ],
+          "medianNanoseconds": 31761792,
+          "minimumNanoseconds": 30992583,
+          "checksum": "1999999000000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        }
+      ]
+    },
+    {
+      "definition": {
+        "id": "channel-thread",
+        "iterations": 250000,
+        "reference": "reference.c",
+        "referenceLanguage": "c",
+        "additionalVariants": [
+          {
+            "id": "rust",
+            "source": "reference.rs"
+          },
+          {
+            "id": "go",
+            "source": "reference.go"
+          }
+        ],
+        "semantics": "one async producer and one dedicated synchronous consumer; the blocking native references isolate Z's additional task-frame cost rather than matching scheduling semantics",
+        "linkArguments": [
+          "-pthread"
+        ]
+      },
+      "zEmitMilliseconds": 162.4702499999985,
+      "z": {
+        "id": "z",
+        "compileMilliseconds": 253.11154199999874,
+        "binaryBytes": 36112,
+        "strippedBinaryBytes": 35320,
+        "samples": [
+          1316620084,
+          1605040000,
+          1322503167,
+          1348795292,
+          1342411500,
+          1299340458,
+          1256942208,
+          1325632459,
+          1338613458
+        ],
+        "medianNanoseconds": 1325632459,
+        "minimumNanoseconds": 1256942208,
+        "checksum": "31249875000",
+        "allocations": 250004,
+        "frees": 250004,
+        "requestedBytes": 46000704,
+        "allocationsMeasured": true
+      },
+      "reference": {
+        "id": "c",
+        "compileMilliseconds": 344.67837500000314,
+        "binaryBytes": 35296,
+        "strippedBinaryBytes": 35208,
+        "samples": [
+          1115885667,
+          1159535375,
+          1158508792,
+          1090751458,
+          1073080875,
+          1058139709,
+          1113553792,
+          1188268333,
+          1171645208
+        ],
+        "medianNanoseconds": 1115885667,
+        "minimumNanoseconds": 1058139709,
+        "checksum": "31249875000",
+        "allocations": 0,
+        "frees": 0,
+        "requestedBytes": 0,
+        "allocationsMeasured": true
+      },
+      "additional": [
+        {
+          "id": "rust",
+          "compileMilliseconds": 673.777792000008,
+          "binaryBytes": 513624,
+          "strippedBinaryBytes": 410704,
+          "samples": [
+            966892208,
+            1030427958,
+            928247833,
+            888178625,
+            920907292,
+            943678000,
+            969177833,
+            970925333,
+            957531792
+          ],
+          "medianNanoseconds": 957531792,
+          "minimumNanoseconds": 888178625,
+          "checksum": "31249875000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "go",
+          "compileMilliseconds": 362.5724999999802,
+          "binaryBytes": 1589234,
+          "strippedBinaryBytes": 1589272,
+          "samples": [
+            677303458,
+            648500750,
+            639032458,
+            635082875,
+            628092000,
+            654171792,
+            663729416,
+            649434042,
+            656783334
+          ],
+          "medianNanoseconds": 649434042,
+          "minimumNanoseconds": 628092000,
+          "checksum": "31249875000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        }
+      ]
+    },
+    {
+      "definition": {
+        "id": "channel-thread-sync",
+        "iterations": 250000,
+        "reference": "../channel-thread/reference.c",
+        "referenceLanguage": "c",
+        "additionalVariants": [
+          {
+            "id": "rust",
+            "source": "../channel-thread/reference.rs"
+          },
+          {
+            "id": "go",
+            "source": "../channel-thread/reference.go"
+          }
+        ],
+        "semantics": "one synchronous producer and one dedicated synchronous consumer thread transferring u64 values through a capacity-1 channel",
+        "linkArguments": [
+          "-pthread"
+        ]
+      },
+      "zEmitMilliseconds": 158.4727079999866,
+      "z": {
+        "id": "z",
+        "compileMilliseconds": 239.85241699998733,
+        "binaryBytes": 35904,
+        "strippedBinaryBytes": 35304,
+        "samples": [
+          1080354500,
+          1194342958,
+          1188545125,
+          1176543458,
+          1086451250,
+          1077123125,
+          1136525083,
+          1170675959,
+          1163854084
+        ],
+        "medianNanoseconds": 1163854084,
+        "minimumNanoseconds": 1077123125,
+        "checksum": "31249875000",
+        "allocations": 4,
+        "frees": 4,
+        "requestedBytes": 672,
+        "allocationsMeasured": true
+      },
+      "reference": {
+        "id": "c",
+        "compileMilliseconds": 85.77887500001816,
+        "binaryBytes": 35296,
+        "strippedBinaryBytes": 35208,
+        "samples": [
+          1156314958,
+          1173111916,
+          1155139792,
+          1126373500,
+          1388962417,
+          1144539250,
+          1162717250,
+          1134792708,
+          1450344209
+        ],
+        "medianNanoseconds": 1156314958,
+        "minimumNanoseconds": 1126373500,
+        "checksum": "31249875000",
+        "allocations": 0,
+        "frees": 0,
+        "requestedBytes": 0,
+        "allocationsMeasured": true
+      },
+      "additional": [
+        {
+          "id": "rust",
+          "compileMilliseconds": 949.9407919999794,
+          "binaryBytes": 513624,
+          "strippedBinaryBytes": 410704,
+          "samples": [
+            984999291,
+            1160944625,
+            1001342625,
+            968769209,
+            886172375,
+            922344083,
+            896146958,
+            956564292,
+            974469209
+          ],
+          "medianNanoseconds": 968769209,
+          "minimumNanoseconds": 886172375,
+          "checksum": "31249875000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        },
+        {
+          "id": "go",
+          "compileMilliseconds": 302.99166599998716,
+          "binaryBytes": 1589234,
+          "strippedBinaryBytes": 1589272,
+          "samples": [
+            654351084,
+            660189750,
+            753689458,
+            684234667,
+            678658458,
+            670936917,
+            689712208,
+            652183875,
+            665634625
+          ],
+          "medianNanoseconds": 670936917,
+          "minimumNanoseconds": 652183875,
+          "checksum": "31249875000",
+          "allocations": 0,
+          "frees": 0,
+          "requestedBytes": 0,
+          "allocationsMeasured": false
+        }
+      ]
+    }
+  ],
+  "hyperfine": [
+    {
+      "command": "z",
+      "meanSeconds": 0.05321621838000001,
+      "standardDeviationSeconds": 0.0008853339830963741
+    },
+    {
+      "command": "c",
+      "meanSeconds": 0.05353855158,
+      "standardDeviationSeconds": 0.0004709840102964572
+    },
+    {
+      "command": "rust",
+      "meanSeconds": 0.05326124738000001,
+      "standardDeviationSeconds": 0.00024532407573421035
+    },
+    {
+      "command": "zig",
+      "meanSeconds": 0.053390601780000005,
+      "standardDeviationSeconds": 0.00031227783994356963
+    },
+    {
+      "command": "nim",
+      "meanSeconds": 0.05400465157999999,
+      "standardDeviationSeconds": 0.001714107362200527
+    }
+  ]
+}

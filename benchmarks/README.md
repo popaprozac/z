@@ -29,6 +29,14 @@ not be compared across hosts without recording hardware and toolchain versions.
 Use `Z_BENCH_CASES=channel-local,channel-thread` to run a focused subset and
 `Z_BENCH_REPORT=checkpoint-channels.md` to keep that report separate from the
 full checkpoint.
+Without an explicit report name, new reports use the UTC date, platform, and
+architecture so reruns do not overwrite the original historical checkpoint.
+
+Each run now also writes adjacent JSON with individual samples, workload sizes,
+allocation counts, compilation timings, and the Z revision/dirty-state marker.
+Native/compiler subprocesses have a 180-second deadline (override with
+`Z_BENCH_TIMEOUT_MS`). These are watchdogs, not measured time limits or successful
+results. Do not run benchmarks alongside compiler tests or other CPU-heavy work.
 
 The native reference must preserve the relevant Z semantics. For example,
 wrapping arithmetic is compared with unsigned modular C arithmetic, checked
@@ -52,6 +60,37 @@ Z_BENCH_ITERATIONS=50000000 hyperfine --warmup 2 \
 Do not interpret cross-language allocation cells as zero when they display
 `—`: equivalent allocator instrumentation has not yet been added for that
 toolchain.
+
+## Compiler build-latency matrix
+
+```sh
+bun run bootstrap
+Z_BUILD_BENCH_REPORT=benchmarks/results/build-latency-2026-09-08.json \
+  bun benchmarks/build-latency.ts
+```
+
+This self-contained probe generates 24 Z modules with 16 helpers each, plus a
+tiny imported C header with a transitive dependency. It compares Stage 0 and
+the bootstrapped native driver against identical source and validates every
+produced executable's checksum. Three trials alternate driver order. Results
+include fresh project caches, unchanged builds, one-module changes, transitive
+header changes, debug/release switches, and repetitions after each change.
+Every native unchanged row must hit its input cache; changed inputs and profile
+switches must invalidate. Timing excludes executable validation and bootstrap.
+
+`Z_BUILD_BENCH_TRIALS`, `Z_BUILD_BENCH_MODULES`, and
+`Z_BUILD_BENCH_FUNCTIONS` control workload size; `Z_BENCH_NATIVE` selects an
+already-built native driver. Every child process group has a bounded watchdog.
+The probe removes only its own temporary fixture directory and saves raw JSON
+and a Markdown summary. A fresh project cache is **not** a cold machine: host
+filesystem, compiler, and SDK caches remain warm. This is a synthetic compiler
+workload, not a prediction for a header-heavy application such as Z Notes.
+
+The runtime suite uses Stage-0-generated C at `-O3`; this build matrix uses the
+actual CLI profiles (`-O0` debug and `-O2 -DNDEBUG` release). Keep those results
+separate. Foreign-adapter/SDK scale, .zd changes, generated overlays, compiler
+replacement, memory, and module-level incremental compilation need additional
+measurements.
 
 ## Z Notes build latency
 
