@@ -1,5 +1,5 @@
-// Integration prerequisite: Stage 0 runs this; native Z reports Z0700 for
-// the ordinary named suspending helper. No native resources are needed.
+// Both compiler paths execute this ordinary named suspending helper.
+// The real listener's native resources and child awaits are separate tiers.
 import { scheduler } from "std/async";
 
 async function listen(): void {

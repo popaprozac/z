@@ -1,6 +1,4 @@
-// Integration prerequisite, not an executable differential fixture yet.
-// Stage 0 executes this with owned frame fields. Native check accepts
-// this body, but native run still rejects its combined frame at C emission.
+// Both compiler paths preserve selected owned fields across suspension.
 import { scheduler } from "std/async";
 
 struct Failure {

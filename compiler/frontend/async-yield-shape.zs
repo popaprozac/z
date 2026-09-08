@@ -1,0 +1,126 @@
+// Shared admission rule for the first general, executor-local yield frame.
+// This is an implementation boundary, not a second set of ownership rules.
+import {
+  ExpressionKind, ExpressionTree, FunctionDeclaration, Program,
+  StatementArena, StatementKind,
+} from "./parser.zs";
+
+export function isFrameSchedulerYield(
+  in program: Program, in arena: StatementArena, index: usize
+): boolean {
+  if (arena.nodes[index].kind != StatementKind.expressionStatement) return false;
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (tree.nodes[root].kind != ExpressionKind.awaitExpression
+          || tree.nodes[root].children.length != 1) return false;
+        const call = tree.nodes[root].children[0];
+        if (tree.nodes[call].kind != ExpressionKind.callExpression
+          || tree.nodes[call].children.length != 1) return false;
+        const member = tree.nodes[call].children[0];
+        if (tree.nodes[member].kind != ExpressionKind.memberExpression
+          || tree.nodes[member].value != "yield"
+          || tree.nodes[member].children.length != 1) return false;
+        const receiver = tree.nodes[member].children[0];
+        if (tree.nodes[receiver].kind != ExpressionKind.identifierExpression) return false;
+        for (const imported of program.imports) {
+          if (imported.header != "std/async") continue;
+          for (const binding of imported.bindings) {
+            if (binding.importedName == "scheduler"
+              && binding.localName == tree.nodes[receiver].value) return true;
+          }
+        }
+        select false;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
+function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): boolean {
+  const kind = tree.nodes[index].kind;
+  if (kind == ExpressionKind.awaitExpression
+    || kind == ExpressionKind.tryExpression
+    || kind == ExpressionKind.spawnExpression
+    || kind == ExpressionKind.executorPlacementExpression
+    || kind == ExpressionKind.executorOnExpression
+    || kind == ExpressionKind.matchExpression
+    || kind == ExpressionKind.ifExpression
+    || kind == ExpressionKind.unsafeExpression
+    || kind == ExpressionKind.valueBlockExpression
+    || kind == ExpressionKind.whileExpression
+    || kind == ExpressionKind.forExpression) return false;
+  // Nested callable bodies have their own lifetime and suspension analysis.
+  if (kind == ExpressionKind.closureExpression) return true;
+  for (const child of tree.nodes[index].children) {
+    if (!frameExpressionIsSynchronous(tree, child)) return false;
+  }
+  return true;
+}
+
+function frameStatementIsSupported(
+  in program: Program, in arena: StatementArena, index: usize, nested: boolean
+): boolean {
+  if (isFrameSchedulerYield(program, arena, index)) return true;
+  const kind = arena.nodes[index].kind;
+  if (kind == StatementKind.variableStatement
+    || kind == StatementKind.destructureStatement) {
+    // Keep lexical local storage expansion separate from root frame storage.
+    if (nested || arena.nodes[index].arrayBindings.length != 0) return false;
+    match (in arena.nodes[index].expression) { some(_) => {} none => return false; }
+  } else if (kind != StatementKind.returnStatement
+    && kind != StatementKind.expressionStatement
+    && kind != StatementKind.assignmentStatement
+    && kind != StatementKind.ifStatement
+    && kind != StatementKind.whileStatement
+    && kind != StatementKind.blockStatement
+    && kind != StatementKind.breakStatement
+    && kind != StatementKind.continueStatement) return false;
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (!frameExpressionIsSynchronous(tree, root)) return false;
+      }
+      none => return false;
+    }
+    none => {}
+  }
+  match (in arena.nodes[index].secondExpression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (!frameExpressionIsSynchronous(tree, root)) return false;
+      }
+      none => return false;
+    }
+    none => {}
+  }
+  for (const child of arena.nodes[index].children) {
+    if (!frameStatementIsSupported(program, arena, child, true)) return false;
+  }
+  return true;
+}
+
+export function functionUsesYieldFrame(
+  in program: Program, in declaration: FunctionDeclaration
+): boolean {
+  if (!declaration.asynchronous || declaration.parameters.length != 0
+    || declaration.executorAffinity.byteLength != 0) return false;
+  match (in declaration.errorType) { some(_) => return false; none => {} }
+  if (declaration.returnType.name != "void"
+    && declaration.returnType.name != "i32") return false;
+  let yields = false;
+  let index: usize = 0;
+  while (index < declaration.body.nodes.length) {
+    if (isFrameSchedulerYield(program, declaration.body, index)) yields = true;
+    index = index + 1;
+  }
+  if (!yields) return false;
+  for (const root of declaration.body.roots) {
+    if (!frameStatementIsSupported(program, declaration.body, root, false)) return false;
+  }
+  return true;
+}

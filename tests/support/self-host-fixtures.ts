@@ -10,6 +10,12 @@ export type SelfHostDifferentialCase = {
 
 export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferentialCase[] = [
   { entry: "tests/fixtures/match-wildcard.zs" },
+  { entry: "tests/fixtures/async-launch-listener.zs" },
+  { entry: "tests/fixtures/async-launch-owned-destructure.zs" },
+  {
+    entry: "tests/fixtures/self-host-emit-async-yield-frame.zs",
+    expectedStdout: "prepared delivery\nreleased discarded\nselected\nreleased selected\n",
+  },
   {
     entry: "examples/language/collections/map-identities.zs",
     expectedStdout: "open: Draft\nfound: Draft\nclosed Draft\n",
@@ -248,6 +254,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-async-function-main-placement-local-throws.zs": focusedPositive,
   "self-host-emit-sync-main-error-taskification.zs": focusedPositive,
   "self-host-emit-async-local-state.zs": focusedPositive,
+  "self-host-emit-async-yield-frame.zs": differential,
   "self-host-emit-async-function-main-placement-structured-invalid.zs": focusedNegative,
   "self-host-emit-async-prefixed-tail-method.zs": focusedPositive,
   "self-host-emit-async-prefix-try.zs": focusedPositive,

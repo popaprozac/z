@@ -9448,6 +9448,235 @@ function executableAsyncParentShape(
   return persistentAsyncParentShape(program, declaration);
 }
 
+function yieldFrameName(in declaration: LoweredFunction): String {
+  let name = TextBuffer();
+  name.append("_z_stage1_yield_");
+  appendCBindingName(inout name, declaration.name);
+  return name.finish();
+}
+
+function appendYieldFrameCleanups(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  in cleanups: Array<LoweredCleanup>, depth: usize
+): void {
+  let remaining = cleanups.length;
+  while (remaining > 0) {
+    remaining = remaining - 1;
+    let cleanup = copy cleanups[remaining];
+    for (const local of declaration.statements) {
+      if (local.kind == LoweredStatementKind.localStatement
+        && local.name == cleanup.name) {
+        cleanup.guard = copy local.liveFlag;
+      }
+    }
+    appendAsyncFrameCleanup(inout output, declaration, cleanup, depth);
+    if (cleanup.guard.byteLength > 0) {
+      appendIndent(inout output, depth);
+      output.append(cleanup.guard);
+      output.append(" = false;\n");
+    }
+  }
+}
+
+function appendYieldFrameStatement(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  index: usize, depth: usize
+): void throws String {
+  const statement = view declaration.statements[index];
+  if (statement.kind == LoweredStatementKind.schedulerYieldStatement) {
+    appendIndent(inout output, depth);
+    output.append(`frame->state = ${index + 1};\n`);
+    appendIndent(inout output, depth);
+    output.append("z_stage1_async_enqueue(task->executor, task);\n");
+    appendIndent(inout output, depth);
+    output.append(`return;\n_z_resume_${index}:;\n`);
+    return;
+  }
+  if (statement.kind == LoweredStatementKind.localStatement) {
+    const initializer = match (in statement.expression) {
+      some(value) => value;
+      none => throw "native yield frame requires initialized locals";
+    };
+    try appendBorrowedTemporaryInitializers(inout output, declaration, initializer, depth);
+    appendIndent(inout output, depth);
+    appendAsyncFrameBindingName(inout output, declaration, statement.name);
+    output.append(" = ");
+    try appendExpression(inout output, declaration, initializer);
+    output.append(";\n");
+    appendBorrowedTemporaryCleanups(inout output, declaration, initializer, depth);
+    if (statement.liveFlag.byteLength > 0) {
+      appendIndent(inout output, depth);
+      output.append(statement.liveFlag);
+      output.append(" = true;\n");
+    }
+    return;
+  }
+  if (statement.kind == LoweredStatementKind.returnStatement) {
+    match (in statement.expression) {
+      some(value) => {
+        try appendBorrowedTemporaryInitializers(inout output, declaration, value, depth);
+        appendIndent(inout output, depth);
+        output.append("frame->result = ");
+        try appendExpression(inout output, declaration, value);
+        output.append(";\n");
+        appendBorrowedTemporaryCleanups(inout output, declaration, value, depth);
+      }
+      none => {}
+    }
+    appendYieldFrameCleanups(inout output, declaration, statement.cleanups, depth);
+    appendIndent(inout output, depth);
+    output.append("goto _z_complete;\n");
+    return;
+  }
+  if (statement.kind == LoweredStatementKind.blockStatement) {
+    for (const child of statement.children) {
+      try appendYieldFrameStatement(inout output, declaration, child, depth);
+    }
+    appendYieldFrameCleanups(inout output, declaration, statement.cleanups, depth);
+    return;
+  }
+  if (statement.kind == LoweredStatementKind.ifStatement
+    || statement.kind == LoweredStatementKind.whileStatement) {
+    appendIndent(inout output, depth);
+    output.append(statement.kind == LoweredStatementKind.ifStatement ? "if " : "while ");
+    const condition = match (in statement.expression) {
+      some(value) => value;
+      none => throw "native yield frame lost its control-flow condition";
+    };
+    try appendCondition(inout output, declaration, condition);
+    output.append(" {\n");
+    try appendYieldFrameStatement(inout output, declaration, statement.children[0], depth + 1);
+    appendIndent(inout output, depth);
+    output.append("}");
+    if (statement.kind == LoweredStatementKind.ifStatement && statement.children.length == 2) {
+      output.append(" else {\n");
+      try appendYieldFrameStatement(inout output, declaration, statement.children[1], depth + 1);
+      appendIndent(inout output, depth);
+      output.append("}");
+    }
+    output.append("\n");
+    if (statement.kind == LoweredStatementKind.whileStatement) {
+      output.append(`_z_stage1_loop_exit_${index}: __attribute__((unused));\n`);
+    }
+    return;
+  }
+  try appendStatement(inout output, declaration, index, depth);
+}
+
+function appendYieldFrameHelpers(
+  inout output: TextBuffer, in program: LoweredProgram
+): void throws String {
+  for (const source of program.functions) {
+    if (source.asyncSuspension != "yield-frame") continue;
+    const name = yieldFrameName(source);
+    let declaration = copy source;
+    for (const statement of source.statements) {
+      if (statement.kind != LoweredStatementKind.localStatement) continue;
+      if (asyncFrameBinds(declaration, statement.name)) {
+        throw "native yield frames cannot reuse a local binding name yet";
+      }
+      declaration.asyncFrameBindings.push(copy statement.name);
+    }
+    output.append(`typedef struct ${name} {\n  Z_AsyncTask task;\n  uint32_t state;\n`);
+    if (source.returnType.kind != LoweredTypeKind.voidType) {
+      output.append("  ");
+      output.append(try cType(source.returnType));
+      output.append(" result;\n");
+    }
+    for (const statement of source.statements) {
+      if (statement.kind != LoweredStatementKind.localStatement) continue;
+      const type = match (in statement.type) {
+        some(value) => copy value;
+        none => throw "native yield frame lost local type evidence";
+      };
+      output.append("  ");
+      output.append(try cType(type));
+      output.append(" ");
+      appendCBindingName(inout output, statement.name);
+      output.append(";\n");
+      if (statement.liveFlag.byteLength > 0) {
+        output.append("  bool ");
+        output.append(statement.liveFlag);
+        output.append(";\n");
+      }
+    }
+    output.append(`} ${name};\n`);
+    for (const statement of source.statements) {
+      if (statement.kind != LoweredStatementKind.localStatement) continue;
+      output.append("#define _z_stage1_frame_binding_");
+      appendCBindingName(inout output, statement.name);
+      output.append(" (frame->");
+      appendCBindingName(inout output, statement.name);
+      output.append(")\n");
+      if (statement.liveFlag.byteLength > 0) {
+        output.append(`#define ${statement.liveFlag} (frame->${statement.liveFlag})\n`);
+      }
+    }
+    output.append(`static void ${name}_cleanup(${name} *frame) {\n  (void)frame;\n`);
+    let cleanup = Array<LoweredCleanup>();
+    for (const statement of source.statements) {
+      if (statement.kind != LoweredStatementKind.localStatement
+        || statement.liveFlag.byteLength == 0) continue;
+      const type = match (in statement.type) {
+        some(value) => copy value;
+        none => throw "native yield frame lost cleanup type evidence";
+      };
+      cleanup.push(LoweredCleanup({ name: copy statement.name, type, guard: copy statement.liveFlag }));
+    }
+    appendYieldFrameCleanups(inout output, declaration, cleanup, 1);
+    output.append(`}\nstatic void ${name}_poll(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n`);
+    output.append(`  if (task->cancellation_requested) { ${name}_cleanup(frame); task->cancelled = true; task->completed = true; return; }\n  switch (frame->state) {\n    case 0: break;\n`);
+    let index: usize = 0;
+    while (index < declaration.statements.length) {
+      if (declaration.statements[index].kind == LoweredStatementKind.schedulerYieldStatement) {
+        output.append(`    case ${index + 1}: goto _z_resume_${index};\n`);
+      }
+      index = index + 1;
+    }
+    output.append("    default: abort();\n  }\n");
+    for (const root of declaration.roots) {
+      try appendYieldFrameStatement(inout output, declaration, root, 1);
+    }
+    output.append(`_z_complete: __attribute__((unused));\n  ${name}_cleanup(frame);\n  task->completed = true;\n}\n`);
+    output.append(`static void ${name}_destroy(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n  z_stage1_async_remove_queued(task);\n  ${name}_cleanup(frame);\n  free(frame);\n}\n`);
+    for (const statement of source.statements) {
+      if (statement.kind != LoweredStatementKind.localStatement) continue;
+      output.append("#undef _z_stage1_frame_binding_");
+      appendCBindingName(inout output, statement.name);
+      output.append("\n");
+      if (statement.liveFlag.byteLength > 0) output.append(`#undef ${statement.liveFlag}\n`);
+    }
+    output.append(`static void ${name}_take(Z_AsyncTask *task, void *output) {\n  if (!task->completed || task->cancelled) abort();\n`);
+    if (source.returnType.kind != LoweredTypeKind.voidType) {
+      output.append("  *(");
+      output.append(try cType(source.returnType));
+      output.append(` *)output = ((${name} *)task)->result;\n`);
+    } else output.append("  (void)output;\n");
+    output.append(`}\nstatic __attribute__((unused)) Z_AsyncInvocation ${name}_start(Z_AsyncExecutor *executor) {\n  if (executor == NULL) abort();\n  ${name} *frame = calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.executor = executor;\n  frame->task.poll = ${name}_poll;\n  return (Z_AsyncInvocation){ .task = &frame->task, .take_result = ${name}_take, .destroy = ${name}_destroy };\n}\n\n`);
+  }
+}
+
+function appendYieldFrameDriver(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  processArguments: boolean
+): void throws String {
+  const name = yieldFrameName(declaration);
+  try appendFunctionSignature(inout output, declaration, processArguments);
+  output.append(" {\n");
+  if (declaration.name == "main" && processArguments) {
+    output.append("  z_stage1_process_argc = argc;\n  z_stage1_process_argv = argv;\n");
+  }
+  output.append(`  Z_AsyncExecutor executor = {0};\n  Z_AsyncInvocation invocation = ${name}_start(&executor);\n  z_stage1_async_enqueue(&executor, invocation.task);\n  while (!invocation.task->completed) { if (!z_stage1_async_drive_one(&executor)) abort(); }\n`);
+  if (declaration.returnType.kind != LoweredTypeKind.voidType) {
+    output.append("  ");
+    output.append(try cType(declaration.returnType));
+    output.append(" result;\n  invocation.take_result(invocation.task, &result);\n");
+  } else output.append("  invocation.take_result(invocation.task, NULL);\n");
+  output.append("  invocation.destroy(invocation.task);\n");
+  if (declaration.returnType.kind != LoweredTypeKind.voidType) output.append("  return result;\n");
+  output.append("}\n\n");
+}
+
 function appendPersistentAsyncParentDriver(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -9507,6 +9736,10 @@ function appendFunction(
   in declaration: LoweredFunction,
   processArguments: boolean
 ): void throws String {
+  if (declaration.asyncSuspension == "yield-frame") {
+    try appendYieldFrameDriver(inout output, declaration, processArguments);
+    return;
+  }
   if (declaration.compilerIntrinsic == "jsonDecode") {
     try appendDerivedJsonDecode(
       inout output,
@@ -10033,6 +10266,25 @@ function appendCallableHelpers(
           program,
           expression
         );
+        if (asyncSuspension == "yield-frame"
+          && expression.kind == LoweredExpressionKind.directFunctionValue) {
+          if (functionType.parameters.length != 0) throw "native yield frame adapter requires a parameterless callable";
+          output.append("static Z_AsyncInvocation ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_start(void *context, Z_AsyncExecutor *executor) {\n  (void)context;\n  return _z_stage1_yield_");
+          appendCBindingName(inout output, expression.value);
+          output.append("_start(executor);\n}\nstatic Z_");
+          output.append(functionType.name);
+          output.append(" ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_value(void) {\n  return (Z_");
+          output.append(functionType.name);
+          output.append("){ .start = ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_start };\n}\n\n");
+          expressionIndex = expressionIndex + 1;
+          continue;
+        }
         const directSchedulerYield = asyncSuspension == "scheduler-yield"
           && expression.kind == LoweredExpressionKind.directFunctionValue;
         const tailAwaitShape = expression.kind
@@ -12060,6 +12312,9 @@ function appendAsyncCallableRuntime(
   in program: LoweredProgram
 ): void {
   let required = false;
+  for (const declaration of program.functions) {
+    if (declaration.asyncSuspension == "yield-frame") required = true;
+  }
   for (const functionType of program.functionTypes) {
     if (functionType.asynchronous) required = true;
   }
@@ -20087,6 +20342,9 @@ function appendTypeDefinitions(
     output.append("typedef void (*Z_MainThreadRequest)(void *context);\n\n");
   }
   let usesAsyncFunctionType = false;
+  for (const declaration of program.functions) {
+    if (declaration.asyncSuspension == "yield-frame") usesAsyncFunctionType = true;
+  }
   for (const declaration of program.functionTypes) {
     if (declaration.asynchronous) usesAsyncFunctionType = true;
   }
@@ -24047,6 +24305,7 @@ function emitLoweredC(
   try appendThreadSpawnPrototypes(inout output, program);
   try appendTaskScopeScheduleHelpers(inout output, program);
   try appendAsyncMethodAwaitStartPrototypes(inout output, program);
+  try appendYieldFrameHelpers(inout output, program);
   try appendCallableHelpers(inout output, program);
   try appendObjCBlockArgumentHelpers(inout output, program);
   try appendAsyncCallableAwaitHelpers(inout output, program);

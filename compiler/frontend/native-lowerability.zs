@@ -14,6 +14,7 @@ import {
   TypeReference,
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
+import { functionUsesYieldFrame } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -2240,6 +2241,51 @@ function validateNativeBody(
   }
 }
 
+function nativeYieldFrameStorageSupported(
+  in graph: ModuleGraph, moduleIndex: usize, in name: String,
+  in visiting: Array<String>
+): boolean {
+  if (name == "String" || name == "cstring" || name == "boolean"
+    || name == "f32" || name == "f64" || isIntegerTypeName(name)) return true;
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (generic.base != "Array" && generic.base != "Option"
+        && generic.base != "Result") return false;
+      for (const argument of generic.arguments) {
+        if (!nativeYieldFrameStorageSupported(graph, moduleIndex, argument, visiting)) return false;
+      }
+      return true;
+    }
+    none => {}
+  }
+  const location = match (typeSymbolLocation(graph.modules, moduleIndex, name)) {
+    some(found) => found;
+    none => return false;
+  };
+  const identity = `${location.moduleIndex}:${location.symbolIndex}`;
+  for (const seen of visiting) { if (seen == identity) return true; }
+  const symbol = view graph.modules[location.moduleIndex].symbols[location.symbolIndex];
+  if (symbol.kind != ModuleSymbolKind.structSymbol
+    && symbol.kind != ModuleSymbolKind.classSymbol
+    && symbol.kind != ModuleSymbolKind.enumSymbol) return false;
+  return match (in symbol.typeSignature) {
+    some(signature) => {
+      if (signature.foreignKind.byteLength != 0) return false;
+      let next = copy visiting;
+      next.push(identity);
+      for (const field of signature.fields) {
+        if (!nativeYieldFrameStorageSupported(graph, location.moduleIndex, field.typeName, next)) return false;
+      }
+      for (const variant of signature.variants) {
+        if (variant.payloadType.byteLength > 0
+          && !nativeYieldFrameStorageSupported(graph, location.moduleIndex, variant.payloadType, next)) return false;
+      }
+      select true;
+    }
+    none => false;
+  };
+}
+
 function validateNativeFunction(
   in path: String,
   moduleIndex: usize,
@@ -2255,6 +2301,48 @@ function validateNativeFunction(
     declaration,
     owner
   );
+  const parsedModule = parsedModuleIndexForGraphModule(modules, graph, moduleIndex);
+  const yieldFrame = owner.byteLength == 0 && parsedModule < modules.length
+    && !(declaration.name != "main" && firstTierSchedulerYield)
+    && functionUsesYieldFrame(modules[parsedModule].program, declaration);
+  if (yieldFrame) {
+    for (const statement of declaration.body.nodes) {
+      // The compiler-created owner must be supported too, even when none of
+      // its unsupported fields are selected into user-visible bindings.
+      if (statement.kind == StatementKind.destructureStatement) {
+        match (in statement.expression) {
+          some(syntax) => match (in syntax.tree) {
+            some(tree) => {
+              const root = tree.root;
+              const sourceType = resolvedExpressionType(graph, moduleIndex, tree, root);
+              const visiting = Array<String>();
+              if (!nativeYieldFrameStorageSupported(graph, moduleIndex, sourceType, visiting)) {
+                throw loweringBoundary(path, "Z0700",
+                  "native yield-frame destructuring source requires owned Z value storage; borrowed views and native storage remain outside this tier",
+                  statement.line, statement.column, 5);
+              }
+            }
+            none => {}
+          }
+          none => {}
+        }
+      }
+      for (const binding of graph.modules[moduleIndex].semanticEvidence.bindingResolutions) {
+        let matches = statement.kind == StatementKind.variableStatement
+          && binding.offset == statement.nameOffset;
+        for (const field of statement.objectBindings) {
+          if (binding.offset == field.bindingOffset) matches = true;
+        }
+        if (!matches) continue;
+        const visiting = Array<String>();
+        if (!nativeYieldFrameStorageSupported(graph, moduleIndex, binding.typeName, visiting)) {
+          throw loweringBoundary(path, "Z0700",
+            `native yield-frame local "${binding.name}" requires owned Z value storage; borrowed views and native storage remain outside this tier`,
+            binding.line, binding.column, binding.name.byteLength);
+        }
+      }
+    }
+  }
   const firstTierTailAwait = functionHasFirstTierTailAwaitStorage(
     moduleIndex,
     modules,
@@ -2325,6 +2413,7 @@ function validateNativeFunction(
     && functionContainsSuspension(declaration)
     && !firstTierSchedulerYield
     && !firstTierTailAwait
+    && !yieldFrame
   ) {
     throw loweringBoundary(
       path,

@@ -5540,16 +5540,17 @@ the enclosing task cancels and joins correctly.
 
 | Reproduction | Stage 0 | Fixed-point native driver |
 | --- | --- | --- |
-| `tests/fixtures/async-launch-owned-destructure.zs` | Runs; selected owned fields survive suspension in the task frame | `check` accepts; `run` fails at C emission with the current named-Task await boundary |
-| `tests/fixtures/async-launch-listener.zs` | Runs successfully | `Z0700`: an ordinary named helper with a suspending loop is outside the current executable tier |
+| `tests/fixtures/async-launch-owned-destructure.zs` | Runs; selected owned fields survive suspension in the task frame | Runs with guarded owned frame fields |
+| `tests/fixtures/async-launch-listener.zs` | Runs successfully | Runs through an executor-local resumable loop frame |
 
 The first is the natural error-conversion shape: `const { code, message } =
 move error`, followed by a suspension while the selected fields remain live.
 The second needs only a counter and `await scheduler.yield()` inside a loop;
 it is not specific to Foundation handles or socket ownership. Existing
-one-yield-prefix and tail-child helper tiers do not cover it. Successful native
-`check` is not execution evidence for the first body. Keep both reductions as
-targets for positive execution tests, not permanent language restrictions.
+one-yield-prefix and tail-child helper tiers did not cover it. Both reductions
+now have positive native execution evidence and remain in the differential
+corpus. This closes the reduced cases, not every composition the real listener
+requires; successful native `check` alone still is not execution evidence.
 
 The intended listener must create and destroy its endpoint on its worker,
 observe cancellation between deadline-bounded receives, and retain the primary
@@ -5577,11 +5578,11 @@ The executable differential fixture `self-host-emit-conditional-conversion.zs`
 covers both choices, nested ternaries, wide integers, floating-point conversions,
 and String results. This changes compile-time evidence, not the runtime model.
 
-Continuation order: finish native destructuring/suspension parity; expand
-native ordinary-helper suspension/control-flow lowering with
-positive cancellation and destruction tests; then restore the listener
+Continuation order: extend the native loop frame to the actual listener's
+parameter/owned native storage and child-await/error composition, preserving
+cancellation and endpoint destruction ordering; then restore the listener
 integration probe and exercise startup, competing launches, quit, and teardown.
-No new source syntax or public Zapp API is required.
+No new source syntax or public Zapp API is required by these prerequisites.
 
 ### Stage-0 owned destructuring checkpoint
 
@@ -5607,8 +5608,42 @@ inside `async scope`, including scopes nested in loops. A bare conditional or
 loop-owned local still needs lexical cleanup states; hiding it behind
 destructuring must not bypass that restriction. Borrowed views, positional array
 patterns, custom-`deinit` value sources, and foreign RAII fields are not newly
-admitted. The native combined frame and ordinary suspending-helper gaps remain
-the next prerequisites; the Zapp listener is still not enabled.
+admitted. The native checkpoint below closes the two reduced prerequisites,
+not all of this broader Stage-0 coverage; the Zapp listener is still not enabled.
+
+### Native executor-local yield-frame checkpoint
+
+The fixed-point emitter now uses one reusable frame implementation per eligible
+ordinary function, with direct-callable adapters delegating to the same start
+operation. Each invocation owns its own frame.
+The initial boundary is a parameterless, non-throwing function returning `void`
+or `i32`, without explicit declaration affinity. Its suspension points are
+standalone `await scheduler.yield()` statements. Root initialized Z-owned locals
+and value-struct patterns survive yields in nested `if`/`while` control flow,
+including `break`, `continue`, and early function returns. This uses existing
+source syntax and ownership checks; no new capture or lifetime rules are added.
+
+`self-host-emit-async-yield-frame.zs` executes the same branch/loop and ownership
+case through Stage 0 and native C. A producer runs once; its unselected ARC field
+is destroyed immediately, while selected String and ARC fields remain live.
+Transferred fields are cleared without disarming the entire temporary owner.
+Guarded reverse cleanup handles normal completion, cancellation before entry,
+and cancellation after initialization. C-level invocation tests also check that
+destroying a cancelled invocation leaves no queued task; those paths run with
+UndefinedBehaviorSanitizer as well as strict ordinary C compilation.
+
+Each invocation allocates one zero-initialized heap frame. A yield stores the
+resume state and requeues that same task on that same executor: no new OS thread
+or per-yield frame allocation. All admitted locals currently receive frame
+slots, including compiler temporaries; liveness-based slot reuse and allocation
+elision remain optimization work, not measured wins in this checkpoint.
+
+The shared admission rule keeps parameters, throwing bodies, child awaits,
+placed operations, nested source-local declarations, positional/view patterns,
+and native/synchronized storage outside this new tier. The storage check covers
+the entire destructuring source, not just selected fields. Existing separately
+supported async tiers remain available. The actual launch listener therefore
+still needs composition work before `app.run()` can own and cancel/join it.
 
 ## Not tested yet
 

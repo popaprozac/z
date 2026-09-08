@@ -75,6 +75,7 @@ import { Map, Set } from "std/collections";
 import fs from "std/fs";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
+import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -415,6 +416,7 @@ export enum LoweredStatementKind {
   continueStatement,
   testExpectationStatement,
   delayStatement,
+  schedulerYieldStatement,
 }
 
 export struct LoweredStatement {
@@ -22859,6 +22861,11 @@ function lowerStatementWithResult(
   inout statements: Array<LoweredStatement>
 ): usize throws String {
   let preludeRoots = Array<usize>();
+  if (isFrameSchedulerYield(program, arena, index)) {
+    const placeholder = appendMainDelayPlaceholder(inout statements);
+    statements[placeholder].kind = LoweredStatementKind.schedulerYieldStatement;
+    return placeholder;
+  }
   match (in arena.nodes[index].expression) {
     some(syntax) => {
       let includeRoot = true;
@@ -26038,6 +26045,8 @@ function lowerFunction(
   let mainDelayLoopSource: usize = 0;
   let mainDelayLoopPosition: usize = 0;
   let asyncSuspension = "";
+  const yieldFrame = receiverName.byteLength == 0
+    && functionUsesYieldFrame(program, declaration);
   let executorAffinity = declaration.executorAffinity.copyBytes(
     0,
     declaration.executorAffinity.byteLength
@@ -26112,6 +26121,7 @@ function lowerFunction(
       && functionContainsSuspension(declaration)
       && !firstTierSchedulerYield
       && !firstTierTailAwait
+      && !yieldFrame
     ) {
       throw `native lowering does not support suspending async function ${declaration.name} yet`;
     }
@@ -26242,6 +26252,7 @@ function lowerFunction(
       position = position + 1;
     }
   }
+  if (yieldFrame && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
   let parameters = Array<LoweredParameter>();
   let ownedParameters = Array<LoweredCleanup>();
   let liveFlags = Array<LoweredLiveFlag>();
@@ -26556,6 +26567,16 @@ function lowerFunction(
     );
   }
   const rootLoopCleanups = Array<LoweredCleanup>();
+  if (asyncSuspension == "yield-frame") {
+    let frameLocals = Array<usize>();
+    let index: usize = 0;
+    while (index < statements.length) {
+      frameLocals.push(index);
+      index = index + 1;
+    }
+    ensureMainFrameLocalLiveFlags(program, importedTypes, frameLocals,
+      inout statements, inout liveFlags);
+  }
   const introduced = try planCleanupSequence(
     program,
     importedTypes,
@@ -26665,6 +26686,25 @@ function lowerFunction(
   appendCleanupCopies(inout fallthroughCleanups, ownedParameters);
   appendCleanupCopies(inout fallthroughCleanups, introduced);
   attachMoveLiveFlags(inout expressions, liveFlags);
+  if (asyncSuspension == "yield-frame") {
+    // A normalized field transfer clears that field, not the temporary owner.
+    // Its remaining unselected fields still require destruction.
+    for (const statement of statements) {
+      let selectedField = false;
+      for (const label of statement.labels) {
+        if (label == "destructure-binding") selectedField = true;
+      }
+      if (!selectedField) continue;
+      match (in statement.expression) {
+        some(initializer) => {
+          if (expressions[initializer].kind == LoweredExpressionKind.moveValue) {
+            expressions[initializer].value = "";
+          }
+        }
+        none => {}
+      }
+    }
+  }
   rewriteParameterValues(parameters, inout expressions);
   let returnType = try lowerModuleType(
     program,

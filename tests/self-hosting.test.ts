@@ -11190,10 +11190,10 @@ test("compiles a multi-module Z application through the standalone native driver
     {
       name: "suspending-ordinary-async",
       source: [
-        'import { scheduler } from "std/async";',
+        'import { scheduler } from "std/async"; import { delay } from "std/time";',
         "async function deferred(): i32 {",
         "  await scheduler.yield();",
-        "  await scheduler.yield();",
+        "  await delay(1);",
         "  return 42;",
         "}",
         "function main(): i32 { return 0; }",

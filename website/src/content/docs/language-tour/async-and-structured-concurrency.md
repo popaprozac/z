@@ -174,10 +174,12 @@ ownership-bearing frame shapes are still expanding. Stage 0 executes owned
 value-struct destructuring at the function root or directly inside an explicit
 `async scope`, including awaited producers and cancellation cleanup. Owned
 branch/loop locals still need that explicit lexical scope; borrowed-view and
-array patterns in async frames are not yet executable. Fixed-point native
-execution of destructuring combined with suspension remains incomplete, and
-the native compiler's ordinary named-helper tiers do not yet include a loop
-containing `await scheduler.yield()`. These are implementation boundaries, not
+array patterns in async frames are not yet executable. The fixed-point native
+compiler now executes root Z-owned patterns across `scheduler.yield()`, including
+yields in nested `if`/`while` statements. This tier is limited to parameterless,
+non-throwing `void`/`i32` functions without explicit declaration affinity;
+parameters, native storage, child awaits, and nested source-local declarations
+remain separate composition work. These are implementation boundaries, not
 new ownership rules. A successful `check` alone is not proof that an advanced
 frame shape can be emitted and run. Check the
 [implementation status](/reference/status/) when an advanced async composition
