@@ -148,8 +148,14 @@ production or compatibility-sensitive use.
   gated on full startup/lifetime integration. Early terminal awaited returns
   now compose with one later awaited local in native function and supported
   method frames, including owned results and cancellation cleanup. Both paths
-  reuse one child-invocation slot; branch-local storage across suspension and
-  additional continuation suspensions remain staged. Direct
+  reuse one child-invocation slot. Sequential root `TaskScope.close()`/`cancel()`
+  joins now preserve that awaited value, resume each following segment once,
+  and join admitted work before parent cleanup. Same-executor joins suspend on
+  a waiter; separate-driver scopes retain the existing synchronous bridge.
+  Locally created scope owners are rejected in this frame tier until implicit
+  scope unwinding can join their children when cancellation skips an explicit
+  await. Native-thread cancellation joins and branch-local storage across
+  suspension remain staged. Direct
   timer awaits in native `main` still require a future resumable entry frame;
   that boundary now reports `Z0700` at the await.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`

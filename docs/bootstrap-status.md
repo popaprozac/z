@@ -1223,8 +1223,18 @@ body. Both paths share one child invocation slot. Root-owned inputs, locals,
 success/error results, and supported class-method frames retain their existing
 cleanup rules. UBSan regressions cover both paths and cancellation/cold drop;
 generated local fields are namespaced so `result` cannot collide with runtime
-storage. Nested branch-local storage across an early await and additional
-continuation suspensions remain explicit boundaries. This is an upstream
+storage. The continuation may now contain sequential root `await scope.close()`
+and `await scope.cancel()` statements, identified by the checked `TaskScope`
+receiver type (including import aliases). It preserves the owned awaited result
+and resumes each synchronous segment once. Same-executor joins register waiters
+instead of recursively driving the executor; cancellation/destruction joins
+admitted work before releasing frame owners. Scopes created on a separate driver
+retain the existing synchronous bridge. Creating a new TaskScope inside this
+continuation is rejected: cancellation could skip its explicit join, and implicit
+scope-unwind states are not implemented in this frame tier. Passed-in handles
+retain their independent ownership. Native-thread cancellation joins,
+nested branch-local storage, and other continuation suspensions remain explicit
+boundaries. This is an upstream
 composition prerequisite, not proof that Zapp's full startup wrapper is enabled.
 
 Continue focused self-hosting work in this order:

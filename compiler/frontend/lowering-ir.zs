@@ -22032,12 +22032,18 @@ function statementContainsLexicalFrameLocal(in arena: StatementArena, index: usi
 }
 
 function functionUsesFirstTierLinearAwait(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
   in declaration: FunctionDeclaration
 ): boolean {
   if (declaration.body.roots.length < 2) return false;
   let awaitCount: usize = 0;
   for (const root of declaration.body.roots) {
     if (!statementContainsSuspension(declaration.body, root)) continue;
+    if (awaitCount == 1 && statementIsTaskScopeJoinAwait(
+      program, importedTypes, evidence, declaration.body, root
+    )) continue;
     // An early terminal await chooses the parent's final result. It does not
     // initialize the later awaited local or resume through that continuation.
     if (awaitCount == 0) {
@@ -26384,9 +26390,27 @@ function lowerFunction(
     const firstTierPlacedMethodLinear = executorAffinity
         != "thread.main"
       && functionUsesFirstTierPlacedMethodLinearAwait(declaration);
-    const firstTierLinearAwait = functionUsesFirstTierLinearAwait(declaration)
+    const firstTierLinearAwait = functionUsesFirstTierLinearAwait(
+        program, importedTypes, evidence, declaration
+      )
       || firstTierPlacedFunctionLinear
       || firstTierPlacedMethodLinear;
+    if (firstTierLinearAwait) {
+      for (const statement of declaration.body.nodes) {
+        match (in statement.expression) {
+          some(syntax) => match (in syntax.tree) {
+            some(tree) => for (const node of tree.nodes) {
+              if (node.kind == ExpressionKind.newExpression
+                && importedAsyncHandleBinding(program, node.value, "TaskScope")) {
+                throw "native continuation-owned TaskScope requires implicit scope-unwind states before cancellation can safely skip its explicit join";
+              }
+            }
+            none => {}
+          }
+          none => {}
+        }
+      }
+    }
     const firstTierPlacedMethodTail = executorAffinity
         != "thread.main"
       && functionUsesFirstTierPlacedMethodTailAwait(declaration);

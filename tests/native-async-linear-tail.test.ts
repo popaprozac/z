@@ -14,7 +14,7 @@ function emit(): string {
   return cached = emitted.stdout;
 }
 
-function execute(source: string, expected: string): void {
+function execute(source: string, expected?: string): string {
   const directory = mkdtempSync("/tmp/z-linear-tail-");
   try {
     const binary = resolve(directory, "program");
@@ -24,9 +24,170 @@ function execute(source: string, expected: string): void {
     assert.equal(compiled.status, 0, compiled.stderr);
     const result = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
     assert.equal(result.status, 0, result.stderr || String(result.error));
-    assert.equal(result.stdout, expected);
+    if (expected !== undefined) assert.equal(result.stdout, expected);
+    return result.stdout;
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
+
+let cachedScopeSource: string | undefined;
+function emitScopeJoin(): string {
+  if (cachedScopeSource !== undefined) return cachedScopeSource;
+  const input = resolve(projectRoot, "tests/fixtures/async-linear-scope-join.zs");
+  const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+  return cachedScopeSource = emitted.stdout;
+}
+
+test("preserves owned success and failure through sequential TaskScope joins", () => {
+  const input = resolve(projectRoot, "tests/fixtures/async-linear-scope-join.zs");
+  const expected = "released parent\n" + ("before close\nbetween joins\nafter cancel\n"
+    + "released continuation\nreleased parent\n").repeat(2);
+  execute(compileToC(readFileSync(input, "utf8"), input), expected);
+  const source = emitScopeJoin();
+  assert.match(source, /frame->child = z_stage1_task_scope_join_start/);
+  execute(source, expected);
+}, 240_000);
+
+test("TaskScope join waiters suspend, fan out, cancel, and retain their scope through destruction", () => {
+  let source = emitScopeJoin();
+  const start = source.match(/static Z_AsyncInvocation (\w+_start)\(void \*context, Z_AsyncExecutor \*executor, bool argument0, bool argument1, Z_Message argument2, Z_TaskScope \* argument3\)/)?.[1];
+  assert.ok(start, "owned startup with a TaskScope parameter");
+  source = source.replace("void Z_Message_deinit(Z_Message *self) {", "void Z_Message_deinit(Z_Message *self) { ++messageDrops;")
+    .replace("void Z_Failure_deinit(Z_Failure *self) {", "void Z_Failure_deinit(Z_Failure *self) { ++errorDrops;")
+    .replace("void Z_Guard_deinit(Z_Guard *self) {", "void Z_Guard_deinit(Z_Guard *self) { if (joining && finished != 1) abort();");
+  const output = execute(`static int messageDrops, errorDrops, finished;\nstatic _Bool joining;
+#define main z_fixture_main\n${source}\n#undef main
+static int destroyed, released;
+typedef struct TestChild { Z_AsyncTask task; bool entered; } TestChild;
+static TestChild *active;
+static void test_poll(Z_AsyncTask *task) {
+  TestChild *child = (TestChild *)task;
+  if (!child->entered) { child->entered = true; return; }
+  ++finished;
+  task->cancelled = task->cancellation_requested;
+  task->completed = true;
+}
+static void test_cancel(Z_AsyncTask *task) {
+  if (!task->queued) z_stage1_async_enqueue(task->executor, task);
+}
+static void test_destroy(Z_AsyncTask *task) {
+  if (!task->completed) abort();
+  ++destroyed; active = NULL; free(task);
+}
+static void test_release(void *context) { if (context != &released) abort(); ++released; }
+static Z_AsyncInvocation test_start(void *context, Z_AsyncExecutor *executor) {
+  if (context != &released) abort();
+  active = calloc(1, sizeof(*active));
+  active->task.poll = test_poll; active->task.request_cancel = test_cancel;
+  active->task.executor = executor;
+  return (Z_AsyncInvocation){ .task = &active->task, .destroy = test_destroy };
+}
+int main(void) {
+  for (int mode = 0; mode < 6; ++mode) {
+    Z_AsyncExecutor executor = {0};
+    Z_TaskScope *scope = z_stage1_task_scope_new(mode == 5 ? NULL : &executor);
+    finished = destroyed = released = 0;
+    Z_TaskControl *control = z_stage1_task_scope_spawn_async(scope, test_start, &released, test_release);
+    if (!control->accepted || scope->pending != 1 || active == NULL) return 1;
+    Z_AsyncInvocation first = z_stage1_task_scope_join_start(scope, mode == 1 || mode == 5, &executor);
+    if (mode == 3) {
+      // Cold destruction must close admission and join admitted work too.
+      first.destroy(first.task);
+    } else {
+      z_stage1_async_enqueue(&executor, first.task);
+      if (!z_stage1_async_run_one(&executor)) return 2;
+      if (mode != 1 && mode != 5 && (first.task->completed || scope->join_waiters == NULL)) return 3;
+      if (mode == 0) {
+        // A second waiter must not overwrite the first one.
+        Z_AsyncInvocation second = z_stage1_task_scope_join_start(scope, false, &executor);
+        z_stage1_async_enqueue(&executor, second.task);
+        if (!z_stage1_async_run_one(&executor)) return 4;
+        if (z_stage1_async_run_one(&executor)) return 5; // no busy polling
+        z_stage1_async_enqueue(&executor, &active->task);
+        for (int ticks = 0; !first.task->completed || !second.task->completed; ++ticks)
+          if (ticks > 12 || !z_stage1_async_run_one(&executor)) return 6;
+        second.destroy(second.task);
+      } else if (mode == 2) {
+        z_stage1_async_request_cancel(first.task);
+      }
+      if (mode != 4) {
+        for (int ticks = 0; !first.task->completed; ++ticks)
+          if (ticks > 12 || !z_stage1_async_run_one(&executor)) return 7;
+        if (mode == 2 && !first.task->cancelled) return 8;
+      }
+      // Mode 4 drops the active waiter while its child is still suspended.
+      first.destroy(first.task);
+    }
+    if (finished != 1 || destroyed != 1 || released != 1 || scope->pending != 0
+      || scope->join_waiters != NULL || scope->jobs != NULL || !scope->closing) return 9;
+    Z_TaskControl *rejected = z_stage1_task_scope_spawn_async(scope, test_start, &released, test_release);
+    if (rejected->accepted || released != 2) return 10;
+    Z_TaskControl_release(rejected);
+    Z_TaskControl_release(control);
+    if (scope->refcount != 1) return 11;
+    Z_TaskScope_release(scope);
+    if (executor.head != NULL || executor.tail != NULL) return 12;
+  }
+  for (int fail = 0; fail <= 1; ++fail) {
+    for (int steps = 0; steps <= 18; ++steps) {
+      Z_AsyncExecutor executor = {0};
+      Z_TaskScope *scope = z_stage1_task_scope_new(&executor);
+      finished = destroyed = released = messageDrops = errorDrops = 0;
+      joining = false;
+      Z_TaskControl *control = z_stage1_task_scope_spawn_async(scope, test_start, &released, test_release);
+      Z_AsyncInvocation parent = ${start}(NULL, &executor, false, fail,
+        (Z_Message){ .text = Z_STRING_LITERAL("owned") }, Z_TaskScope_retain(scope));
+      z_stage1_async_enqueue(&executor, parent.task);
+      for (int tick = 0; tick < steps && !parent.task->completed; ++tick) {
+        if (!z_stage1_async_run_one(&executor)) break;
+      }
+      joining = scope->join_waiters != NULL;
+      z_stage1_async_request_cancel(parent.task);
+      for (int tick = 0; !parent.task->completed; ++tick)
+        if (tick > 40 || !z_stage1_async_drive_one(&executor)) return 13;
+      if (!parent.task->cancelled) return 14;
+      parent.destroy(parent.task);
+      // Cancellation before the join was reached does not close a passed-in
+      // scope. The caller still owns it and must finish its independent jobs.
+      if (scope->pending != 0) z_stage1_task_scope_join(scope, true);
+      Z_TaskControl_release(control);
+      if (messageDrops != (steps == 0 ? 1 : 2) || errorDrops > fail
+        || finished != 1 || destroyed != 1 || released != 1 || scope->refcount != 1
+        || scope->join_waiters != NULL || executor.head != NULL || executor.tail != NULL) return 15;
+      Z_TaskScope_release(scope);
+    }
+  }
+  // A naturally completing pending scope resumes the actual Z continuation,
+  // without recomputing the owned Result or its side effects.
+  for (int fail = 0; fail <= 1; ++fail) {
+    Z_AsyncExecutor executor = {0};
+    Z_TaskScope *scope = z_stage1_task_scope_new(&executor);
+    finished = destroyed = released = messageDrops = errorDrops = 0;
+    joining = false;
+    Z_TaskControl *control = z_stage1_task_scope_spawn_async(scope, test_start, &released, test_release);
+    Z_AsyncInvocation parent = ${start}(NULL, &executor, false, fail,
+      (Z_Message){ .text = Z_STRING_LITERAL("owned") }, Z_TaskScope_retain(scope));
+    z_stage1_async_enqueue(&executor, parent.task);
+    for (int tick = 0; z_stage1_async_run_one(&executor); ++tick) if (tick > 30) return 16;
+    if (parent.task->completed || scope->join_waiters == NULL || active == NULL) return 17;
+    joining = true;
+    z_stage1_async_enqueue(&executor, &active->task);
+    for (int tick = 0; !parent.task->completed; ++tick)
+      if (tick > 30 || !z_stage1_async_run_one(&executor)) return 18;
+    if (parent.task->cancelled) return 19;
+    parent.destroy(parent.task);
+    Z_TaskControl_release(control);
+    if (messageDrops != 2 || errorDrops != fail || finished != 1 || destroyed != 1
+      || scope->refcount != 1 || executor.head != NULL || executor.tail != NULL) return 20;
+    Z_TaskScope_release(scope);
+  }
+  return 0;
+}`);
+  assert.equal(output.match(/between joins/g)?.length, 2);
+  assert.equal(output.match(/after cancel/g)?.length, 2);
+}, 240_000);
 
 test("composes early awaited returns with an owned awaited-local continuation", () => {
   const expected = "released before\nreleased later\nreleased before\n".repeat(4);
@@ -58,6 +219,45 @@ async function main(): i32 on thread.main { return await startup(false); }`;
     assert.notEqual(emitted.status, 0);
     assert.match(emitted.stderr, /Z0700.*early terminal awaits followed by one awaited local/);
     assert.doesNotMatch(emitted.stderr, /await delay|unnamed.*Task/);
+    const ownedScope = `import { TaskScope as Scope } from "std/async";
+import { thread } from "std/thread";
+async function operation(): i32 { return 0; }
+async function startup(early: boolean): i32 on thread.main {
+  const updates = new Scope();
+  const control = updates.schedule(thread.main, async (): void => {});
+  if (!control.accepted) return 1;
+  if (early) return await operation();
+  const outcome = await operation();
+  await updates.cancel();
+  return outcome;
+}
+async function main(): i32 on thread.main { return await startup(false); }`;
+    compileToC(ownedScope, input);
+    writeFileSync(input, ownedScope);
+    const unsafeUnwind = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.notEqual(unsafeUnwind.status, 0);
+    assert.match(unsafeUnwind.stderr, /Z0700.*implicit scope-unwind states/);
+    for (const method of ["close", "cancel"]) {
+      const ordinaryReceiver = `import { thread } from "std/thread";
+readonly class Other { async function ${method}(): void {} }
+async function operation(): i32 { return 0; }
+async function startup(early: boolean, other: Other): i32 on thread.main {
+  if (early) return await operation();
+  const value = await operation();
+  await other.${method}();
+  return value;
+}
+async function main(): i32 on thread.main { return await startup(false, new Other({})); }`;
+      compileToC(ordinaryReceiver, input);
+      writeFileSync(input, ordinaryReceiver);
+      const rejected = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+      });
+      assert.notEqual(rejected.status, 0);
+      assert.match(rejected.stderr, /Z0700.*broader continuation frame/);
+    }
     const nested = `import { thread } from "std/thread";
 struct Request { text: String; }
 async function read(in request: Request): i32 { return i32(request.text.byteLength); }

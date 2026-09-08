@@ -37,6 +37,7 @@ import { stringStartsWith } from "./semantic-type-shapes.zs";
 import { internalBackendFailure } from "./native-backend-errors.zs";
 import { channelIdentityKind, channelPayloadIdentity } from "./channel-shapes.zs";
 import { channelHandleDefinitions, channelRuntimeDeclarations, channelRuntimeDefinitions } from "./channel-runtime.zs";
+import { taskScopeJoinRuntime } from "./task-scope-join-runtime.zs";
 
 function labelsContain(in labels: Array<String>, in candidate: String): boolean {
   for (const label of labels) {
@@ -783,6 +784,55 @@ function appendAsyncLinearEarlyTailCompletion(
   try appendAsyncTailLocalCleanups(inout output, program, declaration, 2);
   appendAsyncStoredParameterCleanups(inout output, program, functionType, 2);
   output.append("    task->cancelled = _z_early_cancelled;\n    task->completed = true;\n    return;\n  }\n");
+}
+
+function appendAsyncLinearContinuation(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  in functionType: LoweredFunctionType,
+  in shape: AsyncLinearAwaitShape
+): void throws String {
+  // Join states reuse the one child invocation slot. No awaited value or
+  // synchronous suffix statement is re-evaluated when a join wakes the frame.
+  output.append("  }\n  if (frame->_z_resume_state == 2) {\n");
+  let suffix = shape.rootPosition + 1;
+  while (suffix < declaration.roots.length) {
+    const root = declaration.roots[suffix];
+    let joinIndex = declaration.expressions.length;
+    if (declaration.statements[root].kind == LoweredStatementKind.expressionStatement) {
+      match (in declaration.statements[root].expression) {
+        some(expression) => if (declaration.expressions[expression].kind == LoweredExpressionKind.taskScopeClose) {
+          joinIndex = expression;
+        }
+        none => {}
+      }
+    }
+    if (joinIndex < declaration.expressions.length) {
+      const join = view declaration.expressions[joinIndex];
+      if (join.children.length != 1) throw "native linear TaskScope join lost its receiver";
+      const waitingState = 4 + suffix * 2;
+      output.append("    frame->child = z_stage1_task_scope_join_start(");
+      try appendExpression(inout output, declaration, join.children[0]);
+      output.append(", ");
+      output.append(join.labels.length > 0 && join.labels[0] == "cancel" ? "true" : "false");
+      output.append(", task->executor);\n");
+      output.append(`    frame->_z_resume_state = ${waitingState};\n`);
+      output.append("    frame->child.task->waiter = task;\n    z_stage1_async_enqueue(task->executor, frame->child.task);\n    return;\n  }\n");
+      output.append(`  if (frame->_z_resume_state == ${waitingState}) {\n`);
+      output.append("    if (frame->child.task == NULL || !frame->child.task->completed) abort();\n    const bool _z_join_cancelled = task->cancellation_requested || frame->child.task->cancelled;\n    z_stage1_async_remove_queued(frame->child.task);\n    if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n    if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n    frame->child = (Z_AsyncInvocation){0};\n    if (_z_join_cancelled) {\n");
+      try appendAsyncTailLocalCleanups(inout output, program, declaration, 3);
+      appendAsyncStoredParameterCleanups(inout output, program, functionType, 3);
+      output.append("      task->cancelled = true; task->completed = true; return;\n    }\n");
+      output.append(`    frame->_z_resume_state = ${waitingState + 1};\n  }\n  if (frame->_z_resume_state == ${waitingState + 1}) {\n`);
+    } else {
+      try appendAsyncTailPrefixStatement(
+        inout output, program, declaration, functionType, shape.expressionIndex, root, 2
+      );
+    }
+    suffix = suffix + 1;
+  }
+  output.append("  }\n");
 }
 
 function asyncDoubleAwaitShape(
@@ -11714,6 +11764,7 @@ function appendCallableHelpers(
           try appendAsyncLinearEarlyTailCompletion(
             inout output, program, linearDeclaration, functionType, shape
           );
+          output.append("  if (frame->_z_resume_state == 1) {\n");
           output.append("  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(frame);\n");
@@ -11805,20 +11856,9 @@ function appendCallableHelpers(
           output.append("  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(frame);\n  frame->_z_resume_state = 2;\n");
-          let suffix = shape.rootPosition + 1;
-          while (suffix < linearDeclaration.roots.length) {
-            const suffixRoot = linearDeclaration.roots[suffix];
-            try appendAsyncTailPrefixStatement(
-              inout output,
-              program,
-              linearDeclaration,
-              functionType,
-              shape.expressionIndex,
-              suffixRoot,
-              1
-            );
-            suffix = suffix + 1;
-          }
+          try appendAsyncLinearContinuation(
+            inout output, program, linearDeclaration, functionType, shape
+          );
           output.append("  task->completed = true;\n}\n\n");
         }
         if (directDoubleAwait) {
@@ -13077,7 +13117,7 @@ function appendTaskScopeRuntime(
   output.append("#if defined(_WIN32)\n  InitializeCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_init(&scope->mutex, NULL) != 0) abort();\n#endif\n  return scope;\n}\n\n");
   output.append("static void z_stage1_task_scope_job_cancel(Z_AsyncTask *task) {\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;\n  if (job->control != NULL) job->control->cancellation_requested = true;\n  if (job->child.task != NULL) z_stage1_async_request_cancel(job->child.task);\n}\n\n");
   output.append("static void z_stage1_task_scope_release_callable(Z_TaskScopeJob *job) {\n  if (job->release != NULL) job->release(job->context);\n  job->start = NULL;\n  job->context = NULL;\n  job->release = NULL;\n}\n\n");
-  output.append("static void z_stage1_task_scope_job_finish(Z_TaskScopeJob *job) {\n  job->task.completed = true;\n  Z_TaskScope *scope = job->scope;\n  Z_TaskControl *control = job->control;\n  z_stage1_task_scope_lock(scope);\n  if (scope->pending == 0) abort();\n  scope->pending -= 1;\n  if (control != NULL) control->job = NULL;\n  job->control = NULL;\n  z_stage1_task_scope_unlock(scope);\n  Z_TaskControl_release(control);\n}\n\n");
+  output.append("static void z_stage1_task_scope_job_finish(Z_TaskScopeJob *job) {\n  job->task.completed = true;\n  Z_TaskScope *scope = job->scope;\n  Z_TaskControl *control = job->control;\n  z_stage1_task_scope_lock(scope);\n  if (scope->pending == 0) abort();\n  scope->pending -= 1;\n  if (control != NULL) control->job = NULL;\n  job->control = NULL;\n  z_stage1_task_scope_unlock(scope);\n  z_stage1_task_scope_wake_joiners(scope);\n  Z_TaskControl_release(control);\n}\n\n");
   output.append("static void z_stage1_task_scope_job_poll(Z_AsyncTask *task) {\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;\n  if (job->state == 0) {\n    job->state = 1;\n    if (task->cancellation_requested) {\n      task->cancelled = true;\n      z_stage1_task_scope_release_callable(job);\n      z_stage1_task_scope_job_finish(job);\n      return;\n    }\n    if (job->start == NULL) abort();\n    job->child = job->start(job->context, task->executor);\n    z_stage1_task_scope_release_callable(job);\n    if (task->cancellation_requested) z_stage1_async_request_cancel(job->child.task);\n    if (job->child.task == NULL) abort();\n    if (job->child.task->completed) z_stage1_async_enqueue(task->executor, task);\n    else {\n      if (job->child.task->waiter != NULL) abort();\n      job->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, job->child.task);\n    }\n    return;\n  }\n  if (job->state != 1 || job->child.task == NULL || !job->child.task->completed) abort();\n  task->cancelled = task->cancellation_requested || job->child.task->cancelled;\n  z_stage1_task_scope_release_invocation(&job->child);\n  z_stage1_task_scope_job_finish(job);\n}\n\n");
   output.append("static void z_stage1_task_scope_drain_external(Z_TaskScope *scope) {\n  z_stage1_task_scope_lock(scope);\n  Z_TaskScopeJob *job = scope->external_head;\n  scope->external_head = NULL;\n  scope->external_tail = NULL;\n  z_stage1_task_scope_unlock(scope);\n  while (job != NULL) {\n    Z_TaskScopeJob *next = job->external_next;\n    job->external_next = NULL;\n    z_stage1_async_enqueue(scope->executor, &job->task);\n    job = next;\n  }\n}\n\n");
   output.append("#if defined(__APPLE__)\nstatic void z_stage1_task_scope_dispatch_perform(void *context);\n#endif\n\n");
@@ -13091,6 +13131,7 @@ function appendTaskScopeRuntime(
   output.append("static __attribute__((unused)) Z_TaskControl *z_stage1_task_scope_spawn_async(Z_TaskScope *scope, Z_AsyncInvocation (*start)(void *, Z_AsyncExecutor *), void *context, void (*release)(void *)) {\n  if (scope == NULL || start == NULL) abort();\n  Z_TaskControl *control = z_stage1_task_control_new(true);\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)calloc(1, sizeof(*job));\n  if (job == NULL) abort();\n  job->task.poll = z_stage1_task_scope_job_poll;\n  job->task.request_cancel = z_stage1_task_scope_job_cancel;\n  job->task.executor = scope->executor;\n  job->start = start;\n  job->context = context;\n  job->release = release;\n  job->scope = scope;\n  z_stage1_task_scope_lock(scope);\n  if (scope->closing) {\n    z_stage1_task_scope_unlock(scope);\n    z_stage1_task_scope_release_callable(job);\n    free(job);\n    control->accepted = false;\n    return control;\n  }\n  control->scope = Z_TaskScope_retain(scope);\n  control->job = job;\n  job->control = Z_TaskControl_retain(control);\n  job->scope_next = scope->jobs;\n  scope->jobs = job;\n  if (scope->external_tail == NULL) scope->external_head = job;\n  else scope->external_tail->external_next = job;\n  scope->external_tail = job;\n  scope->pending += 1;\n  z_stage1_task_scope_unlock(scope);\n  z_stage1_task_scope_schedule_perform(scope);\n  return control;\n}\n\n");
   output.append("static __attribute__((unused)) bool z_stage1_task_control_request_cancel(Z_TaskControl *control) {\n  if (control == NULL || !control->accepted || control->scope == NULL) return false;\n  Z_TaskScope *scope = control->scope;\n  z_stage1_task_scope_lock(scope);\n  if (control->cancellation_requested || control->job == NULL) {\n    z_stage1_task_scope_unlock(scope);\n    return false;\n  }\n  control->cancellation_requested = true;\n  Z_TaskScopeJob *job = control->job;\n  z_stage1_task_scope_unlock(scope);\n  z_stage1_async_request_cancel(&job->task);\n  z_stage1_task_scope_schedule_perform(scope);\n  return true;\n}\n\n");
   output.append("static __attribute__((unused)) void z_stage1_task_scope_join(Z_TaskScope *scope, bool cancel) {\n  if (scope == NULL) abort();\n  z_stage1_task_scope_lock(scope);\n  scope->closing = true;\n  if (cancel) scope->cancelling = true;\n  if (cancel) {\n    for (Z_TaskScopeJob *job = scope->jobs; job != NULL; job = job->scope_next) z_stage1_async_request_cancel(&job->task);\n  }\n  z_stage1_task_scope_unlock(scope);\n  for (;;) {\n    z_stage1_task_scope_drain_external(scope);\n    z_stage1_task_scope_lock(scope);\n    const size_t pending = scope->pending;\n    z_stage1_task_scope_unlock(scope);\n    if (pending == 0) break;\n    if (!z_stage1_async_drive_one(scope->executor)) abort();\n  }\n  z_stage1_task_scope_discard_jobs(scope);\n}\n\n");
+  output.append(taskScopeJoinRuntime());
 }
 
 function appendAsyncCallableAwaitHelpers(
@@ -14467,6 +14508,7 @@ function appendAsyncMethodAwaitHelpers(
         try appendAsyncLinearEarlyTailCompletion(
           inout output, program, linearDeclaration, functionType, shape
         );
+        output.append("  if (frame->_z_resume_state == 1) {\n");
         output.append("  if (frame->_z_resume_state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
         appendAsyncCallableAwaitHelperName(
           inout output,
@@ -14558,20 +14600,9 @@ function appendAsyncMethodAwaitHelpers(
           expressionIndex
         );
         output.append("_release_child(frame);\n  frame->_z_resume_state = 2;\n");
-        let suffix = shape.rootPosition + 1;
-        while (suffix < linearDeclaration.roots.length) {
-          const suffixRoot = linearDeclaration.roots[suffix];
-          try appendAsyncTailPrefixStatement(
-            inout output,
-            program,
-            linearDeclaration,
-            functionType,
-            shape.expressionIndex,
-            suffixRoot,
-            1
-          );
-          suffix = suffix + 1;
-        }
+        try appendAsyncLinearContinuation(
+          inout output, program, linearDeclaration, functionType, shape
+        );
         output.append("  task->completed = true;\n}\n\n");
         if (consumingStructReceiver) {
           if (receiverLiveFlag.byteLength > 0) {
@@ -21196,6 +21227,7 @@ function appendTypeDefinitions(
   }
   if (usesTaskScope) {
     output.append("typedef struct Z_TaskScopeJob Z_TaskScopeJob;\n");
+    output.append("typedef struct Z_TaskScopeJoin Z_TaskScopeJoin;\n");
     output.append("typedef struct Z_TaskScope Z_TaskScope;\n");
     output.append("typedef struct Z_TaskControl Z_TaskControl;\n");
     output.append("struct Z_TaskScope {\n");
@@ -21204,6 +21236,7 @@ function appendTypeDefinitions(
     output.append("  Z_AsyncExecutor *executor;\n");
     output.append("#if defined(_WIN32)\n  CRITICAL_SECTION mutex;\n#else\n  pthread_mutex_t mutex;\n#endif\n");
     output.append("  bool closing;\n  bool cancelling;\n  size_t pending;\n");
+    output.append("  Z_TaskScopeJoin *join_waiters;\n");
     output.append("  Z_TaskScopeJob *jobs;\n  Z_TaskScopeJob *external_head;\n  Z_TaskScopeJob *external_tail;\n");
     output.append("};\n");
     output.append("struct Z_TaskControl {\n");
@@ -21217,6 +21250,7 @@ function appendTypeDefinitions(
     output.append("  Z_TaskScopeJob *scope_next;\n  Z_TaskScopeJob *external_next;\n");
     output.append("  uint8_t state;\n};\n\n");
     output.append("static void Z_TaskScope_deinit(Z_TaskScope **scope);\n");
+    output.append("static void z_stage1_task_scope_wake_joiners(Z_TaskScope *scope);\n");
     output.append("static __attribute__((unused)) void Z_TaskControl_deinit(Z_TaskControl **control);\n\n");
   }
   for (const taskName of taskNames) {

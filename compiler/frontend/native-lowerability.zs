@@ -1136,13 +1136,58 @@ function statementContainsLexicalFrameLocal(in arena: StatementArena, index: usi
   return false;
 }
 
+function statementIsTaskScopeJoinAwait(
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (arena.nodes[index].kind != StatementKind.expressionStatement) return false;
+  const parsedModule = parsedModuleIndexForGraphModule(modules, graph, moduleIndex);
+  if (parsedModule >= modules.length) return false;
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (tree.nodes[root].kind != ExpressionKind.awaitExpression
+          || tree.nodes[root].children.length != 1) return false;
+        const call = tree.nodes[root].children[0];
+        if (tree.nodes[call].kind != ExpressionKind.callExpression
+          || tree.nodes[call].children.length != 1) return false;
+        const callee = tree.nodes[call].children[0];
+        if (tree.nodes[callee].kind != ExpressionKind.memberExpression
+          || tree.nodes[callee].children.length != 1
+          || (tree.nodes[callee].value != "close" && tree.nodes[callee].value != "cancel")) return false;
+        const receiver = tree.nodes[callee].children[0];
+        const typeName = resolvedExpressionType(graph, moduleIndex, tree, receiver);
+        for (const imported of modules[parsedModule].program.imports) {
+          if (imported.header != "std/async") continue;
+          for (const binding of imported.bindings) {
+            if (binding.importedName == "TaskScope" && binding.localName == typeName) return true;
+          }
+        }
+        return false;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
 function functionUsesFirstTierLinearAwait(
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
   in declaration: FunctionDeclaration
 ): boolean {
   if (declaration.body.roots.length < 2) return false;
   let awaitCount: usize = 0;
   for (const root of declaration.body.roots) {
     if (!statementContainsSuspension(declaration.body, root)) continue;
+    if (awaitCount == 1 && statementIsTaskScopeJoinAwait(
+      moduleIndex, modules, graph, declaration.body, root
+    )) continue;
     if (awaitCount == 0) {
       const kind = declaration.body.nodes[root].kind;
       if (
@@ -1290,7 +1335,7 @@ function functionHasFirstTierTailAwaitStorage(
         owner.byteLength == 0
         && functionUsesFirstTierBranchedTailAwait(declaration)
       )
-      && !functionUsesFirstTierLinearAwait(declaration)
+      && !functionUsesFirstTierLinearAwait(moduleIndex, modules, graph, declaration)
       && !functionUsesFirstTierDoubleAwaitWithTaskifiablePlacements(
         moduleIndex,
         modules,
@@ -1301,7 +1346,7 @@ function functionHasFirstTierTailAwaitStorage(
   ) return false;
   match (in declaration.errorType) {
     some(_) => if (
-      !functionUsesFirstTierLinearAwait(declaration)
+      !functionUsesFirstTierLinearAwait(moduleIndex, modules, graph, declaration)
       && !functionUsesFirstTierPlacedAsyncLinearAwait(
         moduleIndex,
         modules,
@@ -2538,6 +2583,34 @@ function validateNativeFunction(
     declaration,
     owner
   );
+  if (declaration.asynchronous && declaration.name != "main"
+    && functionUsesFirstTierLinearAwait(moduleIndex, modules, graph, declaration)
+    && parsedModule < modules.length) {
+    // A scope created here is a structural owner, not just a retained handle.
+    // Cancellation can skip its explicit join. Until the frame has implicit
+    // scope-exit states, admitting it would leave scheduled children alive.
+    for (const statement of declaration.body.nodes) {
+      match (in statement.expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => for (const node of tree.nodes) {
+            if (node.kind != ExpressionKind.newExpression) continue;
+            for (const imported of modules[parsedModule].program.imports) {
+              if (imported.header != "std/async") continue;
+              for (const binding of imported.bindings) {
+                if (binding.importedName == "TaskScope" && binding.localName == node.value) {
+                  throw loweringBoundary(path, "Z0700",
+                    "a TaskScope created inside this native continuation requires implicit scope-unwind states so cancellation cannot skip its child joins; this frame tier currently supports passed-in scope handles",
+                    node.line, node.column, 3);
+                }
+              }
+            }
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
+  }
   if (declaration.asynchronous && declaration.name != "main"
     && !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait) {
     let earlierTerminalAwait = false;

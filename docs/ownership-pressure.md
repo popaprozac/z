@@ -6248,6 +6248,65 @@ Final checkpoint: all 210 tests in the self-hosting tier pass on a frozen
 compiler snapshot; the standalone compiler reaches a fixed point. The restored
 normal Z Notes smoke and both Zapp TypeScript check projects also pass.
 
+### TaskScope joins in an owned continuation (2026-09-08)
+
+The next minimized application shape now executes through both Stage 0 and the
+native emitter: an early terminal await, one owned awaited `Result`, synchronous
+work, and sequential root `await updates.close()` / `await updates.cancel()`
+statements. Free functions and supported class methods share the same suffix
+emission. The result remains frame-owned until the last join and final match;
+success/error payloads are neither recomputed nor copied on resumption.
+
+Admission checks the actual `std/async` TaskScope receiver, including import
+aliases. Ordinary user-defined `.close()` and `.cancel()` methods still receive
+the broader-continuation diagnostic; spelling alone cannot authorize a runtime
+primitive. Nested joins and additional ordinary awaited locals remain outside
+this slice.
+
+Same-executor joins now retain a scope and register a waiter. Finishing the final
+admitted child wakes all joiners without busy polling. The parent's existing
+single child-invocation slot holds each join in sequence. A join has one small
+heap allocation; this is current bootstrap runtime overhead, not a claim of
+zero-cost scope joining. Scopes created with a separate executor retain the
+existing synchronous driver bridge. General cross-executor readiness composition
+has not landed as part of this change.
+
+Bounded UBSan tests exercise normal close, explicit cancel, cancellation of a
+close, two simultaneous waiters, cold and active destruction, rejection after
+admission closes, the separate-driver bridge, and exact final reference counts.
+The actual generated Z parent is cancelled at 19 scheduler positions on both
+success/error paths, and naturally resumed after a pending scope on both paths.
+Checks ensure child destruction precedes parent guard cleanup and that the
+post-join continuation never runs after cancellation. Cancelling before a passed
+scope's join is reached does not implicitly close that independently owned scope;
+its caller must still finish it.
+
+An additional active-parent probe exposed a separate structural-owner gap:
+`new TaskScope()` inside the continuation could leave a scheduled timer/child
+behind when parent cancellation skipped the later explicit join. The bounded
+generated-C probe returned status 22 because the executor still held pending
+work after parent destruction. Merely retaining/deinitializing a scope handle
+does not implement the implicit joining promised for a locally created scope.
+This shape now receives `Z0700` at construction (including import aliases), with
+a lowering backstop, until implicit scope-unwind states are implemented. The
+passing handle tests above intentionally receive independently owned scopes;
+they do not claim to solve local structural ownership.
+
+Next: implicit continuation-owned TaskScope unwinding, native-thread
+cancellation/join, then the saved Application.run integration and full
+primary/secondary application gate. Automatic
+forwarding remains disabled; passing the TaskScope fixture does not establish the
+complete application's lifetime ordering.
+
+Final source snapshot: all 212 self-hosting-tier tests pass (421.63 seconds).
+The local standalone compiler was rebuilt to a fixed point (10,870,008 emitted
+C bytes); it runs the sequential-join fixture and independently reports `Z0700`
+for the continuation-owned scope probe. These are composition/correctness checks,
+not a new runtime or compilation performance benchmark.
+The ordinary native Z Notes auto-closing smoke also passes, as do all eight
+real-process startup transport cases (Stage 0 and native, with UBSan). The saved
+full startup wrapper remains unapplied; these passing gates do not enable it.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
