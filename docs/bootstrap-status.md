@@ -1159,12 +1159,15 @@ The immediate consumer-driven prerequisite is Zapp's lifecycle-owned launch
 listener, before enabling automatic secondary-instance forwarding. Its reduced
 `async-launch-listener.zs` and `async-launch-owned-destructure.zs` fixtures now
 execute through both compiler paths. The native executor-local yield frame
-supports parameterless non-throwing `void`/`i32` helpers without explicit
-declaration affinity, root initialized Z-owned locals/destructuring, and
+supports non-throwing `void`/`i32` helpers without explicit declaration affinity,
+owned Z-value parameters, root initialized Z-owned locals/destructuring, and
 `scheduler.yield()` inside nested `if`/`while` control flow. Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
-The actual listener still needs parameters, native storage, and child-await/error
-composition; the two reductions do not establish that integration. The broader
+Owned inputs enter the cold frame before its first poll, so dropping an unstarted
+invocation or cancelling before entry still destroys them. Implicit ARC argument
+retention preserves the caller's owner; explicit `move` transfers it. The actual
+listener still needs synchronized/native storage and child-await/error composition;
+the reductions do not establish that integration. The broader
 `async-owned-destructure.zs` probe covers explicit copy/move, awaited producers,
 scoped child borrows, errors, and cancellation before or after initialization.
 Cleanup-bearing branch/loop locals still require an explicit `async scope`,

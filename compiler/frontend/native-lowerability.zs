@@ -22,7 +22,7 @@ import {
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import { typeHasCleanup } from "./semantic-type-ownership.zs";
-import { typeSymbolLocation } from "./semantic-type-identities.zs";
+import { transparentTypeName, typeSymbolLocation } from "./semantic-type-identities.zs";
 import { aggregateFieldShape } from "./semantic-member-lookups.zs";
 import {
   ModuleGraph,
@@ -2247,6 +2247,10 @@ function nativeYieldFrameStorageSupported(
 ): boolean {
   if (name == "String" || name == "cstring" || name == "boolean"
     || name == "f32" || name == "f64" || isIntegerTypeName(name)) return true;
+  const actual = transparentTypeName(graph.modules, moduleIndex, name);
+  if (actual != name) {
+    return nativeYieldFrameStorageSupported(graph, moduleIndex, actual, visiting);
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       if (generic.base != "Array" && generic.base != "Option"
@@ -2306,6 +2310,14 @@ function validateNativeFunction(
     && !(declaration.name != "main" && firstTierSchedulerYield)
     && functionUsesYieldFrame(modules[parsedModule].program, declaration);
   if (yieldFrame) {
+    for (const parameter of declaration.parameters) {
+      const visiting = Array<String>();
+      if (!nativeYieldFrameStorageSupported(graph, moduleIndex, parameter.type.name, visiting)) {
+        throw loweringBoundary(path, "Z0700",
+          `native yield-frame parameter "${parameter.name}" requires owned Z value storage; borrowed views and native storage remain outside this tier`,
+          parameter.line, parameter.column, parameter.name.byteLength);
+      }
+    }
     for (const statement of declaration.body.nodes) {
       // The compiler-created owner must be supported too, even when none of
       // its unsupported fields are selected into user-visible bindings.

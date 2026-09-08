@@ -5518,6 +5518,38 @@ function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
   });
 }
 
+function treeIsSharedClassReference(
+  in program: Program, in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree, index: usize
+): boolean {
+  if (tree.nodes[index].kind != ExpressionKind.identifierExpression) return false;
+  let typeName = match (resolvedExpressionTypeName(evidence, tree, index)) {
+    some(name) => name;
+    none => {
+      const name = copy tree.nodes[index].value;
+      const offset = tree.nodes[index].offset;
+      select match (namedValueTypeName(program, evidence, "", name, offset)) {
+        some(found) => found;
+        none => return false;
+      };
+    }
+  };
+  // Binding evidence can retain the source spelling of transparent aliases.
+  let aliasDepth: usize = 0;
+  while (aliasDepth < program.typeAliases.length) {
+    match (localTypeAliasTarget(program, typeName)) {
+      some(target) => typeName = move target;
+      none => break;
+    }
+    aliasDepth = aliasDepth + 1;
+  }
+  for (const aggregate of program.aggregates) {
+    if (aggregate.name == typeName
+      && aggregate.kind == DeclarationKind.classDeclaration) return true;
+  }
+  return false;
+}
+
 function collectTreeMovedNames(
   in program: Program,
   in evidence: ModuleSemanticEvidence,
@@ -5570,6 +5602,7 @@ function collectTreeMovedNames(
       if (
         parameterModes[argumentPosition - 1] == "value"
         && tree.nodes[argument].kind == ExpressionKind.identifierExpression
+        && !treeIsSharedClassReference(program, evidence, tree, argument)
       ) movedNames.add(tree.nodes[argument].value.copyBytes(
         0,
         tree.nodes[argument].value.byteLength
@@ -5707,6 +5740,7 @@ function collectTreeMovedNames(
           if (
             declaration.parameters[parameter].mode == ParameterMode.value
             && tree.nodes[argument].kind == ExpressionKind.identifierExpression
+            && !treeIsSharedClassReference(program, evidence, tree, argument)
           ) movedNames.add(tree.nodes[argument].value.copyBytes(
             0,
             tree.nodes[argument].value.byteLength
@@ -26252,6 +26286,12 @@ function lowerFunction(
       position = position + 1;
     }
   }
+  if (yieldFrame && asyncSuspension == "scheduler-yield") {
+    for (const parameter of declaration.parameters) {
+      const type = try lowerModuleType(program, importedTypes, parameter.type);
+      if (moduleTypeNeedsCleanup(program, importedTypes, type)) asyncSuspension = "yield-frame";
+    }
+  }
   if (yieldFrame && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
   let parameters = Array<LoweredParameter>();
   let ownedParameters = Array<LoweredCleanup>();
@@ -26499,14 +26539,13 @@ function lowerFunction(
       );
       let guard = "";
       if (
-        moved
-        && (
+        asyncSuspension == "yield-frame"
+        || (moved && (
           declaration.asynchronous
-          ||
-          hasMainDelayMatch
+          || hasMainDelayMatch
           || hasMainDelayLoop
           || functionMoveIndex.hasControlFlow
-        )
+        ))
       ) {
         guard = ownerLiveFlag(parameter.name);
         liveFlags.push(LoweredLiveFlag({

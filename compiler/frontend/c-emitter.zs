@@ -9455,6 +9455,34 @@ function yieldFrameName(in declaration: LoweredFunction): String {
   return name.finish();
 }
 
+function yieldFrameParameterGuard(in declaration: LoweredFunction, in name: String): String {
+  for (const flag of declaration.liveFlags) {
+    if (flag.parameter && flag.owner == name) return copy flag.name;
+  }
+  return "";
+}
+
+function appendYieldFrameParameters(
+  inout output: TextBuffer, in parameters: Array<LoweredParameter>
+): void throws String {
+  let index: usize = 0;
+  for (const parameter of parameters) {
+    if (parameter.mode != LoweredParameterMode.value) throw "native yield frames require owned value parameters";
+    output.append(", ");
+    const name = `_z_argument_${index}`;
+    try appendCallableParameterDeclaration(inout output, parameter, name);
+    index = index + 1;
+  }
+}
+
+function appendYieldFrameArguments(inout output: TextBuffer, count: usize): void {
+  let index: usize = 0;
+  while (index < count) {
+    output.append(`, _z_argument_${index}`);
+    index = index + 1;
+  }
+}
+
 function appendYieldFrameCleanups(
   inout output: TextBuffer, in declaration: LoweredFunction,
   in cleanups: Array<LoweredCleanup>, depth: usize
@@ -9570,6 +9598,9 @@ function appendYieldFrameHelpers(
     if (source.asyncSuspension != "yield-frame") continue;
     const name = yieldFrameName(source);
     let declaration = copy source;
+    for (const parameter of source.parameters) {
+      declaration.asyncFrameBindings.push(copy parameter.name);
+    }
     for (const statement of source.statements) {
       if (statement.kind != LoweredStatementKind.localStatement) continue;
       if (asyncFrameBinds(declaration, statement.name)) {
@@ -9583,6 +9614,15 @@ function appendYieldFrameHelpers(
       output.append(try cType(source.returnType));
       output.append(" result;\n");
     }
+    for (const parameter of source.parameters) {
+      output.append("  ");
+      output.append(try cType(parameter.type));
+      output.append(" _z_binding_");
+      appendCBindingName(inout output, parameter.name);
+      output.append(";\n");
+      const guard = yieldFrameParameterGuard(source, parameter.name);
+      if (guard.byteLength > 0) output.append(`  bool ${guard};\n`);
+    }
     for (const statement of source.statements) {
       if (statement.kind != LoweredStatementKind.localStatement) continue;
       const type = match (in statement.type) {
@@ -9591,7 +9631,7 @@ function appendYieldFrameHelpers(
       };
       output.append("  ");
       output.append(try cType(type));
-      output.append(" ");
+      output.append(" _z_binding_");
       appendCBindingName(inout output, statement.name);
       output.append(";\n");
       if (statement.liveFlag.byteLength > 0) {
@@ -9601,11 +9641,20 @@ function appendYieldFrameHelpers(
       }
     }
     output.append(`} ${name};\n`);
+    for (const parameter of source.parameters) {
+      output.append("#define _z_stage1_frame_binding_");
+      appendCBindingName(inout output, parameter.name);
+      output.append(" (frame->_z_binding_");
+      appendCBindingName(inout output, parameter.name);
+      output.append(")\n");
+      const guard = yieldFrameParameterGuard(source, parameter.name);
+      if (guard.byteLength > 0) output.append(`#define ${guard} (frame->${guard})\n`);
+    }
     for (const statement of source.statements) {
       if (statement.kind != LoweredStatementKind.localStatement) continue;
       output.append("#define _z_stage1_frame_binding_");
       appendCBindingName(inout output, statement.name);
-      output.append(" (frame->");
+      output.append(" (frame->_z_binding_");
       appendCBindingName(inout output, statement.name);
       output.append(")\n");
       if (statement.liveFlag.byteLength > 0) {
@@ -9614,6 +9663,12 @@ function appendYieldFrameHelpers(
     }
     output.append(`static void ${name}_cleanup(${name} *frame) {\n  (void)frame;\n`);
     let cleanup = Array<LoweredCleanup>();
+    for (const parameter of source.parameters) {
+      const guard = yieldFrameParameterGuard(source, parameter.name);
+      if (guard.byteLength > 0) cleanup.push(LoweredCleanup({
+        name: copy parameter.name, type: copy parameter.type, guard,
+      }));
+    }
     for (const statement of source.statements) {
       if (statement.kind != LoweredStatementKind.localStatement
         || statement.liveFlag.byteLength == 0) continue;
@@ -9639,6 +9694,13 @@ function appendYieldFrameHelpers(
     }
     output.append(`_z_complete: __attribute__((unused));\n  ${name}_cleanup(frame);\n  task->completed = true;\n}\n`);
     output.append(`static void ${name}_destroy(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n  z_stage1_async_remove_queued(task);\n  ${name}_cleanup(frame);\n  free(frame);\n}\n`);
+    for (const parameter of source.parameters) {
+      output.append("#undef _z_stage1_frame_binding_");
+      appendCBindingName(inout output, parameter.name);
+      output.append("\n");
+      const guard = yieldFrameParameterGuard(source, parameter.name);
+      if (guard.byteLength > 0) output.append(`#undef ${guard}\n`);
+    }
     for (const statement of source.statements) {
       if (statement.kind != LoweredStatementKind.localStatement) continue;
       output.append("#undef _z_stage1_frame_binding_");
@@ -9652,7 +9714,19 @@ function appendYieldFrameHelpers(
       output.append(try cType(source.returnType));
       output.append(` *)output = ((${name} *)task)->result;\n`);
     } else output.append("  (void)output;\n");
-    output.append(`}\nstatic __attribute__((unused)) Z_AsyncInvocation ${name}_start(Z_AsyncExecutor *executor) {\n  if (executor == NULL) abort();\n  ${name} *frame = calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.executor = executor;\n  frame->task.poll = ${name}_poll;\n  return (Z_AsyncInvocation){ .task = &frame->task, .take_result = ${name}_take, .destroy = ${name}_destroy };\n}\n\n`);
+    output.append(`}\nstatic __attribute__((unused)) Z_AsyncInvocation ${name}_start(Z_AsyncExecutor *executor`);
+    try appendYieldFrameParameters(inout output, source.parameters);
+    output.append(`) {\n  if (executor == NULL) abort();\n  ${name} *frame = calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.executor = executor;\n  frame->task.poll = ${name}_poll;\n`);
+    let argument: usize = 0;
+    for (const parameter of source.parameters) {
+      output.append("  frame->_z_binding_");
+      appendCBindingName(inout output, parameter.name);
+      output.append(` = _z_argument_${argument};\n`);
+      const guard = yieldFrameParameterGuard(source, parameter.name);
+      if (guard.byteLength > 0) output.append(`  frame->${guard} = true;\n`);
+      argument = argument + 1;
+    }
+    output.append(`  return (Z_AsyncInvocation){ .task = &frame->task, .take_result = ${name}_take, .destroy = ${name}_destroy };\n}\n\n`);
   }
 }
 
@@ -9661,12 +9735,20 @@ function appendYieldFrameDriver(
   processArguments: boolean
 ): void throws String {
   const name = yieldFrameName(declaration);
-  try appendFunctionSignature(inout output, declaration, processArguments);
+  let driver = copy declaration;
+  let parameter: usize = 0;
+  while (parameter < driver.parameters.length) {
+    driver.parameters[parameter].name = `_z_argument_${parameter}`;
+    parameter = parameter + 1;
+  }
+  try appendFunctionSignature(inout output, driver, processArguments);
   output.append(" {\n");
   if (declaration.name == "main" && processArguments) {
     output.append("  z_stage1_process_argc = argc;\n  z_stage1_process_argv = argv;\n");
   }
-  output.append(`  Z_AsyncExecutor executor = {0};\n  Z_AsyncInvocation invocation = ${name}_start(&executor);\n  z_stage1_async_enqueue(&executor, invocation.task);\n  while (!invocation.task->completed) { if (!z_stage1_async_drive_one(&executor)) abort(); }\n`);
+  output.append(`  Z_AsyncExecutor executor = {0};\n  Z_AsyncInvocation invocation = ${name}_start(&executor`);
+  appendYieldFrameArguments(inout output, declaration.parameters.length);
+  output.append(");\n  z_stage1_async_enqueue(&executor, invocation.task);\n  while (!invocation.task->completed) { if (!z_stage1_async_drive_one(&executor)) abort(); }\n");
   if (declaration.returnType.kind != LoweredTypeKind.voidType) {
     output.append("  ");
     output.append(try cType(declaration.returnType));
@@ -10268,12 +10350,15 @@ function appendCallableHelpers(
         );
         if (asyncSuspension == "yield-frame"
           && expression.kind == LoweredExpressionKind.directFunctionValue) {
-          if (functionType.parameters.length != 0) throw "native yield frame adapter requires a parameterless callable";
           output.append("static Z_AsyncInvocation ");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_start(void *context, Z_AsyncExecutor *executor) {\n  (void)context;\n  return _z_stage1_yield_");
+          output.append("_start(void *context, Z_AsyncExecutor *executor");
+          try appendYieldFrameParameters(inout output, functionType.parameters);
+          output.append(") {\n  (void)context;\n  return _z_stage1_yield_");
           appendCBindingName(inout output, expression.value);
-          output.append("_start(executor);\n}\nstatic Z_");
+          output.append("_start(executor");
+          appendYieldFrameArguments(inout output, functionType.parameters.length);
+          output.append(");\n}\nstatic Z_");
           output.append(functionType.name);
           output.append(" ");
           appendCallableHelperName(inout output, owner, expressionIndex);

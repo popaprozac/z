@@ -176,9 +176,11 @@ value-struct destructuring at the function root or directly inside an explicit
 branch/loop locals still need that explicit lexical scope; borrowed-view and
 array patterns in async frames are not yet executable. The fixed-point native
 compiler now executes root Z-owned patterns across `scheduler.yield()`, including
-yields in nested `if`/`while` statements. This tier is limited to parameterless,
-non-throwing `void`/`i32` functions without explicit declaration affinity;
-parameters, native storage, child awaits, and nested source-local declarations
+yields in nested `if`/`while` statements. This tier supports owned Z-value
+parameters in non-throwing `void`/`i32` functions without explicit declaration
+affinity. Inputs enter the cold frame before its body runs, including cleanup
+if it is dropped or cancelled before entry. Borrowed parameters,
+native/synchronized storage, child awaits, and nested source-local declarations
 remain separate composition work. These are implementation boundaries, not
 new ownership rules. A successful `check` alone is not proof that an advanced
 frame shape can be emitted and run. Check the

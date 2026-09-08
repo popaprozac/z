@@ -660,11 +660,14 @@ root or directly inside an explicit `async scope`. A scope inside a branch or
 loop joins its children before destroying these fields. Borrowed-view and
 positional array patterns in async frames remain deferred. The fixed-point
 native compiler now executes root Z-owned patterns across standalone
-`scheduler.yield()` in parameterless, non-throwing `void`/`i32` functions without
-explicit declaration affinity, including yields inside `if`/`while` statements.
+`scheduler.yield()` in non-throwing `void`/`i32` functions without explicit
+declaration affinity, including yields inside `if`/`while` statements and owned
+Z-value parameters. Those inputs belong to the cold invocation before its body
+runs and are cleaned even if it is dropped or cancelled before entry. Passing
+a class handle retains an alias normally; `move` transfers the caller's alias.
 That tier does not yet combine these patterns with awaited producers, child
-awaits, native storage, or nested source-local declarations. These are lowering
-limits, not different destructuring semantics.
+awaits, borrowed parameters, native/synchronized storage, or nested source-local
+declarations. These are lowering limits, not different destructuring semantics.
 
 Fixed arrays, `Array<T>`, and `Slice<T>` support positional local patterns:
 

@@ -5638,12 +5638,50 @@ or per-yield frame allocation. All admitted locals currently receive frame
 slots, including compiler temporaries; liveness-based slot reuse and allocation
 elision remain optimization work, not measured wins in this checkpoint.
 
-The shared admission rule keeps parameters, throwing bodies, child awaits,
+The initial shared admission rule kept parameters, throwing bodies, child awaits,
 placed operations, nested source-local declarations, positional/view patterns,
 and native/synchronized storage outside this new tier. The storage check covers
 the entire destructuring source, not just selected fields. Existing separately
 supported async tiers remain available. The actual launch listener therefore
 still needs composition work before `app.run()` can own and cancel/join it.
+
+### Owned inputs to native yield frames
+
+The next slice admits ordinary owned Z-value parameters to the same frame:
+scalars, String/Array/Option values, ARC class handles, and supported recursively
+owned Z aggregates. They are installed at invocation start, before the first
+poll, with live flags already armed. A dropped cold invocation or pre-entry
+cancellation therefore destroys its inputs even though no local initializer has
+run. After entry, reverse cleanup destroys initialized locals before the
+remaining parameters. Moving a parameter into a local or destructuring source
+disarms its old slot; selected fields keep their own guards.
+
+`self-host-emit-async-yield-parameters.zs` is in the executable differential
+corpus. Its inputs include an owned aggregate containing ARC fields and an
+Array<String>, plus scalar limits. It moves selected fields through a yielding
+loop and uses names such as `state`, `result`, `task`, `frame`, and `executor`.
+Frame binding fields and indexed adapter arguments now keep those source names
+separate from internal scheduler state. Tests cover cold drop, pre-entry
+cancellation, post-initialization cancellation, and exact destructor ordering,
+including UBSan. This adds slots to the existing allocation, not an allocation
+per argument or yield.
+
+The ARC alias test exposed an upstream native cleanup omission: ordinary
+value-parameter call lowering correctly inserted a retain, but source cleanup
+discovery also marked that bare class argument as moved. The caller's final
+release was consequently lost. Cleanup discovery now uses class type evidence
+(including binding evidence when no per-expression type is present) to preserve
+that caller-owned alias. Explicit `move` remains consuming. Regression coverage
+compares implicit retain and explicit move with Stage 0, and checks the shared
+fix on a synchronous call too. Transparent class aliases are resolved both by
+frame admission and by caller cleanup discovery; an alias chain must not turn
+an ARC argument into an apparent move.
+
+Borrowed inputs still need parent loan storage/join proof in this loop tier.
+Native/synchronized storage, throwing bodies, child awaits, and declaration
+placement remain separate expansions. The next listener-specific prerequisite
+is its Foundation-backed lease/endpoint and synchronized inbox storage; no
+automatic launch listener or public Zapp API was enabled by this checkpoint.
 
 ## Not tested yet
 

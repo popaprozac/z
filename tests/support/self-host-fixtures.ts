@@ -17,6 +17,10 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
     expectedStdout: "prepared delivery\nreleased discarded\nselected\nreleased selected\n",
   },
   {
+    entry: "tests/fixtures/self-host-emit-async-yield-parameters.zs",
+    expectedStdout: "prepared launch\nreleased discarded\nselected\nreleased selected\n",
+  },
+  {
     entry: "examples/language/collections/map-identities.zs",
     expectedStdout: "open: Draft\nfound: Draft\nclosed Draft\n",
   },
@@ -255,6 +259,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-sync-main-error-taskification.zs": focusedPositive,
   "self-host-emit-async-local-state.zs": focusedPositive,
   "self-host-emit-async-yield-frame.zs": differential,
+  "self-host-emit-async-yield-parameters.zs": differential,
   "self-host-emit-async-function-main-placement-structured-invalid.zs": focusedNegative,
   "self-host-emit-async-prefixed-tail-method.zs": focusedPositive,
   "self-host-emit-async-prefix-try.zs": focusedPositive,

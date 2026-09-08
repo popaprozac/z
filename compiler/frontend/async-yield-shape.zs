@@ -1,7 +1,7 @@
 // Shared admission rule for the first general, executor-local yield frame.
 // This is an implementation boundary, not a second set of ownership rules.
 import {
-  ExpressionKind, ExpressionTree, FunctionDeclaration, Program,
+  ExpressionKind, ExpressionTree, FunctionDeclaration, ParameterMode, Program,
   StatementArena, StatementKind,
 } from "./parser.zs";
 
@@ -107,8 +107,12 @@ function frameStatementIsSupported(
 export function functionUsesYieldFrame(
   in program: Program, in declaration: FunctionDeclaration
 ): boolean {
-  if (!declaration.asynchronous || declaration.parameters.length != 0
-    || declaration.executorAffinity.byteLength != 0) return false;
+  if (!declaration.asynchronous || declaration.executorAffinity.byteLength != 0) return false;
+  for (const parameter of declaration.parameters) {
+    // Owned inputs enter the cold frame. Borrowed inputs need parent loan
+    // storage and join proof, and are a separate executable tier.
+    if (parameter.mode != ParameterMode.value) return false;
+  }
   match (in declaration.errorType) { some(_) => return false; none => {} }
   if (declaration.returnType.name != "void"
     && declaration.returnType.name != "i32") return false;
