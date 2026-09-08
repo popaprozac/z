@@ -25,7 +25,7 @@ function execute(source: string, expected: string, flags: string[] = []): void {
     ], { encoding: "utf8", input: source, timeout: 30_000, killSignal: "SIGKILL" });
     assert.equal(compilation.status, 0, compilation.stderr || String(compilation.error));
     const run = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
-    assert.equal(run.status, 0, run.stderr || String(run.error));
+    assert.equal(run.status, 0, run.stderr || String(run.error ?? run.signal));
     assert.equal(run.stderr, "");
     assert.equal(run.stdout, expected);
   } finally { rmSync(directory, { recursive: true, force: true }); }
@@ -43,6 +43,124 @@ test("runs native yield frames with branches, loop control, and destructured own
   for (const name of ["async-launch-listener.zs", "async-launch-owned-destructure.zs"]) {
     execute(emit(resolve(projectRoot, "tests/fixtures", name)), "");
   }
+}, 240_000);
+
+test("retains TaskScope and TaskControl handles across native yields and cancellation", () => {
+  const input = resolve(projectRoot, "tests/fixtures/async-yield-scope.zs");
+  const source = emit(input);
+  const flags = ["-pthread", "-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all",
+    ...(process.platform === "darwin" ? ["-framework", "CoreFoundation"] : [])];
+  execute(compileToC(readFileSync(input, "utf8"), input), "wake on main\nwake on main\n", flags);
+  execute(source, "wake on main\nwake on main\n", flags);
+  execute(`#define main z_fixture_main\n${source}\n#undef main
+int main(void) {
+  Z_AsyncExecutor executor = {0};
+  for (int phase = 0; phase < 3; ++phase) {
+    Z_TaskScope *scope = z_stage1_task_scope_new(NULL);
+    Z_AsyncInvocation invocation = _z_stage1_yield_listen_start(&executor, Z_TaskScope_retain(scope), 2);
+    if (scope->refcount != 2) return 1;
+    if (phase != 0) {
+      z_stage1_async_enqueue(&executor, invocation.task);
+      if (phase == 2 && !z_stage1_async_drive_one(&executor)) return 2;
+      z_stage1_async_request_cancel(invocation.task);
+      if (!z_stage1_async_drive_one(&executor) || !invocation.task->cancelled) return 3;
+    }
+    invocation.destroy(invocation.task);
+    if (scope->refcount != 1 || executor.head != NULL) return 4;
+    z_stage1_task_scope_join(scope, true);
+    Z_TaskScope_release(scope);
+
+    Z_TaskControl *control = z_stage1_task_control_new(true);
+    invocation = _z_stage1_yield_holdControl_start(&executor, Z_TaskControl_retain(control));
+    if (control->refcount != 2) return 5;
+    if (phase != 0) {
+      z_stage1_async_enqueue(&executor, invocation.task);
+      if (phase == 2 && !z_stage1_async_drive_one(&executor)) return 6;
+      z_stage1_async_request_cancel(invocation.task);
+      if (!z_stage1_async_drive_one(&executor) || !invocation.task->cancelled) return 7;
+    }
+    invocation.destroy(invocation.task);
+    if (control->refcount != 1 || executor.head != NULL) return 8;
+    Z_TaskControl_release(control);
+  }
+  return 0;
+}`, "wake on main\n", flags);
+}, 240_000);
+
+test("joins main-bound wakeups queued by a yielding native worker frame", () => {
+  if (process.platform !== "darwin") return;
+  const source = emit(resolve(projectRoot, "tests/fixtures/async-yield-scope.zs"));
+  execute(`#define main z_fixture_main\n${source}\n#undef main
+#include <CoreFoundation/CoreFoundation.h>
+typedef struct { Z_TaskScope *scope; int cancel; int status; } Probe;
+static int callable_releases;
+static Z_AsyncInvocation must_not_start(void *context, Z_AsyncExecutor *executor) {
+  (void)context; (void)executor;
+  abort();
+}
+static void release_probe(void *context) { free(context); callable_releases += 1; }
+static void *queue_cancelled_or_rejected(void *context) {
+  Probe *probe = context;
+  void *owned = malloc(1);
+  if (owned == NULL) abort();
+  Z_TaskControl *control = z_stage1_task_scope_spawn_async(probe->scope, must_not_start, owned, release_probe);
+  if (control->accepted == probe->scope->closing) abort();
+  Z_TaskControl_release(control);
+  return NULL;
+}
+static void *run_listener(void *context) {
+  Probe *probe = context;
+  if (pthread_main_np() != 0) abort();
+  Z_AsyncExecutor executor = {0};
+  Z_AsyncInvocation invocation = _z_stage1_yield_listen_start(&executor, Z_TaskScope_retain(probe->scope), 2);
+  z_stage1_async_enqueue(&executor, invocation.task);
+  for (int tick = 0; !invocation.task->completed; ++tick) {
+    if (tick > 4 || !z_stage1_async_drive_one(&executor)) abort();
+    if (probe->cancel) z_stage1_async_request_cancel(invocation.task);
+  }
+  if (probe->cancel) { if (!invocation.task->cancelled) abort(); }
+  else { int result = 0; invocation.take_result(invocation.task, &result); if (result != 2) abort(); }
+  invocation.destroy(invocation.task);
+  if (executor.head != NULL || executor.tail != NULL) abort();
+  probe->status = 1;
+  return NULL;
+}
+int main(void) {
+  for (int cancel = 0; cancel < 2; ++cancel) {
+    Z_TaskScope *scope = z_stage1_task_scope_new(NULL);
+    Probe probe = { .scope = scope, .cancel = cancel };
+    pthread_t worker;
+    if (pthread_create(&worker, NULL, run_listener, &probe) != 0) return 1;
+    // No main callback runs before this join. The listener only admits work;
+    // it never depends on the host while the host is joining the listener.
+    if (pthread_join(worker, NULL) != 0 || probe.status != 1) return 2;
+    if (scope->pending != (cancel ? 1u : 2u)) return 3;
+    z_stage1_task_scope_join(scope, cancel);
+    if (scope->pending != 0 || scope->external_head != NULL) return 4;
+    // Drain already-posted dispatch notifications before the host is released.
+    for (int tick = 0; scope->refcount != 1 && tick < 20; ++tick)
+      CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true);
+    if (scope->refcount != 1) return 5;
+    Z_TaskScope_release(scope);
+  }
+  for (int closed = 0; closed < 2; ++closed) {
+    Z_TaskScope *scope = z_stage1_task_scope_new(NULL);
+    if (closed) z_stage1_task_scope_join(scope, false);
+    Probe probe = { .scope = scope };
+    pthread_t worker;
+    if (pthread_create(&worker, NULL, queue_cancelled_or_rejected, &probe) != 0) return 6;
+    if (pthread_join(worker, NULL) != 0) return 7;
+    if (callable_releases != closed || scope->pending != (closed ? 0u : 1u)) return 8;
+    z_stage1_task_scope_join(scope, true);
+    if (callable_releases != 1) return 9;
+    for (int tick = 0; scope->refcount != 1 && tick < 20; ++tick)
+      CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true);
+    if (scope->refcount != 1) return 10;
+    Z_TaskScope_release(scope);
+    callable_releases = 0;
+  }
+  return 0;
+}`, "wake on main\nwake on main\n", ["-pthread", "-framework", "CoreFoundation", "-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all"]);
 }, 240_000);
 
 test("cancels native yield frames before entry and after owned initialization without leaks", () => {

@@ -2247,7 +2247,8 @@ function nativeYieldFrameStorageSupported(
   in visiting: Array<String>
 ): boolean {
   if (name == "String" || name == "cstring" || name == "boolean"
-    || name == "f32" || name == "f64" || isIntegerTypeName(name)) return true;
+    || name == "f32" || name == "f64" || isIntegerTypeName(name)
+    || name == "TaskScope" || name == "TaskControl") return true;
   if (stringStartsWith(name, "readonly ")) {
     const target = name.copyBytes(9, name.byteLength);
     return nativeYieldFrameStorageSupported(graph, moduleIndex, target, visiting);

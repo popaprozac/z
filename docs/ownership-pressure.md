@@ -5883,6 +5883,39 @@ still rejects malformed dispatch and stale overlays, including after a cache
 hit. Foreign-adapter waits, imported-type lowering costs, and profile-specific
 cache storage remain the next performance opportunities.
 
+### Listener wakeup probe: cold scheduling and owned scope handles (2026-09-08)
+
+Continuing the launch-listener probe uncovered two native-lowering gaps rather
+than a need for new application APIs. `TaskScope` and `TaskControl` now use
+their existing retained ownership inside yielding function parameters and root
+locals. Cold-frame destruction, cancellation before entry, and cancellation
+after an alias is initialized restore the caller's reference count exactly.
+
+More importantly, native `TaskScope.schedule(thread.main, async ... )` used to
+start the callable while constructing its job. A non-suspending async body can
+execute inside that start function, so a worker could execute main-isolated
+code before dispatch. Scheduling now transfers the callable's start/context/
+release fields into the existing job and starts it only when the destination
+executor polls. No additional wrapper allocation is needed; the job stores
+three additional pointer-sized fields. Rejection and cancellation before entry
+release the callable without executing its body or allocating its child frame.
+
+`async-yield-scope.zs` runs under Stage 0 and native emission. A bounded Darwin
+pthread harness drives the native listener frame on a worker, joins that worker
+without pumping main, then joins or cancels admitted main wakeups. The callback
+asserts `pthread_main_np()`, owned contexts are released exactly once, and the
+scope returns to its original reference count after posted dispatch notifications
+drain. These checks run under UBSan, not ASan. Existing captured and
+delay-suspending TaskScope probes remain passing.
+
+This tests the frame/scheduler boundary, **not** complete language-level worker
+integration: native `thread.spawn` still rejects an owned `TaskScope` capture.
+The next bounded prerequisite is that capture plus parent-to-worker cancellation
+propagation into the yielding child; simply relaxing the capture allowlist would
+not prove cancellation. Then wire the endpoint/inbox/main-wakeup lifecycle with
+startup failure and teardown tests. Automatic secondary-instance forwarding
+remains disabled until those application checks pass.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
