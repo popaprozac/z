@@ -6034,6 +6034,44 @@ verify disarmed source owners, conditional cleanup, and the matching outer-loop
 exit label while preserving compile/run checks. Compiler safety behavior was
 not weakened to recover the older emitted text.
 
+### Application startup readiness exposes native channel execution parity (2026-09-08)
+
+Moving the verified launch listener into `Application.run()` needs a one-shot
+startup result: elected primary with an open endpoint, successful secondary
+handoff, or a typed failure. AppKit setup must not begin before that result.
+The existing capacity-one channel and explicit synchronous endpoints fit this
+bounded handshake without polling, a new public synchronization API, or an
+application-specific native shim.
+
+The initial yielding-worker reproduction was rejected as unsupported
+`SyncSender<i32>` frame storage. Removing the worker and all suspension exposed
+the underlying boundary: even synchronous channel creation/send/receive reaches
+native lowering without an implementation, failing on `ChannelClosed<i32>`.
+Native channel tests had proved semantic evidence and ownership parity, not
+executable lowering. Existing channel runtime and benchmark evidence comes from
+Stage 0-generated native binaries. Native code generation has no channel type,
+storage, endpoint operations, or cleanup implementation yet; an admission-list
+change would merely hide the first diagnostic.
+
+Emission now reports this prerequisite explicitly as `Z0700`, before async-frame
+classification. `bun run z check <source> --native-frontend` still verifies native
+semantic parity; standalone native `z check` also validates lowerability and
+reports the same boundary as `z build`. Regression coverage keeps that semantic
+parity path available,
+executes the synchronous reproduction through Stage 0, checks aliased and nested
+endpoint declarations, and leaves similarly named user types and unused imports
+alone. The status matrix and website distinguish the two compiler paths.
+
+Application integration is paused at this scope boundary. The recommended next
+slice is native **synchronous bounded-channel** lowering using the existing
+surface: `Channel<T>.bounded`, `.sync()`, blocking send/receive, close, owned
+unsent errors, endpoint retention, and exact cleanup. Validate cross-thread
+readiness plus yielding-frame endpoint storage and cancellation before resuming
+application election/readiness → secondary handoff → ordered shutdown. Full
+async channel waiters, unbounded channels, and new synchronization syntax are
+not prerequisites for that slice. Automatic application forwarding remains
+disabled; the previously verified endpoint/inbox/main-host probe is unchanged.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

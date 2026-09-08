@@ -33,8 +33,13 @@ production or compatibility-sensitive use.
   `Receiver<T>`, preserve unsent ownership through `ChannelClosed<T>`, suspend
   task frames under backpressure, wake cleanly on close/cancellation, and expose
   explicit blocking `SyncSender<T>` / `SyncReceiver<T>` conversions for native
-  threads. Unbounded and rendezvous storage, selection, timeouts, and concurrent
-  receive loans remain future tiers
+  threads. Channel execution currently uses Stage 0; the fixed-point native
+  compiler checks channel types and ownership but does not yet emit their
+  storage or operations, including synchronous endpoints. Native emission
+  reports `Z0700`, as does standalone native `z check`, which also validates
+  lowerability. The hybrid `bun run z check <source> --native-frontend` retains
+  native semantic parity coverage. Unbounded and rendezvous storage, selection, timeouts, and
+  concurrent receive loans remain future tiers
 - Stored synchronous callables and a Stage 0 stored-async task tier that
   preserve either `thread.main` isolation or arbitrary-thread `thread.any`
   sharing without scheduling implicitly. Native lowering now preserves the

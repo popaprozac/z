@@ -17290,6 +17290,77 @@ test("preserves bounded channel endpoint and ownership effects natively", () => 
   rmSync(directory, { recursive: true, force: true });
 }, 120_000);
 
+test("reports the channel native-emission boundary without disabling native semantic checks", () => {
+  const input = resolve(projectRoot, "tests/fixtures/self-host-channel-sync.zs");
+  const executed = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(executed.status, 0, executed.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-channel-emission-");
+  try {
+    const cases = [
+      { name: "sync", path: input },
+      {
+        name: "yielding",
+        source: 'import { SyncSender } from "std/channel";\n'
+          + 'import { scheduler } from "std/async";\n'
+          + "async function listen(ready: SyncSender<i32>): void { await scheduler.yield(); }\n"
+          + "function main(): i32 { return 0; }\n",
+      },
+      {
+        name: "aliased",
+        source: 'import { SyncSender as ReadySender } from "std/channel";\n'
+          + "function listen(ready: ReadySender<i32>): void {}\n"
+          + "function main(): i32 { return 0; }\n",
+      },
+      {
+        name: "nested",
+        source: 'import { SyncSender } from "std/channel";\n'
+          + "struct Ready { sender: Option<SyncSender<i32>>; }\n"
+          + "function main(): i32 { return 0; }\n",
+      },
+      {
+        name: "callable-alias",
+        source: 'import { SyncSender } from "std/channel";\n'
+          + "type Notify = (sender: SyncSender<i32>) => void;\n"
+          + "function main(): i32 { return 0; }\n",
+      },
+    ];
+    for (const entry of cases) {
+      const source = entry.path ?? resolve(directory, `${entry.name}.zs`);
+      if (entry.source) writeFileSync(source, entry.source);
+      const checked = spawnSync(process.execPath, [cli, "check", source, "--native-frontend"], {
+        encoding: "utf8",
+      });
+      assert.equal(checked.status, 0, `${entry.name}\n${checked.stderr}`);
+      const emitted = spawnSync(process.execPath, [cli, "self-host-emit", source], {
+        encoding: "utf8",
+      });
+      assert.equal(emitted.status, 1, entry.name);
+      assert.match(emitted.stderr, /error\[Z0700\]: std\/channel type/);
+      assert.match(emitted.stderr, /native semantic support but no native code generation yet/);
+      assert.match(emitted.stderr, /includes synchronous endpoints/);
+      assert.doesNotMatch(emitted.stderr, /internal compiler error|yield-frame parameter/);
+    }
+
+    // Neither a lookalike generic name nor an unused import reserves storage.
+    for (const [name, prefix] of [
+      ["Sender", ""],
+      ["MySender", 'import { Channel } from "std/channel";\n'],
+    ]) {
+      const source = resolve(directory, `${name}.zs`);
+      writeFileSync(source, prefix
+        + `struct ${name}<T> { value: T; }\n`
+        + `function main(): i32 { const value = ${name}<i32>({ value: 42 }); return value.value - 42; }\n`);
+      const emitted = spawnSync(process.execPath, [cli, "self-host-emit", source], {
+        encoding: "utf8",
+      });
+      assert.equal(emitted.status, 0, emitted.stderr);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 120_000);
+
 test("preserves trait receiver capabilities in the native module graph", () => {
   const input = resolve(projectRoot, "examples/language/basics/classes.zs");
   const result = spawnSync(
