@@ -212,6 +212,9 @@ export enum ModuleSymbolKind {
 }
 
 export struct ModuleSymbol {
+  // Derived from a checked std import; aliases must keep their intrinsic
+  // identity when a public signature is rebased into another module.
+  standardTypeName: String = "";
   name: String;
   kind: ModuleSymbolKind;
   exported: boolean;

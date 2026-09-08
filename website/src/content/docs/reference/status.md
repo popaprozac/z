@@ -33,11 +33,12 @@ production or compatibility-sensitive use.
   `Receiver<T>`, preserve unsent ownership through `ChannelClosed<T>`, suspend
   task frames under backpressure, wake cleanly on close/cancellation, and expose
   explicit blocking `SyncSender<T>` / `SyncReceiver<T>` conversions for native
-  threads. Channel execution currently uses Stage 0; the fixed-point native
-  compiler checks channel types and ownership but does not yet emit their
-  storage or operations, including synchronous endpoints. Native emission
-  reports `Z0700`, as does standalone native `z check`, which also validates
-  lowerability. The hybrid `bun run z check <source> --native-frontend` retains
+  threads. Both compilers execute bounded synchronous channels, including
+  owned unsent errors, queue cleanup, cross-module storage, and readiness
+  signaling from a yielding worker that is later cancelled and joined. Native
+  asynchronous send/receive still report `Z0700`; async waiter execution uses
+  Stage 0. Native custom-destructor and foreign-resource transfer proofs remain
+  conservative. The hybrid `bun run z check <source> --native-frontend` retains
   native semantic parity coverage. Unbounded and rendezvous storage, selection, timeouts, and
   concurrent receive loans remain future tiers
 - Stored synchronous callables and a Stage 0 stored-async task tier that

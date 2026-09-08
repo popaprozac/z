@@ -681,6 +681,8 @@ export function typeMovesOnOwnedUse(
   }
   if (
     stringStartsWith(managedType, "Weak<")
+    || stringStartsWith(transparentManagedType, "Sender<")
+    || stringStartsWith(transparentManagedType, "SyncSender<")
     || stringStartsWith(transparentManagedType, "__z_native_function:")
   ) return false;
   match (inferredTypeSymbolLocation(modules, moduleIndex, managedType)) {

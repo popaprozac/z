@@ -13455,11 +13455,11 @@ function channelSyncReceiverDeinitName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_sync_receiver_deinit`;
 }
 
-function channelSenderSyncName(valueType: string): string {
+export function channelSenderSyncName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_sender_sync`;
 }
 
-function channelReceiverSyncName(valueType: string): string {
+export function channelReceiverSyncName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_receiver_sync`;
 }
 
@@ -13467,11 +13467,11 @@ export function channelCloseName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_close`;
 }
 
-function channelSyncSendName(valueType: string): string {
+export function channelSyncSendName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_sync_send`;
 }
 
-function channelSyncReceiveName(valueType: string): string {
+export function channelSyncReceiveName(valueType: string): string {
   return `z_channel_${nativeSymbolPart(valueType)}_sync_receive`;
 }
 

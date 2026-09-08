@@ -17290,7 +17290,7 @@ test("preserves bounded channel endpoint and ownership effects natively", () => 
   rmSync(directory, { recursive: true, force: true });
 }, 120_000);
 
-test("reports the channel native-emission boundary without disabling native semantic checks", () => {
+test("emits synchronous channel storage while retaining the async waiter boundary", () => {
   const input = resolve(projectRoot, "tests/fixtures/self-host-channel-sync.zs");
   const executed = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
   assert.equal(executed.status, 0, executed.stderr);
@@ -17335,12 +17335,23 @@ test("reports the channel native-emission boundary without disabling native sema
       const emitted = spawnSync(process.execPath, [cli, "self-host-emit", source], {
         encoding: "utf8",
       });
-      assert.equal(emitted.status, 1, entry.name);
-      assert.match(emitted.stderr, /error\[Z0700\]: std\/channel type/);
-      assert.match(emitted.stderr, /native semantic support but no native code generation yet/);
-      assert.match(emitted.stderr, /includes synchronous endpoints/);
-      assert.doesNotMatch(emitted.stderr, /internal compiler error|yield-frame parameter/);
+      assert.equal(emitted.status, 0, `${entry.name}\n${emitted.stderr}`);
+      const executable = resolve(directory, entry.name);
+      const compiled = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread", "-", "-o", executable], {
+        encoding: "utf8", input: emitted.stdout, timeout: 30_000,
+      });
+      assert.equal(compiled.status, 0, `${entry.name}\n${compiled.stderr}`);
+      const ran = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000 });
+      assert.equal(ran.status, 0, `${entry.name}\n${ran.stderr}`);
     }
+
+    const asynchronous = spawnSync(process.execPath, [
+      cli, "self-host-emit", resolve(projectRoot, "tests/fixtures/self-host-channel-parity.zs"),
+    ], { encoding: "utf8", timeout: 60_000 });
+    assert.equal(asynchronous.status, 1);
+    assert.match(asynchronous.stderr, /error\[Z0700\]: native asynchronous channel/);
+    assert.match(asynchronous.stderr, /requires waiter lowering/);
+    assert.doesNotMatch(asynchronous.stderr, /internal compiler error/);
 
     // Neither a lookalike generic name nor an unused import reserves storage.
     for (const [name, prefix] of [

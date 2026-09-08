@@ -255,7 +255,7 @@ export function buildModuleSymbols(
         const offset = binding.offset;
         const line = binding.line;
         const column = binding.column;
-        symbols.push(importedSymbol(
+        let symbol = importedSymbol(
           binding.localName,
           binding.importedName,
           ModuleSymbolKind.importedSymbol,
@@ -263,7 +263,11 @@ export function buildModuleSymbols(
           offset,
           line,
           column
-        ));
+        );
+        if (declaration.header == "std/channel") {
+          symbol.standardTypeName = copy binding.importedName;
+        }
+        symbols.push(move symbol);
       }
     } else {
       const name = moduleBindingName(declaration);

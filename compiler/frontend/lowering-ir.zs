@@ -72,6 +72,10 @@ import {
   sourceCollectionTypeName,
 } from "./semantic-intrinsics.zs";
 import { Map, Set } from "std/collections";
+import {
+  channelTypeKind, channelIdentity, channelIdentityKind, channelKindRetains,
+  isChannelType, programUsesChannels,
+} from "./channel-shapes.zs";
 import fs from "std/fs";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
@@ -113,6 +117,7 @@ export enum LoweredTypeKind {
   onceType,
   onceLifetimeType,
   mutexType,
+  channelEndpointType,
   taskType,
   taskScopeType,
   taskControlType,
@@ -280,6 +285,7 @@ export enum LoweredExpressionKind {
   taskScopeClose,
   taskControlCancel,
   mutexValue,
+  channelOperation,
   mutexWithLock,
   objectiveCAutoreleasePool,
   arenaNew,
@@ -3192,6 +3198,16 @@ function intrinsicMutexName(in valueType: LoweredType): String {
   return `Mutex_${identity}`;
 }
 
+function intrinsicChannelType(in kind: String, in payload: LoweredType): LoweredType {
+  const identity = loweredTypeIdentity(payload);
+  const storedKind = kind == "Channel" ? "Endpoints" : copy kind;
+  return LoweredType({
+    kind: kind == "Closed" || kind == "Endpoints" || kind == "Channel"
+      ? LoweredTypeKind.structType : LoweredTypeKind.channelEndpointType,
+    name: channelIdentity(storedKind, identity),
+  });
+}
+
 function intrinsicWeakName(in targetType: LoweredType): String {
   const identity = loweredTypeIdentity(targetType);
   return `${identity}_weak`;
@@ -3351,6 +3367,11 @@ function lowerTypeName(
       kind: LoweredTypeKind.functionType,
       name: name.copyBytes(0, name.byteLength),
     });
+  }
+  if (stringStartsWith(name, "__z_Channel_")) {
+    const kind = channelIdentityKind(name);
+    return LoweredType({ kind: kind == "Closed" || kind == "Endpoints"
+      ? LoweredTypeKind.structType : LoweredTypeKind.channelEndpointType, name: copy name });
   }
   if (stringStartsWith(name, "Mutex_")) {
     return LoweredType({
@@ -3611,6 +3632,11 @@ function lowerTypeName(
           name: intrinsicOnceLifetimeName(valueType),
         });
       }
+      const channelKind = channelTypeKind(program, generic.base);
+      if (channelKind.byteLength > 0 && generic.arguments.length == 1) {
+        const payload = try lowerTypeName(program, generic.arguments[0]);
+        return intrinsicChannelType(channelKind, payload);
+      }
       if (generic.base == "Mutex" && generic.arguments.length == 1) {
         const valueType = try lowerTypeName(program, generic.arguments[0]);
         return LoweredType({
@@ -3747,6 +3773,11 @@ function lowerModuleTypeName(
       kind: LoweredTypeKind.functionType,
       name: name.copyBytes(0, name.byteLength),
     });
+  }
+  if (stringStartsWith(name, "__z_Channel_")) {
+    const kind = channelIdentityKind(name);
+    return LoweredType({ kind: kind == "Closed" || kind == "Endpoints"
+      ? LoweredTypeKind.structType : LoweredTypeKind.channelEndpointType, name: copy name });
   }
   if (stringStartsWith(name, "Mutex_")) {
     return LoweredType({
@@ -3998,6 +4029,11 @@ function lowerModuleTypeName(
           kind: LoweredTypeKind.onceLifetimeType,
           name: intrinsicOnceLifetimeName(valueType),
         });
+      }
+      const channelKind = channelTypeKind(program, generic.base);
+      if (channelKind.byteLength > 0 && generic.arguments.length == 1) {
+        const payload = try lowerModuleTypeName(program, importedTypes, generic.arguments[0]);
+        return intrinsicChannelType(channelKind, payload);
       }
       if (generic.base == "Mutex" && generic.arguments.length == 1) {
         const valueType = try lowerModuleTypeName(
@@ -4330,6 +4366,7 @@ function aggregateNeedsCleanup(
 }
 
 function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
+  if (stringStartsWith(type.name, "__z_Channel_")) return true;
   if (
     type.kind == LoweredTypeKind.arrayType
     || type.kind == LoweredTypeKind.mapType
@@ -4532,6 +4569,7 @@ function moduleTypeNeedsCleanupDepth(
   in type: LoweredType,
   depth: usize
 ): boolean {
+  if (stringStartsWith(type.name, "__z_Channel_")) return true;
   if (
     type.kind == LoweredTypeKind.arrayType
     || type.kind == LoweredTypeKind.mapType
@@ -4641,6 +4679,10 @@ function loweredTypeSupportsCopyHelper(in type: LoweredType): boolean {
 }
 
 function moduleTypeRetainsCapturedIdentity(in type: LoweredType): boolean {
+  if (type.kind == LoweredTypeKind.channelEndpointType) {
+    const kind = channelIdentityKind(type.name);
+    return channelKindRetains(kind);
+  }
   return type.kind == LoweredTypeKind.classType
     || type.kind == LoweredTypeKind.weakType
     || type.kind == LoweredTypeKind.mutexType
@@ -4792,6 +4834,7 @@ function moduleTypeIsWorkerDestructible(
           || generic.base == "Mutex"
           || generic.base == "Array"
           || generic.base == "Set"
+          || isChannelType(program, generic.base)
         )
         && generic.arguments.length == 1
       ) return moduleTypeIsWorkerDestructible(
@@ -4940,6 +4983,10 @@ function moduleTypeIsThreadShareable(
           )) return false;
         }
         return true;
+      }
+      const channelKind = channelTypeKind(program, generic.base);
+      if (channelKindRetains(channelKind) && generic.arguments.length == 1) {
+        return moduleTypeIsWorkerDestructible(program, importedTypes, generic.arguments[0], visiting);
       }
       if (generic.base == "Mutex" && generic.arguments.length == 1) {
         return moduleTypeIsWorkerDestructible(
@@ -8168,6 +8215,13 @@ function pushThreadCaptureValue(
     Array<String>()
   );
   if (!capture.owned) return local;
+  if (capture.type.kind == LoweredTypeKind.channelEndpointType
+    && moduleTypeRetainsCapturedIdentity(capture.type)) {
+    let retained = Array<usize>();
+    retained.push(local);
+    return pushExpression(inout expressions, LoweredExpressionKind.retainValue,
+      capture.type.name, move retained, Array<String>());
+  }
   let children = Array<usize>();
   children.push(local);
   return pushExpression(
@@ -8216,6 +8270,11 @@ function collectMutexClosureCaptures(
         statements[scanStatement].kind == LoweredStatementKind.localStatement
         && statements[scanStatement].name == captureName
       ) declaredInside = true;
+      if (statements[scanStatement].kind == LoweredStatementKind.matchArmStatement) {
+        for (const binding of statements[scanStatement].labels) {
+          if (binding == captureName) declaredInside = true;
+        }
+      }
       scanStatement = scanStatement + 1;
     }
     if (declaredInside) {
@@ -8404,6 +8463,11 @@ function collectThreadClosureCaptures(
         statements[scanStatement].kind == LoweredStatementKind.localStatement
         && statements[scanStatement].name == captureName
       ) declaredInside = true;
+      if (statements[scanStatement].kind == LoweredStatementKind.matchArmStatement) {
+        for (const binding of statements[scanStatement].labels) {
+          if (binding == captureName) declaredInside = true;
+        }
+      }
       scanStatement = scanStatement + 1;
     }
     if (declaredInside) {
@@ -8471,6 +8535,7 @@ function collectThreadClosureCaptures(
     const sharedArc = type.kind == LoweredTypeKind.classType
       && importedTypeThreadShareable(importedTypes, type);
     const sharedScope = type.kind == LoweredTypeKind.taskScopeType;
+    const channelEndpoint = type.kind == LoweredTypeKind.channelEndpointType;
     if (
       needsCleanup
       && type.kind == LoweredTypeKind.classType
@@ -8483,6 +8548,7 @@ function collectThreadClosureCaptures(
       && type.kind != LoweredTypeKind.stringType
       && !sharedArc
       && !sharedScope
+      && !channelEndpoint
     ) {
       throw `native thread.spawn does not support ownership-bearing capture ${captureName} yet`;
     }
@@ -8543,6 +8609,11 @@ function collectCallableBlockCaptures(
         statements[scanStatement].kind == LoweredStatementKind.localStatement
         && statements[scanStatement].name == captureName
       ) declaredInside = true;
+      if (statements[scanStatement].kind == LoweredStatementKind.matchArmStatement) {
+        for (const binding of statements[scanStatement].labels) {
+          if (binding == captureName) declaredInside = true;
+        }
+      }
       scanStatement = scanStatement + 1;
     }
     if (declaredInside) {
@@ -12888,6 +12959,54 @@ function lowerExpressionContextual(
         );
       }
     }
+    if (tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+      && programUsesChannels(program)) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      const method = view tree.nodes[calleeInput].value;
+      let receiverName = match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, receiverInput)) {
+        some(name) => name;
+        none => copy tree.nodes[receiverInput].value;
+      };
+      match (localTypeAliasTarget(program, receiverName)) {
+        some(target) => receiverName = move target;
+        none => {}
+      }
+      match (genericTypeShape(receiverName)) {
+        some(shape) => {
+          const kind = channelTypeKind(program, shape.base);
+          if (kind.byteLength > 0 && shape.arguments.length == 1) {
+            const payload = try lowerModuleTypeName(program, importedTypes, shape.arguments[0]);
+            const type = intrinsicChannelType(kind, payload);
+            let children = Array<usize>();
+            if (kind == "Channel" && method == "bounded") {
+              const capacityInput = tree.nodes[index].children[1];
+              const capacity = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+                capacityInput, "usize", inout output);
+              children.push(capacity);
+            } else {
+              if ((kind == "Sender" && method == "send") || (kind == "Receiver" && method == "receive")) {
+                throw "native asynchronous channel operations require waiter lowering; use explicit synchronous endpoints";
+              }
+              let receiver = try lowerExpression(program, importedTypes, evidence, tree, receiverInput, inout output);
+              if (kind == "Receiver" && method == "sync") {
+                receiver = wrapImplicitOwnedTransfer(tree, receiverInput, receiver, inout output);
+              }
+              children.push(receiver);
+              if (method == "send") {
+                const input = tree.nodes[index].children[1];
+                let value = try lowerExpressionExpected(program, importedTypes, evidence, tree, input, shape.arguments[0], inout output);
+                value = wrapOwnedStorageType(program, importedTypes, tree, input, payload, value, inout output);
+                children.push(value);
+              }
+            }
+            return pushExpression(inout output, LoweredExpressionKind.channelOperation,
+              `Z_${type.name}_${method}`, move children, Array<String>());
+          }
+        }
+        none => {}
+      }
+    }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
       && tree.nodes[index].children.length == 2
@@ -14203,14 +14322,12 @@ function lowerExpressionContextual(
               argumentInput,
               inout output
             );
-            let moveChildren = Array<usize>();
-            moveChildren.push(argument);
-            const movedArgument = pushExpression(
-              inout output,
-              LoweredExpressionKind.moveValue,
-              "",
-              moveChildren,
-              Array<String>()
+            // Storage transfer is type-directed: primitive elements must not
+            // inherit a same-named owner's move flag from another scope.
+            const elementTypeName = receiverType.name.copyBytes(10, receiverType.name.byteLength);
+            const movedArgument = try wrapOwnedStorage(
+              program, importedTypes, tree, argumentInput,
+              elementTypeName, argument, inout output
             );
             let children = Array<usize>();
             children.push(receiver);
@@ -18336,6 +18453,22 @@ function directThrowingCallResult(
   index: usize,
   in ownerName: String
 ): Option<LoweredEnum> throws String {
+  if (tree.nodes[index].kind == ExpressionKind.callExpression && tree.nodes[index].children.length > 0) {
+    const callee = tree.nodes[index].children[0];
+    if (tree.nodes[callee].kind == ExpressionKind.memberExpression && tree.nodes[callee].value == "send"
+      && tree.nodes[callee].children.length == 1) {
+      const receiver = tree.nodes[callee].children[0];
+      match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, receiver)) {
+        some(name) => match (genericTypeShape(name)) {
+          some(shape) => if (channelTypeKind(program, shape.base) == "SyncSender" && shape.arguments.length == 1) {
+            return try intrinsicResultDeclaration(program, importedTypes, `Result<void, ChannelClosed<${shape.arguments[0]}>>`);
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
+  }
   if (
     tree.nodes[index].kind
       == ExpressionKind.executorPlacementExpression
@@ -27593,8 +27726,25 @@ function collectIntrinsicTypeName(
   inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
-  inout enums: Array<LoweredEnum>
+  inout enums: Array<LoweredEnum>,
+  inout structs: Array<LoweredStruct>
 ): void throws String {
+  match (nativeFunctionSignature(name)) {
+    some(signature) => {
+      for (const parameter of signature.parameterTypes) {
+        try collectIntrinsicTypeName(program, importedTypes, parameter,
+          inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
+      }
+      try collectIntrinsicTypeName(program, importedTypes, signature.returnType,
+        inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
+      if (signature.errorType.byteLength > 0) {
+        try collectIntrinsicTypeName(program, importedTypes, signature.errorType,
+          inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
+      }
+      return;
+    }
+    none => {}
+  }
   if (stringStartsWith(name, "readonly ")) {
     const target = name.copyBytes(9, name.byteLength);
     try collectIntrinsicTypeName(
@@ -27606,7 +27756,8 @@ function collectIntrinsicTypeName(
       inout slices,
       inout maps,
       inout sets,
-      inout enums
+      inout enums,
+      inout structs
     );
     return;
   }
@@ -27621,7 +27772,8 @@ function collectIntrinsicTypeName(
       inout slices,
       inout maps,
       inout sets,
-      inout enums
+      inout enums,
+      inout structs
     );
     return;
   }
@@ -27678,7 +27830,8 @@ function collectIntrinsicTypeName(
           inout slices,
           inout maps,
           inout sets,
-          inout enums
+          inout enums,
+          inout structs
         );
         none => {}
       }
@@ -27730,8 +27883,37 @@ function collectIntrinsicTypeName(
           inout slices,
           inout maps,
           inout sets,
-          inout enums
+          inout enums,
+          inout structs
         );
+      }
+      const channelKind = channelTypeKind(program, generic.base);
+      if (channelKind.byteLength > 0 && generic.arguments.length == 1) {
+        const valueType = try lowerModuleTypeName(program, importedTypes, generic.arguments[0]);
+        const closedType = intrinsicChannelType("Closed", valueType);
+        if (!containsLoweredStruct(structs, closedType.name)) {
+          let closedFields = Array<LoweredField>();
+          closedFields.push(LoweredField({ name: "value", type: LoweredType({ kind: valueType.kind, name: copy valueType.name }),
+            optionalField: false, borrowedView: false, defaultTarget: "" }));
+          structs.push(LoweredStruct({ name: copy closedType.name, nativeCName: "", fields: move closedFields,
+            referenceType: false, executorBound: false, threadShareable: false, workerDestructible: true,
+            needsDeinit: true, initializer: Option<LoweredFunction>.none, deinitializer: Option<LoweredFunction>.none }));
+          let endpointFields = Array<LoweredField>();
+          endpointFields.push(LoweredField({ name: "sender", type: intrinsicChannelType("Sender", valueType),
+            optionalField: false, borrowedView: false, defaultTarget: "" }));
+          endpointFields.push(LoweredField({ name: "receiver", type: intrinsicChannelType("Receiver", valueType),
+            optionalField: false, borrowedView: false, defaultTarget: "" }));
+          const pairType = intrinsicChannelType("Endpoints", valueType);
+          structs.push(LoweredStruct({ name: copy pairType.name, nativeCName: "", fields: move endpointFields,
+            referenceType: false, executorBound: false, threadShareable: false, workerDestructible: true,
+            needsDeinit: true, initializer: Option<LoweredFunction>.none, deinitializer: Option<LoweredFunction>.none }));
+          const optionName = `Option<${generic.arguments[0]}>`;
+          const resultName = `Result<void, ChannelClosed<${generic.arguments[0]}>>`;
+          try collectIntrinsicTypeName(program, importedTypes, optionName,
+            inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
+          try collectIntrinsicTypeName(program, importedTypes, resultName,
+            inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
+        }
       }
       if (generic.base == "Task" && generic.arguments.length == 2) {
         const resultName = `Result<${generic.arguments[0]}, ${generic.arguments[1]}>`;
@@ -27744,7 +27926,8 @@ function collectIntrinsicTypeName(
           inout slices,
           inout maps,
           inout sets,
-          inout enums
+          inout enums,
+          inout structs
         );
       }
       const array = try intrinsicArrayDeclaration(
@@ -27855,7 +28038,8 @@ function collectArenaIntrinsicEnums(
   inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
-  inout enums: Array<LoweredEnum>
+  inout enums: Array<LoweredEnum>,
+  inout structs: Array<LoweredStruct>
 ): void throws String {
   for (const statement of arena.nodes) {
     match (in statement.typeAnnotation) {
@@ -27868,7 +28052,8 @@ function collectArenaIntrinsicEnums(
         inout slices,
         inout maps,
         inout sets,
-        inout enums
+        inout enums,
+        inout structs
       );
       none => {}
     }
@@ -27886,7 +28071,8 @@ function collectArenaIntrinsicEnums(
                 inout slices,
                 inout maps,
                 inout sets,
-                inout enums
+                inout enums,
+                inout structs
               );
               if (
                 node.kind == ExpressionKind.closureExpression
@@ -27904,7 +28090,8 @@ function collectArenaIntrinsicEnums(
                   inout slices,
                   inout maps,
                   inout sets,
-                  inout enums
+                  inout enums,
+                  inout structs
                 );
               }
             }
@@ -27928,7 +28115,8 @@ function collectArenaIntrinsicEnums(
                 inout slices,
                 inout maps,
                 inout sets,
-                inout enums
+                inout enums,
+                inout structs
               );
             }
           }
@@ -27949,7 +28137,8 @@ function collectFunctionIntrinsicTypes(
   inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
-  inout enums: Array<LoweredEnum>
+  inout enums: Array<LoweredEnum>,
+  inout structs: Array<LoweredStruct>
 ): void throws String {
   for (const parameter of declaration.parameters) {
     try collectIntrinsicTypeName(
@@ -27961,7 +28150,8 @@ function collectFunctionIntrinsicTypes(
       inout slices,
       inout maps,
       inout sets,
-      inout enums
+      inout enums,
+      inout structs
     );
   }
   try collectIntrinsicTypeName(
@@ -27973,7 +28163,8 @@ function collectFunctionIntrinsicTypes(
     inout slices,
     inout maps,
     inout sets,
-    inout enums
+    inout enums,
+    inout structs
   );
   match (in declaration.errorType) {
     some(type) => {
@@ -27986,7 +28177,8 @@ function collectFunctionIntrinsicTypes(
         inout slices,
         inout maps,
         inout sets,
-        inout enums
+        inout enums,
+        inout structs
       );
       const returnName = declaration.returnType.name.copyBytes(
         0,
@@ -28003,7 +28195,8 @@ function collectFunctionIntrinsicTypes(
         inout slices,
         inout maps,
         inout sets,
-        inout enums
+        inout enums,
+        inout structs
       );
     }
     none => {}
@@ -28017,7 +28210,8 @@ function collectFunctionIntrinsicTypes(
     inout slices,
     inout maps,
     inout sets,
-    inout enums
+    inout enums,
+    inout structs
   );
 }
 
@@ -28062,7 +28256,8 @@ function collectIntrinsicEnums(
   inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
-  inout enums: Array<LoweredEnum>
+  inout enums: Array<LoweredEnum>,
+  inout structs: Array<LoweredStruct>
 ): void throws String {
   const unsettledTypeParameters = programGenericTypeParameterNames(program);
   for (const binding of evidence.bindingResolutions) {
@@ -28079,7 +28274,8 @@ function collectIntrinsicEnums(
       inout slices,
       inout maps,
       inout sets,
-      inout enums
+      inout enums,
+      inout structs
     );
   }
   for (const expression of evidence.expressionResolutions) {
@@ -28096,7 +28292,8 @@ function collectIntrinsicEnums(
       inout slices,
       inout maps,
       inout sets,
-      inout enums
+      inout enums,
+      inout structs
     );
   }
   for (const call of evidence.callResolutions) {
@@ -28115,7 +28312,8 @@ function collectIntrinsicEnums(
       inout slices,
       inout maps,
       inout sets,
-      inout enums
+      inout enums,
+      inout structs
     );
   }
   for (const alias of program.typeAliases) {
@@ -28132,7 +28330,8 @@ function collectIntrinsicEnums(
       inout slices,
       inout maps,
       inout sets,
-      inout enums
+      inout enums,
+      inout structs
     );
   }
   for (const aggregate of program.aggregates) {
@@ -28151,7 +28350,8 @@ function collectIntrinsicEnums(
         inout slices,
         inout maps,
         inout sets,
-        inout enums
+        inout enums,
+        inout structs
       );
     }
     match (in aggregate.deinitializer) {
@@ -28164,7 +28364,8 @@ function collectIntrinsicEnums(
         inout slices,
         inout maps,
         inout sets,
-        inout enums
+        inout enums,
+        inout structs
       );
       none => {}
     }
@@ -28178,7 +28379,8 @@ function collectIntrinsicEnums(
         inout slices,
         inout maps,
         inout sets,
-        inout enums
+        inout enums,
+        inout structs
       );
     }
   }
@@ -28194,7 +28396,8 @@ function collectIntrinsicEnums(
           inout slices,
           inout maps,
           inout sets,
-          inout enums
+          inout enums,
+          inout structs
         );
         none => {}
       }
@@ -28211,7 +28414,8 @@ function collectIntrinsicEnums(
       inout slices,
       inout maps,
       inout sets,
-      inout enums
+      inout enums,
+      inout structs
     );
   }
 }
@@ -30860,7 +31064,8 @@ function appendLoweredProgram(
     inout slices,
     inout maps,
     inout sets,
-    inout enums
+    inout enums,
+    inout structs
   );
   // Result<T, E> lowers to a collision-safe intrinsic enum name. Preserve its
   // variants in the same lookup table as imported/source enums so a local
@@ -31139,7 +31344,8 @@ function appendLoweredProgram(
         inout slices,
         inout maps,
         inout sets,
-        inout enums
+        inout enums,
+        inout structs
       );
     }
   }
@@ -31231,7 +31437,8 @@ function appendLoweredProgram(
             inout slices,
             inout maps,
             inout sets,
-            inout enums
+            inout enums,
+            inout structs
           );
         }
         try collectArenaIntrinsicEnums(
@@ -31243,7 +31450,8 @@ function appendLoweredProgram(
           inout slices,
           inout maps,
           inout sets,
-          inout enums
+          inout enums,
+          inout structs
         );
         let loweredInitializer = try lowerConstructor(
           program,
@@ -31294,7 +31502,8 @@ function appendLoweredProgram(
           inout slices,
           inout maps,
           inout sets,
-          inout enums
+          inout enums,
+          inout structs
         );
         let loweredDeinitializer = try lowerDeinitializer(
           program,
@@ -31369,7 +31578,8 @@ function appendLoweredProgram(
         inout slices,
         inout maps,
         inout sets,
-        inout enums
+        inout enums,
+        inout structs
       );
       const ownerName = semanticMethodOwnerName(
         aggregate.name,
@@ -31599,7 +31809,8 @@ function appendLoweredProgram(
         inout slices,
         inout maps,
         inout sets,
-        inout enums
+        inout enums,
+        inout structs
       );
       const ownerName = semanticMethodOwnerName(
         aggregate.name,
@@ -31745,7 +31956,8 @@ function appendLoweredProgram(
       inout slices,
       inout maps,
       inout sets,
-      inout enums
+      inout enums,
+      inout structs
     );
     const suffix = try genericCallableSpecializationSuffix(
       program,
@@ -31813,6 +32025,7 @@ function appendDeferredGenericMethod(
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>,
+  inout structs: Array<LoweredStruct>,
   inout functions: Array<LoweredFunction>
 ): void throws String {
   let aggregateIndex = program.aggregates.length;
@@ -31902,7 +32115,8 @@ function appendDeferredGenericMethod(
       inout slices,
       inout maps,
       inout sets,
-      inout enums
+      inout enums,
+      inout structs
     );
     const ownerName = semanticMethodOwnerName(
       aggregate.name,
@@ -31965,6 +32179,7 @@ function appendDeferredGenericFunction(
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>,
+  inout structs: Array<LoweredStruct>,
   inout functions: Array<LoweredFunction>
 ): void throws String {
   let declarationIndex = program.functions.length;
@@ -31998,7 +32213,8 @@ function appendDeferredGenericFunction(
     inout slices,
     inout maps,
     inout sets,
-    inout enums
+    inout enums,
+    inout structs
   );
   const suffix = try genericCallableSpecializationSuffix(
     program,
@@ -32467,6 +32683,7 @@ function lowerModulesIncludingTests(
         inout maps,
         inout sets,
         inout enums,
+        inout structs,
         inout functions
       );
       match (genericOutcome) {
@@ -32537,6 +32754,7 @@ function lowerModulesIncludingTests(
         inout maps,
         inout sets,
         inout enums,
+        inout structs,
         inout functions
       );
       match (genericOutcome) {

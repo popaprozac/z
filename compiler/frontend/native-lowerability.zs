@@ -23,6 +23,7 @@ import {
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import { typeHasCleanup } from "./semantic-type-ownership.zs";
+import { channelTypeKind } from "./channel-shapes.zs";
 import { transparentTypeName, typeSymbolLocation } from "./semantic-type-identities.zs";
 import { aggregateFieldShape } from "./semantic-member-lookups.zs";
 import {
@@ -125,109 +126,6 @@ function typeUsesGeneric(in name: String, in base: String): boolean {
   return stringContains(name, `${base}<`);
 }
 
-function nativeChannelTypeNames(in program: Program): Array<String> {
-  let names = Array<String>();
-  for (const declaration of program.imports) {
-    if (declaration.header != "std/channel") continue;
-    // Semantic evidence uses canonical intrinsic names even for aliased imports.
-    if (names.length == 0) {
-      names = Array<String>("Channel", "Sender", "Receiver", "SyncSender", "SyncReceiver", "ChannelClosed");
-    }
-    for (const binding of declaration.bindings) {
-      if (binding.localName != binding.importedName) names.push(copy binding.localName);
-    }
-  }
-  return names;
-}
-
-function nativeTypeIdentifierByte(byte: u8): boolean {
-  return (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
-    || (byte >= 48 && byte <= 57) || byte == 95 || byte == 46;
-}
-
-function validateNativeChannelType(
-  in path: String, in names: Array<String>, in typeName: String,
-  line: usize, column: usize, length: usize
-): void throws ModuleResolveError {
-  if (names.length == 0) return;
-  // Inspect generic base tokens, including nested and callable type arguments.
-  // Do not confuse MySender<T> or vendor.Sender<T> with std/channel storage.
-  let index: usize = 0;
-  while (index < typeName.byteLength) {
-    if (!nativeTypeIdentifierByte(typeName.byteAt(index))) {
-      index = index + 1;
-      continue;
-    }
-    const start = index;
-    while (index < typeName.byteLength && nativeTypeIdentifierByte(typeName.byteAt(index))) {
-      index = index + 1;
-    }
-    if (index >= typeName.byteLength || typeName.byteAt(index) != 60) continue;
-    const base = typeName.copyBytes(start, index);
-    for (const name of names) {
-      if (base != name) continue;
-      throw loweringBoundary(path, "Z0700",
-        `std/channel type "${base}" has native semantic support but no native code generation yet; this includes synchronous endpoints; use the Stage 0 runner for channel execution`,
-        line, column, length);
-    }
-  }
-}
-
-function validateNativeChannelFunction(
-  in path: String, in names: Array<String>, in declaration: FunctionDeclaration
-): void throws ModuleResolveError {
-  for (const parameter of declaration.parameters) {
-    const length = parameter.type.name.byteLength;
-    try validateNativeChannelType(path, names, parameter.type.name,
-      parameter.type.line, parameter.type.column, length);
-  }
-  const returnLength = declaration.returnType.name.byteLength;
-  try validateNativeChannelType(path, names, declaration.returnType.name,
-    declaration.returnType.line, declaration.returnType.column, returnLength);
-  match (in declaration.errorType) {
-    some(error) => {
-      const length = error.name.byteLength;
-      try validateNativeChannelType(path, names, error.name, error.line, error.column, length);
-    }
-    none => {}
-  }
-}
-
-function validateNativeChannelDeclarations(
-  in module: ParsedModule, in names: Array<String>
-): void throws ModuleResolveError {
-  if (names.length == 0) return;
-  for (const alias of module.program.typeAliases) {
-    const length = alias.target.name.byteLength;
-    try validateNativeChannelType(module.path, names, alias.target.name,
-      alias.target.line, alias.target.column, length);
-  }
-  for (const declaration of module.program.functions) {
-    try validateNativeChannelFunction(module.path, names, declaration);
-  }
-  for (const aggregate of module.program.aggregates) {
-    for (const field of aggregate.fields) {
-      const length = field.type.name.byteLength;
-      try validateNativeChannelType(module.path, names, field.type.name,
-        field.type.line, field.type.column, length);
-    }
-    for (const method of aggregate.methods) {
-      try validateNativeChannelFunction(module.path, names, method);
-    }
-  }
-  for (const declaration of module.program.enums) {
-    for (const variant of declaration.variants) {
-      match (in variant.payload) {
-        some(payload) => {
-          const length = payload.name.byteLength;
-          try validateNativeChannelType(module.path, names, payload.name,
-            payload.line, payload.column, length);
-        }
-        none => {}
-      }
-    }
-  }
-}
 
 function nativeOwnerExecutorAffinity(
   moduleIndex: usize,
@@ -1626,11 +1524,17 @@ function validateNativeThreadCaptureExpression(
       captureName,
       useOffset
     );
+    const actualType = transparentTypeName(graph.modules, moduleIndex, typeName);
+    const channelEndpoint = stringStartsWith(actualType, "Sender<")
+      || stringStartsWith(actualType, "SyncSender<")
+      || stringStartsWith(actualType, "Receiver<")
+      || stringStartsWith(actualType, "SyncReceiver<");
     if (
       typeName.byteLength > 0
       && typeName != "String"
       && typeName != "TextBuffer"
       && typeName != "TaskScope"
+      && !channelEndpoint
       && moduleIndex < graph.modules.length
     ) {
       let visiting = Array<String>();
@@ -2424,7 +2328,11 @@ function nativeYieldFrameStorageSupported(
     some(generic) => {
       if (generic.base != "Array" && generic.base != "Option"
         && generic.base != "Result" && generic.base != "Mutex"
-        && generic.base != "Map") return false;
+        && generic.base != "Map") {
+        if (parsedModule >= modules.length) return false;
+        const channelKind = channelTypeKind(modules[parsedModule].program, generic.base);
+        if (channelKind.byteLength == 0) return false;
+      }
       let argumentIndex: usize = 0;
       for (const argument of generic.arguments) {
         // Result<void, E> has a payload-free success variant, not a void slot.
@@ -2474,6 +2382,37 @@ function nativeYieldFrameStorageSupported(
   };
 }
 
+function validateNativeChannelExpression(
+  in path: String, moduleIndex: usize, in program: Program,
+  in graph: ModuleGraph, in syntax: ExpressionSyntax
+): void throws ModuleResolveError {
+  match (in syntax.tree) {
+    some(tree) => {
+      for (const call of tree.nodes) {
+        if (call.kind != ExpressionKind.callExpression || call.children.length == 0) continue;
+        const callee = view tree.nodes[call.children[0]];
+        if (callee.kind != ExpressionKind.memberExpression || callee.children.length != 1) continue;
+        if (callee.value != "send" && callee.value != "receive") continue;
+        const receiver = resolvedExpressionType(graph, moduleIndex, tree, callee.children[0]);
+        const actual = transparentTypeName(graph.modules, moduleIndex, receiver);
+        match (genericTypeShape(actual)) {
+          some(shape) => {
+            const kind = channelTypeKind(program, shape.base);
+            if ((kind == "Sender" && callee.value == "send")
+              || (kind == "Receiver" && callee.value == "receive")) {
+              throw loweringBoundary(path, "Z0700",
+                "native asynchronous channel send/receive requires waiter lowering; use explicit .sync() endpoints for blocking operations on a dedicated thread",
+                call.line, call.column, 1);
+            }
+          }
+          none => {}
+        }
+      }
+    }
+    none => {}
+  }
+}
+
 function validateNativeFunction(
   in path: String,
   moduleIndex: usize,
@@ -2490,6 +2429,24 @@ function validateNativeFunction(
     owner
   );
   const parsedModule = parsedModuleIndexForGraphModule(modules, graph, moduleIndex);
+  if (parsedModule < modules.length) {
+    let usesChannels = false;
+    for (const imported of modules[parsedModule].program.imports) {
+      if (imported.header == "std/channel") usesChannels = true;
+    }
+    if (usesChannels) {
+      for (const statement of declaration.body.nodes) {
+        match (in statement.expression) {
+          some(syntax) => try validateNativeChannelExpression(path, moduleIndex, modules[parsedModule].program, graph, syntax);
+          none => {}
+        }
+        match (in statement.secondExpression) {
+          some(syntax) => try validateNativeChannelExpression(path, moduleIndex, modules[parsedModule].program, graph, syntax);
+          none => {}
+        }
+      }
+    }
+  }
   const yieldFrame = owner.byteLength == 0 && parsedModule < modules.length
     && !(declaration.name != "main" && firstTierSchedulerYield)
     && functionUsesYieldFrame(modules[parsedModule].program, declaration);
@@ -2787,19 +2744,11 @@ export function validateNativeLowerability(
       continue;
     }
     const module = view modules[parsedModuleIndex];
-    const channelTypes = nativeChannelTypeNames(module.program);
-    // Semantic evidence stays supported. The standalone driver's check also
-    // validates lowerability, so it reports this boundary just like build.
-    // Run before frame classification so synchronous and yielding functions
-    // report the same actual prerequisite rather than a misleading frame limit.
-    try validateNativeChannelDeclarations(module, channelTypes);
     for (const binding of graph.modules[graphModuleIndex]
       .semanticEvidence.bindingResolutions) {
       const bindingLength = binding.name.byteLength;
       const bindingLine = binding.line;
       const bindingColumn = binding.column;
-      try validateNativeChannelType(module.path, channelTypes, binding.typeName,
-        bindingLine, bindingColumn, bindingLength);
       try validateNativeCollectionTypeName(
         module.path,
         binding.typeName,
@@ -2812,8 +2761,6 @@ export function validateNativeLowerability(
       .semanticEvidence.expressionResolutions) {
       const expressionLine = expression.line;
       const expressionColumn = expression.column;
-      try validateNativeChannelType(module.path, channelTypes, expression.typeName,
-        expressionLine, expressionColumn, 1);
       try validateNativeCollectionTypeName(
         module.path,
         expression.typeName,

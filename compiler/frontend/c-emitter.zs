@@ -35,6 +35,8 @@ import {
 } from "./semantic-model.zs";
 import { stringStartsWith } from "./semantic-type-shapes.zs";
 import { internalBackendFailure } from "./native-backend-errors.zs";
+import { channelIdentityKind, channelPayloadIdentity } from "./channel-shapes.zs";
+import { channelHandleDefinitions, channelRuntimeDeclarations, channelRuntimeDefinitions } from "./channel-runtime.zs";
 
 function labelsContain(in labels: Array<String>, in candidate: String): boolean {
   for (const label of labels) {
@@ -114,6 +116,7 @@ function cType(in type: LoweredType): String throws String {
     type.kind == LoweredTypeKind.onceType
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
+    || type.kind == LoweredTypeKind.channelEndpointType
     || type.kind == LoweredTypeKind.taskType
   ) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.enumType) return `Z_${type.name}`;
@@ -3157,6 +3160,26 @@ function programMutexTypeNames(
   return names;
 }
 
+function appendChannelRuntime(inout output: TextBuffer, in program: LoweredProgram, declarations: boolean): void throws String {
+  for (const aggregate of program.structs) {
+    if (channelIdentityKind(aggregate.name) != "Closed") continue;
+    const id = channelPayloadIdentity(aggregate.name);
+    const valueType = view aggregate.fields[0].type;
+    const nativeType = try cType(valueType);
+    if (declarations) {
+      output.append(channelRuntimeDeclarations(id, nativeType));
+    } else {
+      let cleanup = "";
+      if (loweredTypeNeedsDeinit(program, valueType)) {
+        cleanup = valueType.kind == LoweredTypeKind.classType
+          ? `Z_${valueType.name}_release(s->items[index]);`
+          : `Z_${valueType.name}_deinit(&s->items[index]);`;
+      }
+      output.append(channelRuntimeDefinitions(id, nativeType, cleanup));
+    }
+  }
+}
+
 function appendTaskTypeName(
   inout names: Array<String>,
   in type: LoweredType
@@ -3305,6 +3328,11 @@ function loweredTypeForIdentity(
   if (identity == "Arena") return LoweredType({ kind: LoweredTypeKind.arenaType, name: "Arena" });
   if (identity == "TaskScope") return LoweredType({ kind: LoweredTypeKind.taskScopeType, name: "TaskScope" });
   if (identity == "TaskControl") return LoweredType({ kind: LoweredTypeKind.taskControlType, name: "TaskControl" });
+  const channelKind = channelIdentityKind(identity);
+  if (channelKind == "Sender" || channelKind == "SyncSender"
+    || channelKind == "Receiver" || channelKind == "SyncReceiver") {
+    return LoweredType({ kind: LoweredTypeKind.channelEndpointType, name: copy identity });
+  }
   if (identity == "cstring") return LoweredType({ kind: LoweredTypeKind.cstringType, name: "cstring" });
   if (
     identity.byteLength > 5
@@ -6202,6 +6230,18 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.channelOperation) {
+    output.append(declaration.expressions[index].value);
+    output.append("(");
+    let first = true;
+    for (const child of declaration.expressions[index].children) {
+      if (!first) output.append(", ");
+      first = false;
+      try appendExpression(inout output, declaration, child);
+    }
+    output.append(")");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.mutexValue) {
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received malformed Mutex construction";
@@ -7101,6 +7141,7 @@ function appendLocalStatementStorage(
         && storageType.kind != LoweredTypeKind.foreignObjCType
         && storageType.kind != LoweredTypeKind.onceLifetimeType
         && storageType.kind != LoweredTypeKind.mutexType
+        && storageType.kind != LoweredTypeKind.channelEndpointType
         && storageType.kind != LoweredTypeKind.taskType
         && storageType.kind != LoweredTypeKind.functionType;
     }
@@ -12950,7 +12991,7 @@ function appendTaskScopeRuntime(
   output.append("#if defined(_WIN32)\n  DeleteCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_destroy(&scope->mutex) != 0) abort();\n#endif\n  free(scope);\n}\n\n");
   output.append("static void Z_TaskControl_release(Z_TaskControl *control) {\n  if (control == NULL) return;\n  if (__atomic_fetch_sub(&control->refcount, 1, __ATOMIC_ACQ_REL) != 1) return;\n  Z_TaskScope_release(control->scope);\n  free(control);\n}\n\n");
   output.append("static __attribute__((unused)) void Z_TaskScope_deinit(Z_TaskScope **scope) {\n  if (scope == NULL) return;\n  Z_TaskScope_release(*scope);\n  *scope = NULL;\n}\n\n");
-  output.append("static void Z_TaskControl_deinit(Z_TaskControl **control) {\n  if (control == NULL) return;\n  Z_TaskControl_release(*control);\n  *control = NULL;\n}\n\n");
+  output.append("static __attribute__((unused)) void Z_TaskControl_deinit(Z_TaskControl **control) {\n  if (control == NULL) return;\n  Z_TaskControl_release(*control);\n  *control = NULL;\n}\n\n");
   output.append("static Z_TaskControl *z_stage1_task_control_new(bool accepted) {\n  Z_TaskControl *control = (Z_TaskControl *)calloc(1, sizeof(*control));\n  if (control == NULL) abort();\n  control->refcount = 1;\n  control->accepted = accepted;\n  return control;\n}\n\n");
   output.append("static __attribute__((unused)) Z_TaskScope *z_stage1_task_scope_new(Z_AsyncExecutor *executor) {\n  Z_TaskScope *scope = (Z_TaskScope *)calloc(1, sizeof(*scope));\n  if (scope == NULL) abort();\n  scope->refcount = 1;\n  scope->executor = executor != NULL ? executor : &scope->local_executor;\n");
   if (usesExternalCompletion) {
@@ -18562,8 +18603,8 @@ function threadSpawnOwnsCapture(
   const childIndex = bodyChildCount + captureIndex;
   if (childIndex >= expression.children.length) return false;
   const capture = expression.children[childIndex];
-  return declaration.expressions[capture].kind
-    == LoweredExpressionKind.moveValue;
+  return declaration.expressions[capture].kind == LoweredExpressionKind.moveValue
+    || declaration.expressions[capture].kind == LoweredExpressionKind.retainValue;
 }
 
 function appendThreadSpawnPrototypes(
@@ -20058,6 +20099,7 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.weakType
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
+    || type.kind == LoweredTypeKind.channelEndpointType
     || type.kind == LoweredTypeKind.taskType
     || type.kind == LoweredTypeKind.taskScopeType
     || type.kind == LoweredTypeKind.taskControlType
@@ -21077,7 +21119,7 @@ function appendTypeDefinitions(
     output.append("  Z_TaskScopeJob *scope_next;\n  Z_TaskScopeJob *external_next;\n");
     output.append("  uint8_t state;\n};\n\n");
     output.append("static void Z_TaskScope_deinit(Z_TaskScope **scope);\n");
-    output.append("static void Z_TaskControl_deinit(Z_TaskControl **control);\n\n");
+    output.append("static __attribute__((unused)) void Z_TaskControl_deinit(Z_TaskControl **control);\n\n");
   }
   for (const taskName of taskNames) {
     output.append("typedef struct Z_");
@@ -21094,6 +21136,11 @@ function appendTypeDefinitions(
     output.append(";\n\n");
   }
   const mutexNames = programMutexTypeNames(program);
+  for (const aggregate of program.structs) {
+    if (channelIdentityKind(aggregate.name) != "Closed") continue;
+    const id = channelPayloadIdentity(aggregate.name);
+    output.append(channelHandleDefinitions(id));
+  }
   for (const mutexName of mutexNames) {
     output.append("typedef struct Z_");
     output.append(mutexName);
@@ -23853,6 +23900,10 @@ function emitLoweredC(
   const usesMainDelay = programUsesMainDelay(program);
   const mutexTypeNames = programMutexTypeNames(program);
   const usesMutex = mutexTypeNames.length > 0;
+  let usesChannels = false;
+  for (const aggregate of program.structs) {
+    if (channelIdentityKind(aggregate.name) == "Closed") usesChannels = true;
+  }
   const onceTypeNames = programOnceTypeNames(program);
   const usesOnce = onceTypeNames.length > 0;
   const taskTypeNames = programTaskTypeNames(program);
@@ -23955,6 +24006,7 @@ function emitLoweredC(
   }
   if (
     usesMutex
+    || usesChannels
     || usesOnce
     || usesThreads
     || usesObjectiveCAsyncCompletion
@@ -24676,6 +24728,7 @@ function emitLoweredC(
   }
   if (program.functions.length > 0) output.append("\n");
   try appendMutexWithLockHelpers(inout output, program, true);
+  try appendChannelRuntime(inout output, program, true);
   try appendClassAndOnceRuntime(inout output, program);
   for (const declaration of program.slices) {
     const elementType = try cType(declaration.elementType);
@@ -25003,6 +25056,7 @@ function emitLoweredC(
     output.append(" *self);\n");
   }
   if (usesArena) try appendArenaCreateHelpers(inout output, program);
+  try appendChannelRuntime(inout output, program, false);
   try appendThreadMainCallHelpers(inout output, program);
   try appendThreadSpawnHelpers(inout output, program);
   try appendObjCAutoreleasePoolHelpers(inout output, program);

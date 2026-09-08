@@ -6072,6 +6072,45 @@ async channel waiters, unbounded channels, and new synchronization syntax are
 not prerequisites for that slice. Automatic application forwarding remains
 disabled; the previously verified endpoint/inbox/main-host probe is unchanged.
 
+### Native bounded synchronous channels close the readiness prerequisite (2026-09-08)
+
+The existing channel API now lowers to native bounded queue storage and
+blocking endpoint operations. No new language syntax or synchronization API
+was introduced. Sender conversion retains a shared handle; receiver conversion
+transfers the unique receive authority. Closing drains buffered messages before
+`Option.none`, while failed sends return the original owner in `ChannelClosed<T>`.
+
+The executable pressure test is a real `thread.spawn` whose named async callee
+owns `SyncSender<i32>` and `TaskScope` parameters, sends readiness, and yields.
+The parent receives readiness, cancels/joins the worker, then closes its scope.
+Stage 0 and native emission run the same source. Repeated native executions use
+UBSan and instrument channel storage releases to detect leaked endpoint aliases.
+Other tests cover ring wraparound, buffered drain, receiver-drop wakeup, final
+sender destruction, owned String and struct messages, rejected payload recovery,
+exactly-once automatic payload cleanup, and aliased cross-module endpoint fields.
+
+Composition exposed four upstream gaps beyond queue emission: Stage 0 lacked
+sync endpoint calls and shared-sender retention in async frames; native move
+closures consumed shared senders; callable type aliases did not materialize
+their nested intrinsic storage; and rebasing an imported `Sender as Producer`
+field lost the intrinsic's canonical identity. These are fixed in the compiler,
+not worked around in application source. A separate native scalar Array.push
+bug attached an unrelated same-named owner's live flag, and worker capture
+discovery mistook match-arm bindings for captures; both have regressions.
+
+This does **not** implement native async channel waiter queues or expand custom
+destructor/foreign-resource thread-safety proof. The cleanup test instruments
+ordinary generated value-struct cleanup rather than treating an unproven custom
+destructor as transferable. Synchronous endpoint operations block the calling
+OS thread even inside an async function; they are not substitutes for async
+backpressure on a responsive executor.
+
+Next: return to Application.run election/readiness, secondary handoff, and
+ordered listener cancellation/join. Automatic application forwarding remains
+disabled until that integration is verified. Preserve the earlier Stage 0
+throughput/allocation measurements; benchmark this new native queue separately
+before making a native performance comparison.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
@@ -6096,9 +6135,9 @@ disabled; the previously verified endpoint/inbox/main-host probe is unchanged.
   child-task mutable borrows, whole Z value aggregates containing them, and
   fallible results now survive suspension, return/await relay, `try`/`attempt`,
   match, failure, and cancellation;
-- imported generic channel endpoints stored in cross-module aggregates, plus
-  application-lifetime ownership-bearing `thread.spawn` tasks supervised and
-  joined entirely by fixed-point Z;
+- broader nested and returned generic channel endpoint storage beyond the
+  verified aliased cross-module fields, plus application-lifetime ownership-bearing
+  `thread.spawn` tasks supervised and joined entirely by fixed-point Z;
 - Windows C++ UI ownership and callback shapes.
 - a Rust-produced native library with opaque ownership, escaping callbacks,
   thread-affinity contracts, Cargo-driven artifact preparation, and a complete

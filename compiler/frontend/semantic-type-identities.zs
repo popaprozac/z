@@ -594,6 +594,18 @@ function localTypeSpelling(
   return `__z_module_${location.moduleIndex}_${targetName}`;
 }
 
+function standardTypeName(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in name: String
+): String {
+  if (moduleIndex >= modules.length) return copy name;
+  const index = moduleSymbolIndex(modules[moduleIndex], name);
+  if (index < modules[moduleIndex].symbols.length
+    && modules[moduleIndex].symbols[index].standardTypeName.byteLength > 0) {
+    return copy modules[moduleIndex].symbols[index].standardTypeName;
+  }
+  return copy name;
+}
+
 export function rebaseTypeName(
   in modules: Array<ResolvedModule>,
   fromModuleIndex: usize,
@@ -677,7 +689,7 @@ export function rebaseTypeName(
   }
   match (genericTypeShape(name)) {
     some(generic) => {
-      let base = generic.base.copyBytes(0, generic.base.byteLength);
+      let base = standardTypeName(modules, fromModuleIndex, generic.base);
       match (typeSymbolLocation(modules, fromModuleIndex, generic.base)) {
         some(location) => base = localTypeSpelling(modules, toModuleIndex, location);
         none => {}
@@ -704,7 +716,7 @@ export function rebaseTypeName(
   }
   return match (typeSymbolLocation(modules, fromModuleIndex, name)) {
     some(location) => localTypeSpelling(modules, toModuleIndex, location);
-    none => name.copyBytes(0, name.byteLength);
+    none => standardTypeName(modules, fromModuleIndex, name);
   };
 }
 
@@ -715,6 +727,25 @@ function transparentTypeNameAtDepth(
   depth: usize
 ): String {
   if (depth >= 64) return name.copyBytes(0, name.byteLength);
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      const base = standardTypeName(modules, moduleIndex, generic.base);
+      if (base != generic.base) {
+        let output = TextBuffer();
+        output.append(base);
+        output.append("<");
+        let index: usize = 0;
+        for (const argument of generic.arguments) {
+          if (index > 0) output.append(", ");
+          output.append(argument);
+          index = index + 1;
+        }
+        output.append(">");
+        return output.finish();
+      }
+    }
+    none => {}
+  }
   return match (typeSymbolLocation(modules, moduleIndex, name)) {
     some(location) => {
       if (
@@ -874,7 +905,7 @@ export function semanticTypeIdentity(
   }
   match (genericTypeShape(name)) {
     some(generic) => {
-      let base = generic.base.copyBytes(0, generic.base.byteLength);
+      let base = standardTypeName(modules, moduleIndex, generic.base);
       match (typeSymbolLocation(modules, moduleIndex, generic.base)) {
         some(location) => base = symbolTypeIdentity(modules, location);
         none => {}

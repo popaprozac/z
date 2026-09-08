@@ -60,6 +60,10 @@ import {
   channelReceiverOperationRetainName,
   channelSenderName,
   channelSenderRetainName,
+  channelSenderSyncName,
+  channelReceiverSyncName,
+  channelSyncSendName,
+  channelSyncReceiveName,
   nicheOptionNull,
   nicheOptionPayload,
 } from "./codegen-c.ts";
@@ -4767,13 +4771,8 @@ function emitAwaitArguments(
       return `Z_${argumentType}_retain(${value})`;
     }
     if (threadTransfer === "share" && argumentType) {
-      const mutex = parseMutexType(argumentType);
-      if (mutex) return `${asyncMutexRetainName(mutex.valueType)}(${value})`;
-      if (argumentType === "TaskScope") return `z_task_scope_retain(${value})`;
-      if (argumentType === "TaskControl") return `z_task_control_retain(${value})`;
-      if (parent.types.structs.get(argumentType)?.kind === "class") {
-        return `Z_${argumentType}_retain(${value})`;
-      }
+      const retained = retainManagedFrameValue(argumentType, value, parent.types);
+      if (retained) return retained;
       unsupported(fileName, argument.location, `thread-shared capture type ${JSON.stringify(argumentType)} has no retain operation`);
     }
     if (site.placement && argument.kind === "identifier" && parameter?.mode === "value") {
@@ -7794,9 +7793,24 @@ function emitFrameExpressionInner(
         return `${asyncMemoryReplaceName(memoryReplace)}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
       }
       const channelCall = plan.types.semanticInfo.channelCalls.get(expression.location.offset);
-      if (channelCall && expression.callee.kind === "member" && channelCall.operation === "close") {
+      if (channelCall?.operation === "bounded") {
+        return `${channelBoundedName(channelCall.valueType)}((uintptr_t)(${emitFrameExpression(expression.arguments[0], plan, fileName)}))`;
+      }
+      if (channelCall && expression.callee.kind === "member") {
         const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
-        return `${channelCloseName(channelCall.valueType)}((${receiver}).storage)`;
+        if (channelCall.operation === "close") return `${channelCloseName(channelCall.valueType)}((${receiver}).storage)`;
+        if (channelCall.operation === "sync" && channelCall.endpoint === "sender") {
+          return `${channelSenderSyncName(channelCall.valueType)}(${receiver})`;
+        }
+        if (channelCall.operation === "sync" && channelCall.endpoint === "receiver") {
+          return `${channelReceiverSyncName(channelCall.valueType)}(${receiver})`;
+        }
+        if (channelCall.operation === "send" && channelCall.endpoint === "syncSender") {
+          return `${channelSyncSendName(channelCall.valueType)}(${receiver}, ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+        }
+        if (channelCall.operation === "receive" && channelCall.endpoint === "syncReceiver") {
+          return `${channelSyncReceiveName(channelCall.valueType)}(${receiver})`;
+        }
       }
       const mutexConstructor = plan.types.semanticInfo.mutexConstructors.get(expression.location.offset);
       if (mutexConstructor) {
