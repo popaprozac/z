@@ -5859,17 +5859,29 @@ guard with a different name; another references a guard without declaring it.
 The separate 85-module `z check` succeeds, so lowering-only checks are not enough
 to certify native executable composition.
 
-Keep this as an upstream correctness gate: align lowered cleanup ownership with
-each emitter's lexical/frame guard, add reduced execution/cleanup regressions,
-then build the full application. Do not work around it in Zapp or edit generated
-native source. The prior reduced yield-frame results remain valid but do not
-establish whole-application correctness.
+This gate is now closed upstream. Tail-await match frames use the lowering
+planner's existing live flag for frame storage, moves, and cleanup; synchronous
+matches after an await declare that same lexical guard. No generated-C patch or
+Zapp source workaround is required. The full Z Notes release and development
+builds now compile and link successfully.
+
+`async-match-guard-composition.zs` reduces both paths to owned String-bearing
+payloads with observable `deinit`. Stage 0 and native emission agree on exact
+cleanup after success and failure. A bounded native harness also cancels before
+entry, during child ownership, and after child completion, then destroys
+unclaimed success/error aggregate results. It checks exact destructor output
+and an empty executor queue under UBSan. The fixture is included in the
+executable differential corpus so future yield-frame improvements also exercise
+these older tail-await paths. Compilation is not an interactive launch or a
+proof of every application shutdown path.
 
 The launch-listener main-host placement/cancellation/join checkpoint above is
 paused for this performance sweep, not replaced. `docs/performance.md` records
-the measured duplicate dispatcher check, nondeterministic worker archive input,
-foreign-adapter waits, and imported-type lowering costs, plus the proposed order
-for resolving them before returning to listener integration.
+the successful current build timings, deterministic worker archive publication,
+and removal of redundant dispatcher checking. The final generated-overlay build
+still rejects malformed dispatch and stale overlays, including after a cache
+hit. Foreign-adapter waits, imported-type lowering costs, and profile-specific
+cache storage remain the next performance opportunities.
 
 ## Not tested yet
 

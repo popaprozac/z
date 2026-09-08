@@ -616,14 +616,13 @@ source, configuration, and release settings. Existing caches were not purged:
 These are single-run observations, not medians. The build failed during Clang
 validation of generated Objective-C. **They are not successful build or launch
 times**, and do not include completed native optimization/linking, bundling,
-signing, or application startup. No current warm-build latency improvement is
-claimed. The successful 0.22-second native cache-hit result above is historical,
-not revalidated for today's full application. No Go, Bun-based framework, or
-Tauri comparison was run in this sweep.
+signing, or application startup. These initial failed attempts cannot establish
+a warm-build speedup; the successful follow-up measurements are below. No Go,
+Bun-based framework, or Tauri comparison was run in this sweep.
 
-### Immediate correctness gate
+### Initial correctness gate (resolved below)
 
-The current native compiler emits references to undeclared
+The initial native compiler emitted references to undeclared
 `_z_stage1_live__z_stage1_match_payload_*` flags in ordinary async match paths.
 The application reproduces both a moved match payload passed to an awaited
 child and an owned error payload returned inside another aggregate. The former
@@ -632,10 +631,10 @@ name; the latter references a guard with no declaration. The same five Clang
 diagnostics occurred in both builds. The generated dispatcher check passes
 because it lowers the program without compiling the emitted native source.
 
-Fix these upstream and add reduced regression coverage for existing async
-lowering paths before using the full application to certify performance or
-resuming listener integration. Do not patch generated C or weaken ownership
-guards to make a timing run pass.
+The required gate was to fix these upstream and add reduced regression coverage
+for existing async lowering paths before using the full application to certify
+performance or resuming listener integration. Generated C and ownership checks
+must not be patched around to make a timing run pass.
 
 ### Confirmed unchanged-build costs
 
@@ -688,7 +687,53 @@ copies. Preserve aliases, `.zd` contracts, header dependencies, target settings,
 and compiler identity in reuse decisions. A parser rewrite is not the first
 performance lever indicated by this profile.
 
-### Agreed work remains queued; performance sequence proposed
+### Successful follow-up: guard repair and unchanged-build reuse
+
+The upstream guard repair uses the lowering planner's live flag consistently
+in tail-await frames and declares it in synchronous post-await match arms.
+The reduced fixture covers moved success/error payloads, custom cleanup,
+cancellation around child ownership, and destruction of unclaimed aggregate
+results. Stage 0/native execution and bounded UBSan probes pass. The native
+compiler was rebuilt to a fixed point before these application measurements.
+
+Zapp now publishes deterministic native archives from freshly compiled objects.
+Identical bytes leave the previous archive untouched. Object compilation still
+runs, so header, compiler, and flag changes are not hidden by a new dependency
+cache. Regression tests cover timestamp-only changes, changed header contents,
+archive corruption, and archiver failure without replacing a valid artifact.
+
+The separate generated-dispatcher `z check` is removed. The final
+`z build --generated ...` remains authoritative: standalone-driver tests build,
+hit the cache, then reject malformed generated code and stale overlay hashes.
+This removes the observed 16–17-second duplicate pass without removing semantic
+validation or changing release optimization.
+
+| Successful workload | Observed wall time | Measurement boundary |
+| --- | ---: | --- |
+| Release pipeline requiring native recompilation | 31.08–32.21 s | Metadata reuse, Vite production build, native compile/link, bundle and ad-hoc signing |
+| Unchanged release pipeline | 2.02–2.90 s | Same complete build-only pipeline, including Vite |
+| Dev pipeline requiring native recompilation | 25.03 s | Service metadata, native compile/link, development bundle and signing |
+| Unchanged dev build-and-bundle | 0.58–0.69 s | Excludes Vite server startup, worker bundling, and app launch |
+| Native `z build` inside unchanged runs | 0.19–0.30 s | Validated compiler input-cache hit |
+| Native debug build after generated Z source changed | 24.60 s | Direct `z build`; unchanged repeat 0.20 s |
+
+These are local observations, not statistical medians. Existing metadata and
+SDK caches were warm; the recompilation rows are **not clean-machine builds**.
+Dev and release still share an artifact slot, so the first mode switch rebuilt
+the native application. The generated-source invalidation probe added only a
+comment to a generated dispatcher; it proves conservative invalidation, not
+fine-grained semantic incremental compilation. Normal generation subsequently
+restored that artifact. No interactive launch or startup time is included.
+
+Repeat the build-only pipeline using
+`bun benchmarks/profile-zapp-build.ts ../zapp release <label>` (or `dev`).
+The probe records phase/command timings in
+`.z-cache/benchmarks/zapp-build.jsonl`, bounds subprocess groups, and does not
+launch the application. See `benchmarks/README.md` for prerequisites and the dev
+measurement exclusions. Compare successful runs with successful runs; do not
+divide the original failed-build times by these cache-hit results.
+
+### Agreed work remains queued; remaining performance sequence
 
 The paused functional checkpoint remains **main-host wakeup placement and
 cancellation/join integration for the lifecycle-owned launch listener**, followed
@@ -696,20 +741,20 @@ by startup/readiness. The endpoint/inbox probe remains compile-only; automatic
 secondary-instance forwarding is still disabled. See the matching continuation
 in Zapp's `docs/application-activation.md` and Z's ownership-pressure log.
 
-Before returning there, the proposed performance sequence is:
+The correctness/cache checkpoint above is complete. The remaining performance
+sequence, without losing the functional continuation, is:
 
-1. Close the native async match/live-guard regression and compile the real app.
-2. Make worker artifacts stable and eliminate redundant generated checking
-   while preserving rejection tests; remeasure unchanged release and dev builds.
-3. Separate profile caches; measure frontend-only, one-Z-file, contract/header,
+1. Separate profile caches; measure frontend-only, one-Z-file, contract/header,
    and compiler-change invalidation separately.
-4. Profile/cache foreign-adapter work and reduce imported-type lowering copies.
-5. Only then design module/object-level incremental code generation and native
+2. Profile/cache foreign-adapter work and reduce imported-type lowering copies.
+3. Only then design module/object-level incremental code generation and native
    compilation to reduce genuine source-change rebuilds. Do not trade runtime
    optimization or ownership checks for an apparently faster release build.
 
 An unchanged build should validate inputs and reuse artifacts, not lower 85
-modules again. This is a tooling/compiler implementation goal, not a proposed
-change to Z syntax or application semantics. Complete build, bundle, launch,
-memory, and changed-source numbers remain to be measured after the correctness
-gate closes.
+modules again; this now holds for same-profile Z Notes repeats. Genuine source
+changes still pay the broad lowering/Clang path, so changed-source latency is the
+next material compiler target. This is a tooling/compiler implementation goal,
+not a proposed change to Z syntax or application semantics. Clean-cache builds,
+interactive dev launch, memory, and the wider invalidation matrix remain to be
+measured separately.

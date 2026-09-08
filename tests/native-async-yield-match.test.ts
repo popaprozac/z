@@ -40,6 +40,48 @@ test("handles receive failures with synchronous match arms in native yielding lo
   execute(emit(), expected);
 }, 240_000);
 
+test("preserves cleanup guards in existing tail-await and post-await match frames", () => {
+  const input = resolve(projectRoot, "tests/fixtures/async-match-guard-composition.zs");
+  const expected = "released message\nreleased error\nreleased error\nreleased message\n";
+  execute(compileToC(readFileSync(input, "utf8"), input), expected);
+  const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+  execute(emitted.stdout, expected);
+  execute(`#define main z_fixture_main\n${emitted.stdout}\n#undef main
+int main(void) {
+  Z_AsyncExecutor executor = {0};
+  // Cancel before entry, while the moved payload is owned by the child,
+  // and after child completion. The frame and child must never both drop it.
+  for (int steps = 0; steps <= 3; ++steps) {
+    Z_AsyncInvocation call = z_stage1_callable_main_0_start(NULL, &executor, false);
+    z_stage1_async_enqueue(&executor, call.task);
+    for (int step = 0; step < steps && !call.task->completed; ++step) {
+      if (!z_stage1_async_drive_one(&executor)) return 1;
+    }
+    if (!call.task->completed) z_stage1_async_request_cancel(call.task);
+    for (int tick = 0; !call.task->completed; ++tick) {
+      if (tick > 8 || !z_stage1_async_drive_one(&executor)) return 2;
+    }
+    call.destroy(call.task);
+    if (executor.head != NULL || executor.tail != NULL) return 3;
+  }
+  // Returned aggregates own their moved payload until the result is claimed
+  // or the completed frame is destroyed. Exercise unclaimed success/error.
+  for (int fail = 0; fail <= 1; ++fail) {
+    Z_AsyncInvocation call = z_stage1_callable_main_6_start(NULL, &executor, fail);
+    z_stage1_async_enqueue(&executor, call.task);
+    for (int tick = 0; !call.task->completed; ++tick) {
+      if (tick > 8 || !z_stage1_async_drive_one(&executor)) return 4;
+    }
+    call.destroy(call.task);
+    if (executor.head != NULL || executor.tail != NULL) return 5;
+  }
+  return 0;
+}`, "released message\n".repeat(4) + "released error\n");
+}, 240_000);
+
 test("shares match cleanup and temporary argument handling with synchronous native code", () => {
   const directory = mkdtempSync("/tmp/z-match-cleanup-");
   try {

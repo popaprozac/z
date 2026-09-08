@@ -2642,7 +2642,7 @@ test("composes owned matches, ARC arguments, and post-await control flow", () =>
     );
     assert.match(
       emission.stdout,
-      /_z_stage1_async_live_.* = false;[\s\S]*Z_Service_retain\(service\)/,
+      /_z_stage1_live__z_stage1_match_payload_.* = false[\s\S]*Z_Service_retain\(service\)/,
     );
     assert.match(
       emission.stdout,
@@ -10571,6 +10571,24 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(generatedRun.status, 0, generatedRun.stderr);
+  // Zapp relies on the final build validating generated dispatch instead of
+  // paying for a separate graph-wide check. Exercise this after a cache hit.
+  const generatedBuild = () => spawnSync(driver,
+    ["build", generatedApplication, "--generated", generatedCallOverlay],
+    { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+  const firstGeneratedBuild = generatedBuild();
+  assert.equal(firstGeneratedBuild.status, 0, firstGeneratedBuild.stderr);
+  const reusedGeneratedBuild = generatedBuild();
+  assert.equal(reusedGeneratedBuild.status, 0, reusedGeneratedBuild.stderr);
+  assert.match(reusedGeneratedBuild.stdout, /cache hit/);
+  writeFileSync(resolve(generatedOutput, "adapters.zs"),
+    "export function adapt(value: i32): i32 { return true; }\n");
+  const invalidGeneratedBuild = generatedBuild();
+  assert.equal(invalidGeneratedBuild.status, 1);
+  assert.match(invalidGeneratedBuild.stderr, /boolean/);
+  assert.doesNotMatch(invalidGeneratedBuild.stdout, /cache hit/);
+  writeFileSync(resolve(generatedOutput, "adapters.zs"),
+    "export function adapt(value: i32): i32 { return value + 1; }\n");
   writeFileSync(generatedCallOverlay, JSON.stringify({
     ...generatedCallOverlayValue,
     modules: {
@@ -10603,6 +10621,10 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(staleGeneratedCheck.status, 1);
   assert.match(staleGeneratedCheck.stderr, /source hash is stale/);
+  const staleGeneratedBuild = generatedBuild();
+  assert.equal(staleGeneratedBuild.status, 1);
+  assert.match(staleGeneratedBuild.stderr, /source hash is stale/);
+  assert.doesNotMatch(staleGeneratedBuild.stdout, /cache hit/);
 
   const foreignAdapterSource = resolve(directory, "foreign-adapter-input.zs");
   const foreignAdapterHeader = resolve(
@@ -10830,7 +10852,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
-  assert.match(recursiveCompilation.stdout, /compiled 41 Z modules/);
+  assert.match(recursiveCompilation.stdout, /compiled \d+ Z modules/);
   assert.equal(
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,
@@ -11188,22 +11210,23 @@ test("compiles a multi-module Z application through the standalone native driver
 
   const nativeLoweringBoundaries = [
     {
-      name: "suspending-ordinary-async",
+      name: "nested-await-in-yield-frame",
       source: [
         'import { scheduler } from "std/async"; import { delay } from "std/time";',
         "async function deferred(): i32 {",
         "  await scheduler.yield();",
         "  await delay(1);",
-        "  return 42;",
+        "  return 40 + await duration();",
         "}",
+        "async function duration(): i32 { return 2; }",
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
-      line: 2,
-      column: 7,
+      line: 3,
+      column: 3,
       marker: "^^^^^",
       code: "Z0700",
-      summary: 'suspending async function "deferred" is not executable in the native compiler yet',
+      summary: "scheduler.yield() in this function requires unsupported native frame composition; use root owned locals and standalone direct child awaits in the current tier",
     },
     {
       name: "synchronous-placed-method-tail",

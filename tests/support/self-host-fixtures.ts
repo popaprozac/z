@@ -13,6 +13,10 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/async-launch-listener.zs" },
   { entry: "tests/fixtures/async-launch-owned-destructure.zs" },
   {
+    entry: "tests/fixtures/async-match-guard-composition.zs",
+    expectedStdout: "released message\nreleased error\nreleased error\nreleased message\n",
+  },
+  {
     entry: "tests/fixtures/self-host-emit-async-yield-frame.zs",
     expectedStdout: "prepared delivery\nreleased discarded\nselected\nreleased selected\n",
   },

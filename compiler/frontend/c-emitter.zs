@@ -1045,8 +1045,11 @@ function asyncTailAwaitMatchArm(
   return Option<usize>.none;
 }
 
-function asyncTailMatchBindingLiveFlag(in name: String): String {
-  return `_z_stage1_async_live_${name}`;
+function asyncTailMatchBindingLiveFlag(in arm: LoweredStatement): String {
+  // Moves and lexical cleanup already reference the lowering planner's guard.
+  // Store that same guard in the frame instead of inventing a second owner.
+  if (arm.liveFlag.byteLength > 0) return copy arm.liveFlag;
+  return `_z_stage1_async_live_${arm.labels[0]}`;
 }
 
 function asyncFrameBinds(
@@ -1184,7 +1187,7 @@ function appendAsyncTailMatchBindingField(
   appendCBindingName(inout output, arm.labels[0]);
   output.append(";\n");
   if (loweredTypeNeedsDeinit(program, type)) {
-    const liveFlag = asyncTailMatchBindingLiveFlag(arm.labels[0]);
+    const liveFlag = asyncTailMatchBindingLiveFlag(arm);
     output.append("  bool ");
     appendCBindingName(inout output, liveFlag);
     output.append(";\n");
@@ -1261,7 +1264,7 @@ function appendAsyncTailMatchBindingMacro(
   output.append(")\n");
   match (in arm.type) {
     some(type) => if (loweredTypeNeedsDeinit(program, type)) {
-      const liveFlag = asyncTailMatchBindingLiveFlag(arm.labels[0]);
+      const liveFlag = asyncTailMatchBindingLiveFlag(arm);
       output.append("#define ");
       appendCBindingName(inout output, liveFlag);
       output.append(" (frame->");
@@ -1326,7 +1329,7 @@ function appendAsyncTailMatchBindingMacroUndef(
   }
   match (in arm.type) {
     some(type) => if (loweredTypeNeedsDeinit(program, type)) {
-      const liveFlag = asyncTailMatchBindingLiveFlag(arm.labels[0]);
+      const liveFlag = asyncTailMatchBindingLiveFlag(arm);
       output.append("#undef ");
       appendCBindingName(inout output, liveFlag);
       output.append("\n");
@@ -1507,7 +1510,7 @@ function appendAsyncTailMatchBindingCleanup(
   if (arm.labels.length != 1) {
     throw "native matched tail await requires one payload binding";
   }
-  const liveFlag = asyncTailMatchBindingLiveFlag(arm.labels[0]);
+  const liveFlag = asyncTailMatchBindingLiveFlag(arm);
   appendIndent(inout output, depth);
   output.append("if (");
   appendCBindingName(inout output, liveFlag);
@@ -2211,6 +2214,12 @@ function appendAsyncTailSynchronousMatch(
       }
       none => {}
     }
+    if (arm.liveFlag.byteLength > 0) {
+      appendIndent(inout output, depth + 2);
+      output.append("bool ");
+      appendCBindingName(inout output, arm.liveFlag);
+      output.append(" __attribute__((unused)) = true;\n");
+    }
     for (const child of arm.children) {
       try appendAsyncTailPrefixStatement(
         inout output,
@@ -2720,9 +2729,7 @@ function appendAsyncTailDispatchStatement(
                   arm.labels[0]
                 )
               ) {
-                const bindingLiveFlag = asyncTailMatchBindingLiveFlag(
-                  arm.labels[0]
-                );
+                const bindingLiveFlag = asyncTailMatchBindingLiveFlag(arm);
                 appendIndent(inout output, depth);
                 appendCBindingName(
                   inout output,
@@ -2930,9 +2937,7 @@ function appendAsyncTailDispatchStatement(
           armIndex == awaitedArm
           && loweredTypeNeedsDeinit(program, type)
         ) {
-          const liveFlag = asyncTailMatchBindingLiveFlag(
-            arm.labels[0]
-          );
+          const liveFlag = asyncTailMatchBindingLiveFlag(arm);
           appendIndent(inout output, depth + 2);
           appendCBindingName(inout output, liveFlag);
           output.append(" = true;\n");
