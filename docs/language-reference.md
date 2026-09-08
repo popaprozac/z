@@ -393,8 +393,24 @@ before handing the independent String to its caller. An `inout` callback may
 similarly return ownership taken from protected storage using an operation
 such as `remove` or `replace`; that is not a borrowed reference escaping.
 Throwing callbacks preserve the error payload and unlock before `try` or
-`attempt` handles it. Consuming an ownership-bearing outer capture inside the
-callback is not supported yet, even with a `move` closure.
+`attempt` handles it.
+
+An inline `move` callback may transfer its owned captures into protected storage:
+
+```z
+const request = Request({ path: "/notes" });
+inbox.withLock(move (inout state): void => {
+  state.pending.push(move request);
+});
+```
+
+This is safe because `withLock` invokes this synchronous, nonescaping callback
+exactly once. The outer `move` transfers unique capture ownership into that call;
+the inner `move request` transfers it onward. An early return or typed failure
+destroys any captures not transferred. Shared identities retain their ordinary
+sharing behavior. The callback environment is stack-local, with no additional
+heap allocation. Ordinary reusable closures still cannot consume their owned
+captures, and omitting the explicit `move` keeps the capture borrowed.
 
 Declaring the local binding `const` fixes the mutex identity; it does not
 freeze its payload. Mutation remains available only inside an `inout` callback.

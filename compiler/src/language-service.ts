@@ -2069,6 +2069,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
           `withLock<R>((in value: ${value}) => R): R`,
           `withLock<R>((inout value: ${value}) => R): R`,
           "// blocks the current OS thread; the protected borrow cannot escape or suspend",
+          "// invokes this inline callback once; an explicit move closure may consume owned captures",
         ].join("\n"),
         source,
         word.start,

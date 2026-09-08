@@ -5453,13 +5453,49 @@ Explicit String copying and construction of an Array or ARC object still carry
 their ordinary allocation costs; this is not a zero-allocation claim for every
 callback.
 
-The admission half remains open and needs a design check-in: `withLock` invokes
-one synchronous, nonescaping callback, but its captures are currently checked
-as reusable. Consequently an owned captured request cannot be moved into the
-protected queue even with `move (...) => ...`. Extending this known-once call
-site is distinct from allowing an arbitrary reusable closure to consume its
-environment. The Zapp inbox refactor is not shipped until that boundary and its
-native cleanup are settled; the public activation API is unchanged.
+The admission half prompted an explicit design check-in. The agreed rule is
+now implemented: `withLock` invokes one synchronous, nonescaping callback, so an
+inline `move` closure may consume its owned captures. A unique request moves
+from caller to callback to queue; early return or typed failure destroys the
+unconsumed request. Shared ARC identity is retained, not uniquely removed from
+the caller. This does not add a general consuming function-value type or relax
+the restrictions on reusable closures, borrowed captures, views, or suspension.
+
+`self-host-emit-mutex-owned-capture.zs` checks exact destruction across accepted
+and rejected admission, early throw, expression-body transfer, returned capture,
+and shared ARC capture. Both compilers use stack-local capture storage without
+a heap environment. Stage 0 also constructs non-default-constructible move-only
+C++ captures directly in that storage. One test caught a compiler bookkeeping
+bug: marking the outer capture transferred at its first source occurrence also
+marked that occurrence's *read inside the callback* moved, suppressing cleanup
+on early failure. The outer transfer and callback-body moves are now separate.
+
+The Zapp threaded inbox test also exposed two existing Stage-0 async composition
+gaps: synchronous `try` skipped argument preparation for inline closures, and
+executor-release adapters were emitted for executor-bound value structs as if
+they were ARC classes. Argument preparation now applies to throwing calls;
+release adapters are restricted to classes and use canonical native names.
+Scoped lock captures can transfer out of an async frame while the lock callback
+itself remains synchronous. Native worker-destructibility evidence now follows
+collection elements, aliases, and readonly wrappers inside synchronized state;
+it still rejects executor-bound and unproven destruction. The collection-worker
+differential fixture exercises a Mutex-backed Map of enum requests containing
+readonly String Arrays and optional String data.
+
+Replacing the original queue with the owned inbox also exposed a control-flow
+parity bug: `break` in a `match` arm emitted C `break`, exiting only the generated
+switch and leaving the enclosing drain loop running. Native loop lowering now
+records the actual loop exit target, preserving cleanup before the jump.
+`self-host-emit-match-loop-exit.zs` covers while/for exits, nested loops,
+continue, and destruction of a live loop-local owner. All runtime probes have
+finite watchdogs; the original failing drain was terminated by its watchdog.
+
+The launch-event smoke then caught a second cleanup-scope collision: a borrowing
+lock callback moved a callback-local Array out, but the enclosing function's
+later move-flag pass erased the callback's live flag. The callback freed the
+returned storage before delivery. Callback-local move flags are now protected
+regardless of capture mode; the owned-capture differential fixture includes a
+borrowing callback with an early-return branch and a moved local result.
 
 ## Not tested yet
 

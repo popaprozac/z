@@ -112,6 +112,15 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-result.zs" },
   { entry: "tests/fixtures/self-host-emit-throwing-method.zs" },
   { entry: "tests/fixtures/self-host-emit-mutex-field.zs" },
+  { entry: "tests/fixtures/self-host-emit-mutex-collection-worker.zs" },
+  {
+    entry: "tests/fixtures/self-host-emit-match-loop-exit.zs",
+    expectedStdout: "released while\nreleased for\n",
+  },
+  {
+    entry: "tests/fixtures/self-host-emit-mutex-owned-capture.zs",
+    expectedStdout: "released request rejected\nreleased request failed\nreleased observer shared\nreleased request returned\nreleased request expression\nreleased request accepted\n",
+  },
   {
     entry: "tests/fixtures/self-host-emit-mutex-owned-result.zs",
     expectedStdout: "released parcel first\nreleased parcel temporary\nreleased error unavailable\nreleased parcel temporary\nreleased error ready\nreleased error ready\nreleased parcel propagated\nreleased error ready\nreleased snapshot ready\nreleased parcel remaining\n",
@@ -203,6 +212,9 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-match-try.zs": focusedPositive,
   "self-host-emit-move.zs": focusedPositive,
   "self-host-emit-mutex-field.zs": differential,
+  "self-host-emit-mutex-collection-worker.zs": differential,
+  "self-host-emit-match-loop-exit.zs": differential,
+  "self-host-emit-mutex-owned-capture.zs": differential,
   "self-host-emit-mutex-owned-result.zs": differential,
   "self-host-emit-nested-value-match.zs": focusedPositive,
   "self-host-emit-option.zs": differential,

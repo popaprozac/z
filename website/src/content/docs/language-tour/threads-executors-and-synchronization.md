@@ -244,8 +244,23 @@ function snapshot(in state: Mutex<DocumentState>): String {
 The caller owns the snapshot after the lock is released. Stage 0 and the native
 compiler also preserve owned Array, Option, Result, and ARC results, including
 typed failure cleanup. This does not permit a `view` of protected storage to
-escape. Transferring an owned outer capture into a lock callback remains a
-separate compiler capability; a `move` closure does not enable that today.
+escape.
+
+The inline callback runs exactly once, so an explicit `move` closure can transfer
+owned captures into protected storage:
+
+```z
+const request = Request({ path: "/notes" });
+inbox.withLock(move (inout state): void => {
+  state.pending.push(move request);
+});
+```
+
+The caller transfers `request` to the callback, which transfers it into the
+queue. If the callback returns early or throws instead, its remaining captures
+are destroyed. Shared ARC identities keep their ordinary retained-sharing
+semantics. This uses a stack-local callback environment, not a heap allocation;
+it does not make ordinary reusable closures consuming.
 
 ## Explicit application roots with `Once<T>`
 

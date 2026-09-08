@@ -179,6 +179,9 @@ export type ClosureInfo = {
   readonly owned: boolean;
   readonly storable: boolean;
   readonly threadSafe: boolean;
+  // Intrinsic-only, synchronous, nonescaping invocation. Never a reusable
+  // function-value capability: each capture is transferred to one call.
+  readonly scopedOneShot?: boolean;
 };
 
 export type MutexWithLockCallInfo = {
@@ -6355,6 +6358,7 @@ function inferClosureExpression(
     owned: false,
     storable: false,
     threadSafe: false,
+    scopedOneShot: transientBorrow && oneShotOwnedCaptures && expression.captureMode === "move",
   });
   return type;
 }
@@ -6450,6 +6454,7 @@ function finalizeClosureFunctionValue(
     ) {
       continue;
     }
+    const bodyReadWasMoved = state.movedExpressions.has(capture.location.offset);
     consumeOwnedValue(
       { kind: "identifier", name: capture.name, location: capture.location },
       capture.type,
@@ -6459,6 +6464,11 @@ function finalizeClosureFunctionValue(
       fileName,
       state,
     );
+    // The capture's diagnostic location is its first use *inside* the body.
+    // Transferring it into the callback must not turn that read into a move.
+    if (closure.scopedOneShot && !bodyReadWasMoved) {
+      state.movedExpressions.delete(capture.location.offset);
+    }
   }
   return closure;
 }
@@ -12081,6 +12091,7 @@ function inferExpressionInner(
               {
                 transientBorrow: true,
                 executionContext: "inherit",
+                oneShotOwnedCaptures: true,
               },
             );
           } finally {

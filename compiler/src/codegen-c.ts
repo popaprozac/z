@@ -900,7 +900,7 @@ export function generateC(
     if (!closure.declaration.async) {
       lines.push(`${generateFunctionSignature(closure.declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
     }
-    if (closure.owned) {
+    if (closure.owned && !closure.scopedOneShot) {
       lines.push(`static void ${closureEnvironmentRetainName(closure)}(void *context);`);
       lines.push(`static void ${closureEnvironmentReleaseName(closure)}(void *context);`);
     }
@@ -3867,6 +3867,10 @@ function generateClosureAdapter(
   const prefix: string[] = [];
   const hidden = closure.captures.map((capture) => {
     const stored = `environment->${capture.name}`;
+    if (closure.scopedOneShot && capture.mode === "value"
+      && requiresNativeMove(capture.type, structs, enums, foreignNamedTypes)) {
+      return `std::move(${stored})`;
+    }
     if (!closure.owned) return stored;
     if (capture.mode === "value") return stored;
     if (capture.mode === "in" && closureCaptureHasReferenceIdentity(capture.type, structs, foreignNamedTypes)) return stored;
@@ -3924,7 +3928,7 @@ function generateClosureEnvironmentDefinition(
     return `  ${type} ${capture.name};`;
   });
   return `typedef struct ${name} {
-${closure.owned ? "  size_t refcount;\n" : ""}
+${closure.owned && !closure.scopedOneShot ? "  size_t refcount;\n" : ""}
 ${fields.join("\n")}
 } ${name};`;
 }
@@ -3935,6 +3939,7 @@ function generateClosureEnvironmentLifecycle(
   enums: Map<string, EnumDeclaration>,
   semanticInfo: SemanticInfo,
 ): string {
+  if (closure.scopedOneShot) return "";
   const name = closureEnvironmentName(closure);
   const cleanupCounter = { value: 0 };
   const cleanup = [...closure.captures].reverse().map((capture) => (
@@ -8599,28 +8604,34 @@ function generateClosureValue(
     return consumeValue(functionValueLiteral(functionType, closureAdapterName(closure)), context);
   }
   const environmentType = closureEnvironmentName(closure);
-  const environment = closure.owned
+  const heapOwned = closure.owned && !closure.scopedOneShot;
+  const environment = heapOwned
     ? `_z_closure_environment_${closure.declaration.location.offset}`
     : `_z_borrowed_closure_environment_${closure.declaration.location.offset}`;
   const captures = closure.captures.map((capture) => {
     const captured: Expression = { kind: "identifier", name: capture.name, location: capture.location };
     const value = closure.owned
-      ? generateOwnedClosureCaptureValue(capture, context)
+      ? generateOwnedClosureCaptureValue(capture, context, closure.scopedOneShot)
       : generateExpression(captured, context);
     const borrowedPointer = !closure.owned
       && capture.mode !== "value"
       && !(capture.mode === "in" && closureCaptureHasReferenceIdentity(capture.type, context.structs, context.semanticInfo.foreignNamedTypes));
-    const target = closure.owned ? `${environment}->${capture.name}` : `${environment}.${capture.name}`;
+    const target = heapOwned ? `${environment}->${capture.name}` : `${environment}.${capture.name}`;
+    if (closure.scopedOneShot) return `.${capture.name} = ${value}`;
     return `${target} = ${borrowedPointer ? `&(${value})` : value};`;
   });
   const value = functionValueLiteral(
     functionType,
     closureAdapterName(closure),
-    closure.owned ? environment : `&(${environment})`,
-    closure.owned ? closureEnvironmentRetainName(closure) : "NULL",
-    closure.owned ? closureEnvironmentReleaseName(closure) : "NULL",
+    heapOwned ? environment : `&(${environment})`,
+    heapOwned ? closureEnvironmentRetainName(closure) : "NULL",
+    heapOwned ? closureEnvironmentReleaseName(closure) : "NULL",
   );
-  if (!closure.owned) {
+  if (closure.scopedOneShot) {
+    return `${environmentType} ${environment} = { ${captures.join(", ")} };
+${consumeValue(value, context)}`;
+  }
+  if (!heapOwned) {
     return `${environmentType} ${environment};
 ${captures.join("\n")}
 ${consumeValue(value, context)}`;
@@ -8635,9 +8646,18 @@ ${consumeValue(value, context)}`;
 function generateOwnedClosureCaptureValue(
   capture: ClosureInfo["captures"][number],
   context: GenerationContext,
+  scopedOneShot = false,
 ): string {
   const captured: Expression = { kind: "identifier", name: capture.name, location: capture.location };
-  let value = generateExpression(captured, context);
+  const captureContext = scopedOneShot ? {
+    ...context,
+    semanticInfo: {
+      ...context.semanticInfo,
+      movedExpressions: new Set([...context.semanticInfo.movedExpressions]
+        .filter((offset) => offset !== capture.location.offset)),
+    },
+  } : context;
+  let value = generateExpression(captured, captureContext);
   const capturedClass = context.structs.get(capture.type);
   const capturedFunction = parseFunctionType(capture.type);
   if (capture.type === "TaskScope") value = `z_task_scope_retain(${value})`;
@@ -8653,6 +8673,13 @@ function generateOwnedClosureCaptureValue(
     else if (capturedClass?.kind === "class") value = `${retainName(capture.type)}(${value})`;
     else if (capturedFunction) value = `${functionTypeRetainName(capturedFunction)}(${value})`;
     else if (parseWeakType(capture.type)) value = `z_weak_retain(${value})`;
+    else if (scopedOneShot) {
+      if (requiresNativeMove(capture.type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)) {
+        value = `std::move(${value})`;
+      }
+      const flag = context.liveFlags.get(capture.name);
+      if (flag) value = `(${flag} = false, ${value})`;
+    }
   }
   return value;
 }

@@ -365,8 +365,12 @@ scoped-lock helper. Callback results retain their complete `Result<T, E>` ABI
 when throwing, independently of the enclosing function; normal return and
 typed failure unlock before the caller receives the value. String snapshots,
 Arrays, ARC results, and owned Option/Result payloads have differential cleanup
-coverage. Borrowed/view results and suspension remain rejected, and consuming
-ownership-bearing callback captures remain a separate pending slice.
+coverage. Inline `move` lock callbacks may consume their owned captures because
+the intrinsic invokes them exactly once. Native helpers transfer captures by
+value and destroy unconsumed captures on normal return or typed failure, using
+stack-local liveness flags without allocating a closure environment. Borrowed
+captures, borrowed/view results, and suspension retain their restrictions;
+ordinary reusable closures are not made consuming.
 Expression-bodied `thread.spawn` closures now identify inferred local captures
 before lowering as well. Direct owned `String` transfer and shareable ARC class
 retention remain executable; recursively ownership-bearing value captures stop

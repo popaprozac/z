@@ -8422,13 +8422,15 @@ test("runs Stage 0 and the native compiler against the same executable corpus", 
     const stage0Run = spawnSync(
       stage0Executable,
       programArguments,
-      { encoding: "utf8" },
+      { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" },
     );
     const nativeRun = spawnSync(
       nativeExecutable,
       programArguments,
-      { encoding: "utf8" },
+      { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" },
     );
+    assert.notEqual(stage0Run.status, null, `${testCase.entry} Stage-0 runtime did not exit: ${stage0Run.error ?? stage0Run.signal}`);
+    assert.notEqual(nativeRun.status, null, `${testCase.entry} native runtime did not exit: ${nativeRun.error ?? nativeRun.signal}`);
     assert.equal(
       nativeRun.status,
       stage0Run.status,
@@ -11413,6 +11415,7 @@ test("compiles a multi-module Z application through the standalone native driver
     "tests/fixtures/self-host-emit-thread-task.zs",
     "tests/fixtures/self-host-emit-mutex-field.zs",
     "tests/fixtures/self-host-emit-mutex-owned-result.zs",
+    "tests/fixtures/self-host-emit-mutex-owned-capture.zs",
   ]) {
     const positive = spawnSync(
       driver,
@@ -11420,6 +11423,29 @@ test("compiles a multi-module Z application through the standalone native driver
       { encoding: "utf8" },
     );
     assert.equal(positive.status, 0, `${positiveControl}\n${positive.stderr}`);
+  }
+
+  for (const [name, body] of [
+    ["borrow", "state.withLock((in value): String => move request);"],
+    ["moved", "state.withLock(move (in value): String => move request); return i32(request.byteLength);"],
+    ["twice", "state.withLock(move (in value): void => { consume(move request); consume(move request); });"],
+  ]) {
+    const file = resolve(directory, `mutex-capture-${name}.zs`);
+    writeFileSync(file, `
+      import { Mutex } from "std/sync";
+      function consume(value: String): void {}
+      function main(): i32 {
+        const state = Mutex(0);
+        const request: String = "owned";
+        ${body}
+        return 0;
+      }
+    `);
+    const rejected = spawnSync(driver, ["check", file], {
+      encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+    });
+    assert.equal(rejected.status, 1, `${name}: ${rejected.stderr}`);
+    assert.match(rejected.stderr, /borrowed|moved/);
   }
 
   const backendIceInput = resolve(

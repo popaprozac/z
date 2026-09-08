@@ -2869,7 +2869,8 @@ function generateRuntime(
   const needsExecutorBoundRuntime = plans.some((plan) => plan.nativeThread)
     || usesForeignRuntimeEntry;
   const executorBoundClasses = new Set(needsExecutorBoundRuntime
-    ? plans.flatMap((plan) => [...plan.types.semanticInfo.aggregateExecutorAffinities.keys()])
+    ? plans.flatMap((plan) => [...plan.types.semanticInfo.aggregateExecutorAffinities.keys()]
+      .filter((type) => plan.types.structs.get(type)?.kind === "class"))
     : []);
   const usesExecutorBoundReleases = executorBoundClasses.size > 0;
   const lines = [
@@ -2894,7 +2895,7 @@ function generateRuntime(
     ...(usesNativeFrameStorage ? ["#include <memory>", "#include <new>", ""] : []),
     ...[...executorBoundClasses].flatMap((type) => [
       `static __attribute__((unused)) void ${executorBoundReleaseAdapter(type)}(void *value) {`,
-      `  Z_${type}_release((Z_${type} *)value);`,
+      `  Z_${asyncNativeSymbolPart(type)}_release((Z_${asyncNativeSymbolPart(type)} *)value);`,
       "}",
       "",
     ]),
@@ -6923,23 +6924,33 @@ function emitPreparedFrameExpression(
           return;
         }
         const environmentType = closureEnvironmentName(closure);
-        const environment = closure.owned
+        const heapOwned = closure.owned && !closure.scopedOneShot;
+        const environment = heapOwned
           ? `_z_async_owned_environment_${candidate.location.offset}`
           : `_z_async_inline_environment_${candidate.location.offset}`;
-        prefix.push(closure.owned
+        if (!closure.scopedOneShot) prefix.push(heapOwned
           ? `${environmentType} *${environment} = (${environmentType} *)calloc(1, sizeof(${environmentType}));`
           : `${environmentType} ${environment};`);
-        if (closure.owned) {
+        if (heapOwned) {
           prefix.push(`if (${environment} == NULL) abort();`);
           prefix.push(`${environment}->refcount = 1;`);
         }
+        const captureInitializers: string[] = [];
         for (const capture of closure.captures) {
           const captured: Expression = {
             kind: "identifier",
             name: capture.name,
             location: capture.location,
           };
-          let value = emitFrameExpression(captured, plan, fileName);
+          const capturePlan = closure.scopedOneShot ? {
+            ...plan,
+            types: { ...plan.types, semanticInfo: {
+              ...plan.types.semanticInfo,
+              movedExpressions: new Set([...plan.types.semanticInfo.movedExpressions]
+                .filter((offset) => offset !== capture.location.offset)),
+            } },
+          } : plan;
+          let value = emitFrameExpression(captured, capturePlan, fileName);
           const hasReferenceIdentity = capture.type === "TaskScope"
             || capture.type === "TaskControl"
             || plan.types.structs.get(capture.type)?.kind === "class"
@@ -6952,6 +6963,14 @@ function emitPreparedFrameExpression(
             else if (mutex) value = `${asyncMutexRetainName(mutex.valueType)}(${value})`;
             else if (plan.types.structs.get(capture.type)?.kind === "class") value = `Z_${capture.type}_retain(${value})`;
             else if (capturedFunction) value = `${functionTypeCName(capturedFunction)}_retain(${value})`;
+            else if (closure.scopedOneShot && hasFrameCleanup(capture.type, plan.types)) {
+              const retained = retainManagedFrameValue(capture.type, value, plan.types);
+              if (retained) value = retained;
+              else {
+                const storage = asyncFrameBindingName(capture.name, capture.type, plan.locals);
+                value = frameTransferredValue(value, `frame->${frameLiveField(storage)}`, capture.type, plan.types);
+              }
+            }
             else if (hasFrameCleanup(capture.type, plan.types)) {
               unsupported(
                 fileName,
@@ -6963,18 +6982,22 @@ function emitPreparedFrameExpression(
           }
           const borrowedPointer = !closure.owned && capture.mode !== "value"
             && !(capture.mode === "in" && hasReferenceIdentity);
-          const target = closure.owned
+          const target = heapOwned
             ? `${environment}->${capture.name}`
             : `${environment}.${capture.name}`;
-          prefix.push(`${target} = ${borrowedPointer ? `&(${value})` : value};`);
+          if (closure.scopedOneShot) captureInitializers.push(`.${capture.name} = ${value}`);
+          else prefix.push(`${target} = ${borrowedPointer ? `&(${value})` : value};`);
+        }
+        if (closure.scopedOneShot) {
+          prefix.push(`${environmentType} ${environment} = { ${captureInitializers.join(", ")} };`);
         }
         prefix.push(
           `${functionTypeCName(functionType)} ${functionValue} = ${functionValueLiteral(
             functionType,
             closureAdapterName(closure),
-            closure.owned ? environment : `&${environment}`,
-            closure.owned ? closureEnvironmentRetainName(closure) : "NULL",
-            closure.owned ? closureEnvironmentReleaseName(closure) : "NULL",
+            heapOwned ? environment : `&${environment}`,
+            heapOwned ? closureEnvironmentRetainName(closure) : "NULL",
+            heapOwned ? closureEnvironmentReleaseName(closure) : "NULL",
           )};`,
         );
         expressionBindings.set(candidate.location.offset, functionValue);
@@ -8127,8 +8150,10 @@ function emitSynchronousTryOperation(
   const errorPayload = requiresNativeFramePlacement(errorType, plan.types)
     ? `std::move(${temporary}.data.failure)`
     : `${temporary}.data.failure`;
+  const prepared = emitPreparedFrameExpression(call, plan, fileName);
   const lines = [
-    `${cFrameType(resultType, plan.types)} ${temporary} = ${emitFrameExpression(call, plan, fileName)};`,
+    ...prepared.prefix,
+    `${cFrameType(resultType, plan.types)} ${temporary} = ${prepared.value};`,
     `if (${temporary}.tag == ${resultTag(resultType, "failure")}) {`,
     requiresNativeFramePlacement(errorType, plan.types)
       ? `  new (frame->error) ${cFrameType(errorType, plan.types)}(${errorPayload});`

@@ -15,6 +15,147 @@ import {
   writeFileSync,
 } from "./support/bootstrap.ts";
 
+test("consumes inline move captures once under Mutex.withLock without a heap environment", () => {
+  const file = resolve(projectRoot, "tests/fixtures/self-host-emit-mutex-owned-capture.zs");
+  const source = readFileSync(file, "utf8");
+  assert.deepEqual(diagnostics(source, file), []);
+  const generated = compileToC(source, file);
+  assert.doesNotMatch(generated, /Z_ClosureEnv_\d+ \*\w+ = .*calloc/);
+  const result = spawnSync(process.execPath, [cli, "run", file], {
+    encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released request rejected\nreleased request failed\nreleased observer shared\nreleased request returned\nreleased request expression\nreleased request accepted\n");
+}, 60_000);
+
+test("keeps one-shot Mutex capture ownership local and explicit", () => {
+  const prelude = `import { Mutex } from "std/sync";
+    struct Request { path: String; deinit {} }
+    struct Inbox { pending: Array<Request>; }
+    function consume(request: Request): void {}`;
+  const cases = [
+    { body: `const request = Request({ path: "x" });
+        inbox.withLock((inout state): void => state.pending.push(move request));`,
+      error: /cannot move borrowed/ },
+    { body: `const request = Request({ path: "x" });
+        inbox.withLock(move (inout state): void => state.pending.push(move request));
+        consume(move request);`, error: /moved value|after.*mov/ },
+    { body: `const request = Request({ path: "x" });
+        inbox.withLock(move (inout state): void => {
+          state.pending.push(move request);
+          state.pending.push(move request);
+        });`, error: /moved value|after.*mov/ },
+    { body: `const request = Request({ path: "x" });
+        const reusable: () => void = move (): void => consume(move request);`,
+      error: /cannot move borrowed/ },
+  ];
+  for (const [index, {body, error}] of cases.entries()) {
+    const source = `${prelude}
+      function main(): i32 {
+        const inbox = Mutex(Inbox({ pending: Array<Request>() }));
+        ${body}
+        return 0;
+      }`;
+    assert.match(diagnostics(source, `/tmp/z-mutex-capture-negative-${index}.zs`)[0]?.message ?? "", error);
+  }
+  const borrowed = `${prelude}
+    function transfer(in inbox: Mutex<Inbox>, in request: Request): void {
+      inbox.withLock(move (inout state): void => state.pending.push(move request));
+    }
+    function main(): i32 { return 0; }`;
+  assert.match(diagnostics(borrowed, "/tmp/z-mutex-borrowed-capture.zs")[0]?.message ?? "", /cannot move borrowed/);
+});
+
+test("constructs move-only C++ captures directly in a scoped Mutex environment", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-native-capture-");
+  const file = resolve(directory, "main.zs");
+  try {
+    writeFileSync(file, `
+      import { Mutex } from "std/sync";
+      import native from "${resolve(projectRoot, "tests/fixtures/move-only.hpp")}";
+      function exercise(): i32 {
+        const mutex = Mutex(0);
+        const request = native.zcpp.UniqueValue(42);
+        const answer = mutex.withLock(move (in value): i32 =>
+          native.zcpp.consume_unique(move request));
+        const unused = native.zcpp.UniqueValue(1);
+        mutex.withLock(move (in value): void => {
+          if (unused.value() > 0) return;
+        });
+        return answer - 42;
+      }
+      function main(): i32 {
+        const status = exercise();
+        return status + native.zcpp.unique_live();
+      }
+    `);
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("transfers one-shot lock captures out of an async frame and prepares throwing call arguments", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-async-capture-");
+  const file = resolve(directory, "main.zs");
+  try {
+    writeFileSync(file, `
+      import { Mutex } from "std/sync";
+      struct Request { path: String; }
+      function invoke(callback: () => i32): i32 throws i32 { return callback(); }
+      async function main(): i32 throws i32 {
+        const mutex = Mutex(0);
+        const request = Request({ path: "owned" });
+        const result = mutex.withLock(move (in value): Request => move request);
+        const answer = try invoke(move (): i32 => 42);
+        const other = Request({ path: "failure" });
+        const failed = attempt mutex.withLock(move (in value): void throws i32 => {
+          if (other.path.byteLength > 0) throw 7;
+        });
+        return match (failed) {
+          success => 1;
+          failure(error) => answer - 42 + error - 7 + i32(result.path.byteLength) - 5;
+        };
+      }
+    `);
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("does not emit ARC release adapters for executor-bound value structs", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-executor-value-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { thread } from "std/thread";
+      struct Metadata on thread.main { title: String; }
+      async function main(): i32 on thread.main {
+        const metadata = Metadata({ title: "application" });
+        const worker = thread.spawn(move (): i32 => 42);
+        const result = await worker;
+        return result - 42;
+      }
+    `;
+    writeFileSync(file, source);
+    const generated = compileToC(source, file);
+    assert.doesNotMatch(generated, /z_async_release_Metadata_on_executor/);
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("preserves owned Mutex results, callback effects, and exactly-once cleanup", () => {
   const file = resolve(projectRoot, "tests/fixtures/self-host-emit-mutex-owned-result.zs");
   const source = readFileSync(file, "utf8");
@@ -921,6 +1062,11 @@ test("surfaces Mutex imports, inferred closure parameters, methods, and results 
     hover(source, file, source.indexOf("withLock") + 1)
       ?.contents.value ?? "",
     /withLock.*(?:in|inout).*Counter/s,
+  );
+  assert.match(
+    hover(source, file, source.indexOf("withLock") + 1)
+      ?.contents.value ?? "",
+    /once.*explicit move closure may consume owned captures/,
   );
   assert.match(
     hover(source, file, source.indexOf("value): i32") + 1)

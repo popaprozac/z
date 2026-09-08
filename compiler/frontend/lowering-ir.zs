@@ -4749,6 +4749,14 @@ function moduleTypeIsWorkerDestructible(
   in name: String,
   in visiting: Array<String>
 ): boolean {
+  match (localTypeAliasTarget(program, name)) {
+    some(target) => return moduleTypeIsWorkerDestructible(program, importedTypes, target, visiting);
+    none => {}
+  }
+  if (stringStartsWith(name, "readonly ")) {
+    const target = name.copyBytes(9, name.byteLength);
+    return moduleTypeIsWorkerDestructible(program, importedTypes, target, visiting);
+  }
   if (threadShareablePrimitive(name)) return true;
   match (genericTypeShape(name)) {
     some(generic) => {
@@ -4756,6 +4764,8 @@ function moduleTypeIsWorkerDestructible(
         (
           generic.base == "Option"
           || generic.base == "Mutex"
+          || generic.base == "Array"
+          || generic.base == "Set"
         )
         && generic.arguments.length == 1
       ) return moduleTypeIsWorkerDestructible(
@@ -4764,7 +4774,7 @@ function moduleTypeIsWorkerDestructible(
         generic.arguments[0],
         visiting
       );
-      if (generic.base == "Result" && generic.arguments.length == 2) {
+      if ((generic.base == "Result" || generic.base == "Map") && generic.arguments.length == 2) {
         for (const argument of generic.arguments) {
           if (!moduleTypeIsWorkerDestructible(
             program,
@@ -8100,7 +8110,8 @@ function collectMutexClosureCaptures(
   in statements: Array<LoweredStatement>,
   statementStart: usize,
   in parameterName: String,
-  useOffset: usize
+  useOffset: usize,
+  ownsCaptures: boolean
 ): Array<LoweredClosureCapture> throws String {
   let captures = Array<LoweredClosureCapture>();
   let index = start;
@@ -8163,19 +8174,38 @@ function collectMutexClosureCaptures(
       typeName
     );
     if (
-      moduleTypeNeedsCleanup(program, importedTypes, type)
+      !ownsCaptures
+      && moduleTypeNeedsCleanup(program, importedTypes, type)
       && loweredRangeMovesName(expressions, start, captureName)
     ) {
       throw `native Mutex.withLock cannot consume ownership-bearing capture ${captureName}`;
     }
+    const owned = ownsCaptures && moduleTypeNeedsCleanup(program, importedTypes, type);
     captures.push(LoweredClosureCapture({
       name: move captureName,
       type,
-      owned: false,
+      owned,
     }));
     index = index + 1;
   }
   return captures;
+}
+
+function pushMutexCaptureValue(
+  inout expressions: Array<LoweredExpression>,
+  in capture: LoweredClosureCapture
+): usize {
+  if (!capture.owned || !moduleTypeRetainsCapturedIdentity(capture.type)) {
+    return pushThreadCaptureValue(inout expressions, capture);
+  }
+  const local = pushExpression(
+    inout expressions, LoweredExpressionKind.localValue, capture.name,
+    Array<usize>(), Array<String>()
+  );
+  return pushExpression(
+    inout expressions, LoweredExpressionKind.retainValue, capture.type.name,
+    Array<usize>(local), Array<String>()
+  );
 }
 
 function collectObjCPoolClosureCaptures(
@@ -13202,6 +13232,7 @@ function lowerExpressionContextual(
             let children = Array<usize>();
             children.push(receiver);
             let captures = Array<LoweredClosureCapture>();
+            const ownsCaptures = tree.nodes[closureInput].value == "move";
             let expressionVoidSuccess = false;
             if (bodyKind == "expression") {
               const bodyStart = output.length;
@@ -13243,7 +13274,8 @@ function lowerExpressionContextual(
                 in noStatements,
                 0,
                 parameterName,
-                tree.nodes[closureInput].offset
+                tree.nodes[closureInput].offset,
+                ownsCaptures
               );
               rewriteClosureParameterValues(
                 inout output,
@@ -13256,6 +13288,11 @@ function lowerExpressionContextual(
                   bodyStart,
                   capture.name
                 );
+              }
+              if (ownsCaptures) {
+                const bodyEnd = output.length;
+                attachThreadCaptureMoveFlags(inout output, bodyStart, bodyEnd, captures);
+                markWorkerOwnedMoveRange(inout output, bodyStart, bodyEnd);
               }
               children.push(body);
             }
@@ -13274,19 +13311,14 @@ function lowerExpressionContextual(
               : bodyKind.copyBytes(0, bodyKind.byteLength));
             labels.push(copy callbackSignature.returnType);
             labels.push(copy callbackSignature.errorType);
+            labels.push(ownsCaptures ? "move" : "borrow");
             for (const capture of captures) {
               labels.push(capture.name.copyBytes(
                 0,
                 capture.name.byteLength
               ));
               labels.push(loweredTypeIdentity(capture.type));
-              const captureValue = pushExpression(
-                inout output,
-                LoweredExpressionKind.localValue,
-                capture.name,
-                Array<usize>(),
-                Array<String>()
-              );
+              const captureValue = pushMutexCaptureValue(inout output, capture);
               children.push(captureValue);
             }
             const mutexName = intrinsicMutexName(valueType);
@@ -20619,7 +20651,7 @@ function completeNativeClosureBlocks(
     if (
       expressions[expressionIndex].kind
         != LoweredExpressionKind.mutexWithLock
-      || expressions[expressionIndex].labels.length < 6
+      || expressions[expressionIndex].labels.length < 7
       || expressions[expressionIndex].labels[3] != "block"
     ) {
       expressionIndex = expressionIndex + 1;
@@ -20651,6 +20683,7 @@ function completeNativeClosureBlocks(
       );
       loweredStatements.push(lowered);
     }
+    const mutexBodyExpressionEnd = expressions.length;
     const parameterName = expressions[expressionIndex].labels[0].copyBytes(
       0,
       expressions[expressionIndex].labels[0].byteLength
@@ -20669,7 +20702,8 @@ function completeNativeClosureBlocks(
       statements,
       bodyStatementStart,
       parameterName,
-      useOffset
+      useOffset,
+      expressions[expressionIndex].labels[6] == "move"
     );
     rewriteClosureParameterValues(
       inout expressions,
@@ -20689,13 +20723,7 @@ function completeNativeClosureBlocks(
       expressions[expressionIndex].labels.push(
         loweredTypeIdentity(capture.type)
       );
-      const captureValue = pushExpression(
-        inout expressions,
-        LoweredExpressionKind.localValue,
-        capture.name,
-        Array<usize>(),
-        Array<String>()
-      );
+      const captureValue = pushMutexCaptureValue(inout expressions, capture);
       expressions[expressionIndex].children.push(captureValue);
     }
     const mutexResultType = try lowerModuleTypeName(
@@ -20717,7 +20745,6 @@ function completeNativeClosureBlocks(
       }));
       returnStatement = returnStatement + 1;
     }
-    const bodyExpressionEnd = expressions.length;
     let mutexLiveFlags = Array<LoweredLiveFlag>();
     const inherited = Array<LoweredCleanup>();
     const loopCleanups = Array<LoweredCleanup>();
@@ -20748,8 +20775,14 @@ function completeNativeClosureBlocks(
       inout expressions,
       mutexLiveFlags,
       bodyExpressionStart,
-      bodyExpressionEnd
+      mutexBodyExpressionEnd
     );
+    if (expressions[expressionIndex].labels[6] == "move") {
+      attachThreadCaptureMoveFlags(inout expressions, bodyExpressionStart, mutexBodyExpressionEnd, captures);
+    }
+    // Callback-local owners have their own cleanup scope even when captures
+    // are borrowed. The enclosing function must not overwrite their flags.
+    markWorkerOwnedMoveRange(inout expressions, bodyExpressionStart, mutexBodyExpressionEnd);
     if (
       introduced.length > 0
       && sequenceFallsThrough(arena, sourceStatements)
@@ -24912,7 +24945,31 @@ function lowerStatementCore(
     matchConsumesSubject: false,
     matchBindingNeedsCleanup: false,
   }));
+  if (kind == LoweredStatementKind.whileStatement || kind == LoweredStatementKind.forStatement) {
+    const body = statements[outputIndex].children[0];
+    const target = `_z_stage1_loop_exit_${outputIndex}`;
+    bindLoopBreakTargets(inout statements, body, target);
+  }
   return outputIndex;
+}
+
+function bindLoopBreakTargets(
+  inout statements: Array<LoweredStatement>,
+  index: usize,
+  in target: String
+): void {
+  const kind = statements[index].kind;
+  if (kind == LoweredStatementKind.whileStatement || kind == LoweredStatementKind.forStatement) return;
+  if (kind == LoweredStatementKind.breakStatement) {
+    statements[index].name = copy target;
+    return;
+  }
+  let childIndex: usize = 0;
+  while (childIndex < statements[index].children.length) {
+    const child = statements[index].children[childIndex];
+    bindLoopBreakTargets(inout statements, child, target);
+    childIndex = childIndex + 1;
+  }
 }
 
 function appendMainDelayPlaceholder(

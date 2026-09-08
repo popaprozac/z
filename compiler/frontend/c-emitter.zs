@@ -6258,13 +6258,15 @@ function appendExpression(
       && declaration.expressions[index].labels[3] == "lowered-block";
     let captureChild: usize = 2;
     if (blockBody) captureChild = 1;
+    const ownedCaptures = declaration.expressions[index].labels.length >= 7
+      && declaration.expressions[index].labels[6] == "move";
     while (
       captureChild < declaration.expressions[index].children.length
     ) {
-      output.append(", &(");
+      output.append(ownedCaptures ? ", " : ", &(");
       const capture = declaration.expressions[index].children[captureChild];
       try appendExpression(inout output, declaration, capture);
-      output.append(")");
+      if (!ownedCaptures) output.append(")");
       captureChild = captureChild + 1;
     }
     output.append(")");
@@ -8112,6 +8114,8 @@ function appendStatement(
     try appendBranch(inout output, declaration, body, depth + 1);
     appendIndent(inout output, depth);
     output.append("}\n");
+    appendIndent(inout output, depth);
+    output.append(`_z_stage1_loop_exit_${index}: __attribute__((unused));\n`);
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.forStatement) {
@@ -8214,6 +8218,8 @@ function appendStatement(
     try appendBranch(inout output, declaration, body, depth + 1);
     appendIndent(inout output, depth);
     output.append("}\n");
+    appendIndent(inout output, depth);
+    output.append(`_z_stage1_loop_exit_${index}: __attribute__((unused));\n`);
     return;
   }
   if (
@@ -8223,7 +8229,11 @@ function appendStatement(
     appendCleanups(inout output, declaration.statements[index].cleanups, depth);
     appendIndent(inout output, depth);
     if (declaration.statements[index].kind == LoweredStatementKind.breakStatement) {
-      output.append("break;\n");
+      if (declaration.statements[index].name.byteLength > 0) {
+        output.append("goto ");
+        output.append(declaration.statements[index].name);
+        output.append(";\n");
+      } else output.append("break;\n");
     } else output.append("continue;\n");
     return;
   }
@@ -18234,8 +18244,8 @@ function appendMutexWithLockHelpers(
       }
       if (
         expression.children.length == 0
-        || expression.labels.length < 6
-        || (expression.labels.length - 6) % 2 != 0
+        || expression.labels.length < 7
+        || (expression.labels.length - 7) % 2 != 0
       ) throw "native C emission received malformed Mutex.withLock evidence";
       const resultType = try loweredTypeForIdentity(
         program,
@@ -18245,6 +18255,7 @@ function appendMutexWithLockHelpers(
       const valueType = try mutexValueType(program, expression.value);
       const nativeValueType = try cType(valueType);
       const blockBody = expression.labels[3] == "lowered-block";
+      const ownedCaptures = expression.labels[6] == "move";
       if (blockBody) {
         output.append("static __attribute__((unused)) ");
         output.append(nativeResultType);
@@ -18259,7 +18270,7 @@ function appendMutexWithLockHelpers(
         output.append(nativeValueType);
         output.append(" *");
         appendCBindingName(inout output, expression.labels[0]);
-        let captureLabel: usize = 6;
+        let captureLabel: usize = 7;
         while (captureLabel + 1 < expression.labels.length) {
           const captureType = try loweredTypeForIdentity(
             program,
@@ -18268,14 +18279,27 @@ function appendMutexWithLockHelpers(
           const nativeCaptureType = try cType(captureType);
           output.append(", ");
           output.append(nativeCaptureType);
-          output.append(" const *");
+          output.append(ownedCaptures ? " *" : " const *");
           appendCBindingName(
             inout output,
             expression.labels[captureLabel]
           );
+          if (ownedCaptures && loweredTypeNeedsDeinit(program, captureType)) {
+            const captureIndex = (captureLabel - 7) / 2;
+            output.append(`, bool *_z_stage1_capture_live_${captureIndex}`);
+          }
           captureLabel = captureLabel + 2;
         }
         output.append(") {\n");
+        captureLabel = 7;
+        while (captureLabel + 1 < expression.labels.length) {
+          const captureType = try loweredTypeForIdentity(program, expression.labels[captureLabel + 1]);
+          if (ownedCaptures && loweredTypeNeedsDeinit(program, captureType)) {
+            const captureIndex = (captureLabel - 7) / 2;
+            output.append(`  (void)_z_stage1_capture_live_${captureIndex};\n`);
+          }
+          captureLabel = captureLabel + 2;
+        }
         for (const root of expression.statements) {
           try appendStatement(inout output, declaration, root, 1);
         }
@@ -18295,7 +18319,7 @@ function appendMutexWithLockHelpers(
       output.append("(Z_");
       output.append(expression.value);
       output.append(" mutex");
-      let captureLabel: usize = 6;
+      let captureLabel: usize = 7;
       while (captureLabel + 1 < expression.labels.length) {
         const captureType = try loweredTypeForIdentity(
           program,
@@ -18304,14 +18328,33 @@ function appendMutexWithLockHelpers(
         const nativeCaptureType = try cType(captureType);
         output.append(", ");
         output.append(nativeCaptureType);
-        output.append(" const *");
-        appendCBindingName(
-          inout output,
-          expression.labels[captureLabel]
-        );
+        if (ownedCaptures) {
+          const captureIndex = (captureLabel - 7) / 2;
+          output.append(` _z_stage1_owned_${captureIndex}`);
+        } else {
+          output.append(" const *");
+          appendCBindingName(inout output, expression.labels[captureLabel]);
+        }
         captureLabel = captureLabel + 2;
       }
       output.append(") {\n");
+      if (ownedCaptures) {
+        captureLabel = 7;
+        while (captureLabel + 1 < expression.labels.length) {
+          const captureIndex = (captureLabel - 7) / 2;
+          const captureType = try loweredTypeForIdentity(program, expression.labels[captureLabel + 1]);
+          const nativeCaptureType = try cType(captureType);
+          output.append(`  ${nativeCaptureType} *`);
+          appendCBindingName(inout output, expression.labels[captureLabel]);
+          output.append(` = &_z_stage1_owned_${captureIndex};\n`);
+          if (loweredTypeNeedsDeinit(program, captureType)) {
+            output.append(`  bool _z_stage1_owned_live_${captureIndex} = true;\n`);
+            output.append(`  bool *_z_stage1_capture_live_${captureIndex} = &_z_stage1_owned_live_${captureIndex};\n`);
+            output.append(`  (void)_z_stage1_capture_live_${captureIndex};\n`);
+          }
+          captureLabel = captureLabel + 2;
+        }
+      }
       output.append("  if (mutex.storage == NULL) abort();\n");
       output.append("#if defined(_WIN32)\n  AcquireSRWLockExclusive(&mutex.storage->native);\n#else\n");
       output.append("  if (pthread_mutex_lock(&mutex.storage->native) != 0) abort();\n#endif\n");
@@ -18322,6 +18365,9 @@ function appendMutexWithLockHelpers(
         output.append(" *");
         appendCBindingName(inout output, expression.labels[0]);
         output.append(" = &mutex.storage->value;\n");
+        output.append("  (void)");
+        appendCBindingName(inout output, expression.labels[0]);
+        output.append(";\n");
       }
       if (expression.labels[3] == "expression-void-success") {
         output.append("  ");
@@ -18340,13 +18386,18 @@ function appendMutexWithLockHelpers(
           expressionIndex
         );
         output.append("_body(&mutex.storage->value");
-        captureLabel = 6;
+        captureLabel = 7;
         while (captureLabel + 1 < expression.labels.length) {
           output.append(", ");
           appendCBindingName(
             inout output,
             expression.labels[captureLabel]
           );
+          const captureType = try loweredTypeForIdentity(program, expression.labels[captureLabel + 1]);
+          if (ownedCaptures && loweredTypeNeedsDeinit(program, captureType)) {
+            const captureIndex = (captureLabel - 7) / 2;
+            output.append(`, _z_stage1_capture_live_${captureIndex}`);
+          }
           captureLabel = captureLabel + 2;
         }
         output.append(")");
@@ -18364,6 +18415,22 @@ function appendMutexWithLockHelpers(
         );
       }
       output.append(";\n");
+      if (ownedCaptures) {
+        let remaining = expression.labels.length;
+        while (remaining > 7) {
+          remaining = remaining - 2;
+          const captureIndex = (remaining - 7) / 2;
+          const captureType = try loweredTypeForIdentity(program, expression.labels[remaining + 1]);
+          if (loweredTypeNeedsDeinit(program, captureType)) {
+            const cleanup = LoweredCleanup({
+              name: `_z_stage1_owned_${captureIndex}`,
+              type: captureType,
+              guard: `_z_stage1_owned_live_${captureIndex}`,
+            });
+            appendCleanup(inout output, in cleanup, 1);
+          }
+        }
+      }
       output.append("#if defined(_WIN32)\n  ReleaseSRWLockExclusive(&mutex.storage->native);\n#else\n");
       output.append("  if (pthread_mutex_unlock(&mutex.storage->native) != 0) abort();\n#endif\n");
       if (resultType.kind != LoweredTypeKind.voidType) {
