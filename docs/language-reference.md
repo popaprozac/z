@@ -665,8 +665,12 @@ declaration affinity, including yields inside `if`/`while` statements and owned
 Z-value parameters. Those inputs belong to the cold invocation before its body
 runs and are cleaned even if it is dropped or cancelled before entry. Passing
 a class handle retains an alias normally; `move` transfers the caller's alias.
+The frame also holds Mutex-backed state and Objective-C references, directly or
+inside supported Z aggregates. `withLock` remains synchronous: the lock is
+released before a subsequent yield. Heap-frame destruction explicitly clears
+Clang strong slots, even in wrappers without a Z `deinit`.
 That tier does not yet combine these patterns with awaited producers, child
-awaits, borrowed parameters, native/synchronized storage, or nested source-local
+awaits, borrowed parameters, other foreign storage, or nested source-local
 declarations. These are lowering limits, not different destructuring semantics.
 
 Fixed arrays, `Array<T>`, and `Slice<T>` support positional local patterns:

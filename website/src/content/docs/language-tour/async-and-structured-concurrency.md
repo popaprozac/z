@@ -179,8 +179,10 @@ compiler now executes root Z-owned patterns across `scheduler.yield()`, includin
 yields in nested `if`/`while` statements. This tier supports owned Z-value
 parameters in non-throwing `void`/`i32` functions without explicit declaration
 affinity. Inputs enter the cold frame before its body runs, including cleanup
-if it is dropped or cancelled before entry. Borrowed parameters,
-native/synchronized storage, child awaits, and nested source-local declarations
+if it is dropped or cancelled before entry. Mutex-backed state and Objective-C
+references can also live in these frames, with explicit strong-slot cleanup.
+Scoped `withLock` callbacks release their lock before the next yield. Borrowed
+parameters, other foreign storage, child awaits, and nested source-local declarations
 remain separate composition work. These are implementation boundaries, not
 new ownership rules. A successful `check` alone is not proof that an advanced
 frame shape can be emitted and run. Check the

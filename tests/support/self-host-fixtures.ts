@@ -21,6 +21,10 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
     expectedStdout: "prepared launch\nreleased discarded\nselected\nreleased selected\n",
   },
   {
+    entry: "tests/fixtures/async-yield-inbox.zs",
+    expectedStdout: "released inbox\n",
+  },
+  {
     entry: "examples/language/collections/map-identities.zs",
     expectedStdout: "open: Draft\nfound: Draft\nclosed Draft\n",
   },

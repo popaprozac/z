@@ -5678,10 +5678,61 @@ frame admission and by caller cleanup discovery; an alias chain must not turn
 an ARC argument into an apparent move.
 
 Borrowed inputs still need parent loan storage/join proof in this loop tier.
-Native/synchronized storage, throwing bodies, child awaits, and declaration
-placement remain separate expansions. The next listener-specific prerequisite
-is its Foundation-backed lease/endpoint and synchronized inbox storage; no
-automatic launch listener or public Zapp API was enabled by this checkpoint.
+Native/synchronized storage was the next prerequisite after this checkpoint;
+throwing bodies, child awaits, and declaration placement remain separate
+expansions. No automatic launch listener or public Zapp API was enabled.
+
+### Foundation resources and synchronized inboxes in native yield frames
+
+The listener needs two existing ownership mechanisms to compose: its private
+Foundation-backed lease/endpoint and an ARC inbox owning Mutex-protected state.
+The frame now admits Objective-C interfaces/protocol references (including
+nullable references), Mutex, and supported Map storage recursively through Z
+aggregates. `readonly` collection qualification does not change owned storage;
+checking the actual launch payload exposed and closed that admission omission.
+No executor hop, cross-thread transfer permission, or new capture rule follows
+from admitting storage to an executor-local frame.
+
+`async-yield-inbox.zs` exercises a readonly ARC inbox, Mutex state, and a Map of
+named enum payloads containing readonly Array<String> and Option<String>.
+Its caller retains the inbox identity across await. A separate direct Mutex
+parameter transfers its handle. Cancellation tests retain a test observer,
+verify the payload survives frame destruction until its final owner releases,
+and use `pthread_mutex_trylock` to prove the synchronous callback has unlocked
+before the frame yields. No lock or `inout` callback loan spans suspension.
+Emitting this shape also required early `withLock` helper prototypes; their
+definition order must not constrain where an ordinary synchronous call appears.
+
+`async-yield-native-storage.zs` uses real NSFileHandle owners for `/dev/null`.
+It combines a nested endpoint/lease, a Mutex inbox, direct native locals,
+nullable native parameters, and a plain wrapper with object destructuring.
+Unlike a C stack scope, `free(frame)` does not invoke Clang's strong-slot
+destructors. Frame cleanup therefore runs guarded Z cleanup and explicitly
+clears direct/nested strong slots, including retained aliases in moved-from
+storage. The single completion path preserves reverse cleanup order rather
+than releasing Z owners first and leaving native locals until a second pass.
+
+The Darwin test builds the standalone native compiler from the current source
+so it uses real Clang import metadata, not the source-only emitter's foreign
+placeholders. UBSan and descriptor checks cover normal completion, cold drop,
+cancellation before entry/after a yield, a null early return, and wrappers with
+no user `deinit`. Weak-reference probes also verify that endpoint/lease objects
+actually deallocate, including after moving a parameter into a root local;
+closing a descriptor alone would not prove ARC release. Endpoint cleanup
+precedes lease cleanup. The application is
+not launched by these tests, and no ASan probe is left running.
+
+This adds no allocation per yield or per stored argument. Existing Mutex
+synchronization and ARC retention costs remain; no new benchmark speedup is
+claimed. A separate collection parity gap surfaced: direct Map<usize, String>
+values still hit the older native admission restriction, whereas the real
+inbox's named enum payload is supported and tested. That restriction should be
+revisited as its own collection-lowering check, not papered over in Zapp.
+
+Next: child-await/error composition for bounded receive failures, then listener
+startup/readiness and cancellation/join integration. Borrowed parameters,
+broader foreign storage, nested source-local declarations, and declaration
+placement remain outside this yield tier. No public Zapp API changed.
 
 ## Not tested yet
 

@@ -42,7 +42,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
   },
   "objc-interop": {
     timeoutMilliseconds: 60_000,
-    files: ["tests/objc-interop.test.ts"],
+    files: ["tests/objc-interop.test.ts", "tests/native-async-objc-storage.test.ts"],
   },
   "swift-interop": {
     timeoutMilliseconds: 60_000,

@@ -1165,9 +1165,13 @@ owned Z-value parameters, root initialized Z-owned locals/destructuring, and
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument
-retention preserves the caller's owner; explicit `move` transfers it. The actual
-listener still needs synchronized/native storage and child-await/error composition;
-the reductions do not establish that integration. The broader
+retention preserves the caller's owner; explicit `move` transfers it. The
+frame also supports Mutex-backed state and Objective-C references, including
+nullable references, plain wrappers, and nested lease/endpoint aggregates.
+Explicit frame cleanup releases Clang strong slots as well as Z owners; bounded
+descriptor tests cover cold drop and cancellation. Scoped `withLock` callbacks
+finish before yielding. Child-await/error composition remains a listener
+prerequisite; the reductions do not establish that integration. The broader
 `async-owned-destructure.zs` probe covers explicit copy/move, awaited producers,
 scoped child borrows, errors, and cancellation before or after initialization.
 Cleanup-bearing branch/loop locals still require an explicit `async scope`,

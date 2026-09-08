@@ -19,6 +19,7 @@ import {
   fixedArrayShape,
   genericTypeShape,
   isIntegerTypeName,
+  nullableTargetType,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import { typeHasCleanup } from "./semantic-type-ownership.zs";
@@ -2247,14 +2248,23 @@ function nativeYieldFrameStorageSupported(
 ): boolean {
   if (name == "String" || name == "cstring" || name == "boolean"
     || name == "f32" || name == "f64" || isIntegerTypeName(name)) return true;
+  if (stringStartsWith(name, "readonly ")) {
+    const target = name.copyBytes(9, name.byteLength);
+    return nativeYieldFrameStorageSupported(graph, moduleIndex, target, visiting);
+  }
   const actual = transparentTypeName(graph.modules, moduleIndex, name);
   if (actual != name) {
     return nativeYieldFrameStorageSupported(graph, moduleIndex, actual, visiting);
   }
+  const nullable = nullableTargetType(name);
+  if (nullable.byteLength > 0) {
+    return nativeYieldFrameStorageSupported(graph, moduleIndex, nullable, visiting);
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       if (generic.base != "Array" && generic.base != "Option"
-        && generic.base != "Result") return false;
+        && generic.base != "Result" && generic.base != "Mutex"
+        && generic.base != "Map") return false;
       for (const argument of generic.arguments) {
         if (!nativeYieldFrameStorageSupported(graph, moduleIndex, argument, visiting)) return false;
       }
@@ -2269,6 +2279,13 @@ function nativeYieldFrameStorageSupported(
   const identity = `${location.moduleIndex}:${location.symbolIndex}`;
   for (const seen of visiting) { if (seen == identity) return true; }
   const symbol = view graph.modules[location.moduleIndex].symbols[location.symbolIndex];
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      if (signature.foreignKind == "objcInterface"
+        || signature.foreignKind == "objcProtocol") return true;
+    }
+    none => {}
+  }
   if (symbol.kind != ModuleSymbolKind.structSymbol
     && symbol.kind != ModuleSymbolKind.classSymbol
     && symbol.kind != ModuleSymbolKind.enumSymbol) return false;
@@ -2314,7 +2331,7 @@ function validateNativeFunction(
       const visiting = Array<String>();
       if (!nativeYieldFrameStorageSupported(graph, moduleIndex, parameter.type.name, visiting)) {
         throw loweringBoundary(path, "Z0700",
-          `native yield-frame parameter "${parameter.name}" requires owned Z value storage; borrowed views and native storage remain outside this tier`,
+          `native yield-frame parameter "${parameter.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
           parameter.line, parameter.column, parameter.name.byteLength);
       }
     }
@@ -2330,7 +2347,7 @@ function validateNativeFunction(
               const visiting = Array<String>();
               if (!nativeYieldFrameStorageSupported(graph, moduleIndex, sourceType, visiting)) {
                 throw loweringBoundary(path, "Z0700",
-                  "native yield-frame destructuring source requires owned Z value storage; borrowed views and native storage remain outside this tier",
+                  "native yield-frame destructuring source requires supported owned frame storage; borrowed views and other native storage remain outside this tier",
                   statement.line, statement.column, 5);
               }
             }
@@ -2349,7 +2366,7 @@ function validateNativeFunction(
         const visiting = Array<String>();
         if (!nativeYieldFrameStorageSupported(graph, moduleIndex, binding.typeName, visiting)) {
           throw loweringBoundary(path, "Z0700",
-            `native yield-frame local "${binding.name}" requires owned Z value storage; borrowed views and native storage remain outside this tier`,
+            `native yield-frame local "${binding.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
             binding.line, binding.column, binding.name.byteLength);
         }
       }

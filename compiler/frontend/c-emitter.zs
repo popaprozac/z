@@ -9484,7 +9484,7 @@ function appendYieldFrameArguments(inout output: TextBuffer, count: usize): void
 }
 
 function appendYieldFrameCleanups(
-  inout output: TextBuffer, in declaration: LoweredFunction,
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
   in cleanups: Array<LoweredCleanup>, depth: usize
 ): void {
   let remaining = cleanups.length;
@@ -9497,7 +9497,24 @@ function appendYieldFrameCleanups(
         cleanup.guard = copy local.liveFlag;
       }
     }
-    appendAsyncFrameCleanup(inout output, declaration, cleanup, depth);
+    if (loweredTypeNeedsDeinit(program, cleanup.type)) {
+      appendAsyncFrameCleanup(inout output, declaration, cleanup, depth);
+    }
+    // Clang destroys strong stack slots automatically, but free(frame) does
+    // not run those destructors. Clear direct and recursively nested strong
+    // fields after Z cleanup, including aliases left in moved-from storage.
+    if (typeContainsObjectiveCStrongSlot(program, cleanup.type)) {
+      appendIndent(inout output, depth);
+      appendAsyncFrameBindingName(inout output, declaration, cleanup.name);
+      output.append(" = ");
+      if (cleanup.type.kind == LoweredTypeKind.foreignObjCType) output.append("nil");
+      else {
+        output.append("(Z_");
+        output.append(cleanup.type.name);
+        output.append("){0}");
+      }
+      output.append(";\n");
+    }
     if (cleanup.guard.byteLength > 0) {
       appendIndent(inout output, depth);
       output.append(cleanup.guard);
@@ -9507,7 +9524,7 @@ function appendYieldFrameCleanups(
 }
 
 function appendYieldFrameStatement(
-  inout output: TextBuffer, in declaration: LoweredFunction,
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
   index: usize, depth: usize
 ): void throws String {
   const statement = view declaration.statements[index];
@@ -9551,16 +9568,17 @@ function appendYieldFrameStatement(
       }
       none => {}
     }
-    appendYieldFrameCleanups(inout output, declaration, statement.cleanups, depth);
+    // This tier has root-owned frame storage only. One shared completion path
+    // destroys it in reverse initialization order, including Clang ARC slots.
     appendIndent(inout output, depth);
     output.append("goto _z_complete;\n");
     return;
   }
   if (statement.kind == LoweredStatementKind.blockStatement) {
     for (const child of statement.children) {
-      try appendYieldFrameStatement(inout output, declaration, child, depth);
+      try appendYieldFrameStatement(inout output, program, declaration, child, depth);
     }
-    appendYieldFrameCleanups(inout output, declaration, statement.cleanups, depth);
+    appendYieldFrameCleanups(inout output, program, declaration, statement.cleanups, depth);
     return;
   }
   if (statement.kind == LoweredStatementKind.ifStatement
@@ -9573,12 +9591,12 @@ function appendYieldFrameStatement(
     };
     try appendCondition(inout output, declaration, condition);
     output.append(" {\n");
-    try appendYieldFrameStatement(inout output, declaration, statement.children[0], depth + 1);
+    try appendYieldFrameStatement(inout output, program, declaration, statement.children[0], depth + 1);
     appendIndent(inout output, depth);
     output.append("}");
     if (statement.kind == LoweredStatementKind.ifStatement && statement.children.length == 2) {
       output.append(" else {\n");
-      try appendYieldFrameStatement(inout output, declaration, statement.children[1], depth + 1);
+      try appendYieldFrameStatement(inout output, program, declaration, statement.children[1], depth + 1);
       appendIndent(inout output, depth);
       output.append("}");
     }
@@ -9665,20 +9683,21 @@ function appendYieldFrameHelpers(
     let cleanup = Array<LoweredCleanup>();
     for (const parameter of source.parameters) {
       const guard = yieldFrameParameterGuard(source, parameter.name);
-      if (guard.byteLength > 0) cleanup.push(LoweredCleanup({
+      if (guard.byteLength > 0 || typeContainsObjectiveCStrongSlot(program, parameter.type)) cleanup.push(LoweredCleanup({
         name: copy parameter.name, type: copy parameter.type, guard,
       }));
     }
     for (const statement of source.statements) {
-      if (statement.kind != LoweredStatementKind.localStatement
-        || statement.liveFlag.byteLength == 0) continue;
+      if (statement.kind != LoweredStatementKind.localStatement) continue;
       const type = match (in statement.type) {
         some(value) => copy value;
         none => throw "native yield frame lost cleanup type evidence";
       };
+      if (statement.liveFlag.byteLength == 0
+        && !typeContainsObjectiveCStrongSlot(program, type)) continue;
       cleanup.push(LoweredCleanup({ name: copy statement.name, type, guard: copy statement.liveFlag }));
     }
-    appendYieldFrameCleanups(inout output, declaration, cleanup, 1);
+    appendYieldFrameCleanups(inout output, program, declaration, cleanup, 1);
     output.append(`}\nstatic void ${name}_poll(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n`);
     output.append(`  if (task->cancellation_requested) { ${name}_cleanup(frame); task->cancelled = true; task->completed = true; return; }\n  switch (frame->state) {\n    case 0: break;\n`);
     let index: usize = 0;
@@ -9690,7 +9709,7 @@ function appendYieldFrameHelpers(
     }
     output.append("    default: abort();\n  }\n");
     for (const root of declaration.roots) {
-      try appendYieldFrameStatement(inout output, declaration, root, 1);
+      try appendYieldFrameStatement(inout output, program, declaration, root, 1);
     }
     output.append(`_z_complete: __attribute__((unused));\n  ${name}_cleanup(frame);\n  task->completed = true;\n}\n`);
     output.append(`static void ${name}_destroy(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n  z_stage1_async_remove_queued(task);\n  ${name}_cleanup(frame);\n  free(frame);\n}\n`);
@@ -18572,7 +18591,8 @@ function appendThreadSpawnHelpers(
 
 function appendMutexWithLockHelpers(
   inout output: TextBuffer,
-  in program: LoweredProgram
+  in program: LoweredProgram,
+  prototypes: boolean
 ): void throws String {
   for (const declaration of program.functions) {
     let expressionIndex: usize = 0;
@@ -18596,7 +18616,7 @@ function appendMutexWithLockHelpers(
       const nativeValueType = try cType(valueType);
       const blockBody = expression.labels[3] == "lowered-block";
       const ownedCaptures = expression.labels[6] == "move";
-      if (blockBody) {
+      if (blockBody && !prototypes) {
         output.append("static __attribute__((unused)) ");
         output.append(nativeResultType);
         output.append(" ");
@@ -18676,6 +18696,11 @@ function appendMutexWithLockHelpers(
           appendCBindingName(inout output, expression.labels[captureLabel]);
         }
         captureLabel = captureLabel + 2;
+      }
+      if (prototypes) {
+        output.append(");\n");
+        expressionIndex = expressionIndex + 1;
+        continue;
       }
       output.append(") {\n");
       if (ownedCaptures) {
@@ -24105,6 +24130,7 @@ function emitLoweredC(
     output.append(";\n");
   }
   if (program.functions.length > 0) output.append("\n");
+  try appendMutexWithLockHelpers(inout output, program, true);
   try appendClassAndOnceRuntime(inout output, program);
   for (const declaration of program.slices) {
     const elementType = try cType(declaration.elementType);
@@ -24435,7 +24461,7 @@ function emitLoweredC(
   try appendThreadMainCallHelpers(inout output, program);
   try appendThreadSpawnHelpers(inout output, program);
   try appendObjCAutoreleasePoolHelpers(inout output, program);
-  try appendMutexWithLockHelpers(inout output, program);
+  try appendMutexWithLockHelpers(inout output, program, false);
   for (const declaration of program.fixedArrays) {
     if (!loweredTypeNeedsDeinit(program, declaration.elementType)) continue;
     output.append("static __attribute__((unused)) void Z_");

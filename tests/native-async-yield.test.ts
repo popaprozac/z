@@ -131,15 +131,13 @@ async function main(): i32 {
     const storage = spawnSync(process.execPath, [cli, "self-host-emit", input], {
       encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
     });
-    assert.notEqual(storage.status, 0);
-    assert.match(storage.stderr, /Z0700/);
-    assert.match(storage.stderr, /requires owned Z value storage/);
+    assert.equal(storage.status, 0, storage.stderr);
+    execute(storage.stdout, "");
 
     writeFileSync(input, `import { scheduler } from "std/async";
-import { Mutex } from "std/sync";
-struct State { value: i32; }
-struct Bundle { state: Mutex<State>; code: i32; }
-function prepare(): Bundle { return Bundle({ state: Mutex(State({ value: 1 })), code: 7 }); }
+import { Set } from "std/collections";
+struct Bundle { state: Set<i32>; code: i32; }
+function prepare(): Bundle { return Bundle({ state: Set<i32>(), code: 7 }); }
 async function main(): i32 {
   const { code } = prepare();
   await scheduler.yield();
@@ -150,7 +148,7 @@ async function main(): i32 {
     });
     assert.notEqual(hiddenStorage.status, 0);
     assert.match(hiddenStorage.stderr, /Z0700/);
-    assert.match(hiddenStorage.stderr, /destructuring source requires owned Z value storage/);
+    assert.match(hiddenStorage.stderr, /destructuring source requires supported owned frame storage/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
@@ -245,7 +243,7 @@ async function main(): i32 {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
-test("rejects invalid moved inputs and unsupported borrowed or synchronized yield parameters", () => {
+test("rejects invalid moved inputs and unsupported borrowed or collection yield parameters", () => {
   const directory = mkdtempSync("/tmp/z-native-yield-input-rejection-");
   try {
     const input = resolve(directory, "main.zs");
@@ -266,12 +264,11 @@ async function inspect(in message: String): void {
 }
 function main(): i32 { return 0; }`, expected: /Z0700/ },
       { source: `import { scheduler } from "std/async";
-import { Mutex } from "std/sync";
-struct State { value: i32; }
-async function inspect(state: Mutex<State>): void {
+import { Set } from "std/collections";
+async function inspect(state: Set<i32>): void {
   while (true) { await scheduler.yield(); }
 }
-function main(): i32 { return 0; }`, expected: /parameter "state" requires owned Z value storage/ },
+function main(): i32 { return 0; }`, expected: /parameter "state" requires supported owned frame storage/ },
     ];
     for (const item of cases) {
       writeFileSync(input, item.source);
@@ -282,4 +279,44 @@ function main(): i32 { return 0; }`, expected: /parameter "state" requires owned
       assert.match(result.stderr, item.expected);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("owns synchronized inbox storage without holding its lock across native yields", () => {
+  const input = resolve(projectRoot, "tests/fixtures/async-yield-inbox.zs");
+  const source = emit(input);
+  execute(compileToC(readFileSync(input, "utf8"), input), "released inbox\n");
+  execute(source, "released inbox\n", ["-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all"]);
+  const harness = `#define main z_fixture_main\n${source}\n#undef main
+int main(void) {
+  Z_AsyncExecutor executor = {0};
+  Z_AsyncInvocation cold = _z_stage1_yield_deliver_start(&executor, makeInbox(), 2);
+  cold.destroy(cold.task);
+
+  Z_AsyncInvocation before = _z_stage1_yield_deliver_start(&executor, makeInbox(), 2);
+  z_stage1_async_enqueue(&executor, before.task);
+  z_stage1_async_request_cancel(before.task);
+  if (!z_stage1_async_drive_one(&executor) || !before.task->cancelled) return 1;
+  before.destroy(before.task);
+
+  Z_Mutex_InboxState inbox = makeInbox();
+  Z_AsyncInvocation active = _z_stage1_yield_deliver_start(&executor, Z_Mutex_InboxState_retain(inbox), 2);
+  z_stage1_async_enqueue(&executor, active.task);
+  if (!z_stage1_async_drive_one(&executor) || active.task->completed) return 2;
+#if !defined(_WIN32)
+  if (pthread_mutex_trylock(&inbox.storage->native) != 0) return 3;
+#endif
+  if (inbox.storage->value.count != 1 || inbox.storage->value.pending.length != 1) return 4;
+#if !defined(_WIN32)
+  if (pthread_mutex_unlock(&inbox.storage->native) != 0) return 5;
+#endif
+  z_stage1_async_request_cancel(active.task);
+  if (!z_stage1_async_drive_one(&executor) || !active.task->cancelled) return 6;
+  active.destroy(active.task);
+  if (inbox.storage->refcount != 1) return 7;
+  Z_Mutex_InboxState_deinit(&inbox);
+  if (executor.head != NULL || executor.tail != NULL) return 8;
+  return 0;
+}`;
+  execute(harness, "released inbox\nreleased inbox\nreleased inbox\n",
+    ["-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all"]);
 }, 240_000);
