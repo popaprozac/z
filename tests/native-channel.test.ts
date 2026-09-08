@@ -185,6 +185,72 @@ test("native yielding workers signal readiness through sync channels before canc
   `);
 }, 180_000);
 
+test("native yielding workers capture destructured bindings with their declaration identities", () => {
+  runChannelProgram(`
+    import { Channel, Sender } from "std/channel";
+    import { scheduler } from "std/async";
+    import { thread } from "std/thread";
+    function drop(sender: Sender<i32>): void {}
+    async function ready(sender: Sender<i32>, value: i32): i32 {
+      const send = sender.sync();
+      const sent = attempt send.send(value);
+      await scheduler.yield();
+      return 0;
+    }
+    async function main(): i32 {
+      const { sender: outgoing, receiver } = Channel<i32>.bounded(1);
+      const value = 42;
+      const receive = receiver.sync();
+      const worker = thread.spawn(async move (): i32 => await ready(outgoing, value));
+      drop(move outgoing);
+      const received = receive.receive();
+      await worker.cancel();
+      return match (received) { some(value) => value - 42; none => 1; };
+    }
+  `);
+}, 180_000);
+
+test("native yielding workers select nested owned startup results before suspension", () => {
+  runChannelProgram(`
+    import { Channel, Sender } from "std/channel";
+    import { TaskScope, scheduler } from "std/async";
+    import { thread } from "std/thread";
+    struct Message { name: String; }
+    function openMessage(): Option<Message> throws i32 {
+      return Option.some(Message({ name: "ready" }));
+    }
+    async function listen(sender: Sender<i32>, updates: TaskScope): i32 {
+      const ready = sender.sync();
+      const selected = match (attempt openMessage()) {
+        success(option) => match (option) {
+          some(value) => value;
+          none => return 1;
+        }
+        failure(error) => return error;
+      };
+      const sent = attempt ready.send(selected.name == "ready" ? 42 : 1);
+      await scheduler.yield();
+      return 0;
+    }
+    async function main(): i32 {
+      const { sender, receiver } = Channel<i32>.bounded(1);
+      const receive = receiver.sync();
+      const updates = new TaskScope();
+      const worker = thread.spawn(async move (): i32 => await listen(sender, updates));
+      const received = receive.receive();
+      await worker.cancel();
+      await updates.cancel();
+      return match (received) { some(value) => value - 42; none => 1; };
+    }
+  `, "", (source) => {
+    const definition = /static[^\n]* void Z_Message_deinit\([^\n]*\) \{/g;
+    assert.equal([...source.matchAll(definition)].length, 1);
+    return "static unsigned z_test_message_deinits;\n"
+      + source.replace(definition, "$&\n  z_test_message_deinits += 1;")
+      + "\n__attribute__((destructor)) static void z_test_verify_cleanup(void) { if (z_test_message_deinits != 1) abort(); }\n";
+  });
+}, 180_000);
+
 test("native channel receiver drop wakes a full-queue sender with its original value", () => {
   runChannelProgram(`
     import { Channel, SyncReceiver } from "std/channel";
@@ -258,6 +324,46 @@ test("native primitive array arguments do not inherit an unrelated local ownersh
       return 0;
     }
   `);
+}, 180_000);
+
+test("native owned storage consumes fallible array and channel payload temporaries exactly once", () => {
+  runChannelProgram(`
+    import { Channel } from "std/channel";
+    struct Message { name: String; }
+    function message(): Message throws i32 {
+      return Message({ name: "payload remains owned by its destination" });
+    }
+    function exercise(): i32 throws i32 {
+      let values = Array<Message>();
+      values.push(try message());
+      if (values[0].name != "payload remains owned by its destination") return 1;
+      const { sender, receiver } = Channel<Message>.bounded(1);
+      const send = sender.sync();
+      const receive = receiver.sync();
+      match (attempt send.send(try message())) { success => {} failure(_) => return 2; }
+      match (receive.receive()) {
+        some(value) => { if (value.name != values[0].name) return 3; }
+        none => return 4;
+      }
+      send.close();
+      return match (attempt send.send(try message())) {
+        success => 5;
+        failure(error) => error.value.name == values[0].name ? 0 : 6;
+      };
+    }
+    function main(): i32 {
+      return match (attempt exercise()) { success(value) => value; failure(_) => 7; };
+    }
+  `, "", (source) => {
+    const definition = /static[^\n]* void Z_Message_deinit\([^\n]*\) \{/g;
+    assert.equal([...source.matchAll(definition)].length, 1);
+    // A try expression becomes a synthetic local in native lowering. Its
+    // destination owns the value; statement cleanup must not also destroy it.
+    assert.doesNotMatch(source, /Z_Message_deinit\(&_z_stage1_nested_try_\d+\)/);
+    return "static unsigned z_test_message_deinits;\n"
+      + source.replace(definition, "$&\n  z_test_message_deinits += 1;")
+      + "\n__attribute__((destructor)) static void z_test_verify_cleanup(void) { if (z_test_message_deinits != 3) abort(); }\n";
+  });
 }, 180_000);
 
 test("native channel handles compose through aliased imports and cross-module storage", () => {

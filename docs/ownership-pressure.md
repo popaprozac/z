@@ -6111,6 +6111,55 @@ disabled until that integration is verified. Preserve the earlier Stage 0
 throughput/allocation measurements; benchmark this new native queue separately
 before making a native performance comparison.
 
+### Startup outcome composition and normalized ownership (2026-09-08)
+
+Application startup uses an owned `Result<Option<Endpoint>, Error>`: a primary
+keeps its endpoint, a secondary returns after forwarding, and failure carries an
+owned message. Stage 0 could check the nested value-producing matches but could
+not emit an inner match as the final arm of an outer match in an async frame.
+The planner now shares one destination between those matches and finishes each
+arm's cleanup separately. Tests cover suspension before selection, early return,
+typed failure, and cancellation with exactly-once cleanup. This adds no new
+syntax and no extra intermediate owned result or retain.
+
+The same integration caught a regression in native `Array.push(try make())`.
+The fallible result is normalized to a synthetic local. Type-directed storage
+correctly avoided moving primitive values, but failed to mark a cleanup-bearing
+synthetic local as transferred; end-of-statement cleanup then destroyed the
+value already held by the array. In the native compiler itself, this corrupted
+imported Objective-C method metadata. The shared owned-storage helper now
+recognizes normalized fallible/conditional owners after checking the payload's
+cleanup requirement. The regression executes array insertion, channel send,
+receive, and rejected-send recovery under UBSan, checks three exact payload
+destructions, and rejects an emitted duplicate synthetic-local cleanup. The
+earlier same-name primitive/owned-local regression remains covered.
+
+Yielding worker capture identity resolution also now recognizes object-pattern
+bindings, including renamed channel senders. A test captures a destructured
+sender, releases the parent's retained alias, receives readiness, and joins the
+worker. These remain ordinary compiler composition fixes, not application-only
+storage types or new ownership rules.
+
+Application-level startup integration is still gated on the full native graph
+and real-process checks. The standalone listener probe is not by itself proof
+that every Application.run failure path joins correctly. The Stage 0 UBSan
+startup matrix passes primary/secondary handoff, idle cancellation, a partial
+request, and hostile-path startup failure. Native emission currently rejects
+the production probe: native-header builds collision-mangle an imported
+`internal async` callee, while its caller retains the original target spelling.
+The worker bridge therefore cannot find the callee's yielding frame. A smaller
+same-module nested owned-result worker passes with exact cleanup; do not treat
+this as missing nested-match syntax or weaken the worker cancellation check.
+The next fix must preserve checked target module/symbol identity across
+lowering and emitted-name rewriting, including aliased and same-named internal
+imports. Zapp preserves the integration as an unapplied patch and keeps its
+normal application launch unchanged until the native process gate passes.
+
+Other async storage
+boundaries encountered during integration remain explicit: positional array
+destructuring, cleanup-bearing conditional locals, and ownership-bearing
+replacement assignment are not generalized by these fixes.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

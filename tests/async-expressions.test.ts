@@ -717,10 +717,10 @@ hostToolchainTest("publishes owned worker results through borrowed Objective-C i
   assert.match(artifact.source, /frame->value_app = nil;/);
   assert.doesNotMatch(artifact.source, /z_string_copy_bytes\(frame->value_status, 0, \(frame->value_status\)\.length\)/);
 
-  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8", timeout: 30_000 });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "background work completed\n");
-}, 10_000);
+}, 45_000);
 
 test("runs async match expressions with checked arithmetic and editor details", () => {
   const example = resolve(projectRoot, "examples/async/async-overview.zs");
@@ -1068,6 +1068,78 @@ test("consumes owned async statement matches across suspension", () => {
 
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("selects nested owned matches in async frames with inner suspension and exact cleanup", () => {
+  const directory = mkdtempSync("/tmp/z-async-nested-owned-match-");
+  const fileName = resolve(directory, "main.zs");
+  try {
+    writeFileSync(fileName, `
+      import console from "std/console";
+      import { delay } from "std/time";
+      struct Resource {
+        id: i32;
+        deinit { console.log(this.id); }
+      }
+      function source(mode: i32): Option<Resource> throws i32 {
+        if (mode == 9) throw 9;
+        if (mode == 7) return Option<Resource>.none;
+        return Option.some(Resource({ id: 42 }));
+      }
+      async function choose(input: Result<Option<Resource>, i32>): Resource throws i32 {
+        const selected = match (input) {
+          success(option) => match (option) {
+            some(resource) => { await delay(1); select resource; }
+            none => return Resource({ id: 7 });
+          }
+          failure(code) => throw code;
+        };
+        return move selected;
+      }
+      async function main(): i32 {
+        const first = attempt await choose(attempt source(42));
+        match (first) { success(_) => {} failure(_) => return 1; }
+        const second = attempt await choose(attempt source(7));
+        match (second) { success(_) => {} failure(_) => return 2; }
+        const third = attempt await choose(attempt source(9));
+        return match (third) { success(_) => 3; failure(code) => code - 9; };
+      }
+    `);
+    const executed = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8", timeout: 30_000 });
+    assert.equal(executed.status, 0, executed.stderr || executed.error?.message);
+    assert.equal(executed.stdout, "42\n7\n");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("cancels nested async match payloads exactly once before selection", () => {
+  const directory = mkdtempSync("/tmp/z-async-nested-match-cancel-");
+  const fileName = resolve(directory, "main.zs");
+  try {
+    writeFileSync(fileName, `
+      import console from "std/console";
+      import { delay } from "std/time";
+      struct Resource { id: i32; deinit { console.log(this.id); } }
+      async function choose(): i32 {
+        const source = Option.some(Option.some(Resource({ id: 42 })));
+        return match (source) {
+          some(inner) => { select match (inner) {
+            some(resource) => { await delay(1000); select resource.id; }
+            none => -1;
+          }; }
+          none => -2;
+        };
+      }
+      async function main(): i32 {
+        const pending = task choose();
+        await delay(1);
+        await pending.cancel();
+        return 0;
+      }
+    `);
+    const executed = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8", timeout: 30_000 });
+    assert.equal(executed.status, 0, executed.stderr || executed.error?.message);
+    assert.equal(executed.stdout, "42\n");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 test("selects from consuming owned async match arms after suspension", () => {

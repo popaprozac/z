@@ -204,6 +204,7 @@ type AsyncOperation =
     readonly armIndex: number;
   }
   | { readonly kind: "matchCleanup"; readonly site: AsyncMatchSite; readonly armIndex: number }
+  | { readonly kind: "matchComplete"; readonly site: AsyncValueMatchSite; readonly armIndex: number }
   | {
     readonly kind: "matchSelect";
     readonly site: AsyncValueMatchSite;
@@ -821,7 +822,18 @@ function planFunction(
       }
       const prefix = statements.slice(0, -1);
       if (prefix.length > 0) planStatements(prefix, scope, controlDepth + 1);
-      if (final.kind === "expressionStatement" || final.kind === "select") {
+      const nestedMatch = final.kind === "match"
+        ? { ...final, kind: "matchExpression" as const }
+        : (final.kind === "expressionStatement" || final.kind === "select")
+          && final.expression.kind === "matchExpression"
+          ? final.expression : null;
+      if (nestedMatch) {
+        // The inner match initializes the same destination, then finishes its
+        // own arm cleanup. Only then may the enclosing arm finish. Reusing the
+        // destination avoids an extra owned temporary or a second retain.
+        planValueMatch(nestedMatch, destination, destinationType, false, scope, controlDepth + 1);
+        operations.push({ kind: "matchComplete", site, armIndex });
+      } else if (final.kind === "expressionStatement" || final.kind === "select") {
         recordNestedAwaits(final.expression, final.expression, hasFrameCleanup(destinationType, types));
         validateFrameExpression(final.expression, locals, fileName, types, suspensions);
         operations.push({ kind: "matchSelect", site, armIndex, expression: final.expression });
@@ -5394,31 +5406,31 @@ function emitAsyncMatchCleanup(
 }
 
 function emitAsyncMatchSelect(
-  operation: Extract<AsyncOperation, { kind: "matchSelect" }>,
+  operation: Extract<AsyncOperation, { kind: "matchSelect" | "matchComplete" }>,
   plan: AsyncFunctionPlan,
   fileName: string,
 ): string[] {
   const { site } = operation;
-  let value = emitFrameExpression(operation.expression, plan, fileName);
-  const suspension = plan.suspensions.get(operation.expression.location.offset);
-  if (suspension && hasFrameCleanup(site.destinationType, plan.types)) {
-    value = frameTransferredValue(
-      value,
-      `frame->${suspension.field}_live`,
-      site.destinationType,
-      plan.types,
-    );
+  const lines: string[] = [];
+  if (operation.kind === "matchSelect") {
+    let value = emitFrameExpression(operation.expression, plan, fileName);
+    const suspension = plan.suspensions.get(operation.expression.location.offset);
+    if (suspension && hasFrameCleanup(site.destinationType, plan.types)) {
+      value = frameTransferredValue(
+        value,
+        `frame->${suspension.field}_live`,
+        site.destinationType,
+        plan.types,
+      );
+    }
+    lines.push(requiresNativeFramePlacement(site.destinationType, plan.types)
+      ? `new (${site.destination}) ${cFrameType(site.destinationType, plan.types)}(${value});`
+      : `${site.destination} = ${value};`);
+    if (hasFrameCleanup(site.destinationType, plan.types)) {
+      lines.push(`${destinationLiveFlag(site.destination, plan)} = true;`);
+    }
   }
-  const initialize = requiresNativeFramePlacement(site.destinationType, plan.types)
-    ? `new (${site.destination}) ${cFrameType(site.destinationType, plan.types)}(${value});`
-    : `${site.destination} = ${value};`;
-  const lines = [
-    initialize,
-    ...(hasFrameCleanup(site.destinationType, plan.types)
-      ? [`${destinationLiveFlag(site.destination, plan)} = true;`]
-      : []),
-    ...emitAsyncMatchCleanupLines(site, operation.armIndex, plan),
-  ];
+  lines.push(...emitAsyncMatchCleanupLines(site, operation.armIndex, plan));
   if (site.terminal) {
     if (plan.declaration.errorType) lines.push("frame->failed = false;");
     lines.push(`frame->state = ${finalizeStateMarker};`, "continue;");
@@ -5571,8 +5583,8 @@ function generatePoll(
       state += 1;
       continue;
     }
-    if (operation.kind === "matchSelect") {
-      emitNestedAwaits(operation.expression);
+    if (operation.kind === "matchSelect" || operation.kind === "matchComplete") {
+      if (operation.kind === "matchSelect") emitNestedAwaits(operation.expression);
       cases.push(caseBlock(state, emitAsyncMatchSelect(operation, plan, fileName)));
       state += 1;
       continue;

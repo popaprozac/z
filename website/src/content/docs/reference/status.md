@@ -36,6 +36,12 @@ production or compatibility-sensitive use.
   threads. Both compilers execute bounded synchronous channels, including
   owned unsent errors, queue cleanup, cross-module storage, and readiness
   signaling from a yielding worker that is later cancelled and joined. Native
+  worker capture lookup includes renamed object-destructured sender bindings;
+  storing fallible owned values in arrays and channels transfers normalized
+  temporaries without duplicate cleanup. Stage 0 nested value-producing async
+  matches share one destination and preserve cleanup across suspension, early
+  return, failure, and cancellation. These are composition fixes with existing
+  syntax, not a general expansion of async storage support. Native
   asynchronous send/receive still report `Z0700`; async waiter execution uses
   Stage 0. Native custom-destructor and foreign-resource transfer proofs remain
   conservative. The hybrid `bun run z check <source> --native-frontend` retains

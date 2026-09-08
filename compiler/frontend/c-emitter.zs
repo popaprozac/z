@@ -18951,7 +18951,23 @@ function appendThreadSpawnHelpers(
           for (const statement of expression.statements) {
             if (workerStatementContainsAwait(declaration, statement)) awaitsChild = true;
           }
-          if (awaitsChild) throw "native TaskScope worker captures currently require a terminal await of a named nonthrowing yielding function; move the asynchronous body into that function so cancellation can join its frame";
+          if (awaitsChild) {
+            let targetDetail = "";
+            if (!blockBody && expression.children.length > 0) {
+              const body = view declaration.expressions[expression.children[0]];
+              if (body.kind == LoweredExpressionKind.asyncFunctionAwait && body.children.length > 0) {
+                const callable = view declaration.expressions[body.children[0]];
+                targetDetail = `; awaited target ${callable.value}`;
+                for (const target of program.functions) {
+                  if (target.name == callable.value) {
+                    targetDetail = `${targetDetail} has frame classification "${target.asyncSuspension}"`;
+                    break;
+                  }
+                }
+              }
+            }
+            throw `native TaskScope worker captures currently require a terminal await of a named nonthrowing yielding function; move the asynchronous body into that function so cancellation can join its frame${targetDetail}`;
+          }
         }
       }
       if (yieldAwait < declaration.expressions.length) {

@@ -7240,6 +7240,28 @@ function wrapOwnedStorageType(
       Array<String>()
     );
   }
+  // Normalization materializes fallible/conditional owned expressions in
+  // synthetic locals. Storing their value consumes that temporary just like
+  // a named owner; otherwise statement cleanup also destroys the destination.
+  // Keep this after the cleanup-type check so scalar arguments never acquire
+  // an ownership flag merely because they were normalized into a local.
+  if (
+    output[value].kind == LoweredExpressionKind.localValue
+    && (
+      expressionHasLabel(output[value], "nested-try-binding")
+      || expressionHasLabel(output[value], "nested-conditional-binding")
+    )
+  ) {
+    let children = Array<usize>();
+    children.push(value);
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.moveValue,
+      "",
+      move children,
+      Array<String>()
+    );
+  }
   return wrapImplicitOwnedTransfer(tree, input, value, inout output);
 }
 
@@ -20114,6 +20136,14 @@ function threadCaptureBindingOffset(
       && statement.nameOffset < useOffset
       && statement.nameOffset >= resolvedOffset
     ) resolvedOffset = statement.nameOffset;
+    if (statement.kind != StatementKind.destructureStatement) continue;
+    for (const binding of statement.objectBindings) {
+      if (
+        binding.bindingName == name
+        && binding.bindingOffset < useOffset
+        && binding.bindingOffset >= resolvedOffset
+      ) resolvedOffset = binding.bindingOffset;
+    }
   }
   if (resolvedOffset > 0) return resolvedOffset;
   for (const declaration of program.functions) {
