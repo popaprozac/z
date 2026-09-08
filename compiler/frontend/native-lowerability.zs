@@ -52,6 +52,50 @@ function loweringBoundary(
   );
 }
 
+function validateMainTimerExpression(
+  in program: Program, in arena: StatementArena, in tree: ExpressionTree,
+  index: usize, in path: String
+): void throws ModuleResolveError {
+  const node = view tree.nodes[index];
+  if (node.kind == ExpressionKind.closureExpression) return;
+  if (node.kind == ExpressionKind.awaitExpression && node.children.length == 1) {
+    const call = node.children[0];
+    if (tree.nodes[call].kind == ExpressionKind.callExpression && tree.nodes[call].children.length == 2) {
+      const callee = tree.nodes[call].children[0];
+      if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
+        for (const imported of program.imports) {
+          if (imported.header != "std/time") continue;
+          for (const binding of imported.bindings) {
+            if (binding.importedName == "delay" && binding.localName == tree.nodes[callee].value) {
+              throw loweringBoundary(path, "Z0700",
+                "direct timer awaits in main require a resumable native entry frame, which is not implemented yet; z check and the Stage 0 runner support this shape",
+                node.line, node.column, 5);
+            }
+          }
+        }
+      }
+    }
+  }
+  for (const child of node.children) { try validateMainTimerExpression(program, arena, tree, child, path); }
+  for (const child of node.statements) { try validateMainTimerStatement(program, arena, child, path); }
+}
+
+function validateMainTimerStatement(
+  in program: Program, in arena: StatementArena, index: usize, in path: String
+): void throws ModuleResolveError {
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        try validateMainTimerExpression(program, arena, tree, root, path);
+      }
+      none => {}
+    }
+    none => {}
+  }
+  for (const child of arena.nodes[index].children) { try validateMainTimerStatement(program, arena, child, path); }
+}
+
 function stringContains(in value: String, in candidate: String): boolean {
   if (candidate.byteLength == 0) return true;
   if (candidate.byteLength > value.byteLength) return false;
@@ -2345,6 +2389,13 @@ function validateNativeFunction(
   const yieldFrame = owner.byteLength == 0 && parsedModule < modules.length
     && !(declaration.name != "main" && firstTierSchedulerYield)
     && functionUsesYieldFrame(modules[parsedModule].program, declaration);
+  if (owner.byteLength == 0 && declaration.name == "main" && parsedModule < modules.length) {
+    // main has a synchronous host entry in the current native driver. Do not
+    // misclassify an unsupported timer await as a join of an unnamed Task.
+    for (const root of declaration.body.roots) {
+      try validateMainTimerStatement(modules[parsedModule].program, declaration.body, root, path);
+    }
+  }
   if (yieldFrame) {
     match (in declaration.errorType) {
       some(error) => {

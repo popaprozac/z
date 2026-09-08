@@ -13546,8 +13546,16 @@ function nativeSymbolPart(name: string): string {
   )).join("");
 }
 
+const aggregateRuntimeMemberNames = new Set([
+  "new", "deinit", "retain", "release", "finalize_on_executor",
+  "weak", "weak_upgrade", "weak_retain", "weak_deinit",
+]);
+
 function methodName(owner: string, method: string): string {
-  return `${structName(owner)}_${method}`;
+  // Runtime ownership helpers share the aggregate prefix, not the Z member
+  // namespace. Escape their names (and the escape prefix itself) injectively.
+  const protectedName = aggregateRuntimeMemberNames.has(method) || method.startsWith("__z_method_");
+  return `${structName(owner)}_${protectedName ? "__z_method_" : ""}${method}`;
 }
 
 function deinitName(owner: string): string {

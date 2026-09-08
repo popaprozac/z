@@ -125,8 +125,14 @@ production or compatibility-sensitive use.
   main-thread wakeups remain separately owned and joined by the scope. Bounded
   UBSan tests cover pre-entry cancellation, closed-scope rejection, repeated
   teardown, and exact reference counts. General worker bodies and cross-thread
-  `TaskControl` capture remain staged; this is not yet the full application
-  launch-listener integration.
+  `TaskControl` capture remain staged. The real endpoint/inbox/main-host probe
+  now passes under both compilers and UBSan, including competing startup,
+  closed-scope rejection, idle/partial-client cancellation, and startup failure.
+  Root owned match initializers also work in the native yielding frame, with
+  cleanup on failed initialization and cancellation. Automatic application
+  forwarding remains gated on production startup/lifetime integration. Direct
+  timer awaits in native `main` still require a future resumable entry frame;
+  that boundary now reports `Z0700` at the await.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - Exact `z.json` source-module mappings for bare imports in Stage 0, the editor,

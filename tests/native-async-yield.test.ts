@@ -16,6 +16,13 @@ function emit(input: string): string {
 }
 function fixtureEmission(): string { return cachedEmission ??= emit(fixture); }
 function parameterEmission(): string { return cachedParameterEmission ??= emit(parameterFixture); }
+function nativeYieldStart(source: string, name: string): string {
+  // Imported headers can require private bridge mangling. Harnesses inspect
+  // generated storage, but must not treat its module-qualified name as an ABI.
+  const frame = new RegExp(`typedef struct (_z_stage1_yield_(?:__z_module_\\d+_)?${name}) \\{`).exec(source)?.[1];
+  assert.ok(frame, `Missing frame for ${name}`);
+  return `${frame}_start`;
+}
 function execute(source: string, expected: string, flags: string[] = []): void {
   const directory = mkdtempSync("/tmp/z-native-yield-frame-");
   try {
@@ -57,7 +64,7 @@ int main(void) {
   Z_AsyncExecutor executor = {0};
   for (int phase = 0; phase < 3; ++phase) {
     Z_TaskScope *scope = z_stage1_task_scope_new(NULL);
-    Z_AsyncInvocation invocation = _z_stage1_yield_listen_start(&executor, Z_TaskScope_retain(scope), 2);
+    Z_AsyncInvocation invocation = ${nativeYieldStart(source, "listen")}(&executor, Z_TaskScope_retain(scope), 2);
     if (scope->refcount != 2) return 1;
     if (phase != 0) {
       z_stage1_async_enqueue(&executor, invocation.task);
@@ -71,7 +78,7 @@ int main(void) {
     Z_TaskScope_release(scope);
 
     Z_TaskControl *control = z_stage1_task_control_new(true);
-    invocation = _z_stage1_yield_holdControl_start(&executor, Z_TaskControl_retain(control));
+    invocation = ${nativeYieldStart(source, "holdControl")}(&executor, Z_TaskControl_retain(control));
     if (control->refcount != 2) return 5;
     if (phase != 0) {
       z_stage1_async_enqueue(&executor, invocation.task);
@@ -112,7 +119,7 @@ static void *run_listener(void *context) {
   Probe *probe = context;
   if (pthread_main_np() != 0) abort();
   Z_AsyncExecutor executor = {0};
-  Z_AsyncInvocation invocation = _z_stage1_yield_listen_start(&executor, Z_TaskScope_retain(probe->scope), 2);
+  Z_AsyncInvocation invocation = ${nativeYieldStart(source, "listen")}(&executor, Z_TaskScope_retain(probe->scope), 2);
   z_stage1_async_enqueue(&executor, invocation.task);
   for (int tick = 0; !invocation.task->completed; ++tick) {
     if (tick > 4 || !z_stage1_async_drive_one(&executor)) abort();

@@ -617,6 +617,17 @@ function objectiveCRegistrationHelperName(
   return `z_stage1_objc_register_${moduleIndex}_${offset}`;
 }
 
+function userMethodTarget(in owner: String, in method: String, in suffix: String): String {
+  // Keep user methods out of the generated ownership-helper namespace. The
+  // prefix is escaped too, so a source method cannot alias an escaped method.
+  const protectedName = method == "new" || method == "deinit"
+    || method == "retain" || method == "release" || method == "finalize_on_executor"
+    || method == "weak" || method == "weak_upgrade"
+    || method == "weak_retain" || method == "weak_deinit"
+    || stringStartsWith(method, "__z_method_");
+  return protectedName ? `Z_${owner}___z_method_${method}${suffix}` : `Z_${owner}_${method}${suffix}`;
+}
+
 function objectiveCAdapterHelperName(
   moduleIndex: usize,
   offset: usize
@@ -672,7 +683,7 @@ function collectObjectiveCProtocolAdapter(
         method.nativeReturnType.byteLength
       ),
       nativeParameterTypes: parameterTypes,
-      targetName: `Z_${ownerEmittedName}_${method.targetName}`,
+      targetName: userMethodTarget(ownerEmittedName, method.targetName, ""),
     }));
   }
   adapters.push(LoweredObjCProtocolAdapter({
@@ -10546,10 +10557,11 @@ function lowerAsyncMethodTailCall(
       : "value");
     argument = argument + 1;
   }
+  const target = userMethodTarget(receiverType.name, sourceMethodName, genericMethodSuffix);
   return pushExpression(
     inout output,
     LoweredExpressionKind.methodCall,
-    `Z_${receiverType.name}_${sourceMethodName}${genericMethodSuffix}`,
+    target,
     children,
     labels
   );
@@ -15186,7 +15198,7 @@ function lowerExpressionContextual(
           && ownerType.kind != LoweredTypeKind.foreignObjCType
         ) throw "native static-method lowering requires a concrete struct or class owner";
         if (ownerType.kind != LoweredTypeKind.foreignObjCType) {
-          const target = `Z_${ownerType.name}_${sourceMethodName}${genericMethodSuffix}`;
+          const target = userMethodTarget(ownerType.name, sourceMethodName, genericMethodSuffix);
           staticMethodTarget = move target;
         }
       }
@@ -15613,10 +15625,11 @@ function lowerExpressionContextual(
         labels.push(move argumentMode);
         argument = argument + 1;
       }
+      const target = userMethodTarget(receiverType.name, sourceMethodName, genericMethodSuffix);
       return pushExpression(
         inout output,
         LoweredExpressionKind.methodCall,
-        `Z_${receiverType.name}_${sourceMethodName}${genericMethodSuffix}`,
+        target,
         children,
         labels
       );
@@ -27271,13 +27284,42 @@ function containsName(in names: Array<String>, in name: String): boolean {
 
 function collisionSafePrivateFunctionNames(
   in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph,
   includeTests: boolean
 ): Array<String> {
   let names = Array<String>();
+  let foreignNames = Set<String>();
+  let includesNativeHeaders = false;
+  for (const module of parsed) {
+    for (const imported of module.program.imports) {
+      if (stringEndsWithBytes(imported.header, ".h")
+        || stringEndsWithBytes(imported.header, ".hh")
+        || stringEndsWithBytes(imported.header, ".hpp")) includesNativeHeaders = true;
+    }
+  }
+  for (const module of graph.modules) {
+    for (const symbol of module.symbols) {
+      if (symbol.foreignHeader.byteLength == 0) continue;
+      match (in symbol.functionSignature) {
+        some(_) => foreignNames.add(copy symbol.importedName);
+        none => {}
+      }
+    }
+    for (const resolution of module.semanticEvidence.callResolutions) {
+      if (resolution.kind == "foreign") foreignNames.add(copy resolution.targetName);
+    }
+  }
   for (const module of parsed) {
     for (const declaration of module.program.functions) {
       if (declaration.testDeclaration && !includeTests) continue;
       if (containsName(names, declaration.name)) continue;
+      // Called native symbols are known precisely. Async bridges additionally
+      // need protection from uncalled declarations/raw-only header symbols:
+      // unlike Stage 0, native emission keeps a synchronous facade for them.
+      if (foreignNames.has(declaration.name) || (includesNativeHeaders && declaration.asynchronous)) {
+        names.push(copy declaration.name);
+        continue;
+      }
       let count: usize = 0;
       let exportedCount: usize = 0;
       for (const candidateModule of parsed) {
@@ -31360,7 +31402,7 @@ function appendLoweredProgram(
         failure(message) => throw
           `method ${use.sourceName}.${method.name}: ${message}`;
       };
-      loweredMethod.name = `Z_${use.emittedName}_${method.name}`;
+      loweredMethod.name = userMethodTarget(use.emittedName, method.name, "");
       loweredMethod.nativeCExportName = "";
       rewritePrivateCallTargets(
         program,
@@ -31454,7 +31496,7 @@ function appendLoweredProgram(
         success(lowered) => lowered;
         failure(message) => throw `method ${aggregate.name}.${method.name}: ${message}`;
       };
-      loweredMethod.name = `Z_${emittedName}_${method.name}`;
+      loweredMethod.name = userMethodTarget(emittedName, method.name, "");
       loweredMethod.nativeCExportName = "";
       rewritePrivateCallTargets(
         program,
@@ -31590,7 +31632,7 @@ function appendLoweredProgram(
         failure(message) => throw
           `method ${aggregate.name}.${method.name}: ${message}`;
       };
-      loweredMethod.name = `Z_${ownerEmittedName}_${method.name}${suffix}`;
+      loweredMethod.name = userMethodTarget(ownerEmittedName, method.name, suffix);
       loweredMethod.nativeCExportName = "";
       rewritePrivateCallTargets(
         program,
@@ -31893,7 +31935,7 @@ function appendDeferredGenericMethod(
       failure(message) => throw
         `method ${aggregate.name}.${method.name}: ${message}`;
     };
-    loweredMethod.name = `Z_${ownerEmittedName}_${method.name}${suffix}`;
+    loweredMethod.name = userMethodTarget(ownerEmittedName, method.name, suffix);
     loweredMethod.nativeCExportName = "";
     rewritePrivateCallTargets(
       program,
@@ -32239,6 +32281,7 @@ function lowerModulesIncludingTests(
   let embeddedBytes = Array<LoweredEmbeddedBytes>();
   const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(
     parsed,
+    graph,
     includeTests
   );
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);

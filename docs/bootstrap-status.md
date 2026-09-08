@@ -1180,11 +1180,13 @@ destructors and Clang strong fields. Synchronous `match` statements also compose
 inside these loops, including `attempt` subjects, root Results from awaited
 children, borrowed matches, wildcard cleanup, early return/throw/`try`, and
 loop exits. Match payloads stay in lexical storage and finish before the next
-suspension; awaited subjects, suspension inside arms, and destructured patterns
-remain outside this native frame tier. Borrowed child arguments, method/placed
+suspension. Root owned locals may also be initialized by a synchronous match;
+returning or throwing arms leave the destination uninitialized, with cleanup
+tested before and after frame entry. Awaited subjects, suspension inside arms,
+and destructured patterns remain outside this native frame tier. Borrowed child arguments, method/placed
 awaits, nested awaited expressions, and nested source locals remain separate
 yield-frame boundaries. The frame still requires an explicit `scheduler.yield()`;
-these reductions do not establish the actual listener integration. The broader
+these reductions alone do not establish application integration. The broader
 `async-owned-destructure.zs` probe covers explicit copy/move, awaited producers,
 scoped child borrows, errors, and cancellation before or after initialization.
 Cleanup-bearing branch/loop locals still require an explicit `async scope`,
@@ -1203,7 +1205,16 @@ cancellation, repeated completion/cancellation/closed-scope rejection, destinati
 thread assertions, and exact final scope reference counts. Unsupported
 scope-capturing worker await shapes remain explicit lowering errors; general
 worker-body normalization and cross-thread `TaskControl` capture are not added.
-The actual endpoint readiness/inbox/host-teardown integration remains next.
+The real Zapp endpoint/inbox/main-host probe now also passes through Stage 0 and
+the fixed-point driver under UBSan: delivery, competing startup, closed-scope
+rejection, idle/partial-client cancellation, and failed endpoint creation all
+preserve ordered teardown. The host uses the macOS CFRunLoop and endpoint storage
+stays worker-owned. User ownership-helper method names and private async bridges
+that collide with native headers are now separated from generated runtime/native
+symbols. Automatic application forwarding remains disabled pending production
+startup/lifetime integration. Direct timer awaits in native `main` remain a
+separate resumable-entry-frame gap, diagnosed as `Z0700` rather than an internal
+unnamed-Task error. See the [integration evidence](ownership-pressure.md#real-launch-endpoint-inbox-and-main-host-integration-2026-09-08).
 
 Continue focused self-hosting work in this order:
 

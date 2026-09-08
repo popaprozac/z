@@ -35,6 +35,92 @@ function execute(source: string, expected: string): void {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
+test("initializes owned yield-frame locals from a match without marking failed initialization live", () => {
+  const directory = mkdtempSync("/tmp/z-yield-match-owner-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const source = `import console from "std/console";
+import { scheduler } from "std/async";
+struct Resource { label: String; deinit { console.log(this.label); } }
+struct OpenError { code: i32; label: String; deinit { console.log(this.label); } }
+function open(fail: boolean): Resource throws OpenError {
+  if (fail) throw OpenError({ code: -1, label: "error released" });
+  return Resource({ label: "endpoint released" });
+}
+async function listen(fail: boolean): i32 {
+  const guard = Resource({ label: "worker released" });
+  let endpoint = match (attempt open(fail)) {
+    success(value) => { select move value; }
+    failure(error) => return error.code;
+  };
+  await scheduler.yield();
+  console.log(endpoint.label);
+  return 42;
+}
+async function main(): i32 {
+  const first = await listen(false);
+  const second = await listen(true);
+  return first + second - 41;
+}`;
+    writeFileSync(input, source);
+    const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr || String(native.error));
+    const expected = "endpoint released\nendpoint released\nworker released\nerror released\nworker released\n";
+    execute(compileToC(source, input), expected);
+    execute(native.stdout, expected);
+    execute(`#define main z_fixture_main\n${native.stdout}\n#undef main
+int main(void) {
+  Z_AsyncExecutor executor = {0};
+  for (int entered = 0; entered < 2; ++entered) {
+    Z_AsyncInvocation call = _z_stage1_yield_listen_start(&executor, false);
+    z_stage1_async_enqueue(&executor, call.task);
+    if (entered && !z_stage1_async_drive_one(&executor)) return 1;
+    z_stage1_async_request_cancel(call.task);
+    for (int tick = 0; !call.task->completed; ++tick) {
+      if (tick > 5 || !z_stage1_async_drive_one(&executor)) return 2;
+    }
+    if (!call.task->cancelled) return 3;
+    call.destroy(call.task);
+    if (executor.head != NULL || executor.tail != NULL) return 4;
+  }
+  return 0;
+}`, "endpoint released\nworker released\n");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("reports unsupported native-main timer frames before attempting a Task join", () => {
+  const directory = mkdtempSync("/tmp/z-main-timer-boundary-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const source = `import { delay as pause } from "std/time";
+import { thread } from "std/thread";
+async function main(): i32 on thread.main {
+  if (true) { await pause(1); }
+  return 0;
+}`;
+    writeFileSync(input, source);
+    // The source and its semantics are valid; only standalone native emission
+    // needs a richer entry frame. Keep that distinction out of the type system.
+    assert.ok(compileToC(source, input).length > 0);
+    const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL",
+    });
+    assert.notEqual(native.status, 0);
+    assert.match(native.stderr, /Z0700.*direct timer awaits in main require a resumable native entry frame/);
+    assert.doesNotMatch(native.stderr, /internal compiler error|named Task<T> binding/);
+
+    // Existing suspending callee frames still compile: the restriction is on
+    // a direct timer in the entry body, not all timer use reachable from main.
+    const supported = resolve(projectRoot, "tests/fixtures/self-host-emit-task-scope-delay-method.zs");
+    const nested = spawnSync(process.execPath, [cli, "self-host-emit", supported], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(nested.status, 0, nested.stderr || String(nested.error));
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 test("handles receive failures with synchronous match arms in native yielding loops", () => {
   execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
   execute(emit(), expected);

@@ -50,7 +50,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
   },
   "self-hosting": {
     timeoutMilliseconds: 120_000,
-    files: ["tests/self-hosting.test.ts", "tests/native-async-yield.test.ts", "tests/native-async-yield-child.test.ts", "tests/native-async-yield-match.test.ts", "tests/native-worker-yield.test.ts"],
+    files: ["tests/self-hosting.test.ts", "tests/native-async-yield.test.ts", "tests/native-async-yield-child.test.ts", "tests/native-async-yield-match.test.ts", "tests/native-worker-yield.test.ts", "tests/native-symbol-hygiene.test.ts"],
   },
   async: {
     timeoutMilliseconds: 60_000,

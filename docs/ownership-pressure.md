@@ -5964,6 +5964,76 @@ jobs → destroy host. Passing this runtime prerequisite is not proof of the
 complete application listener. A yielding loop is also not an efficient idle
 wait: blocking/notification-backed reception must stay bounded and measured.
 
+### Real launch endpoint, inbox, and main-host integration (2026-09-08)
+
+The Zapp `application-launch-listener-smoke.zs` now runs the real bounded Unix
+socket receiver on an ordinary Z worker. It uses the existing `ActivationInbox`,
+`TaskScope`, and a main-isolated `Once<LaunchHost>`; the Foundation-backed endpoint
+is constructed and destroyed on the worker, never transferred to main. The
+host pumps the macOS CFRunLoop, as an AppKit host does, so scheduled callbacks
+must actually reach the main executor. There is no interactive window or
+automatic forwarding installed in `Application` by this probe.
+
+Three compiler seams appeared only when these pieces were combined:
+
+- A root owned local selected by synchronous `match` was rejected by native
+  yield-frame admission, although its normalized lowering already existed.
+  The frame now admits that shape. A returning/throwing arm does not mark the
+  destination live; success, failed initialization, cold cancellation, and
+  cancellation after initialization have exact-once cleanup tests. Match arms
+  still cannot suspend, and this does not admit nested owned locals.
+- An ordinary user method named `release` collided with generated ARC cleanup.
+  Both emitters now escape ownership-helper member names and the escape prefix
+  itself. Direct, generic, static, trait-constrained, and weak-reference calls
+  retain their behavior without reserving these source-level method names.
+- A private async helper named `listen` collided with the POSIX declaration
+  included by the real socket headers. Native private bridge naming now accounts
+  for known foreign symbols and protects private async facades when native
+  headers are present. Broader exported-Z symbol and macro-namespace hygiene
+  still needs an audit; explicit C exports retain their declared ABI names.
+
+The integrated Stage 0 and fixed-point native executables both pass the bounded
+UBSan matrix: normal delivery (including empty, spaced, and Unicode arguments),
+a competing secondary that does not disturb the primary, rejection by a closed
+main-work scope, idle cancellation, cancellation with an incomplete client
+frame, and startup failure at a hostile socket path. The hostile path remains
+untouched. Readiness is published only after election **and** socket creation.
+Shutdown closes admission, cancels/joins the listener, joins main jobs, and then
+releases the main-owned host. The worker's socket/lease cleanup completes before
+its join; the identity can be acquired again afterward. Existing lower-level
+tests separately inspect reverse endpoint/lease destruction and exact strong
+reference counts.
+
+Receive waits remain bounded, not instantly interruptible: listener polling and
+an admitted client's frame/acknowledgement each have an absolute deadline. The
+integration watchdog allows four seconds after readiness for the complete
+scenario and teardown; every child and socket is tracked and cleaned up. This
+is not a new throughput or idle-CPU benchmark.
+
+One separate boundary remains explicit: direct `await delay(...)` inside native
+`main` needs a resumable entry frame. It now reports `Z0700` at the await instead
+of an internal unnamed-Task lowering error. Stage 0 supports that shape. The
+CFRunLoop pump in this macOS probe exercises the actual host loop; it does not
+claim to implement native-main timers or provide a general polling API.
+The entry-name audit also found that renaming the existing suspending
+`PublishService.publish` fixture method to `main` hits an older lowering check
+that treats its source name as the entry point. The new diagnostic is restricted
+to free functions, but this separate method-emission gap remains queued with
+the entry-frame work; ordinary suspending methods retain their existing tier.
+
+Next: integrate this proven lifetime/order into the application startup path,
+with fail-closed election/readiness/secondary handoff. Keep automatic forwarding
+disabled until that application-level gate passes. General native entry-frame
+timer suspension stays queued upstream. No new public syntax or framework API
+was needed for this checkpoint.
+
+The full self-hosting tier also exposed three stale tests, reproduced from an
+untouched `6053fda` checkout: optional-field move guards, owned-match/loop cleanup
+snapshots, and the older struct-yield diagnostic wording. Their assertions now
+verify disarmed source owners, conditional cleanup, and the matching outer-loop
+exit label while preserving compile/run checks. Compiler safety behavior was
+not weakened to recover the older emitted text.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

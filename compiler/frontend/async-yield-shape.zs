@@ -88,7 +88,20 @@ function frameStatementIsSupported(
 ): boolean {
   if (isFrameSchedulerYield(program, arena, index)) return !synchronousOnly;
   const kind = arena.nodes[index].kind;
-  if (kind == StatementKind.matchStatement) {
+  // Match-initialized root owners use the same non-suspending arm lowering as
+  // statement matches. The selected value becomes live only after the match;
+  // an arm that returns/throws never initializes the destination frame slot.
+  let matchInitializer = false;
+  if (kind == StatementKind.variableStatement && !nested) {
+    match (in arena.nodes[index].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => matchInitializer = tree.nodes[tree.root].kind == ExpressionKind.matchExpression;
+        none => {}
+      }
+      none => {}
+    }
+  }
+  if (kind == StatementKind.matchStatement || matchInitializer) {
     return match (in arena.nodes[index].expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
@@ -124,6 +137,7 @@ function frameStatementIsSupported(
     if (nested || arena.nodes[index].arrayBindings.length != 0) return false;
     match (in arena.nodes[index].expression) { some(_) => {} none => return false; }
   } else if (kind != StatementKind.returnStatement
+    && !(kind == StatementKind.selectStatement && synchronousOnly)
     && kind != StatementKind.throwStatement
     && kind != StatementKind.expressionStatement
     && kind != StatementKind.assignmentStatement

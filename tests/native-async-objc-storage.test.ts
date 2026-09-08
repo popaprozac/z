@@ -38,8 +38,7 @@ hostToolchainTest("cleans Foundation resources and synchronized storage in nativ
     const source = readFileSync(`${native}.m`, "utf8");
     execute(source, resolve(directory, "native-ubsan"), expected);
 
-    const harness = `#define main z_fixture_main\n${source}\n#undef main
-#include <errno.h>
+    const harness = `#include <errno.h>
 static int descriptor_closed(int fd) { errno = 0; return fcntl(fd, F_GETFD) == -1 && errno == EBADF; }
 int main(void) {
   Z_AsyncExecutor executor = {0};
@@ -191,7 +190,17 @@ int main(void) {
   }
   return 0;
 }`;
-    execute(harness, resolve(directory, "cancellation-ubsan"),
+    // Bridge names are private generated identities, not a native ABI. Resolve
+    // the frame names after header-aware mangling rather than pinning module IDs.
+    const nativeHarness = harness.replace(
+      /\b_z_stage1_yield_(listenMoved|listenDirect|listenOwner|joinNative|matchNative|listen)(_start)?\b/g,
+      (_match, name: string, suffix: string | undefined) => {
+        const frame = new RegExp(`typedef struct (_z_stage1_yield_(?:__z_module_\\d+_)?${name}) \\{`).exec(source)?.[1];
+        assert.ok(frame, `Missing frame for ${name}`);
+        return frame + (suffix ?? "");
+      },
+    );
+    execute(`#define main z_fixture_main\n${source}\n#undef main\n${nativeHarness}`, resolve(directory, "cancellation-ubsan"),
       expected.repeat(3) + "released endpoint\nreleased lease\n".repeat(3));
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 360_000);
