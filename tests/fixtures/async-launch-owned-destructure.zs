@@ -1,5 +1,5 @@
 // Integration prerequisite, not an executable differential fixture yet.
-// Stage 0 rejects async struct destructuring (Z0700). Native check accepts
+// Stage 0 executes this with owned frame fields. Native check accepts
 // this body, but native run still rejects its combined frame at C emission.
 import { scheduler } from "std/async";
 

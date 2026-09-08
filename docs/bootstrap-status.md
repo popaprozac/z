@@ -1159,8 +1159,12 @@ The immediate consumer-driven prerequisite is Zapp's lifecycle-owned launch
 listener, before enabling automatic secondary-instance forwarding. Its reduced
 `async-launch-listener.zs` fixture runs in Stage 0 but native `Z0700` rejects a
 named helper with a yield inside a loop. `async-launch-owned-destructure.zs`
-separately exposes Stage 0's async struct-destructuring gate and a native frame
-that passes `check` but fails C emission. Close these frame/cleanup boundaries
+now executes in Stage 0, with selected fields stored in the owned task frame;
+the native combined shape still passes `check` but fails C emission. The broader
+`async-owned-destructure.zs` probe covers explicit copy/move, awaited producers,
+scoped child borrows, errors, and cancellation before or after initialization.
+Cleanup-bearing branch/loop locals still require an explicit `async scope`,
+as ordinary owned async locals do. Close the remaining native frame boundaries
 with execution and cancellation tests before restoring the app integration;
 do not weaken executor provenance or substitute an uninterruptible synchronous
 worker. See [the exact pressure-test checkpoint](ownership-pressure.md#launch-readiness-and-the-next-async-composition-prerequisite).

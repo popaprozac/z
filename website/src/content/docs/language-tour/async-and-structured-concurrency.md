@@ -170,8 +170,12 @@ lower statically when every child is lexical.
 :::caution[Pre-alpha composition]
 The accepted model is broader than every fixed-point native lowering tier.
 General suspension counts, nested control-flow combinations, and some
-ownership-bearing frame shapes are still expanding. In particular, Stage 0
-does not yet execute ordinary struct destructuring inside async functions, and
+ownership-bearing frame shapes are still expanding. Stage 0 executes owned
+value-struct destructuring at the function root or directly inside an explicit
+`async scope`, including awaited producers and cancellation cleanup. Owned
+branch/loop locals still need that explicit lexical scope; borrowed-view and
+array patterns in async frames are not yet executable. Fixed-point native
+execution of destructuring combined with suspension remains incomplete, and
 the native compiler's ordinary named-helper tiers do not yet include a loop
 containing `await scheduler.yield()`. These are implementation boundaries, not
 new ownership rules. A successful `check` alone is not proof that an advanced

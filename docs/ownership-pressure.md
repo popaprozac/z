@@ -5540,7 +5540,7 @@ the enclosing task cancels and joins correctly.
 
 | Reproduction | Stage 0 | Fixed-point native driver |
 | --- | --- | --- |
-| `tests/fixtures/async-launch-owned-destructure.zs` | `Z0700`: ordinary struct destructuring is not lowered into async frames | `check` accepts; `run` fails at C emission with the current named-Task await boundary |
+| `tests/fixtures/async-launch-owned-destructure.zs` | Runs; selected owned fields survive suspension in the task frame | `check` accepts; `run` fails at C emission with the current named-Task await boundary |
 | `tests/fixtures/async-launch-listener.zs` | Runs successfully | `Z0700`: an ordinary named helper with a suspending loop is outside the current executable tier |
 
 The first is the natural error-conversion shape: `const { code, message } =
@@ -5577,11 +5577,38 @@ The executable differential fixture `self-host-emit-conditional-conversion.zs`
 covers both choices, nested ternaries, wide integers, floating-point conversions,
 and String results. This changes compile-time evidence, not the runtime model.
 
-Continuation order: add owned struct destructuring to async-frame storage and
-cleanup; expand native ordinary-helper suspension/control-flow lowering with
+Continuation order: finish native destructuring/suspension parity; expand
+native ordinary-helper suspension/control-flow lowering with
 positive cancellation and destruction tests; then restore the listener
 integration probe and exercise startup, competing launches, quit, and teardown.
 No new source syntax or public Zapp API is required.
+
+### Stage-0 owned destructuring checkpoint
+
+`tests/fixtures/async-owned-destructure.zs` now exercises the first prerequisite
+through the same initializer and cleanup paths as ordinary async locals. An
+internal source slot evaluates the producer once, selected fields transfer into
+their own guarded frame slots, and unselected fields are destroyed immediately.
+Clearing transferred fields and the source live flag prevents duplicate cleanup.
+This adds frame storage, not a separate allocation per destructuring operation;
+`move` transfers ownership without a deep copy, while explicit `copy` retains
+its normal field-copy costs.
+
+The executable evidence includes String/Array/Option copies and moves, retained
+class fields, renamed and mutable bindings, awaited producers, an owned field
+returned after suspension, scoped borrows joined before destruction, failure
+before and after initialization, and cancellation during an awaited initializer
+or after its selected fields become live. Observable destructors verify exact
+cleanup ordering; the fixture also runs under UndefinedBehaviorSanitizer.
+
+The implementation deliberately preserves ordinary owned-local placement:
+cleanup-bearing bindings are supported at the async function root and directly
+inside `async scope`, including scopes nested in loops. A bare conditional or
+loop-owned local still needs lexical cleanup states; hiding it behind
+destructuring must not bypass that restriction. Borrowed views, positional array
+patterns, custom-`deinit` value sources, and foreign RAII fields are not newly
+admitted. The native combined frame and ordinary suspending-helper gaps remain
+the next prerequisites; the Zapp listener is still not enabled.
 
 ## Not tested yet
 

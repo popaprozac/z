@@ -448,6 +448,7 @@ export type SemanticInfo = {
   readonly optionalChains: ReadonlyMap<number, OptionalChainPlan>;
   readonly structSpreads: ReadonlyMap<number, StructSpreadPlan>;
   readonly arrayDestructures: ReadonlyMap<number, ArrayDestructurePlan>;
+  readonly objectDestructureTypes: ReadonlyMap<number, string>;
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
@@ -618,6 +619,7 @@ type AnalysisState = {
   readonly optionalChains: Map<number, OptionalChainPlan>;
   readonly structSpreads: Map<number, StructSpreadPlan>;
   readonly arrayDestructures: Map<number, ArrayDestructurePlan>;
+  readonly objectDestructureTypes: Map<number, string>;
   readonly generatedOptionalEnums: Map<string, EnumDeclaration>;
   unsafeDepth: number;
   readonly unsafeExpectedTypes: Map<number, string>;
@@ -1266,6 +1268,7 @@ export function analyze(
     optionalChains: new Map(),
     structSpreads: new Map(),
     arrayDestructures: new Map(),
+    objectDestructureTypes: new Map(),
     generatedOptionalEnums: new Map(),
     unsafeDepth: 0,
     unsafeExpectedTypes: new Map(),
@@ -4806,11 +4809,18 @@ function analyzeStatement(
       if (expected) requireAssignable(expected, initializerType, statement.initializer, fileName, structs, enums, state);
       const inferredSourceType = String(underlyingType(expected ?? initializerType));
       const sourceType = parseViewType(inferredSourceType)?.target ?? inferredSourceType;
-      if (owner.async && parseChannelHandleType(sourceType)?.kind !== "endpoints") {
+      if (owner.async && statement.arrayBindings) {
         throw new DiagnosticError(fileName, statement.location, "this destructuring shape is not executable in async functions yet", {
           code: "Z0700",
-          notes: ["Channel endpoint destructuring is supported because both ownership-bearing fields transfer directly into task-frame storage"],
-          helps: ["bind the aggregate normally in async code until general destructuring is added to task-frame lowering"],
+          notes: ["value-struct fields and Channel endpoints can transfer into task-frame storage; positional array patterns remain a separate lowering tier"],
+          helps: ["bind the array normally in async code until positional destructuring is added to task-frame lowering"],
+        });
+      }
+      if (owner.async && containsStoredViewType(inferredSourceType, structs, enums)) {
+        throw new DiagnosticError(fileName, statement.location, "borrowed view destructuring is not executable in async frames yet", {
+          code: "Z0700",
+          notes: ["owned field transfer does not establish a suspension-safe lifetime for projected views"],
+          helps: ["keep view destructuring in synchronous code while this frame tier is expanded"],
         });
       }
       if (statement.arrayBindings) {
@@ -5026,6 +5036,7 @@ function analyzeStatement(
       if (!explicitOwnership) {
         consumeOwnedValue(statement.initializer, sourceType, locals, structs, enums, fileName, state);
       }
+      state.objectDestructureTypes.set(statement.location.offset, sourceType);
       for (const { binding, field } of fields) {
         const stored = statement.mutable ? `${mutablePrefix}${field.type.name}` : field.type.name;
         locals.set(binding.bindingName, stored);

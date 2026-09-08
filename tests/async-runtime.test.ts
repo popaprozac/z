@@ -232,6 +232,53 @@ test("materializes cleanup-bearing immutable borrow temporaries in the awaiting 
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("transfers destructured value-struct fields through owned async frames", () => {
+  const input = resolve(projectRoot, "tests/fixtures/async-owned-destructure.zs");
+  const source = readFileSync(input, "utf8");
+  assert.deepEqual(diagnostics(source, input), []);
+  const generated = compileToC(source, input);
+  assert.match(generated, /value___z_async_destructure_/);
+  assert.match(generated, /live___z_async_destructure_\d+ = false/);
+  assert.match(generated, /value___z_async_destructure_\d+\.selected = NULL/);
+  const snapshot = source.indexOf("snapshot != title");
+  assert.match(hover(source, input, snapshot)?.contents.value ?? "", /snapshot: String/);
+  const execution = spawnSync(process.execPath, [cli, "run", input], {
+    encoding: "utf8", timeout: 15_000, killSignal: "SIGKILL",
+  });
+  assert.equal(execution.status, 0, execution.stderr || String(execution.error));
+  assert.equal(execution.stdout, [
+    "prepared inspected", "released inspected discarded", "inspected", "released inspected selected",
+    "prepared scoped", "released scoped discarded", "scoped selected", "released scoped selected", "scope ended",
+    "prepared scoped", "released scoped discarded", "scoped selected", "released scoped selected", "scope ended",
+    "prepared awaited", "released awaited discarded", "awaited selected", "released awaited selected",
+    "prepared borrowed", "released borrowed discarded", "released borrowed selected", "borrowed borrowed", "borrow joined",
+    "prepared returned", "released returned discarded", "returned selected",
+    "prepared failed", "released failed discarded", "failed selected", "released failed selected",
+    "prepared cancelled", "released cancelled discarded", "released cancelled selected", "joined cancellation",
+    "prepared initializing", "released initializing discarded", "released initializing selected", "joined initializer cancellation",
+    "released returned selected", "",
+  ].join("\n"));
+  const reduced = resolve(projectRoot, "tests/fixtures/async-launch-owned-destructure.zs");
+  const reproduction = spawnSync(process.execPath, [cli, "run", reduced], {
+    encoding: "utf8", timeout: 15_000, killSignal: "SIGKILL",
+  });
+  assert.equal(reproduction.status, 0, reproduction.stderr || String(reproduction.error));
+});
+
+test("preserves ownership and lexical limits for async struct destructuring", () => {
+  const prelude = 'import { scheduler } from "std/async"; struct Record { title: String; count: i32; }';
+  const owned = 'const record = Record({ title: "draft", count: 1 });';
+  const body = (contents: string) => `${prelude} async function main(): i32 { ${contents} return 0; }`;
+  assert.throws(() => compileToC(body(`${owned} const { title } = record;`), "async-destructure-implicit.zs"), /requires explicit copy or move/);
+  assert.throws(() => compileToC(body(`${owned} const { title } = move record; return record.count;`), "async-destructure-moved.zs"), /use of moved value/);
+  assert.throws(() => compileToC(`${prelude} async function inspect(in record: Record): void { const { title } = move record; } function main(): i32 { return 0; }`, "async-destructure-borrow.zs"), /cannot move.*borrowed/);
+  assert.throws(() => compileToC(`${prelude} struct Shelf { record: Record; } async function main(): i32 { const shelf = Shelf({ record: Record({ title: "draft", count: 1 }) }); const viewed = view shelf.record; const { title } = viewed; return 0; }`, "async-destructure-view.zs"), /view destructuring is not executable in async frames/);
+  assert.throws(() => compileToC(body('if (true) { const { title } = Record({ title: "draft", count: 1 }); await scheduler.yield(); }'), "async-destructure-branch.zs"), /cleanup-bearing conditional-local binding needs lexical frame cleanup states/);
+  assert.throws(() => compileToC(body(`${owned} const { title } = move record; const moved = move title; await scheduler.yield(); const invalid = title.byteLength;`), "async-destructure-field-moved.zs"), /use of moved value/);
+  assert.throws(() => compileToC(body('const values = [1, 2]; const [first] = values;'), "async-destructure-array.zs"), /destructuring shape is not executable in async functions/);
+  assert.throws(() => compileToC('struct Resource { value: i32; deinit {} } async function main(): i32 { const { value } = Resource({ value: 1 }); return value; }', "async-destructure-deinit.zs"), /because it defines deinit/);
+});
+
 test("stores named synchronous function values inside async frames", () => {
   const source = `
     import { thread } from "std/thread";

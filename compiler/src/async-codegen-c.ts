@@ -155,6 +155,12 @@ type AsyncValueBranchSite = {
 type AsyncOperation =
   | { readonly kind: "statement"; readonly statement: Statement }
   | {
+    readonly kind: "objectDestructure";
+    readonly statement: Extract<Statement, { kind: "destructure" }>;
+    readonly sourceBinding: string;
+    readonly sourceType: string;
+  }
+  | {
     readonly kind: "channelDestructure";
     readonly statement: Extract<Statement, { kind: "destructure" }>;
     readonly valueType: string;
@@ -634,6 +640,36 @@ function planFunction(
       for (const local of [...activeScope.cleanupLocals].reverse()) {
         operations.push({ kind: "localCleanup", name: local.name, type: local.type });
       }
+    }
+  };
+  const registerFrameLocal = (
+    name: string,
+    type: string,
+    location: SourceLocation,
+    scope: number,
+    controlDepth: number,
+  ): void => {
+    if (scope !== 0 && locals.has(name)) {
+      unsupported(fileName, location, "shadowing an async frame binding inside `async scope` is not executable yet");
+    }
+    requireFrameType(type, location, fileName, "async local", types);
+    if (controlDepth > 0 && locals.has(name)) {
+      unsupported(fileName, location, "shadowing or reusing an async frame binding inside conditional control flow is not executable yet");
+    }
+    const owningAsyncScope = scope === 0
+      ? null
+      : [...activeScopes].reverse().find((candidate) => candidate.scope === scope) ?? null;
+    if (
+      controlDepth > 0
+      && hasFrameCleanup(type, types)
+      && (!owningAsyncScope || controlDepth > owningAsyncScope.controlDepth)
+    ) {
+      unsupported(fileName, location, "a cleanup-bearing conditional-local binding needs lexical frame cleanup states");
+    }
+    locals.set(name, type);
+    if (scope !== 0 && hasFrameCleanup(type, types)) {
+      if (!owningAsyncScope) throw new Error(`missing active async scope ${scope} for local ${JSON.stringify(name)}`);
+      owningAsyncScope.cleanupLocals.push({ name, type });
     }
   };
   const ownedTaskScopes = new Set<string>();
@@ -1285,6 +1321,31 @@ function planFunction(
       }
       if (statement.kind === "destructure") {
         const channel = semanticInfo.channelCalls.get(statement.initializer.location.offset);
+        if (!channel) {
+          const sourceType = semanticInfo.objectDestructureTypes.get(statement.location.offset);
+          if (!sourceType || !types.structs.has(sourceType) || statement.arrayBindings) {
+            unsupported(fileName, statement.location, "async object destructuring requires an analyzed value struct");
+          }
+          const sourceBinding = `__z_async_destructure_${statement.location.offset}`;
+          // Use the ordinary initializer path so a producer (including try or
+          // await) runs once and its owned result is guarded across suspension.
+          planStatements([{
+            kind: "variable",
+            name: sourceBinding,
+            nameLocation: statement.location,
+            location: statement.location,
+            mutable: false,
+            type: { name: sourceType, location: statement.location },
+            initializer: statement.initializer,
+          }], scope, controlDepth);
+          for (const binding of statement.objectBindings) {
+            const type = semanticInfo.bindingTypes.get(binding.bindingLocation.offset);
+            if (!type) unsupported(fileName, binding.bindingLocation, "async destructuring requires an analyzed field type");
+            registerFrameLocal(binding.bindingName, type, binding.bindingLocation, scope, controlDepth);
+          }
+          operations.push({ kind: "objectDestructure", statement, sourceBinding, sourceType });
+          continue;
+        }
         const sender = statement.objectBindings.find((binding) => binding.fieldName === "sender");
         const receiver = statement.objectBindings.find((binding) => binding.fieldName === "receiver");
         if (
@@ -1328,16 +1389,9 @@ function planFunction(
       if (statement.kind === "variable") {
         const threadSpawn = statement.initializer?.kind === "call"
           && semanticInfo.threadSpawnCalls.has(statement.initializer.location.offset);
-        if (scope !== 0 && locals.has(statement.name)) {
-          unsupported(
-            fileName,
-            statement.nameLocation,
-            "shadowing an async frame binding inside `async scope` is not executable yet",
-          );
-        }
         const type = statement.type?.name ?? semanticInfo.bindingTypes.get(statement.nameLocation.offset);
         if (!type) unsupported(fileName, statement.location, `could not determine async frame type for ${JSON.stringify(statement.name)}`);
-        requireFrameType(type, statement.type?.location ?? statement.nameLocation, fileName, "async local", types);
+        registerFrameLocal(statement.name, type, statement.type?.location ?? statement.nameLocation, scope, controlDepth);
         if (!statement.initializer && hasFrameCleanup(type, types)) {
           unsupported(
             fileName,
@@ -1345,35 +1399,6 @@ function planFunction(
             "an uninitialized ownership-bearing async local needs live-storage transition lowering",
             "initialize the binding immediately, or use a cleanup-free out destination in this tier",
           );
-        }
-        if (controlDepth > 0 && locals.has(statement.name)) {
-          unsupported(
-            fileName,
-            statement.nameLocation,
-            "shadowing or reusing an async frame binding inside conditional control flow is not executable yet",
-          );
-        }
-        const owningAsyncScope = scope === 0
-          ? null
-          : [...activeScopes].reverse().find((candidate) => candidate.scope === scope) ?? null;
-        if (
-          controlDepth > 0
-          && hasFrameCleanup(type, types)
-          && (!owningAsyncScope || controlDepth > owningAsyncScope.controlDepth)
-        ) {
-          unsupported(
-            fileName,
-            statement.nameLocation,
-            "a cleanup-bearing conditional-local binding needs lexical frame cleanup states",
-          );
-        }
-        locals.set(statement.name, type);
-        if (scope !== 0 && hasFrameCleanup(type, types)) {
-          const activeScope = [...activeScopes].reverse().find((candidate) => candidate.scope === scope);
-          if (!activeScope) {
-            throw new Error(`missing active async scope ${scope} for local ${JSON.stringify(statement.name)}`);
-          }
-          activeScope.cleanupLocals.push({ name: statement.name, type });
         }
         if (
           statement.initializer?.kind === "new"
@@ -5631,6 +5656,30 @@ function generatePoll(
         `  ${frameCleanup(frameStoredValue(operation.name, operation.type, plan.types), operation.type, plan.types)}`,
         `  frame->${frameLiveField(operation.name)} = false;`,
         "}",
+        `frame->state = ${state + 1};`,
+        "continue;",
+      ]));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "objectDestructure") {
+      const source = frameStoredValue(operation.sourceBinding, operation.sourceType, plan.types);
+      const lines: string[] = [];
+      for (const binding of operation.statement.objectBindings) {
+        const type = plan.locals.get(binding.bindingName)!;
+        const field = `${source}.${cFieldName(binding.fieldName)}`;
+        lines.push(`${frameStoredValue(binding.bindingName, type, plan.types)} = ${field};`);
+        if (hasFrameCleanup(type, plan.types)) {
+          lines.push(`${field} = ${asyncFrameZeroValue(type, plan.types)};`);
+          lines.push(`frame->${frameLiveField(binding.bindingName)} = true;`);
+        }
+      }
+      if (hasFrameCleanup(operation.sourceType, plan.types)) {
+        lines.push(frameCleanup(source, operation.sourceType, plan.types));
+        lines.push(`frame->${frameLiveField(operation.sourceBinding)} = false;`);
+      }
+      cases.push(caseBlock(state, [
+        ...lines,
         `frame->state = ${state + 1};`,
         "continue;",
       ]));

@@ -646,11 +646,21 @@ cleanup-bearing struct requires `copy record` to preserve the source or
 `move record` to consume it. Selected fields become independent bindings and
 unselected owned fields are destroyed. Private fields are accessible only from
 the declaring type. The current tier rejects classes, custom-`deinit` or foreign
-RAII storage, and nested, object-rest, default, parameter, and async patterns.
+RAII storage, and nested, object-rest, default, and parameter patterns.
 The fixed-point native compiler implements the same rule for recursively
 copyable Z-owned fields, including `String`, `Array<T>`, structs, and enums. It
 evaluates the source once, clears every transferred slot, and destroys the
 remaining temporary, so early returns cannot double-destroy or leak fields.
+
+Stage 0 also executes value-struct patterns in async frames. The initializer is
+evaluated once, including `try` and `await`; selected owned fields survive later
+suspension and are cleaned on completion, error, or cancellation. As with other
+owned async locals, cleanup-bearing patterns currently belong at the function
+root or directly inside an explicit `async scope`. A scope inside a branch or
+loop joins its children before destroying these fields. Borrowed-view and
+positional array patterns in async frames remain deferred, and fixed-point
+native execution of the combined destructuring/suspension shape is not yet
+supported. These are lowering limits, not different destructuring semantics.
 
 Fixed arrays, `Array<T>`, and `Slice<T>` support positional local patterns:
 
