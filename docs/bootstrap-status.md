@@ -1176,7 +1176,12 @@ results, `try` propagation, and `attempt`-materialized Results. An active child
 is joined before canceled parent storage is released. Typed errors travel through
 the existing owned `Result<T, E>` representation, including payload-free
 `Result<void, E>` success. Cancellation and unclaimed-result tests cover both Z
-destructors and Clang strong fields. Borrowed child arguments, method/placed
+destructors and Clang strong fields. Synchronous `match` statements also compose
+inside these loops, including `attempt` subjects, root Results from awaited
+children, borrowed matches, wildcard cleanup, early return/throw/`try`, and
+loop exits. Match payloads stay in lexical storage and finish before the next
+suspension; awaited subjects, suspension inside arms, and destructured patterns
+remain outside this native frame tier. Borrowed child arguments, method/placed
 awaits, nested awaited expressions, and nested source locals remain separate
 yield-frame boundaries. The frame still requires an explicit `scheduler.yield()`;
 these reductions do not establish the actual listener integration. The broader

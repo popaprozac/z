@@ -83,10 +83,41 @@ function frameExpressionIsSupported(in tree: ExpressionTree, index: usize): bool
 }
 
 function frameStatementIsSupported(
-  in program: Program, in arena: StatementArena, index: usize, nested: boolean
+  in program: Program, in arena: StatementArena, index: usize,
+  nested: boolean, synchronousOnly: boolean
 ): boolean {
-  if (isFrameSchedulerYield(program, arena, index)) return true;
+  if (isFrameSchedulerYield(program, arena, index)) return !synchronousOnly;
   const kind = arena.nodes[index].kind;
+  if (kind == StatementKind.matchStatement) {
+    return match (in arena.nodes[index].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          const root = tree.root;
+          if (tree.nodes[root].kind != ExpressionKind.matchExpression
+            || tree.nodes[root].children.length < 2) return false;
+          const subject = tree.nodes[root].children[0];
+          if (!frameExpressionIsSynchronous(tree, subject)) return false;
+          let armIndex: usize = 1;
+          while (armIndex < tree.nodes[root].children.length) {
+            const arm = tree.nodes[root].children[armIndex];
+            if (tree.nodes[arm].kind != ExpressionKind.matchArmExpression
+              || tree.nodes[arm].labels.length != 1) return false;
+            // Payload bindings remain lexical C storage. Destructured payload
+            // locals and payloads spanning suspension need their own frame tier.
+            if (tree.nodes[arm].labels[0] != "none"
+              && tree.nodes[arm].labels[0] != "binding") return false;
+            for (const child of tree.nodes[arm].statements) {
+              if (!frameStatementIsSupported(program, arena, child, true, true)) return false;
+            }
+            armIndex = armIndex + 1;
+          }
+          select true;
+        }
+        none => false;
+      }
+      none => false;
+    };
+  }
   if (kind == StatementKind.variableStatement
     || kind == StatementKind.destructureStatement) {
     // Keep lexical local storage expansion separate from root frame storage.
@@ -105,7 +136,13 @@ function frameStatementIsSupported(
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
         const root = tree.root;
-        if (kind == StatementKind.ifStatement || kind == StatementKind.whileStatement
+        if (synchronousOnly) {
+          let expression = root;
+          if ((tree.nodes[root].kind == ExpressionKind.tryExpression
+            || tree.nodes[root].kind == ExpressionKind.attemptExpression)
+            && tree.nodes[root].children.length == 1) expression = tree.nodes[root].children[0];
+          if (!frameExpressionIsSynchronous(tree, expression)) return false;
+        } else if (kind == StatementKind.ifStatement || kind == StatementKind.whileStatement
           || kind == StatementKind.throwStatement || kind == StatementKind.destructureStatement) {
           if (!frameExpressionIsSynchronous(tree, root)) return false;
         } else if (!frameExpressionIsSupported(tree, root)) return false;
@@ -125,7 +162,7 @@ function frameStatementIsSupported(
     none => {}
   }
   for (const child of arena.nodes[index].children) {
-    if (!frameStatementIsSupported(program, arena, child, true)) return false;
+    if (!frameStatementIsSupported(program, arena, child, true, synchronousOnly)) return false;
   }
   return true;
 }
@@ -149,7 +186,7 @@ export function functionUsesYieldFrame(
   }
   if (!yields) return false;
   for (const root of declaration.body.roots) {
-    if (!frameStatementIsSupported(program, declaration.body, root, false)) return false;
+    if (!frameStatementIsSupported(program, declaration.body, root, false, false)) return false;
   }
   return true;
 }

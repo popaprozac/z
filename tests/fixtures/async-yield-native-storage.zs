@@ -64,6 +64,20 @@ async function listenMoved(endpoint: Endpoint, rounds: i32): i32 {
 // No user deinit: the frame must still clear Clang-owned strong fields.
 struct NativeOwner { file: Foundation.NSFileHandle; }
 
+function rejectNative(owner: NativeOwner): i32 throws NativeOwner { throw owner; }
+
+async function matchNative(owner: NativeOwner, early: boolean): i32 {
+  match (attempt rejectNative(owner)) {
+    success(_) => return 1;
+    failure(error) => {
+      if (error.file.fileDescriptor < 0) return 2;
+      if (early) return 0;
+    }
+  }
+  await scheduler.yield();
+  return 0;
+}
+
 async function failNative(owner: NativeOwner): i32 throws NativeOwner {
   await scheduler.yield();
   throw owner;

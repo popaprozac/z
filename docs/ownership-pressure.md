@@ -5796,6 +5796,57 @@ wakeup shape against these remaining boundaries, then restore startup/readiness
 and cancellation/join integration. No automatic listener or public Zapp API is
 enabled by the reduced compiler tests.
 
+### Synchronous matches inside native yielding loops
+
+The actual launch endpoint calls a bounded synchronous `receive(in inbox)` and
+materializes failures with `attempt`. Supporting child awaits alone did not make
+this listener expressible: it also needs a `match` inside the yielding loop.
+`async-yield-match.zs` now executes that shape through Stage 0 and the native
+frontend, with exact destructor traces and bounded UBSan checks.
+
+The native frame accepts ordinary enum match statements whose subject and arms
+complete synchronously. Payload-free arms, one binding/discard, borrowing, and
+wildcards are supported. Root Results produced by `attempt await child()` can
+be matched afterward. Match expressions, awaited subjects, object-pattern
+destructuring, nested source locals, and suspension inside an arm remain distinct
+composition boundaries. Payloads are lexical storage, not new heap-frame fields.
+An enclosing C scope ends their Clang ARC lifetime before the next resume label.
+
+This exposed two older native cleanup-planning omissions. A move anywhere in an
+arm had suppressed cleanup for the entire arm, leaking its payload on other
+branches. Statement arms now use the existing move/live-guard plan. Separately,
+`break` and `continue` must include the current arm's payload in the enclosing
+loop's cleanup set. The same tests also execute without async to keep these
+shared fixes honest. The real transport regression then caught a double cleanup
+of a nested `Result<Option<Lease>>`: consuming the inner match was not indexed
+under its hygienically renamed payload owner. Move indexing now includes
+lowered consuming-match subjects and treats matching as control flow, so an
+inner consumption disarms the same owner guarded by outer-arm cleanup. A reduced
+nested Result/Option probe exercises both consumption and an early return before
+it in synchronous and yielding functions. Early return, throw, and failed synchronous `try` release
+lexical payloads before the common frame-completion path releases root owners.
+Consuming-match subject temporaries are initialized and destroyed around subject
+evaluation, before any arm can exit early.
+
+Cancellation checks cover a borrowed owner retained across a yield, a consumed
+wildcard owner, and an unclaimed propagated error. Foundation probes additionally
+check real descriptor closure and weak-reference invalidation after normal
+completion, an early-return arm, or cancellation after the match. There is no
+allocation per match introduced by this change: generated code uses the same
+tag switch and ownership operations as synchronous matching.
+
+Two pre-existing boundaries encountered while widening the probes remain queued:
+Stage 0 does not yet emit an interpolated String argument directly inside this
+async expression shape, and the source-only native path can get farther than
+Stage 0 for a rejected cleanup-bearing borrowed call temporary before Clang
+rejects it. Keep rejection parity as a separate follow-up; do not infer support
+from native emission alone.
+
+Zapp's actual endpoint/inbox probe now includes its bounded receive-error match,
+but remains compile-only. Next: main-host wakeup placement and cancellation/join
+integration, then startup/readiness. Automatic secondary-instance forwarding is
+not enabled by this checkpoint, and no new language syntax or Zapp API was added.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

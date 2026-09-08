@@ -7480,6 +7480,197 @@ function appendForeignUnionMatchStatement(
   output.append("}\n");
 }
 
+function appendEnumMatchStart(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  index: usize, depth: usize
+): void throws String {
+  if (declaration.statements[index].matchConsumesSubject) {
+    match (in declaration.statements[index].expression) {
+      some(subject) => try appendBorrowedTemporaryInitializers(
+        inout output, declaration, subject, depth
+      );
+      none => {}
+    }
+  }
+  const consumedLiveFlag = consumedMatchLiveFlag(
+    declaration,
+    declaration.statements[index]
+  );
+  if (consumedLiveFlag.byteLength > 0) {
+    appendIndent(inout output, depth);
+    appendCBindingName(inout output, consumedLiveFlag);
+    output.append(" = false;\n");
+  }
+  const matchTemporary = `_z_stage1_match_${index}`;
+  if (declaration.statements[index].matchConsumesSubject) {
+    const subjectType = match (in declaration.statements[index].type) {
+      some(type) => try cType(type);
+      none => throw "native C emission received an untyped match subject";
+    };
+    appendIndent(inout output, depth);
+    output.append(subjectType);
+    output.append(" ");
+    output.append(matchTemporary);
+    output.append(" = ");
+    match (in declaration.statements[index].expression) {
+      some(subject) => try appendExpression(
+        inout output,
+        declaration,
+        subject
+      );
+      none => throw "native C emission received a match without a subject";
+    }
+    output.append(";\n");
+    match (in declaration.statements[index].expression) {
+      some(subject) => appendBorrowedTemporaryCleanups(
+        inout output, declaration, subject, depth
+      );
+      none => {}
+    }
+  }
+  appendIndent(inout output, depth);
+  output.append("switch (");
+  if (declaration.statements[index].matchConsumesSubject) {
+    output.append(matchTemporary);
+  } else {
+    match (in declaration.statements[index].expression) {
+      some(subject) => {
+        try appendExpression(inout output, declaration, subject);
+      }
+      none => throw "native C emission received a match without a subject";
+    }
+  }
+  const nicheViewOption = labelsContain(
+    declaration.statements[index].labels,
+    "niche-view-option"
+  );
+  if (nicheViewOption) output.append(" != NULL ? 1 : 0");
+  else if (labelsContain(declaration.statements[index].labels, "tagged")) {
+    if (labelsContain(declaration.statements[index].labels, "view-subject")) {
+      output.append("->tag");
+    } else {
+      output.append(".tag");
+    }
+  }
+  output.append(") {\n");
+}
+
+function appendEnumMatchArmStart(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  index: usize, arm: usize, depth: usize
+): void throws String {
+  const matchTemporary = `_z_stage1_match_${index}`;
+  const nicheViewOption = labelsContain(
+    declaration.statements[index].labels, "niche-view-option"
+  );
+  if (declaration.statements[arm].kind != LoweredStatementKind.matchArmStatement) {
+    throw "native C emission received a malformed match arm";
+  }
+  appendIndent(inout output, depth + 1);
+  if (declaration.statements[arm].name == "_") {
+    output.append("default");
+  } else if (nicheViewOption) {
+    output.append(declaration.statements[arm].name == "some"
+      ? "case 1"
+      : "case 0");
+  } else {
+    output.append("case Z_");
+    output.append(declaration.statements[index].name);
+    if (labelsContain(declaration.statements[index].labels, "tagged")) {
+      output.append("Tag");
+    }
+    output.append("_");
+    output.append(declaration.statements[arm].name);
+  }
+  output.append(": {\n");
+  match (in declaration.statements[arm].type) {
+    some(type) => {
+      if (declaration.statements[arm].labels.length != 1) {
+        throw "native C emission received a payload arm without one binding";
+      }
+      appendIndent(inout output, depth + 2);
+      const loadViewValue = nicheViewOption
+        && viewPayloadLoadsAsValue(type);
+      const transferredClassPayload = declaration.statements[index]
+        .matchConsumesSubject
+        && !declaration.statements[arm].matchBindingNeedsCleanup
+        && (
+          type.kind == LoweredTypeKind.classType
+          || type.kind == LoweredTypeKind.foreignObjCType
+        );
+      if (
+        !declaration.statements[arm].matchBindingNeedsCleanup
+        && !nicheViewOption
+        && !transferredClassPayload
+      ) {
+        output.append("const ");
+      }
+      const payloadType = try cType(type);
+      output.append(payloadType);
+      if (transferredClassPayload) output.append(" const");
+      if (
+        nicheViewOption
+        && !loadViewValue
+        && type.kind != LoweredTypeKind.cstringType
+        && type.kind != LoweredTypeKind.foreignHandleType
+      ) output.append(" const *");
+      output.append(" __attribute__((unused))");
+      output.append(" ");
+      appendCBindingName(
+        inout output,
+        declaration.statements[arm].labels[0]
+      );
+      output.append(" = ");
+      if (loadViewValue) output.append("*(");
+      const objectiveCPayload = type.kind
+        == LoweredTypeKind.foreignObjCType;
+      if (objectiveCPayload) {
+        output.append("(");
+        output.append(payloadType);
+        output.append(")");
+        output.append(transferredClassPayload
+          ? "z_stage1_objc_take(&"
+          : "z_stage1_objc_borrow(&");
+      }
+      if (declaration.statements[index].matchConsumesSubject) {
+        output.append(matchTemporary);
+      } else {
+        match (in declaration.statements[index].expression) {
+          some(subject) => try appendExpression(
+            inout output,
+            declaration,
+            subject
+          );
+          none => throw "native C emission received a match without a subject";
+        }
+      }
+      if (loadViewValue) output.append(")");
+      if (nicheViewOption) {
+        // The nullable pointer is the payload; no tag or union survives.
+      } else if (labelsContain(declaration.statements[index].labels, "view-subject")) {
+        output.append("->payload.");
+      } else {
+        output.append(".payload.");
+      }
+      if (!nicheViewOption) {
+        output.append(declaration.statements[arm].name);
+      }
+      if (objectiveCPayload) output.append(")");
+      output.append(";\n");
+      if (declaration.statements[arm].liveFlag.byteLength > 0) {
+        appendIndent(inout output, depth + 2);
+        output.append("bool ");
+        appendCBindingName(
+          inout output,
+          declaration.statements[arm].liveFlag
+        );
+        output.append(" = true;\n");
+      }
+    }
+    none => {}
+  }
+}
+
 function appendStatement(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -7848,170 +8039,11 @@ function appendStatement(
       );
       return;
     }
-    const consumedLiveFlag = consumedMatchLiveFlag(
-      declaration,
-      declaration.statements[index]
-    );
-    if (consumedLiveFlag.byteLength > 0) {
-      appendIndent(inout output, depth);
-      appendCBindingName(inout output, consumedLiveFlag);
-      output.append(" = false;\n");
-    }
-    const matchTemporary = `_z_stage1_match_${index}`;
-    if (declaration.statements[index].matchConsumesSubject) {
-      const subjectType = match (in declaration.statements[index].type) {
-        some(type) => try cType(type);
-        none => throw "native C emission received an untyped match subject";
-      };
-      appendIndent(inout output, depth);
-      output.append(subjectType);
-      output.append(" ");
-      output.append(matchTemporary);
-      output.append(" = ");
-      match (in declaration.statements[index].expression) {
-        some(subject) => try appendExpression(
-          inout output,
-          declaration,
-          subject
-        );
-        none => throw "native C emission received a match without a subject";
-      }
-      output.append(";\n");
-    }
-    appendIndent(inout output, depth);
-    output.append("switch (");
-    if (declaration.statements[index].matchConsumesSubject) {
-      output.append(matchTemporary);
-    } else {
-      match (in declaration.statements[index].expression) {
-        some(subject) => {
-          try appendExpression(inout output, declaration, subject);
-        }
-        none => throw "native C emission received a match without a subject";
-      }
-    }
-    const nicheViewOption = labelsContain(
-      declaration.statements[index].labels,
-      "niche-view-option"
-    );
-    if (nicheViewOption) output.append(" != NULL ? 1 : 0");
-    else if (labelsContain(declaration.statements[index].labels, "tagged")) {
-      if (labelsContain(declaration.statements[index].labels, "view-subject")) {
-        output.append("->tag");
-      } else {
-        output.append(".tag");
-      }
-    }
-    output.append(") {\n");
+    try appendEnumMatchStart(inout output, declaration, index, depth);
     let hasWildcard = false;
     for (const arm of declaration.statements[index].children) {
-      if (declaration.statements[arm].kind != LoweredStatementKind.matchArmStatement) {
-        throw "native C emission received a malformed match arm";
-      }
-      appendIndent(inout output, depth + 1);
-      if (declaration.statements[arm].name == "_") {
-        hasWildcard = true;
-        output.append("default");
-      } else if (nicheViewOption) {
-        output.append(declaration.statements[arm].name == "some"
-          ? "case 1"
-          : "case 0");
-      } else {
-        output.append("case Z_");
-        output.append(declaration.statements[index].name);
-        if (labelsContain(declaration.statements[index].labels, "tagged")) {
-          output.append("Tag");
-        }
-        output.append("_");
-        output.append(declaration.statements[arm].name);
-      }
-      output.append(": {\n");
-      match (in declaration.statements[arm].type) {
-        some(type) => {
-          if (declaration.statements[arm].labels.length != 1) {
-            throw "native C emission received a payload arm without one binding";
-          }
-          appendIndent(inout output, depth + 2);
-          const loadViewValue = nicheViewOption
-            && viewPayloadLoadsAsValue(type);
-          const transferredClassPayload = declaration.statements[index]
-            .matchConsumesSubject
-            && !declaration.statements[arm].matchBindingNeedsCleanup
-            && (
-              type.kind == LoweredTypeKind.classType
-              || type.kind == LoweredTypeKind.foreignObjCType
-            );
-          if (
-            !declaration.statements[arm].matchBindingNeedsCleanup
-            && !nicheViewOption
-            && !transferredClassPayload
-          ) {
-            output.append("const ");
-          }
-          const payloadType = try cType(type);
-          output.append(payloadType);
-          if (transferredClassPayload) output.append(" const");
-          if (
-            nicheViewOption
-            && !loadViewValue
-            && type.kind != LoweredTypeKind.cstringType
-            && type.kind != LoweredTypeKind.foreignHandleType
-          ) output.append(" const *");
-          output.append(" __attribute__((unused))");
-          output.append(" ");
-          appendCBindingName(
-            inout output,
-            declaration.statements[arm].labels[0]
-          );
-          output.append(" = ");
-          if (loadViewValue) output.append("*(");
-          const objectiveCPayload = type.kind
-            == LoweredTypeKind.foreignObjCType;
-          if (objectiveCPayload) {
-            output.append("(");
-            output.append(payloadType);
-            output.append(")");
-            output.append(transferredClassPayload
-              ? "z_stage1_objc_take(&"
-              : "z_stage1_objc_borrow(&");
-          }
-          if (declaration.statements[index].matchConsumesSubject) {
-            output.append(matchTemporary);
-          } else {
-            match (in declaration.statements[index].expression) {
-              some(subject) => try appendExpression(
-                inout output,
-                declaration,
-                subject
-              );
-              none => throw "native C emission received a match without a subject";
-            }
-          }
-          if (loadViewValue) output.append(")");
-          if (nicheViewOption) {
-            // The nullable pointer is the payload; no tag or union survives.
-          } else if (labelsContain(declaration.statements[index].labels, "view-subject")) {
-            output.append("->payload.");
-          } else {
-            output.append(".payload.");
-          }
-          if (!nicheViewOption) {
-            output.append(declaration.statements[arm].name);
-          }
-          if (objectiveCPayload) output.append(")");
-          output.append(";\n");
-          if (declaration.statements[arm].liveFlag.byteLength > 0) {
-            appendIndent(inout output, depth + 2);
-            output.append("bool ");
-            appendCBindingName(
-              inout output,
-              declaration.statements[arm].liveFlag
-            );
-            output.append(" = true;\n");
-          }
-        }
-        none => {}
-      }
+      if (declaration.statements[arm].name == "_") hasWildcard = true;
+      try appendEnumMatchArmStart(inout output, declaration, index, arm, depth);
       for (const child of declaration.statements[arm].children) {
         try appendStatement(inout output, declaration, child, depth + 2);
       }
@@ -9644,6 +9676,7 @@ function appendYieldFrameTry(
   output.append(`if (${temporary}.tag == Z_${statement.name}Tag_failure) {\n`);
   appendIndent(inout output, depth + 1);
   output.append(`frame->result = (Z_${statement.labels[1]}){.tag = Z_${statement.labels[1]}Tag_failure, .payload.failure = ${temporary}.payload.failure};\n`);
+  appendYieldFrameLexicalCleanups(inout output, declaration, statement.cleanups, depth + 1);
   appendIndent(inout output, depth + 1);
   output.append("goto _z_complete;\n");
   appendIndent(inout output, depth);
@@ -9675,6 +9708,57 @@ function appendYieldFrameTry(
   output.append(";\n");
 }
 
+function appendYieldFrameLexicalCleanups(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  in cleanups: Array<LoweredCleanup>, depth: usize
+): void {
+  // Root owners are released by the shared completion path. Match payloads
+  // only exist in their arm and must be destroyed before jumping out of it.
+  let remaining = cleanups.length;
+  while (remaining > 0) {
+    remaining = remaining - 1;
+    if (!asyncFrameBinds(declaration, cleanups[remaining].name)) {
+      appendCleanup(inout output, cleanups[remaining], depth);
+    }
+  }
+}
+
+function appendYieldFrameMatch(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
+  index: usize, depth: usize
+): void throws String {
+  const statement = view declaration.statements[index];
+  if (statement.foreignMatchDiscriminant.byteLength > 0) {
+    throw "native yield-frame foreign union matches remain a later tier";
+  }
+  // No arm suspends in this tier. The scope also ends Clang ARC payload
+  // lifetimes before a later resume label can be entered from the poll switch.
+  appendIndent(inout output, depth);
+  output.append("{\n");
+  try appendEnumMatchStart(inout output, declaration, index, depth + 1);
+  let hasWildcard = false;
+  for (const arm of statement.children) {
+    if (declaration.statements[arm].name == "_") hasWildcard = true;
+    try appendEnumMatchArmStart(inout output, declaration, index, arm, depth + 1);
+    for (const child of declaration.statements[arm].children) {
+      try appendYieldFrameStatement(inout output, program, declaration, child, depth + 3);
+    }
+    appendCleanups(inout output, declaration.statements[arm].cleanups, depth + 3);
+    appendIndent(inout output, depth + 3);
+    output.append("break;\n");
+    appendIndent(inout output, depth + 2);
+    output.append("}\n");
+  }
+  if (!hasWildcard) {
+    appendIndent(inout output, depth + 2);
+    output.append("default: abort();\n");
+  }
+  appendIndent(inout output, depth + 1);
+  output.append("}\n");
+  appendIndent(inout output, depth);
+  output.append("}\n");
+}
+
 function appendYieldFrameStatement(
   inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
   index: usize, depth: usize
@@ -9687,6 +9771,10 @@ function appendYieldFrameStatement(
     output.append("z_stage1_async_enqueue(task->executor, task);\n");
     appendIndent(inout output, depth);
     output.append(`return;\n_z_resume_${index}:;\n`);
+    return;
+  }
+  if (statement.kind == LoweredStatementKind.matchStatement) {
+    try appendYieldFrameMatch(inout output, program, declaration, index, depth);
     return;
   }
   const awaited = yieldFrameAwaitExpression(declaration, index);
@@ -9800,8 +9888,9 @@ function appendYieldFrameStatement(
       }
       none => {}
     }
-    // This tier has root-owned frame storage only. One shared completion path
-    // destroys it in reverse initialization order, including Clang ARC slots.
+    appendYieldFrameLexicalCleanups(inout output, declaration, statement.cleanups, depth);
+    // One shared completion path destroys root frame owners in reverse
+    // initialization order, including Clang ARC slots.
     appendIndent(inout output, depth);
     output.append("goto _z_complete;\n");
     appendIndent(inout output, depth);

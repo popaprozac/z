@@ -162,6 +162,33 @@ int main(void) {
     }
     if (executor.head != NULL || executor.tail != NULL) return 20;
   }
+  // The match subject and its payload have lexical Clang ARC lifetimes.
+  // They must end before the next resume label, including early-return paths.
+  for (int phase = 0; phase < 3; ++phase) {
+    Z_AsyncInvocation invocation;
+    int fd;
+    __weak NSFileHandle *owner;
+    @autoreleasepool {
+      NSFileHandle *file = openHandle();
+      fd = file.fileDescriptor;
+      owner = file;
+      invocation = _z_stage1_yield_matchNative_start(&executor, (Z_NativeOwner){ .file = file }, phase == 0);
+    }
+    z_stage1_async_enqueue(&executor, invocation.task);
+    @autoreleasepool {
+      if (!z_stage1_async_drive_one(&executor)) return 21;
+      if (phase == 0 && !invocation.task->completed) return 22;
+      if (phase != 0) {
+        if (invocation.task->completed || descriptor_closed(fd) || owner == nil) return 23;
+        if (phase == 1) z_stage1_async_request_cancel(invocation.task);
+        if (!z_stage1_async_drive_one(&executor) || !invocation.task->completed) return 24;
+        if (invocation.task->cancelled != (phase == 1)) return 25;
+      }
+      invocation.destroy(invocation.task);
+    }
+    if (!descriptor_closed(fd) || owner != nil) return 26;
+    if (executor.head != NULL || executor.tail != NULL) return 27;
+  }
   return 0;
 }`;
     execute(harness, resolve(directory, "cancellation-ubsan"),

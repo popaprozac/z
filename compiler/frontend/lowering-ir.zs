@@ -5934,7 +5934,8 @@ function cleanupMoveIndex(
   in program: Program,
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
-  in expressions: Array<LoweredExpression>
+  in expressions: Array<LoweredExpression>,
+  in statements: Array<LoweredStatement>
 ): CleanupMoveIndex {
   let movedNames = Set<String>();
   let hasControlFlow = false;
@@ -5958,6 +5959,21 @@ function cleanupMoveIndex(
     const operand = expression.children[0];
     const root = loweredExpressionStorageRoot(expressions, operand);
     if (root.byteLength > 0) movedNames.add(move root);
+  }
+  for (const statement of statements) {
+    if (statement.kind != LoweredStatementKind.matchStatement) continue;
+    hasControlFlow = true;
+    if (!statement.matchConsumesSubject) continue;
+    match (in statement.expression) {
+      some(subject) => {
+        // Payload names are hygienically rewritten during lowering. A nested
+        // consuming match moves that rewritten owner without a moveValue node.
+        if (expressions[subject].kind == LoweredExpressionKind.localValue) {
+          movedNames.add(copy expressions[subject].value);
+        }
+      }
+      none => {}
+    }
   }
   let movedThreadBindingOffsets = Array<usize>();
   for (const expression of expressions) {
@@ -6495,6 +6511,9 @@ function planCleanupStatement(
                   patternCleanups.push(move cleanup);
                 }
               }
+              let armLoopCleanups = Array<LoweredCleanup>();
+              appendCleanupCopies(inout armLoopCleanups, loopCleanups);
+              if (insideLoop) appendCleanupCopies(inout armLoopCleanups, patternCleanups);
               const introduced = try planCleanupSequence(
                 program,
                 importedTypes,
@@ -6510,7 +6529,7 @@ function planCleanupStatement(
                 inout liveFlags,
                 forceMoveLiveGuards,
                 insideLoop,
-                loopCleanups
+                armLoopCleanups
               );
               if (
                 sequenceFallsThrough(arena, sourceRoots)
@@ -19693,7 +19712,10 @@ function lowerMatchTree(
     const matchBindingNeedsCleanup = match (in payloadType) {
       some(type) => !nicheViewOption && consuming
         && moduleTypeNeedsCleanup(program, importedTypes, type)
-        && !payloadTransfersOut;
+        // A statement arm can transfer only on one branch. Let the existing
+        // move/live-guard planner account for each exit instead of dropping
+        // ownership for the entire arm when any nested statement moves it.
+        && (!payloadTransfersOut || (!returnValueArms && valueBinding.byteLength == 0));
       none => false;
     };
     const loweredArm = statements.length;
@@ -20528,7 +20550,8 @@ function completeNativeClosureBlocks(
         program,
         evidence,
         arena,
-        expressions
+        expressions,
+        statements
       );
       const workerIntroduced = try planCleanupSequence(
         program,
@@ -20673,7 +20696,8 @@ function completeNativeClosureBlocks(
         program,
         evidence,
         arena,
-        expressions
+        expressions,
+        statements
       );
       const introduced = try planCleanupSequence(
         program,
@@ -20807,7 +20831,8 @@ function completeNativeClosureBlocks(
       program,
       evidence,
       arena,
-      expressions
+      expressions,
+      statements
     );
     const introduced = try planCleanupSequence(
       program,
@@ -26526,7 +26551,8 @@ function lowerFunction(
     program,
     evidence,
     declaration.body,
-    expressions
+    expressions,
+    statements
   );
   let parameterIndex: usize = 0;
   while (parameterIndex < declaration.parameters.length) {
@@ -26868,7 +26894,8 @@ function lowerDeinitializer(
     program,
     evidence,
     body,
-    expressions
+    expressions,
+    statements
   );
   const introduced = try planCleanupSequence(
     program,
@@ -26965,7 +26992,8 @@ function lowerConstructor(
     program,
     evidence,
     declaration.body,
-    expressions
+    expressions,
+    statements
   );
   let parameterIndex: usize = 0;
   while (parameterIndex < declaration.parameters.length) {

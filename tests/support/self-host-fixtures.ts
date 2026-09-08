@@ -29,6 +29,17 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
     expectedStdout: "released first\nendpoint\nreleased endpoint\nreleased second\nreleased endpoint\nreleased batch\nreleased batch\nreleased snapshot\nreleased error rejected\n",
   },
   {
+    entry: "tests/fixtures/async-yield-match.zs",
+    expectedStdout: "retry\nreleased error retry\n"
+      + "retry\nreleased error retry\nreleased endpoint outer\n"
+      + "retry\nreleased endpoint outer\nretry\nreleased error retry\n"
+      + "retry\nreleased error retry\nreleased endpoint outer\npropagated\nreleased error propagated\n"
+      + "retry\nreleased error retry\nreleased endpoint outer\n"
+      + "borrowed\nreleased error borrowed\n"
+      + "retry\nreleased error retry\n".repeat(2)
+      + "nested\nreleased error nested\nreleased error nested\n",
+  },
+  {
     entry: "examples/language/collections/map-identities.zs",
     expectedStdout: "open: Draft\nfound: Draft\nclosed Draft\n",
   },

@@ -185,7 +185,12 @@ Scoped `withLock` callbacks release their lock before the next yield. Direct
 named child calls with owned value arguments can be awaited, including repeatedly
 in loops; root locals can own their results. `try` propagates the child's error
 and `attempt` keeps its `Result`. Cancellation joins the active child before
-releasing parent storage. Borrowed parameters, method/placed awaits, nested
+releasing parent storage. Synchronous `match` statements can handle an `attempt`
+inside the yielding loop, or inspect a root Result returned by an awaited child.
+Borrowing, wildcard cleanup, early returns, and loop exits preserve ownership;
+the arm's payload is released before the next suspension. Awaited match subjects,
+suspending arms, and object-pattern destructuring are not part of this frame tier.
+Borrowed parameters, method/placed awaits, nested
 awaited expressions, other foreign storage, and nested source-local declarations
 remain separate composition work. These are implementation boundaries, not
 new ownership rules. A successful `check` alone is not proof that an advanced
