@@ -5531,6 +5531,58 @@ delivery. Automatic `app.run()` integration, main-executor drain/wakeup,
 startup/shutdown races, sandbox packaging, and other platforms remain separate
 work. No new public API, language syntax, or implicit retry policy was added.
 
+## Launch readiness and the next async composition prerequisite
+
+The attempted integration of the launch endpoint into `app.run()` exposed two
+independent lowering boundaries. The integration is deliberately not enabled:
+the independently tested lease, bounded transport, and inbox do not prove that
+the enclosing task cancels and joins correctly.
+
+| Reproduction | Stage 0 | Fixed-point native driver |
+| --- | --- | --- |
+| `tests/fixtures/async-launch-owned-destructure.zs` | `Z0700`: ordinary struct destructuring is not lowered into async frames | `check` accepts; `run` fails at C emission with the current named-Task await boundary |
+| `tests/fixtures/async-launch-listener.zs` | Runs successfully | `Z0700`: an ordinary named helper with a suspending loop is outside the current executable tier |
+
+The first is the natural error-conversion shape: `const { code, message } =
+move error`, followed by a suspension while the selected fields remain live.
+The second needs only a counter and `await scheduler.yield()` inside a loop;
+it is not specific to Foundation handles or socket ownership. Existing
+one-yield-prefix and tail-child helper tiers do not cover it. Successful native
+`check` is not execution evidence for the first body. Keep both reductions as
+targets for positive execution tests, not permanent language restrictions.
+
+The intended listener must create and destroy its endpoint on its worker,
+observe cancellation between deadline-bounded receives, and retain the primary
+lease until endpoint cleanup completes. The worker may hold the synchronized
+inbox, but main-bound event dispatch remains with the main-owned application
+host. Shutdown must close admission and cancel/join the listener before
+destroying that host. A synchronous infinite worker that waits for cleanup in
+its joining parent would deadlock; moving code into helpers does not solve that
+lifetime ordering.
+
+Two independent pieces now have bounded runtime evidence in Zapp: a private
+readiness mode retries only transient **pre-send connection** failures within
+the original absolute deadline, and the shared inbox coalesces wake reservations
+under its mutex. A delayed endpoint succeeds; an elected primary that never
+publishes one times out without creating another primary. A lost acknowledgement
+never resends a payload. Clearing a wake reservation before draining permits a
+concurrent producer to reserve the next wake. The reservation primitive is not
+yet wired to main-executor dispatch.
+
+The delayed-readiness test also exposed native conditional type evidence:
+`u64(ready ? 250 : 8000)` looked up the boolean condition's type because it
+shares a starting offset with the conditional. Sema now records contextual
+branch types, and lowering obtains the selected type from those branches.
+The executable differential fixture `self-host-emit-conditional-conversion.zs`
+covers both choices, nested ternaries, wide integers, floating-point conversions,
+and String results. This changes compile-time evidence, not the runtime model.
+
+Continuation order: add owned struct destructuring to async-frame storage and
+cleanup; expand native ordinary-helper suspension/control-flow lowering with
+positive cancellation and destruction tests; then restore the listener
+integration probe and exercise startup, competing launches, quit, and teardown.
+No new source syntax or public Zapp API is required.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

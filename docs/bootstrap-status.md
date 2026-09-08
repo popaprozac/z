@@ -1155,6 +1155,16 @@ executor-affinity rejection suite now covers off-main field, method, and
 function access plus valid inherited contexts; future lowering slices must keep
 expanding both halves of that evidence.
 
+The immediate consumer-driven prerequisite is Zapp's lifecycle-owned launch
+listener, before enabling automatic secondary-instance forwarding. Its reduced
+`async-launch-listener.zs` fixture runs in Stage 0 but native `Z0700` rejects a
+named helper with a yield inside a loop. `async-launch-owned-destructure.zs`
+separately exposes Stage 0's async struct-destructuring gate and a native frame
+that passes `check` but fails C emission. Close these frame/cleanup boundaries
+with execution and cancellation tests before restoring the app integration;
+do not weaken executor provenance or substitute an uninterruptible synchronous
+worker. See [the exact pressure-test checkpoint](ownership-pressure.md#launch-readiness-and-the-next-async-composition-prerequisite).
+
 Continue focused self-hosting work in this order:
 
 1. Continue decomposing the former 8,980-line `module-resolver.zs` without

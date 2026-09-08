@@ -14296,17 +14296,19 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
   );
   assert.match(ordinaryCheck.stdout, /native frontend hybrid compiler index matches \d+ binding\/signature queries/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 3 inferred local binding contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 29 expression type contracts/);
+  // Includes the two String-valued arms of the audit conditional, separately
+  // from its boolean condition at the same starting source position.
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 31 expression type contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ inferred local binding stage-0 Z resolutions/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 29 expression stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 31 expression stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ function, \d+ method, and \d+ constructor native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ aggregate, \d+ field, and \d+ enum-variant native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ explicit type-use native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 3 inferred local binding native-authoritative contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 29 expression native-authoritative contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 31 expression native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(4 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 

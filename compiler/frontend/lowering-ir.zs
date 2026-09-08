@@ -8547,6 +8547,16 @@ function resolvedExpressionTypeName(
   in tree: ExpressionTree,
   index: usize
 ): Option<String> {
+  // A conditional and its condition share a starting source position. The
+  // offset-keyed evidence belongs to the condition, not the selected value.
+  // Sema proves the arms equivalent and records their contextual result types.
+  if (
+    tree.nodes[index].kind == ExpressionKind.conditionalExpression
+    && tree.nodes[index].children.length == 3
+  ) {
+    const branch = tree.nodes[index].children[1];
+    return resolvedExpressionTypeName(evidence, tree, branch);
+  }
   const resolutionIndex = resolvedExpressionResolutionIndex(
     evidence,
     tree,

@@ -7097,6 +7097,14 @@ function inferExpressionNodeType(
       return "";
     }
     if (equivalentTypes(modules, moduleIndex, thenType, elseType)) {
+      // Preserve the selected value's type independently of the condition,
+      // which has the same start offset as the whole conditional expression.
+      recordExpressionResolution(
+        modules, moduleIndex, tree, children[1], thenType, inout evidence
+      );
+      recordExpressionResolution(
+        modules, moduleIndex, tree, children[2], elseType, inout evidence
+      );
       try consumeOwnedExpressionNode(
         module,
         modules,

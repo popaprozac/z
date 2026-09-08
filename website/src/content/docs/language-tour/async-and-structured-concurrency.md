@@ -170,7 +170,12 @@ lower statically when every child is lexical.
 :::caution[Pre-alpha composition]
 The accepted model is broader than every fixed-point native lowering tier.
 General suspension counts, nested control-flow combinations, and some
-ownership-bearing frame shapes are still expanding. Check the
+ownership-bearing frame shapes are still expanding. In particular, Stage 0
+does not yet execute ordinary struct destructuring inside async functions, and
+the native compiler's ordinary named-helper tiers do not yet include a loop
+containing `await scheduler.yield()`. These are implementation boundaries, not
+new ownership rules. A successful `check` alone is not proof that an advanced
+frame shape can be emitted and run. Check the
 [implementation status](/reference/status/) when an advanced async composition
 produces `Z0700`.
 :::
