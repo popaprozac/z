@@ -6142,23 +6142,61 @@ storage types or new ownership rules.
 
 Application-level startup integration is still gated on the full native graph
 and real-process checks. The standalone listener probe is not by itself proof
-that every Application.run failure path joins correctly. The Stage 0 UBSan
-startup matrix passes primary/secondary handoff, idle cancellation, a partial
-request, and hostile-path startup failure. Native emission currently rejects
-the production probe: native-header builds collision-mangle an imported
-`internal async` callee, while its caller retains the original target spelling.
-The worker bridge therefore cannot find the callee's yielding frame. A smaller
-same-module nested owned-result worker passes with exact cleanup; do not treat
-this as missing nested-match syntax or weaken the worker cancellation check.
-The next fix must preserve checked target module/symbol identity across
-lowering and emitted-name rewriting, including aliased and same-named internal
-imports. Zapp preserves the integration as an unapplied patch and keeps its
-normal application launch unchanged until the native process gate passes.
+that every Application.run failure path joins correctly. Native-header builds
+initially collision-mangled an imported `internal async` callee while its caller
+retained the original target spelling. The worker bridge could not find that
+callee's yielding frame. This was call identity loss, not missing nested-match
+syntax or a reason to weaken the worker cancellation check. The following
+checkpoint closes that identity gap and records the next integration boundary.
 
 Other async storage
 boundaries encountered during integration remain explicit: positional array
 destructuring, cleanup-bearing conditional locals, and ownership-bearing
 replacement assignment are not generalized by these fixes.
+
+### Checked call identity across emitted module names (2026-09-08)
+
+Native lowering now preserves a call's source offset through direct, awaited,
+and placed-call lowering. After module/specialization names are settled, the
+containing source module's checked call evidence supplies the exact target
+module and symbol. Private naming and generic suffixes are applied to that
+declaration, not guessed from the caller's imports or a same-named output
+function. Missing/inconsistent evidence fails closed. Named callable values
+without a call site continue to use their existing lowering; this is not a
+claim that every first-class function-identity shape has been generalized.
+
+The regression imports two internal async functions with the same source name
+under different aliases, with native headers present. Both worker frames execute
+and join. It also exercises same-module async calls, same-named synchronous
+functions, and generic specializations. All 14 native channel tests pass with
+UBSan; worker cases repeat eight times and the queue reference counter returns
+to zero. All 161 self-hosting tests pass on a frozen source snapshot, and the
+compiler rebuild reaches a fixed point. The source-offset field
+is compiler IR metadata only, not an application allocation or runtime lookup.
+
+Zapp's production-shaped startup matrix now passes **both** compilers under
+UBSan: primary/secondary forwarding, idle shutdown, a partial request during
+shutdown, and hostile-path startup failure. The subsequent full Z Notes build
+finds a different boundary before launching an application. This minimal
+ordinary Z shape checks and runs with Stage 0, but native lowering still rejects
+the combination of an early awaited return and a later awaited local:
+
+```zs
+async function startup(enabled: boolean): i32 on thread.main {
+  if (!enabled) return await operation();
+  const result = await operation();
+  return result;
+}
+```
+
+Native frame admission currently separates branched tail awaits from linear
+awaited-local continuations. Neither classifier accepts this combination, so
+it incorrectly falls through to the main-thread timer-only diagnostic. The
+next slice is their safe composition, with precise unsupported-shape diagnostics,
+then the real startup wrapper's owned outcome, listener cancellation/join, and
+TaskScope joins. Do not work around this with a synchronous wrapper or a new
+framework API. The saved Application.run patch remains unapplied; normal Zapp
+startup is unchanged until the full application gate passes.
 
 ## Not tested yet
 

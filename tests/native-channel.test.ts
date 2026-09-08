@@ -251,6 +251,52 @@ test("native yielding workers select nested owned startup results before suspens
   });
 }, 180_000);
 
+test("native header builds preserve checked identities for imported internal async workers", () => {
+  runChannelProgram(`
+    import { Channel } from "std/channel";
+    import { TaskScope, scheduler } from "std/async";
+    import { thread } from "std/thread";
+    import { listen as listenFirst, result as firstResult, tag as firstTag } from "./first.zs";
+    import { listen as listenSecond, result as secondResult, tag as secondTag } from "./second.zs";
+    async function local(): i32 { await scheduler.yield(); return 0; }
+    async function main(): i32 {
+      const { sender, receiver } = Channel<i32>.bounded(2);
+      const receive = receiver.sync();
+      const updates = new TaskScope();
+      const first = thread.spawn(async move (): i32 => await listenFirst(sender, updates));
+      const second = thread.spawn(async move (): i32 => await listenSecond(sender, updates));
+      const a = match (receive.receive()) { some(value) => value; none => -100; };
+      const b = match (receive.receive()) { some(value) => value; none => -100; };
+      await first.cancel();
+      await second.cancel();
+      await updates.cancel();
+      const localResult = await local();
+      return a + b + firstResult() + secondResult() + firstTag(5) + secondTag(5) + localResult - 126;
+    }
+  `, "", (source) => {
+    assert.match(source, /__z_module_\d+_listen/);
+    return source;
+  }, Object.fromEntries([
+    ["z.json", JSON.stringify({
+      package: { name: "native-call-identity", version: "0.1.0" },
+      target: { name: "native-call-identity", entry: "main.zs" },
+    })],
+    ...[["first.zs", 20], ["second.zs", 22]].map(([name, value]) => [name, `
+      import native from "stdlib.h";
+      import { Sender } from "std/channel";
+      import { TaskScope, scheduler } from "std/async";
+      internal function result(): i32 { return ${value}; }
+      internal function tag<T>(value: T): i32 { return ${value}; }
+      internal async function listen(sender: Sender<i32>, updates: TaskScope): i32 {
+        const ready = sender.sync();
+        const sent = attempt ready.send(result());
+        await scheduler.yield();
+        return 0;
+      }
+    `]),
+  ]));
+}, 180_000);
+
 test("native channel receiver drop wakes a full-queue sender with its original value", () => {
   runChannelProgram(`
     import { Channel, SyncReceiver } from "std/channel";

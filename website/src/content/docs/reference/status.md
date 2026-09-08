@@ -141,8 +141,13 @@ production or compatibility-sensitive use.
   now passes under both compilers and UBSan, including competing startup,
   closed-scope rejection, idle/partial-client cancellation, and startup failure.
   Root owned match initializers also work in the native yielding frame, with
-  cleanup on failed initialization and cancellation. Automatic application
-  forwarding remains gated on production startup/lifetime integration. Direct
+  cleanup on failed initialization and cancellation. Checked call identities
+  now survive native-header private-name mangling across modules, including
+  aliased internal async imports. The channel-based readiness/startup probe
+  passes both compilers under UBSan. Automatic application forwarding remains
+  gated on full startup/lifetime integration: a main-bound function combining
+  an early awaited return with a later awaited local still exceeds the native
+  frame-composition tier. Direct
   timer awaits in native `main` still require a future resumable entry frame;
   that boundary now reports `Z0700` at the await.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`

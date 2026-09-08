@@ -350,6 +350,10 @@ export struct LoweredExpression {
   children: Array<usize>;
   statements: Array<usize>;
   labels: Array<String>;
+  // One-based source call offset (zero means no checked call identity).
+  // Resolve this against the containing function's source module after all
+  // module/specialization names are settled; a bare target name is ambiguous.
+  callTargetOffset: usize = 0;
   captureBindingOffsets: Array<usize> = Array<usize>();
   captureTypes: Array<LoweredType> = Array<LoweredType>();
   moveSpreadOverrides: Array<LoweredField> = Array<LoweredField>();
@@ -7291,6 +7295,20 @@ function resolvedCallTarget(
   ));
 }
 
+function preserveCallTargetIdentity(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  input: usize,
+  callee: usize,
+  inout output: Array<LoweredExpression>
+): void {
+  const resolutionIndex = resolvedCallResolutionIndex(evidence, tree, input);
+  if (
+    resolutionIndex < evidence.callResolutions.length
+    && evidence.callResolutions[resolutionIndex].kind == "function"
+  ) output[callee].callTargetOffset = tree.nodes[input].offset + 1;
+}
+
 function callResolutionIndexForOffset(
   in evidence: ModuleSemanticEvidence,
   offset: usize
@@ -10353,6 +10371,7 @@ function lowerPlacedDirectCall(
     Array<usize>(),
     Array<String>()
   );
+  preserveCallTargetIdentity(evidence, tree, index, callee, inout output);
   const parameterModes = resolvedCallParameterModes(
     program,
     evidence,
@@ -12000,6 +12019,9 @@ function lowerExpressionContextual(
             target,
             Array<usize>(),
             callableLabels
+          );
+          preserveCallTargetIdentity(
+            evidence, tree, taskInput, callable, inout output
           );
           let children = Array<usize>();
           children.push(callable);
@@ -15938,6 +15960,11 @@ function lowerExpressionContextual(
         inout output
       );
     }
+    if (
+      standardTarget.byteLength == 0
+      && foreignTarget.byteLength == 0
+      && staticMethodTarget.byteLength == 0
+    ) preserveCallTargetIdentity(evidence, tree, index, callee, inout output);
     const parameterModes = resolvedCallParameterModes(
       program,
       evidence,
@@ -21667,6 +21694,7 @@ function rewritePlacedFunctionAwaitAtRoot(
     Array<usize>(),
     callableLabels
   );
+  expressions[callable].callTargetOffset = expressions[targetIndex].callTargetOffset;
   let children = Array<usize>();
   children.push(callable);
   for (const value of arguments) {
@@ -27624,6 +27652,7 @@ function rewritePrivateCallTargets(
     if (
       lowered.expressions[index].kind
         == LoweredExpressionKind.directFunctionValue
+      && lowered.expressions[index].callTargetOffset == 0
     ) {
       for (const declaration of program.functions) {
         if (
@@ -27650,6 +27679,7 @@ function rewritePrivateCallTargets(
       const callee = lowered.expressions[index].children[0];
       if (
         lowered.expressions[callee].kind == LoweredExpressionKind.localValue
+        && lowered.expressions[callee].callTargetOffset == 0
       ) {
         for (const declaration of program.functions) {
           const genericTarget = `${declaration.name}__Function_`;
@@ -27689,6 +27719,75 @@ function rewritePrivateCallTargets(
       }
     }
     index = index + 1;
+  }
+}
+
+function rewriteCheckedCallTargets(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in collisionNames: Array<String>,
+  inout functions: Array<LoweredFunction>
+): void throws String {
+  let sourceModules = Map<String, usize>();
+  let moduleIndex: usize = 0;
+  while (moduleIndex < graph.modules.length) {
+    sourceModules.set(copy graph.modules[moduleIndex].path, moduleIndex);
+    moduleIndex = moduleIndex + 1;
+  }
+  let functionIndex: usize = 0;
+  while (functionIndex < functions.length) {
+    const sourceModule = sourceModules.get(functions[functionIndex].sourcePath);
+    let expressionIndex: usize = 0;
+    while (expressionIndex < functions[functionIndex].expressions.length) {
+      const offset = functions[functionIndex].expressions[expressionIndex].callTargetOffset;
+      if (offset == 0) {
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      const owner = match (in sourceModule) {
+        some(value) => value;
+        none => throw "native checked call lost its source module";
+      };
+      const evidence = view graph.modules[owner].semanticEvidence;
+      const resolutionIndex = callResolutionIndexForOffset(evidence, offset - 1);
+      if (resolutionIndex >= evidence.callResolutions.length) {
+        throw "native checked call lost its semantic resolution";
+      }
+      const resolution = view evidence.callResolutions[resolutionIndex];
+      const targetModule = resolution.targetModuleIndex;
+      const targetSymbol = resolution.targetSymbolIndex;
+      if (
+        targetModule >= parsed.length
+        || targetModule >= graph.modules.length
+        || targetSymbol >= graph.modules[targetModule].symbols.length
+      ) throw "native checked call lost its target module/symbol identity";
+      const symbol = view graph.modules[targetModule].symbols[targetSymbol];
+      if (
+        symbol.kind != ModuleSymbolKind.functionSymbol
+        || symbol.name != resolution.targetName
+      ) throw `native checked call target identity mismatch for ${resolution.targetName}`;
+      const target = view functions[functionIndex].expressions[expressionIndex].value;
+      const specializedPrefix = `${resolution.targetName}__Function_`;
+      if (
+        target != resolution.targetName
+        && !stringStartsWith(target, specializedPrefix)
+      ) throw `native checked call spelling changed before identity resolution: ${target}`;
+      // Retain the specialization suffix, but obtain the base name solely
+      // from the checked target declaration, never the caller's imports or
+      // another same-named function in the output graph.
+      const suffix = target.copyBytes(resolution.targetName.byteLength, target.byteLength);
+      let emittedName = copy symbol.name;
+      if (symbol.nativeCExport) {
+        emittedName = emittedNativeCExportImplementationName(targetModule, symbol.name);
+      } else if (privateFunctionNeedsMangle(
+        parsed[targetModule].program, collisionNames, targetModule, graph.entry, symbol.name
+      )) {
+        emittedName = emittedPrivateFunctionName(targetModule, symbol.name);
+      }
+      functions[functionIndex].expressions[expressionIndex].value = `${emittedName}${suffix}`;
+      expressionIndex = expressionIndex + 1;
+    }
+    functionIndex = functionIndex + 1;
   }
 }
 
@@ -32794,6 +32893,7 @@ function lowerModulesIncludingTests(
       }
     }
   }
+  try rewriteCheckedCallTargets(parsed, graph, privateFunctionCollisionNames, inout functions);
   rewriteNativeCExportCallTargets(inout functions);
   annotateObjectiveCEnumPayloads(enums, inout functions);
   return LoweredProgram({
