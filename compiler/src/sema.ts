@@ -9952,7 +9952,8 @@ function inferExpressionInner(
         const field = declaration && "type" in declaredField
           ? resolveSemanticField(initializer.location, declaration, declaredField, state)
           : declaredField;
-        if (declaration && "visibility" in field && field.visibility === "internal") {
+        if (declaration && "visibility" in field && (field.visibility === "internal"
+          || (declaration.kind === "struct" && field.visibility === "private"))) {
           const synthesizedDefault = initializer.location.offset === field.location.offset
             && initializer.location.fileName === field.location.fileName;
           if (!synthesizedDefault) {

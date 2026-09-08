@@ -8224,6 +8224,24 @@ function generateBridgedStringValue(expression: Expression, value: string, conte
   return value;
 }
 
+function withoutResultStringBridge(expression: Expression, context: GenerationContext): GenerationContext {
+  const offset = expression.location.offset;
+  const info = context.semanticInfo;
+  if (!info.objcStringsToNative.has(offset) && !info.objcStringsToZ.has(offset)
+    && !info.swiftStringsToZ.has(offset)) return context;
+  const withoutOffset = (values: ReadonlySet<number>): ReadonlySet<number> => {
+    if (!values.has(offset)) return values;
+    const filtered = new Set(values);
+    filtered.delete(offset);
+    return filtered;
+  };
+  return { ...context, semanticInfo: { ...info,
+    objcStringsToNative: withoutOffset(info.objcStringsToNative),
+    objcStringsToZ: withoutOffset(info.objcStringsToZ),
+    swiftStringsToZ: withoutOffset(info.swiftStringsToZ),
+  } };
+}
+
 function generateLoweredCompositeValue(
   expression: Expression,
   children: readonly Expression[],
@@ -8985,7 +9003,10 @@ function generateConditionalValue(
   consumeValue: (value: string, context: GenerationContext) => string,
   consumeTerminates: boolean,
 ): string {
-  return generateDirectValue(expression.condition, context, (condition, conditionContext) => {
+  // A ternary and its condition share a starting offset. Result-only bridge
+  // evidence must not convert the boolean condition at that same offset.
+  return generateDirectValue(expression.condition, withoutResultStringBridge(expression, context), (condition, loweredContext) => {
+    const conditionContext = { ...loweredContext, semanticInfo: context.semanticInfo };
     const thenBranch = generateDirectValue(
       expression.thenExpression,
       conditionContext,
@@ -10871,7 +10892,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return `(${generateExpression(expression.left, context)} ${expression.operator} ${generateExpression(expression.right, context)})`;
     }
     case "conditional":
-      return `(${generateExpression(expression.condition, context)} ? ${generateExpression(expression.thenExpression, context)} : ${generateExpression(expression.elseExpression, context)})`;
+      return `(${generateExpression(expression.condition, withoutResultStringBridge(expression, context))} ? ${generateExpression(expression.thenExpression, context)} : ${generateExpression(expression.elseExpression, context)})`;
     case "new":
       if (!context.structs.get(expression.typeName)?.constructor) {
         return generateExpression(expression.arguments[0], context);

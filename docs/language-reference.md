@@ -1004,6 +1004,9 @@ const same = session;
 Field visibility is separate from storage and ownership: struct and class fields
 are public unless marked `internal` or `private`. `internal` grants the owning
 manifest-defined package access; `private` grants only the declaring aggregate.
+Explicit struct field initialization follows that visibility too: a private
+field may be supplied by a static factory on the struct, not by an outside
+caller. Outside callers may still omit a private field with a declared default.
 A user class constructor may establish invariants and may throw. Constructors
 use the same visibility words:
 

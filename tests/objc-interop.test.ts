@@ -2160,7 +2160,7 @@ hostToolchainTest("owns an AppKit target/action router in a linked application r
 
   assert.equal(artifact.language, "objective-c");
   assert.match(artifact.source, /ZObjCConnection \* actionConnection;/);
-  assert.match(artifact.source, /self->actionConnection = actionConnection;/);
+  assert.match(artifact.source, /self->actionConnection = _z_init_actionConnection;/);
   assert.match(artifact.source, /self->actionConnection = nil;/);
   assert.match(artifact.source, /z_objc_connect\(/);
   assert.match(artifact.source, /Router_dispatch\([^,]+, &\(\(\*message\)\)\)/);
@@ -2307,7 +2307,7 @@ test("owns standalone Objective-C protocol adapters as storable ARC values", () 
   assert.match(artifact.source, /\[\[ZObjCProtocolAdapter_SchemeHandler alloc\] initWithOwner:controller\]/);
   assert.match(artifact.source, /\[configuration setURLSchemeHandler:.*adapter.* forURLScheme:@"zapp"\]/);
   assert.match(artifact.source, /\[NSArray arrayWithObject:\s*task\]/);
-  assert.match(artifact.source, /int32_t z_id, id<WKURLSchemeHandler> adapter/);
+  assert.match(artifact.source, /int32_t _z_init_id, id<WKURLSchemeHandler> _z_init_adapter/);
   const compilation = spawnSync("clang", [
     "-x", "objective-c",
     "-fobjc-arc", "-fblocks",
@@ -2772,6 +2772,18 @@ test("borrows embedded process-lifetime bytes into NSData without copying", () =
   const ordinaryArray = source.replace("PAYLOAD);", "Array<u8>(1, 2));");
   assert.match(diagnostics(ordinaryArray, example)[0]?.message ?? "", /expects embed\.StaticBytes/);
 });
+
+hostToolchainTest("bridges conditional String results without converting their boolean conditions", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "tests/fixtures/objc-conditional-strings.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.doesNotMatch(artifact.source, /z_nsstring_from_string\(accepted\)/);
+  const result = spawnSync(process.execPath, [cli, "run", example], {
+    encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+  });
+  assert.equal(result.status, 0, result.stderr);
+}, 60_000);
 
 hostToolchainTest("copies owned Z strings across NSString boundaries without losing embedded nulls", () => {
   if (process.platform !== "darwin") return;

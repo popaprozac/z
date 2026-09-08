@@ -68,6 +68,16 @@ if (body instanceof Foundation.NSString) {
 narrowed `NSString` to an explicit Z `String` makes an owned UTF-8 copy with its
 exact byte length.
 
+String bridging also composes with conditional values:
+
+```z
+const reply: Foundation.NSString = accepted ? "accepted" : "rejected";
+const snapshot: String = reply;
+```
+
+The selected String result crosses the native boundary; the boolean condition
+does not. Converting back to `String` creates an independent owned UTF-8 copy.
+
 ## Main-thread requirements enter the type system
 
 Imported Apple metadata and reviewed API notes can mark declarations

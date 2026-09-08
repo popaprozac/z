@@ -150,6 +150,9 @@ constructor` limits it to the class and its static factories. The class remains
 usable as a public parameter, field, or result type. External metadata and
 editor call surfaces do not publish an inaccessible constructor signature.
 Structs continue to use value construction and do not declare constructors.
+Explicitly supplying a private struct field requires access from inside the
+declaring struct, such as a static factory. Outside callers can omit private
+fields that have defaults, but cannot override those defaults.
 
 A collection can independently carry readonly semantics:
 

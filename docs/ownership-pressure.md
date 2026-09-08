@@ -5497,6 +5497,40 @@ returned storage before delivery. Callback-local move flags are now protected
 regardless of capture mode; the owned-capture differential fixture includes a
 borrowing callback with an early-return branch and a moved local result.
 
+## Bounded launch transport: owned resources and result-only bridges
+
+Zapp's private macOS launch transport now consumes the primary-instance lease
+into a move-only endpoint. Its `deinit` removes the socket and closes its
+descriptor before automatic field cleanup releases the lease. A static factory
+initializes the private fields, so application code cannot substitute a socket
+or identifier for the lease it owns. Connection owners close on success,
+rejection, incomplete frames, and typed failure. Framing, absolute deadlines,
+admission into the shared inbox, and acknowledgement interpretation remain Z
+code; narrow named raw functions perform OS socket and byte-buffer operations.
+
+This exposed two compiler gaps rather than new ownership rules:
+
+- Stage 0 permitted explicit construction of private struct fields from a free
+  function, while the native checker rejected it. Both now require the declaring
+  aggregate's access context. Omitted private fields with defaults remain valid;
+  a static factory can initialize them explicitly. The destructuring fixture now
+  obtains its private value through a legal factory before testing field access.
+- A ternary and its condition share a starting source offset. String bridge
+  evidence attached to a conditional result was also applied to its boolean
+  condition, producing invalid Objective-C. Codegen now suppresses result-only
+  bridge evidence while lowering that condition and restores it for the result.
+  `objc-conditional-strings.zs` tests both choices, template-valued arms, and
+  String/NSString bridging in both directions without a wrapper in source.
+
+The isolated process regression passes through Stage 0 and the native driver,
+including UndefinedBehaviorSanitizer builds: bounded/concurrent admission,
+fragmented and malformed input, slow-client deadlines, uncertain or invalid
+acknowledgements, scope release, process death, and stale-socket recovery.
+An acknowledgement proves only admission, not listener completion or durable
+delivery. Automatic `app.run()` integration, main-executor drain/wakeup,
+startup/shutdown races, sandbox packaging, and other platforms remain separate
+work. No new public API, language syntax, or implicit retry policy was added.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

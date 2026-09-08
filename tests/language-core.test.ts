@@ -52,6 +52,23 @@ import {
   writeFileSync,
 } from "./support/bootstrap.ts";
 
+test("restricts private struct initialization to its declaring aggregate", () => {
+  const declaration = `struct Endpoint {
+    private descriptor: i32;
+    static function create(): Endpoint { return Endpoint({ descriptor: 42 }); }
+    function read(): i32 { return this.descriptor; }
+  }`;
+  assert.deepEqual(diagnostics(`${declaration}
+    function main(): i32 { const endpoint = Endpoint.create(); return endpoint.read() - 42; }
+  `, "private-struct-factory.zs"), []);
+  assert.match(diagnostics(`${declaration}
+    function main(): i32 { const endpoint = Endpoint({ descriptor: 42 }); return 0; }
+  `, "private-struct-construction.zs")[0]?.message ?? "", /field "descriptor" is private to struct "Endpoint"/);
+  assert.deepEqual(diagnostics(`struct Defaults { private value: i32 = 42; }
+    function main(): i32 { const defaults = Defaults(); return 0; }
+  `, "private-struct-default.zs"), []);
+});
+
 test("keeps field storage spelling consistent across C backends without changing public C rules", () => {
   const source = readFileSync(resolve(projectRoot, "compiler/frontend/c-emitter.zs"), "utf8");
   const bindingPolicy = source.split("function isCReservedWord(")[1]!.split("function appendCBindingName(")[0]!;
@@ -2308,13 +2325,16 @@ test("destructures value structs and borrowed collection entries", () => {
   const privateFields = `
     struct Secret {
       private value: i32;
+      static function create(value: i32): Secret {
+        return Secret({ value });
+      }
       function reveal(): i32 {
         const { value } = this;
         return value;
       }
     }
     function main(): i32 {
-      const secret = Secret({ value: 42 });
+      const secret = Secret.create(42);
       return secret.reveal() - 42;
     }
   `;
