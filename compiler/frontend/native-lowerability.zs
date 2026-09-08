@@ -1482,6 +1482,7 @@ function validateNativeThreadCaptureExpression(
       typeName.byteLength > 0
       && typeName != "String"
       && typeName != "TextBuffer"
+      && typeName != "TaskScope"
       && moduleIndex < graph.modules.length
     ) {
       let visiting = Array<String>();
@@ -2243,23 +2244,33 @@ function validateNativeBody(
 }
 
 function nativeYieldFrameStorageSupported(
-  in graph: ModuleGraph, moduleIndex: usize, in name: String,
+  in modules: Array<ParsedModule>, in graph: ModuleGraph, moduleIndex: usize, in name: String,
   in visiting: Array<String>
 ): boolean {
   if (name == "String" || name == "cstring" || name == "boolean"
     || name == "f32" || name == "f64" || isIntegerTypeName(name)
     || name == "TaskScope" || name == "TaskControl") return true;
+  const parsedModule = parsedModuleIndexForGraphModule(modules, graph, moduleIndex);
+  if (parsedModule < modules.length) {
+    for (const declaration of modules[parsedModule].program.imports) {
+      if (declaration.header != "std/async") continue;
+      for (const binding of declaration.bindings) {
+        if (binding.localName == name
+          && (binding.importedName == "TaskScope" || binding.importedName == "TaskControl")) return true;
+      }
+    }
+  }
   if (stringStartsWith(name, "readonly ")) {
     const target = name.copyBytes(9, name.byteLength);
-    return nativeYieldFrameStorageSupported(graph, moduleIndex, target, visiting);
+    return nativeYieldFrameStorageSupported(modules, graph, moduleIndex, target, visiting);
   }
   const actual = transparentTypeName(graph.modules, moduleIndex, name);
   if (actual != name) {
-    return nativeYieldFrameStorageSupported(graph, moduleIndex, actual, visiting);
+    return nativeYieldFrameStorageSupported(modules, graph, moduleIndex, actual, visiting);
   }
   const nullable = nullableTargetType(name);
   if (nullable.byteLength > 0) {
-    return nativeYieldFrameStorageSupported(graph, moduleIndex, nullable, visiting);
+    return nativeYieldFrameStorageSupported(modules, graph, moduleIndex, nullable, visiting);
   }
   match (genericTypeShape(name)) {
     some(generic) => {
@@ -2273,7 +2284,7 @@ function nativeYieldFrameStorageSupported(
           argumentIndex = argumentIndex + 1;
           continue;
         }
-        if (!nativeYieldFrameStorageSupported(graph, moduleIndex, argument, visiting)) return false;
+        if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, argument, visiting)) return false;
         argumentIndex = argumentIndex + 1;
       }
       return true;
@@ -2303,11 +2314,11 @@ function nativeYieldFrameStorageSupported(
       let next = copy visiting;
       next.push(identity);
       for (const field of signature.fields) {
-        if (!nativeYieldFrameStorageSupported(graph, location.moduleIndex, field.typeName, next)) return false;
+        if (!nativeYieldFrameStorageSupported(modules, graph, location.moduleIndex, field.typeName, next)) return false;
       }
       for (const variant of signature.variants) {
         if (variant.payloadType.byteLength > 0
-          && !nativeYieldFrameStorageSupported(graph, location.moduleIndex, variant.payloadType, next)) return false;
+          && !nativeYieldFrameStorageSupported(modules, graph, location.moduleIndex, variant.payloadType, next)) return false;
       }
       select true;
     }
@@ -2338,7 +2349,7 @@ function validateNativeFunction(
     match (in declaration.errorType) {
       some(error) => {
         const visiting = Array<String>();
-        if (!nativeYieldFrameStorageSupported(graph, moduleIndex, error.name, visiting)) {
+        if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, error.name, visiting)) {
           throw loweringBoundary(path, "Z0700", "native yield-frame error requires supported owned frame storage",
             declaration.line, declaration.column, 5);
         }
@@ -2347,7 +2358,7 @@ function validateNativeFunction(
     }
     for (const parameter of declaration.parameters) {
       const visiting = Array<String>();
-      if (!nativeYieldFrameStorageSupported(graph, moduleIndex, parameter.type.name, visiting)) {
+      if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, parameter.type.name, visiting)) {
         throw loweringBoundary(path, "Z0700",
           `native yield-frame parameter "${parameter.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
           parameter.line, parameter.column, parameter.name.byteLength);
@@ -2363,7 +2374,7 @@ function validateNativeFunction(
               const root = tree.root;
               const sourceType = resolvedExpressionType(graph, moduleIndex, tree, root);
               const visiting = Array<String>();
-              if (!nativeYieldFrameStorageSupported(graph, moduleIndex, sourceType, visiting)) {
+              if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, sourceType, visiting)) {
                 throw loweringBoundary(path, "Z0700",
                   "native yield-frame destructuring source requires supported owned frame storage; borrowed views and other native storage remain outside this tier",
                   statement.line, statement.column, 5);
@@ -2382,7 +2393,7 @@ function validateNativeFunction(
         }
         if (!matches) continue;
         const visiting = Array<String>();
-        if (!nativeYieldFrameStorageSupported(graph, moduleIndex, binding.typeName, visiting)) {
+        if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, binding.typeName, visiting)) {
           throw loweringBoundary(path, "Z0700",
             `native yield-frame local "${binding.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
             binding.line, binding.column, binding.name.byteLength);

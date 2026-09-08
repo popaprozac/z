@@ -5908,13 +5908,61 @@ scope returns to its original reference count after posted dispatch notification
 drain. These checks run under UBSan, not ASan. Existing captured and
 delay-suspending TaskScope probes remain passing.
 
-This tests the frame/scheduler boundary, **not** complete language-level worker
-integration: native `thread.spawn` still rejects an owned `TaskScope` capture.
-The next bounded prerequisite is that capture plus parent-to-worker cancellation
-propagation into the yielding child; simply relaxing the capture allowlist would
-not prove cancellation. Then wire the endpoint/inbox/main-wakeup lifecycle with
-startup failure and teardown tests. Automatic secondary-instance forwarding
-remains disabled until those application checks pass.
+At this checkpoint the probe tested the frame/scheduler boundary, not a
+language-level worker capture. The follow-up below closes that prerequisite;
+automatic secondary-instance forwarding remains disabled until the application
+startup and teardown checks pass.
+
+### Language-level worker scope capture and yielding-child cancellation (2026-09-08)
+
+`async-worker-scope.zs` now uses ordinary `thread.spawn(async move ...)` rather
+than a handwritten pthread driver to carry a retained `TaskScope` onto a worker.
+The parent keeps its handle. A terminal await of a named nonthrowing yielding
+function drives that cold child on a worker-local executor; each drive observes
+the worker's synchronized cancellation flag and forwards it to the child.
+Cancellation joins nested children and releases their owned storage before
+publishing worker completion. Cancelled children do not expose a result.
+
+```zs
+const updates = new TaskScope();
+const listener = thread.spawn(async move (): i32 => await listen(updates));
+// listen owns its locals, queues main wakeups through updates.schedule(...),
+// and reaches scheduler.yield() between bounded operations.
+await listener.cancel();
+await updates.close();
+```
+
+This is the existing API and ownership model, not a new capture rule: `move`
+retains shared identity and transfers unique ownership as appropriate. The
+native frame tier is still `void`/`i32`, root owned locals, synchronous nested
+control flow, and direct named child awaits. General asynchronous worker body
+normalization, throwing worker wrappers for this path, and cross-thread
+`TaskControl` capture are not added. A scope-capturing worker with an unsupported
+child-await shape fails closed; it must not silently call a synchronous bridge
+that cannot observe cancellation. Broader Task return annotations and renamed
+`TaskControl` parameters receiving a `schedule` result also need a separate
+Stage-0/native diagnostic parity audit: the latter currently reports
+`expected WakeControl, found TaskControl` in a native-frontend check. This probe
+creates and joins the worker in its enclosing async function.
+
+The combined test exposed another real composition failure: when native worker
+awaits enable external-completion support, a TaskScope-owned fallback executor
+must initialize and destroy that support too. Borrowed enclosing executors keep
+their own lifecycle; the scope neither reinitializes nor destroys them.
+
+Bounded UBSan tests cover normal completion, cancellation before worker entry,
+cancellation after owned initialization, nested child cleanup, owned String
+capture into a void child, and rejection after close. A 60-worker matrix joins
+or cancels admitted main work, drains already-posted dispatch notifications,
+and checks exact resource cleanup, an empty queue, and the original scope
+reference count. Stage 0 and native execution agree. No ASan processes or
+unbounded test children are used.
+
+Next: restore the real endpoint/inbox/main-wakeup integration probe, including
+startup failure and close-admission → cancel/join listener → drain/cancel main
+jobs → destroy host. Passing this runtime prerequisite is not proof of the
+complete application listener. A yielding loop is also not an efficient idle
+wait: blocking/notification-backed reception must stay bounded and measured.
 
 ## Not tested yet
 

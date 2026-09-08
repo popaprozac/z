@@ -118,6 +118,15 @@ production or compatibility-sensitive use.
   owns a serial fallback executor on the current thread; it does not create an
   OS thread. Z Notes now runs this complete path through the standalone native
   driver without a Stage 0 override.
+- The native launch-listener prerequisite now retains a `TaskScope` captured by
+  an ordinary `thread.spawn(async move ...)` closure. A terminal await of a named
+  nonthrowing `void`/`i32` yielding helper propagates worker cancellation into its
+  cold frame and joins nested children before releasing parent storage. Admitted
+  main-thread wakeups remain separately owned and joined by the scope. Bounded
+  UBSan tests cover pre-entry cancellation, closed-scope rejection, repeated
+  teardown, and exact reference counts. General worker bodies and cross-thread
+  `TaskControl` capture remain staged; this is not yet the full application
+  launch-listener integration.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - Exact `z.json` source-module mappings for bare imports in Stage 0, the editor,

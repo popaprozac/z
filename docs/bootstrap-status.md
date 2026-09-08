@@ -1193,6 +1193,18 @@ with execution and cancellation tests before restoring the app integration;
 do not weaken executor provenance or substitute an uninterruptible synchronous
 worker. See [the exact pressure-test checkpoint](ownership-pressure.md#launch-readiness-and-the-next-async-composition-prerequisite).
 
+The native listener prerequisite also now covers a retained `TaskScope` capture
+in `thread.spawn(async move ...)`, with the parent keeping its handle. A terminal
+await of a named nonthrowing `void`/`i32` yielding helper runs its cold child on
+the worker executor and propagates worker cancellation through nested child
+cleanup before join completes. Main work admitted by `schedule` stays owned by
+the scope and is joined/cancelled separately. UBSan probes cover pre-entry
+cancellation, repeated completion/cancellation/closed-scope rejection, destination
+thread assertions, and exact final scope reference counts. Unsupported
+scope-capturing worker await shapes remain explicit lowering errors; general
+worker-body normalization and cross-thread `TaskControl` capture are not added.
+The actual endpoint readiness/inbox/host-teardown integration remains next.
+
 Continue focused self-hosting work in this order:
 
 1. Continue decomposing the former 8,980-line `module-resolver.zs` without

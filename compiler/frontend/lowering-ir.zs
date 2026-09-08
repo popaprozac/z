@@ -3207,6 +3207,19 @@ function importedArenaBinding(in program: Program, in name: String): boolean {
   return false;
 }
 
+function importedAsyncHandleBinding(
+  in program: Program, in name: String, in handle: String
+): boolean {
+  if (name == handle) return true;
+  for (const declaration of program.imports) {
+    if (declaration.header != "std/async" || !declaration.selective) continue;
+    for (const binding of declaration.bindings) {
+      if (binding.localName == name && binding.importedName == handle) return true;
+    }
+  }
+  return false;
+}
+
 function taskStorageType(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -3340,13 +3353,13 @@ function lowerTypeName(
       name: name.copyBytes(0, name.byteLength),
     });
   }
-  if (name == "TaskScope") {
+  if (importedAsyncHandleBinding(program, name, "TaskScope")) {
     return LoweredType({
       kind: LoweredTypeKind.taskScopeType,
       name: "TaskScope",
     });
   }
-  if (name == "TaskControl") {
+  if (importedAsyncHandleBinding(program, name, "TaskControl")) {
     return LoweredType({
       kind: LoweredTypeKind.taskControlType,
       name: "TaskControl",
@@ -3736,13 +3749,13 @@ function lowerModuleTypeName(
       name: name.copyBytes(0, name.byteLength),
     });
   }
-  if (name == "TaskScope") {
+  if (importedAsyncHandleBinding(program, name, "TaskScope")) {
     return LoweredType({
       kind: LoweredTypeKind.taskScopeType,
       name: "TaskScope",
     });
   }
-  if (name == "TaskControl") {
+  if (importedAsyncHandleBinding(program, name, "TaskControl")) {
     return LoweredType({
       kind: LoweredTypeKind.taskControlType,
       name: "TaskControl",
@@ -8446,6 +8459,7 @@ function collectThreadClosureCaptures(
     );
     const sharedArc = type.kind == LoweredTypeKind.classType
       && importedTypeThreadShareable(importedTypes, type);
+    const sharedScope = type.kind == LoweredTypeKind.taskScopeType;
     if (
       needsCleanup
       && type.kind == LoweredTypeKind.classType
@@ -8457,13 +8471,14 @@ function collectThreadClosureCaptures(
       needsCleanup
       && type.kind != LoweredTypeKind.stringType
       && !sharedArc
+      && !sharedScope
     ) {
       throw `native thread.spawn does not support ownership-bearing capture ${captureName} yet`;
     }
     captures.push(LoweredClosureCapture({
       name: move captureName,
       type,
-      owned: needsCleanup && !sharedArc,
+      owned: needsCleanup && !sharedArc && !sharedScope,
     }));
     index = index + 1;
   }
@@ -9702,7 +9717,7 @@ function staticallyResolvedExpressionTypeName(
         receiver
       )) {
         some(receiverType) => {
-          if (receiverType == "TaskScope") {
+          if (importedAsyncHandleBinding(program, receiverType, "TaskScope")) {
             return Option.some("TaskControl");
           }
         }
@@ -11802,7 +11817,7 @@ function lowerExpressionContextual(
           some(name) => name;
           none => "";
         };
-        if (receiverTypeName == "TaskScope") {
+        if (importedAsyncHandleBinding(program, receiverTypeName, "TaskScope")) {
           const receiver = try lowerExpression(
             program,
             importedTypes,
@@ -12285,7 +12300,7 @@ function lowerExpressionContextual(
         some(name) => name;
         none => "";
       };
-      if (receiverTypeName == "TaskScope") {
+      if (importedAsyncHandleBinding(program, receiverTypeName, "TaskScope")) {
         const receiver = try lowerExpression(
           program,
           importedTypes,
@@ -12359,7 +12374,7 @@ function lowerExpressionContextual(
         some(name) => name;
         none => "";
       };
-      if (receiverTypeName == "TaskControl") {
+      if (importedAsyncHandleBinding(program, receiverTypeName, "TaskControl")) {
         const receiver = try lowerExpression(
           program,
           importedTypes,
@@ -16498,7 +16513,7 @@ function lowerExpressionContextual(
     )) {
       some(receiverTypeName) => {
         if (
-          receiverTypeName == "TaskControl"
+          importedAsyncHandleBinding(program, receiverTypeName, "TaskControl")
           && (
             tree.nodes[index].value == "accepted"
             || tree.nodes[index].value == "isCancellationRequested"
@@ -21032,7 +21047,7 @@ function statementIsTaskScopeJoinAwait(
           tree,
           receiver
         )) {
-          some(name) => name == "TaskScope";
+          some(name) => importedAsyncHandleBinding(program, name, "TaskScope");
           none => false;
         };
       }
@@ -23590,7 +23605,7 @@ function lowerStatementCore(
                   some(name) => name;
                   none => throw "native task cancellation could not resolve its Task type";
                 };
-                if (receiverTypeName != "TaskScope") {
+                if (!importedAsyncHandleBinding(program, receiverTypeName, "TaskScope")) {
                 const storageType = try taskStorageType(
                   program,
                   importedTypes,

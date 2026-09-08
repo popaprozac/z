@@ -12935,18 +12935,28 @@ function appendTaskScopeRuntime(
 ): void {
   if (!programUsesTaskScope(program)) return;
   const usesDelay = programUsesMainDelay(program);
+  const usesExternalCompletion = programUsesObjectiveCAsyncCompletion(program)
+    || programUsesAsyncThreadAwait(program);
   output.append("static void z_stage1_task_scope_lock(Z_TaskScope *scope) {\n#if defined(_WIN32)\n  EnterCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_lock(&scope->mutex) != 0) abort();\n#endif\n}\n\n");
   output.append("static void z_stage1_task_scope_unlock(Z_TaskScope *scope) {\n#if defined(_WIN32)\n  LeaveCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_unlock(&scope->mutex) != 0) abort();\n#endif\n}\n\n");
   output.append("static Z_TaskScope *Z_TaskScope_retain(Z_TaskScope *scope) {\n  if (scope != NULL) __atomic_add_fetch(&scope->refcount, 1, __ATOMIC_RELAXED);\n  return scope;\n}\n\n");
   output.append("static Z_TaskControl *Z_TaskControl_retain(Z_TaskControl *control) {\n  if (control != NULL) __atomic_add_fetch(&control->refcount, 1, __ATOMIC_RELAXED);\n  return control;\n}\n\n");
   output.append("static void z_stage1_task_scope_release_invocation(Z_AsyncInvocation *invocation) {\n  if (invocation == NULL || invocation->task == NULL) return;\n  if (invocation->destroy != NULL) invocation->destroy(invocation->task);\n  if (invocation->release_context != NULL) invocation->release_context(invocation->callable_context);\n  *invocation = (Z_AsyncInvocation){0};\n}\n\n");
   output.append("static void z_stage1_task_scope_discard_jobs(Z_TaskScope *scope) {\n  Z_TaskScopeJob *job = scope->jobs;\n  scope->jobs = NULL;\n  while (job != NULL) {\n    Z_TaskScopeJob *next = job->scope_next;\n    if (job->child.task != NULL) abort();\n    free(job);\n    job = next;\n  }\n}\n\n");
-  output.append("static void Z_TaskScope_release(Z_TaskScope *scope) {\n  if (scope == NULL) return;\n  if (__atomic_fetch_sub(&scope->refcount, 1, __ATOMIC_ACQ_REL) != 1) return;\n  if (scope->pending != 0 || scope->external_head != NULL) abort();\n  z_stage1_task_scope_discard_jobs(scope);\n#if defined(_WIN32)\n  DeleteCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_destroy(&scope->mutex) != 0) abort();\n#endif\n  free(scope);\n}\n\n");
+  output.append("static void Z_TaskScope_release(Z_TaskScope *scope) {\n  if (scope == NULL) return;\n  if (__atomic_fetch_sub(&scope->refcount, 1, __ATOMIC_ACQ_REL) != 1) return;\n  if (scope->pending != 0 || scope->external_head != NULL) abort();\n  z_stage1_task_scope_discard_jobs(scope);\n");
+  if (usesExternalCompletion) {
+    output.append("  if (scope->executor == &scope->local_executor) z_stage1_async_executor_destroy_external(scope->executor);\n");
+  }
+  output.append("#if defined(_WIN32)\n  DeleteCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_destroy(&scope->mutex) != 0) abort();\n#endif\n  free(scope);\n}\n\n");
   output.append("static void Z_TaskControl_release(Z_TaskControl *control) {\n  if (control == NULL) return;\n  if (__atomic_fetch_sub(&control->refcount, 1, __ATOMIC_ACQ_REL) != 1) return;\n  Z_TaskScope_release(control->scope);\n  free(control);\n}\n\n");
   output.append("static __attribute__((unused)) void Z_TaskScope_deinit(Z_TaskScope **scope) {\n  if (scope == NULL) return;\n  Z_TaskScope_release(*scope);\n  *scope = NULL;\n}\n\n");
   output.append("static void Z_TaskControl_deinit(Z_TaskControl **control) {\n  if (control == NULL) return;\n  Z_TaskControl_release(*control);\n  *control = NULL;\n}\n\n");
   output.append("static Z_TaskControl *z_stage1_task_control_new(bool accepted) {\n  Z_TaskControl *control = (Z_TaskControl *)calloc(1, sizeof(*control));\n  if (control == NULL) abort();\n  control->refcount = 1;\n  control->accepted = accepted;\n  return control;\n}\n\n");
-  output.append("static __attribute__((unused)) Z_TaskScope *z_stage1_task_scope_new(Z_AsyncExecutor *executor) {\n  Z_TaskScope *scope = (Z_TaskScope *)calloc(1, sizeof(*scope));\n  if (scope == NULL) abort();\n  scope->refcount = 1;\n  scope->executor = executor != NULL ? executor : &scope->local_executor;\n#if defined(_WIN32)\n  InitializeCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_init(&scope->mutex, NULL) != 0) abort();\n#endif\n  return scope;\n}\n\n");
+  output.append("static __attribute__((unused)) Z_TaskScope *z_stage1_task_scope_new(Z_AsyncExecutor *executor) {\n  Z_TaskScope *scope = (Z_TaskScope *)calloc(1, sizeof(*scope));\n  if (scope == NULL) abort();\n  scope->refcount = 1;\n  scope->executor = executor != NULL ? executor : &scope->local_executor;\n");
+  if (usesExternalCompletion) {
+    output.append("  if (executor == NULL) z_stage1_async_executor_init_external(scope->executor);\n");
+  }
+  output.append("#if defined(_WIN32)\n  InitializeCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_init(&scope->mutex, NULL) != 0) abort();\n#endif\n  return scope;\n}\n\n");
   output.append("static void z_stage1_task_scope_job_cancel(Z_AsyncTask *task) {\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;\n  if (job->control != NULL) job->control->cancellation_requested = true;\n  if (job->child.task != NULL) z_stage1_async_request_cancel(job->child.task);\n}\n\n");
   output.append("static void z_stage1_task_scope_release_callable(Z_TaskScopeJob *job) {\n  if (job->release != NULL) job->release(job->context);\n  job->start = NULL;\n  job->context = NULL;\n  job->release = NULL;\n}\n\n");
   output.append("static void z_stage1_task_scope_job_finish(Z_TaskScopeJob *job) {\n  job->task.completed = true;\n  Z_TaskScope *scope = job->scope;\n  Z_TaskControl *control = job->control;\n  z_stage1_task_scope_lock(scope);\n  if (scope->pending == 0) abort();\n  scope->pending -= 1;\n  if (control != NULL) control->job = NULL;\n  job->control = NULL;\n  z_stage1_task_scope_unlock(scope);\n  Z_TaskControl_release(control);\n}\n\n");
@@ -18610,6 +18620,110 @@ function appendThreadSpawnPrototypes(
   if (emitted) output.append("\n");
 }
 
+// A terminal await can drive a cold yielding child on the worker's executor.
+// Keep this separate from the ordinary synchronous callable bridge: that bridge
+// has no worker cancellation authority and must not swallow cancellation.
+function threadYieldAwaitIndex(
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  in spawn: LoweredExpression
+): usize {
+  if (spawn.labels.length < 6 || spawn.labels[2] != "async"
+    || spawn.labels[3].byteLength > 0) return declaration.expressions.length;
+  let body = declaration.expressions.length;
+  if (spawn.labels[0] == "expression" && spawn.children.length > 0) {
+    body = spawn.children[0];
+  } else if (spawn.labels[0] == "lowered-block" && spawn.statements.length == 1) {
+    const statement = view declaration.statements[spawn.statements[0]];
+    if (statement.kind == LoweredStatementKind.returnStatement) {
+      match (in statement.expression) {
+        some(value) => body = value;
+        none => {}
+      }
+    }
+  }
+  if (body >= declaration.expressions.length) return body;
+  const awaited = view declaration.expressions[body];
+  if (awaited.kind != LoweredExpressionKind.asyncFunctionAwait
+    || awaited.children.length == 0) return declaration.expressions.length;
+  const callable = view declaration.expressions[awaited.children[0]];
+  if (callable.kind != LoweredExpressionKind.directFunctionValue) {
+    return declaration.expressions.length;
+  }
+  for (const target of program.functions) {
+    if (target.name == callable.value && target.asyncSuspension == "yield-frame") return body;
+  }
+  return declaration.expressions.length;
+}
+
+function workerExpressionContainsAwait(in declaration: LoweredFunction, index: usize): boolean {
+  const expression = view declaration.expressions[index];
+  if (expression.kind == LoweredExpressionKind.asyncFunctionAwait) return true;
+  // Nested worker closures have their own cancellation boundary.
+  if (expression.kind == LoweredExpressionKind.threadSpawn) return false;
+  for (const child of expression.children) {
+    if (workerExpressionContainsAwait(declaration, child)) return true;
+  }
+  for (const statement of expression.statements) {
+    if (workerStatementContainsAwait(declaration, statement)) return true;
+  }
+  return false;
+}
+
+function workerStatementContainsAwait(in declaration: LoweredFunction, index: usize): boolean {
+  const statement = view declaration.statements[index];
+  match (in statement.expression) {
+    some(value) => if (workerExpressionContainsAwait(declaration, value)) return true;
+    none => {}
+  }
+  match (in statement.secondExpression) {
+    some(value) => if (workerExpressionContainsAwait(declaration, value)) return true;
+    none => {}
+  }
+  for (const child of statement.children) {
+    if (workerStatementContainsAwait(declaration, child)) return true;
+  }
+  return false;
+}
+
+function appendThreadYieldAwaitBody(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  in spawn: LoweredExpression,
+  awaitedIndex: usize,
+  in resultType: LoweredType
+): void throws String {
+  const awaited = view declaration.expressions[awaitedIndex];
+  const external = programUsesObjectiveCAsyncCompletion(program)
+    || programUsesAsyncThreadAwait(program);
+  output.append("  Z_AsyncExecutor executor = {0};\n");
+  if (external) output.append("  z_stage1_async_executor_init_external(&executor);\n");
+  output.append(`  Z_AsyncInvocation invocation = Z_${awaited.value}_start(`);
+  try appendExpression(inout output, declaration, awaited.children[0]);
+  output.append(", &executor");
+  let argument: usize = 1;
+  while (argument < awaited.children.length) {
+    output.append(", ");
+    try appendExpression(inout output, declaration, awaited.children[argument]);
+    argument = argument + 1;
+  }
+  output.append(");\n  if (invocation.task == NULL || invocation.task->completed) abort();\n  z_stage1_async_enqueue(&executor, invocation.task);\n  while (!invocation.task->completed) {\n");
+  output.append(`    if (Z_${spawn.value}_is_cancellation_requested(_z_stage1_task_storage)) z_stage1_async_request_cancel(invocation.task);\n`);
+  output.append("    if (!z_stage1_async_drive_one(&executor)) abort();\n  }\n  const bool cancelled = invocation.task->cancelled;\n");
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    output.append("  ");
+    output.append(try cType(resultType));
+    output.append(" result = {0};\n");
+  }
+  output.append("  if (!cancelled) {\n    if (invocation.failed != NULL && invocation.failed(invocation.task)) abort();\n    if (invocation.take_result != NULL) invocation.take_result(invocation.task, ");
+  output.append(resultType.kind == LoweredTypeKind.voidType ? "NULL" : "&result");
+  output.append(");\n  }\n  if (invocation.destroy != NULL) invocation.destroy(invocation.task);\n  if (invocation.release_context != NULL) invocation.release_context(invocation.callable_context);\n  if (executor.head != NULL || executor.tail != NULL) abort();\n");
+  if (external) output.append("  z_stage1_async_executor_destroy_external(&executor);\n");
+  output.append("  if (cancelled) _z_stage1_task_storage->continuation_cancelled = true;\n");
+  if (resultType.kind != LoweredTypeKind.voidType) output.append("  return result;\n");
+}
+
 function appendThreadSpawnHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -18745,7 +18859,8 @@ function appendThreadSpawnHelpers(
           expression.labels[captureLabel + 1]
         );
         const nativeCaptureType = try cType(captureType);
-        if (captureType.kind == LoweredTypeKind.classType) {
+        if (captureType.kind == LoweredTypeKind.classType
+          || captureType.kind == LoweredTypeKind.taskScopeType) {
           output.append(nativeCaptureType);
           output.append(" const *");
         } else {
@@ -18780,7 +18895,29 @@ function appendThreadSpawnHelpers(
         );
         captureLabel = captureLabel + 2;
       }
-      if (blockBody) {
+      const yieldAwait = threadYieldAwaitIndex(program, declaration, expression);
+      if (yieldAwait == declaration.expressions.length) {
+        let capturesScope = false;
+        let capture: usize = 7;
+        while (capture < expression.labels.length) {
+          const type = try loweredTypeForIdentity(program, expression.labels[capture]);
+          if (type.kind == LoweredTypeKind.taskScopeType) capturesScope = true;
+          capture = capture + 2;
+        }
+        if (capturesScope) {
+          let awaitsChild = false;
+          if (!blockBody) awaitsChild = workerExpressionContainsAwait(declaration, expression.children[0]);
+          for (const statement of expression.statements) {
+            if (workerStatementContainsAwait(declaration, statement)) awaitsChild = true;
+          }
+          if (awaitsChild) throw "native TaskScope worker captures currently require a terminal await of a named nonthrowing yielding function; move the asynchronous body into that function so cancellation can join its frame";
+        }
+      }
+      if (yieldAwait < declaration.expressions.length) {
+        try appendThreadYieldAwaitBody(
+          inout output, program, declaration, expression, yieldAwait, resultType
+        );
+      } else if (blockBody) {
         for (const root of expression.statements) {
           try appendStatement(inout output, declaration, root, 1);
         }
@@ -18943,7 +19080,8 @@ function appendThreadSpawnHelpers(
           )) output.append(
             `  worker_context->_z_stage1_capture_live_${initializedCapture} = true;\n`
           );
-          if (captureType.kind == LoweredTypeKind.classType) {
+          if (captureType.kind == LoweredTypeKind.classType
+            || captureType.kind == LoweredTypeKind.taskScopeType) {
             output.append("  Z_");
             output.append(captureType.name);
             output.append("_retain(worker_context->");
