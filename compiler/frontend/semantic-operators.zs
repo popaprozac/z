@@ -11,6 +11,7 @@ import {
 } from "./semantic-type-shapes.zs";
 import {
   typeHasCleanup,
+  typeIsNativeObjCReference,
   typeSupportsExplicitCopy,
 } from "./semantic-type-ownership.zs";
 import {
@@ -131,9 +132,10 @@ export function unaryOperatorType(
     }
     let visiting = Array<String>();
     if (
-      !genericOwnedParameter
-      && !typeHasCleanup(modules, moduleIndex, operand, visiting)
-      && !isUnresolvedExternalType(modules, moduleIndex, operand)
+      typeIsNativeObjCReference(modules, moduleIndex, operand)
+      || (!genericOwnedParameter
+        && !typeHasCleanup(modules, moduleIndex, operand, visiting)
+        && !isUnresolvedExternalType(modules, moduleIndex, operand))
     ) {
       throw invalidOperator(
         module,

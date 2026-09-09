@@ -765,6 +765,25 @@ export function typeContainsOpaqueCleanupStorage(
   return false;
 }
 
+// Native Objective-C references retain shared identity on ordinary value use.
+// That cleanup obligation is not unique ownership that `move value` can take.
+export function typeIsNativeObjCReference(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in typeName: String
+): boolean {
+  let actual = transparentTypeName(modules, moduleIndex, typeName);
+  const nullableTarget = nullableTargetType(actual);
+  if (nullableTarget.byteLength > 0) actual = nullableTarget;
+  return match (inferredTypeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+      some(signature) => signature.foreignKind == "objcInterface"
+        || signature.foreignKind == "objcSubclass"
+        || signature.foreignKind == "objcProtocol";
+      none => false;
+    }
+    none => actual == "id";
+  };
+}
+
 export function typeMovesOnOwnedUse(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

@@ -6821,6 +6821,26 @@ exercise the full resolver and freshly bootstrapped manifest path. Deprecations
 remain retained metadata pending warning reporting. Full subclass execution and
 remaining body ownership/availability composition are still gated.
 
+The native subclass ownership audit also found that `typeHasCleanup` alone was
+too broad a test for explicit move. It admitted retained Objective-C aliases,
+although Stage 0 rejects `move alias` because that reference does not represent
+unique ownership. Native operator checking now recognizes imported interfaces,
+source subclasses, protocol object identity, nullable references, and transparent
+aliases. A second parity gap admitted direct `this` capture whenever the closure
+avoided a thread-affine call or had a main-affine function type; structural
+checking now preserves Stage 0's existing direct-receiver capture boundary.
+Named alias captures are not banned: typed owned closures retain them, and
+inline synchronous `in` callbacks can borrow them. The strict-Clang/UBSan fixture
+now returns an owned callback from a helper, proves the receiver is still alive,
+calls it, and checks zero live native objects after teardown across 200 iterations.
+
+**Next concrete ownership gap:** conversion of a borrowed capturing closure into
+a stored function value needs native escape/owned-environment proof. The typed
+oracle still accepts a case that Stage 0 rejects. Full native subclass resolution
+is explicitly tested to remain gated, so this is evidence to close before native
+emission, not an executable safety claim. Continue with stored/returned/passed
+closures and nested nonescaping callbacks before lifting that boundary.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

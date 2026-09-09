@@ -169,6 +169,12 @@ recursive path.
   initialization and dispatch from virtual calls. Tests reject invalid
   arguments/results, downcasts/sibling conversions, readonly property writes,
   alias reinitialization/overlap, and missing imported executor capabilities.
+  Native Objective-C references cannot use explicit `move` (including nullable
+  and transparent aliases); ordinary uses retain identity. Direct `this` capture
+  stays rejected like Stage 0, while typed owned alias captures and inline
+  borrowed callbacks have positive parity tests. Borrowed-closure conversion
+  into stored function values still needs escape proof before the execution gate
+  can be removed.
   Typed checking requires attached superclass ABI evidence. The driver supplies
   the existing deployment target as parsed-module context;
   `semantic-native-availability.zs` enforces applicable unavailable, introduced,

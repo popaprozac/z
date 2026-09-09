@@ -145,9 +145,11 @@ The research Objective-C probe remains an isolated test oracle, not a new
 handwritten production backend.
 
 Current evidence: `tests/objc-subclasses.test.ts` runs a native base fixture under
-strict Clang and UBSan. Two hundred constructions, base-reference virtual calls,
+strict Clang and UBSan. Two hundred iterations cover constructions, base-reference virtual calls,
 selector aliases, superclass dispatch, post-initialization native properties,
-and scope cleanup leave zero live fixture objects. A real `NSWindow` subclass
+and scope cleanup, including an owned callback that keeps its native receiver
+alive after the creator returns and releases it on callback destruction. They
+leave zero live fixture objects. A real `NSWindow` subclass
 passes compile-only verification without launching a GUI. Rejection tests cover
 construction, ABI, lifecycle, effects, and representation boundaries. Editor
 tests cover contextual keyword tokens, native identity/override hover, and
@@ -188,6 +190,22 @@ receiver loans. The literal `thread.main` affinity must resolve to the imported
 `std/thread` capability. Consuming and variadic native calls remain rejected in
 this body tier.
 
+The ownership follow-up distinguishes cleanup from unique ownership: native
+Objective-C references (including source subclasses, nullable references, and
+transparent aliases) cannot be explicitly moved merely because ARC must release
+them. Ordinary assignment/argument passing still retains shared identity. Direct
+`this` capture remains rejected consistently with Stage 0; capturing a named alias
+in an explicitly typed `move` closure retains that alias instead. Tests preserve
+owned String moves/captures, borrowed object-parameter retention, and inline
+synchronous `in` callbacks while rejecting use after a String move.
+
+One concrete open parity gap is borrowed-capture conversion into a stored
+function value. Stage 0 rejects it without an owned environment; the limited
+native typed oracle does not yet carry that escape proof. A regression test
+requires the full resolver to remain gated for this case. Complete that proof
+before enabling native subclass emission; do not mistake a successful typed
+oracle for executable ownership safety.
+
 The standalone driver now passes the existing project `target.platform` and
 `target.minimumVersion` into parsed module context. Without a configured target,
 compiler-private host evidence supplies the platform, not an invented minimum
@@ -211,7 +229,8 @@ body checking. Complete ownership and availability composition are still require
 passing this limited typed oracle is not a claim that every body composition is
 safe to emit.
 
-Next: complete body ownership checks and remaining availability/diagnostic composition, then
+Next: borrowed-closure escape/owned-environment proof, remaining body ownership
+checks, and availability/diagnostic composition, then
 lowering/emission parity; afterward
 deliberate and test owned state, initialization/teardown callbacks, and reentrancy
 before Zapp's window transition state moves into a subclass.

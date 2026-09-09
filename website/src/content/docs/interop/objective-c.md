@@ -140,12 +140,17 @@ expression blocks. A nested closure may still return to its own caller. The
 first native body-typing tier checks names, argument/result types, inherited
 properties, nominal base conversions, and receiver alias exclusivity using the
 ordinary checker. It also requires the imported `thread.main` capability.
+Native Objective-C references retain shared identity on ordinary assignment;
+explicit `move` does not apply to these references. Direct `this` capture is
+still outside the initial closure tier. A named alias can be retained in a typed
+owned closure, with the appropriate executor contract. Runtime tests verify that
+such a callback keeps the native receiver alive until the callback is destroyed.
 Native subclass checks also use the existing `z.json` deployment target to reject
 unavailable APIs and APIs introduced after, or obsoleted by, that minimum version.
 This includes superclass declarations, overrides, calls, and properties. Other
 platforms' restrictions are ignored. Without a configured minimum, version checks
 remain deferred just as in Stage 0; platform-only unavailability still applies.
-Native deprecation warnings remain pending.
+Native deprecation warnings and borrowed-closure escape proof remain pending.
 Execution still reports `Z0814` pending complete ownership/availability composition
 and native emission. This typed-body checkpoint does not enable native
 execution or stateful subclasses.

@@ -1,6 +1,8 @@
 import native from "./objc-subclass.h";
 import { thread } from "std/thread";
 
+type ReadValue = () => i32 on thread.main;
+
 class Counter extends native.ZSubclassFixture on thread.main {
   constructor(value: i32) {
     super.initWithValue(value);
@@ -20,8 +22,20 @@ class Counter extends native.ZSubclassFixture on thread.main {
   }
 
   override function read(in object: native.ZSubclassFixture): i32 as "readObject:" {
-    return object.value();
+    const callback: ReadValue = move (): i32 => object.value();
+    return callback();
   }
+}
+
+function retainedReader(): ReadValue on thread.main {
+  const counter = new Counter(40);
+  return move (): i32 => counter.value();
+}
+
+function exerciseEscapingReader(): i32 on thread.main {
+  const callback = retainedReader();
+  if (native.z_subclass_live_count() != 1) return 2;
+  return callback() - 42;
 }
 
 function exercise(): i32 on thread.main {
@@ -35,6 +49,7 @@ function main(): i32 {
   let index: i32 = 0;
   while (index < 200) {
     if (exercise() != 0) return 1;
+    if (exerciseEscapingReader() != 0) return 2;
     index = index + 1;
   }
   return native.z_subclass_live_count();

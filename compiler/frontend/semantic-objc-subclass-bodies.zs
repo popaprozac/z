@@ -74,6 +74,8 @@ function visitExpression(
       throw bodyError(module,
         "the native receiver cannot be used before superclass initialization succeeds", node.line, node.column);
     }
+    if (context.insideClosure && node.value == "this") throw bodyError(module,
+      "capturing `this` is not implemented in the initial closure tier", node.line, node.column);
     if (node.value == "super") throw bodyError(module,
       "`super` may only be the direct receiver of a native superclass call", node.line, node.column);
   }
@@ -87,6 +89,8 @@ function visitExpression(
       "`super` cannot be captured by a closure", node.line, node.column);
     if (context.beforeInitialization && name == "this") throw bodyError(module,
       "the native receiver cannot be used before superclass initialization succeeds", node.line, node.column);
+    if (name == "this") throw bodyError(module,
+      "capturing `this` is not implemented in the initial closure tier", node.line, node.column);
   }
   if (node.kind == ExpressionKind.callExpression && node.children.length > 0) {
     const callee = view tree.nodes[node.children[0]];

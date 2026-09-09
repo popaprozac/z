@@ -145,6 +145,10 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       ["super expression closure", overrideBody("const callback = (): i32 => super.value(); return callback();"), /cannot be captured/],
       ["super block closure", overrideBody("const callback = (): i32 => { return super.value(); }; return callback();"), /cannot be captured/],
       ["super nested closure", overrideBody("const callback = (): i32 => { const inner = (): i32 => super.value(); return inner(); }; return callback();"), /cannot be captured/],
+      ["direct receiver capture", overrideBody("const callback: () => i32 on thread.main = move (): i32 => this.value(); return callback();"), /capturing `this`/],
+      ["receiver capture without dispatch", overrideBody("const callback: () => i32 = move (): i32 => { const alias = this; return 42; }; return callback();"), /capturing `this`/],
+      ["nested receiver capture", overrideBody("const callback = (): i32 => { const inner = (): i32 => { const alias = this; return 42; }; return inner(); }; return callback();"), /capturing `this`/],
+      ["constructor receiver capture", constructorTail("const callback = (): i32 => { const alias = this; return 42; }; const observed = callback();"), /capturing `this`/],
       ["constructor closure initialization", constructorTail("const callback = (): void => { super.initWithValue(value); }; callback();"), /cannot be captured/],
       ["constructor parameter shadow", nativeBaseline.replace("constructor(value: i32)", "constructor(self: i32)"), /cannot be shadowed/],
       ["local receiver shadow", constructorTail("const self = value;"), /cannot be shadowed/],
@@ -210,6 +214,14 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       ["native setter argument", constructorTail('this.configuredValue = "bad";'), /i32.*String|String.*i32/],
       ["uncontracted explicit borrow", overrideBody("return super.readObject(in this);"), /in is not valid/],
       ["receiver alias overlap", constructorTail("const alias = this; observe(inout this, in alias);") + "\nfunction observe(inout left: Counter, in right: Counter): void {}", /overlap|alias/],
+      ["move native receiver", overrideBody("const alias = move this; return 42;"), /no unique ownership to move/],
+      ["move retained native alias", overrideBody("const alias = this; const other = move alias; return other.value();"), /no unique ownership to move/],
+      ["move imported base alias", overrideBody("const alias: native.ZWireBase = this; const other = move alias; return other.value();"), /no unique ownership to move/],
+      ["move nullable base alias", overrideBody("const alias: native.ZWireBase | null = this; const other = move alias; return 42;"), /no unique ownership to move/],
+      ["move transparent native alias", overrideBody("const alias: CounterAlias = this; const other = move alias; return 42;") + "\ntype CounterAlias = Counter;", /no unique ownership to move/],
+      ["copy native receiver", overrideBody("const alias = copy this; return alias.value();"), /cannot be explicitly copied/],
+      ["moved String use", overrideBody('const message = "hello"; const moved = move message; return i32(message.byteLength);'), /use of moved value/],
+      ["owned String capture use", overrideBody('const message = "hello"; const callback: () => i32 = move (): i32 => i32(message.byteLength); return i32(message.byteLength);'), /use of moved value/],
     ] satisfies [string, string, RegExp][]) {
       const checked = runDeclaration(source, "types");
       assert.equal(checked.status, 1, `${name}: ${checked.stdout}${checked.stderr}`);
@@ -223,6 +235,14 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       ["ordinary local computation", overrideBody("let total = super.value(); if (total > 0) { total = total + 2; } return total;")],
       ["native property read", overrideBody("return this.configuredValue;")],
       ["native property initialization", constructorTail("this.configuredValue = value;")],
+      ["ordinary retained argument", overrideBody("consume(this); return this.value();") + "\nfunction consume(value: Counter): void {}"],
+      ["owned native alias capture", overrideBody("const alias = this; const callback: () => i32 on thread.main = move (): i32 => alias.value(); return callback() + alias.value();")],
+      ["inline borrowed alias capture", overrideBody("const alias = this; return inspect((): i32 => alias.value());") + "\nfunction inspect(in callback: () => i32 on thread.main): i32 on thread.main { return callback(); }"],
+      ["owned String capture", overrideBody('const message = "hello"; const callback: () => i32 = move (): i32 => i32(message.byteLength); return callback();')],
+      ["ordinary Z ARC move and id shadowing", overrideBody("const item = new id({ value: 42 }); const other = move item; return other.value;") + "\nclass id { value: i32; }"],
+      ["retained borrowed object capture", overrideBody("const callback: () => i32 on thread.main = move (): i32 => object.value(); return callback() + object.value();")
+        .replace('override function value()', 'override function read(in object: native.ZWireBase)')
+        .replace('as "value"', 'as "readObject:"')],
       ["declared override borrow", overrideBody("return this.read(in this);")
         .replace('override function value()', 'override function read(in object: native.ZWireBase)')
         .replace('as "value"', 'as "readObject:"')],
@@ -243,6 +263,13 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       assert.equal(checked.status, 1, checked.stdout + checked.stderr);
       assert.match(checked.stdout, /consuming Objective-C calls/);
     }
+    // Borrowed-closure escape proof is still a required ownership slice. Do not
+    // let the limited typed oracle's accepted result authorize execution.
+    const borrowedEscape = overrideBody("const alias = this; const callback: () => i32 on thread.main = (): i32 => alias.value(); return callback();");
+    assert.throws(() => compileToNative(borrowedEscape, decoder), /borrowed capturing closure cannot become a function value/);
+    const gatedBorrowedEscape = runDeclaration(borrowedEscape, true);
+    assert.equal(gatedBorrowedEscape.status, 1, gatedBorrowedEscape.stdout + gatedBorrowedEscape.stderr);
+    assert.match(gatedBorrowedEscape.stdout, /Z0814:.*execution still requires/);
     const availabilityHeader = "objc-subclass-availability.h";
     const availabilityStream = resolveForeignFunctionDeclarationStreams([{
       kind: "import", moduleName: "native", bindings: null, header: availabilityHeader,
