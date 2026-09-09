@@ -1247,6 +1247,16 @@ Nested constructors still require lexical ownership states. Nested branch-local
 storage and other continuation suspensions remain explicit boundaries. This is an upstream
 composition prerequisite, not proof that Zapp's full startup wrapper is enabled.
 
+Returned consuming matches now compose through nested match arms with one
+terminal direct child await, including payload-free arms and single-statement
+`select` blocks. Throwing parents use `try await`; broader arm continuations
+remain staged. Enclosing payloads stay owned by the existing frame until
+transfer or cleanup. Root destructuring also preserves selected locals across
+continuation states, while its temporary source and unselected fields are
+cleaned in the synchronous extraction group. Cold/active destruction detaches
+retired tail-frame waiters without disrupting structural joins. See the
+[ownership evidence](ownership-pressure.md#returned-matches-and-destructured-continuation-owners-2026-09-08).
+
 Continue focused self-hosting work in this order:
 
 1. Continue decomposing the former 8,980-line `module-resolver.zs` without

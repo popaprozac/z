@@ -30,6 +30,145 @@ function execute(source: string, expected?: string): string {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
+let cachedReturnedMatch: string | undefined;
+let cachedDestructured: string | undefined;
+function emitDestructured(): string {
+  if (cachedDestructured !== undefined) return cachedDestructured;
+  const input = resolve(projectRoot, "tests/fixtures/async-destructured-locals.zs");
+  const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+  return cachedDestructured = emitted.stdout;
+}
+
+test("stores destructured root owners across native continuation states", () => {
+  const input = resolve(projectRoot, "tests/fixtures/async-destructured-locals.zs");
+  execute(compileToC(readFileSync(input, "utf8"), input), "");
+  const emitted = emitDestructured();
+  const source = emitted.replace("void Z_Resource_deinit(Z_Resource *self) {", "$& if (self->name.length != 0) ++drops;");
+  assert.notEqual(source, emitted);
+  execute(`static int drops;\n#define main fixture_main\n${source}\n#undef main
+int main(void) {
+  const int status = fixture_main();
+  if (status != 0 || drops != 18) { fprintf(stderr, "status=%d drops=%d\\n", status, drops); return 1; }
+  return 0;
+}`, "");
+}, 240_000);
+
+test("destroys every initialized destructured owner when a continuation is cancelled or dropped", () => {
+  let source = emitDestructured();
+  const start = source.match(/static Z_AsyncInvocation (\w+_start)\(void \*context, Z_AsyncExecutor \*executor, bool argument0, bool argument1\)/)?.[1];
+  assert.ok(start, "startup frame");
+  const owners = source.match(/\(Z_Resource\)\{\.name = Z_STRING_LITERAL\("(?:used|retained|later|last|unselected)"\)\}/g);
+  assert.ok(owners && owners.length >= 4, "known owned initializers");
+  source = source.replace(/\(Z_Resource\)\{\.name = Z_STRING_LITERAL\("(?:used|retained|later|last|unselected)"\)\}/g, "(recordOwner(), $&)")
+    .replace("void Z_Resource_deinit(Z_Resource *self) {", "$& if (self->name.length != 0) ++drops;");
+  execute(`static int created, drops;\nstatic void recordOwner(void) { ++created; }\n#define main fixture_main\n${source}\n#undef main
+int main(void) {
+  for (int mode = 0; mode < 3; ++mode) for (int early = 0; early < 2; ++early)
+    for (int fail = 0; fail < 2; ++fail) for (int steps = 0; steps < 20; ++steps) {
+      Z_AsyncExecutor executor = {0};
+      created = drops = 0;
+      Z_AsyncInvocation parent = ${start}(NULL, &executor, early, fail);
+      if (mode != 0 || steps > 0) z_stage1_async_enqueue(&executor, parent.task);
+      for (int tick = 0; tick < steps && !parent.task->completed; ++tick)
+        if (!z_stage1_async_drive_one(&executor)) return 1;
+      if (mode == 2) {
+        z_stage1_async_request_cancel(parent.task);
+        for (int tick = 0; !parent.task->completed; ++tick)
+          if (tick > 40 || !z_stage1_async_drive_one(&executor)) return 2;
+      }
+      parent.destroy(parent.task);
+      if (created != drops || executor.head != NULL || executor.tail != NULL) {
+        fprintf(stderr, "mode=%d early=%d fail=%d steps=%d created=%d drops=%d\\n", mode, early, fail, steps, created, drops);
+        return 3;
+      }
+    }
+  return 0;
+}`, "");
+}, 240_000);
+
+function emitReturnedMatch(): string {
+  if (cachedReturnedMatch !== undefined) return cachedReturnedMatch;
+  const input = resolve(projectRoot, "tests/fixtures/async-returned-match.zs");
+  const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+  return cachedReturnedMatch = emitted.stdout;
+}
+
+test("returns awaited values from nested match arms with owned payloads and typed failures", () => {
+  const input = resolve(projectRoot, "tests/fixtures/async-returned-match.zs");
+  const expected = "released first\nreleased second\n";
+  execute(compileToC(readFileSync(input, "utf8"), input), expected);
+  execute(emitReturnedMatch(), expected);
+}, 240_000);
+
+test("cleans nested match owners after cancellation and cold or active frame destruction", () => {
+  let source = emitReturnedMatch();
+  const start = source.match(/static Z_AsyncInvocation (\w+_start)\(void \*context, Z_AsyncExecutor \*executor, (Z_\w*Option\w*) argument0, bool argument1\)/);
+  assert.ok(start, "owned Option<Readiness> startup frame");
+  source = source.replace("void Z_Message_deinit(Z_Message *self) {", "$& ++messageDrops;")
+    .replace("void Z_Failure_deinit(Z_Failure *self) {", "$& ++errorDrops;");
+  execute(`static int messageDrops, errorDrops;
+#define main z_fixture_main\n${source}\n#undef main
+int main(void) {
+  for (int mode = 0; mode < 3; ++mode) {
+    for (int fail = 0; fail < 2; ++fail) {
+      for (int steps = 0; steps < 16; ++steps) {
+        Z_AsyncExecutor executor = {0};
+        messageDrops = errorDrops = 0;
+        Z_AsyncInvocation parent = ${start[1]}(NULL, &executor,
+          (${start[2]}){ .tag = ${start[2]}Tag_some,
+            .payload.some = (Z_Readiness){ .tag = Z_ReadinessTag_primary,
+              .payload.primary = (Z_Message){ .text = Z_STRING_LITERAL("owned") } } }, fail);
+        if (mode != 0 || steps > 0) z_stage1_async_enqueue(&executor, parent.task);
+        for (int step = 0; step < steps && !parent.task->completed; ++step) {
+          if (!z_stage1_async_drive_one(&executor)) return 1;
+        }
+        if (mode == 2) {
+          const bool completed = parent.task->completed;
+          z_stage1_async_request_cancel(parent.task);
+          for (int tick = 0; !parent.task->completed; ++tick)
+            if (tick > 30 || !z_stage1_async_drive_one(&executor)) return 2;
+          if (!completed && !parent.task->cancelled) return 3;
+        }
+        parent.destroy(parent.task);
+        if (messageDrops != 1 || errorDrops > fail || executor.head != NULL || executor.tail != NULL) {
+          fprintf(stderr, "mode=%d fail=%d steps=%d drops=%d/%d\\n", mode, fail, steps, messageDrops, errorDrops);
+          return 4;
+        }
+      }
+    }
+  }
+  return 0;
+}`, "released owned\n".repeat(96));
+}, 240_000);
+
+test("preserves select blocks and borrowed match payloads across terminal child awaits", () => {
+  const directory = mkdtempSync("/tmp/z-returned-match-shapes-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const source = readFileSync(resolve(projectRoot, "tests/fixtures/async-returned-match.zs"), "utf8");
+    const borrowed = source.replace("serve(message: Message", "serve(in message: Message")
+      .replace("try await serve(move message, fail);", "{ select try await serve(in message, fail); }");
+    const empty = source.replace("primary Message,", "primary,")
+      .replace("primary(message) => try await serve(move message, fail);", 'primary => try await serve(Message({ text: "child" }), fail);')
+      .replace(/Readiness.primary\(Message\(\{ text: "(?:first|second)" \}\)\)/g, "Readiness.primary");
+    for (const [program, expected] of [[borrowed, "released first\nreleased second\n"], [empty, "released child\n".repeat(2)]]) {
+      execute(compileToC(program!, input), expected);
+      writeFileSync(input, program!);
+      const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+      });
+      assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+      execute(emitted.stdout, expected);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 let cachedScopeSource: string | undefined;
 function emitScopeJoin(): string {
   if (cachedScopeSource !== undefined) return cachedScopeSource;

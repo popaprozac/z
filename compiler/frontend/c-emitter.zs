@@ -26,6 +26,7 @@ import {
   lowerProgram,
   lowerTestModules,
   loweredTypeIdentity,
+  asyncFrameLocalRoots,
 } from "./lowering-ir.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import { Program } from "./parser.zs";
@@ -1177,12 +1178,24 @@ function loweredStatementUsesBinding(
 function asyncFrameLocalNeedsStorage(
   in program: LoweredProgram,
   in declaration: LoweredFunction,
-  position: usize
+  index: usize
 ): boolean {
+  let position = declaration.roots.length;
+  let rootPosition: usize = 0;
+  while (rootPosition < asyncFrameLocalRootLimit(declaration)) {
+    const root = declaration.roots[rootPosition];
+    if (root == index) position = rootPosition;
+    if (labelsContain(declaration.statements[root].labels, "destructure-normalized")) {
+      for (const child of declaration.statements[root].children) {
+        if (child == index && labelsContain(declaration.statements[child].labels, "destructure-binding")) {
+          position = rootPosition;
+        }
+      }
+    }
+    rootPosition = rootPosition + 1;
+  }
   if (position >= declaration.roots.length) return false;
-  const statement = view declaration.statements[
-    declaration.roots[position]
-  ];
+  const statement = view declaration.statements[index];
   if (statement.kind != LoweredStatementKind.localStatement) return false;
   const type = match (in statement.type) {
     some(found) => copy found;
@@ -1238,24 +1251,21 @@ function loweredStatementContainsExpression(
   return false;
 }
 
-function asyncTailAwaitMatchArm(
+function asyncTailAwaitMatchBindingArms(
   in declaration: LoweredFunction,
   expressionIndex: usize
-): Option<usize> {
-  if (declaration.roots.length == 0) return Option<usize>.none;
-  const root = declaration.roots[declaration.roots.length - 1];
-  if (
-    declaration.statements[root].kind
-      != LoweredStatementKind.matchStatement
-  ) return Option<usize>.none;
-  for (const arm of declaration.statements[root].children) {
-    if (loweredStatementContainsExpression(
-      declaration,
-      arm,
-      expressionIndex
-    )) return Option.some(arm);
+): Array<usize> {
+  let arms = Array<usize>();
+  let index: usize = 0;
+  while (index < declaration.statements.length) {
+    const statement = view declaration.statements[index];
+    if (statement.kind == LoweredStatementKind.matchArmStatement
+      && statement.labels.length == 1
+      && loweredStatementContainsExpression(declaration, index, expressionIndex)) arms.push(index);
+    index = index + 1;
   }
-  return Option<usize>.none;
+  // Lowering stores children before parents, also the required cleanup order.
+  return arms;
 }
 
 function asyncTailMatchBindingLiveFlag(in arm: LoweredStatement): String {
@@ -1292,26 +1302,21 @@ function asyncFrameDeclaration(
   matchExpression: Option<usize>
 ): LoweredFunction throws String {
   let declaration = copy source;
-  const limit = asyncFrameLocalRootLimit(source);
-  let position: usize = 0;
-  while (position < limit) {
-    const root = source.roots[position];
+  const locals = asyncFrameLocalRoots(source.statements, source.roots);
+  for (const root of locals) {
     const statement = view source.statements[root];
     if (
       statement.kind == LoweredStatementKind.localStatement
-      && asyncFrameLocalNeedsStorage(program, source, position)
+      && asyncFrameLocalNeedsStorage(program, source, root)
     ) declaration.asyncFrameBindings.push(statement.name.copyBytes(
       0,
       statement.name.byteLength
     ));
-    position = position + 1;
   }
   match (matchExpression) {
-    some(expressionIndex) => match (asyncTailAwaitMatchArm(
-      source,
-      expressionIndex
-    )) {
-      some(armIndex) => {
+    some(expressionIndex) => {
+      const arms = asyncTailAwaitMatchBindingArms(source, expressionIndex);
+      for (const armIndex of arms) {
         const arm = view source.statements[armIndex];
         if (arm.labels.length != 1) {
           throw "native async frame received malformed match binding";
@@ -1321,7 +1326,6 @@ function asyncFrameDeclaration(
           arm.labels[0].byteLength
         ));
       }
-      none => {}
     }
     none => {}
   }
@@ -1341,10 +1345,11 @@ function appendAsyncTailLocalFields(
       }
     }
   }
-  const limit = asyncFrameLocalRootLimit(declaration);
+  const locals = asyncFrameLocalRoots(declaration.statements, declaration.roots);
+  const limit = locals.length;
   let position: usize = 0;
   while (position < limit) {
-    const root = declaration.roots[position];
+    const root = locals[position];
     const statement = view declaration.statements[root];
     if (statement.kind != LoweredStatementKind.localStatement) {
       position = position + 1;
@@ -1353,7 +1358,7 @@ function appendAsyncTailLocalFields(
     if (!asyncFrameLocalNeedsStorage(
       program,
       declaration,
-      position
+      root
     )) {
       position = position + 1;
       continue;
@@ -1386,13 +1391,16 @@ function appendAsyncTailMatchBindingField(
   in declaration: LoweredFunction,
   expressionIndex: usize
 ): void throws String {
-  const armIndex = match (asyncTailAwaitMatchArm(
-    declaration,
-    expressionIndex
-  )) {
-    some(found) => found;
-    none => return;
-  };
+  const arms = asyncTailAwaitMatchBindingArms(declaration, expressionIndex);
+  for (const armIndex of arms) {
+    try appendAsyncTailMatchBindingFieldForArm(inout output, program, declaration, armIndex);
+  }
+}
+
+function appendAsyncTailMatchBindingFieldForArm(
+  inout output: TextBuffer, in program: LoweredProgram,
+  in declaration: LoweredFunction, armIndex: usize
+): void throws String {
   const arm = view declaration.statements[armIndex];
   const type = match (in arm.type) {
     some(found) => copy found;
@@ -1420,11 +1428,12 @@ function appendAsyncTailLocalMacros(
   in program: LoweredProgram,
   in declaration: LoweredFunction
 ): void throws String {
-  const limit = asyncFrameLocalRootLimit(declaration);
+  const locals = asyncFrameLocalRoots(declaration.statements, declaration.roots);
+  const limit = locals.length;
   let position: usize = 0;
   while (position < limit) {
     const statement = view declaration.statements[
-      declaration.roots[position]
+      locals[position]
     ];
     if (statement.kind != LoweredStatementKind.localStatement) {
       position = position + 1;
@@ -1433,7 +1442,7 @@ function appendAsyncTailLocalMacros(
     if (!asyncFrameLocalNeedsStorage(
       program,
       declaration,
-      position
+      locals[position]
     )) {
       position = position + 1;
       continue;
@@ -1466,13 +1475,16 @@ function appendAsyncTailMatchBindingMacro(
   in declaration: LoweredFunction,
   expressionIndex: usize
 ): void throws String {
-  const armIndex = match (asyncTailAwaitMatchArm(
-    declaration,
-    expressionIndex
-  )) {
-    some(found) => found;
-    none => return;
-  };
+  const arms = asyncTailAwaitMatchBindingArms(declaration, expressionIndex);
+  for (const armIndex of arms) {
+    try appendAsyncTailMatchBindingMacroForArm(inout output, program, declaration, armIndex);
+  }
+}
+
+function appendAsyncTailMatchBindingMacroForArm(
+  inout output: TextBuffer, in program: LoweredProgram,
+  in declaration: LoweredFunction, armIndex: usize
+): void throws String {
   const arm = view declaration.statements[armIndex];
   if (arm.labels.length != 1) {
     throw "native matched tail await requires one payload binding";
@@ -1502,17 +1514,18 @@ function appendAsyncTailLocalMacroUndefs(
   in program: LoweredProgram,
   in declaration: LoweredFunction
 ): void throws String {
-  let position = asyncFrameLocalRootLimit(declaration);
+  const locals = asyncFrameLocalRoots(declaration.statements, declaration.roots);
+  let position = locals.length;
   while (position > 0) {
     position = position - 1;
     const statement = view declaration.statements[
-      declaration.roots[position]
+      locals[position]
     ];
     if (statement.kind != LoweredStatementKind.localStatement) continue;
     if (!asyncFrameLocalNeedsStorage(
       program,
       declaration,
-      position
+      locals[position]
     )) continue;
     const type = match (in statement.type) {
       some(found) => copy found;
@@ -1537,13 +1550,16 @@ function appendAsyncTailMatchBindingMacroUndef(
   in declaration: LoweredFunction,
   expressionIndex: usize
 ): void throws String {
-  const armIndex = match (asyncTailAwaitMatchArm(
-    declaration,
-    expressionIndex
-  )) {
-    some(found) => found;
-    none => return;
-  };
+  const arms = asyncTailAwaitMatchBindingArms(declaration, expressionIndex);
+  for (const armIndex of arms) {
+    try appendAsyncTailMatchBindingMacroUndefForArm(inout output, program, declaration, armIndex);
+  }
+}
+
+function appendAsyncTailMatchBindingMacroUndefForArm(
+  inout output: TextBuffer, in program: LoweredProgram,
+  in declaration: LoweredFunction, armIndex: usize
+): void throws String {
   const arm = view declaration.statements[armIndex];
   if (arm.labels.length != 1) {
     throw "native matched tail await requires one payload binding";
@@ -1580,18 +1596,11 @@ function appendAsyncTailLocalInitializer(
     some(found) => copy found;
     none => throw "native prefixed tail await received an untyped local";
   };
-  let rootPosition = declaration.roots.length;
-  let candidate: usize = 0;
-  while (candidate < declaration.roots.length) {
-    if (declaration.roots[candidate] == index) rootPosition = candidate;
-    candidate = candidate + 1;
-  }
   if (
-    rootPosition >= declaration.roots.length
-    || !asyncFrameLocalNeedsStorage(
+    !asyncFrameLocalNeedsStorage(
       program,
       declaration,
-      rootPosition
+      index
     )
   ) {
     try appendStatement(inout output, declaration, index, depth);
@@ -1653,17 +1662,18 @@ function appendAsyncTailLocalCleanups(
   in declaration: LoweredFunction,
   depth: usize
 ): void throws String {
-  let position = asyncFrameLocalRootLimit(declaration);
+  const locals = asyncFrameLocalRoots(declaration.statements, declaration.roots);
+  let position = locals.length;
   while (position > 0) {
     position = position - 1;
     const statement = view declaration.statements[
-      declaration.roots[position]
+      locals[position]
     ];
     if (statement.kind != LoweredStatementKind.localStatement) continue;
     if (!asyncFrameLocalNeedsStorage(
       program,
       declaration,
-      position
+      locals[position]
     )) continue;
     const type = match (in statement.type) {
       some(found) => copy found;
@@ -1707,13 +1717,16 @@ function appendAsyncTailMatchBindingCleanup(
   expressionIndex: usize,
   depth: usize
 ): void throws String {
-  const armIndex = match (asyncTailAwaitMatchArm(
-    declaration,
-    expressionIndex
-  )) {
-    some(found) => found;
-    none => return;
-  };
+  const arms = asyncTailAwaitMatchBindingArms(declaration, expressionIndex);
+  for (const armIndex of arms) {
+    try appendAsyncTailMatchBindingCleanupForArm(inout output, program, declaration, armIndex, depth);
+  }
+}
+
+function appendAsyncTailMatchBindingCleanupForArm(
+  inout output: TextBuffer, in program: LoweredProgram,
+  in declaration: LoweredFunction, armIndex: usize, depth: usize
+): void throws String {
   const arm = view declaration.statements[armIndex];
   const type = match (in arm.type) {
     some(found) => copy found;
@@ -1986,30 +1999,22 @@ function asyncImmediateReturnCleanupIsManaged(
   for (const parameter of declaration.parameters) {
     if (cleanup.name == parameter.name) return true;
   }
-  const limit = asyncFrameLocalRootLimit(declaration);
-  let position: usize = 0;
-  while (position < limit) {
-    const root = declaration.roots[position];
+  const locals = asyncFrameLocalRoots(declaration.statements, declaration.roots);
+  for (const root of locals) {
     if (
       declaration.statements[root].kind
         == LoweredStatementKind.localStatement
       && declaration.statements[root].name == cleanup.name
-      && asyncFrameLocalNeedsStorage(program, declaration, position)
+      && asyncFrameLocalNeedsStorage(program, declaration, root)
     ) return true;
-    position = position + 1;
   }
-  match (asyncTailAwaitMatchArm(
-    declaration,
-    tailExpressionIndex
-  )) {
-    some(armIndex) => {
-      const arm = view declaration.statements[armIndex];
-      if (
-        arm.labels.length == 1
-        && arm.labels[0] == cleanup.name
-      ) return true;
-    }
-    none => {}
+  const arms = asyncTailAwaitMatchBindingArms(declaration, tailExpressionIndex);
+  for (const armIndex of arms) {
+    const arm = view declaration.statements[armIndex];
+    if (
+      arm.labels.length == 1
+      && arm.labels[0] == cleanup.name
+    ) return true;
   }
   return cleanup.name == "this";
 }
@@ -2496,6 +2501,9 @@ function appendAsyncTailPrefixStatement(
         depth
       );
     }
+    if (labelsContain(statement.labels, "destructure-normalized")) {
+      appendCleanups(inout output, statement.cleanups, depth);
+    }
     return;
   }
   if (statement.kind == LoweredStatementKind.ifStatement) {
@@ -2861,6 +2869,23 @@ function appendAsyncTailConsumeMatchSubject(
   };
   const expression = view declaration.expressions[subject];
   if (expression.kind == LoweredExpressionKind.localValue) {
+    // A returned nested match consumes the outer payload owner. That owner
+    // may have a synthetic frame guard when source-level cleanup is elided.
+    for (const arm of declaration.statements) {
+      if (arm.kind != LoweredStatementKind.matchArmStatement
+        || arm.labels.length != 1 || arm.labels[0] != expression.value
+        || !asyncFrameBinds(declaration, arm.labels[0])) continue;
+      match (in arm.type) {
+        some(type) => if (loweredTypeNeedsDeinit(program, type)) {
+          const flag = asyncTailMatchBindingLiveFlag(arm);
+          appendIndent(inout output, depth);
+          appendCBindingName(inout output, flag);
+          output.append(" = false;\n");
+          return;
+        }
+        none => {}
+      }
+    }
     for (const flag of declaration.liveFlags) {
       if (!flag.parameter && flag.owner == expression.value) {
         appendIndent(inout output, depth);
@@ -2910,34 +2935,26 @@ function appendAsyncTailDispatchStatement(
         || declaration.expressions[expression].kind
             == LoweredExpressionKind.threadAwait
       ) {
-        match (asyncTailAwaitMatchArm(
-          declaration,
-          expression
-        )) {
-          some(armIndex) => {
-            const arm = view declaration.statements[armIndex];
-            match (in arm.type) {
-              some(type) => if (
-                arm.labels.length == 1
-                && loweredTypeNeedsDeinit(program, type)
-                && loweredExpressionMovesBinding(
-                  declaration,
-                  tailExpressionIndex,
-                  arm.labels[0]
-                )
-              ) {
-                const bindingLiveFlag = asyncTailMatchBindingLiveFlag(arm);
-                appendIndent(inout output, depth);
-                appendCBindingName(
-                  inout output,
-                  bindingLiveFlag
-                );
-                output.append(" = false;\n");
-              }
-              none => {}
+        const arms = asyncTailAwaitMatchBindingArms(declaration, expression);
+        for (const armIndex of arms) {
+          const arm = view declaration.statements[armIndex];
+          match (in arm.type) {
+            some(type) => if (
+              arm.labels.length == 1
+              && loweredTypeNeedsDeinit(program, type)
+              && loweredExpressionMovesBinding(
+                declaration,
+                tailExpressionIndex,
+                arm.labels[0]
+              )
+            ) {
+              const bindingLiveFlag = asyncTailMatchBindingLiveFlag(arm);
+              appendIndent(inout output, depth);
+              appendCBindingName(inout output, bindingLiveFlag);
+              output.append(" = false;\n");
             }
+            none => {}
           }
-          none => {}
         }
         const noClosureParameterNames = Array<String>();
         let waitingState: usize = 1;
@@ -3003,6 +3020,9 @@ function appendAsyncTailDispatchStatement(
         child,
         depth
       );
+    }
+    if (labelsContain(statement.labels, "destructure-normalized")) {
+      appendCleanups(inout output, statement.cleanups, depth);
     }
     return;
   }
@@ -3095,16 +3115,10 @@ function appendAsyncTailDispatchStatement(
   output.append("switch (");
   output.append(temporary);
   output.append(".tag) {\n");
-  const awaitedArm = match (asyncTailAwaitMatchArm(
-    declaration,
-    tailExpressionIndex
-  )) {
-    some(found) => found;
-    none => throw "native matched tail await lost its selected arm";
-  };
   let hasWildcard = false;
   for (const armIndex of statement.children) {
     const arm = view declaration.statements[armIndex];
+    const awaitedArm = loweredStatementContainsExpression(declaration, armIndex, tailExpressionIndex);
     if (arm.kind != LoweredStatementKind.matchArmStatement) {
       throw "native matched tail await received a malformed arm";
     }
@@ -3128,7 +3142,7 @@ function appendAsyncTailDispatchStatement(
           throw "native matched tail await lost a payload binding";
         }
         appendIndent(inout output, depth + 2);
-        if (armIndex != awaitedArm) {
+        if (!awaitedArm) {
           const payloadType = try cType(type);
           output.append(payloadType);
           output.append(" ");
@@ -3156,14 +3170,14 @@ function appendAsyncTailDispatchStatement(
         if (objectiveCPayload) output.append(")");
         output.append(";\n");
         if (
-          armIndex == awaitedArm
+          awaitedArm
           && loweredTypeNeedsDeinit(program, type)
         ) {
           const liveFlag = asyncTailMatchBindingLiveFlag(arm);
           appendIndent(inout output, depth + 2);
           appendCBindingName(inout output, liveFlag);
           output.append(" = true;\n");
-        } else if (loweredTypeNeedsDeinit(program, type)) {
+        } else if (arm.matchBindingNeedsCleanup && loweredTypeNeedsDeinit(program, type)) {
           if (arm.liveFlag.byteLength == 0) {
             for (const child of arm.children) {
               if (loweredStatementMovesBinding(
@@ -3196,7 +3210,7 @@ function appendAsyncTailDispatchStatement(
     }
     for (const child of arm.children) {
       if (
-        armIndex != awaitedArm
+        !awaitedArm
         && declaration.statements[child].kind
           == LoweredStatementKind.returnStatement
       ) try appendAsyncTailImmediateReturn(
@@ -12195,7 +12209,10 @@ function appendCallableHelpers(
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_task *frame = (");
         appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_task *)task;\n");
+        output.append("_task *)task;\n  task->waiter = NULL;\n  z_stage1_async_remove_queued(task);\n");
+        if (directTailAwait || directDoubleAwait) {
+          output.append("  if (frame->child.task != NULL) frame->child.task->waiter = NULL;\n");
+        }
         if (directTailAwait) {
           output.append("  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
@@ -15011,7 +15028,10 @@ function appendAsyncMethodAwaitHelpers(
         owner,
         expressionIndex
       );
-      output.append("_task *frame) {\n  if (frame == NULL) return;\n");
+      output.append("_task *frame) {\n  if (frame == NULL) return;\n  frame->task.waiter = NULL;\n  z_stage1_async_remove_queued(&frame->task);\n");
+      if (directTailAwait || directDoubleAwait) {
+        output.append("  if (frame->child.task != NULL) frame->child.task->waiter = NULL;\n");
+      }
       if (delaySuspendingMethod) {
         output.append("  z_stage1_async_remove_timer(&frame->task);\n  ");
         appendAsyncCallableAwaitHelperName(

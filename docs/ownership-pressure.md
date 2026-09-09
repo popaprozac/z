@@ -6419,6 +6419,59 @@ cleanup-bearing return from the first scheduler-yield-only function tier. The
 regression uses the already-supported named-child await composition; no Zapp
 implementation workaround was introduced.
 
+## Returned matches and destructured continuation owners (2026-09-08)
+
+Reapplying Zapp's saved Application.run startup wrapper exposed two additional
+native composition failures in ordinary, already-valid Z:
+
+- `return match (...)` containing a nested match and one terminal awaited call
+  was rejected even though explicit returns in similar arms worked.
+- Destructured channel endpoints were emitted as poll-stack locals, while later
+  return cleanup referred to them from a different continuation state. The full
+  application failed Clang compilation with out-of-scope endpoint/guard names.
+
+The first fix shares one conservative source-shape classifier between native
+validation and lowering. Consuming returned matches can contain nested matches,
+payload-free arms, and one-statement `select` blocks. Exactly one terminal direct
+child await is supported; a throwing parent uses `try await`. Borrowing matches,
+suspending subjects, multiple awaited arms, and arbitrary arm continuations are
+not generalized by this checkpoint. Every payload owner enclosing the selected
+await lives in the existing task frame, with inner-before-outer cleanup and
+ownership transfer when a nested match consumes its parent's payload.
+
+The second fix treats a normalized root destructuring group as a declaration
+group, not a lexical scope. Its selected bindings participate in frame field,
+guard, initialization, and reverse cleanup generation like neighboring `const`
+bindings. Its temporary source remains in the synchronous extraction scope;
+unselected fields are destroyed there. Actual branch-local storage is not
+promoted by this rule.
+
+The destruction probes also found a queued-parent lifetime bug: destroying a
+child could notify a parent after its frame had been freed. Direct tail/double
+frame teardown now detaches child waiters and removes retired tasks from the
+queue. Linear frames retain notifications while structurally joining owned
+scopes/workers; prematurely detaching those waiters would prevent their unwind
+from completing.
+
+The focused UBSan suite checks normal/failed returns, borrowed payload calls,
+payload-free arms, 96 nested-match cancellation/destruction cases, and 240
+destructured-owner cases. The latter track every initialized owner, including
+unselected fields, and require empty executor queues after destruction. The
+full native Z Notes smoke now builds and completes with the saved integration
+present but single-instance disabled. This is not yet evidence of automatic
+forwarding: the complete Application.run primary/secondary and rollback probe
+is a separate gate.
+
+Cost: payload and selected-local storage resides in the existing invocation
+frame; no extra task allocation, helper thread, or runtime ownership lookup is
+introduced. This is cleanup/composition evidence, not a throughput benchmark.
+No source syntax or framework API changed.
+
+Verification checkpoint: 224 self-hosting-tier tests and all 98 async-tier tests
+passed. After extending the partial-destructuring case, the final focused suite
+passed all 17 tests. The compiler rebuilt to a byte-identical fixed point, and
+all eight Stage 0/native startup-transport cases passed under UBSan.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

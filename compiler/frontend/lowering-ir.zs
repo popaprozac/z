@@ -6,6 +6,7 @@
 // this representation when ownership-bearing aggregates land.
 
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
+import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
 
 import {
   ArrayBindingKind,
@@ -21968,6 +21969,7 @@ function statementFirstTierTailAwaitCount(
 function functionUsesFirstTierMatchedTailAwait(
   in declaration: FunctionDeclaration
 ): boolean {
+  if (functionUsesReturnedMatchTailAwait(declaration)) return true;
   if (declaration.body.roots.length == 0) return false;
   let position: usize = 0;
   while (position + 1 < declaration.body.roots.length) {
@@ -26346,6 +26348,27 @@ function lowerMainDelayMatch(
   }
 }
 
+// Destructuring is a synthetic statement group, not a lexical scope. Its
+// visible bindings have the same lifetime as neighboring root declarations;
+// the temporary source remains local to the synchronous extraction group.
+export function asyncFrameLocalRoots(
+  in statements: Array<LoweredStatement>, in roots: Array<usize>
+): Array<usize> {
+  let locals = Array<usize>();
+  for (const root of roots) {
+    if (statements[root].kind == LoweredStatementKind.localStatement) {
+      locals.push(root);
+    } else if (statements[root].kind == LoweredStatementKind.blockStatement
+      && loweredStatementHasLabel(statements[root], "destructure-normalized")) {
+      for (const child of statements[root].children) {
+        if (statements[child].kind == LoweredStatementKind.localStatement
+          && loweredStatementHasLabel(statements[child], "destructure-binding")) locals.push(child);
+      }
+    }
+  }
+  return locals;
+}
+
 function ensureMainFrameLocalLiveFlags(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -26942,10 +26965,11 @@ function lowerFunction(
     )
     && roots.length > 1
   ) {
+    const frameLocals = asyncFrameLocalRoots(statements, roots);
     ensureMainFrameLocalLiveFlags(
       program,
       importedTypes,
-      roots,
+      frameLocals,
       inout statements,
       inout liveFlags
     );

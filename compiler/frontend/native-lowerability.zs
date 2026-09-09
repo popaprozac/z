@@ -15,6 +15,7 @@ import {
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
+import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
 import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
@@ -1029,6 +1030,7 @@ function statementFirstTierTailAwaitCount(
 function functionUsesFirstTierMatchedTailAwait(
   in declaration: FunctionDeclaration
 ): boolean {
+  if (functionUsesReturnedMatchTailAwait(declaration)) return true;
   if (declaration.body.roots.length == 0) return false;
   let position: usize = 0;
   while (position + 1 < declaration.body.roots.length) {
@@ -1358,6 +1360,8 @@ function functionHasFirstTierTailAwaitStorage(
   ) return false;
   match (in declaration.errorType) {
     some(_) => if (
+      !functionUsesReturnedMatchTailAwait(declaration)
+      &&
       !functionUsesFirstTierLinearAwait(moduleIndex, modules, graph, declaration)
       && !functionUsesFirstTierPlacedAsyncLinearAwait(
         moduleIndex,

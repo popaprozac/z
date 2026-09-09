@@ -160,7 +160,13 @@ production or compatibility-sensitive use.
   is released on early return, failure, or parent cancellation; explicitly
   cancelling a worker does not cancel its parent. Pending main-thread requests
   wake the join frame and are serviced before it finishes. Nested scope
-  constructors and branch-local storage across suspension remain staged. Direct
+  constructors and branch-local storage across suspension remain staged.
+  Returned consuming matches can nest around one terminal child await; enclosing
+  payloads remain owned by the frame. Single-statement `select` blocks and
+  payload-free arms are supported; throwing parents use `try await`. Root
+  destructuring preserves selected locals across continuation states and cleans
+  unselected fields in its synchronous extraction group. These cases reuse the
+  existing frame rather than allocating a separate task per match or binding. Direct
   timer awaits in native `main` still require a future resumable entry frame;
   that boundary now reports `Z0700` at the await.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
