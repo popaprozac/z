@@ -1,4 +1,4 @@
-import { assert, compileToNative, completions, decodeSemanticTokens, diagnostics, hover, hostToolchainTest, mkdtempSync, positionForOffset, readFileSync, resolve, rmSync, semanticTokens, semanticTokenTypes, spawnSync, writeFileSync, projectRoot } from "./support/bootstrap.ts";
+import { assert, cli, compileToNative, completions, decodeSemanticTokens, diagnostics, hover, hostToolchainTest, mkdtempSync, positionForOffset, readFileSync, resolve, resolveForeignFunctionDeclarationStreams, rmSync, semanticTokens, semanticTokenTypes, spawnSync, writeFileSync, projectRoot } from "./support/bootstrap.ts";
 import { tmpdir } from "node:os";
 
 const fixture = resolve(projectRoot, "tests/fixtures/objc-subclass.zs");
@@ -11,6 +11,54 @@ class Counter extends native.ZSubclassFixture on thread.main {
 }
 function main(): i32 { const counter = new Counter(40); return counter.readVirtualValue() - 42; }
 `;
+
+hostToolchainTest("carries Clang subclass safety evidence through the native Z decoder", () => {
+  if (process.platform !== "darwin") return;
+  const directory = mkdtempSync(resolve(tmpdir(), "z-subclass-wire-"));
+  try {
+    const decoder = resolve(projectRoot, "tests/fixtures/self-host-objc-subclass-evidence.zs");
+    const stream = resolveForeignFunctionDeclarationStreams([{
+      kind: "import", moduleName: "native", bindings: null,
+      header: "objc-subclass-wire.h",
+      location: { fileName: decoder, offset: 0, line: 1, column: 1 },
+    }], decoder, [resolve(projectRoot, "tests/fixtures")]).get("native")!;
+    assert.match(stream, /^ZFDCL000000000000000e\n/);
+    const emission = spawnSync(process.execPath, [cli, "self-host-emit", decoder], {
+      encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(emission.status, 0, emission.stderr);
+    const executable = resolve(directory, "decoder");
+    const compilation = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable], {
+      encoding: "utf8", input: emission.stdout, timeout: 30_000,
+    });
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const input = resolve(directory, "declarations.zfdcl");
+    const run = (source: string) => {
+      writeFileSync(input, source);
+      return spawnSync(executable, [input], { encoding: "utf8", timeout: 5_000 });
+    };
+    const result = run(stream);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const obsolete = run(stream.replace("ZFDCL000000000000000e", "ZFDCL000000000000000d"));
+    assert.equal(obsolete.status, 1, obsolete.stderr);
+    assert.match(obsolete.stdout, /unsupported foreign declaration stream version 13/);
+    // Skip the J record's owner, indices, selector, and base name, then its
+    // instance/instancetype booleans. The next byte is the new initializer fact.
+    let flagOffset = stream.indexOf("\nJ") + 2;
+    const skipText = () => { flagOffset += 16 + Number.parseInt(stream.slice(flagOffset, flagOffset + 16), 16); };
+    skipText();
+    flagOffset += 32;
+    skipText();
+    skipText();
+    flagOffset += 2;
+    assert.match(stream[flagOffset], /[01]/);
+    const invalidFlag = run(stream.slice(0, flagOffset) + "2" + stream.slice(flagOffset + 1));
+    assert.equal(invalidFlag.status, 1, invalidFlag.stderr);
+    assert.match(invalidFlag.stdout, /invalid boolean/);
+    const truncated = run(stream.slice(0, stream.indexOf("\nJ") + 8));
+    assert.equal(truncated.status, 1, truncated.stderr);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
 
 hostToolchainTest("surfaces native subclass identity, overrides, and superclass members in the editor", () => {
   if (process.platform !== "darwin") return;

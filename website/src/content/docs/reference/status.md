@@ -19,7 +19,8 @@ production or compatibility-sensitive use.
 - An experimental Stage 0 native subclass tier: field-free main-isolated
   Objective-C `extends`, checked `override`/selector signatures, designated
   superclass construction, real `super` dispatch, and native ARC identity.
-  Stateful subclasses, async composition, and self-hosted frontend parity remain
+  Native parsing and Clang safety-fact decoding are present; native semantic
+  checking/emission, stateful subclasses, and async composition remain
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler and owned `objc.adapt<P>` carrier with direct `id<P>` ABI,
@@ -224,6 +225,21 @@ production or compatibility-sensitive use.
 - Target-selected platform compilation with inactive-code-aware editor
   behavior; the manifest target is authoritative today, while source-level
   compile-time selection syntax remains deliberately unsettled
+
+## Self-hosting versus retiring Stage 0
+
+Z's native compiler can rebuild its own Z implementation; consecutive compiler
+generations must emit identical C. That proves self-compilation, not complete
+feature parity with the TypeScript Stage 0 compiler.
+
+Some language features still require Stage 0, and foreign metadata/Swift
+preparation still depend on TypeScript tooling. The packaged header adapter
+currently includes Bun's standalone runtime. Generated Z applications do not
+include that compiler runtime.
+
+The goal is a native-first toolchain with no TypeScript implementation dependency,
+not indefinite development of two compilers. A historical bootstrap seed can
+remain available after it leaves the everyday build workflow.
 
 ## Planned, not promised as current behavior
 

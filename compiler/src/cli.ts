@@ -1460,8 +1460,10 @@ function stage0TypeShapes(program: Program, fileName: string): readonly Stage1Ty
         ] : []),
         ...declaration.methods.map((method) => {
           const visibility = `${method.visibility ?? "public"} `;
+          const override = method.override ? "override " : "";
           const staticMethod = method.static ? "static " : "";
-          return `${visibility}${staticMethod}${canonicalFunctionText(method)};`;
+          const selector = method.override && method.nativeSelector ? ` as ${JSON.stringify(method.nativeSelector)}` : "";
+          return `${visibility}${override}${staticMethod}${canonicalFunctionText(method)}${selector};`;
         }),
         ...(declaration.deinitializer ? [`deinit@${declaration.deinitializer.location.offset};`] : []),
       ];
@@ -1470,7 +1472,7 @@ function stage0TypeShapes(program: Program, fileName: string): readonly Stage1Ty
         text: `${declaration.kind} ${declaration.name}${canonicalTypeParameters(
           declaration.typeParameters,
           declaration.typeParameterConstraints,
-        )}${executor}${implemented} {${members.length ? ` ${members.join(" ")}` : ""} }`,
+        )}${declaration.nativeBase ? ` extends ${canonicalTypeName(declaration.nativeBase.name)}` : ""}${executor}${implemented} {${members.length ? ` ${members.join(" ")}` : ""} }`,
         location: { ...declaration.location, fileName },
       };
     }),

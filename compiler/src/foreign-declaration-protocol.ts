@@ -6,7 +6,7 @@ import type {
   ForeignType,
 } from "./foreign-ir.ts";
 
-export const foreignDeclarationProtocolVersion = 13;
+export const foreignDeclarationProtocolVersion = 14;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -78,6 +78,8 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign declarations.
+ * Version 14 carries native subclass restrictions, designated-initializer,
+ * required-super, direct-dispatch, consuming ownership, and variadic evidence.
  * Version 13 preserves Objective-C block parameter signatures so the native
  * frontend can type and lower completion-handler calls directly.
  * Version 11 preserves Clang's flag-enum classification so the native
@@ -258,6 +260,11 @@ export function encodeForeignFunctionDeclarationStream(
         text(method.baseName),
         boolean(method.instance),
         boolean(method.returnsInstanceType),
+        boolean(method.designatedInitializer === true),
+        boolean(method.requiresSuper === true),
+        boolean(method.direct === true),
+        boolean(method.consumesSelf === true),
+        boolean(method.variadic === true),
         text(method.returnType.cName),
         text(semanticTypeName(method.returnType)),
         boolean(required),
@@ -283,6 +290,7 @@ export function encodeForeignFunctionDeclarationStream(
           optionalText(parameter.name),
           text(parameter.type.cName),
           text(semanticTypeName(parameter.type)),
+          boolean(method.consumedParameters?.includes(parameterIndex) === true),
           hexNumber(parameter.protocols?.length ?? 0),
           ...(parameter.protocols ?? []).map(text),
         ].join(""));
@@ -384,6 +392,7 @@ export function encodeForeignFunctionDeclarationStream(
       text(interface_.typeName),
       text(interface_.className),
       optionalText(interface_.superName),
+      boolean(interface_.subclassingRestricted === true),
       optionalText(source?.fileName),
       hexNumber(source?.line ?? 0),
       hexNumber(source?.column ?? 0),

@@ -108,12 +108,14 @@ recursive path.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `foreign-declaration-protocol.zs` decodes the versioned producer-facing
-  `ZFDCL` stream into owned flat Z declarations. Version 13 covers scalar
+  `ZFDCL` stream into owned flat Z declarations. Version 14 covers scalar
   typedef evidence, nominal and flag enums, typed native constants, record layouts and
   fields, canonical C record identity across typedef aliases, Objective-C
   interfaces/protocols/methods, method-parameter `id<Protocol>` qualifiers,
   semantic Objective-C type identity/nullability beside each ABI spelling and
-  recursive block-function signatures,
+  recursive block-function signatures, native subclass restrictions,
+  designated initializers, required-super/direct-dispatch markers, consuming
+  receiver/parameter ownership, and variadic native methods,
   interface-property getter/setter, ownership, protocol, source, executor, and
   availability evidence, method availability/async indices, plus foreign
   functions, overloads, parameters, source locations, executor affinity, and
@@ -151,6 +153,10 @@ recursive path.
   checks, preserve custom getter selectors, and lower directly to message sends.
   Class properties, setters, optional property access, broad SDK header
   discovery, and Objective-C++ remain later fixed-point layers.
+- Native subclass declarations preserve `extends`, `override`, their selector,
+  and superclass `TypeReference` in the Z AST and parser parity output. Native
+  semantic resolution currently rejects them with `Z0814`; carrying syntax and
+  Clang's safety evidence is a prerequisite, not native subclass execution.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies

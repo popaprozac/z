@@ -2,7 +2,9 @@
 
 Status: declaration and construction direction approved, 2026-09-09. The first
 field-free, synchronous **Stage 0** tier is implemented and tested. The
-self-hosted frontend rejects `extends` explicitly until parity lands. Stateful
+self-hosted frontend preserves the declaration syntax and imports the native
+safety facts, but rejects subclass semantic checking/emission explicitly until
+that parity lands. Stateful
 subclasses and production window integration remain separate checkpoints.
 
 ## Motivation
@@ -148,9 +150,33 @@ construction, ABI, lifecycle, effects, and representation boundaries. Editor
 tests cover contextual keyword tokens, native identity/override hover, and
 superclass/inherited member completion. No ASan is required.
 
-Next: native frontend representation and lowering parity; then deliberate and
+Native preparation now includes exact parser-shape parity for the superclass,
+override marker, selector, constructor, and native call syntax. `ZFDCL` version
+14 carries Clang's subclassing restriction, designated initializer, required
+super call, direct dispatch, consuming receiver/parameter ownership, and
+variadic facts into Z-owned declarations. A native Z decoder fixture checks
+both present and absent facts, exact consuming-parameter positions, malformed
+input, and obsolete-version rejection. These facts do not yet authorize native
+subclass execution: semantic resolution reports `Z0814` before an ordinary Z
+class representation could be substituted.
+
+Next: native semantic checking and lowering/emission parity; then deliberate and
 test owned state, initialization/teardown callbacks, and reentrancy before Zapp's
 window transition state moves into a subclass.
+
+The remaining field-free native port is bounded by four gates:
+
+1. Carry the raw safety facts through native foreign normalization and module
+   signatures, retaining native superclass identity rather than ordinary Z ARC
+   layout.
+2. Enforce the same constructor, override, ownership, and executor restrictions
+   in native semantic analysis, with matching negative tests.
+3. Lower checked constructor/super calls and native method entries into explicit
+   IR, then emit native interfaces/implementations and ARC construction without
+   a Z wrapper. Keep generated symbols inaccessible through raw source.
+4. Run the same virtual-dispatch, superclass, alias, construction, and exact
+   destruction fixture through a freshly built native compiler; only then remove
+   the native `Z0814` implementation boundary.
 
 ## References
 

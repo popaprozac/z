@@ -13097,6 +13097,27 @@ export function resolveParsedModulesWithForeignContracts(
   in entryPath: String,
   in foreignContracts: Array<NativeForeignModuleContract>
 ): ModuleGraph throws ModuleResolveError {
+  // The parser preserves native subclass evidence, but ordinary Z-class
+  // semantics must never stand in for its native identity/lifetime rules.
+  for (const module of parsed) {
+    for (const aggregate of module.program.aggregates) {
+      match (in aggregate.nativeBase) {
+        some(base) => throw codedModuleResolutionError(
+          ModuleResolveErrorKind.unsupportedLowering, "Z0814", module.path,
+          "native Objective-C subclasses are parsed, but native semantic checking and emission are not implemented yet; use Stage 0",
+          base.line, base.column, base.name.byteLength
+        );
+        none => {}
+      }
+      for (const method of aggregate.methods) {
+        if (method.overrideMethod) throw codedModuleResolutionError(
+          ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+          "`override` requires an imported Objective-C superclass",
+          method.line, method.column, 8
+        );
+      }
+    }
+  }
   const entry = try findEntryModule(parsed, entryPath);
   let modules = try buildResolvedModules(parsed);
   // Foreign types participate in ordinary type validation, including

@@ -59,15 +59,43 @@ import { selfHostExecutableDifferentialCorpus } from "./support/self-host-fixtur
 import { createHash } from "node:crypto";
 import { exerciseGeneratedAdapterLinking } from "./support/generated-adapter-linking.ts";
 
-hostToolchainTest("fails closed on the Stage 0 native subclass tier until native frontend parity lands", () => {
-  if (process.platform !== "darwin") return;
+hostToolchainTest("preserves native subclass syntax while rejecting unimplemented native semantics", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/objc-subclass.zs");
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture], {
     encoding: "utf8", timeout: 120_000,
   });
-  assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stderr, /native Objective-C subclasses are not supported by the self-hosted frontend yet/);
-}, 150_000);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /stage-1 parser matches/);
+  const resolution = spawnSync(process.execPath, [cli, "self-host-emit", fixture], {
+    encoding: "utf8", timeout: 180_000,
+  });
+  assert.equal(resolution.status, 1, resolution.stderr);
+  assert.match(resolution.stderr, /Z0814/);
+  assert.match(resolution.stderr, /native semantic checking and emission are not implemented yet/);
+  const directory = mkdtempSync("/tmp/z-subclass-parser-");
+  try {
+    const vocabulary = resolve(directory, "main.zs");
+    writeFileSync(vocabulary, `
+      class Vocabulary { override: i32; }
+      function main(): i32 {
+        const super = new Vocabulary({ override: 1 });
+        const extends = 1;
+        return super.override - extends;
+      }
+    `);
+    const contextual = spawnSync(process.execPath, [cli, "self-host-parse", vocabulary], {
+      encoding: "utf8", timeout: 30_000,
+    });
+    assert.equal(contextual.status, 0, contextual.stderr);
+    writeFileSync(vocabulary, 'class Ordinary { override function value(): i32 as "value" { return 0; } }\nfunction main(): i32 { return 0; }\n');
+    const ordinary = spawnSync(process.execPath, [cli, "self-host-emit", vocabulary], {
+      encoding: "utf8", timeout: 30_000,
+    });
+    assert.equal(ordinary.status, 1, ordinary.stderr);
+    assert.match(ordinary.stderr, /Z0814/);
+    assert.match(ordinary.stderr, /`override` requires an imported Objective-C superclass/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 330_000);
 
 hostToolchainTest("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
   const application = resolve(projectRoot, "examples/applications/source-inspector/main.zs");
@@ -9446,7 +9474,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL000000000000000d\nM/);
+  assert.match(encoded, /^ZFDCL000000000000000e\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -9574,7 +9602,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     [directory],
   ).get("native");
   assert.ok(objcStream);
-  assert.match(objcStream, /^ZFDCL000000000000000d\nM/);
+  assert.match(objcStream, /^ZFDCL000000000000000e\nM/);
   assert.match(objcStream, /\nQ/);
   assert.match(objcStream, /\nI/);
   assert.match(objcStream, /\nJ/);

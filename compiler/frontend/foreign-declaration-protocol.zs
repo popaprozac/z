@@ -105,6 +105,7 @@ export struct RawForeignObjCInterface {
   typeName: String;
   className: String;
   superName: Option<String>;
+  subclassingRestricted: boolean;
   methodStart: usize;
   methodCount: usize;
   propertyStart: usize;
@@ -175,6 +176,11 @@ export struct RawForeignObjCMethod {
   baseName: String;
   instance: boolean;
   returnsInstanceType: boolean;
+  designatedInitializer: boolean;
+  requiresSuper: boolean;
+  direct: boolean;
+  consumesSelf: boolean;
+  variadic: boolean;
   returnNativeType: String;
   returnTypeName: String;
   required: boolean;
@@ -200,6 +206,7 @@ export struct RawForeignObjCParameter {
   name: Option<String>;
   nativeType: String;
   typeName: String;
+  consumed: boolean;
   protocolStart: usize;
   protocolCount: usize;
 }
@@ -907,6 +914,7 @@ function appendObjCInterface(
   const typeName = try readText(inout cursor);
   const className = try readText(inout cursor);
   const superName = try readOptionalText(inout cursor);
+  const subclassingRestricted = try readBoolean(inout cursor);
   const sourceFile = try readOptionalText(inout cursor);
   const sourceLine = try readHexUsize(inout cursor);
   const sourceColumn = try readHexUsize(inout cursor);
@@ -920,6 +928,7 @@ function appendObjCInterface(
     typeName,
     className,
     superName,
+    subclassingRestricted,
     methodStart: module.objectiveCMethods.length,
     methodCount,
     propertyStart: module.objectiveCProperties.length,
@@ -982,6 +991,11 @@ function appendObjCMethod(
   const baseName = try readText(inout cursor);
   const instance = try readBoolean(inout cursor);
   const returnsInstanceType = try readBoolean(inout cursor);
+  const designatedInitializer = try readBoolean(inout cursor);
+  const requiresSuper = try readBoolean(inout cursor);
+  const direct = try readBoolean(inout cursor);
+  const consumesSelf = try readBoolean(inout cursor);
+  const variadic = try readBoolean(inout cursor);
   const returnNativeType = try readText(inout cursor);
   const returnTypeName = try readText(inout cursor);
   const required = try readBoolean(inout cursor);
@@ -1003,6 +1017,11 @@ function appendObjCMethod(
     baseName,
     instance,
     returnsInstanceType,
+    designatedInitializer,
+    requiresSuper,
+    direct,
+    consumesSelf,
+    variadic,
     returnNativeType,
     returnTypeName,
     required,
@@ -1046,6 +1065,7 @@ function appendObjCParameter(
   const name = try readOptionalText(inout cursor);
   const nativeType = try readText(inout cursor);
   const typeName = try readText(inout cursor);
+  const consumed = try readBoolean(inout cursor);
   const protocolCount = try readHexUsize(inout cursor);
   const protocolStart = module.objectiveCParameterProtocols.length;
   let protocolIndex: usize = 0;
@@ -1062,6 +1082,7 @@ function appendObjCParameter(
     name,
     nativeType,
     typeName,
+    consumed,
     protocolStart,
     protocolCount,
   }));
@@ -1321,7 +1342,7 @@ export function decodeRawForeignDeclarations(
   try expectLiteral(inout cursor, "ZFDCL");
   let module = emptyRawForeignModule();
   module.version = try readHexUsize(inout cursor);
-  if (module.version != 13) {
+  if (module.version != 14) {
     throw `unsupported foreign declaration stream version ${module.version}`;
   }
   try endRecord(inout cursor);

@@ -225,6 +225,7 @@ export struct FunctionDeclaration {
   nativeCExport: boolean;
   asynchronous: boolean;
   staticMethod: boolean;
+  overrideMethod: boolean = false;
   visibility: Visibility;
   typeParameters: Array<TypeParameter>;
   receiverMode: ReceiverMode;
@@ -279,6 +280,7 @@ export struct AggregateDeclaration {
   kind: DeclarationKind;
   name: String;
   nativeCLayout: boolean;
+  nativeBase: Option<TypeReference> = Option<TypeReference>.none;
   typeParameters: Array<TypeParameter>;
   executorAffinity: String;
   implementedTraits: Array<TypeReference>;
@@ -3259,9 +3261,7 @@ function parseFunctionDeclaration(
     if (member.text == "any") threadContract = `${executor.text}.${member.text}`;
     else executorAffinity = `${executor.text}.${member.text}`;
   }
-  // Stage 1 does not consume Objective-C selector evidence semantically yet,
-  // but it must accept the authoritative source grammar so the native frontend
-  // remains usable while protocol conformance is lowered by the bootstrap.
+  // Keep the selector as source evidence for native protocol and subclass checks.
   let objectiveCSelector = "";
   if (takeIf(tokens, inout current, TokenKind.asKeyword)) {
     const selector = try expect(
@@ -3436,8 +3436,10 @@ function parseAggregateDeclaration(
   const start = try expect(tokens, inout current, keyword, description);
   const name = try expect(tokens, inout current, TokenKind.identifier, `a name after ${start.text}`);
   const typeParameters = try parseTypeParameters(tokens, inout current, inout pendingGreater);
+  let nativeBase = Option<TypeReference>.none;
   if (tokens[current].kind == TokenKind.identifier && tokens[current].text == "extends") {
-    throw fail(tokens[current], "native Objective-C subclasses are not supported by the self-hosted frontend yet; use the Stage 0 compiler for the first subclass tier");
+    current = current + 1;
+    nativeBase = Option.some(try parseType(tokens, inout current, inout pendingGreater));
   }
   let executorAffinity = "";
   if (takeIf(tokens, inout current, TokenKind.onKeyword)) {
@@ -3513,14 +3515,22 @@ function parseAggregateDeclaration(
     }
 
     const fieldReadonly = takeIf(tokens, inout current, TokenKind.readonlyKeyword);
+    let isOverride = false;
+    if (tokens[current].kind == TokenKind.identifier && tokens[current].text == "override"
+      && tokens[current + 1].kind != TokenKind.colon) {
+      current = current + 1;
+      isOverride = true;
+    }
     const isStatic = takeIf(tokens, inout current, TokenKind.staticKeyword);
     const asynchronous = takeIf(tokens, inout current, TokenKind.asyncKeyword);
     if (tokens[current].kind == TokenKind.functionKeyword) {
       if (fieldReadonly) throw fail(tokens[current], "`readonly` applies to stored fields, not methods");
-      const method = try parseFunctionDeclaration(tokens, inout current, false, asynchronous, isStatic, visibility, false);
+      let method = try parseFunctionDeclaration(tokens, inout current, false, asynchronous, isStatic, visibility, false);
+      method.overrideMethod = isOverride;
       methods.push(method);
       continue;
     }
+    if (isOverride) throw fail(tokens[current], "`override` must precede a function declaration");
     if (asynchronous) throw fail(tokens[current], "`async` must precede a function declaration");
     if (isStatic) throw fail(tokens[current], "static fields are not implemented");
     const field = try expect(tokens, inout current, TokenKind.identifier, "a field or method declaration");
@@ -3605,6 +3615,7 @@ function parseAggregateDeclaration(
     kind,
     name: name.text.copyBytes(0, name.text.byteLength),
     nativeCLayout,
+    nativeBase,
     typeParameters,
     executorAffinity,
     implementedTraits,
@@ -4423,6 +4434,10 @@ export function aggregateShapeText(in declaration: AggregateDeclaration): String
     }
     output.append(">");
   }
+  match (in declaration.nativeBase) {
+    some(base) => { output.append(" extends "); output.append(base.name); }
+    none => {}
+  }
   if (!declaration.executorAffinity.isEmpty) {
     output.append(" on ");
     output.append(declaration.executorAffinity);
@@ -4479,9 +4494,15 @@ export function aggregateShapeText(in declaration: AggregateDeclaration): String
   for (const method of declaration.methods) {
     output.append(" ");
     output.append(visibilityName(method.visibility));
+    if (method.overrideMethod) output.append("override ");
     if (method.staticMethod) output.append("static ");
     const signature = functionSignatureText(method);
     output.append(signature);
+    if (method.overrideMethod && !method.objectiveCSelector.isEmpty) {
+      output.append(" as \"");
+      output.append(method.objectiveCSelector);
+      output.append("\"");
+    }
     output.append(";");
   }
   match (in declaration.deinitializer) {

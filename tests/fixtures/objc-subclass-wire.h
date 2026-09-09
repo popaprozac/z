@@ -1,0 +1,16 @@
+// Header-only metadata oracle: no Foundation or native implementation required.
+__attribute__((objc_root_class))
+__attribute__((swift_attr("@MainActor")))
+@interface ZWireBase
+- (instancetype _Nonnull)initWithValue:(int)value __attribute__((objc_designated_initializer));
+- (int)value;
+- (int)requiredValue __attribute__((objc_requires_super));
+- (int)directValue __attribute__((objc_direct));
+- (void)consume __attribute__((ns_consumes_self));
+- (void)takeIndex:(int)index object:(ZWireBase * __attribute__((ns_consumed)))object;
+- (void)log:(int)count, ...;
+@end
+
+__attribute__((objc_subclassing_restricted))
+@interface ZWireFinal : ZWireBase
+@end

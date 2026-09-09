@@ -6729,6 +6729,17 @@ initialization/teardown callback safety is understood. Native frontend parity,
 owned state, native reentrancy, nullable initialization, and suspension remain
 explicit work. Details and evidence: [native subclass design](objc-subclass-design.md).
 
+The native parity follow-up exposed a concrete metadata boundary: carrying the
+selector and return type is not enough to validate subclass construction or
+overrides. ZFDCL v14 now retains designated initialization, required-super and
+direct-dispatch restrictions, subclassing restrictions, consuming receiver and
+parameter positions, and variadic evidence. Clang supplies consuming-self
+ownership for ARC initializer families even without an explicit source
+annotation; the native decoder test checks that fact rather than replacing it
+with a Z inference. Native syntax parity and raw evidence now pass, while native
+semantic resolution still rejects the class with Z0814. The next slice must
+consume this evidence before replacing that boundary with native execution.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

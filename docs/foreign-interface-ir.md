@@ -166,7 +166,7 @@ Z sema and native backends
 The first adapter seam is now executable. The real Clang header producer can
 frame functions, scalar typedefs, nominal enum types, typed native constants,
 record layouts/fields, and the first Objective-C declaration graph as a
-versioned `ZFDCL` raw-declaration stream. Version 13 carries scalar
+versioned `ZFDCL` raw-declaration stream. Version 14 carries scalar
 alias/underlying identity, enum identity/underlying type and flag-enum status,
 constant identity/type, record identity/layout, canonical C record identity
 across typedef aliases, field order/types, function names, namespaces,
@@ -177,7 +177,9 @@ method-parameter `id<Protocol>` qualifiers, async projection indices, and
 interface properties with getter/setter, ownership, protocol qualifiers,
 source, executor, and availability metadata, plus the producer's semantic
 Objective-C type identity and nullability beside the exact ABI spelling and
-recursive Objective-C block-function signatures into
+recursive Objective-C block-function signatures, native subclass restrictions,
+designated-initializer/required-super/direct-dispatch markers, consuming
+receiver and parameter ownership, and variadic-method facts into
 an owned Z decoder. Text is
 length-prefixed UTF-8 and records are flat, so the
 native compiler can validate and consume a bounded stream without adopting

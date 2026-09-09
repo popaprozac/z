@@ -7,7 +7,7 @@ import {
 function inspect(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 13) return 10;
+  if (module.version != 14) return 10;
   if (module.producer != "clang") return 11;
   if (module.objectiveC || module.cPlusPlus) return 12;
   if (module.functions.length != 1) return 13;
@@ -74,7 +74,7 @@ function inspect(in path: String): i32 throws String {
 function inspectClang(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 13) return 40;
+  if (module.version != 14) return 40;
   if (module.producer != "clang") return 41;
   if (module.objectiveC || module.cPlusPlus) return 42;
   if (module.types.length != 1) return 67;
@@ -129,7 +129,7 @@ function inspectClang(in path: String): i32 throws String {
 function inspectObjC(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 13) return 90;
+  if (module.version != 14) return 90;
   if (!module.objectiveC || module.cPlusPlus) return 91;
 
   let foundProtocol = false;
