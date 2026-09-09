@@ -52,6 +52,151 @@ function emitOwnedScope(): string {
   return cachedOwnedScopeSource = emitted.stdout;
 }
 
+let cachedThreadSource: string | undefined;
+function emitThreadJoin(): string {
+  if (cachedThreadSource !== undefined) return cachedThreadSource;
+  const input = resolve(projectRoot, "tests/fixtures/async-linear-thread-join.zs");
+  const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+  return cachedThreadSource = emitted.stdout;
+}
+
+test("joins native worker cancellation after an owned result without cancelling its parent", () => {
+  const input = resolve(projectRoot, "tests/fixtures/async-linear-thread-join.zs");
+  const expected = "released parent\nreleased continuation\nreleased parent\n".repeat(2);
+  execute(compileToC(readFileSync(input, "utf8"), input), expected);
+  const source = emitThreadJoin();
+  assert.match(source, /frame->child = z_stage1_async_thread_join_Task_String_start/);
+  execute(source, expected);
+}, 240_000);
+
+test("drains native workers before frame owners on cancellation, early exit, and active destruction", () => {
+  let source = emitThreadJoin();
+  const start = source.match(/static Z_AsyncInvocation (\w+_start)\(void \*context, Z_AsyncExecutor \*executor, bool argument0, bool argument1, Z_Message argument2\)/)?.[1];
+  assert.ok(start, "startup frame retains owned input and native worker");
+  for (const anchor of ["storage->finished = true;", "free(task->storage);",
+    "storage->owner_thread = pthread_self();", "void Z_Guard_deinit(Z_Guard *self) {"]) {
+    assert.ok(source.includes(anchor), anchor);
+  }
+  source = source
+    .replace("storage->owner_thread = pthread_self();", "$& ++createdWorkers; atomic_fetch_add(&activeWorkers, 1);")
+    .replace("storage->finished = true;", "atomic_fetch_sub(&activeWorkers, 1); $&")
+    .replace("free(task->storage);", "++joinedWorkers; $&")
+    .replace("void Z_Guard_deinit(Z_Guard *self) {",
+      "$& if (atomic_load(&activeWorkers) != 0 || createdWorkers != joinedWorkers) abort(); ++guardDrops;")
+    .replace("void Z_Message_deinit(Z_Message *self) {", "$& ++messageDrops;")
+    .replace("void Z_Failure_deinit(Z_Failure *self) {", "$& ++errorDrops;");
+  execute(`#include <stdatomic.h>
+static _Atomic int activeWorkers;
+static int createdWorkers, joinedWorkers, guardDrops, messageDrops, errorDrops;
+#define main z_fixture_main\n${source}\n#undef main
+int main(void) {
+  for (int mode = 0; mode < 3; ++mode) {
+    for (int early = 0; early <= 1; ++early) {
+      for (int fail = 0; fail <= 1; ++fail) {
+        for (int steps = 0; steps <= 24; ++steps) {
+          Z_AsyncExecutor executor = {0};
+          z_stage1_async_executor_init_external(&executor);
+          createdWorkers = joinedWorkers = guardDrops = messageDrops = errorDrops = 0;
+          Z_AsyncInvocation parent = ${start}(NULL, &executor, early, fail,
+            (Z_Message){ .text = Z_STRING_LITERAL("owned") });
+          if (mode != 0 || steps != 0) z_stage1_async_enqueue(&executor, parent.task);
+          for (int step = 0; step < steps && !parent.task->completed; ++step) {
+            if (!z_stage1_async_drive_one(&executor)) return 1;
+          }
+          if (mode == 2) {
+            const bool alreadyCompleted = parent.task->completed;
+            z_stage1_async_request_cancel(parent.task);
+            for (int tick = 0; !parent.task->completed; ++tick)
+              if (tick > 80 || !z_stage1_async_drive_one(&executor)) return 2;
+            if (!alreadyCompleted && !parent.task->cancelled) return 3;
+          }
+          parent.destroy(parent.task);
+          if (atomic_load(&activeWorkers) != 0 || createdWorkers != joinedWorkers
+            || createdWorkers != (steps == 0 ? 0 : 1)
+            || guardDrops < (steps == 0 ? 0 : 1)
+            || messageDrops != (steps == 0 ? 1 : 2) || errorDrops > fail) {
+            fprintf(stderr, "mode=%d early=%d fail=%d steps=%d workers=%d/%d guards=%d messages=%d errors=%d\\n",
+              mode, early, fail, steps, createdWorkers, joinedWorkers, guardDrops, messageDrops, errorDrops);
+            return 4;
+          }
+          if (executor.head != NULL || executor.tail != NULL) return 5;
+          z_stage1_async_executor_destroy_external(&executor);
+        }
+      }
+    }
+  }
+  return 0;
+}`);
+}, 240_000);
+
+test("composes native-thread joins independently of TaskScope and through main-bound methods", () => {
+  const directory = mkdtempSync("/tmp/z-linear-worker-shapes-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const fixtureSource = readFileSync(resolve(projectRoot, "tests/fixtures/async-linear-thread-join.zs"), "utf8");
+    const withoutScope = fixtureSource.replace(", TaskScope", "")
+      .replace("  const updates = new TaskScope();\n", "")
+      .replace("  await updates.cancel();\n", "");
+    const mainMethod = withoutScope.replace("thread as threads", "thread").replaceAll("threads.spawn", "thread.spawn")
+      .replace("async function startup(", "readonly class Reader {\nasync function startup(")
+      .replace("input: Message): Message throws Failure {\n  const before", "input: Message): Message throws Failure on thread.main {\n  const before")
+      .replace("\nfunction inspect(", "\n}\nfunction inspect(")
+      .replace("async function main(): i32 {", "async function main(): i32 on thread.main {\n  const reader = new Reader({});")
+      .replaceAll("attempt await startup(", "attempt await reader.startup(");
+    const mainHop = withoutScope.replace("thread as threads", "thread").replaceAll("threads.spawn", "thread.spawn")
+      .replace("async function startup(", "function publish(value: String): String on thread.main { return value; }\nasync function startup(")
+      .replace("async (): String => await listen()", "async (): String => await on thread.main publish(\"worker result\")")
+      .replace("input: Message): Message throws Failure {\n  const before", "input: Message): Message throws Failure on thread.main {\n  const before")
+      .replace("async function main(): i32 {", "async function main(): i32 on thread.main {");
+    const expected = "released parent\nreleased continuation\nreleased parent\n".repeat(2);
+    for (const source of [withoutScope, mainMethod, ...(process.platform === "darwin" ? [mainHop] : [])]) {
+      execute(compileToC(source, input), expected);
+      writeFileSync(input, source);
+      const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+      });
+      assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+      execute(emitted.stdout, expected);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("keeps a cold or externally waiting native join alive until worker completion", () => {
+  let source = emitThreadJoin();
+  const helper = source.match(/static Z_Task_String (z_stage1_thread_spawn_startup_\d+)\(void\);/)?.[1];
+  assert.ok(helper);
+  const body = `static Z_String ${helper}_body(Z_Task_StringStorage *_z_stage1_task_storage) {`;
+  assert.ok(source.includes(body));
+  source = source.replace(body, `${body}
+    while (!Z_Task_String_is_cancellation_requested(_z_stage1_task_storage)) {
+      struct timespec pause = {0, 1000000}; nanosleep(&pause, NULL);
+    }`);
+  execute(`#include <time.h>
+#define main z_fixture_main\n${source}\n#undef main
+int main(void) {
+  for (int mode = 0; mode < 2; ++mode) {
+    for (int run = 0; run < 32; ++run) {
+      Z_AsyncExecutor executor = {0};
+      z_stage1_async_executor_init_external(&executor);
+      Z_Task_String worker = ${helper}();
+      Z_AsyncInvocation join = z_stage1_async_thread_await_Task_String_start(&executor, &worker);
+      if (mode != 0) {
+        z_stage1_async_enqueue(&executor, join.task);
+        if (!z_stage1_async_run_one(&executor) || !join.task->external_completion) return 1;
+      }
+      join.destroy(join.task);
+      Z_Task_String_deinit(&worker);
+      if (executor.head != NULL || executor.tail != NULL) return 2;
+      z_stage1_async_executor_destroy_external(&executor);
+    }
+  }
+  return 0;
+}`, "");
+}, 240_000);
+
 test("implicitly joins continuation-owned scopes on return and propagated error", () => {
   const input = resolve(projectRoot, "tests/fixtures/async-linear-owned-scope.zs");
   const expected = "released parent\n".repeat(4);

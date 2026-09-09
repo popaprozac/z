@@ -6361,9 +6361,63 @@ correctness/composition checkpoint, not a new performance benchmark. Native-entr
 guards save/restore a thread-local executor pointer without heap allocation.
 
 Nested/conditional constructors and broader suspension shapes remain rejected.
-The next application gate is native-thread cancellation/join after the owned
-outcome, followed by the saved Application.run integration and complete
-primary/secondary process tests. Automatic forwarding remains disabled.
+That checkpoint left native-thread cancellation/join after the owned outcome
+as the next gate, addressed below. The saved Application.run integration and
+complete primary/secondary process tests still gate automatic forwarding.
+
+## Owned continuations joining native workers (2026-09-08)
+
+The application-startup wrapper keeps an owned `Result` alive while cancelling
+its listener, then joins the scopes that own admitted main-thread work. This
+ordinary composition was rejected by the native linear-await classifier even
+though each operation worked separately.
+
+`tests/fixtures/async-linear-thread-join.zs` now exercises early and continued
+success/error paths, a native worker returning owned String storage, and a
+following scope join. Worker cancellation is recognized through the intrinsic
+Task type or the imported `thread.spawn` constructor, including an import alias;
+an arbitrary user-defined `cancel()` does not become a suspension primitive.
+
+The join retains the parent frame and reuses its child-invocation slot. Explicit
+worker cancellation discards the worker's result and completes normally. Parent
+cancellation propagates to the join and remains a separate structural outcome.
+An early return, error, or cancellation before the explicit statement routes
+through the same child-unwind states before parent locals are destroyed.
+
+A pending worker-to-main request must also wake this join. The external queue
+now distinguishes a notification that resumes a native join from a callback
+that completes its task. The join services a main-thread request, resumes the
+worker, and waits for actual completion without spinning or creating a helper
+thread. Binding the request to its worker now works in expression closures and
+main-isolated functions, as well as the previous `main` block-closure shape.
+
+The focused UBSan matrix covers 300 combinations of early/continued control
+flow, success/failure, scheduler position, explicit cancellation, and cold/active
+frame destruction. It checks worker completion/join before parent guards,
+exact owned-input cleanup, and empty queues/external-completion accounting.
+Additional parity probes cover a function without TaskScope, a main-bound class
+method, and a worker publishing on main while its parent joins.
+Another 64 cases destroy the native waiter itself before polling or while it
+awaits an external notification. Destruction requests cancellation and drains
+the waiter before freeing it, preventing late worker notifications into retired
+join storage.
+
+Verification: the full self-hosting run passed 218 tests and the async tier
+passed all 98. The final focused suite passed 12 tests, including the additional
+waiter-destruction coverage. The rebuilt compiler reached a fixed point; all
+eight Zapp Stage 0/native startup cases passed under UBSan, and the complete
+auto-closing native Z Notes smoke passed with an isolated application identity.
+
+Cost: the existing join object gains two mode flags; worker creation is unchanged.
+The parent still uses one child-invocation slot. This is correctness evidence,
+not a new throughput benchmark. Automatic Application.run forwarding remains
+gated on applying and testing the saved production integration.
+
+Two adjacent forms encountered while broadening the probe remain separate
+native-lowering work: a direct timer await inside an inline worker body, and a
+cleanup-bearing return from the first scheduler-yield-only function tier. The
+regression uses the already-supported named-child await composition; no Zapp
+implementation workaround was introduced.
 
 ## Not tested yet
 

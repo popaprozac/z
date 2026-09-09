@@ -14,6 +14,7 @@ import {
   TypeReference,
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
+import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
@@ -1136,7 +1137,7 @@ function statementContainsLexicalFrameLocal(in arena: StatementArena, index: usi
   return false;
 }
 
-function statementIsTaskScopeJoinAwait(
+function statementIsStructuredJoinAwait(
   moduleIndex: usize,
   in modules: Array<ParsedModule>,
   in graph: ModuleGraph,
@@ -1161,6 +1162,17 @@ function statementIsTaskScopeJoinAwait(
           || (tree.nodes[callee].value != "close" && tree.nodes[callee].value != "cancel")) return false;
         const receiver = tree.nodes[callee].children[0];
         const typeName = resolvedExpressionType(graph, moduleIndex, tree, receiver);
+        if (tree.nodes[callee].value == "cancel"
+          && isNativeThreadBinding(modules[parsedModule].program, arena, tree, receiver)) return true;
+        // The intrinsic Task identity, not a method's spelling, authorizes a
+        // worker cancellation join. Ordinary user-defined cancel methods do
+        // not acquire continuation semantics here.
+        if (tree.nodes[callee].value == "cancel") {
+          match (genericTypeShape(typeName)) {
+            some(shape) => if (shape.base == "Task") return true;
+            none => {}
+          }
+        }
         for (const imported of modules[parsedModule].program.imports) {
           if (imported.header != "std/async") continue;
           for (const binding of imported.bindings) {
@@ -1185,7 +1197,7 @@ function functionUsesFirstTierLinearAwait(
   let awaitCount: usize = 0;
   for (const root of declaration.body.roots) {
     if (!statementContainsSuspension(declaration.body, root)) continue;
-    if (awaitCount == 1 && statementIsTaskScopeJoinAwait(
+    if (awaitCount == 1 && statementIsStructuredJoinAwait(
       moduleIndex, modules, graph, declaration.body, root
     )) continue;
     if (awaitCount == 0) {

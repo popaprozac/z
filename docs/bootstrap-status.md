@@ -1236,9 +1236,15 @@ and joins them before parent-local cleanup. Moving the visible handle cannot
 disable this obligation. Early and continuing paths, multiple local scopes,
 and supported method frames share this cleanup path; cold/active destruction
 drains the same states. Passed-in handles retain their independent ownership.
-Nested constructors still require lexical ownership states. Native-thread cancellation joins,
-nested branch-local storage, and other continuation suspensions remain explicit
-boundaries. This is an upstream
+Sequential root `await worker.cancel()` now composes after the owned awaited
+local. Native worker handles join before parent storage is released, including
+early return, propagated failure, and cancellation that skips the explicit join.
+Explicit worker cancellation completes normally; parent cancellation remains a
+separate structural outcome. A worker's pending main-thread requests wake its
+join frame through the external-completion queue, which services the request
+before joining. Main-isolated functions can own this path, not just `main`.
+Nested constructors still require lexical ownership states. Nested branch-local
+storage and other continuation suspensions remain explicit boundaries. This is an upstream
 composition prerequisite, not proof that Zapp's full startup wrapper is enabled.
 
 Continue focused self-hosting work in this order:

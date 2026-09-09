@@ -5,6 +5,8 @@
 // construction is no longer a call-shaped syntax node. Cleanup plans will join
 // this representation when ownership-bearing aggregates land.
 
+import { isNativeThreadBinding } from "./native-thread-shape.zs";
+
 import {
   ArrayBindingKind,
   ConstructorDeclaration,
@@ -20183,6 +20185,34 @@ function threadCaptureBindingOffset(
   throw `native thread.spawn cannot resolve binding identity for capture ${name}`;
 }
 
+function bindThreadMainTask(
+  in program: Program, in ownerName: String, in taskName: String,
+  index: usize, inout expressions: Array<LoweredExpression>
+): void throws String {
+  if (expressions[index].kind == LoweredExpressionKind.threadSpawn) return;
+  if (expressions[index].kind == LoweredExpressionKind.threadMainCall) {
+    let onMain = ownerName == "main";
+    for (const declaration of program.functions) {
+      if (declaration.name == ownerName && declaration.executorAffinity == "thread.main") onMain = true;
+    }
+    for (const aggregate of program.aggregates) {
+      for (const method of aggregate.methods) {
+        if (semanticMethodOwnerMatches(ownerName, aggregate.name, method.name)
+          && (method.executorAffinity == "thread.main" || aggregate.executorAffinity == "thread.main")) onMain = true;
+      }
+    }
+    if (!onMain) throw "native worker main placement requires a task created in main or a main-isolated function";
+    expressions[index].value = taskName.copyBytes(0, taskName.byteLength);
+    return;
+  }
+  let child: usize = 0;
+  while (child < expressions[index].children.length) {
+    const nested = expressions[index].children[child];
+    try bindThreadMainTask(program, ownerName, taskName, nested, inout expressions);
+    child = child + 1;
+  }
+}
+
 function resolveThreadCaptureBindingOffsets(
   in program: Program,
   in arena: StatementArena,
@@ -20480,7 +20510,13 @@ function completeNativeClosureBlocks(
         == LoweredExpressionKind.threadSpawn
       && expressions[expressionIndex].labels.length >= 1
       && expressions[expressionIndex].labels[0] != "block"
-    ) try resolveThreadCaptureBindingOffsets(
+    ) {
+      if (expressions[expressionIndex].children.length > 0) {
+        const taskName = expressions[expressionIndex].value.copyBytes(0, expressions[expressionIndex].value.byteLength);
+        const body = expressions[expressionIndex].children[0];
+        try bindThreadMainTask(program, ownerName, taskName, body, inout expressions);
+      }
+      try resolveThreadCaptureBindingOffsets(
       program,
       arena,
       ownerName,
@@ -20488,6 +20524,7 @@ function completeNativeClosureBlocks(
       expressionIndex,
       inout expressions
     );
+    }
     if (
       expressions[expressionIndex].kind
         == LoweredExpressionKind.threadSpawn
@@ -20699,14 +20736,8 @@ function completeNativeClosureBlocks(
           expressions[placedExpression].kind
             == LoweredExpressionKind.threadMainCall
         ) {
-          if (ownerName != "main") {
-            throw "native thread.main placement currently requires a task created in main";
-          }
-          expressions[placedExpression].value = expressions[expressionIndex]
-            .value.copyBytes(
-              0,
-              expressions[expressionIndex].value.byteLength
-            );
+          const taskName = expressions[expressionIndex].value.copyBytes(0, expressions[expressionIndex].value.byteLength);
+          try bindThreadMainTask(program, ownerName, taskName, placedExpression, inout expressions);
         }
         placedExpression = placedExpression + 1;
       }
@@ -21211,7 +21242,7 @@ function functionUsesFirstTierSchedulerYield(
   return true;
 }
 
-function statementIsTaskScopeJoinAwait(
+function statementIsStructuredJoinAwait(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
@@ -21244,6 +21275,8 @@ function statementIsTaskScopeJoinAwait(
           )
         ) return false;
         const receiver = tree.nodes[callee].children[0];
+        if (tree.nodes[callee].value == "cancel"
+          && isNativeThreadBinding(program, arena, tree, receiver)) return true;
         return match (evidenceResolvedExpressionTypeName(
           program,
           importedTypes,
@@ -21251,7 +21284,14 @@ function statementIsTaskScopeJoinAwait(
           tree,
           receiver
         )) {
-          some(name) => importedAsyncHandleBinding(program, name, "TaskScope");
+          some(name) => {
+            if (importedAsyncHandleBinding(program, name, "TaskScope")) return true;
+            if (tree.nodes[callee].value != "cancel") return false;
+            return match (genericTypeShape(name)) {
+              some(shape) => shape.base == "Task";
+              none => false;
+            };
+          }
           none => false;
         };
       }
@@ -22042,7 +22082,7 @@ function functionUsesFirstTierLinearAwait(
   let awaitCount: usize = 0;
   for (const root of declaration.body.roots) {
     if (!statementContainsSuspension(declaration.body, root)) continue;
-    if (awaitCount == 1 && statementIsTaskScopeJoinAwait(
+    if (awaitCount == 1 && statementIsStructuredJoinAwait(
       program, importedTypes, evidence, declaration.body, root
     )) continue;
     // An early terminal await chooses the parent's final result. It does not
@@ -26478,7 +26518,7 @@ function lowerFunction(
       && position < declaration.body.roots.length
     ) {
       const root = declaration.body.roots[position];
-      if (statementIsTaskScopeJoinAwait(
+      if (statementIsStructuredJoinAwait(
         program,
         importedTypes,
         evidence,

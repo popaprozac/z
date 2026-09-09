@@ -155,9 +155,12 @@ production or compatibility-sensitive use.
   Root-local `new TaskScope()` values now join their children on function exit,
   including cancellation that skips an explicit await. Errors and cancellation
   cancel the remaining work; normal return waits for it. Moving the handle
-  does not remove this obligation. Nested scope constructors,
-  native-thread cancellation joins, and branch-local storage across
-  suspension remain staged. Direct
+  does not remove this obligation. Sequential `await worker.cancel()` also
+  preserves the owned result. Native worker handles join before parent storage
+  is released on early return, failure, or parent cancellation; explicitly
+  cancelling a worker does not cancel its parent. Pending main-thread requests
+  wake the join frame and are serviced before it finishes. Nested scope
+  constructors and branch-local storage across suspension remain staged. Direct
   timer awaits in native `main` still require a future resumable entry frame;
   that boundary now reports `Z0700` at the await.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
