@@ -2543,6 +2543,45 @@ test("initializes private class state through safe user constructors", () => {
   assert.throws(() => compileToC(privatePattern, "private-pattern.zs"), /field "value" is private to class "Secret"/);
 });
 
+test("keeps constructor initialization separate from nested closure returns and captures", () => {
+  const source = `
+    class Counter {
+      value: i32;
+      constructor() {
+        const calculate = (): i32 => {
+          const nested = (): i32 => { return 42; };
+          return nested();
+        };
+        this.value = calculate();
+      }
+    }
+    function main(): i32 { const counter = new Counter(); return counter.value - 42; }
+  `;
+  assert.doesNotThrow(() => compileToC(source, "constructor-closure-return.zs"));
+  for (const body of [
+    "const read = (): i32 => this.value; this.value = 42;",
+    "const read = (): i32 => { return this.value; }; this.value = 42;",
+    "const write = (): void => { this.value = 42; }; write();",
+    "const read = (): i32 => { const inner = (): i32 => this.value; return inner(); }; this.value = 42;",
+  ]) {
+    const unsafe = `class Counter { value: i32; constructor() { ${body} } }
+      function main(): i32 { const counter = new Counter(); return counter.value; }`;
+    assert.throws(() => compileToC(unsafe, "constructor-early-closure-capture.zs"), /this cannot escape before field "value" is initialized/);
+  }
+  const partiallyInitialized = `
+    class Counter { value: i32; other: i32;
+      constructor() {
+        this.value = 42;
+        const read = (): i32 => { return this.value; };
+        this.other = 0;
+      }
+    }
+    function main(): i32 { const counter = new Counter(); return counter.value; }
+  `;
+  assert.throws(() => compileToC(partiallyInitialized, "constructor-partial-closure-capture.zs"), /this cannot escape before field "other" is initialized/);
+  assert.throws(() => compileToC(source.replace("this.value = calculate();", "return;"), "constructor-real-return.zs"), /constructors return the initialized instance implicitly/);
+});
+
 test("runs visible type-scoped static methods on structs, classes, and generic instances", () => {
   const example = resolve(projectRoot, "examples/language/basics/static-methods.zs");
   const source = readFileSync(example, "utf8");

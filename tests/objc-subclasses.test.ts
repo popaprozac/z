@@ -112,6 +112,78 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       assert.match(checked.stdout, /Z0814/, name);
       assert.match(checked.stdout, expected, name);
     }
+    const constructorTail = (body: string) => nativeBaseline.replace(
+      "super.initWithValue(value);", `super.initWithValue(value); ${body}`,
+    );
+    const overrideBody = (body: string) => nativeBaseline.replace("return super.value() + 2;", body);
+    const bodyCases: [string, string, RegExp][] = [
+      ["double initialization", constructorTail("super.initWithValue(value);"), /exactly once/],
+      ["conditional initialization", constructorTail("if (value == 0) { super.initWithValue(value); }"), /exactly once/],
+      ["match initialization", constructorTail("match (Option<i32>.some(value)) { some(item) => { super.initWithValue(item); } none => {} }"), /exactly once/],
+      ["expression initialization", constructorTail("const observed = if (value == 0) { super.initWithValue(value); select 0; } else { select 1; };"), /exactly once/],
+      ["method initialization", overrideBody("super.initWithValue(42); return 42;"), /exactly once/],
+      ["early receiver", nativeBaseline.replace("super.initWithValue(value)", "super.initWithValue(this.value())"), /before superclass initialization/],
+      ["early super", nativeBaseline.replace("super.initWithValue(value)", "super.initWithValue(super.value())"), /before superclass initialization/],
+      ["early closure receiver", nativeBaseline.replace("super.initWithValue(value)", "super.initWithValue(((): i32 => this.value())())"), /before superclass initialization/],
+      ["early expression receiver", nativeBaseline.replace("super.initWithValue(value)", "super.initWithValue(if (true) { select this.value(); } else { select value; })"), /before superclass initialization/],
+      ["constructor return", constructorTail("return;"), /must fall through/],
+      ["conditional return", constructorTail("if (value == 0) return;"), /must fall through/],
+      ["match return", constructorTail("match (Option<i32>.some(value)) { some(item) => return; none => {} }"), /must fall through/],
+      ["expression return", constructorTail("const observed = if (value == 0) { return; } else { select 1; };"), /must fall through/],
+      ["match expression return", constructorTail("const observed = match (Option<i32>.some(value)) { some(item) => return; none => 0; };"), /must fall through/],
+      ["bare super", overrideBody("const observed = super; return 42;"), /direct receiver/],
+      ["extracted super method", overrideBody("const callback = super.value; return 42;"), /direct receiver/],
+      ["super expression closure", overrideBody("const callback = (): i32 => super.value(); return callback();"), /cannot be captured/],
+      ["super block closure", overrideBody("const callback = (): i32 => { return super.value(); }; return callback();"), /cannot be captured/],
+      ["super nested closure", overrideBody("const callback = (): i32 => { const inner = (): i32 => super.value(); return inner(); }; return callback();"), /cannot be captured/],
+      ["constructor closure initialization", constructorTail("const callback = (): void => { super.initWithValue(value); }; callback();"), /cannot be captured/],
+      ["constructor parameter shadow", nativeBaseline.replace("constructor(value: i32)", "constructor(self: i32)"), /cannot be shadowed/],
+      ["local receiver shadow", constructorTail("const self = value;"), /cannot be shadowed/],
+      ["local selector shadow", overrideBody("const _cmd = 42; return _cmd;"), /cannot be shadowed/],
+      ["closure parameter shadow", overrideBody("const callback = (_cmd: i32): i32 => _cmd; return callback(42);"), /cannot be shadowed/],
+      ["closure local shadow", overrideBody("const callback = (): i32 => { const self = 42; return self; }; return callback();"), /cannot be shadowed/],
+      ["object binding shadow", constructorTail("const { self } = Metadata({ self: value });"), /cannot be shadowed/],
+      ["renamed object binding shadow", constructorTail("const { value: _cmd } = Metadata({ value });"), /cannot be shadowed/],
+      ["array binding shadow", constructorTail("const [self] = Array<i32>(value);"), /cannot be shadowed/],
+      ["array rest shadow", constructorTail("const [first, ..._cmd] = Array<i32>(value, value);"), /cannot be shadowed/],
+      ["match binding shadow", constructorTail("match (Option<i32>.some(value)) { some(self) => {} none => {} }"), /cannot be shadowed/],
+      ["loop binding shadow", constructorTail("for (const _cmd of Array<i32>(value)) {}"), /cannot be shadowed/],
+      ["loop destructuring shadow", constructorTail("for (const { value: self } of Array<i32>(value).entries()) {}"), /cannot be shadowed/],
+      ["manual release", overrideBody("super.release(); return 42;"), /ARC lifecycle methods/],
+      ["unknown superclass call", overrideBody("return super.missing();"), /resolve to one imported/],
+      ["wrong superclass arity", overrideBody("return super.add(42);"), /resolve to one imported/],
+      ["wrong superclass label", overrideBody("return super.add(20, other: 22);"), /resolve to one imported/],
+      ["labelled first argument", overrideBody("return super.add(left: 20, to: 22);"), /resolve to one imported/],
+      ["labelled initializer argument", nativeBaseline.replace("super.initWithValue(value)", "super.initWithValue(value: value)"), /resolve to one imported/],
+      ["consuming superclass receiver", overrideBody("super.consume(); return 42;"), /consuming superclass calls/],
+      ["consumed superclass argument", overrideBody("super.takeIndex(0, this); return 42;"), /consuming superclass calls/],
+      ["variadic superclass call", overrideBody("super.log(1); return 42;"), /non-variadic native ABI/],
+      ["unsupported superclass result", overrideBody("super.extendedValue(); return 42;"), /unsupported superclass return ABI/],
+    ];
+    for (const [name, source, expected] of bodyCases) {
+      const checked = runDeclaration(source);
+      assert.equal(checked.status, 1, `${name}: ${checked.stdout}${checked.stderr}`);
+      assert.match(checked.stdout, /Z0814/, `${name}: ${checked.stdout}${checked.stderr}`);
+      assert.match(checked.stdout, expected, `${name}: ${checked.stdout}${checked.stderr}`);
+      assert.throws(() => compileToNative(source, decoder), undefined, `Stage 0 rejection: ${name}`);
+    }
+    const validBodies: [string, string][] = [
+      ["unlabelled superclass arguments", overrideBody("return super.add(20, 22);")],
+      ["labelled superclass arguments", overrideBody("return super.add(20, to: 22);")],
+      ["inherited superclass call", overrideBody("return super.add(20, to: 22);").replace("extends native.ZWireBase", "extends native.ZWireChild")],
+      ["closure-local return", constructorTail("const callback = (): i32 => { return 42; }; const observed = callback();")],
+      ["nested closure-local return", constructorTail("const callback = (): i32 => { const inner = (): i32 => { return 42; }; return inner(); }; const observed = callback();")],
+      ["constructor select", constructorTail("const observed = if (value == 0) { select 0; } else { select value; };")],
+      ["string and comment vocabulary", constructorTail('const text = "self _cmd this super"; /* super.init(); return; */')],
+      ["renamed property", constructorTail("const metadata = Metadata({ self: value }); const { self: observed } = metadata;") + "\nstruct Metadata { self: i32; }\n"],
+    ];
+    for (const [name, source] of validBodies) {
+      const checked = runDeclaration(source);
+      assert.equal(checked.status, 0, `${name}: ${checked.stdout}${checked.stderr}`);
+      // The native structural checker must not reject ordinary legal bodies.
+      // Stage 0 still supplies their complete typed/ownership/emission oracle.
+      assert.doesNotThrow(() => compileToNative(source, decoder), name);
+    }
     const obsolete = run(stream.replace("ZFDCL000000000000000e", "ZFDCL000000000000000d"));
     assert.equal(obsolete.status, 1, obsolete.stderr);
     assert.match(obsolete.stdout, /unsupported foreign declaration stream version 13/);

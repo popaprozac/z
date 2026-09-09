@@ -11,7 +11,10 @@ import {
   ModuleSymbolLocation, equivalentTypes, isUnresolvedExternalType, rebaseTypeName,
   transparentTypeName, typeSymbolLocation,
 } from "./semantic-type-identities.zs";
-import { rebaseModuleFunctionSignature } from "./semantic-member-lookups.zs";
+import { objcMethodLabelsMatch, rebaseModuleFunctionSignature } from "./semantic-member-lookups.zs";
+import {
+  NativeSuperclassCallSite, inspectNativeSubclassBodies, nativeInitializerSelector,
+} from "./semantic-objc-subclass-bodies.zs";
 import {
   isNumericTypeName, nativeFunctionSignature, nullableTargetType,
   stringStartsWith,
@@ -29,15 +32,8 @@ function subclassError(
   );
 }
 
-function initializerSelector(in name: String): boolean {
-  if (!stringStartsWith(name, "init")) return false;
-  if (name.byteLength == 4) return true;
-  const next = name.byteAt(4);
-  return next < 97 || next > 122;
-}
-
 function runtimeSelector(in name: String): boolean {
-  return initializerSelector(name) || name == "dealloc" || name == "retain"
+  return nativeInitializerSelector(name) || name == "dealloc" || name == "retain"
     || name == "release" || name == "autorelease" || name == "retainCount"
     || name == "class" || stringStartsWith(name, "isKindOfClass:")
     || stringStartsWith(name, "forward")
@@ -252,56 +248,46 @@ function firstSuperclassCall(
   }
 }
 
-function selectorMatchesCall(in selector: String, in tree: ExpressionTree): boolean {
-  const call = view tree.nodes[tree.root];
-  let start: usize = 0;
-  let segment: usize = 0;
-  let index: usize = 0;
-  while (index < selector.byteLength) {
-    if (selector.byteAt(index) == 58) {
-      if (segment >= call.labels.length) return false;
-      if (segment > 0 && call.labels[segment].byteLength > 0
-        && call.labels[segment] != selector.copyBytes(start, index)) return false;
-      start = index + 1;
-      segment = segment + 1;
-    }
-    index = index + 1;
-  }
-  return segment == call.children.length - 1;
-}
-
-function validateInitializerContract(
-  in module: ParsedModule, in tree: ExpressionTree, in methods: Array<ModuleMethodSignature>
+function validateSuperclassCallContract(
+  in module: ParsedModule, in call: NativeSuperclassCallSite, in methods: Array<ModuleMethodSignature>
 ): void throws ModuleResolveError {
-  const call = view tree.nodes[tree.root];
-  const callee = view tree.nodes[call.children[0]];
   let selected = methods.length;
   let count: usize = 0;
   let index: usize = 0;
   while (index < methods.length) {
     const method = view methods[index];
-    if (method.name == callee.value && selectorMatchesCall(method.objectiveCSelector, tree)) {
+    if (method.name == call.name && method.objectiveCParameterNativeTypes.length == call.argumentCount
+      && objcMethodLabelsMatch(method, call.argumentLabels)) {
       selected = index;
       count = count + 1;
     }
     index = index + 1;
   }
   if (count != 1) throw subclassError(module,
-    "superclass initializer must resolve to one imported Objective-C instance selector",
+    "superclass call must resolve to one imported Objective-C instance selector",
     call.line, call.column);
   const method = view methods[selected];
-  if (!initializerSelector(method.objectiveCSelector) || !method.objectiveCDesignatedInitializer
-    || !method.objectiveCReturnsInstanceType) throw subclassError(module,
-    "superclass construction requires an imported designated `init` method returning instancetype",
-    call.line, call.column);
-  const nullableResult = nullableTargetType(method.objectiveCNativeResultType);
-  if (nullableResult.byteLength > 0) throw subclassError(module,
-    "nullable superclass initializers require the later fallible-construction tier",
-    call.line, call.column);
-  if (method.objectiveCConsumedParameters.length > 0) throw subclassError(module,
+  if (call.initializes) {
+    if (!nativeInitializerSelector(method.objectiveCSelector) || !method.objectiveCDesignatedInitializer
+      || !method.objectiveCReturnsInstanceType) throw subclassError(module,
+      "superclass construction requires an imported designated `init` method returning instancetype",
+      call.line, call.column);
+    const nullableResult = nullableTargetType(method.objectiveCNativeResultType);
+    if (nullableResult.byteLength > 0) throw subclassError(module,
+      "nullable superclass initializers require the later fallible-construction tier",
+      call.line, call.column);
+  } else if (nativeInitializerSelector(method.objectiveCSelector)) throw subclassError(module,
+    "superclass initialization must occur exactly once, as the first constructor statement", call.line, call.column);
+  if ((!call.initializes && method.objectiveCConsumesSelf) || method.objectiveCConsumedParameters.length > 0) throw subclassError(module,
     "consuming superclass calls require a later ownership tier", call.line, call.column);
   if (method.signature.asynchronous || method.objectiveCVariadic) throw subclassError(module,
     "superclass calls must use a synchronous, non-variadic native ABI", call.line, call.column);
+  if (method.signature.returnType.byteLength == 0) throw subclassError(module,
+    "unsupported superclass return ABI", call.line, call.column);
+  for (const parameter of method.signature.parameterTypes) {
+    if (parameter.byteLength == 0) throw subclassError(module,
+      "unsupported superclass parameter ABI", call.line, call.column);
+  }
 }
 
 function validateNativeObjCSubclassDeclaration(
@@ -361,6 +347,9 @@ function validateNativeObjCSubclassDeclaration(
     }
     selectors.push(copy method.objectiveCSelector);
   }
+  const superclassCalls = try inspectNativeSubclassBodies(
+    module, aggregate, initializer.nodes[initializer.root].offset
+  );
   // Source-only probes may not have attached Clang metadata. They still
   // hit the execution gate; never invent a superclass signature here.
   const location = match (typeSymbolLocation(modules, moduleIndex, base.name)) {
@@ -393,7 +382,9 @@ function validateNativeObjCSubclassDeclaration(
     if (!found) throw subclassError(module,
       `no inherited Objective-C instance selector "${method.objectiveCSelector}"`, method.line, method.column);
   }
-  try validateInitializerContract(module, initializer, methods);
+  for (const call of superclassCalls) {
+    try validateSuperclassCallContract(module, call, methods);
+  }
 }
 
 export function validateNativeObjCSubclassDeclarations(

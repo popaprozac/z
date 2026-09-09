@@ -2,8 +2,8 @@
 
 Status: declaration and construction direction approved, 2026-09-09. The first
 field-free, synchronous **Stage 0** tier is implemented and tested. The
-self-hosted frontend preserves the declaration syntax and checks imported
-declaration contracts, but rejects native body ownership checking/emission
+self-hosted frontend preserves the declaration syntax, checks imported
+declaration contracts and structural receiver rules, but rejects native body ownership checking/emission
 explicitly until that parity lands. Stateful subclasses and production window
 integration remain separate checkpoints.
 
@@ -163,6 +163,15 @@ present and absent facts, exact consuming-parameter positions, malformed input,
 and obsolete-version rejection. Declaration checks cover restricted and
 main-isolated bases, inherited selectors, exact override types/capabilities,
 forbidden effects/ownership, and designated/nonnullable initializer selection.
+The native syntax-tree body pass enforces exactly-once superclass initialization,
+rejects receiver use in initializer arguments (including nested expressions and
+closures), and keeps `super` a direct, non-capturable call receiver. Constructor
+returns are rejected through branches, match arms, and expression blocks, while
+a nested closure's own `return` remains legal. Native implicit receiver names
+cannot be shadowed by parameters, locals, or destructured/pattern bindings.
+Every discovered superclass call is matched against inherited selector, arity,
+label, ABI-representability, and consuming/variadic contracts; syntactic call
+sites are not yet typed executable evidence.
 These checks do not yet authorize native subclass execution: semantic resolution
 still reports `Z0814` before body analysis could substitute an ordinary Z class
 representation. Source-only probes without attached foreign contracts defer
@@ -176,10 +185,12 @@ The remaining field-free native port is bounded by four gates:
 
 1. **Complete:** carry raw safety facts through native foreign normalization and
    module signatures, without exposing unsupported native ABIs as callable.
-2. **In progress:** declaration contracts and negative tests are present.
-   Complete receiver identity, one-time initialization, pre-initialization use,
-   superclass call/capture rules, availability, executor capability validation,
-   and body ownership before accepting a native subclass as checked executable Z.
+2. **In progress:** declaration contracts, structural receiver/initialization
+   rules, superclass call/capture checks, and negative tests are present.
+   Complete native receiver identity, argument/result typing, availability,
+   executor capability validation, and body ownership before accepting a native
+   subclass as checked executable Z. Structural traversal alone cannot prove
+   whether a receiver is moved, aliased, or returned with valid ownership.
    Executable plans must require attached ABI evidence; the source-only
    declaration deferral must never become a successful execution path.
 3. Lower checked constructor/super calls and native method entries into explicit

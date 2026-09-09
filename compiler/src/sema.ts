@@ -2209,7 +2209,7 @@ export function analyze(
 
   for (const declaration of program.structs) {
     if (declaration.constructor) {
-      analyzeConstructorInitialization(declaration, fileName, state);
+      analyzeConstructorInitialization(declaration, structs, fileName, state);
       analyzeFunction(
         {
           ...constructorFunction(declaration),
@@ -3960,6 +3960,7 @@ function constructorFunction(declaration: StructDeclaration): FunctionDeclaratio
 
 function analyzeConstructorInitialization(
   declaration: StructDeclaration,
+  structs: ReadonlyMap<string, StructDeclaration>,
   fileName: string,
   state: AnalysisState,
 ): void {
@@ -4027,13 +4028,18 @@ function analyzeConstructorInitialization(
       case "weak":
         checkExpression(expression.expression, initialized);
         return;
-      case "closure":
-        if (expression.body.kind === "block") {
-          analyzeConstructorStatements(expression.body.statements, new Set(initialized));
-        } else {
-          checkExpression(expression.body, initialized);
-        }
+      case "closure": {
+        // A closure has its own return/initialization flow. Its body is checked
+        // by ordinary closure analysis, not as part of this constructor. Even a
+        // read of an already initialized field captures the complete receiver,
+        // which cannot escape until all of its fields have been initialized.
+        const receiver = collectClosureCaptures(
+          expression, new Map([["this", declaration.name]]), structs,
+          state.foreignNamedTypes, new Set(expression.parameters.map((parameter) => parameter.name)),
+        ).get("this");
+        if (receiver) checkExpression({ kind: "identifier", name: "this", location: receiver.location }, initialized);
         return;
+      }
       case "call":
         checkExpression(expression.callee, initialized);
         for (const argument of expression.arguments) checkExpression(argument, initialized);

@@ -6753,6 +6753,27 @@ nullability, and exact override signatures are checked natively. Receiver/body
 ownership and emission remain explicitly gated; this is not yet permission to
 instantiate the subclass through the self-hosted compiler.
 
+The structural body follow-up exposed a useful control-flow distinction:
+`return` inside a constructor's match arm or value-producing block still exits
+the constructor, but `return` inside a nested closure exits only that closure.
+The native checker now walks the statement and expression arenas together,
+carrying that boundary explicitly. It also rejects receiver use anywhere in
+initializer arguments, repeated initialization hidden in branches, captured or
+extracted `super`, and implicit receiver shadowing in destructuring and patterns.
+Superclass call selection reuses the ordinary Objective-C label matcher rather
+than growing another subtly different selector grammar. Tests compare legal
+body shapes with the Stage 0 compiler. This is structural evidence only: it does
+not replace typed receiver identity, alias/move analysis, availability, or
+executor proof. The native execution gate stays in place until those checks and
+lowering are complete.
+
+That comparison also caught an existing Stage 0 constructor bug: the general
+field-initialization pass treated a closure-local return as a constructor return.
+It now reuses closure capture discovery and leaves the closure's flow to ordinary
+closure checking. A closure that captures `this` before *all* fields are initialized
+still fails closed, even if it only reads an already initialized field. Writes
+inside a closure cannot count as initialization performed by the constructor.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

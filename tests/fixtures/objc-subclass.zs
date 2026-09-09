@@ -4,7 +4,11 @@ import { thread } from "std/thread";
 class Counter extends native.ZSubclassFixture on thread.main {
   constructor(value: i32) {
     super.initWithValue(value);
-    this.configuredValue = 1;
+    const configuration = (): i32 => {
+      const initial = (): i32 => { return 1; };
+      return initial();
+    };
+    this.configuredValue = configuration();
   }
 
   override function value(): i32 as "value" {

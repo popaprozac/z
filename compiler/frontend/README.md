@@ -158,8 +158,13 @@ recursive path.
   `semantic-objc-subclasses.zs` checks imported base restrictions, inherited
   override contracts, and designated/nonnullable initializer selection using
   normalized Clang facts. Unsupported method ABIs remain non-callable evidence.
+  `semantic-objc-subclass-bodies.zs` traverses statement/expression arenas for
+  one-time initialization, pre-initialization receiver use, constructor return
+  boundaries, implicit receiver shadowing, and non-capturable direct `super`
+  calls. Each call is matched against the inherited native contract. These are
+  structural checks, not executable body typing or ownership evidence.
   Resolution still rejects native subclass bodies with `Z0814` pending receiver
-  ownership, initialization/capture validation, and native lowering/emission.
+  typing/ownership, availability/executor validation, and native lowering/emission.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies

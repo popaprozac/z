@@ -110,7 +110,7 @@ function objcSelectorLabelAt(in selector: String, target: usize): String {
   return "";
 }
 
-function objcMethodLabelsMatch(
+export function objcMethodLabelsMatch(
   in method: ModuleMethodSignature,
   in labels: Array<String>
 ): boolean {
