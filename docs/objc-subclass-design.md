@@ -1,7 +1,9 @@
 # Native Objective-C subclass design
 
-Status: declaration direction approved, 2026-09-09. Not implemented. Constructor
-semantics and state lifetime remain a design checkpoint, not accepted syntax.
+Status: declaration and construction direction approved, 2026-09-09. The first
+field-free, synchronous **Stage 0** tier is implemented and tested. The
+self-hosted frontend rejects `extends` explicitly until parity lands. Stateful
+subclasses and production window integration remain separate checkpoints.
 
 ## Motivation
 
@@ -27,6 +29,16 @@ import AppKit from "AppKit/AppKit.h";
 import { thread } from "std/thread";
 
 class SmoothWindow extends AppKit.NSWindow on thread.main {
+  constructor(frame: AppKit.NSRect) {
+    super.initWithContentRect(
+      frame,
+      styleMask: AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskResizable,
+      backing: AppKit.NSBackingStoreBuffered,
+      defer: false
+    );
+    this.releasedWhenClosed = false;
+  }
+
   override function animationResizeTime(
     frame: AppKit.NSRect
   ): f64 as "animationResizeTime:" {
@@ -35,8 +47,9 @@ class SmoothWindow extends AppKit.NSWindow on thread.main {
 }
 ```
 
-This is a declaration/dispatch illustration, not an executable example or a
-complete resize implementation. Its override forwards unchanged behavior.
+This class passes strict Clang compilation through Stage 0. It is not a complete
+resize implementation: its override forwards unchanged behavior. Construction
+uses `new SmoothWindow(frame)`, not an object-literal initializer.
 
 - `extends` initially names one imported Objective-C superclass. It denotes a
   real native subclass, not an adapter or structural resemblance.
@@ -50,24 +63,53 @@ complete resize implementation. Its override forwards unchanged behavior.
 - Ordinary Z-to-Z inheritance is not enabled. Existing Z ARC classes and
   protocol adapters keep their current semantics.
 
-The spelling is approved, but this is a real compiler/type-representation
-extension. Ordinary Z class allocation cannot simply be reused as an Objective-C
-object. Target one native ARC identity and explicit lowering evidence rather
-than an unrelated wrapper cast to the base class.
+The generated class has one native ARC identity. It does not allocate a Z ARC
+record or a protocol-adapter wrapper. Ordinary calls use Objective-C dispatch;
+`super` uses native superclass dispatch. A base-class reference still invokes
+the override. Local method names may differ from their explicit native selector.
 
-## Open construction and safety decisions
+## Approved construction and current restrictions
 
-Preserve the familiar `new` and `constructor` surface where sound, but deliberate
-the exact superclass-initializer operation before implementation. Imported
-Objective-C allocation/initialization is not an ordinary void method call:
-initialization may return nil or a replacement object. Native subclass state
-must never be attached to an object with incompatible dynamic identity.
+An explicit `constructor` begins with exactly one direct superclass designated
+initializer. Its arguments cannot refer to `this` or `super`. After that call,
+ordinary native property assignments and synchronous calls are available.
+Constructor arguments currently accept scalars, enums, and plain native records
+(including `NSRect`), by value. Constructors must fall through rather than return
+early in this first tier.
+
+The generated initializer assigns the native result back to `self`; it does not
+discard the returned object. Nil or replacement objects with a different dynamic
+class fail closed at runtime. Nullable initializer contracts are rejected before
+emission pending an explicitly fallible construction tier. Inherited initializer
+entry points cannot bypass `new`, and reinitialization is rejected on a known Z
+native subclass receiver. Every generated native entry checks the main thread.
+This is a contract guard, not an implicit executor hop.
+
+The first tier deliberately rejects:
+
+- ordinary Z inheritance, generic subclasses, missing main affinity, and
+  imported classes that forbid subclassing;
+- Z-stored fields, `deinit`, `Weak`, and protocol/trait composition;
+- asynchronous, throwing, consuming, static, generic, block-receiving, or
+  object-returning overrides, plus variadic native signatures;
+- native lifecycle/runtime overrides, direct (`objc_direct`) methods, consuming
+  native ownership contracts, and explicit manual ARC lifecycle calls;
+- methods marked `NS_REQUIRES_SUPER` until path validation exists;
+- capturing `super`, treating it as a value, or using it outside the native class;
+- composition with async lowering or the self-hosted frontend.
+
+Selector and ABI compatibility, subclass restrictions, designated initializer
+metadata, native availability, and executor requirements come from imported
+declarations. Behavioral assumptions about a native initializer or callback are
+still trusted native contracts, not proved by reading a header.
+
+## Remaining state and safety decisions
 
 The first fixture should separate field-free override/super dispatch from the
 later stateful window implementation. A passing stateless fixture does not
 establish stateful subclass safety. Before fields or cleanup hooks ship, settle:
 
-1. Designated initializer selection and inherited construction entry points.
+1. Broader inherited construction entry points and constructor argument ownership.
 2. Nullable/replacement initializer results and cleanup on failed construction.
 3. Native virtual callbacks during initialization or teardown: ordinary Z
    definite-assignment analysis alone cannot prove these callbacks safe.
@@ -96,6 +138,19 @@ unchecked stateful inheritance behind an ergonomic declaration.
 
 The research Objective-C probe remains an isolated test oracle, not a new
 handwritten production backend.
+
+Current evidence: `tests/objc-subclasses.test.ts` runs a native base fixture under
+strict Clang and UBSan. Two hundred constructions, base-reference virtual calls,
+selector aliases, superclass dispatch, post-initialization native properties,
+and scope cleanup leave zero live fixture objects. A real `NSWindow` subclass
+passes compile-only verification without launching a GUI. Rejection tests cover
+construction, ABI, lifecycle, effects, and representation boundaries. Editor
+tests cover contextual keyword tokens, native identity/override hover, and
+superclass/inherited member completion. No ASan is required.
+
+Next: native frontend representation and lowering parity; then deliberate and
+test owned state, initialization/teardown callbacks, and reentrancy before Zapp's
+window transition state moves into a subclass.
 
 ## References
 

@@ -16,6 +16,10 @@ production or compatibility-sensitive use.
 - Native C-family code generation through Clang
 - Header-first C and Objective-C interop, substantial `.zd` contracts, and
   selected C++ values, methods, namespaces, RAII, and move-only resources
+- An experimental Stage 0 native subclass tier: field-free main-isolated
+  Objective-C `extends`, checked `override`/selector signatures, designated
+  superclass construction, real `super` dispatch, and native ARC identity.
+  Stateful subclasses, async composition, and self-hosted frontend parity remain
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler and owned `objc.adapt<P>` carrier with direct `id<P>` ABI,

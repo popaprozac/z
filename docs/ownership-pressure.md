@@ -6712,6 +6712,23 @@ readonly Array return is covered by the independent-copy fixture; richer alias
 indexing evidence remains queued rather than being hidden by an application
 workaround.
 
+## Native subclass pressure from Zapp window resizing (2026-09-09)
+
+An isolated resize probe established that stepping window geometry updates the
+WebView viewport during the animation, but naive delegate-only interception lost
+the restore frame when zoom was interrupted. The correct native seam requires
+subclass dispatch, not more handwritten production Objective-C or an adapter cast
+to `NSWindow`.
+
+The first Stage 0 slice now proves one field-free native ARC identity, designated
+initialization, real override/super dispatch, base-reference conversion, and
+repeated exact destruction. The user approved `extends`, `override`, native
+selector `as`, and a first `super.init...(...)` in the existing constructor shape.
+This does not justify inheriting ordinary Z classes or adding fields before
+initialization/teardown callback safety is understood. Native frontend parity,
+owned state, native reentrancy, nullable initialization, and suspension remain
+explicit work. Details and evidence: [native subclass design](objc-subclass-design.md).
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -317,6 +317,7 @@ export function transformProgramTypeNames(
     ...declaration,
     typeParameterConstraints: constraints(declaration.typeParameterConstraints),
     implements: declaration.implements.map(type),
+    ...(declaration.nativeBase ? { nativeBase: type(declaration.nativeBase) } : {}),
     fields: declaration.fields.map((field) => ({
       ...field,
       type: type(field.type),

@@ -15,6 +15,7 @@ import type {
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DiagnosticError, type DiagnosticLabel } from "./diagnostics.ts";
+import { isSuperCall, nativeSubclassClassName, objcSubclassError, validateObjCSubclassShape, type ObjCSubclassPlan } from "./objc-subclasses.ts";
 import {
   compareTargetVersions,
   displayTargetPlatform,
@@ -134,6 +135,8 @@ export type ObjCCallInfo = {
   readonly selector: string;
   readonly instance: boolean;
   readonly className: string;
+  readonly superDispatch?: boolean;
+  readonly initializesSubclass?: boolean;
   readonly bridge: "dataCopy" | "dataBorrow" | null;
   readonly async: {
     readonly callbackParameter: number;
@@ -493,6 +496,7 @@ export type SemanticInfo = {
   readonly foreignInterfaces: ReadonlyMap<string, ForeignObjCInterface>;
   readonly foreignProtocols: ReadonlyMap<string, ForeignObjCProtocol>;
   readonly objcProtocolConformances: ReadonlyMap<string, ObjCProtocolConformance>;
+  readonly objcSubclasses: ReadonlyMap<string, ObjCSubclassPlan>;
   readonly objcBindingCalls: ReadonlyMap<number, ObjCBindingPlan>;
   readonly objcRegistrationCalls: ReadonlyMap<number, ObjCRegistrationPlan>;
   readonly objcAdapterCalls: ReadonlyMap<number, ObjCAdapterPlan>;
@@ -675,6 +679,7 @@ type AnalysisState = {
   readonly foreignInterfaces: ReadonlyMap<string, ForeignObjCInterface>;
   readonly foreignProtocols: ReadonlyMap<string, ForeignObjCProtocol>;
   readonly objcProtocolConformances: Map<string, ObjCProtocolConformance>;
+  readonly objcSubclasses: Map<string, ObjCSubclassPlan>;
   readonly objcBindingCalls: Map<number, ObjCBindingPlan>;
   readonly objcRegistrationCalls: Map<number, ObjCRegistrationPlan>;
   readonly objcAdapterCalls: Map<number, ObjCAdapterPlan>;
@@ -1324,6 +1329,7 @@ export function analyze(
     foreignInterfaces,
     foreignProtocols,
     objcProtocolConformances: new Map(),
+    objcSubclasses: new Map(),
     objcBindingCalls: new Map(),
     objcRegistrationCalls: new Map(),
     objcAdapterCalls: new Map(),
@@ -1834,6 +1840,7 @@ export function analyze(
   // executor-affine field. Collect that evidence before validating constants;
   // declaration-specific affinity diagnostics still run in the normal pass.
   collectAggregateExecutorAffinities(program, structs, enums, state);
+  registerObjCSubclasses(program, globals, fileName, state);
 
   for (const declaration of program.constants) {
     if (!moduleConstantInitializerSupported(declaration.initializer)) {
@@ -2041,7 +2048,7 @@ export function analyze(
     analyzeTraitDeclaration(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName, state);
   }
   for (const declaration of program.structs) {
-    validateTraitConformance(declaration, traits, foreignProtocols, fileName, state);
+    if (!declaration.nativeBase) validateTraitConformance(declaration, traits, foreignProtocols, fileName, state);
   }
   for (const declaration of program.enums) {
     analyzeEnumDeclaration(declaration, structs, enums, foreignNamedTypes, fileName, state);
@@ -2972,6 +2979,85 @@ function analyzeTraitDeclaration(
     if (containsStoredViewType(method.returnType.name, structs, enums)) {
       throw new DiagnosticError(fileName, method.returnType.location, "trait requirements cannot expose receiver-tied views in the first view tier", { code: "Z0206" });
     }
+  }
+}
+
+function registerObjCSubclasses(program: Program, globals: Map<string, SymbolValue>, fileName: string, state: AnalysisState): void {
+  for (const declaration of program.structs) {
+    if (!declaration.nativeBase) {
+      const invalid = declaration.methods.find((method) => method.override);
+      if (invalid) objcSubclassError(fileName, invalid.location, "`override` requires an imported Objective-C superclass");
+      continue;
+    }
+    const initializer = validateObjCSubclassShape(declaration, fileName);
+    for (const parameter of declaration.constructor!.parameters) {
+      const native = state.foreignNamedTypes.get(parameter.type.name);
+      const plainRecord = native?.kind === "record" && !native.resource && !native.viewOnly;
+      if (parameter.mode !== "value" || (!isNumericType(canonicalType(parameter.type.name, state.foreignNamedTypes)) && parameter.type.name !== "boolean" && !plainRecord && native?.kind !== "enum")) {
+        objcSubclassError(fileName, parameter.location, "native subclass constructor parameters must be scalar or plain native value parameters in the first tier");
+      }
+    }
+    validateExecutorAffinity(declaration.executorAffinity, declaration.location, globals, fileName);
+    const base = state.foreignInterfaces.get(declaration.nativeBase.name);
+    if (!base || state.objcSubclasses.has(base.typeName) || program.structs.some((candidate) => candidate.name === base.typeName)) {
+      objcSubclassError(fileName, declaration.nativeBase.location, "`extends` must name an imported Objective-C class; ordinary Z inheritance is not supported");
+    }
+    if (base.subclassingRestricted) objcSubclassError(fileName, declaration.nativeBase.location, `Objective-C class ${base.className} forbids subclassing`);
+    if (!foreignInterfaceRequiresMain(base, state)) objcSubclassError(fileName, declaration.nativeBase.location, "the first native subclass tier requires a superclass with a main-executor contract");
+    checkForeignAvailability(base.metadata, base.className, declaration.nativeBase.location, fileName, state);
+    const methods = new Map<number, ForeignObjCMethod>();
+    const selectors = new Set<string>();
+    const inherited: ForeignObjCMethod[] = [];
+    const seen = new Set<string>();
+    let current: ForeignObjCInterface | undefined = base;
+    while (current && !seen.has(current.typeName)) {
+      seen.add(current.typeName);
+      for (const method of current.methods) {
+        if (!inherited.some((candidate) => candidate.instance === method.instance && candidate.selector === method.selector)) inherited.push(method);
+      }
+      const namespace = current.typeName.slice(0, current.typeName.lastIndexOf("."));
+      current = current.superName ? state.foreignInterfaces.get(`${namespace}.${current.superName}`) : undefined;
+    }
+    for (const method of declaration.methods) {
+      const selector = method.nativeSelector!;
+      if (selectors.has(selector)) objcSubclassError(fileName, method.location, `duplicate native override selector ${JSON.stringify(selector)}`);
+      selectors.add(selector);
+      const native = inherited.find((candidate) => candidate.instance && candidate.selector === selector);
+      if (!native) objcSubclassError(fileName, method.location, `no inherited Objective-C instance selector ${JSON.stringify(selector)}`);
+      if (native.direct) objcSubclassError(fileName, method.location, "a direct Objective-C method cannot be overridden");
+      if (native.consumesSelf || native.consumedParameters?.length) objcSubclassError(fileName, method.location, "consuming native override ownership requires a later tier");
+      if (native.variadic || native.parameters.some((parameter) => parameter.type.kind === "block")) {
+        objcSubclassError(fileName, method.location, "variadic and block-receiving native overrides are not supported in the first tier");
+      }
+      if (native.returnType.kind === "object" || native.returnType.kind === "block") objcSubclassError(fileName, method.location, "object- or block-returning native overrides require the later return-ownership tier");
+      if (native.requiresSuper) objcSubclassError(fileName, method.location, "this override requires superclass-call path validation, which is not implemented in the first tier");
+      checkForeignAvailability(native.metadata, selector, method.location, fileName, state);
+      validateObjCProtocolMethodSignature(declaration, method, { ...native, required: true }, fileName, state);
+      methods.set(method.location.offset, native);
+    }
+    const className = nativeSubclassClassName(declaration.name);
+    state.objcSubclasses.set(declaration.name, { declaration, base, className, initializer, methods });
+    // A native subclass is an actual Objective-C reference, not a Z ARC record.
+    (state.foreignNamedTypes as Map<string, ForeignNamedType>).set(declaration.name, {
+      kind: "object", exportName: declaration.name, qualifiedName: className, namespacePath: [],
+      typeName: declaration.name, cName: `${className} *`, className, metadata: base.metadata,
+    });
+    (state.foreignObjectTypes as Map<string, ForeignObjectType>).set(declaration.name, {
+      kind: "object", typeName: declaration.name, cName: `${className} *`, className, nullable: false,
+    });
+    // Preserve inherited lookup and source names while exposing override selectors.
+    (state.foreignInterfaces as Map<string, ForeignObjCInterface>).set(declaration.name, {
+      ...base, typeName: declaration.name, className, exportName: declaration.name,
+      superName: base.className,
+      methods: [
+        ...declaration.methods.flatMap((method) => {
+          const native = methods.get(method.location.offset)!;
+          return method.name === native.baseName ? [] : [{ ...native, baseName: method.name }];
+        }),
+        ...inherited,
+      ],
+      properties: base.properties,
+    });
   }
 }
 
@@ -9703,6 +9789,7 @@ function inferExpressionInner(
           code: "Z0220",
         });
       }
+      if (declaration.nativeBase) objcSubclassError(fileName, expression.location, "Weak for native subclasses requires the later native weak-reference tier");
       const affinity = state.aggregateExecutorAffinities.get(declaration.name) ?? null;
       requireMainExecutorContext(
         Boolean(affinity),
@@ -10677,6 +10764,39 @@ function inferExpressionInner(
       throw new DiagnosticError(fileName, expression.location, `struct ${JSON.stringify(displayAssignableType(declaration.name, state))} has no member ${JSON.stringify(expression.property)}`);
     }
     case "call": {
+      if (isSuperCall(expression) && !locals.has("super") && !globals.has("super")) {
+        const plan = state.activeReceiver ? state.objcSubclasses.get(state.activeReceiver) : null;
+        if (!plan || expression.callee.kind !== "member") objcSubclassError(fileName, expression.location, "`super` calls require a native subclass method or constructor");
+        if (/^(?:dealloc|retain|release|autorelease|retainCount)$/.test(expression.callee.property)) objcSubclassError(fileName, expression.location, "native ARC lifecycle methods cannot be called through `super`");
+        const selected = findObjCMethod({ declaration: plan.base, instance: true }, expression.callee.property,
+          expression.arguments.length, expression.argumentLabels, state, fileName, expression.location);
+        const method = selected.method;
+        if (/^(?:dealloc|retain|release|autorelease|retainCount)$/.test(method.selector)) objcSubclassError(fileName, expression.location, "native ARC lifecycle methods cannot be called through `super`");
+        const initializes = expression.location.offset === plan.initializer.location.offset;
+        const initializerFamily = /^init(?:$|[^a-z])/.test(method.selector);
+        if (initializes) {
+          if (!initializerFamily || !method.designatedInitializer || !method.returnsInstanceType) {
+            objcSubclassError(fileName, expression.location, "superclass construction requires an imported designated `init` method returning instancetype");
+          }
+          if (method.returnType.kind !== "object" || method.returnType.nullable) {
+            objcSubclassError(fileName, expression.location, "nullable superclass initializers require the later fallible-construction tier");
+          }
+        } else if (initializerFamily) {
+          objcSubclassError(fileName, expression.location, "superclass initialization must occur exactly once, as the first constructor statement");
+        }
+        if ((!initializes && method.consumesSelf) || method.consumedParameters?.length) objcSubclassError(fileName, expression.location, "consuming superclass calls require a later ownership tier");
+        if (selected.projected || method.variadic) objcSubclassError(fileName, expression.location, "superclass calls must use a synchronous, non-variadic native ABI");
+        checkForeignAvailability(method.metadata, method.selector, expression.location, fileName, state);
+        checkObjCArguments(method, expression.arguments, locals, globals, structs, enums, fileName, state);
+        state.objcCalls.set(expression.location.offset, {
+          selector: method.selector, instance: true, className: plan.base.className,
+          bridge: null, async: null, superDispatch: true, initializesSubclass: initializes,
+        });
+        const result = initializes ? "void" : foreignValueType(method.returnType);
+        if (result === "unknown") objcSubclassError(fileName, expression.location, "unsupported superclass return ABI");
+        state.foreignCallTypes.set(expression.location.offset, String(result));
+        return result;
+      }
       if (expression.callee.kind === "member" && expression.callee.optional) {
         return inferOptionalChain(
           expression,
@@ -13227,6 +13347,10 @@ function inferExpressionInner(
             expression.callee.location,
           );
           const method = selection.method;
+          if (state.objcSubclasses.has(objcReceiverType.declaration.typeName)
+            && (/^init(?:$|[^a-z])/.test(method.selector) || /^(?:alloc|allocWithZone:|new|dealloc|retain|release|autorelease|retainCount)$/.test(method.selector))) {
+            objcSubclassError(fileName, expression.location, "native subclass lifecycle operations must use `new` and the checked constructor, not an inherited lifecycle method");
+          }
           requireMainExecutorContext(
             foreignInterfaceRequiresMain(objcReceiverType.declaration, state)
               || method.metadata.executorAffinity === "main",
@@ -17902,7 +18026,8 @@ function findObjCMethod(
     }));
     if (matches.length > 0 || !declaration.superName) break;
     const moduleName = declaration.typeName.slice(0, declaration.typeName.lastIndexOf("."));
-    declaration = state.foreignInterfaces.get(`${moduleName}.${declaration.superName}`);
+    declaration = state.objcSubclasses.get(declaration.typeName)?.base
+      ?? state.foreignInterfaces.get(`${moduleName}.${declaration.superName}`);
   }
   if (matches.length === 0) {
     const kind = receiver.instance ? "instance" : "class";
@@ -17943,7 +18068,8 @@ function findObjCProperty(
     if (property) return property;
     if (!declaration.superName) break;
     const moduleName = declaration.typeName.slice(0, declaration.typeName.lastIndexOf("."));
-    declaration = state.foreignInterfaces.get(`${moduleName}.${declaration.superName}`);
+    declaration = state.objcSubclasses.get(declaration.typeName)?.base
+      ?? state.foreignInterfaces.get(`${moduleName}.${declaration.superName}`);
   }
   return null;
 }
@@ -18434,6 +18560,8 @@ function isObjCSubclass(actual: ForeignObjectType, expected: ForeignObjectType, 
     const declaration = state.foreignInterfaces.get(name);
     if (!declaration) return false;
     if (declaration.className === expected.className) return true;
+    const nativeSubclass = state.objcSubclasses.get(name);
+    if (nativeSubclass) { name = nativeSubclass.base.typeName; continue; }
     if (!declaration.superName) return false;
     const moduleName = declaration.typeName.slice(0, declaration.typeName.lastIndexOf("."));
     name = `${moduleName}.${declaration.superName}`;

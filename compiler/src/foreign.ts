@@ -1760,6 +1760,14 @@ function collectObjCInterfaces(
         baseName: method.name!.split(":")[0],
         instance: method.instance === true,
         returnsInstanceType: /\binstancetype\b/.test(method.returnType!.qualType ?? ""),
+        ...((method.inner ?? []).some((attribute) => attribute.kind === "ObjCDesignatedInitializerAttr") ? { designatedInitializer: true } : {}),
+        ...((method.inner ?? []).some((attribute) => attribute.kind === "ObjCRequiresSuperAttr") ? { requiresSuper: true } : {}),
+        ...((method.inner ?? []).some((attribute) => attribute.kind === "ObjCDirectAttr") ? { direct: true } : {}),
+        ...((method.inner ?? []).some((attribute) => attribute.kind === "NSConsumesSelfAttr") ? { consumesSelf: true } : {}),
+        ...((method.inner ?? []).some((parameter) => parameter.kind === "ParmVarDecl" && parameter.inner?.some((attribute) => attribute.kind === "NSConsumedAttr"))
+          ? { consumedParameters: (method.inner ?? []).filter((parameter) => parameter.kind === "ParmVarDecl").flatMap((parameter, index) => parameter.inner?.some((attribute) => attribute.kind === "NSConsumedAttr") ? [index] : []) }
+          : {}),
+        ...(method.variadic ? { variadic: true } : {}),
         returnType: mapObjCType(method.returnType!, className, "return", namedTypes, typeNames, objectType),
         parameters: (method.inner ?? [])
           .filter((child) => child.kind === "ParmVarDecl" && child.type?.qualType)
@@ -1803,6 +1811,7 @@ function collectObjCInterfaces(
       typeName: typeNames.get(className)!,
       className,
       superName: declaration.super?.name ?? null,
+      ...((declaration.inner ?? []).some((attribute) => attribute.kind === "ObjCSubclassingRestrictedAttr") ? { subclassingRestricted: true } : {}),
       methods,
       properties,
       metadata: foreignDeclarationMetadata(declaration),

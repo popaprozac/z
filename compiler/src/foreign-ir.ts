@@ -207,6 +207,12 @@ export type ForeignObjCMethod = {
   readonly baseName: string;
   readonly instance: boolean;
   readonly returnsInstanceType: boolean;
+  readonly designatedInitializer?: boolean;
+  readonly requiresSuper?: boolean;
+  readonly direct?: boolean;
+  readonly consumesSelf?: boolean;
+  readonly consumedParameters?: readonly number[];
+  readonly variadic?: boolean;
   readonly returnType: ForeignType;
   readonly parameters: readonly ForeignParameter[];
   readonly metadata: ForeignDeclarationMetadata;
@@ -254,6 +260,7 @@ export type ForeignObjCInterface = {
   readonly typeName: string;
   readonly className: string;
   readonly superName: string | null;
+  readonly subclassingRestricted?: boolean;
   readonly methods: readonly ForeignObjCMethod[];
   readonly properties: readonly ForeignObjCProperty[];
   readonly metadata: ForeignDeclarationMetadata;

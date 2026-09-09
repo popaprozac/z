@@ -3436,6 +3436,9 @@ function parseAggregateDeclaration(
   const start = try expect(tokens, inout current, keyword, description);
   const name = try expect(tokens, inout current, TokenKind.identifier, `a name after ${start.text}`);
   const typeParameters = try parseTypeParameters(tokens, inout current, inout pendingGreater);
+  if (tokens[current].kind == TokenKind.identifier && tokens[current].text == "extends") {
+    throw fail(tokens[current], "native Objective-C subclasses are not supported by the self-hosted frontend yet; use the Stage 0 compiler for the first subclass tier");
+  }
   let executorAffinity = "";
   if (takeIf(tokens, inout current, TokenKind.onKeyword)) {
     const executor = try expect(tokens, inout current, TokenKind.identifier, "an executor name after `on`");

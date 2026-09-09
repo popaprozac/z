@@ -59,6 +59,16 @@ import { selfHostExecutableDifferentialCorpus } from "./support/self-host-fixtur
 import { createHash } from "node:crypto";
 import { exerciseGeneratedAdapterLinking } from "./support/generated-adapter-linking.ts";
 
+hostToolchainTest("fails closed on the Stage 0 native subclass tier until native frontend parity lands", () => {
+  if (process.platform !== "darwin") return;
+  const fixture = resolve(projectRoot, "tests/fixtures/objc-subclass.zs");
+  const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture], {
+    encoding: "utf8", timeout: 120_000,
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /native Objective-C subclasses are not supported by the self-hosted frontend yet/);
+}, 150_000);
+
 hostToolchainTest("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
   const application = resolve(projectRoot, "examples/applications/source-inspector/main.zs");
   const lexer = resolve(projectRoot, "compiler/frontend/lexer.zs");

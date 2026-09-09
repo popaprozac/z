@@ -33,6 +33,7 @@ export function validateRawNativeGeneratedSymbolAccess(
           || name.startsWith("__z_")
           || name.startsWith("z_")
           || name.startsWith("ZObjC")
+          || name.startsWith("ZNative_")
         )
       )),
   );

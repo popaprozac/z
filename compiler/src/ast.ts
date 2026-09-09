@@ -63,6 +63,8 @@ export type ImportBinding = {
 export type StructDeclaration = {
   readonly kind: "struct" | "class";
   readonly name: string;
+  /** Explicit imported Objective-C superclass; never ordinary Z inheritance. */
+  readonly nativeBase?: TypeReference;
   /** Exact public C type identity and layout contract. */
   readonly nativeLayout?: {
     readonly language: "c";
@@ -158,6 +160,8 @@ export type FunctionDeclaration = {
   };
   readonly async?: boolean;
   readonly static?: boolean;
+  /** Explicit native superclass override, checked against its selector. */
+  readonly override?: boolean;
   readonly visibility?: "public" | "internal" | "private";
   readonly typeParameters?: string[];
   readonly typeParameterConstraints?: TypeParameterConstraint[];

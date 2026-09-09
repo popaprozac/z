@@ -607,6 +607,15 @@
     },
     "keywords": {
       "patterns": [{
+        "name": "storage.modifier.override.z",
+        "match": "\\boverride(?=\\s+(?:function|async|static)\\b)"
+      }, {
+        "name": "keyword.control.inheritance.z",
+        "match": "\\bextends(?=\\s+[A-Za-z_][A-Za-z0-9_]*(?:\\.|\\s|$))"
+      }, {
+        "name": "variable.language.super.z",
+        "match": "\\bsuper(?=\\s*\\.)"
+      }, {
         "name": "meta.embedded.native-language.z",
         "match": "\\b(raw)\\s+(c|cpp|objc)\\b",
         "captures": {

@@ -11,6 +11,7 @@ import type {
   MatchStatement,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
+import { objcSubclassError } from "./objc-subclasses.ts";
 import { parseTaskType } from "./async-types.ts";
 import { dynamicArrayTypeName, parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { generatorStepTypeName, parseAsyncGeneratorType } from "./generator-types.ts";
@@ -328,6 +329,8 @@ export function generateAsyncC(
   fileName: string,
   semanticInfo: SemanticInfo,
 ): AsyncCGeneration {
+  const nativeSubclass = program.structs.find((declaration) => declaration.nativeBase);
+  if (nativeSubclass) objcSubclassError(fileName, nativeSubclass.location, "native Objective-C subclasses cannot compose with async lowering yet; use a synchronous Stage 0 program for this first tier");
   const sourceTargets: AsyncTarget[] = [
     ...program.functions.filter((declaration) => declaration.async).map((declaration) => ({
       declaration,

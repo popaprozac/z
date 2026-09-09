@@ -781,7 +781,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       });
       continue;
     }
-    if (token.text === "this") {
+    if (token.text === "this" || (token.text === "super" && next?.kind === "dot" && sourceAggregateAtOffset(context, token.location.offset)?.nativeBase)) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("keyword"),
         modifiers: 0,
@@ -797,11 +797,16 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       && (next.text === "c" || next.text === "cpp" || next.text === "objc");
     const contextualNativeLanguage = (token.text === "c" || token.text === "cpp" || token.text === "objc")
       && (previous?.text === "raw" || previous?.kind === "export");
+    const contextualNativeSubclass = !keywordMember && (
+      (token.text === "extends" && next?.kind === "identifier" && previous?.kind === "identifier")
+      || (token.text === "override" && (next?.kind === "function" || next?.kind === "async" || next?.kind === "static"))
+    );
     if (
       contextualTypeDeclaration
       || contextualTestDeclaration
       || contextualRawBoundary
       || contextualNativeLanguage
+      || contextualNativeSubclass
     ) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("keyword"),
@@ -1142,6 +1147,17 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   const context = safeAnalysis(source, fileName)
     ?? lastSuccessfulLanguageAnalysis(source, fileName);
   if (!context) return syntacticHover(source, fileName, word.text, word.start, word.end);
+  const nativeOwner = sourceAggregateAtOffset(context, word.start);
+  if (nativeOwner?.nativeBase && ["extends", "override", "super"].includes(word.text)) {
+    const details = {
+      extends: `extends ${nativeOwner.nativeBase.name}  // real Objective-C subclass identity, managed by native ARC`,
+      override: "override function  // compiler-checked inherited Objective-C selector and ABI; native entry requires thread.main",
+      super: `super: ${nativeOwner.nativeBase.name}  // calls the superclass implementation on this same native object`,
+    };
+    return markdownHover(details[word.text as keyof typeof details], source, word.start, word.end);
+  }
+  const nativeClass = context.sourceProgram.structs.find((declaration) => declaration.nativeBase && declaration.name === word.text);
+  if (nativeClass?.nativeBase) return markdownHover(`class ${nativeClass.name} extends ${nativeClass.nativeBase.name} on thread.main\n// native Objective-C ARC identity; first tier has no Z-stored fields`, source, word.start, word.end);
   const immediateMemberOwner = source.slice(0, word.start)
     .match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?)\.$/)?.[1];
   const immediateChannel = immediateMemberOwner
@@ -3236,7 +3252,7 @@ function symbolCompletions(
     items.push({
       label: declaration.name,
       kind: declaration.kind === "class" ? completionKinds.class : completionKinds.struct,
-      detail: `${declaration.kind} ${declaration.name}${executor}${
+      detail: `${declaration.kind} ${declaration.name}${declaration.nativeBase ? ` extends ${displayType(declaration.nativeBase.name, context.typeDisplayNames)}` : ""}${executor}${
         mixedClass && affinity ? mixedClassLifecycleHover(affinity) : ""
       }`,
     });
@@ -5626,6 +5642,9 @@ function memberCompletions(
   }
   const fullContext = safeAnalysis(source, fileName);
   const directReceiver = fullContext ? resolveReceiver(fullContext, receiverText, receiverOffset) : null;
+  if (directReceiver?.kind === "objc" && fullContext) {
+    return filterCompletions(objcCompletions(directReceiver.declaration, directReceiver.instance, fullContext), prefix, 1000);
+  }
   if (directReceiver?.kind === "arena") {
     return filterCompletions([
       {
@@ -7228,6 +7247,11 @@ function channelMemberDetail(
 
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
   const compactText = text.replace(/\s+/g, "");
+  if (compactText === "super") {
+    const owner = sourceAggregateAtOffset(context, offset);
+    const base = owner?.nativeBase ? resolveReceiver(context, owner.nativeBase.name, offset) : null;
+    return base?.kind === "objc" ? { ...base, instance: true } : null;
+  }
   const nativeNamespace = resolveForeignModuleNamespace(context, compactText);
   if (nativeNamespace) return { kind: "module", ...nativeNamespace };
   const [moduleName, className, extra] = compactText.split(".");
@@ -8227,7 +8251,8 @@ function collectObjCMethods(declaration: ForeignObjCInterface, instance: boolean
     methods.push(...current.methods.filter((method) => method.instance === instance));
     if (!current.superName) break;
     const moduleName = current.typeName.slice(0, current.typeName.lastIndexOf("."));
-    current = context.semanticInfo.foreignInterfaces.get(`${moduleName}.${current.superName}`);
+    current = context.semanticInfo.objcSubclasses.get(current.typeName)?.base
+      ?? context.semanticInfo.foreignInterfaces.get(`${moduleName}.${current.superName}`);
   }
   return methods;
 }
@@ -8238,7 +8263,8 @@ function foreignObjCRequiresMain(declaration: ForeignObjCInterface, context: Ana
     if (current.metadata.executorAffinity === "main") return true;
     if (!current.superName) break;
     const moduleName = current.typeName.slice(0, current.typeName.lastIndexOf("."));
-    current = context.semanticInfo.foreignInterfaces.get(`${moduleName}.${current.superName}`);
+    current = context.semanticInfo.objcSubclasses.get(current.typeName)?.base
+      ?? context.semanticInfo.foreignInterfaces.get(`${moduleName}.${current.superName}`);
   }
   return false;
 }
@@ -8276,7 +8302,8 @@ function collectObjCProperties(declaration: ForeignObjCInterface, instance: bool
     properties.push(...current.properties.filter((property) => property.classProperty === !instance));
     if (!current.superName) break;
     const moduleName = current.typeName.slice(0, current.typeName.lastIndexOf("."));
-    current = context.semanticInfo.foreignInterfaces.get(`${moduleName}.${current.superName}`);
+    current = context.semanticInfo.objcSubclasses.get(current.typeName)?.base
+      ?? context.semanticInfo.foreignInterfaces.get(`${moduleName}.${current.superName}`);
   }
   return properties;
 }
@@ -9016,7 +9043,9 @@ function methodDetail(
     ? ` throws ${displaySubstitutedType(method.errorType.name, substitutions, typeDisplayNames)}`
     : "";
   const executor = method.executorAffinity ? " on thread.main" : "";
-  return `${visibility}${staticPrefix}${asyncPrefix} function ${method.name}${generic}(${parameters.join(", ")}): ${result}${throws}${executor}`;
+  const override = method.override ? " override" : "";
+  const selector = method.override && method.nativeSelector ? ` as ${JSON.stringify(method.nativeSelector)}` : "";
+  return `${visibility}${override}${staticPrefix}${asyncPrefix} function ${method.name}${generic}(${parameters.join(", ")}): ${result}${throws}${executor}${selector}`;
 }
 
 function executorBoundClassTransportHover(

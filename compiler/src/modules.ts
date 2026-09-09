@@ -735,6 +735,7 @@ function transformStruct(declaration: StructDeclaration, node: ModuleNode, scope
       traits: constraint.traits.map((trait) => renameTypeReference(trait, scope, typeParameters)),
     })),
     implements: declaration.implements.map((item) => renameTypeReference(item, scope, typeParameters)),
+    ...(declaration.nativeBase ? { nativeBase: renameTypeReference(declaration.nativeBase, scope, typeParameters) } : {}),
     fields: declaration.fields.map((field) => ({
       ...field,
       type: renameTypeReference(field.type, scope, typeParameters),

@@ -96,6 +96,44 @@ The placement is useful even when the function may be called from different
 executors: the call site proves where the native operation runs rather than
 depending on a convention in documentation.
 
+## Native subclasses (experimental Stage 0 tier)
+
+A protocol adapter does not become an `NSWindow`. When native virtual dispatch
+is required, the first subclass tier creates a real native ARC object:
+
+```z
+class SmoothWindow extends AppKit.NSWindow on thread.main {
+  constructor(frame: AppKit.NSRect) {
+    super.initWithContentRect(
+      frame,
+      styleMask: AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskResizable,
+      backing: AppKit.NSBackingStoreBuffered,
+      defer: false
+    );
+    this.releasedWhenClosed = false;
+  }
+
+  override function animationResizeTime(frame: AppKit.NSRect): f64
+    as "animationResizeTime:" {
+    return super.animationResizeTime(frame);
+  }
+}
+```
+
+Import AppKit and `thread` as above, then construct with `new SmoothWindow(frame)`.
+The override shown preserves the superclass behavior; it does not implement a
+resize algorithm. The compiler checks the inherited selector and ABI. `super`
+invokes the superclass implementation on the same object. There is no separate
+Z ARC allocation or protocol-adapter wrapper.
+
+The superclass designated initializer must be first and non-nullable. Generated
+code checks the returned identity and the main thread, without scheduling a hop.
+This tier is field-free and synchronous: Z-stored fields, `deinit`, `Weak`,
+fallible constructors, object-returning overrides, and async composition remain
+future work. Ordinary Z-to-Z inheritance is not supported. Use the TypeScript
+Stage 0 compiler for this tier; the self-hosted frontend rejects it explicitly
+pending parity.
+
 ## Own target/action connections
 
 AppKit controls commonly expose a weak target plus selector. Binding only the

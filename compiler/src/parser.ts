@@ -1217,6 +1217,9 @@ export function parse(tokens: Token[], fileName: string): Program {
     const start = declarationToken.location;
     const name = expect("identifier", `a ${kind} name`).text;
     const generic = parseTypeParameters();
+    const nativeBase = at("identifier") && peek().text === "extends"
+      ? (take(), parseType())
+      : undefined;
     const executorAffinity = parseExecutorAffinity();
     const implemented: TypeReference[] = [];
     if (match("implements")) {
@@ -1269,14 +1272,21 @@ export function parse(tokens: Token[], fileName: string): Program {
         continue;
       }
       const fieldReadonly = Boolean(match("readonly"));
+      const isOverride = at("identifier") && peek().text === "override"
+        && tokens[current + 1]?.kind !== "colon"
+        ? (take(), true)
+        : false;
       const isStatic = match("static");
       const isAsync = match("async");
       if (at("function")) {
         if (fieldReadonly) {
           throw new DiagnosticError(fileName, previous().location, "`readonly` applies to stored fields, not methods");
         }
-        methods.push({ ...parseFunction(false, isAsync), static: isStatic, visibility });
+        methods.push({ ...parseFunction(false, isAsync), static: isStatic, visibility, ...(isOverride ? { override: true } : {}) });
         continue;
+      }
+      if (isOverride) {
+        throw new DiagnosticError(fileName, peek().location, "`override` must precede a function declaration");
       }
       if (isAsync) {
         throw new DiagnosticError(fileName, previous().location, "`async` must precede a function declaration");
@@ -1328,6 +1338,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     return {
       kind,
       name,
+      ...(nativeBase ? { nativeBase } : {}),
       nativeLayout: nativeLayoutToken
         ? {
             language: "c" as const,
