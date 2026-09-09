@@ -303,6 +303,13 @@ loop exits; captured environments retain their independent lifetime. Both
 emitter paths have exact-cleanup and allocation-balance regressions. Non-void
 and asynchronous native block callables remain separate staged lowering work.
 
+Ordinary object destructuring preserves Stage 0's conservative custom-cleanup
+boundary in native checking too: a root `deinit` or custom cleanup nested in
+inline fields is rejected before transfer, including through aliases and
+concrete generic payloads. Ordinary owned String/Array/Option fields and ARC
+aliases retain their supported behavior; this does not add partial custom-
+destructor relocation. See the [ownership evidence](ownership-pressure.md#custom-cleanup-destructuring-rejection-parity-2026-09-08).
+
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Async syntax and typing | Implemented | Functions/methods, `await`, `task`, task scopes, typed errors, direct-call and block `await on thread.main` / `task on thread.main` placement, and executor-local `await scheduler.yield()` |

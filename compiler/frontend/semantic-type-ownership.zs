@@ -664,6 +664,107 @@ export function typeHasCleanup(
   return false;
 }
 
+// Partial extraction cannot zero transferred fields and then run an opaque
+// destructor on their former container. Ordinary owned storage (String, etc.)
+// is different: its compiler-generated cleanup understands moved-out fields.
+export function typeContainsOpaqueCleanupStorage(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  if (stringStartsWith(typeName, "view ") || stringStartsWith(typeName, "Slice<")) {
+    return false;
+  }
+  if (stringStartsWith(typeName, "readonly ")) {
+    const target = typeName.copyBytes(9, typeName.byteLength);
+    return typeContainsOpaqueCleanupStorage(modules, moduleIndex, target, visiting);
+  }
+  const nullable = nullableTargetType(typeName);
+  if (nullable.byteLength > 0) {
+    return typeContainsOpaqueCleanupStorage(modules, moduleIndex, nullable, visiting);
+  }
+  const actual = transparentTypeName(modules, moduleIndex, typeName);
+  if (actual != typeName) {
+    return typeContainsOpaqueCleanupStorage(modules, moduleIndex, actual, visiting);
+  }
+  match (fixedArrayShape(actual)) {
+    some(array) => return typeContainsOpaqueCleanupStorage(
+      modules, moduleIndex, array.elementType, visiting
+    );
+    none => {}
+  }
+  let arguments = Array<String>();
+  match (genericTypeShape(actual)) {
+    some(generic) => {
+      if (
+        generic.base == "Array"
+        || generic.base == "Map"
+        || generic.base == "Set"
+        || generic.base == "Option"
+        || generic.base == "Result"
+      ) {
+        for (const argument of generic.arguments) {
+          if (typeContainsOpaqueCleanupStorage(
+            modules, moduleIndex, argument, visiting
+          )) return true;
+        }
+        return false;
+      }
+      for (const argument of generic.arguments) {
+        arguments.push(copy argument);
+      }
+    }
+    none => {}
+  }
+  match (inferredTypeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => {
+      const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+      // ARC identity is not inline storage. Transferring an alias neither
+      // partially moves the referenced object nor invokes its deinitializer.
+      if (symbol.kind == ModuleSymbolKind.classSymbol) return false;
+      const identity = semanticTypeIdentity(modules, moduleIndex, actual);
+      if (containsString(visiting, identity)) return false;
+      let nextVisiting = copyStrings(visiting);
+      nextVisiting.push(identity);
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          if (signature.foreignLayout == "reference") return false;
+          if (signature.customDeinit || signature.foreignResourceRelease.byteLength > 0) return true;
+          let substitutions = Array<NativeValueBinding>();
+          let parameter: usize = 0;
+          while (
+            parameter < signature.typeParameters.length
+            && parameter < arguments.length
+          ) {
+            const argument = rebaseTypeName(
+              modules, moduleIndex, location.moduleIndex, arguments[parameter]
+            );
+            addValueBinding(inout substitutions, signature.typeParameters[parameter], argument);
+            parameter = parameter + 1;
+          }
+          for (const field of signature.fields) {
+            const fieldType = substituteGenericType(field.typeName, substitutions);
+            if (typeContainsOpaqueCleanupStorage(
+              modules, location.moduleIndex, fieldType, nextVisiting
+            )) return true;
+          }
+          for (const variant of signature.variants) {
+            if (variant.payloadType.byteLength == 0) continue;
+            const payloadType = substituteGenericType(variant.payloadType, substitutions);
+            if (typeContainsOpaqueCleanupStorage(
+              modules, location.moduleIndex, payloadType, nextVisiting
+            )) return true;
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 export function typeMovesOnOwnedUse(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

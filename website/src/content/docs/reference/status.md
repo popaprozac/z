@@ -54,7 +54,10 @@ production or compatibility-sensitive use.
   can own local Strings, value aggregates, and consuming match payloads. Each
   invocation cleans up on return, failure, loop exit, or normal completion;
   captures remain owned by the separately retained closure environment. Exact
-  cleanup-order and allocation-balance tests cover both compiler paths
+  cleanup-order and allocation-balance tests cover both compiler paths.
+  Ordinary object destructuring rejects root or nested inline custom cleanup
+  in both semantic frontends, including aliased and generic payloads; supported
+  owned value fields and ARC aliases remain available
 - Stored synchronous callables and a Stage 0 stored-async task tier that
   preserve either `thread.main` isolation or arbitrary-thread `thread.any`
   sharing without scheduling implicitly. Native lowering now preserves the

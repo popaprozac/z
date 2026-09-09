@@ -13,8 +13,9 @@ import {
   aggregateFieldShape,
   hasKnownAggregate,
 } from "./semantic-member-lookups.zs";
-import { typeSymbolLocation } from "./semantic-type-identities.zs";
+import { transparentTypeName, typeSymbolLocation } from "./semantic-type-identities.zs";
 import {
+  typeContainsOpaqueCleanupStorage,
   typeContainsStoredView,
   typeHasCleanup,
 } from "./semantic-type-ownership.zs";
@@ -29,11 +30,49 @@ import {
   ModuleResolveErrorKind,
   ModuleSymbolKind,
   ResolvedModule,
+  codedModuleResolutionError,
   moduleResolutionError,
 } from "./semantic-model.zs";
 import { recordBindingResolution } from "./semantic-evidence.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import { ExpressionTree } from "./parser.zs";
+
+export function requireObjectDestructureCleanup(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in sourceType: String,
+  line: usize,
+  column: usize
+): void throws ModuleResolveError {
+  const actual = transparentTypeName(modules, moduleIndex, sourceType);
+  match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => {
+      const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+      if (symbol.kind == ModuleSymbolKind.structSymbol) {
+        match (in symbol.typeSignature) {
+          some(signature) => if (signature.customDeinit) {
+            throw codedModuleResolutionError(
+              ModuleResolveErrorKind.typeMismatch, "Z0220", module.path,
+              `cannot destructure ${sourceType} because it defines deinit`,
+              line, column, 1
+            );
+          }
+          none => {}
+        }
+      }
+    }
+    none => {}
+  }
+  const visiting = Array<String>();
+  if (typeContainsOpaqueCleanupStorage(modules, moduleIndex, actual, visiting)) {
+    throw codedModuleResolutionError(
+      ModuleResolveErrorKind.typeMismatch, "Z0220", module.path,
+      `cannot destructure ${sourceType} while it contains custom or foreign cleanup storage`,
+      line, column, 1
+    );
+  }
+}
 
 function copyIndices(in indices: Array<usize>): Array<usize> {
   let copied = Array<usize>();

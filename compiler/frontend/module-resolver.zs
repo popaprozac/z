@@ -158,6 +158,7 @@ import {
   addMatchArmValueBindings,
   isDefinitelyNonMatchable,
   matchError,
+  requireObjectDestructureCleanup,
   requireVisibleField,
 } from "./semantic-pattern-validation.zs";
 import {
@@ -11419,6 +11420,10 @@ function inferStatement(
           }
         }
         if (arena.nodes[index].arrayBindings.length == 0) {
+          try requireObjectDestructureCleanup(
+            module, modules, moduleIndex, sourceType,
+            arena.nodes[index].line, arena.nodes[index].column
+          );
           try consumeOwnedExpressionSyntax(
             module,
             modules,

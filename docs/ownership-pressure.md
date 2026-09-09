@@ -6566,9 +6566,44 @@ earlier broad run's fixed-point comparison crossed an in-flight compiler edit;
 the full suite was rerun with source changes frozen before recording this result.
 
 A probe also exposed an existing rejection-parity gap: Stage 0 rejects
-whole-object destructuring when fields contain custom cleanup, but native semantic checking currently accepts
-it. Preserve that conservative rule in a separate upstream parity regression;
-the positive destructuring test here uses supported String fields.
+whole-object destructuring when fields contain custom cleanup, but native
+semantic checking accepted it. The separate checkpoint below closes that gap;
+the positive closure test here uses supported String fields.
+
+## Custom-cleanup destructuring rejection parity (2026-09-08)
+
+The native resolver now rejects ordinary object binding patterns before
+consuming their source when the value defines `deinit`, or its inline storage
+contains custom cleanup. Selecting only a cleanup-free field does not bypass
+the rule: the source container still needs valid cleanup for its other fields.
+This is parity with Stage 0, not a new ownership restriction or syntax change.
+
+`native-destructure-cleanup.test.ts` covers direct/nested resources, transparent
+aliases, fixed and growable arrays, Map keys/values, Set elements, readonly
+collections, Option/Result and enum payloads, and concrete generic fields.
+Cross-module tests use distinct types
+with the same spelling to ensure the check follows nominal identity and rebases
+generic arguments into the declaration's module. The original captured callback
+case is a rejection regression too, with `Z0220` and the source location checked.
+
+The classifier follows stored fields, not every generic argument or referenced
+object. An unused `Phantom<Resource>` parameter is not stored Resource data;
+an ARC class alias does not partially move the referenced object's fields.
+The positive executable fixture therefore combines both with String, Array,
+Map, Set, and Option fields. Stage 0 and native output run under strict C warnings and
+UBSan with exact-once class destruction. Existing recursive copy/move and
+captured-callback allocation-balance tests remain the supported ownership cases.
+
+No runtime check, allocation, retain, or representation change is introduced.
+Partial extraction through custom cleanup remains deliberately unsupported;
+use a whole-value move or a type-specific extraction method. Broader generator
+iteration patterns and native RAII extraction are not expanded by this fix.
+
+Final verification: 232 self-hosting-tier tests, all 98 async-tier tests, and
+the six focused destructuring/callback tests pass. The website builds, and
+the final native compiler reaches a byte-identical fixed point (10,956,083 C
+bytes). The complete isolated Zapp Application.run gate passes again with this
+compiler, including both startup rollback paths and primary/secondary forwarding.
 
 ## Not tested yet
 
