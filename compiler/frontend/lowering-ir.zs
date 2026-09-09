@@ -20323,24 +20323,31 @@ function rewriteObjCPoolReturns(
   }
 }
 
-function rewritePlainVoidClosureReturns(
+function rewriteCallableBlockReturns(
   in roots: Array<usize>,
+  in returnType: LoweredType,
   inout statements: Array<LoweredStatement>
 ): void {
   for (const statementIndex of roots) {
     if (
       statements[statementIndex].kind
         == LoweredStatementKind.returnStatement
-      && !loweredStatementHasLabel(statements[statementIndex], "throw")
     ) {
-      statements[statementIndex].expression = Option<usize>.none;
-      statements[statementIndex].type = Option<LoweredType>.none;
+      if (returnType.kind == LoweredTypeKind.voidType) {
+        statements[statementIndex].expression = Option<usize>.none;
+      }
+      // Cleanup edges materialize a return temporary. Its type belongs to
+      // the callable, never the function containing the closure expression.
+      statements[statementIndex].type = Option.some(LoweredType({
+        kind: returnType.kind,
+        name: returnType.name.copyBytes(0, returnType.name.byteLength),
+      }));
     }
     let children = Array<usize>();
     for (const child of statements[statementIndex].children) {
       children.push(child);
     }
-    rewritePlainVoidClosureReturns(children, inout statements);
+    rewriteCallableBlockReturns(children, returnType, inout statements);
   }
 }
 
@@ -20390,12 +20397,14 @@ function completeNativeClosureBlocks(
       // A block callable owns its return context. Plain `return;` exits the
       // callable; throwing blocks preserve the Result wrappers installed by
       // lowerStatementWithResult so `try` and `throw` propagate locally.
-      if (closureResultTypeName.byteLength == 0) {
-        rewritePlainVoidClosureReturns(
-          loweredStatements,
-          inout statements
-        );
-      }
+      const returnTypeName = closureResultTypeName.byteLength == 0
+        ? "void" : copy closureResultTypeName;
+      const closureReturnType = try lowerModuleTypeName(
+        program, importedTypes, returnTypeName
+      );
+      rewriteCallableBlockReturns(
+        loweredStatements, closureReturnType, inout statements
+      );
       let parameter: usize = 0;
       while (parameter < expressions[expressionIndex].closureParameterCount) {
         const parameterName = expressions[expressionIndex].labels[
@@ -20429,6 +20438,7 @@ function completeNativeClosureBlocks(
         bodyStatementStart,
         closureUseOffset
       );
+      const bodyExpressionEnd = expressions.length;
       for (const capture of captures) {
         if (
           capture.owned
@@ -20481,26 +20491,58 @@ function completeNativeClosureBlocks(
           name: capture.type.name.copyBytes(0, capture.type.name.byteLength),
         }));
       }
-      let statementIndex = bodyStatementStart;
-      while (statementIndex < statements.length) {
-        match (in statements[statementIndex].type) {
-          some(type) => {
-            const ownsCleanupBearingLocal = (
-              statements[statementIndex].kind
-                == LoweredStatementKind.localStatement
-              || (
-                statements[statementIndex].kind
-                  == LoweredStatementKind.matchArmStatement
-                && statements[statementIndex].matchBindingNeedsCleanup
-              )
-            ) && moduleTypeNeedsCleanup(program, importedTypes, type);
-            if (ownsCleanupBearingLocal) {
-              throw `native block callable closures do not support cleanup-bearing local ${statements[statementIndex].name}: ${type.name} yet`;
-            }
-          }
-          none => {}
-        }
-        statementIndex = statementIndex + 1;
+      // Each invocation owns its locals, independently of the environment
+      // that owns the captures. Reuse ordinary lexical cleanup planning for
+      // return/try edges, match payloads, nested scopes, and loop exits.
+      let closureLiveFlags = Array<LoweredLiveFlag>();
+      const inherited = Array<LoweredCleanup>();
+      const loopCleanups = Array<LoweredCleanup>();
+      const closureMoveIndex = cleanupMoveIndex(
+        program, evidence, arena, expressions, statements
+      );
+      const introduced = try planCleanupSequence(
+        program, importedTypes, evidence, arena, ownerName,
+        sourceStatements, loweredStatements, inherited,
+        expressions, closureMoveIndex, inout statements,
+        inout closureLiveFlags, false, false, loopCleanups
+      );
+      attachMoveLiveFlagsRange(
+        inout expressions, closureLiveFlags,
+        bodyExpressionStart, bodyExpressionEnd
+      );
+      if (expressions[expressionIndex].labels[1] == "move") {
+        attachThreadCaptureMoveFlags(
+          inout expressions, bodyExpressionStart, bodyExpressionEnd, captures
+        );
+      }
+      // Preserve this invocation's move guards when the enclosing function
+      // subsequently plans its own cleanup (including closure construction).
+      markWorkerOwnedMoveRange(
+        inout expressions, bodyExpressionStart, bodyExpressionEnd
+      );
+      if (
+        introduced.length > 0
+        && sequenceFallsThrough(arena, sourceStatements)
+        && loweredSequenceFallsThrough(statements, loweredStatements)
+      ) {
+        let bodyCleanups = Array<LoweredCleanup>();
+        appendCleanupCopies(inout bodyCleanups, introduced);
+        const body = statements.length;
+        statements.push(LoweredStatement({
+          kind: LoweredStatementKind.blockStatement,
+          mutableBinding: false,
+          name: "",
+          type: Option<LoweredType>.none,
+          expression: Option<usize>.none,
+          secondExpression: Option<usize>.none,
+          children: move loweredStatements,
+          cleanups: move bodyCleanups,
+          liveFlag: "",
+          labels: Array<String>(),
+          matchConsumesSubject: false,
+          matchBindingNeedsCleanup: false,
+        }));
+        loweredStatements = Array<usize>(body);
       }
       expressions[expressionIndex].statements = move loweredStatements;
       expressionIndex = expressionIndex + 1;

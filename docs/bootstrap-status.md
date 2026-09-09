@@ -296,6 +296,13 @@ functions unavailable to C++; Z does not bypass that limit through private ABI.
 
 ## Async and concurrency
 
+Native synchronous `void` block callables (including `throws E`) support owned
+invocation-local String, struct, enum payload, and destructured String storage.
+Locals clean up on normal fallthrough, return, throw, failed `try`, and scoped
+loop exits; captured environments retain their independent lifetime. Both
+emitter paths have exact-cleanup and allocation-balance regressions. Non-void
+and asynchronous native block callables remain separate staged lowering work.
+
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Async syntax and typing | Implemented | Functions/methods, `await`, `task`, task scopes, typed errors, direct-call and block `await on thread.main` / `task on thread.main` placement, and executor-local `await scheduler.yield()` |

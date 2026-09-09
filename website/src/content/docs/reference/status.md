@@ -50,6 +50,11 @@ production or compatibility-sensitive use.
   conservative. The hybrid `bun run z check <source> --native-frontend` retains
   native semantic parity coverage. Unbounded and rendezvous storage, selection, timeouts, and
   concurrent receive loans remain future tiers
+- Native synchronous `void` block callbacks, including typed throwing callbacks,
+  can own local Strings, value aggregates, and consuming match payloads. Each
+  invocation cleans up on return, failure, loop exit, or normal completion;
+  captures remain owned by the separately retained closure environment. Exact
+  cleanup-order and allocation-balance tests cover both compiler paths
 - Stored synchronous callables and a Stage 0 stored-async task tier that
   preserve either `thread.main` isolation or arbitrary-thread `thread.any`
   sharing without scheduling implicitly. Native lowering now preserves the

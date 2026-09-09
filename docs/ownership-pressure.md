@@ -6475,11 +6475,11 @@ all eight Stage 0/native startup-transport cases passed under UBSan.
 The full-application regression also exposed two adjacent follow-ups, neither
 of which is hidden by a change to the framework's startup API:
 
-- A captured synchronous block closure still rejects a cleanup-bearing local
-  such as the `String` returned by `json.encode`. The test's formatter currently
-  lives in a named function called by an expression closure. Extend native
-  block-callable local ownership and cleanup upstream; captures themselves are
-  not the unsupported feature.
+- A captured synchronous block closure rejected a cleanup-bearing local
+  such as the `String` returned by `json.encode`. The test initially placed its
+  formatter in a named function called by an expression closure. The native
+  block-callable cleanup checkpoint below closes that local-storage gap;
+  captures themselves were not the unsupported feature.
 - Declaring a registered service in the application entry module makes Zapp's
   generated dispatcher import that entry module, creating an import cycle back
   through generated dispatch. The regression keeps its service in a separate
@@ -6519,6 +6519,56 @@ Final verification: all 226 self-hosting-tier tests pass. The expanded readonly
 matrix independently rejects 19 unsafe programs through both semantic frontends;
 the valid await probe passes with both emitted binaries under UBSan. The native
 compiler reaches a byte-identical fixed point (10,934,642 C bytes).
+
+### Invocation-owned block-callable locals
+
+Zapp's second-instance launch callback now motivates a direct composition probe:
+
+```zs
+const handler: (in message: Message) => void = move (in message: Message): void => {
+  const encoded = json.encode(in message);
+  console.log(`${listener.prefix}: ${encoded}`);
+};
+```
+
+Native lowering now runs the existing lexical cleanup planner over synchronous
+void block-callable bodies. The environment owns captures until its last release;
+each invocation separately owns its locals. Early return, typed throw, failed
+try initialization, consuming match payloads, nested blocks, loop break/continue,
+and normal fallthrough all use the same cleanup representation as ordinary
+functions. Invocation-local move guards are protected from the enclosing
+function's later cleanup pass. A throwing closure's cleanup-return temporary
+uses its own `Result<void, E>` type rather than its enclosing function's return
+type, which the new failure regression also exposed.
+
+The three reduced programs execute under Stage 0 and native output with UBSan,
+exact destructor-order assertions, and a test allocation ledger that rejects
+untracked frees and requires zero live allocations at exit. Repeated calls
+exercise a shared ARC capture, an owned String capture, JSON encoding, explicit
+move, owned Option payloads, and destructured String locals. Nested closures
+also retain independent cleanup scopes, including same-named parameters and
+both captured and capture-free inner callables. Their regression exposed a C
+helper-order dependency: native emission now declares callable construction
+surfaces before emitting bodies that can construct them. No additional
+closure environment or per-local heap allocation is introduced by cleanup
+planning; the existing value representation determines allocation cost.
+
+This is not a blanket expansion to non-void or asynchronous native block
+callables, which remain separate lowering tiers. The complete native Zapp
+Application.run gate passes with the JSON formatter restored inline in its
+launch callback, including startup rollback and primary/secondary forwarding.
+
+Final verification: 229 self-hosting-tier tests and all 98 async-tier tests pass;
+the 22 callable-focused regressions and website build also pass. The native
+compiler reaches a byte-identical fixed point (10,939,613 C bytes), and the
+complete isolated Application.run gate passes with that final compiler. The
+earlier broad run's fixed-point comparison crossed an in-flight compiler edit;
+the full suite was rerun with source changes frozen before recording this result.
+
+A probe also exposed an existing rejection-parity gap: Stage 0 rejects
+whole-object destructuring when fields contain custom cleanup, but native semantic checking currently accepts
+it. Preserve that conservative rule in a separate upstream parity regression;
+the positive destructuring test here uses supported String fields.
 
 ## Not tested yet
 

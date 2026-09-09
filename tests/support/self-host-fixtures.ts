@@ -113,6 +113,20 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-control-flow.zs" },
   { entry: "tests/fixtures/self-host-emit-callables.zs" },
   { entry: "tests/fixtures/self-host-emit-try-closure-owned-match.zs" },
+  {
+    entry: "tests/fixtures/self-host-emit-block-closure-owners.zs",
+    expectedStdout: 'notes: {"text":"early"}\nreleased early\n'
+      + 'notes: {"text":"move"}\nconsumed move\nreleased move\n'
+      + 'notes: {"text":"normal"}\npayload\nreleased nested\n'
+      + "released payload\nreleased normal\nreleased listener notes\n",
+  },
+  {
+    entry: "tests/fixtures/self-host-emit-block-closure-cleanup-edges.zs",
+    expectedStdout: "released delivery\nprepare\nreleased error prepare\n"
+      + "released prepared\nreleased delivery\ncallback\nreleased error callback\n"
+      + "released iteration 1\nreleased iteration 2\nreleased prepared\nreleased delivery\ndelivered\n"
+      + "released iteration 1\nreleased iteration 2\nfirst 3\nsecond 3\nreleased prepared\nreleased delivery\ndelivered\n",
+  },
   { entry: "tests/fixtures/self-host-emit-readonly-method-capture.zs" },
   { entry: "tests/fixtures/self-host-emit-readonly-field-iteration.zs" },
   { entry: "tests/fixtures/std-json-nested-encode.zs" },
@@ -205,6 +219,8 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-borrowed-task-control-cancel.zs": focusedPositive,
   "self-host-emit-borrowed-array-temporary.zs": focusedPositive,
   "self-host-emit-expression-closure-template.zs": focusedPositive,
+  "self-host-emit-block-closure-owners.zs": differential,
+  "self-host-emit-block-closure-cleanup-edges.zs": differential,
   "self-host-emit-class-field-order.zs": differential,
   "self-host-emit-class-constructor.zs": differential,
   "self-host-emit-fixed-array.zs": differential,

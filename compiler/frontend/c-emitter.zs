@@ -12988,7 +12988,7 @@ function appendCallableHelpers(
   }
 }
 
-function appendDirectCallableValuePrototypes(
+function appendCallableValuePrototypes(
   inout output: TextBuffer,
   in program: LoweredProgram
 ): void throws String {
@@ -12999,18 +12999,38 @@ function appendDirectCallableValuePrototypes(
       const expression = view owner.expressions[expressionIndex];
       if (
         expression.kind != LoweredExpressionKind.directFunctionValue
+        && expression.kind != LoweredExpressionKind.closureValue
       ) {
         expressionIndex = expressionIndex + 1;
         continue;
       }
       if (expression.labels.length == 0) {
-        throw "native direct callable prototype lost its function type";
+        throw "native callable prototype lost its function type";
       }
-      output.append("static Z_");
+      // Block closures are discovered before the nested callable values in
+      // their bodies. Declare construction surfaces first so helper order
+      // never becomes a source-language restriction.
+      output.append("static ");
+      if (
+        expression.kind == LoweredExpressionKind.closureValue
+        && expression.captureTypes.length == 0
+      ) output.append("const ");
+      output.append("Z_");
       output.append(expression.labels[0]);
       output.append(" ");
       appendCallableHelperName(inout output, owner, expressionIndex);
-      output.append("_value(void);\n");
+      if (expression.captureTypes.length > 0) {
+        output.append("_make(");
+        let capture: usize = 0;
+        while (capture < expression.captureTypes.length) {
+          if (capture > 0) output.append(", ");
+          output.append(try cType(expression.captureTypes[capture]));
+          capture = capture + 1;
+        }
+        output.append(");\n");
+      } else if (expression.kind == LoweredExpressionKind.directFunctionValue) {
+        output.append("_value(void);\n");
+      } else output.append("_value;\n");
       emitted = true;
       expressionIndex = expressionIndex + 1;
     }
@@ -25269,7 +25289,7 @@ function emitLoweredC(
   try appendSetRuntime(inout output, program);
   appendAsyncCallableRuntime(inout output, program);
   appendTaskScopeRuntime(inout output, program);
-  try appendDirectCallableValuePrototypes(inout output, program);
+  try appendCallableValuePrototypes(inout output, program);
   try appendThreadSpawnPrototypes(inout output, program);
   try appendTaskScopeScheduleHelpers(inout output, program);
   try appendAsyncMethodAwaitStartPrototypes(inout output, program);
