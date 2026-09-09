@@ -3410,7 +3410,12 @@ Completed slices and precise unsupported boundaries are tracked in
 
 ## Initial non-goals
 
-- inheritance for Z-defined types (foreign superclass metadata is imported);
+The approved [native Objective-C subclass direction](docs/objc-subclass-design.md)
+adds a planned, explicitly foreign-only `extends` / `override` / `super` surface.
+It is not implemented and does not enable ordinary Z-to-Z inheritance.
+Construction and state lifetime remain a design checkpoint before implementation.
+
+- inheritance among ordinary Z-defined types (foreign superclass metadata is imported);
 - production async scheduling, cancellation, I/O reactors, and CPU-parallel execution;
 - ORC cycle collection;
 - function-like and general expression macros, plus compile-time execution;
