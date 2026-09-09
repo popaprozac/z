@@ -219,6 +219,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-borrowed-task-control-cancel.zs": focusedPositive,
   "self-host-emit-borrowed-array-temporary.zs": focusedPositive,
   "self-host-emit-expression-closure-template.zs": focusedPositive,
+  "self-host-emit-readonly-collection-length.zs": focusedPositive,
   "self-host-emit-block-closure-owners.zs": differential,
   "self-host-emit-block-closure-cleanup-edges.zs": differential,
   "self-host-emit-class-field-order.zs": differential,

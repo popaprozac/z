@@ -6649,6 +6649,69 @@ The rebuilt compiler reaches a byte-identical fixed point (10,965,112 C bytes).
 The complete signed native Zapp startup gate, both Zapp TypeScript checks, and
 the website build pass. No ASan probe or interactive app bundle was used.
 
+## Readonly launch snapshot observations (2026-09-09)
+
+Moving the verified single-instance startup path into the ordinary Z Notes
+example exposed a smaller native parity gap:
+
+```zs
+move (in event: ApplicationSecondInstanceLaunchedEvent): void => {
+  console.log(`received ${event.arguments.length} arguments`);
+}
+```
+
+Stage 0 accepted this ordinary observation, but the standalone native metadata
+gate reported that the interpolation type was unknown. Native member inference
+recognized `Array<T>.length`, not `readonly Array<T>.length`; its lowerability
+fallback repeated the same incomplete classification. The fix shares collection
+length classification across both paths, preserves view/readonly restrictions,
+and resolves transparent aliases before deciding whether the property is an
+intrinsic `usize` read. It does not infer that any member named `length` is numeric.
+
+The reduced fixture covers nested readonly Array/Map/Set fields, an Array type
+alias, an explicit aggregate view, a borrowed callback parameter, and an ordinary
+struct whose `length` field is String. Stage 0 and native C produce the same
+output under strict compilation; the native output also passes UBSan. The
+standalone driver's check, metadata, and run routes are permanent regression
+gates. No collection copy, extra runtime check, public API, or source workaround
+was needed.
+
+### Worker permission snapshots and readonly copy
+
+The real Z Notes build then caught generated startup code passing
+`catalog.entries[index].serviceMethods` into an escaping worker callback owner.
+That field is an owned readonly Array, not shared ARC storage. The recently
+hardened native ownership checker correctly rejects extracting it from the
+borrowed catalog. The generator must explicitly request `copy` so the worker
+owns its independent permission snapshot while the catalog remains intact.
+
+Stage 0 already supported this copy, but native copy capability and lowerability
+checks omitted the readonly wrapper. They now reuse the existing underlying
+copy rules and Array deep-copy emitter. A returned copy survives destruction of
+the source array, and copying a readonly array of move-only resources remains
+invalid. This adds one intentional startup snapshot per worker, not a copy per
+service call.
+
+Negative testing also found that unknown-method fallback could hide calls such
+as `frozen.push(...)` in native checking. The resolver now rejects the existing
+mutating Array/Map/Set methods and `freeze` on readonly receivers before that
+fallback, including aliases and copied snapshots. Copy preserves readonly type;
+it is not a thaw operation. No public API changed.
+
+Verification: 233 self-hosting-tier tests and 97 collection/module tests pass;
+the native snapshot fixture passes strict C and UBSan, and the rebuilt compiler
+reaches a byte-identical fixed point (10,971,404 C bytes). Zapp's packaged and
+Vite Notes launch gates pass with the explicit worker snapshot, as do its 502
+CLI/runtime tests and both TypeScript check projects. The website builds with
+the updated status. These runs used no ASan.
+
+A separate follow-up surfaced in a broadened probe: template interpolation of
+an indexed element from a function returning a readonly Array through a type
+alias can still lose native type evidence (`${detached[0]}`). The direct
+readonly Array return is covered by the independent-copy fixture; richer alias
+indexing evidence remains queued rather than being hidden by an application
+workaround.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

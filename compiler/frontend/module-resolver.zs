@@ -58,6 +58,7 @@ import {
   iterationObjectFieldType,
   numberLiteralType,
   sourceCollectionTypeName,
+  collectionHasLength,
   throwingGeneratorHandleType,
 } from "./semantic-intrinsics.zs";
 import { nativeStandardCall } from "./semantic-standard-library.zs";
@@ -6207,28 +6208,19 @@ function inferExpressionNodeType(
     if (receiverWasView) {
       receiverValueType = receiverValueType.copyBytes(5, receiverValueType.byteLength);
     }
-    match (genericTypeShape(receiverValueType)) {
-      some(generic) => {
-        if (
-          memberName == "length"
-          && (
-            generic.base == "Array"
-            || generic.base == "Map"
-            || generic.base == "Set"
-          )
-        ) {
-          recordExpressionResolution(
-            modules,
-            moduleIndex,
-            tree,
-            index,
-            "usize",
-            inout evidence
-          );
-          return "usize";
-        }
+    if (memberName == "length") {
+      const lengthOwnerType = transparentTypeName(modules, moduleIndex, receiverValueType);
+      if (collectionHasLength(lengthOwnerType)) {
+        recordExpressionResolution(
+          modules,
+          moduleIndex,
+          tree,
+          index,
+          "usize",
+          inout evidence
+        );
+        return "usize";
       }
-      none => {}
     }
     if (
       receiverValueType == "embed.StaticBytes"
@@ -10090,6 +10082,20 @@ function inferExpressionNodeType(
             }
           }
           none => {}
+        }
+        const readonlyOwnerType = transparentTypeName(modules, moduleIndex, ownerType);
+        if (stringStartsWith(readonlyOwnerType, "readonly ")) {
+          const mutableShape = readonlyOwnerType.copyBytes(9, readonlyOwnerType.byteLength);
+          if (collectionHasLength(mutableShape)
+            && (collectionMethodMutates(mutableShape, methodName) || methodName == "freeze")) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `readonly collection has no mutating method "${methodName}"`,
+              tree.nodes[calleeIndex].line,
+              tree.nodes[calleeIndex].column
+            );
+          }
         }
         match (effectiveCollectionMethodSignature(
           modules,

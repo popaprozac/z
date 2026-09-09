@@ -10419,6 +10419,17 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(driverCompilation.status, 0, driverCompilation.stderr);
   exerciseGeneratedAdapterLinking([driver]);
+  const readonlyLengthFixture = resolve(projectRoot, "tests/fixtures/self-host-emit-readonly-collection-length.zs");
+  for (const operation of ["check", "metadata", "run"]) {
+    const result = spawnSync(driver, [operation, readonlyLengthFixture], {
+      encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+    });
+    assert.equal(result.status, 0, result.stderr || String(result.error));
+    if (operation === "run") {
+      assert.equal(result.stdout.replace(/^compiled [^\n]*\n/, ""),
+        "callback 2/1/2\nviews 2/1/2\ncopy 2; original 2\ndetached kept\ncustom ordinary field\n");
+    }
+  }
   const foreignAdapterEnvironment = {
     ...process.env,
     PATH: `${resolve(projectRoot, "compiler/bin")}${delimiter}${process.env.PATH ?? ""}`,
@@ -17016,6 +17027,25 @@ test("keeps readonly collection storage owned in both semantic frontends", () =>
       + 'struct Holder<T> { value: T; }\n'
       + 'function inspect(in holder: Holder<Arguments>): void { const values = holder.value; }\n',
     /cannot move an ownership-bearing field or element out of its owner/);
+    for (const [type, mutations] of [
+      ["readonly Array<String>", ['push("changed")', "clear()", "freeze()"]],
+      ["readonly Map<String, i32>", ['set("changed", 1)', 'remove("changed")', 'delete("changed")', "clear()", "freeze()"]],
+      ["readonly Set<String>", ['add("changed")', 'remove("changed")', 'delete("changed")', "clear()", "freeze()"]],
+    ] as const) {
+      for (const mutation of mutations) {
+        for (const snapshot of type === "readonly Array<String>" ? ["values", "copy values"] : ["values"]) {
+          const source = 'import { Map, Set } from "std/collections";\n'
+            + `type Frozen = ${type};\n`
+            + `function inspect(in values: Frozen): void {\n`
+            + (snapshot === "values" ? "" : `  const snapshot = ${snapshot};\n`)
+            + `  ${snapshot === "values" ? "values" : "snapshot"}.${mutation};\n}\n`;
+          rejected(source, /readonly.*mutat|cannot mutate|has no.*method/);
+        }
+      }
+    }
+    rejected('struct Resource { value: i32; deinit {} }\n'
+      + 'function inspect(in values: readonly Array<Resource>): void { const snapshot = copy values; }\n',
+    /cannot be explicitly copied|cannot.*copy|does not support.*copy/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
@@ -19488,4 +19518,34 @@ hostToolchainTest("owns template temporaries inside expression-bodied closures",
   const execution = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(execution.status, 0, execution.stderr);
   assert.equal(execution.stdout, "worker message: ready\n");
+});
+
+hostToolchainTest("infers readonly collection lengths in templates and borrowed callbacks", () => {
+  const input = resolve(projectRoot, "tests/fixtures/self-host-emit-readonly-collection-length.zs");
+  const expected = "callback 2/1/2\nviews 2/1/2\ncopy 2; original 2\ndetached kept\ncustom ordinary field\n";
+  const stage0 = spawnSync(process.execPath, [cli, "run", input], {
+    encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+  });
+  assert.equal(stage0.status, 0, stage0.stderr);
+  assert.equal(stage0.stdout, expected);
+  const emission = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(emission.status, 0, emission.stderr || String(emission.error));
+  const directory = mkdtempSync("/tmp/z-readonly-length-");
+  try {
+    const executable = resolve(directory, "readonly-length");
+    const compilation = spawnSync("clang", [
+      "-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
+      "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable,
+    ], { encoding: "utf8", input: emission.stdout, timeout: 30_000, killSignal: "SIGKILL" });
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], {
+      encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL",
+    });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(execution.stdout, expected);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

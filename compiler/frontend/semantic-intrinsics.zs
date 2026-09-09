@@ -186,6 +186,26 @@ export function throwingGeneratorHandleType(
   };
 }
 
+// Readonly/view wrappers restrict access, not the scalar type of a length read.
+// Share this classification with the standalone native lowerability gate.
+export function collectionHasLength(in ownerType: String): boolean {
+  if (stringStartsWith(ownerType, "view ") && ownerType.byteLength > 5) {
+    const target = ownerType.copyBytes(5, ownerType.byteLength);
+    return collectionHasLength(target);
+  }
+  if (stringStartsWith(ownerType, "readonly ") && ownerType.byteLength > 9) {
+    const target = ownerType.copyBytes(9, ownerType.byteLength);
+    return collectionHasLength(target);
+  }
+  const sourceType = sourceCollectionTypeName(ownerType);
+  return match (genericTypeShape(sourceType)) {
+    some(generic) => ((generic.base == "Array" || generic.base == "Set")
+        && generic.arguments.length == 1)
+      || (generic.base == "Map" && generic.arguments.length == 2);
+    none => false;
+  };
+}
+
 export function collectionMethodSignature(
   in ownerType: String,
   in methodName: String

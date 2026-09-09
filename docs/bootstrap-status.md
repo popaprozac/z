@@ -67,6 +67,16 @@ restricts mutation; it does not permit implicit field extraction or repeated
 consumption of an owner. Inspect a field in place or through a supported borrow;
 copy the selected value when an independent snapshot is needed.
 
+The native frontend also infers `length: usize` through readonly Array/Map/Set
+fields, transparent aliases, and borrowed views, including nested field reads
+inside template interpolation and callback bodies. These scalar observations do
+not copy, consume, or thaw collection storage.
+
+Explicit `copy` of supported readonly Array storage produces an independent
+snapshot with the same readonly type. Native checking rejects mutating methods
+on frozen Array/Map/Set storage, including transparent aliases and copied
+snapshots; copying does not make move-only element types copyable.
+
 `std/memory.replace` also transfers direct ARC alias identity and local-
 containment evidence with each owner. Aggregates containing nested ARC
 identities remain excluded alongside view-bearing storage until whole-value

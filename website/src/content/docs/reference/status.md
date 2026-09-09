@@ -29,7 +29,11 @@ production or compatibility-sensitive use.
   arenas, JSON foundations, and inline Z tests
 - Readonly collections preserve ownership and deterministic cleanup in both
   semantic frontends, including aliases and nested aggregate/optional storage.
-  Readonly access does not imply borrowing or implicit shared ownership
+  Readonly access does not imply borrowing or implicit shared ownership.
+  Native `length` reads retain their `usize` type through readonly collection
+  fields, aliases, and views, including template interpolation in callbacks.
+  Explicit readonly Array copies own independent storage without becoming
+  mutable; both frontends reject mutating frozen-collection methods
 - Structured tasks, cancellation, executor placement, dedicated native threads,
   `Mutex<T>`, `Once<T>`, and bounded MPSC `Channel<T>` communication across
   proven slices. Channels split shareable async `Sender<T>` from unique async

@@ -1085,6 +1085,10 @@ export function typeSupportsExplicitCopy(
   if (stringStartsWith(actual, "view ")) {
     actual = actual.copyBytes(5, actual.byteLength);
   }
+  if (stringStartsWith(actual, "readonly ")) {
+    const target = actual.copyBytes(9, actual.byteLength);
+    return typeSupportsExplicitCopy(modules, moduleIndex, target, visiting);
+  }
   const transparent = transparentTypeName(modules, moduleIndex, actual);
   if (transparent != actual) {
     return typeSupportsExplicitCopy(

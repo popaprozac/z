@@ -28,6 +28,7 @@ import { typeHasCleanup } from "./semantic-type-ownership.zs";
 import { channelTypeKind } from "./channel-shapes.zs";
 import { transparentTypeName, typeSymbolLocation } from "./semantic-type-identities.zs";
 import { aggregateFieldShape } from "./semantic-member-lookups.zs";
+import { collectionHasLength } from "./semantic-intrinsics.zs";
 import {
   ModuleGraph,
   ModuleResolveError,
@@ -162,6 +163,12 @@ function nativeExplicitCopyTypeSupported(
   moduleIndex: usize,
   in name: String
 ): boolean {
+  if (stringStartsWith(name, "readonly ")) {
+    const target = name.copyBytes(9, name.byteLength);
+    return nativeExplicitCopyTypeSupported(graph, moduleIndex, target);
+  }
+  const actual = transparentTypeName(graph.modules, moduleIndex, name);
+  if (actual != name) return nativeExplicitCopyTypeSupported(graph, moduleIndex, actual);
   match (fixedArrayShape(name)) {
     some(shape) => return nativeExplicitCopyTypeSupported(
       graph,
@@ -1527,18 +1534,9 @@ function resolvedExpressionType(
       );
       none => {}
     }
-    match (genericTypeShape(receiverType)) {
-      some(generic) => {
-        if (
-          nodeValue == "length"
-          && (
-            generic.base == "Array"
-            || generic.base == "Map"
-            || generic.base == "Set"
-          )
-        ) return "usize";
-      }
-      none => {}
+    if (nodeValue == "length") {
+      const lengthOwnerType = transparentTypeName(graph.modules, moduleIndex, receiverType);
+      if (collectionHasLength(lengthOwnerType)) return "usize";
     }
   }
   return "";
