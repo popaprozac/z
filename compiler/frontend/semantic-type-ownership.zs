@@ -530,6 +530,13 @@ export function typeHasCleanup(
   if (stringStartsWith(typeName, "view ") || stringStartsWith(typeName, "Slice<")) {
     return false;
   }
+  // readonly restricts mutation; it does not turn owned collection storage
+  // into a borrowed or reference-counted value. Preserve cleanup recursively
+  // through aliases, aggregate fields, and Option/Result payloads.
+  if (stringStartsWith(typeName, "readonly ")) {
+    const target = typeName.copyBytes(9, typeName.byteLength);
+    return typeHasCleanup(modules, moduleIndex, target, visiting);
+  }
   const transparent = transparentTypeName(modules, moduleIndex, typeName);
   if (transparent != typeName) {
     return typeHasCleanup(modules, moduleIndex, transparent, visiting);

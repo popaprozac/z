@@ -32,6 +32,16 @@ function execute(source: string, expected?: string): string {
 
 let cachedReturnedMatch: string | undefined;
 let cachedDestructured: string | undefined;
+test("observes readonly class collection fields without duplicating their owner across await", () => {
+  const input = resolve(projectRoot, "tests/fixtures/async-readonly-field-observation.zs");
+  execute(compileToC(readFileSync(input, "utf8"), input), "");
+  const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+  execute(emitted.stdout, "");
+}, 240_000);
+
 function emitDestructured(): string {
   if (cachedDestructured !== undefined) return cachedDestructured;
   const input = resolve(projectRoot, "tests/fixtures/async-destructured-locals.zs");

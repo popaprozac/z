@@ -61,6 +61,12 @@ Status meanings:
 | General returned/stored borrows | Planned beyond closed regions | Direct, optional, and one-owner retained-aggregate immutable receiver/parameter provenance, provenance-preserving aggregate forwarding and object destructuring, same-Arena fixed composites and collections, exhaustive branch joins, variant-sensitive ownerless enums, same-Arena optional recursive links, Arena-owned Map/Set edges and removal, and one-owner synchronous returned graph bundles are implemented; loop-carried provenance, multi-owner fields within one returned aggregate, nested aggregates, class alias safety, nested/multi-edge region bundles, generator/async transfer, and general lifetime relationships remain open |
 | ORC cycle collection | Planned | `Weak<T>` works now; arbitrary strong cycles are not collected |
 
+Readonly Array/Map/Set storage remains owned in both semantic frontends,
+including through aliases, generic fields, and optional payloads. `readonly`
+restricts mutation; it does not permit implicit field extraction or repeated
+consumption of an owner. Inspect a field in place or through a supported borrow;
+copy the selected value when an independent snapshot is needed.
+
 `std/memory.replace` also transfers direct ARC alias identity and local-
 containment evidence with each owner. Aggregates containing nested ARC
 identities remain excluded alongside view-bearing storage until whole-value
@@ -1211,8 +1217,9 @@ rejection, idle/partial-client cancellation, and failed endpoint creation all
 preserve ordered teardown. The host uses the macOS CFRunLoop and endpoint storage
 stays worker-owned. User ownership-helper method names and private async bridges
 that collide with native headers are now separated from generated runtime/native
-symbols. Automatic application forwarding remains disabled pending production
-startup/lifetime integration. Direct timer awaits in native `main` remain a
+symbols. The complete native Zapp Application.run integration now passes
+primary/secondary forwarding and endpoint/service-startup rollback; the secondary
+creates no AppKit host or started services. Direct timer awaits in native `main` remain a
 separate resumable-entry-frame gap, diagnosed as `Z0700` rather than an internal
 unnamed-Task error. See the [integration evidence](ownership-pressure.md#real-launch-endpoint-inbox-and-main-host-integration-2026-09-08).
 

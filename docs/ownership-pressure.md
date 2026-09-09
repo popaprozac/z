@@ -6457,10 +6457,10 @@ The focused UBSan suite checks normal/failed returns, borrowed payload calls,
 payload-free arms, 96 nested-match cancellation/destruction cases, and 240
 destructured-owner cases. The latter track every initialized owner, including
 unselected fields, and require empty executor queues after destruction. The
-full native Z Notes smoke now builds and completes with the saved integration
-present but single-instance disabled. This is not yet evidence of automatic
-forwarding: the complete Application.run primary/secondary and rollback probe
-is a separate gate.
+full native Z Notes smoke builds and completes with the saved integration
+present but single-instance disabled. The separate complete Application.run
+primary/secondary and rollback gate also passes after the readonly ownership
+correction below; the disabled smoke alone was not evidence of forwarding.
 
 Cost: payload and selected-local storage resides in the existing invocation
 frame; no extra task allocation, helper thread, or runtime ownership lookup is
@@ -6471,6 +6471,54 @@ Verification checkpoint: 224 self-hosting-tier tests and all 98 async-tier tests
 passed. After extending the partial-destructuring case, the final focused suite
 passed all 17 tests. The compiler rebuilt to a byte-identical fixed point, and
 all eight Stage 0/native startup-transport cases passed under UBSan.
+
+The full-application regression also exposed two adjacent follow-ups, neither
+of which is hidden by a change to the framework's startup API:
+
+- A captured synchronous block closure still rejects a cleanup-bearing local
+  such as the `String` returned by `json.encode`. The test's formatter currently
+  lives in a named function called by an expression closure. Extend native
+  block-callable local ownership and cleanup upstream; captures themselves are
+  not the unsupported feature.
+- Declaring a registered service in the application entry module makes Zapp's
+  generated dispatcher import that entry module, creating an import cycle back
+  through generated dispatch. The regression keeps its service in a separate
+  module, as Z Notes already does. This is a service-generator decomposition
+  follow-up, not a reason to change Z's module-cycle rules.
+
+### Readonly collection ownership parity
+
+The complete Application.run regression then trapped after service-startup
+rollback, in `ApplicationContext.deinit`. A small Z-only reduction showed that
+`const arguments = app.context.arguments` shallow-copied a readonly array and
+destroyed both aliases. Stage 0 already rejected that extraction; the native
+semantic graph incorrectly treated `readonly Array<T>` as cleanup-free.
+
+Native ownership analysis now follows the owned underlying type through the
+readonly qualifier. This applies recursively to Map/Set storage, aliases,
+generic fields, and Option/Result payloads. Readonly restricts mutation; it does
+not imply borrowing, shared ownership, or implicit duplication. Field extraction
+and repeated consumption now receive the existing ownership diagnostics in
+both frontends. No new language rule or runtime cost was introduced.
+
+The valid regression reads the collection in place, copies its selected String,
+awaits a yielding child, and reads the original collection again. Both compiler
+outputs execute under UBSan. The application probe uses this same existing
+ownership rule; it does not need an owned copy of the whole argument array.
+
+The complete native Application.run gate now passes endpoint setup failure,
+service-startup rollback, and real primary/secondary execution. The secondary
+forwards empty/spaced/Unicode arguments and cwd once, exits without starting
+AppKit or services, and all paths reach stopped state. Sequential reuse of the
+same isolated identity verifies lease/endpoint release after startup failure.
+This is full application execution evidence, distinct from the eight earlier
+Stage 0/native UBSan transport cases. The complete application gate itself was
+run with the fixed-point native compiler, not both compilers.
+
+Final verification: all 226 self-hosting-tier tests pass. The expanded readonly
+matrix independently rejects 19 unsafe programs through both semantic frontends;
+the valid await probe passes with both emitted binaries under UBSan. The native
+compiler reaches a byte-identical fixed point (10,934,642 C bytes).
 
 ## Not tested yet
 

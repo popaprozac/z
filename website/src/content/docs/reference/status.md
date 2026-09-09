@@ -27,6 +27,9 @@ production or compatibility-sensitive use.
   before lifecycle shutdown
 - Arrays, strings, maps, sets, filesystem/process primitives, synchronization,
   arenas, JSON foundations, and inline Z tests
+- Readonly collections preserve ownership and deterministic cleanup in both
+  semantic frontends, including aliases and nested aggregate/optional storage.
+  Readonly access does not imply borrowing or implicit shared ownership
 - Structured tasks, cancellation, executor placement, dedicated native threads,
   `Mutex<T>`, `Once<T>`, and bounded MPSC `Channel<T>` communication across
   proven slices. Channels split shareable async `Sender<T>` from unique async
@@ -144,8 +147,9 @@ production or compatibility-sensitive use.
   cleanup on failed initialization and cancellation. Checked call identities
   now survive native-header private-name mangling across modules, including
   aliased internal async imports. The channel-based readiness/startup probe
-  passes both compilers under UBSan. Automatic application forwarding remains
-  gated on full startup/lifetime integration. Early terminal awaited returns
+  passes both compilers under UBSan. The complete native Zapp startup gate now
+  passes automatic primary/secondary forwarding and endpoint/service-startup
+  rollback, without starting secondary AppKit or services. Early terminal awaited returns
   now compose with one later awaited local in native function and supported
   method frames, including owned results and cancellation cleanup. Both paths
   reuse one child-invocation slot. Sequential root `TaskScope.close()`/`cancel()`

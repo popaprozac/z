@@ -16976,6 +16976,47 @@ test("rejects class-field views from identities with hidden aliases natively", (
   }
 });
 
+test("keeps readonly collection storage owned in both semantic frontends", () => {
+  const directory = mkdtempSync("/tmp/z-native-readonly-ownership-");
+  const input = resolve(directory, "main.zs");
+  function rejected(source: string, message: RegExp): void {
+    writeFileSync(input, source);
+    for (const command of ["check", "self-host-resolve"]) {
+      const result = spawnSync(process.execPath, [cli, command, input], {
+        encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL",
+      });
+      assert.equal(result.status, 1, `${command}\n${source}\n${result.stderr}`);
+      assert.match(result.stderr, message);
+    }
+  }
+  try {
+    for (const type of [
+      "readonly Array<i32>", "readonly Array<String>",
+      "readonly Map<String, i32>", "readonly Set<i32>",
+      "Option<readonly Array<i32>>", "Result<readonly Array<i32>, i32>",
+    ]) {
+      const prelude = 'import { Map, Set } from "std/collections";\n'
+        + `readonly struct Context { values: ${type}; }\n`
+        + 'readonly class Application { context: Context; }\n';
+      rejected(prelude
+        + 'function inspect(in app: Application): void { const values = app.context.values; }\n',
+      /cannot move an ownership-bearing field or element out of its owner/);
+      rejected(prelude
+        + `function consume(value: ${type}): void {}\n`
+        + 'function inspect(in app: Application): void { consume(app.context.values); }\n',
+      /cannot move an ownership-bearing field or element out of its owner/);
+      rejected(prelude
+        + 'function consume(value: Context): void {}\n'
+        + 'function inspect(value: Context): void { consume(value); consume(value); }\n',
+      /use of moved value "value"/);
+    }
+    rejected('type Arguments = readonly Array<String>;\n'
+      + 'struct Holder<T> { value: T; }\n'
+      + 'function inspect(in holder: Holder<Arguments>): void { const values = holder.value; }\n',
+    /cannot move an ownership-bearing field or element out of its owner/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 test("borrows readonly class fields through shared ARC identity in both semantic frontends", () => {
   const input = resolve(
     projectRoot,

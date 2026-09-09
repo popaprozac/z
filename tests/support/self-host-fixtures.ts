@@ -12,6 +12,7 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/match-wildcard.zs" },
   { entry: "tests/fixtures/async-launch-listener.zs" },
   { entry: "tests/fixtures/async-launch-owned-destructure.zs" },
+  { entry: "tests/fixtures/async-readonly-field-observation.zs" },
   {
     entry: "tests/fixtures/async-match-guard-composition.zs",
     expectedStdout: "released message\nreleased error\nreleased error\nreleased message\n",
