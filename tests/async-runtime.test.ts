@@ -2360,7 +2360,7 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   `;
   assert.match(
     compileToC(throwingScope, "task-scope-throw.zs"),
-    /z_task_scope_join\(frame->value_taskScope, &frame->task, frame->cancel_children\)/,
+    /z_task_scope_join\(frame->owned_value_taskScope, &frame->task, frame->cancel_children\)/,
   );
 
   const unhandledScheduledError = `

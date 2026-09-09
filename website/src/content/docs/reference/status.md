@@ -152,9 +152,11 @@ production or compatibility-sensitive use.
   joins now preserve that awaited value, resume each following segment once,
   and join admitted work before parent cleanup. Same-executor joins suspend on
   a waiter; separate-driver scopes retain the existing synchronous bridge.
-  Locally created scope owners are rejected in this frame tier until implicit
-  scope unwinding can join their children when cancellation skips an explicit
-  await. Native-thread cancellation joins and branch-local storage across
+  Root-local `new TaskScope()` values now join their children on function exit,
+  including cancellation that skips an explicit await. Errors and cancellation
+  cancel the remaining work; normal return waits for it. Moving the handle
+  does not remove this obligation. Nested scope constructors,
+  native-thread cancellation joins, and branch-local storage across
   suspension remain staged. Direct
   timer awaits in native `main` still require a future resumable entry frame;
   that boundary now reports `Z0700` at the await.

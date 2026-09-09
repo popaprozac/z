@@ -2586,9 +2586,8 @@ function validateNativeFunction(
   if (declaration.asynchronous && declaration.name != "main"
     && functionUsesFirstTierLinearAwait(moduleIndex, modules, graph, declaration)
     && parsedModule < modules.length) {
-    // A scope created here is a structural owner, not just a retained handle.
-    // Cancellation can skip its explicit join. Until the frame has implicit
-    // scope-exit states, admitting it would leave scheduled children alive.
+    // Root-local scope constructors have implicit unwind states. Nested or
+    // embedded constructors still need lexical ownership tracking.
     for (const statement of declaration.body.nodes) {
       match (in statement.expression) {
         some(syntax) => match (in syntax.tree) {
@@ -2598,8 +2597,15 @@ function validateNativeFunction(
               if (imported.header != "std/async") continue;
               for (const binding of imported.bindings) {
                 if (binding.importedName == "TaskScope" && binding.localName == node.value) {
+                  let rootLocal = false;
+                  for (const root of declaration.body.roots) {
+                    if (declaration.body.nodes[root].kind == StatementKind.variableStatement
+                      && declaration.body.nodes[root].nameOffset == statement.nameOffset
+                      && node.offset == tree.nodes[tree.root].offset) rootLocal = true;
+                  }
+                  if (rootLocal) continue;
                   throw loweringBoundary(path, "Z0700",
-                    "a TaskScope created inside this native continuation requires implicit scope-unwind states so cancellation cannot skip its child joins; this frame tier currently supports passed-in scope handles",
+                    "a nested TaskScope constructor requires lexical scope-unwind states; this native continuation tier supports direct root-local TaskScope constructors",
                     node.line, node.column, 3);
                 }
               }

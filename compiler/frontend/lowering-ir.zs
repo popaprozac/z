@@ -479,6 +479,7 @@ export struct LoweredFunction {
   rawColumn: usize = 0;
   asynchronous: boolean;
   asyncSuspension: String;
+  throwsError: boolean = false;
   mainDelaySegments: Array<LoweredMainDelaySegment>;
   mainDelayIfs: Array<LoweredMainDelayIf>;
   mainDelayMatches: Array<LoweredMainDelayMatch>;
@@ -26402,7 +26403,13 @@ function lowerFunction(
             some(tree) => for (const node of tree.nodes) {
               if (node.kind == ExpressionKind.newExpression
                 && importedAsyncHandleBinding(program, node.value, "TaskScope")) {
-                throw "native continuation-owned TaskScope requires implicit scope-unwind states before cancellation can safely skip its explicit join";
+                let rootLocal = false;
+                for (const root of declaration.body.roots) {
+                  if (declaration.body.nodes[root].kind == StatementKind.variableStatement
+                    && declaration.body.nodes[root].nameOffset == statement.nameOffset
+                    && node.offset == tree.nodes[tree.root].offset) rootLocal = true;
+                }
+                if (!rootLocal) throw "native nested TaskScope constructor requires lexical scope-unwind states; use a direct root-local TaskScope constructor";
               }
             }
             none => {}
@@ -27087,6 +27094,7 @@ function lowerFunction(
       name: receiverName.copyBytes(0, receiverName.byteLength),
     }));
   }
+  const throwsError = match (in declaration.errorType) { some(_) => true; none => false; };
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
     testName: declaration.testName.copyBytes(0, declaration.testName.byteLength),
@@ -27108,6 +27116,7 @@ function lowerFunction(
     rawColumn: declaration.rawColumn,
     asynchronous: declaration.asynchronous,
     asyncSuspension: move asyncSuspension,
+    throwsError,
     mainDelaySegments,
     mainDelayIfs,
     mainDelayMatches,

@@ -6307,6 +6307,64 @@ The ordinary native Z Notes auto-closing smoke also passes, as do all eight
 real-process startup transport cases (Stage 0 and native, with UBSan). The saved
 full startup wrapper remains unapplied; these passing gates do not enable it.
 
+### Implicit scope ownership in native continuations (2026-09-08)
+
+The continuation now accepts direct root-local `new TaskScope()` constructors.
+Every initialized scope has a retained structural-owner slot independent of its
+visible binding and cleanup flag. Returns (including early awaited returns),
+propagated errors, and cancellation converge on reverse-order scope joins before
+root locals and parameters are released. A result already computed stays in the
+frame throughout these joins. Normal return closes admission and waits; a typed
+failure cancels children without converting the parent's failure into task
+cancellation. Cold/active destruction drains the same cancellation states.
+
+Moving a scope handle exposed the equivalent Stage 0 bug: its old implicit join
+used the visible binding's live flag, which `move` clears. The child could then
+outlive the parent, with UBSan reporting an invalid boolean load from a queued
+task. Stage 0 now also records the structural owner independently. This adds no
+new source rule: a handle transfer does not transfer the creating frame's
+obligation to finish its admitted work.
+
+The pending-timer test exposed another runtime issue. Scheduling on the current
+executor used the foreign-driver bridge, recursively polling tasks and retaining
+a delayed main-queue wake. It now drains external admission into the current
+queue without recursive polling or a host wake. A delayed host wake checks for
+an already joined scope before touching the scope's borrowed executor pointer.
+
+Z Notes exposed a necessary distinction in that fast path: a native callback can
+re-enter Z while an outer task poll is inside AppKit's run loop. Treating that
+callback as ordinary active-executor work stalled the frontend service request.
+Native C callback/export, Objective-C block, protocol, and target/action entry
+adapters now temporarily clear the inherited polling executor and restore it on
+return. The callback uses the host driver; work scheduled by an actual Z poll
+still uses the non-recursive queue path. A bounded native-entry regression and
+the complete auto-closing Z Notes smoke pass with this distinction in place.
+
+`tests/fixtures/async-linear-owned-scope.zs` covers early/continued success and
+failure, two local scopes, a moved handle, and class-method implicit/explicit
+joins. A bounded generated-C UBSan harness exercises 492 native cancellation and
+destruction cases, checking child completion before parent guard destruction,
+exact scope allocation/release counts, owned payload cleanup, and empty task
+and timer queues. The focused suite also keeps independent passed-in scopes and
+ordinary user-defined close/cancel methods distinct.
+
+Verification: all 215 self-hosting-tier tests and all 98 async-tier tests pass.
+The rebuilt local compiler reaches a fixed point and runs this fixture directly.
+All eight production-shaped Zapp startup cases pass again with Stage 0 and native
+output under UBSan (normal forwarding, idle shutdown, partial request, and startup
+failure for each compiler).
+
+Cost is explicit: scoped frames add two state flags and a retained pointer per
+constructor. Joins reuse the existing child invocation slot and current small
+heap-allocated join object; unscoped frames do not gain these fields. This is a
+correctness/composition checkpoint, not a new performance benchmark. Native-entry
+guards save/restore a thread-local executor pointer without heap allocation.
+
+Nested/conditional constructors and broader suspension shapes remain rejected.
+The next application gate is native-thread cancellation/join after the owned
+outcome, followed by the saved Application.run integration and complete
+primary/secondary process tests. Automatic forwarding remains disabled.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

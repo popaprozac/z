@@ -4239,6 +4239,11 @@ function generateFrame(
       lines.push(`  bool ${frameLiveField(name)};`);
     }
   }
+  // A moved visible handle cannot transfer the creating frame's obligation to
+  // join its children. Keep structural ownership distinct from binding liveness.
+  for (const name of plan.ownedTaskScopes) {
+    lines.push(`  Z_TaskScope *owned_${frameField(name)};`);
+  }
   for (const site of plan.suspensions.values()) {
     const cType = cFrameType(site.type, plan.types);
     if (requiresNativeFramePlacement(site.type, plan.types)) {
@@ -4290,6 +4295,15 @@ function generateDestroy(
     `static __attribute__((unused)) void ${plan.destroyName}(${plan.frameName} *frame) {`,
     "  if (frame == NULL) return;",
   ];
+  if (plan.ownedTaskScopes.size > 0) {
+    lines.push(
+      "  if (!z_async_is_completed(&frame->task)) {",
+      "    frame->task.waiter = NULL;",
+      "    z_async_cancel(&frame->task);",
+      "    z_async_run(&frame->task);",
+      "  }",
+    );
+  }
   if (plan.channel) {
     lines.push(
       "  if (frame->channel_waiter.registered) {",
@@ -5646,13 +5660,14 @@ function generatePoll(
         state += 1;
       }
       if (operation.name) {
-        const scope = `frame->${frameField(operation.name)}`;
+        const structural = plan.ownedTaskScopes.has(operation.name);
+        const scope = `frame->${structural ? "owned_" : ""}${frameField(operation.name)}`;
         cases.push(caseBlock(state, [
-          `if (frame->${frameLiveField(operation.name)}) {`,
+          `if (${structural ? `${scope} != NULL` : `frame->${frameLiveField(operation.name)}`}) {`,
           `  if (!z_task_scope_join(${scope}, &frame->task, ${operation.cancel ? "true" : "frame->cancel_children"})) return;`,
           `  z_task_scope_release(${scope});`,
-          `  frame->${frameField(operation.name)} = NULL;`,
-          `  frame->${frameLiveField(operation.name)} = false;`,
+          `  ${scope} = NULL;`,
+          ...(!structural ? [`  frame->${frameLiveField(operation.name)} = false;`] : []),
           "}",
           `frame->state = ${state + 1};`,
           "continue;",
@@ -5809,6 +5824,9 @@ function generatePoll(
           initialize,
           ...(hasFrameCleanup(type, plan.types)
             ? [`frame->${frameLiveField(statement.name)} = true;`]
+            : []),
+          ...(plan.ownedTaskScopes.has(statement.name)
+            ? [`frame->owned_${frameField(statement.name)} = z_task_scope_retain(frame->${frameField(statement.name)});`]
             : []),
           `frame->state = ${state + 1};`,
           "continue;",
@@ -6111,13 +6129,12 @@ function generatePoll(
   }
   const finalizeState = state;
   for (const name of [...plan.ownedTaskScopes].reverse()) {
-    const scope = `frame->${frameField(name)}`;
+    const scope = `frame->owned_${frameField(name)}`;
     cases.push(caseBlock(state, [
-      `if (frame->${frameLiveField(name)}) {`,
+      `if (${scope} != NULL) {`,
       `  if (!z_task_scope_join(${scope}, &frame->task, frame->cancel_children)) return;`,
       `  z_task_scope_release(${scope});`,
-      `  frame->${frameField(name)} = NULL;`,
-      `  frame->${frameLiveField(name)} = false;`,
+      `  ${scope} = NULL;`,
       "}",
       `frame->state = ${state + 1};`,
       "continue;",

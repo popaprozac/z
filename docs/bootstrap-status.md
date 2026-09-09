@@ -1229,10 +1229,14 @@ receiver type (including import aliases). It preserves the owned awaited result
 and resumes each synchronous segment once. Same-executor joins register waiters
 instead of recursively driving the executor; cancellation/destruction joins
 admitted work before releasing frame owners. Scopes created on a separate driver
-retain the existing synchronous bridge. Creating a new TaskScope inside this
-continuation is rejected: cancellation could skip its explicit join, and implicit
-scope-unwind states are not implemented in this frame tier. Passed-in handles
-retain their independent ownership. Native-thread cancellation joins,
+retain the existing synchronous bridge. Direct root-local `new TaskScope()`
+construction now records a separate structural owner in the frame. Normal
+return closes/joins its children; propagated failure or cancellation cancels
+and joins them before parent-local cleanup. Moving the visible handle cannot
+disable this obligation. Early and continuing paths, multiple local scopes,
+and supported method frames share this cleanup path; cold/active destruction
+drains the same states. Passed-in handles retain their independent ownership.
+Nested constructors still require lexical ownership states. Native-thread cancellation joins,
 nested branch-local storage, and other continuation suspensions remain explicit
 boundaries. This is an upstream
 composition prerequisite, not proof that Zapp's full startup wrapper is enabled.

@@ -19,7 +19,8 @@ function execute(source: string, expected?: string): string {
   try {
     const binary = resolve(directory, "program");
     const compiled = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
-      "-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", binary],
+      "-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", binary,
+      ...(process.platform === "darwin" ? ["-framework", "CoreFoundation"] : ["-pthread"])],
       { input: source, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
     assert.equal(compiled.status, 0, compiled.stderr);
     const result = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
@@ -39,6 +40,118 @@ function emitScopeJoin(): string {
   assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
   return cachedScopeSource = emitted.stdout;
 }
+
+let cachedOwnedScopeSource: string | undefined;
+function emitOwnedScope(): string {
+  if (cachedOwnedScopeSource !== undefined) return cachedOwnedScopeSource;
+  const input = resolve(projectRoot, "tests/fixtures/async-linear-owned-scope.zs");
+  const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+  return cachedOwnedScopeSource = emitted.stdout;
+}
+
+test("implicitly joins continuation-owned scopes on return and propagated error", () => {
+  const input = resolve(projectRoot, "tests/fixtures/async-linear-owned-scope.zs");
+  const expected = "released parent\n".repeat(4);
+  execute(compileToC(readFileSync(input, "utf8"), input), expected);
+  const source = emitOwnedScope();
+  assert.match(source, /_z_scope_unwind:/);
+  assert.match(source, /Z_TaskScope_retain\(.*_z_stage1_frame_binding_/);
+  execute(source, expected);
+}, 240_000);
+
+test("cancels and drains locally owned scopes before releasing the parent at every suspension", () => {
+  let source = emitOwnedScope();
+  const start = source.match(/static Z_AsyncInvocation (\w+_start)\(void \*context, Z_AsyncExecutor \*executor, bool argument0, bool argument1, Z_Message argument2\)/)?.[1];
+  assert.ok(start, "startup frame with owned input and two local scopes");
+  source = source
+    .replace("scope->refcount = 1;", "scope->refcount = 1; ++createdScopes;")
+    .replace("free(scope);", "++releasedScopes; free(scope);")
+    .replace("scope->pending += 1;", "scope->pending += 1; ++activeJobs;")
+    .replace("scope->pending -= 1;", "scope->pending -= 1; --activeJobs; ++finishedJobs;")
+    .replace("void Z_Guard_deinit(Z_Guard *self) {", "void Z_Guard_deinit(Z_Guard *self) { if (activeJobs != 0) abort(); ++guardDrops;")
+    .replace("void Z_Message_deinit(Z_Message *self) {", "void Z_Message_deinit(Z_Message *self) { ++messageDrops;")
+    .replace("void Z_Failure_deinit(Z_Failure *self) {", "void Z_Failure_deinit(Z_Failure *self) { ++errorDrops;");
+  execute(`static int createdScopes, releasedScopes, activeJobs, finishedJobs, guardDrops, messageDrops, errorDrops;
+#define main z_fixture_main\n${source}\n#undef main
+int main(void) {
+  for (int mode = 0; mode < 3; ++mode) {
+    for (int early = 0; early <= 1; ++early) {
+      for (int fail = 0; fail <= 1; ++fail) {
+        for (int steps = 0; steps <= 40; ++steps) {
+          Z_AsyncExecutor executor = {0};
+          createdScopes = releasedScopes = activeJobs = finishedJobs = guardDrops = messageDrops = errorDrops = 0;
+          Z_AsyncInvocation parent = ${start}(NULL, &executor, early, fail,
+            (Z_Message){ .text = Z_STRING_LITERAL("owned") });
+          if (mode != 0 || steps != 0) z_stage1_async_enqueue(&executor, parent.task);
+          for (int step = 0; step < steps && !parent.task->completed; ++step) {
+            if (!z_stage1_async_run_one(&executor)) break;
+          }
+          if (mode == 2) {
+            const bool alreadyCompleted = parent.task->completed;
+            z_stage1_async_request_cancel(parent.task);
+            for (int tick = 0; !parent.task->completed; ++tick)
+              if (tick > 80 || !z_stage1_async_drive_one(&executor)) return 1;
+            if (!alreadyCompleted && !parent.task->cancelled) return 2;
+          }
+          // Both cold and active destruction must drain the same unwind path.
+          parent.destroy(parent.task);
+          if (activeJobs != 0 || createdScopes != releasedScopes
+            || finishedJobs != createdScopes || guardDrops != (steps == 0 ? 0 : 1)) {
+            fprintf(stderr, "mode=%d early=%d fail=%d steps=%d created=%d released=%d jobs=%d finished=%d guards=%d\\n",
+              mode, early, fail, steps, createdScopes, releasedScopes, activeJobs, finishedJobs, guardDrops);
+            return 3;
+          }
+          if (messageDrops != (steps == 0 ? 1 : 2) || errorDrops > fail) return 4;
+          if (executor.head != NULL || executor.tail != NULL || executor.timers != NULL) return 5;
+        }
+      }
+    }
+  }
+  return 0;
+}`);
+}, 240_000);
+
+test("native re-entry schedules scope work while an outer Z poll is inside a host call", () => {
+  let source = emitOwnedScope();
+  const implementation = /static int32_t (__z_c_impl_\w*nativeEcho)\(int32_t value\) \{/;
+  assert.match(source, implementation);
+  source = source.replace(implementation, "$& if (z_stage1_current_executor != NULL) abort(); boundaryHook();");
+  execute(`static void (*boundaryHook)(void);
+#define main z_fixture_main\n${source}\n#undef main
+static int finished;
+static Z_TaskScope *scope;
+static Z_TaskControl *callbackControl;
+static void test_poll(Z_AsyncTask *task) { ++finished; task->completed = true; }
+static void test_destroy(Z_AsyncTask *task) { if (!task->completed) abort(); free(task); }
+static Z_AsyncInvocation test_start(void *context, Z_AsyncExecutor *executor) {
+  (void)context;
+  Z_AsyncTask *task = calloc(1, sizeof(*task));
+  task->poll = test_poll; task->executor = executor;
+  return (Z_AsyncInvocation){ .task = task, .destroy = test_destroy };
+}
+static void native_callback(void) {
+  callbackControl = z_stage1_task_scope_spawn_async(scope, test_start, NULL, NULL);
+}
+int main(void) {
+  Z_AsyncExecutor executor = {0};
+  scope = z_stage1_task_scope_new(&executor);
+  boundaryHook = native_callback;
+  z_stage1_current_executor = &executor;
+  Z_TaskControl *direct = z_stage1_task_scope_spawn_async(scope, test_start, NULL, NULL);
+  if (finished != 0) return 1; // Normal polling admits work without recursion.
+  if (nativeEcho(42) != 42 || finished != 2) return 2;
+  if (z_stage1_current_executor != &executor) return 3; // Native entry restored it.
+  z_stage1_current_executor = NULL;
+  z_stage1_task_scope_join(scope, false);
+  Z_TaskControl_release(direct); Z_TaskControl_release(callbackControl);
+  if (scope->refcount != 1 || executor.head != NULL || executor.timers != NULL) return 4;
+  Z_TaskScope_release(scope);
+  return 0;
+}`);
+}, 240_000);
 
 test("preserves owned success and failure through sequential TaskScope joins", () => {
   const input = resolve(projectRoot, "tests/fixtures/async-linear-scope-join.zs");
@@ -224,8 +337,6 @@ import { thread } from "std/thread";
 async function operation(): i32 { return 0; }
 async function startup(early: boolean): i32 on thread.main {
   const updates = new Scope();
-  const control = updates.schedule(thread.main, async (): void => {});
-  if (!control.accepted) return 1;
   if (early) return await operation();
   const outcome = await operation();
   await updates.cancel();
@@ -234,11 +345,22 @@ async function startup(early: boolean): i32 on thread.main {
 async function main(): i32 on thread.main { return await startup(false); }`;
     compileToC(ownedScope, input);
     writeFileSync(input, ownedScope);
-    const unsafeUnwind = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    const safeUnwind = spawnSync(process.execPath, [cli, "self-host-emit", input], {
       encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
     });
-    assert.notEqual(unsafeUnwind.status, 0);
-    assert.match(unsafeUnwind.stderr, /Z0700.*implicit scope-unwind states/);
+    assert.equal(safeUnwind.status, 0, safeUnwind.stderr);
+    execute(safeUnwind.stdout);
+    const nestedScope = ownedScope.replace(
+      "const updates = new Scope();",
+      "const updates = early ? new Scope() : new Scope();",
+    );
+    compileToC(nestedScope, input);
+    writeFileSync(input, nestedScope);
+    const rejectedScope = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.notEqual(rejectedScope.status, 0);
+    assert.match(rejectedScope.stderr, /Z0700.*nested TaskScope constructor.*root-local/);
     for (const method of ["close", "cancel"]) {
       const ordinaryReceiver = `import { thread } from "std/thread";
 readonly class Other { async function ${method}(): void {} }
