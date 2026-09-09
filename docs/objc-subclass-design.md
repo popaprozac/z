@@ -2,10 +2,10 @@
 
 Status: declaration and construction direction approved, 2026-09-09. The first
 field-free, synchronous **Stage 0** tier is implemented and tested. The
-self-hosted frontend preserves the declaration syntax and imports the native
-safety facts, but rejects subclass semantic checking/emission explicitly until
-that parity lands. Stateful
-subclasses and production window integration remain separate checkpoints.
+self-hosted frontend preserves the declaration syntax and checks imported
+declaration contracts, but rejects native body ownership checking/emission
+explicitly until that parity lands. Stateful subclasses and production window
+integration remain separate checkpoints.
 
 ## Motivation
 
@@ -154,23 +154,34 @@ Native preparation now includes exact parser-shape parity for the superclass,
 override marker, selector, constructor, and native call syntax. `ZFDCL` version
 14 carries Clang's subclassing restriction, designated initializer, required
 super call, direct dispatch, consuming receiver/parameter ownership, and
-variadic facts into Z-owned declarations. A native Z decoder fixture checks
-both present and absent facts, exact consuming-parameter positions, malformed
-input, and obsolete-version rejection. These facts do not yet authorize native
-subclass execution: semantic resolution reports `Z0814` before an ordinary Z
-class representation could be substituted.
+variadic facts into Z-owned declarations. Native normalization and module
+signatures retain those facts, including the unprojected result's nullability.
+Methods with an unsupported ABI remain separate, non-callable evidence so they
+cannot disappear from override checking or become accidentally callable.
+A native Z fixture checks the entire decoder/normalizer/signature path, both
+present and absent facts, exact consuming-parameter positions, malformed input,
+and obsolete-version rejection. Declaration checks cover restricted and
+main-isolated bases, inherited selectors, exact override types/capabilities,
+forbidden effects/ownership, and designated/nonnullable initializer selection.
+These checks do not yet authorize native subclass execution: semantic resolution
+still reports `Z0814` before body analysis could substitute an ordinary Z class
+representation. Source-only probes without attached foreign contracts defer
+ABI-dependent checks to that same fail-closed boundary.
 
-Next: native semantic checking and lowering/emission parity; then deliberate and
-test owned state, initialization/teardown callbacks, and reentrancy before Zapp's
-window transition state moves into a subclass.
+Next: native body ownership checking and lowering/emission parity; then
+deliberate and test owned state, initialization/teardown callbacks, and reentrancy
+before Zapp's window transition state moves into a subclass.
 
 The remaining field-free native port is bounded by four gates:
 
-1. Carry the raw safety facts through native foreign normalization and module
-   signatures, retaining native superclass identity rather than ordinary Z ARC
-   layout.
-2. Enforce the same constructor, override, ownership, and executor restrictions
-   in native semantic analysis, with matching negative tests.
+1. **Complete:** carry raw safety facts through native foreign normalization and
+   module signatures, without exposing unsupported native ABIs as callable.
+2. **In progress:** declaration contracts and negative tests are present.
+   Complete receiver identity, one-time initialization, pre-initialization use,
+   superclass call/capture rules, availability, executor capability validation,
+   and body ownership before accepting a native subclass as checked executable Z.
+   Executable plans must require attached ABI evidence; the source-only
+   declaration deferral must never become a successful execution path.
 3. Lower checked constructor/super calls and native method entries into explicit
    IR, then emit native interfaces/implementations and ARC construction without
    a Z wrapper. Keep generated symbols inaccessible through raw source.

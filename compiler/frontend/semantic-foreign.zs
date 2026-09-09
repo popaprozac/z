@@ -193,9 +193,11 @@ function objcMethodSignature(
   let parameterTypes = Array<String>();
   let parameterNativeTypes = Array<String>();
   let parameterProtocols = Array<ModuleObjCParameterProtocolSignature>();
+  let consumedParameters = Array<usize>();
   let parameterIndex: usize = 0;
   while (parameterIndex < method.parameters.length) {
     const parameter = view method.parameters[parameterIndex];
+    if (parameter.consumed) consumedParameters.push(parameterIndex);
     let projectedCallback = false;
     match (method.asyncCallbackParameter) {
       some(index) => projectedCallback = index == parameterIndex;
@@ -316,10 +318,19 @@ function objcMethodSignature(
       0,
       method.nativeReturnType.byteLength
     ),
+    objectiveCNativeResultType: localObjCTypeName(
+      contracts, indices, namespace, method.nativeResultType
+    ),
     objectiveCParameterNativeTypes: parameterNativeTypes,
     objectiveCParameterProtocols: parameterProtocols,
     objectiveCRequired: method.required,
     objectiveCReturnsInstanceType: method.returnsInstanceType,
+    objectiveCDesignatedInitializer: method.designatedInitializer,
+    objectiveCRequiresSuper: method.requiresSuper,
+    objectiveCDirect: method.direct,
+    objectiveCConsumesSelf: method.consumesSelf,
+    objectiveCVariadic: method.variadic,
+    objectiveCConsumedParameters: consumedParameters,
     objectiveCAvailability: availability,
     objectiveCAsyncCallbackParameter: method.asyncCallbackParameter,
     objectiveCAsyncResultParameter: method.asyncResultParameter,
@@ -334,13 +345,16 @@ function objcInterfaceTypeSignature(
   in namespace: String
 ): ModuleTypeSignature {
   let methods = Array<ModuleMethodSignature>();
+  let unrepresentableMethods = Array<ModuleMethodSignature>();
   for (const method of interface_.methods) {
-    if (method.representable) methods.push(objcMethodSignature(
+    const signature = objcMethodSignature(
       method,
       contracts,
       indices,
       namespace
-    ));
+    );
+    if (method.representable) methods.push(move signature);
+    else unrepresentableMethods.push(move signature);
   }
   let fields = Array<ModuleFieldSignature>();
   let hierarchy = Array<usize>();
@@ -459,6 +473,8 @@ function objcInterfaceTypeSignature(
     foreignUnderlyingType: "",
     foreignResourceRelease: "",
     foreignObjCSuperName: superName,
+    foreignObjCSubclassingRestricted: interface_.subclassingRestricted,
+    foreignObjCUnrepresentableMethods: unrepresentableMethods,
   });
 }
 

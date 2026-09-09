@@ -188,6 +188,7 @@ export struct NativeForeignObjCParameterContract {
   typeName: String;
   nativeType: String;
   protocols: Array<String>;
+  consumed: boolean;
 }
 
 export struct NativeForeignObjCMethodContract {
@@ -195,8 +196,14 @@ export struct NativeForeignObjCMethodContract {
   selector: String;
   instance: boolean;
   returnsInstanceType: boolean;
+  designatedInitializer: boolean;
+  requiresSuper: boolean;
+  direct: boolean;
+  consumesSelf: boolean;
+  variadic: boolean;
   returnType: String;
   nativeReturnType: String;
+  nativeResultType: String;
   required: boolean;
   executorAffinity: String;
   parameters: Array<NativeForeignObjCParameterContract>;
@@ -211,6 +218,7 @@ export struct NativeForeignObjCInterfaceContract {
   name: String;
   nativeName: String;
   superName: String;
+  subclassingRestricted: boolean;
   executorAffinity: String;
   methods: Array<NativeForeignObjCMethodContract>;
   properties: Array<NativeForeignObjCPropertyContract>;
@@ -3109,6 +3117,7 @@ function normalizedObjCParameter(
       parameter.nativeType.byteLength
     ),
     protocols,
+    consumed: parameter.consumed,
   });
 }
 
@@ -3323,11 +3332,18 @@ function normalizedObjCMethod(
     selector: method.selector.copyBytes(0, method.selector.byteLength),
     instance: method.instance,
     returnsInstanceType: method.returnsInstanceType,
+    designatedInitializer: method.designatedInitializer,
+    requiresSuper: method.requiresSuper,
+    direct: method.direct,
+    consumesSelf: method.consumesSelf,
+    variadic: method.variadic,
     returnType,
     nativeReturnType: method.returnNativeType.copyBytes(
       0,
       method.returnNativeType.byteLength
     ),
+    // Keep the ABI result before instancetype or async result projection.
+    nativeResultType: relativeObjCTypeName(declarations, method.returnTypeName),
     required: method.required,
     executorAffinity,
     parameters,
@@ -3490,6 +3506,7 @@ function normalizedObjCInterfaces(
         declaration.className.byteLength
       ),
       superName,
+      subclassingRestricted: declaration.subclassingRestricted,
       executorAffinity,
       methods: try normalizedObjCMethods(
         declarations,

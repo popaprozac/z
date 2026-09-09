@@ -19,8 +19,9 @@ production or compatibility-sensitive use.
 - An experimental Stage 0 native subclass tier: field-free main-isolated
   Objective-C `extends`, checked `override`/selector signatures, designated
   superclass construction, real `super` dispatch, and native ARC identity.
-  Native parsing and Clang safety-fact decoding are present; native semantic
-  checking/emission, stateful subclasses, and async composition remain
+  Native parsing, safety-fact normalization, and declaration contract checks
+  are present; native body ownership checking/emission, stateful subclasses,
+  and async composition remain
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler and owned `objc.adapt<P>` carrier with direct `id<P>` ABI,

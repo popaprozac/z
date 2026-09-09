@@ -12,7 +12,7 @@ class Counter extends native.ZSubclassFixture on thread.main {
 function main(): i32 { const counter = new Counter(40); return counter.readVirtualValue() - 42; }
 `;
 
-hostToolchainTest("carries Clang subclass safety evidence through the native Z decoder", () => {
+hostToolchainTest("checks native subclass declarations using normalized Clang safety evidence", () => {
   if (process.platform !== "darwin") return;
   const directory = mkdtempSync(resolve(tmpdir(), "z-subclass-wire-"));
   try {
@@ -39,6 +39,79 @@ hostToolchainTest("carries Clang subclass safety evidence through the native Z d
     };
     const result = run(stream);
     assert.equal(result.status, 0, result.stdout + result.stderr);
+    const sourcePath = resolve(directory, "probe.zs");
+    const nativeBaseline = baseline.replace("./objc-subclass.h", "objc-subclass-wire.h")
+      .replaceAll("ZSubclassFixture", "ZWireBase")
+      .replace("counter.readVirtualValue()", "counter.value()");
+    const runDeclaration = (source: string, gate = false) => {
+      writeFileSync(input, stream);
+      writeFileSync(sourcePath, source);
+      return spawnSync(executable, [input, sourcePath, ...(gate ? ["gate"] : [])], {
+        encoding: "utf8", timeout: 5_000,
+      });
+    };
+    for (const source of [nativeBaseline, nativeBaseline.replace("extends native.ZWireBase", "extends native.ZWireChild"),
+      nativeBaseline.replace('return super.value() + 2;', 'return 42;')
+        .replace('override function value()', 'override function observed()'),
+      nativeBaseline.replace('override function value(): i32 as "value" { return super.value() + 2; }',
+        'override function sum(left: i32, right: i32): i32 as "add:to:" { return left + right; }'),
+      nativeBaseline.replace('override function value(): i32 as "value" { return super.value() + 2; }',
+        'override function read(in object: native.ZWireBase): i32 as "readObject:" { return 0; }'),
+    ]) {
+      const checked = runDeclaration(source);
+      assert.equal(checked.status, 0, checked.stdout + checked.stderr);
+    }
+    const gated = runDeclaration(nativeBaseline, true);
+    assert.equal(gated.status, 1, gated.stderr);
+    assert.match(gated.stdout, /Z0814:.*native body ownership checking and emission/);
+    const cases: [string, string, RegExp][] = [
+      ["ordinary base", nativeBaseline.replace("native.ZWireBase", "Parent").replace("class Counter", "class Parent {}\nclass Counter"), /imported Objective-C class/],
+      ["struct", nativeBaseline.replace("class Counter", "struct Counter"), /native Objective-C class declaration/],
+      ["generic", nativeBaseline.replace("class Counter", "class Counter<T>"), /generic native subclasses/],
+      ["affinity", nativeBaseline.replace(" on thread.main", ""), /must declare `on thread.main`/],
+      ["state", nativeBaseline.replace("constructor(value", "stored: i32; constructor(value"), /state-lifetime tier/],
+      ["deinit", nativeBaseline.replace("constructor(value", "deinit {} constructor(value"), /state-lifetime tier/],
+      ["constructor", nativeBaseline.replace("constructor(value: i32) { super.initWithValue(value); }", ""), /explicit constructor/],
+      ["first initializer", nativeBaseline.replace("{ super.initWithValue", "{ const before = 1; super.initWithValue"), /must begin/],
+      ["throwing initializer", nativeBaseline.replace("constructor(value: i32)", "constructor(value: i32) throws i32"), /fallible native subclass construction/],
+      ["borrowed argument", nativeBaseline.replace("constructor(value: i32)", "constructor(in value: i32)"), /constructor parameters must be scalar/],
+      ["owned argument", nativeBaseline.replace("constructor(value: i32)", "constructor(value: String)"), /constructor parameters must be scalar/],
+      ["override", nativeBaseline.replace("override function", "function"), /requires `override function`/],
+      ["selector", nativeBaseline.replace(' as "value"', ""), /explicit `as/],
+      ["async", nativeBaseline.replace("override function", "override async function"), /synchronous, non-throwing/],
+      ["static", nativeBaseline.replace("override function", "override static function"), /synchronous, non-throwing/],
+      ["throwing", nativeBaseline.replace('i32 as "value"', 'i32 throws i32 as "value"'), /synchronous, non-throwing/],
+      ["final", nativeBaseline.replace("extends native.ZWireBase", "extends native.ZWireFinal"), /forbids subclassing/],
+      ["unisolated", nativeBaseline.replace("extends native.ZWireBase", "extends native.ZWireUnisolated"), /main-executor contract/],
+      ["unknown selector", nativeBaseline.replace('as "value"', 'as "missing"'), /no inherited.*selector/],
+      ["wrong return", nativeBaseline.replace('value(): i32 as', 'value(): i64 as'), /returns i32.*returns i64/],
+      ["wrong arity", nativeBaseline.replace('value(): i32 as', 'value(extra: i32): i32 as'), /expects 0 parameter/],
+      ["wrong parameter type", nativeBaseline.replace('override function value(): i32 as "value" { return super.value() + 2; }',
+        'override function sum(left: i64, right: i32): i32 as "add:to:" { return 0; }'), /parameter 1 expects i32, found i64/],
+      ["wrong scalar capability", nativeBaseline.replace('override function value(): i32 as "value" { return super.value() + 2; }',
+        'override function sum(in left: i32, right: i32): i32 as "add:to:" { return 0; }'), /incompatible passing capability/],
+      ["owned object parameter", nativeBaseline.replace('override function value(): i32 as "value" { return super.value() + 2; }',
+        'override function read(object: native.ZWireBase): i32 as "readObject:" { return 0; }'), /incompatible passing capability/],
+      ["requires super", nativeBaseline.replace('as "value"', 'as "requiredValue"'), /superclass-call path validation/],
+      ["direct", nativeBaseline.replace('as "value"', 'as "directValue"'), /direct Objective-C method cannot be overridden/],
+      ["unrepresentable direct", nativeBaseline.replace('as "value"', 'as "extendedValue"'), /direct Objective-C method cannot be overridden/],
+      ["inherited direct", nativeBaseline.replace("extends native.ZWireBase", "extends native.ZWireChild").replace('as "value"', 'as "directValue"'), /direct Objective-C method cannot be overridden/],
+      ["consuming self", nativeBaseline.replace('as "value"', 'as "consume"'), /consuming native override ownership/],
+      ["consuming parameter", nativeBaseline.replace('as "value"', 'as "takeIndex:object:"'), /consuming native override ownership/],
+      ["variadic", nativeBaseline.replace('as "value"', 'as "log:"'), /variadic and block-receiving/],
+      ["lifecycle", nativeBaseline.replace('as "value"', 'as "dealloc"'), /lifecycle or runtime selector/],
+      ["non-designated", nativeBaseline.replace("super.initWithValue(value)", "super.value()"), /designated `init`/],
+      ["nullable", nativeBaseline.replace("extends native.ZWireBase", "extends native.ZWireNullable")
+        .replace('override function value(): i32 as "value" { return super.value() + 2; }', ""), /nullable superclass initializers/],
+      ["duplicate selector", nativeBaseline.replace('return super.value() + 2; }', 'return super.value() + 2; } override function other(): i32 as "value" { return 0; }'), /duplicate native override selector/],
+      ["override without base", nativeBaseline.replace(" extends native.ZWireBase", ""), /`override` requires an imported/],
+    ];
+    for (const [name, source, expected] of cases) {
+      const checked = runDeclaration(source);
+      assert.equal(checked.status, 1, `${name}: ${checked.stdout}${checked.stderr}`);
+      assert.match(checked.stdout, /Z0814/, name);
+      assert.match(checked.stdout, expected, name);
+    }
     const obsolete = run(stream.replace("ZFDCL000000000000000e", "ZFDCL000000000000000d"));
     assert.equal(obsolete.status, 1, obsolete.stderr);
     assert.match(obsolete.stdout, /unsupported foreign declaration stream version 13/);

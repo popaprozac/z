@@ -6740,6 +6740,19 @@ with a Z inference. Native syntax parity and raw evidence now pass, while native
 semantic resolution still rejects the class with Z0814. The next slice must
 consume this evidence before replacing that boundary with native execution.
 
+The next declaration-checking slice found two ways an otherwise correct decoder
+could still lose safety: normalization replaced `instancetype` with the owner
+type (discarding nullable-initializer evidence), and callable method filtering
+dropped unsupported native ABIs (hiding forbidden overrides). The normalized
+contract and module signature now retain the unprojected result and all Clang
+safety flags. Unsupported methods occupy a separate evidence list, not ordinary
+member lookup. Native tests exercise the full path, including a direct
+`long double` method that must be rejected as an override without becoming
+callable. Inherited restrictions, consumed-parameter positions, initializer
+nullability, and exact override signatures are checked natively. Receiver/body
+ownership and emission remain explicitly gated; this is not yet permission to
+instantiate the subclass through the self-hosted compiler.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

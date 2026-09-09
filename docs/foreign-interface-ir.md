@@ -187,6 +187,13 @@ TypeScript object layouts or JSON as compiler architecture. An end-to-end
 fixture runs a scalar C header through Clang, the stream encoder, native Z
 decoding, strict C compilation, and execution.
 
+Objective-C normalization preserves the original result type alongside the
+projected Z result: rebinding `instancetype` or adapting an async completion
+must not erase native nullability. Subclass safety flags survive normalization
+and module attachment, with consumed-parameter indices remaining native ABI
+indices. Unrepresentable interface methods stay in a separate, non-callable
+evidence list so a forbidden override cannot disappear during callable filtering.
+
 Normalized records keep both source and canonical identities. The source name
 drives Z spelling, hover, and emitted ABI types; exact canonical identity drives
 equivalence within the same producer contract. AppKit `NSRect` can therefore

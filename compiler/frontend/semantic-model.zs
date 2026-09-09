@@ -306,11 +306,19 @@ export struct ModuleMethodSignature {
   objectiveCImplementationSelector: String = "";
   objectiveCSelector: String = "";
   objectiveCNativeReturnType: String = "";
+  objectiveCNativeResultType: String = "";
   objectiveCParameterNativeTypes: Array<String> = Array<String>();
   objectiveCParameterProtocols: Array<ModuleObjCParameterProtocolSignature> =
     Array<ModuleObjCParameterProtocolSignature>();
   objectiveCRequired: boolean = true;
   objectiveCReturnsInstanceType: boolean = false;
+  objectiveCDesignatedInitializer: boolean = false;
+  objectiveCRequiresSuper: boolean = false;
+  objectiveCDirect: boolean = false;
+  objectiveCConsumesSelf: boolean = false;
+  objectiveCVariadic: boolean = false;
+  // Indices refer to the native signature, before async callback projection.
+  objectiveCConsumedParameters: Array<usize> = Array<usize>();
   objectiveCAvailability: Array<ModuleObjCAvailabilitySignature> =
     Array<ModuleObjCAvailabilitySignature>();
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
@@ -350,6 +358,11 @@ export struct ModuleTypeSignature {
     Array<ModuleForeignUnionVariantSignature>();
   foreignFallbackVariant: String = "";
   foreignObjCSuperName: String = "";
+  foreignObjCSubclassingRestricted: boolean = false;
+  // Retain rejected ABI declarations for subclass validation without making
+  // them available through ordinary method lookup or completion.
+  foreignObjCUnrepresentableMethods: Array<ModuleMethodSignature> =
+    Array<ModuleMethodSignature>();
   foreignObjCProtocolName: String = "";
 }
 

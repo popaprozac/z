@@ -132,8 +132,10 @@ This tier is field-free and synchronous: Z-stored fields, `deinit`, `Weak`,
 fallible constructors, object-returning overrides, and async composition remain
 future work. Ordinary Z-to-Z inheritance is not supported. Use the TypeScript
 Stage 0 compiler for execution. The native frontend now parses these declarations
-and decodes Clang's safety facts, but reports `Z0814` until native subclass
-checking and emission are implemented.
+and checks imported declaration contracts, including restricted bases, inherited
+override signatures, and designated/nonnullable initializer selection. It still
+reports `Z0814` until native receiver/body ownership checking and emission are
+implemented. Declaration checking alone does not enable native execution.
 
 ## Own target/action connections
 

@@ -154,9 +154,12 @@ recursive path.
   Class properties, setters, optional property access, broad SDK header
   discovery, and Objective-C++ remain later fixed-point layers.
 - Native subclass declarations preserve `extends`, `override`, their selector,
-  and superclass `TypeReference` in the Z AST and parser parity output. Native
-  semantic resolution currently rejects them with `Z0814`; carrying syntax and
-  Clang's safety evidence is a prerequisite, not native subclass execution.
+  and superclass `TypeReference` in the Z AST and parser parity output.
+  `semantic-objc-subclasses.zs` checks imported base restrictions, inherited
+  override contracts, and designated/nonnullable initializer selection using
+  normalized Clang facts. Unsupported method ABIs remain non-callable evidence.
+  Resolution still rejects native subclass bodies with `Z0814` pending receiver
+  ownership, initialization/capture validation, and native lowering/emission.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies

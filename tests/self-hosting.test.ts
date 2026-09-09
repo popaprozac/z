@@ -71,7 +71,7 @@ hostToolchainTest("preserves native subclass syntax while rejecting unimplemente
   });
   assert.equal(resolution.status, 1, resolution.stderr);
   assert.match(resolution.stderr, /Z0814/);
-  assert.match(resolution.stderr, /native semantic checking and emission are not implemented yet/);
+  assert.match(resolution.stderr, /native body ownership checking and emission, which are not implemented yet/);
   const directory = mkdtempSync("/tmp/z-subclass-parser-");
   try {
     const vocabulary = resolve(directory, "main.zs");

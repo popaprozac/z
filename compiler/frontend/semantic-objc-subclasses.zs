@@ -1,0 +1,425 @@
+import {
+  AggregateDeclaration, DeclarationKind, ExpressionKind, ExpressionTree,
+  FunctionDeclaration, ParameterMode, ReceiverMode, StatementKind,
+} from "./parser.zs";
+import { ParsedModule } from "./module-symbols.zs";
+import {
+  ModuleMethodSignature, ModuleResolveError, ModuleResolveErrorKind,
+  ResolvedModule, codedModuleResolutionError,
+} from "./semantic-model.zs";
+import {
+  ModuleSymbolLocation, equivalentTypes, isUnresolvedExternalType, rebaseTypeName,
+  transparentTypeName, typeSymbolLocation,
+} from "./semantic-type-identities.zs";
+import { rebaseModuleFunctionSignature } from "./semantic-member-lookups.zs";
+import {
+  isNumericTypeName, nativeFunctionSignature, nullableTargetType,
+  stringStartsWith,
+} from "./semantic-type-shapes.zs";
+
+// Declaration validation is separate from body ownership and native emission.
+// No successful declaration check may turn a native subclass into a Z ARC
+// record. The resolver keeps an explicit execution gate after this pass.
+function subclassError(
+  in module: ParsedModule, in message: String, line: usize, column: usize
+): ModuleResolveError {
+  return codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+    message, line, column, 1
+  );
+}
+
+function initializerSelector(in name: String): boolean {
+  if (!stringStartsWith(name, "init")) return false;
+  if (name.byteLength == 4) return true;
+  const next = name.byteAt(4);
+  return next < 97 || next > 122;
+}
+
+function runtimeSelector(in name: String): boolean {
+  return initializerSelector(name) || name == "dealloc" || name == "retain"
+    || name == "release" || name == "autorelease" || name == "retainCount"
+    || name == "class" || stringStartsWith(name, "isKindOfClass:")
+    || stringStartsWith(name, "forward")
+    || stringStartsWith(name, "methodSignatureForSelector:")
+    || stringStartsWith(name, "respondsToSelector:");
+}
+
+function plainNativeValue(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in name: String
+): boolean {
+  const typeName = transparentTypeName(modules, moduleIndex, name);
+  if (typeName == "boolean" || isNumericTypeName(typeName)) return true;
+  const location = match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(value) => value;
+    none => return false;
+  };
+  return match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+    some(signature) => signature.foreignKind == "enum"
+      || signature.foreignKind == "scalar"
+      || (signature.foreignKind == "record"
+        && signature.foreignResourceRelease.byteLength == 0
+        && signature.foreignLayout == "struct");
+    none => false;
+  };
+}
+
+function nativeObjectType(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in name: String
+): boolean {
+  const nullable = nullableTargetType(name);
+  if (nullable.byteLength > 0) return nativeObjectType(modules, moduleIndex, nullable);
+  if (name == "id" || stringStartsWith(name, "__z_objc:")) return true;
+  const location = match (typeSymbolLocation(modules, moduleIndex, name)) {
+    some(value) => value;
+    none => return false;
+  };
+  return match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+    some(signature) => signature.foreignKind == "objcInterface";
+    none => false;
+  };
+}
+
+function appendInheritedMethod(
+  in modules: Array<ResolvedModule>, sourceIndex: usize, targetIndex: usize,
+  in method: ModuleMethodSignature, inout methods: Array<ModuleMethodSignature>
+): void {
+  if (method.staticMethod) return;
+  // The nearest declaration of a selector wins, including an unrepresentable
+  // declaration that shadows an otherwise callable ancestor.
+  for (const existing of methods) {
+    if (existing.objectiveCSelector == method.objectiveCSelector) return;
+  }
+  let rebound = copy method;
+  rebound.signature = rebaseModuleFunctionSignature(modules, sourceIndex, targetIndex, method.signature);
+  rebound.objectiveCNativeResultType = rebaseTypeName(
+    modules, sourceIndex, targetIndex, method.objectiveCNativeResultType
+  );
+  methods.push(move rebound);
+}
+
+function inheritedMethods(
+  in module: ParsedModule, in modules: Array<ResolvedModule>, moduleIndex: usize,
+  in aggregate: AggregateDeclaration, in baseName: String
+): Array<ModuleMethodSignature> throws ModuleResolveError {
+  let methods = Array<ModuleMethodSignature>();
+  let visited = Array<String>();
+  let current = copy baseName;
+  let mainIsolated = false;
+  while (current.byteLength > 0) {
+    const location = match (typeSymbolLocation(modules, moduleIndex, current)) {
+      some(value) => value;
+      none => ModuleSymbolLocation({ moduleIndex: modules.length, symbolIndex: 0 });
+    };
+    if (location.moduleIndex >= modules.length) break;
+    const key = `${location.moduleIndex}:${location.symbolIndex}`;
+    for (const previous of visited) {
+      if (previous == key) throw subclassError(module,
+        "cyclic imported Objective-C superclass metadata", aggregate.line, aggregate.column);
+    }
+    visited.push(key);
+    match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+      some(signature) => {
+        if (signature.executorAffinity == "thread.main") mainIsolated = true;
+        for (const method of signature.methods) {
+          appendInheritedMethod(modules, location.moduleIndex, moduleIndex, method, inout methods);
+        }
+        for (const method of signature.foreignObjCUnrepresentableMethods) {
+          appendInheritedMethod(modules, location.moduleIndex, moduleIndex, method, inout methods);
+        }
+        current = rebaseTypeName(modules, location.moduleIndex, moduleIndex, signature.foreignObjCSuperName);
+      }
+      none => break;
+    }
+  }
+  if (!mainIsolated) throw subclassError(module,
+    "the first native subclass tier requires a superclass with a main-executor contract",
+    aggregate.line, aggregate.column);
+  return methods;
+}
+
+function validateOverrideShape(
+  in module: ParsedModule, in method: FunctionDeclaration
+): void throws ModuleResolveError {
+  if (!method.overrideMethod || method.objectiveCSelector.byteLength == 0) {
+    throw subclassError(module,
+      "a native subclass method requires `override function` and an explicit `as \"selector:\"`",
+      method.line, method.column);
+  }
+  let throwing = false;
+  match (in method.errorType) { some(_) => throwing = true; none => {} }
+  if (method.staticMethod || method.asynchronous || throwing
+    || method.rawLanguage.byteLength > 0 || method.receiverMode == ReceiverMode.move
+    || method.typeParameters.length > 0) {
+    throw subclassError(module,
+      "a native override must be a synchronous, non-throwing, non-consuming instance method",
+      method.line, method.column);
+  }
+  if (runtimeSelector(method.objectiveCSelector)) throw subclassError(module,
+    `native lifecycle or runtime selector "${method.objectiveCSelector}" cannot be overridden in the first tier`,
+    method.line, method.column);
+}
+
+function validateOverrideContract(
+  in module: ParsedModule, in modules: Array<ResolvedModule>, moduleIndex: usize,
+  in method: FunctionDeclaration, in native: ModuleMethodSignature
+): void throws ModuleResolveError {
+  if (native.objectiveCDirect) throw subclassError(module,
+    "a direct Objective-C method cannot be overridden", method.line, method.column);
+  if (native.objectiveCConsumesSelf || native.objectiveCConsumedParameters.length > 0) {
+    throw subclassError(module, "consuming native override ownership requires a later tier", method.line, method.column);
+  }
+  let blockParameter = false;
+  for (const parameter of native.signature.parameterTypes) {
+    match (nativeFunctionSignature(parameter)) { some(_) => blockParameter = true; none => {} }
+  }
+  if (native.objectiveCVariadic || blockParameter || native.signature.asynchronous) {
+    throw subclassError(module,
+      "variadic and block-receiving native overrides are not supported in the first tier",
+      method.line, method.column);
+  }
+  let blockResult = false;
+  match (nativeFunctionSignature(native.objectiveCNativeResultType)) { some(_) => blockResult = true; none => {} }
+  if (blockResult || nativeObjectType(modules, moduleIndex, native.objectiveCNativeResultType)) {
+    throw subclassError(module,
+      "object- or block-returning native overrides require the later return-ownership tier",
+      method.line, method.column);
+  }
+  if (native.objectiveCRequiresSuper) throw subclassError(module,
+    "this override requires superclass-call path validation, which is not implemented in the first tier",
+    method.line, method.column);
+  if (native.signature.returnType.byteLength == 0) throw subclassError(module,
+    "unsupported native override return ABI", method.line, method.column);
+  if (!equivalentTypes(modules, moduleIndex, method.returnType.name, native.signature.returnType)) {
+    throw subclassError(module,
+      `Objective-C selector "${native.objectiveCSelector}" returns ${native.signature.returnType}, but the override returns ${method.returnType.name}`,
+      method.returnType.line, method.returnType.column);
+  }
+  if (method.parameters.length != native.signature.parameterTypes.length) throw subclassError(module,
+    `Objective-C selector "${native.objectiveCSelector}" expects ${native.signature.parameterTypes.length} parameter(s), but the override declares ${method.parameters.length}`,
+    method.line, method.column);
+  let index: usize = 0;
+  while (index < method.parameters.length) {
+    const parameter = view method.parameters[index];
+    const expected = view native.signature.parameterTypes[index];
+    if (expected.byteLength == 0 || !equivalentTypes(modules, moduleIndex, parameter.type.name, expected)) {
+      throw subclassError(module,
+        `Objective-C selector "${native.objectiveCSelector}" parameter ${index + 1} expects ${expected}, found ${parameter.type.name}`,
+        parameter.line, parameter.column);
+    }
+    const borrowed = nativeObjectType(modules, moduleIndex, expected);
+    if ((borrowed && parameter.mode != ParameterMode.input)
+      || (!borrowed && parameter.mode != ParameterMode.value)) throw subclassError(module,
+      `Objective-C override parameter "${parameter.name}" has incompatible passing capability`,
+      parameter.line, parameter.column);
+    index = index + 1;
+  }
+}
+
+function firstSuperclassCall(
+  in module: ParsedModule, in aggregate: AggregateDeclaration
+): ExpressionTree throws ModuleResolveError {
+  const message = "a native subclass constructor must begin with exactly one `super.init...(...)` call";
+  match (in aggregate.constructorDeclaration) {
+    some(initializer) => {
+      if (initializer.body.roots.length > 0) {
+        const first = view initializer.body.nodes[initializer.body.roots[0]];
+        if (first.kind == StatementKind.expressionStatement) {
+          match (in first.expression) {
+            some(expression) => match (in expression.tree) {
+              some(tree) => {
+                const call = view tree.nodes[tree.root];
+                if (call.kind == ExpressionKind.callExpression && call.children.length > 0) {
+                  const callee = view tree.nodes[call.children[0]];
+                  if (callee.kind == ExpressionKind.memberExpression && callee.children.length == 1) {
+                    const receiver = view tree.nodes[callee.children[0]];
+                    if (receiver.kind == ExpressionKind.identifierExpression && receiver.value == "super") return copy tree;
+                  }
+                }
+              }
+              none => {}
+            }
+            none => {}
+          }
+        }
+        throw subclassError(module, message, first.line, first.column);
+      }
+      throw subclassError(module, message, initializer.line, initializer.column);
+    }
+    none => throw subclassError(module,
+      "a native subclass requires an explicit constructor and superclass initializer",
+      aggregate.line, aggregate.column);
+  }
+}
+
+function selectorMatchesCall(in selector: String, in tree: ExpressionTree): boolean {
+  const call = view tree.nodes[tree.root];
+  let start: usize = 0;
+  let segment: usize = 0;
+  let index: usize = 0;
+  while (index < selector.byteLength) {
+    if (selector.byteAt(index) == 58) {
+      if (segment >= call.labels.length) return false;
+      if (segment > 0 && call.labels[segment].byteLength > 0
+        && call.labels[segment] != selector.copyBytes(start, index)) return false;
+      start = index + 1;
+      segment = segment + 1;
+    }
+    index = index + 1;
+  }
+  return segment == call.children.length - 1;
+}
+
+function validateInitializerContract(
+  in module: ParsedModule, in tree: ExpressionTree, in methods: Array<ModuleMethodSignature>
+): void throws ModuleResolveError {
+  const call = view tree.nodes[tree.root];
+  const callee = view tree.nodes[call.children[0]];
+  let selected = methods.length;
+  let count: usize = 0;
+  let index: usize = 0;
+  while (index < methods.length) {
+    const method = view methods[index];
+    if (method.name == callee.value && selectorMatchesCall(method.objectiveCSelector, tree)) {
+      selected = index;
+      count = count + 1;
+    }
+    index = index + 1;
+  }
+  if (count != 1) throw subclassError(module,
+    "superclass initializer must resolve to one imported Objective-C instance selector",
+    call.line, call.column);
+  const method = view methods[selected];
+  if (!initializerSelector(method.objectiveCSelector) || !method.objectiveCDesignatedInitializer
+    || !method.objectiveCReturnsInstanceType) throw subclassError(module,
+    "superclass construction requires an imported designated `init` method returning instancetype",
+    call.line, call.column);
+  const nullableResult = nullableTargetType(method.objectiveCNativeResultType);
+  if (nullableResult.byteLength > 0) throw subclassError(module,
+    "nullable superclass initializers require the later fallible-construction tier",
+    call.line, call.column);
+  if (method.objectiveCConsumedParameters.length > 0) throw subclassError(module,
+    "consuming superclass calls require a later ownership tier", call.line, call.column);
+  if (method.signature.asynchronous || method.objectiveCVariadic) throw subclassError(module,
+    "superclass calls must use a synchronous, non-variadic native ABI", call.line, call.column);
+}
+
+function validateNativeObjCSubclassDeclaration(
+  in module: ParsedModule, in modules: Array<ResolvedModule>, moduleIndex: usize,
+  in aggregate: AggregateDeclaration
+): void throws ModuleResolveError {
+  const base = match (in aggregate.nativeBase) {
+    some(value) => copy value;
+    none => {
+      for (const method of aggregate.methods) {
+        if (method.overrideMethod) throw subclassError(module,
+          "`override` requires an imported Objective-C superclass", method.line, method.column);
+      }
+      return;
+    }
+  };
+  if (aggregate.kind != DeclarationKind.classDeclaration || aggregate.nativeCLayout) throw subclassError(module,
+    "`extends` requires a native Objective-C class declaration", aggregate.line, aggregate.column);
+  if (aggregate.typeParameters.length > 0) throw subclassError(module,
+    "generic native subclasses are not supported in the first tier", aggregate.line, aggregate.column);
+  if (aggregate.executorAffinity != "thread.main") throw subclassError(module,
+    "a native subclass must declare `on thread.main`", aggregate.line, aggregate.column);
+  if (aggregate.fields.length > 0) throw subclassError(module,
+    "native subclass fields require the later initialization and state-lifetime tier",
+    aggregate.fields[0].line, aggregate.fields[0].column);
+  match (in aggregate.deinitializer) {
+    some(value) => throw subclassError(module,
+      "native subclass deinit requires the later state-lifetime tier", value.line, value.column);
+    none => {}
+  }
+  if (aggregate.implementedTraits.length > 0) throw subclassError(module,
+    "native subclass protocol and trait conformance is not supported in the first tier",
+    aggregate.line, aggregate.column);
+  const initializer = try firstSuperclassCall(module, aggregate);
+  match (in aggregate.constructorDeclaration) {
+    some(declaration) => {
+      match (in declaration.errorType) {
+        some(_) => throw subclassError(module,
+          "fallible native subclass construction is not supported in the first tier", declaration.line, declaration.column);
+        none => {}
+      }
+      for (const parameter of declaration.parameters) {
+        if (parameter.mode != ParameterMode.value
+          || !plainNativeValue(modules, moduleIndex, parameter.type.name)) throw subclassError(module,
+          "native subclass constructor parameters must be scalar or plain native value parameters in the first tier",
+          parameter.line, parameter.column);
+      }
+    }
+    none => {}
+  }
+  let selectors = Array<String>();
+  for (const method of aggregate.methods) {
+    try validateOverrideShape(module, method);
+    for (const selector of selectors) {
+      if (selector == method.objectiveCSelector) throw subclassError(module,
+        `duplicate native override selector "${selector}"`, method.line, method.column);
+    }
+    selectors.push(copy method.objectiveCSelector);
+  }
+  // Source-only probes may not have attached Clang metadata. They still
+  // hit the execution gate; never invent a superclass signature here.
+  const location = match (typeSymbolLocation(modules, moduleIndex, base.name)) {
+    some(value) => value;
+    none => {
+      if (isUnresolvedExternalType(modules, moduleIndex, base.name)) return;
+      throw subclassError(module,
+        "`extends` must name an imported Objective-C class; ordinary Z inheritance is not supported",
+        base.line, base.column);
+    }
+  };
+  match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+    some(signature) => {
+      if (signature.foreignKind != "objcInterface") throw subclassError(module,
+        "`extends` must name an imported Objective-C class; ordinary Z inheritance is not supported", base.line, base.column);
+      if (signature.foreignObjCSubclassingRestricted) throw subclassError(module,
+        `Objective-C class ${signature.foreignNativeName} forbids subclassing`, base.line, base.column);
+    }
+    none => throw subclassError(module,
+      "`extends` must name an imported Objective-C class; ordinary Z inheritance is not supported", base.line, base.column);
+  }
+  const methods = try inheritedMethods(module, modules, moduleIndex, aggregate, base.name);
+  for (const method of aggregate.methods) {
+    let found = false;
+    for (const native of methods) {
+      if (native.objectiveCSelector != method.objectiveCSelector) continue;
+      found = true;
+      try validateOverrideContract(module, modules, moduleIndex, method, native);
+    }
+    if (!found) throw subclassError(module,
+      `no inherited Objective-C instance selector "${method.objectiveCSelector}"`, method.line, method.column);
+  }
+  try validateInitializerContract(module, initializer, methods);
+}
+
+export function validateNativeObjCSubclassDeclarations(
+  in parsed: Array<ParsedModule>, in modules: Array<ResolvedModule>
+): void throws ModuleResolveError {
+  let moduleIndex: usize = 0;
+  while (moduleIndex < parsed.length) {
+    const module = view parsed[moduleIndex];
+    for (const aggregate of module.program.aggregates) {
+      try validateNativeObjCSubclassDeclaration(module, modules, moduleIndex, aggregate);
+    }
+    moduleIndex = moduleIndex + 1;
+  }
+}
+
+export function requireNativeObjCSubclassBodySupport(in parsed: Array<ParsedModule>): void throws ModuleResolveError {
+  for (const module of parsed) {
+    for (const aggregate of module.program.aggregates) {
+      match (in aggregate.nativeBase) {
+        some(base) => throw codedModuleResolutionError(
+          ModuleResolveErrorKind.unsupportedLowering, "Z0814", module.path,
+          "native Objective-C subclasses still require native body ownership checking and emission, which are not implemented yet; use Stage 0",
+          base.line, base.column, base.name.byteLength
+        );
+        none => {}
+      }
+    }
+  }
+}
