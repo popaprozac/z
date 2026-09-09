@@ -1,5 +1,7 @@
 import { TextBuffer } from "std/text";
 import {
+  nativeObjCSubclassBase,
+  prepareNativeObjCSubclassTypes,
   requireNativeObjCSubclassBodySupport,
   validateNativeObjCSubclassDeclarations,
 } from "./semantic-objc-subclasses.zs";
@@ -17,8 +19,10 @@ import {
 } from "./module-symbols.zs";
 import {
   isPublicCAbiReservedWord,
+  resolveAggregateNames,
   validateModuleNames,
 } from "./semantic-names.zs";
+import { nativeInitializerSelector } from "./semantic-objc-subclass-bodies.zs";
 import {
   NativeCallAccess,
   pendingAsyncCallShape,
@@ -10675,6 +10679,18 @@ function inferExpressionNodeType(
           tree.nodes[index].labels
         )) {
           some(method) => {
+            const selector = view method.objectiveCSelector;
+            if (nativeInitializerSelector(selector)
+              || selector == "alloc" || selector == "allocWithZone:" || selector == "new"
+              || selector == "dealloc" || selector == "retain" || selector == "release"
+              || selector == "autorelease" || selector == "retainCount") {
+              const subclassBase = nativeObjCSubclassBase(modules, moduleIndex, ownerType);
+              if (subclassBase.byteLength > 0) {
+                throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+                  "native subclass lifecycle operations must use `new` and the checked constructor, not an inherited lifecycle method",
+                  tree.nodes[index].line, tree.nodes[index].column, 1);
+              }
+            }
             if (
               method.visibility == "private"
               && !activeOwnerMatchesMethod(modules, moduleIndex, bindings, method)
@@ -10827,7 +10843,28 @@ function inferExpressionNodeType(
             );
             const callableSignature = methodCallableSignature(method);
             const argumentNodes = callArgumentNodes(children);
-            const callKind = staticMethod ? "staticMethod" : "method";
+            let callKind = staticMethod ? "staticMethod" : "method";
+            const nativeBase = valueBindingType(bindings, "__z_native_objc_subclass_base");
+            if (!staticMethod && nativeBase.byteLength > 0
+              && tree.nodes[receiverIndex].kind == ExpressionKind.identifierExpression
+              && tree.nodes[receiverIndex].value == "super") {
+              const initializerOffset = valueBindingType(bindings, "__z_native_objc_initializer_offset");
+              callKind = initializerOffset == `${tree.nodes[index].offset}`
+                ? "objcSuperInitializer" : "objcSuper";
+            }
+            if (nativeBase.byteLength > 0 && method.objectiveCSelector.byteLength > 0) {
+              if ((method.objectiveCConsumesSelf && callKind != "objcSuperInitializer")
+                || method.objectiveCConsumedParameters.length > 0) {
+                throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+                  "consuming Objective-C calls inside native subclass bodies require a later ownership tier",
+                  tree.nodes[index].line, tree.nodes[index].column, 1);
+              }
+              if (method.objectiveCVariadic || method.signature.asynchronous) {
+                throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+                  "native subclass bodies require synchronous, non-variadic Objective-C calls",
+                  tree.nodes[index].line, tree.nodes[index].column, 1);
+              }
+            }
             const callType = try inferSignatureCallType(
               module,
               modules,
@@ -12576,7 +12613,13 @@ function inferFunctionExpressions(
     "this",
     localClassAliasIdentity(declaration.offset)
   );
-  try inferStatementSequence(
+  const nativeBase = nativeObjCSubclassBase(modules, moduleIndex, ownerType);
+  if (!declaration.staticMethod && nativeBase.byteLength > 0) {
+    addBorrowedValueBinding(inout bindings, "super", nativeBase, false);
+    setValueBindingClassAlias(inout bindings, "super", localClassAliasIdentity(declaration.offset));
+    addValueBinding(inout bindings, "__z_native_objc_subclass_base", nativeBase);
+  }
+  const continues = try inferStatementSequence(
     module,
     modules,
     moduleIndex,
@@ -12586,6 +12629,11 @@ function inferFunctionExpressions(
     inout evidence,
     bodyReturnType
   );
+  if (nativeBase.byteLength > 0 && bodyReturnType != "void" && continues) {
+    throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+      "a native override must return a value on every continuing path",
+      declaration.line, declaration.column, 1);
+  }
   try requireInitializedOutputParameters(
     module,
     declaration.line,
@@ -12728,6 +12776,62 @@ function validateExpressionTypesAndLocals(
         );
       }
       none => {}
+    }
+  }
+  return evidence;
+}
+
+// Uses the ordinary expression/call/loan checker, but never the ordinary Z
+// record constructor path. The returned facts remain behind the native
+// subclass execution gate until availability and lowering are complete.
+export function validateNativeObjCSubclassBodyTypes(
+  in module: ParsedModule, in modules: Array<ResolvedModule>, moduleIndex: usize
+): ModuleSemanticEvidence throws ModuleResolveError {
+  let evidence = emptySemanticEvidence();
+  let validatedTypes = false;
+  for (const aggregate of module.program.aggregates) {
+    match (in aggregate.nativeBase) { some(_) => {} none => continue; }
+    const base = nativeObjCSubclassBase(modules, moduleIndex, aggregate.name);
+    if (base.byteLength == 0) continue;
+    if (!validatedTypes) {
+      if (!importedStandardType(module, "thread", "std/thread", "thread")) {
+        throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+          "native subclass affinity requires the imported thread.main capability from std/thread",
+          aggregate.line, aggregate.column, 1);
+      }
+      try validateModuleTypes(module, modules, moduleIndex);
+      validatedTypes = true;
+    }
+    try resolveAggregateNames(module, modules[moduleIndex].symbols, aggregate);
+    match (in aggregate.constructorDeclaration) {
+      some(initializer) => {
+        let bindings = functionValueBindings(initializer.parameters);
+        addValueBinding(inout bindings, "__z_native_function_name", "constructor");
+        addValueBinding(inout bindings, "__z_native_return_type", "void");
+        addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
+        addValueBinding(inout bindings, "__z_native_executor_context", "thread.main");
+        addValueBinding(inout bindings, "__z_native_objc_subclass_base", base);
+        addBorrowedValueBinding(inout bindings, "this", aggregate.name, true);
+        addBorrowedValueBinding(inout bindings, "super", base, false);
+        const alias = localClassAliasIdentity(initializer.offset);
+        setValueBindingClassAlias(inout bindings, "this", alias);
+        setValueBindingClassAlias(inout bindings, "super", alias);
+        const first = view initializer.body.nodes[initializer.body.roots[0]];
+        match (in first.expression) {
+          some(expression) => match (in expression.tree) {
+            some(tree) => addValueBinding(inout bindings, "__z_native_objc_initializer_offset", `${tree.nodes[tree.root].offset}`);
+            none => {}
+          }
+          none => {}
+        }
+        try inferStatementSequence(module, modules, moduleIndex, initializer.body,
+          initializer.body.roots, inout bindings, inout evidence, "void");
+      }
+      none => {}
+    }
+    for (const method of aggregate.methods) {
+      try inferFunctionExpressions(module, modules, moduleIndex, method,
+        aggregate.name, aggregate.executorAffinity, aggregate.typeParameters, inout evidence);
     }
   }
   return evidence;
@@ -13109,6 +13213,22 @@ export function resolveParsedModulesWithForeignContracts(
   // evidence to fill an unresolved namespace afterward.
   try attachForeignContracts(parsed, foreignContracts, inout modules);
   try validateNativeObjCSubclassDeclarations(parsed, modules);
+  try prepareNativeObjCSubclassTypes(parsed, inout modules);
+  let subclassModuleIndex: usize = 0;
+  while (subclassModuleIndex < parsed.length) {
+    for (const aggregate of parsed[subclassModuleIndex].program.aggregates) {
+      match (in aggregate.nativeBase) {
+        some(_) => {
+          modules[subclassModuleIndex].semanticEvidence = try validateNativeObjCSubclassBodyTypes(
+            parsed[subclassModuleIndex], modules, subclassModuleIndex
+          );
+          break;
+        }
+        none => {}
+      }
+    }
+    subclassModuleIndex = subclassModuleIndex + 1;
+  }
   try requireNativeObjCSubclassBodySupport(parsed);
   try validateNativeCLayouts(parsed, modules);
   try validateNativeCExports(parsed, modules);

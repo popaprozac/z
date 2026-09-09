@@ -136,9 +136,13 @@ and checks imported declaration contracts, including restricted bases, inherited
 override signatures, and designated/nonnullable initializer selection. Structural
 checks also reject repeated initialization, receiver use in initializer
 arguments, captured or extracted `super`, and constructor returns hidden in
-expression blocks. A nested closure may still return to its own caller. It still
-reports `Z0814` until native receiver/body ownership checking and emission are
-implemented. Structural checking alone does not enable native execution.
+expression blocks. A nested closure may still return to its own caller. The
+first native body-typing tier checks names, argument/result types, inherited
+properties, nominal base conversions, and receiver alias exclusivity using the
+ordinary checker. It also requires the imported `thread.main` capability.
+Execution still reports `Z0814` pending availability, complete body ownership
+parity, and native emission. This typed-body checkpoint does not enable native
+execution or stateful subclasses.
 
 ## Own target/action connections
 

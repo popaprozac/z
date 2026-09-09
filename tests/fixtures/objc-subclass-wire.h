@@ -12,6 +12,8 @@ __attribute__((swift_attr("@MainActor")))
 - (long double)extendedValue __attribute__((objc_direct));
 - (int)add:(int)left to:(int)right;
 - (int)readObject:(ZWireBase * _Nonnull)object;
+@property int configuredValue;
+@property(readonly) int readOnlyValue;
 @end
 
 __attribute__((objc_subclassing_restricted))

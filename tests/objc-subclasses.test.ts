@@ -43,10 +43,10 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
     const nativeBaseline = baseline.replace("./objc-subclass.h", "objc-subclass-wire.h")
       .replaceAll("ZSubclassFixture", "ZWireBase")
       .replace("counter.readVirtualValue()", "counter.value()");
-    const runDeclaration = (source: string, gate = false) => {
+    const runDeclaration = (source: string, mode: false | true | "types" = false) => {
       writeFileSync(input, stream);
       writeFileSync(sourcePath, source);
-      return spawnSync(executable, [input, sourcePath, ...(gate ? ["gate"] : [])], {
+      return spawnSync(executable, [input, sourcePath, ...(mode ? [mode === true ? "gate" : mode] : [])], {
         encoding: "utf8", timeout: 5_000,
       });
     };
@@ -63,7 +63,15 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
     }
     const gated = runDeclaration(nativeBaseline, true);
     assert.equal(gated.status, 1, gated.stderr);
-    assert.match(gated.stdout, /Z0814:.*native body ownership checking and emission/);
+    assert.match(gated.stdout, /Z0814:.*availability checks, complete body ownership parity, and native emission/);
+    const invalidBeforeGate = runDeclaration(nativeBaseline.replace("super.initWithValue(value)", 'super.initWithValue("bad")'), true);
+    assert.equal(invalidBeforeGate.status, 1, invalidBeforeGate.stdout + invalidBeforeGate.stderr);
+    assert.match(invalidBeforeGate.stdout, /i32.*String|String.*i32/);
+    assert.doesNotMatch(invalidBeforeGate.stdout, /execution still requires/);
+    const typed = runDeclaration(nativeBaseline, "types");
+    assert.equal(typed.status, 0, typed.stdout + typed.stderr);
+    assert.match(typed.stdout, /objcSuperInitializer:initWithValue::native.ZWireBase/);
+    assert.match(typed.stdout, /objcSuper:value:i32/);
     const cases: [string, string, RegExp][] = [
       ["ordinary base", nativeBaseline.replace("native.ZWireBase", "Parent").replace("class Counter", "class Parent {}\nclass Counter"), /imported Objective-C class/],
       ["struct", nativeBaseline.replace("class Counter", "struct Counter"), /native Objective-C class declaration/],
@@ -183,6 +191,56 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       // The native structural checker must not reject ordinary legal bodies.
       // Stage 0 still supplies their complete typed/ownership/emission oracle.
       assert.doesNotThrow(() => compileToNative(source, decoder), name);
+    }
+    for (const [name, source, expected] of [
+      ["initializer argument type", nativeBaseline.replace("super.initWithValue(value)", 'super.initWithValue("bad")'), /i32.*String|String.*i32/],
+      ["missing executor capability", nativeBaseline.replace('import { thread } from "std/thread";', ''), /imported thread.main capability/],
+      ["super argument type", overrideBody('return super.add(20, to: "bad");'), /i32.*String|String.*i32/],
+      ["override result type", overrideBody('return "bad";'), /i32.*String|String.*i32/],
+      ["unknown receiver property", overrideBody("return this.missing;"), /missing/],
+      ["unknown local", overrideBody("return absent;"), /absent/],
+      ["nominal downcast", overrideBody("const base: native.ZWireBase = this; const child: Counter = base; return child.value();"), /Counter/],
+      ["sibling nominal identity", overrideBody("const sibling: Sibling = this; return sibling.value();")
+        + '\nclass Sibling extends native.ZWireBase on thread.main { constructor(value: i32) { super.initWithValue(value); } }', /Sibling/],
+      ["missing return", overrideBody("const observed = super.value();"), /return.*continuing path/],
+      ["this reinitialization", overrideBody("this.initWithValue(1); return 42;"), /checked constructor/],
+      ["alias reinitialization", overrideBody("const alias = this; alias.initWithValue(1); return 42;"), /checked constructor/],
+      ["readonly native property", constructorTail("this.readOnlyValue = value;"), /readonly/],
+      ["native setter argument", constructorTail('this.configuredValue = "bad";'), /i32.*String|String.*i32/],
+      ["uncontracted explicit borrow", overrideBody("return super.readObject(in this);"), /in is not valid/],
+      ["receiver alias overlap", constructorTail("const alias = this; observe(inout this, in alias);") + "\nfunction observe(inout left: Counter, in right: Counter): void {}", /overlap|alias/],
+    ] satisfies [string, string, RegExp][]) {
+      const checked = runDeclaration(source, "types");
+      assert.equal(checked.status, 1, `${name}: ${checked.stdout}${checked.stderr}`);
+      assert.match(checked.stdout, expected, name);
+      assert.throws(() => compileToNative(source, decoder), undefined, `Stage 0: ${name}`);
+    }
+    for (const [name, source] of [
+      ["native this dispatch", overrideBody("return this.add(20, to: 22);")],
+      ["native base conversion", overrideBody("const base: native.ZWireBase = this; return base.add(20, to: 22);")],
+      ["native receiver argument", overrideBody("return super.readObject(this);")],
+      ["ordinary local computation", overrideBody("let total = super.value(); if (total > 0) { total = total + 2; } return total;")],
+      ["native property read", overrideBody("return this.configuredValue;")],
+      ["native property initialization", constructorTail("this.configuredValue = value;")],
+      ["declared override borrow", overrideBody("return this.read(in this);")
+        .replace('override function value()', 'override function read(in object: native.ZWireBase)')
+        .replace('as "value"', 'as "readObject:"')],
+      ["unaliased override borrow", overrideBody("return this.readObject(in this);")
+        .replace('override function value()', 'override function readObject(in object: native.ZWireBase)')
+        .replace('as "value"', 'as "readObject:"')],
+    ]) {
+      const checked = runDeclaration(source, "types");
+      assert.equal(checked.status, 0, `${name}: ${checked.stdout}${checked.stderr}`);
+      assert.doesNotThrow(() => compileToNative(source, decoder), name);
+    }
+    for (const body of [
+      "this.consume(); return 42;",
+      "const alias: native.ZWireBase = this; alias.consume(); return 42;",
+      "this.takeIndex(0, this); return 42;",
+    ]) {
+      const checked = runDeclaration(overrideBody(body), "types");
+      assert.equal(checked.status, 1, checked.stdout + checked.stderr);
+      assert.match(checked.stdout, /consuming Objective-C calls/);
     }
     const obsolete = run(stream.replace("ZFDCL000000000000000e", "ZFDCL000000000000000d"));
     assert.equal(obsolete.status, 1, obsolete.stderr);

@@ -13,6 +13,7 @@ int z_subclass_live_count(void) { return liveCount; }
 }
 - (int)value { return _value; }
 - (int)readVirtualValue { return [self value]; }
+- (int)readObject:(ZSubclassFixture *)object { return [object value]; }
 - (int)add:(int)left to:(int)right { return left + right; }
 - (int)requiredValue { return 0; }
 - (int)directValue { return 0; }

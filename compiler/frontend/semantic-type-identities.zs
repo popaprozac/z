@@ -800,6 +800,11 @@ function symbolTypeIdentity(
     ].typeSignature
   ) {
     some(signature) => {
+      // Source-defined native subclasses can share a base-pointer ABI, but
+      // never the base's (or one another's) nominal source identity.
+      if (signature.foreignKind == "objcSubclass") {
+        return `@${location.moduleIndex}:${location.symbolIndex}`;
+      }
       if (
         signature.foreignNativeName.byteLength > 0
         && modules[location.moduleIndex].symbols[

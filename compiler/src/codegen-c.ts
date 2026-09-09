@@ -112,6 +112,7 @@ type GenerationContext = {
   readonly liveFlagCounter: { value: number };
   readonly expressionOverrides: ReadonlyMap<number, string>;
   readonly objectTypeOverrides: ReadonlyMap<number, string>;
+  readonly expressionTypeOverrides?: ReadonlyMap<Expression, string>;
   readonly semanticInfo: SemanticInfo;
   readonly constructorSelf?: string;
   readonly constructorFieldFlags?: ReadonlyMap<string, string>;
@@ -8286,18 +8287,22 @@ function generateBridgedStringValue(expression: Expression, value: string, conte
   return value;
 }
 
-function withoutResultStringBridge(expression: Expression, context: GenerationContext): GenerationContext {
+function conditionalConditionContext(expression: Extract<Expression, { kind: "conditional" }>, context: GenerationContext): GenerationContext {
   const offset = expression.location.offset;
   const info = context.semanticInfo;
-  if (!info.objcStringsToNative.has(offset) && !info.objcStringsToZ.has(offset)
-    && !info.swiftStringsToZ.has(offset)) return context;
+  // Conditional results and their boolean conditions currently share a source
+  // offset. Restore the condition's type as well as excluding result bridges;
+  // otherwise cleanup staging can declare a boolean comparison as Z_String.
+  const expressionTypeOverrides = new Map(context.expressionTypeOverrides);
+  // Key by the expression node: its leftmost operand may share this offset too.
+  expressionTypeOverrides.set(expression.condition, "boolean");
   const withoutOffset = (values: ReadonlySet<number>): ReadonlySet<number> => {
     if (!values.has(offset)) return values;
     const filtered = new Set(values);
     filtered.delete(offset);
     return filtered;
   };
-  return { ...context, semanticInfo: { ...info,
+  return { ...context, expressionTypeOverrides, semanticInfo: { ...info,
     objcStringsToNative: withoutOffset(info.objcStringsToNative),
     objcStringsToZ: withoutOffset(info.objcStringsToZ),
     swiftStringsToZ: withoutOffset(info.swiftStringsToZ),
@@ -8801,7 +8806,8 @@ function withObjectTypeOverride(
 }
 
 function temporaryValueType(expression: Expression, context: GenerationContext): string {
-  return context.semanticInfo.numericLiteralTypes.get(expression.location.offset)
+  return context.expressionTypeOverrides?.get(expression)
+    ?? context.semanticInfo.numericLiteralTypes.get(expression.location.offset)
     ?? context.semanticInfo.expressionTypes.get(expression.location.offset)
     ?? inferExpressionType(expression, context);
 }
@@ -9067,8 +9073,9 @@ function generateConditionalValue(
 ): string {
   // A ternary and its condition share a starting offset. Result-only bridge
   // evidence must not convert the boolean condition at that same offset.
-  return generateDirectValue(expression.condition, withoutResultStringBridge(expression, context), (condition, loweredContext) => {
-    const conditionContext = { ...loweredContext, semanticInfo: context.semanticInfo };
+  return generateDirectValue(expression.condition, conditionalConditionContext(expression, context), (condition, loweredContext) => {
+    const conditionContext = { ...loweredContext, semanticInfo: context.semanticInfo,
+      expressionTypeOverrides: context.expressionTypeOverrides };
     const thenBranch = generateDirectValue(
       expression.thenExpression,
       conditionContext,
@@ -10954,7 +10961,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return `(${generateExpression(expression.left, context)} ${expression.operator} ${generateExpression(expression.right, context)})`;
     }
     case "conditional":
-      return `(${generateExpression(expression.condition, withoutResultStringBridge(expression, context))} ? ${generateExpression(expression.thenExpression, context)} : ${generateExpression(expression.elseExpression, context)})`;
+      return `(${generateExpression(expression.condition, conditionalConditionContext(expression, context))} ? ${generateExpression(expression.thenExpression, context)} : ${generateExpression(expression.elseExpression, context)})`;
     case "new":
       if (!context.structs.get(expression.typeName)?.constructor && !context.semanticInfo.objcSubclasses.has(expression.typeName)) {
         return generateExpression(expression.arguments[0], context);
@@ -12927,6 +12934,8 @@ function generateContextualSignedLiteral(operator: "+" | "-", value: string, typ
 }
 
 function inferExpressionType(expression: Expression, context: GenerationContext): string {
+  const override = context.expressionTypeOverrides?.get(expression);
+  if (override) return override;
   if (
     expression.kind === "member"
     && expression.object.kind === "identifier"

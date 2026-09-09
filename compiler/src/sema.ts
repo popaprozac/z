@@ -3050,11 +3050,21 @@ function registerObjCSubclasses(program: Program, globals: Map<string, SymbolVal
       ...base, typeName: declaration.name, className, exportName: declaration.name,
       superName: base.className,
       methods: [
-        ...declaration.methods.flatMap((method) => {
+        ...declaration.methods.map((method) => {
           const native = methods.get(method.location.offset)!;
-          return method.name === native.baseName ? [] : [{ ...native, baseName: method.name }];
+          // Calls through the source-declared override have its checked Z
+          // capabilities, including borrowed native object parameters. Keep
+          // the inherited header contract unchanged for superclass/base calls.
+          return { ...native, baseName: method.name,
+            parameters: native.parameters.map((parameter, index) => ({
+              ...parameter,
+              ...(method.parameters[index].mode === "in" ? { access: "in" as const } : {}),
+            })),
+          };
         }),
-        ...inherited,
+        ...inherited.filter((native) => !declaration.methods.some((method) => (
+          method.name === native.baseName && method.nativeSelector === native.selector
+        ))),
       ],
       properties: base.properties,
     });

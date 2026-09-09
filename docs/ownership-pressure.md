@@ -6774,6 +6774,38 @@ closure checking. A closure that captures `this` before *all* fields are initial
 still fails closed, even if it only reads an already initialized field. Writes
 inside a closure cannot count as initialization performed by the constructor.
 
+The typed-body follow-up demonstrates why native subclasses need a distinct
+reference identity rather than reusing a Z ARC record or simply renaming the
+imported base. Their base-pointer ABI permits native calls, but source subclass
+names remain nominal: upcasts work while downcasts and sibling conversions fail.
+`this` and `super` share one alias identity, and the existing call/loan checker
+detects overlapping receiver aliases. Inherited getters/setters use ordinary
+property checking; override calls keep their declared Z capabilities. Tests also
+reject reinitialization through aliases, missing imported executor capability,
+wrong argument/result types, and missing returns. Super initialization and
+dispatch have distinct semantic call evidence. Attached superclass ABI evidence
+is mandatory before typed bodies are inspected. Availability, full ownership
+composition, and emission remain gated, so this is not yet native execution.
+
+Compiling that checker in Z exposed a Stage 0 emission bug unrelated to Objective-C:
+a ternary and its condition share a source offset, allowing the String result
+type to overwrite the boolean condition's temporary-storage type when that
+condition needs String cleanup. Code generation now carries a small, scoped
+boolean type override for the condition, restoring the parent's context for
+the result branches without cloning the full semantic type map. A strict-C
+runtime regression exercises both branches repeatedly. This was fixed upstream
+rather than changing the checker source to avoid an ordinary conditional.
+
+The new sibling-conversion negative caught a second identity shortcut: generic
+foreign type canonicalization used the shared native base spelling, collapsing
+two source subclasses. Source-defined native references now retain their module
+and symbol identity even when their call ABI uses the same base pointer. A
+cross-frontend override-call test also found Stage 0 exposing only the header's
+parameter contract under a Z override's source name. Source override entries now
+retain checked `in` capabilities without changing calls through an imported base
+or `super`. The strict-Clang/UBSan fixture exercises the borrowed override call
+and still checks exact native destruction across repeated constructions.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

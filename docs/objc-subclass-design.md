@@ -3,8 +3,10 @@
 Status: declaration and construction direction approved, 2026-09-09. The first
 field-free, synchronous **Stage 0** tier is implemented and tested. The
 self-hosted frontend preserves the declaration syntax, checks imported
-declaration contracts and structural receiver rules, but rejects native body ownership checking/emission
-explicitly until that parity lands. Stateful subclasses and production window
+declaration contracts and structural receiver rules, and uses the ordinary
+expression/call/loan checker for a first native body-typing tier. Native execution
+remains explicitly gated on availability, complete ownership parity, and emission.
+Stateful subclasses and production window
 integration remain separate checkpoints.
 
 ## Motivation
@@ -170,14 +172,30 @@ returns are rejected through branches, match arms, and expression blocks, while
 a nested closure's own `return` remains legal. Native implicit receiver names
 cannot be shadowed by parameters, locals, or destructured/pattern bindings.
 Every discovered superclass call is matched against inherited selector, arity,
-label, ABI-representability, and consuming/variadic contracts; syntactic call
-sites are not yet typed executable evidence.
-These checks do not yet authorize native subclass execution: semantic resolution
-still reports `Z0814` before body analysis could substitute an ordinary Z class
-representation. Source-only probes without attached foreign contracts defer
-ABI-dependent checks to that same fail-closed boundary.
+label, ABI-representability, and consuming/variadic contracts.
 
-Next: native body ownership checking and lowering/emission parity; then
+The first native typed-body pass prepares a nominal source subclass with an
+imported base-pointer ABI, not an ordinary Z ARC record or an alias of the base.
+`this` and `super` share one alias identity; inherited properties and methods use
+ordinary member lookup, argument/result checking, and loan analysis. Local
+override calls retain their declared Z parameter capabilities. Evidence separates
+superclass initialization, superclass dispatch, and ordinary virtual calls.
+Tests cover scalar arguments/results, missing returns/names, property reads and
+setters, readonly-property rejection, subclass-to-base conversion, rejected
+downcasts/sibling conversions, reinitialization through aliases, and overlapping
+receiver loans. The literal `thread.main` affinity must resolve to the imported
+`std/thread` capability. Consuming and variadic native calls remain rejected in
+this body tier.
+
+These checks do not yet authorize native subclass execution: semantic resolution
+still reports `Z0814` before an executable graph can leave the resolver. A
+source-only probe without attached superclass ABI evidence cannot enter typed
+body checking. Availability and complete ownership parity are still required;
+passing this limited typed oracle is not a claim that every body composition is
+safe to emit.
+
+Next: native availability and complete body ownership checks, then
+lowering/emission parity; afterward
 deliberate and test owned state, initialization/teardown callbacks, and reentrancy
 before Zapp's window transition state moves into a subclass.
 
@@ -186,11 +204,12 @@ The remaining field-free native port is bounded by four gates:
 1. **Complete:** carry raw safety facts through native foreign normalization and
    module signatures, without exposing unsupported native ABIs as callable.
 2. **In progress:** declaration contracts, structural receiver/initialization
-   rules, superclass call/capture checks, and negative tests are present.
-   Complete native receiver identity, argument/result typing, availability,
-   executor capability validation, and body ownership before accepting a native
-   subclass as checked executable Z. Structural traversal alone cannot prove
-   whether a receiver is moved, aliased, or returned with valid ownership.
+   rules, superclass call/capture checks, nominal receiver identity, first
+   argument/result/property typing, imported executor capability validation,
+   and alias-exclusivity tests are present. Complete availability and body
+   ownership parity before accepting a native subclass as checked executable Z.
+   The first typed-body slice reuses the loan checker but does not yet establish
+   safety for every capture, move, return, or reentrant native call.
    Executable plans must require attached ABI evidence; the source-only
    declaration deferral must never become a successful execution path.
 3. Lower checked constructor/super calls and native method entries into explicit

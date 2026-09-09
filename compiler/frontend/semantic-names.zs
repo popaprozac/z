@@ -474,20 +474,24 @@ function resolveFunctionNames(
   in module: ParsedModule,
   in symbols: Array<ModuleSymbol>,
   in declaration: FunctionDeclaration,
-  includeThis: boolean
+  includeThis: boolean,
+  includeSuper: boolean
 ): void throws ModuleResolveError {
   let bindings = parameterBindings(declaration.parameters);
   if (includeThis && !declaration.staticMethod) bindings.push("this");
+  if (includeSuper && !declaration.staticMethod) bindings.push("super");
   try resolveStatementSequence(module, symbols, declaration.body, declaration.body.roots, bindings);
 }
 
 function resolveConstructorNames(
   in module: ParsedModule,
   in symbols: Array<ModuleSymbol>,
-  in declaration: ConstructorDeclaration
+  in declaration: ConstructorDeclaration,
+  includeSuper: boolean
 ): void throws ModuleResolveError {
   let bindings = parameterBindings(declaration.parameters);
   bindings.push("this");
+  if (includeSuper) bindings.push("super");
   try resolveStatementSequence(module, symbols, declaration.body, declaration.body.roots, bindings);
 }
 
@@ -501,17 +505,18 @@ function resolveDeinitNames(
   try resolveStatementSequence(module, symbols, declaration.body, declaration.body.roots, bindings);
 }
 
-function resolveAggregateNames(
+export function resolveAggregateNames(
   in module: ParsedModule,
   in symbols: Array<ModuleSymbol>,
   in declaration: AggregateDeclaration
 ): void throws ModuleResolveError {
+  const nativeSubclass = match (in declaration.nativeBase) { some(_) => true; none => false; };
   match (in declaration.constructorDeclaration) {
-    some(initializer) => try resolveConstructorNames(module, symbols, initializer);
+    some(initializer) => try resolveConstructorNames(module, symbols, initializer, nativeSubclass);
     none => {}
   }
   for (const method of declaration.methods) {
-    try resolveFunctionNames(module, symbols, method, true);
+    try resolveFunctionNames(module, symbols, method, true, nativeSubclass);
   }
   match (in declaration.deinitializer) {
     some(deinitializer) => try resolveDeinitNames(module, symbols, deinitializer);
@@ -524,7 +529,7 @@ export function validateModuleNames(
   in symbols: Array<ModuleSymbol>
 ): void throws ModuleResolveError {
   for (const declaration of module.program.functions) {
-    try resolveFunctionNames(module, symbols, declaration, false);
+    try resolveFunctionNames(module, symbols, declaration, false, false);
   }
   for (const declaration of module.program.aggregates) {
     try resolveAggregateNames(module, symbols, declaration);

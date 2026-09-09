@@ -7,6 +7,7 @@ __attribute__((swift_attr("@MainActor")))
 - (instancetype)initWithValue:(int)value NS_DESIGNATED_INITIALIZER;
 - (int)value;
 - (int)readVirtualValue;
+- (int)readObject:(ZSubclassFixture *)object;
 - (int)add:(int)left to:(int)right;
 @property int configuredValue;
 - (int)requiredValue NS_REQUIRES_SUPER;

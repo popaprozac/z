@@ -18,12 +18,17 @@ class Counter extends native.ZSubclassFixture on thread.main {
   override function sum(left: i32, right: i32): i32 as "add:to:" {
     return super.add(left, to: right) + 1;
   }
+
+  override function read(in object: native.ZSubclassFixture): i32 as "readObject:" {
+    return object.value();
+  }
 }
 
 function exercise(): i32 on thread.main {
   const counter = new Counter(40);
   const base: native.ZSubclassFixture = counter;
-  return base.readVirtualValue() + counter.sum(20, to: 21) + counter.configuredValue - 85;
+  return base.readVirtualValue() + counter.sum(20, to: 21) + counter.configuredValue
+    + counter.read(in base) - 127;
 }
 
 function main(): i32 {

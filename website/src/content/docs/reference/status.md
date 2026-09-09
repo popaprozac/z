@@ -20,9 +20,9 @@ production or compatibility-sensitive use.
   Objective-C `extends`, checked `override`/selector signatures, designated
   superclass construction, real `super` dispatch, and native ARC identity.
   Native parsing, safety-fact normalization, declaration contract checks, and
-  structural initialization/receiver checks are present; full native body
-  typing/ownership and emission, stateful subclasses,
-  and async composition remain
+  structural initialization/receiver checks, and first native body typing with
+  property/alias checking are present. Availability, complete native ownership
+  parity and emission, stateful subclasses, and async composition remain
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler and owned `objc.adapt<P>` carrier with direct `id<P>` ABI,

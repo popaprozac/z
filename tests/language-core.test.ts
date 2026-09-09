@@ -2456,6 +2456,34 @@ test("constructs structs from object values and classes through class-only new",
   assert.throws(() => compileToC(qualifiedLegacy, "qualified-legacy-construction.zs"));
 });
 
+hostToolchainTest("keeps cleanup-bearing ternary conditions boolean independently of their result type", () => {
+  const source = `
+    function describe(value: i32): String {
+      const expected = "42";
+      return expected == \`\${value}\` ? "match" : "miss";
+    }
+    function main(): i32 {
+      let index: i32 = 0;
+      while (index < 100) {
+        if (describe(42) != "match") return 1;
+        if (describe(0) != "miss") return 2;
+        index = index + 1;
+      }
+      return 0;
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-conditional-condition-");
+  try {
+    const output = resolve(directory, "main.c");
+    const executable = resolve(directory, "probe");
+    writeFileSync(output, compileToC(source, resolve(directory, "main.zs")));
+    const built = spawnSync("clang", ["-std=c11", "-Wall", "-Wextra", "-Werror", output, "-o", executable], { encoding: "utf8", timeout: 30_000 });
+    assert.equal(built.status, 0, built.stderr);
+    const result = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000 });
+    assert.equal(result.status, 0, result.stderr);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("initializes private class state through safe user constructors", () => {
   const example = resolve(projectRoot, "examples/language/basics/constructors.zs");
   const source = readFileSync(example, "utf8");

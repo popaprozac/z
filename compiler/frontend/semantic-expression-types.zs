@@ -249,6 +249,7 @@ function nativeObjectiveCReferenceAssignable(
         ].typeSignature
       ) {
         some(signature) => signature.foreignKind == "objcInterface"
+          || signature.foreignKind == "objcSubclass"
           || signature.foreignKind == "objcProtocol";
         none => false;
       }
@@ -263,7 +264,7 @@ function nativeObjectiveCReferenceAssignable(
       ].typeSignature
     ) {
       some(signature) => {
-        if (signature.foreignKind != "objcInterface") return false;
+        if (signature.foreignKind != "objcInterface" && signature.foreignKind != "objcSubclass") return false;
       }
       none => return false;
     }
@@ -288,7 +289,7 @@ function nativeObjectiveCReferenceAssignable(
         ) {
           some(signature) => {
             if (
-              signature.foreignKind != "objcInterface"
+              (signature.foreignKind != "objcInterface" && signature.foreignKind != "objcSubclass")
               || signature.foreignObjCSuperName.byteLength == 0
             ) return false;
             current = rebaseTypeName(

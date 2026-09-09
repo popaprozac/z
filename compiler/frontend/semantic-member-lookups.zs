@@ -89,6 +89,9 @@ export struct NativeMethodCallShape {
   objectiveCNativeReturnType: String;
   objectiveCParameterNativeTypes: Array<String>;
   objectiveCParameterProtocols: Array<ModuleObjCParameterProtocolSignature>;
+  objectiveCConsumesSelf: boolean = false;
+  objectiveCConsumedParameters: Array<usize> = Array<usize>();
+  objectiveCVariadic: boolean = false;
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
@@ -837,6 +840,9 @@ export function methodCallShape(
               ),
               objectiveCParameterNativeTypes: nativeParameterTypes,
               objectiveCParameterProtocols: nativeParameterProtocols,
+              objectiveCConsumesSelf: method.objectiveCConsumesSelf,
+              objectiveCConsumedParameters: copy method.objectiveCConsumedParameters,
+              objectiveCVariadic: method.objectiveCVariadic,
               objectiveCAsyncCallbackParameter:
                 method.objectiveCAsyncCallbackParameter,
               objectiveCAsyncResultParameter:

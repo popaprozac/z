@@ -8,10 +8,11 @@ import { ParsedModule } from "../../compiler/frontend/module-symbols.zs";
 import { ModuleSource } from "../../compiler/frontend/semantic-model.zs";
 import { attachForeignContracts, NativeForeignModuleContract } from "../../compiler/frontend/semantic-foreign.zs";
 import {
-  requireNativeObjCSubclassBodySupport, validateNativeObjCSubclassDeclarations,
+  prepareNativeObjCSubclassTypes, validateNativeObjCSubclassDeclarations,
 } from "../../compiler/frontend/semantic-objc-subclasses.zs";
+import { resolveParsedModulesWithForeignContracts, validateNativeObjCSubclassBodyTypes } from "../../compiler/frontend/module-resolver.zs";
 
-function inspect(in path: String, in sourcePath: String, gate: boolean): i32 throws String {
+function inspect(in path: String, in sourcePath: String, in mode: String): i32 throws String {
   const source = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(source);
   if (module.version != 14) throw "wrong foreign protocol version";
@@ -56,7 +57,7 @@ function inspect(in path: String, in sourcePath: String, gate: boolean): i32 thr
       index = index + 1;
     }
   }
-  if (!foundBase || !foundFinal || observed != 10) throw "missing native subclass evidence";
+  if (!foundBase || !foundFinal || observed != 13) throw `missing native subclass evidence: ${observed}`;
   const contracts = try parseForeignContracts(
     "declare module \"objc-subclass-wire.h\" {}", "wire.zd"
   );
@@ -82,7 +83,7 @@ function inspect(in path: String, in sourcePath: String, gate: boolean): i32 thr
       normalizedCount = normalizedCount + 1;
     }
   }
-  if (normalizedCount != 10) throw "dropped normalized native methods";
+  if (normalizedCount != 13) throw "dropped normalized native methods";
   let programSource = "import native from \"objc-subclass-wire.h\"; function main(): i32 { return 0; }";
   if (sourcePath.byteLength > 0) programSource = try fs.readText(sourcePath);
   const moduleSource = ModuleSource({
@@ -142,14 +143,27 @@ function inspect(in path: String, in sourcePath: String, gate: boolean): i32 thr
       none => {}
     }
   }
-  if (attachedCount != 9 || excludedCount != 1 || !attachedFinal || !attachedNullable) throw "missing attached subclass evidence";
+  if (attachedCount != 12 || excludedCount != 1 || !attachedFinal || !attachedNullable) throw "missing attached subclass evidence";
   match (attempt validateNativeObjCSubclassDeclarations(parsedModules, resolved)) {
     success => {}
     failure(error) => throw `${error.code}: ${error.message}`;
   }
-  if (gate) {
-    match (attempt requireNativeObjCSubclassBodySupport(parsedModules)) {
+  if (mode == "types") {
+    match (attempt prepareNativeObjCSubclassTypes(parsedModules, inout resolved)) {
       success => {}
+      failure(error) => throw `${error.code}: ${error.message}`;
+    }
+    const evidence = match (attempt validateNativeObjCSubclassBodyTypes(parsedModules[0], resolved, 0)) {
+      success(value) => value;
+      failure(error) => throw `${error.code}: ${error.message}`;
+    };
+    for (const call of evidence.callResolutions) {
+      console.log(`${call.kind}:${call.objectiveCSelector}:${call.returnType}`);
+    }
+  }
+  if (mode == "gate") {
+    match (attempt resolveParsedModulesWithForeignContracts(parsedModules, "probe.zs", foreignModules)) {
+      success(_) => {}
       failure(error) => throw `${error.code}: ${error.message}`;
     }
   }
@@ -160,7 +174,8 @@ function main(): i32 {
   const arguments = process.args();
   if (arguments.length < 1 || arguments.length > 3) return 2;
   const sourcePath = arguments.length > 1 ? copy arguments[1] : "";
-  return match (attempt inspect(arguments[0], sourcePath, arguments.length == 3)) {
+  const mode = arguments.length == 3 ? copy arguments[2] : "";
+  return match (attempt inspect(arguments[0], sourcePath, mode)) {
     success(code) => code;
     failure(error) => { console.log(error); select 1; }
   };

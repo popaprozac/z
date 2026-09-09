@@ -406,11 +406,101 @@ export function requireNativeObjCSubclassBodySupport(in parsed: Array<ParsedModu
       match (in aggregate.nativeBase) {
         some(base) => throw codedModuleResolutionError(
           ModuleResolveErrorKind.unsupportedLowering, "Z0814", module.path,
-          "native Objective-C subclasses still require native body ownership checking and emission, which are not implemented yet; use Stage 0",
+          "native Objective-C subclass execution still requires availability checks, complete body ownership parity, and native emission; use Stage 0",
           base.line, base.column, base.name.byteLength
         );
         none => {}
       }
     }
   }
+}
+
+// This source-owned reference has nominal Z identity and an imported native
+// base ABI. It is deliberately not an ordinary Z ARC record or an alias of the
+// imported class. No executable graph may leave the resolver until the later
+// subclass emission gate is removed. Declaration validation must run first.
+export function prepareNativeObjCSubclassTypes(
+  in parsed: Array<ParsedModule>, inout modules: Array<ResolvedModule>
+): void throws ModuleResolveError {
+  let moduleIndex: usize = 0;
+  while (moduleIndex < parsed.length) {
+    const module = view parsed[moduleIndex];
+    for (const aggregate of module.program.aggregates) {
+      const baseName = match (in aggregate.nativeBase) {
+        some(base) => copy base.name;
+        none => "";
+      };
+      if (baseName.byteLength == 0) continue;
+      const baseLocation = match (typeSymbolLocation(modules, moduleIndex, baseName)) {
+        some(location) => location;
+        none => throw subclassError(module,
+          "native subclass body checking requires attached Objective-C superclass ABI evidence",
+          aggregate.line, aggregate.column);
+      };
+      const location = match (typeSymbolLocation(modules, moduleIndex, aggregate.name)) {
+        some(value) => value;
+        none => throw subclassError(module, "missing native subclass type identity", aggregate.line, aggregate.column);
+      };
+      const methods = try inheritedMethods(module, modules, moduleIndex, aggregate, baseName);
+      let signature = match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(value) => copy value;
+        none => throw subclassError(module, "missing native subclass signature", aggregate.line, aggregate.column);
+      };
+      signature.foreignKind = "objcSubclass";
+      signature.foreignLayout = "reference";
+      signature.foreignObjCSuperName = copy baseName;
+      signature.customDeinit = true;
+      // Native calls can use the imported base pointer ABI without collapsing
+      // the source subclass's nominal identity into that base type.
+      const baseSignature = match (in modules[baseLocation.moduleIndex].symbols[baseLocation.symbolIndex].typeSignature) {
+        some(value) => copy value;
+        none => throw subclassError(module, "missing imported superclass signature", aggregate.line, aggregate.column);
+      };
+      signature.foreignNativeName = copy baseSignature.foreignNativeName;
+      for (const field of baseSignature.fields) {
+        let property = copy field;
+        property.typeName = rebaseTypeName(modules, baseLocation.moduleIndex, moduleIndex, field.typeName);
+        property.objectiveCProtocols = Array<String>();
+        for (const protocol of field.objectiveCProtocols) {
+          property.objectiveCProtocols.push(rebaseTypeName(modules, baseLocation.moduleIndex, moduleIndex, protocol));
+        }
+        signature.fields.push(move property);
+      }
+      let methodIndex: usize = 0;
+      while (methodIndex < signature.methods.length) {
+        const selector = copy signature.methods[methodIndex].objectiveCImplementationSelector;
+        for (const native of methods) {
+          if (native.objectiveCSelector != selector) continue;
+          let method = copy native;
+          method.name = copy signature.methods[methodIndex].name;
+          method.receiverMode = copy signature.methods[methodIndex].receiverMode;
+          method.signature = copy signature.methods[methodIndex].signature;
+          method.objectiveCImplementationSelector = copy selector;
+          signature.methods[methodIndex] = move method;
+          break;
+        }
+        methodIndex = methodIndex + 1;
+      }
+      const header = copy modules[baseLocation.moduleIndex].symbols[baseLocation.symbolIndex].foreignHeader;
+      modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature = Option.some(move signature);
+      modules[location.moduleIndex].symbols[location.symbolIndex].foreignHeader = move header;
+    }
+    moduleIndex = moduleIndex + 1;
+  }
+}
+
+export function nativeObjCSubclassBase(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in name: String
+): String {
+  if (name.byteLength == 0) return "";
+  return match (typeSymbolLocation(modules, moduleIndex, name)) {
+    some(location) => {
+      return match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => signature.foreignKind == "objcSubclass"
+          ? rebaseTypeName(modules, location.moduleIndex, moduleIndex, signature.foreignObjCSuperName) : "";
+        none => "";
+      };
+    }
+    none => "";
+  };
 }

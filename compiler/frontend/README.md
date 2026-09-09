@@ -161,10 +161,16 @@ recursive path.
   `semantic-objc-subclass-bodies.zs` traverses statement/expression arenas for
   one-time initialization, pre-initialization receiver use, constructor return
   boundaries, implicit receiver shadowing, and non-capturable direct `super`
-  calls. Each call is matched against the inherited native contract. These are
-  structural checks, not executable body typing or ownership evidence.
-  Resolution still rejects native subclass bodies with `Z0814` pending receiver
-  typing/ownership, availability/executor validation, and native lowering/emission.
+  calls. Each call is matched against the inherited native contract. A first
+  typed-body pass prepares a nominal native subclass/base ABI, gives `this` and
+  `super` one alias identity, and reuses ordinary names, types, member calls,
+  property access, and loan checking. Evidence distinguishes superclass
+  initialization and dispatch from virtual calls. Tests reject invalid
+  arguments/results, downcasts/sibling conversions, readonly property writes,
+  alias reinitialization/overlap, and missing imported executor capabilities.
+  Typed checking requires attached superclass ABI evidence. Resolution still
+  rejects execution with `Z0814` pending availability, complete ownership parity,
+  and native lowering/emission; the first body slice is not a full safety proof.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies
