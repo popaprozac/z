@@ -72,8 +72,11 @@ z build . --generated .zapp/generated/services.zbuild.json
 
 The overlay uses exact module specifiers, cannot shadow project or standard
 imports, and generated source is checked as ordinary Z. Stage 0 and the
-fixed-point native driver resolve the same overlay. Checked generated call
-adaptation is the next layer.
+fixed-point native driver also execute source-hashed, exact-target checked call
+adaptation. A generated adapter can import an exported type declared beside
+`main`: its compiler-created function link does not invent a source import
+cycle. Ordinary imports in either authored or generated files still reject
+cycles, and generated code keeps the normal type and visibility checks.
 
 Native dependencies belong in `z.json`. Portable libraries use
 `target.link.libraries`; Apple executables can use

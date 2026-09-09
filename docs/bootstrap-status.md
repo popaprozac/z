@@ -232,6 +232,17 @@ module's canonical callable ABI. The router's companion C-callback entry proves
 that a checked escaping native callback can own that reusable class graph and
 release it deterministically.
 
+Validated generated call adapters now link back to entry-defined exported types
+without introducing source import cycles. Ordinary imports in generated files
+remain cycle-checked and visibility-checked. Both drivers preserve generated
+roots and their ordinary dependencies in emission and cache invalidation; native
+lowering supplies checked nominal ABI/cleanup evidence when an adapter returns
+its own ARC implementation into a generic replacement. Distinct generic method
+instances keep independent semantic sites in Stage 0. The same reduced matrix
+executes through both drivers, including owned cleanup under UBSan, and Zapp's
+complete native Application.run gate passes with its service beside main. See
+[the generated-link contract](generated-adapter-linking.md).
+
 ## Foreign interfaces
 
 | Boundary | Status | Current boundary |

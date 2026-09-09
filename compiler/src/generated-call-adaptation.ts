@@ -240,6 +240,7 @@ export function applyGeneratedCallAdaptersToProgram(
     };
     imports.push({
       kind: "import",
+      generatedAdapterLink: true,
       moduleName: `__z_generated_call_module_${index}`,
       bindings: [{
         importedName: declaration.adapterExport,

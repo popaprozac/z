@@ -445,6 +445,7 @@ function appendAdapterImport(
     column: 1,
   }));
   program.imports.push(ImportDeclaration({
+    generatedAdapterLink: true,
     moduleName: `__z_generated_call_module_${index}`,
     bindings,
     selective: true,

@@ -335,6 +335,9 @@ export struct ImportBinding {
 }
 
 export struct ImportDeclaration {
+  // Set only by validated driver call adaptation, never by source parsing.
+  // Name/visibility resolution includes the link; initialization order does not.
+  generatedAdapterLink: boolean = false;
   moduleName: String;
   bindings: Array<ImportBinding>;
   selective: boolean;

@@ -106,7 +106,7 @@ name an existing package in the resolved graph; it grants the generated module
 that exact package identity for `internal` access. Generated source receives no
 other privilege and is parsed, checked, and lowered as ordinary Z.
 
-Stage 0 also executes versioned, source-hashed `callAdapters` for tools that
+Both compiler drivers execute versioned, source-hashed `callAdapters` for tools that
 need checked generated adapters without rewriting source. `offset` is the
 parser's call-expression offset and `argument` is zero-based. Before adapting,
 the compiler checks the source digest and proves that the call resolves to
@@ -126,6 +126,15 @@ protocol does not carry invocation overlays; the standalone fixed-point `z`
 does execute the overlay itself. Generated overlays are build products, not
 portable package configuration, and should normally live under a tool cache
 such as `.zapp/`.
+
+A validated adapter reference is a generated function link, not an authored
+module-initialization dependency. Its generated module may import an exported
+type declared beside the caller's `main`; that alone does not form a circular
+source import. Ordinary imports—including imports written in generated
+files—still reject cycles, require visible exports, and retain their dependency
+order. Generated modules and their ordinary dependencies remain checked and
+included in build invalidation. This does not grant access to private service
+types or permit general circular imports. See [generated adapter linking](generated-adapter-linking.md).
 
 Modules may publish named compile-time values:
 

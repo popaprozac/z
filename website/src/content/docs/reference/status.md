@@ -193,7 +193,11 @@ production or compatibility-sensitive use.
   files. A packaged generated module may authorize its one synthetic replacement
   access to a same-package `internal` method without exposing that method to
   authored consumers; the fixed-point driver owns the SHA-256 and native AST
-  transformation.
+  transformation. Validated adapter references are function links rather than
+  source-initialization edges, allowing adapters to import entry-defined
+  exported types. Ordinary import cycles, including those inside generated
+  source, remain errors; generated roots and their dependencies stay checked,
+  emitted, and tracked for build invalidation.
 - A standalone native compiler capable of rebuilding its own constrained source
   graph to a fixed point
 - Compiler API 2 and `z metadata`, exposing versioned checked public symbols and

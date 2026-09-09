@@ -121,6 +121,11 @@ export function loadSourceModuleBatch(
       ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../stdlib"),
   );
   const modules = new Map<string, SourceModuleBatchModule>();
+  const generatedLinks: Array<{
+    dependencies: Map<number, string>;
+    declaration: ImportDeclaration;
+    dependencyPath: string;
+  }> = [];
   const packageForFile = (fileName: string) => {
     const matches = (options.packages ?? []).filter((candidate) => (
       fileName === candidate.rootDirectory || fileName.startsWith(`${candidate.rootDirectory}${sep}`)
@@ -222,6 +227,13 @@ export function loadSourceModuleBatch(
         }
         continue;
       }
+      if (declaration.generatedAdapterLink) {
+        // Finish the ordinary import graph before discovering generated roots.
+        // Only validated adapter records can create this provenance; authored
+        // imports in generated files still go through ordinary cycle checking.
+        generatedLinks.push({ dependencies, declaration, dependencyPath });
+        continue;
+      }
       const dependency = load(dependencyPath, null, null, [...stack, canonical], declaration);
       if (packageDependencyPath) dependency.packageSpecifiers.add(declaration.header);
       dependencies.set(declaration.location.offset, dependency.fileName);
@@ -230,6 +242,11 @@ export function loadSourceModuleBatch(
   };
 
   const entry = load(entryPath, entrySource, entryProgram, [], null);
+  for (const { dependencies, declaration, dependencyPath } of generatedLinks) {
+    const dependency = load(dependencyPath, null, null, [], declaration);
+    dependency.packageSpecifiers.add(declaration.header);
+    dependencies.set(declaration.location.offset, dependency.fileName);
+  }
   return { entryFileName: entry.fileName, modules: [...modules.values()] };
 }
 
@@ -312,10 +329,23 @@ export function linkSourceModules(
   const visit = (node: ModuleNode): void => {
     if (visited.has(node.fileName)) return;
     visited.add(node.fileName);
-    for (const dependency of node.dependencies.values()) visit(dependency);
+    for (const declaration of node.program.imports) {
+      if (declaration.generatedAdapterLink) continue;
+      const dependency = node.dependencies.get(declaration.location.offset);
+      if (dependency) visit(dependency);
+    }
     ordered.push(node);
   };
   visit(entry);
+  // Generated functions are roots for emission, with their own ordinary
+  // declaration/constant dependencies. Never order an artificial import cycle.
+  for (const node of ordered) {
+    for (const declaration of node.program.imports) {
+      if (!declaration.generatedAdapterLink) continue;
+      const dependency = node.dependencies.get(declaration.location.offset);
+      if (dependency) visit(dependency);
+    }
+  }
 
   const nativeExports = new Map<string, FunctionDeclaration>();
   const nativeNames = new Map<string, {

@@ -57,6 +57,7 @@ import type {
 } from "./support/bootstrap.ts";
 import { selfHostExecutableDifferentialCorpus } from "./support/self-host-fixtures.ts";
 import { createHash } from "node:crypto";
+import { exerciseGeneratedAdapterLinking } from "./support/generated-adapter-linking.ts";
 
 hostToolchainTest("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
   const application = resolve(projectRoot, "examples/applications/source-inspector/main.zs");
@@ -10417,6 +10418,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8", input: driverEmission.stdout },
   );
   assert.equal(driverCompilation.status, 0, driverCompilation.stderr);
+  exerciseGeneratedAdapterLinking([driver]);
   const foreignAdapterEnvironment = {
     ...process.env,
     PATH: `${resolve(projectRoot, "compiler/bin")}${delimiter}${process.env.PATH ?? ""}`,

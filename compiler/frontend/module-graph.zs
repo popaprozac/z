@@ -208,6 +208,7 @@ export function buildResolvedModules(
 
 function visitModule(
   index: usize,
+  in parsed: Array<ParsedModule>,
   in modules: Array<ResolvedModule>,
   inout states: Array<u8>,
   inout order: Array<usize>
@@ -221,14 +222,22 @@ function visitModule(
     1
   );
   states[index] = 1;
-  for (const dependency of modules[index].dependencies) {
-    try visitModule(dependency, modules, inout states, inout order);
+  for (const declaration of parsed[index].program.imports) {
+    if (declaration.generatedAdapterLink) continue;
+    const target = importTarget(parsed, parsed[index], declaration);
+    match (target) {
+      some(dependency) => {
+        try visitModule(dependency, parsed, modules, inout states, inout order);
+      }
+      none => {}
+    }
   }
   states[index] = 2;
   order.push(index);
 }
 
 export function resolveModuleOrder(
+  in parsed: Array<ParsedModule>,
   in modules: Array<ResolvedModule>,
   entry: usize
 ): Array<usize> throws ModuleResolveError {
@@ -239,6 +248,23 @@ export function resolveModuleOrder(
     index = index + 1;
   }
   let dependencyOrder = Array<usize>();
-  try visitModule(entry, modules, inout states, inout dependencyOrder);
+  try visitModule(entry, parsed, modules, inout states, inout dependencyOrder);
+  // Include generated function roots without making them initialization edges
+  // back from the caller. Each root's authored imports remain a checked DAG.
+  let orderedIndex: usize = 0;
+  while (orderedIndex < dependencyOrder.length) {
+    const moduleIndex = dependencyOrder[orderedIndex];
+    for (const declaration of parsed[moduleIndex].program.imports) {
+      if (!declaration.generatedAdapterLink) continue;
+      const target = importTarget(parsed, parsed[moduleIndex], declaration);
+      match (target) {
+        some(dependency) => {
+          try visitModule(dependency, parsed, modules, inout states, inout dependencyOrder);
+        }
+        none => {}
+      }
+    }
+    orderedIndex = orderedIndex + 1;
+  }
   return dependencyOrder;
 }

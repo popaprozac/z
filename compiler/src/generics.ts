@@ -1101,13 +1101,16 @@ export function materializeGenerics(
       template.typeParameters!.forEach((parameter, index) => substitutions.set(parameter, args[index]));
       instantiateDeferredMethodDemands(template, substitutions);
       requestedMethodInstances.add(methodInstanceKey(materializedOwnerName, template.name, args));
+      // Each method instance needs fresh semantic sites even on a nongeneric
+      // owner. Sharing the template/owner remapper lets one concrete receiver
+      // type overwrite another instance's member-call evidence.
       methods.push(transform({
         ...template,
         name: monomorphizedName(template.name, args),
         genericOriginName: template.name,
         typeParameters: [],
         typeParameterConstraints: [],
-      }, substitutions, remapLocation) as FunctionDeclaration);
+      }, substitutions, specializationLocationRemapper()) as FunctionDeclaration);
     }
     while (pendingMethodDemands.has(materializedOwnerName)) {
       const pending = pendingMethodDemands.get(materializedOwnerName)!;

@@ -20,6 +20,7 @@ import {
   writeFileSync,
 } from "./support/bootstrap.ts";
 import { createHash } from "node:crypto";
+import { exerciseGeneratedAdapterLinking } from "./support/generated-adapter-linking.ts";
 import type { ZProgramMetadata } from "../compiler/src/program-metadata.ts";
 import { lex } from "../compiler/src/lexer.ts";
 import { linkSourceModules } from "../compiler/src/modules.ts";
@@ -260,6 +261,10 @@ test("resolves generated modules without editing authored source", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("links generated adapters back to entry declarations without allowing source cycles", () => {
+  exerciseGeneratedAdapterLinking([process.execPath, cli]);
 });
 
 test("checks and lowers source-hashed generated call adaptations", () => {

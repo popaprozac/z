@@ -13112,6 +13112,6 @@ export function resolveParsedModulesWithForeignContracts(
     index = index + 1;
   }
 
-  const dependencyOrder = try resolveModuleOrder(modules, entry);
+  const dependencyOrder = try resolveModuleOrder(parsed, modules, entry);
   return ModuleGraph({ modules, dependencyOrder, entry });
 }

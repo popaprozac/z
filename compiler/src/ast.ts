@@ -45,6 +45,9 @@ export type TypeAliasDeclaration = {
 
 export type ImportDeclaration = {
   readonly kind: "import";
+  /** Compiler-only function link introduced by a validated call-adapter record.
+   * It participates in name/visibility checking, not source initialization order. */
+  readonly generatedAdapterLink?: true;
   readonly moduleName: string;
   readonly bindings: ImportBinding[] | null;
   readonly header: string;

@@ -1580,6 +1580,48 @@ test("infers generic results from annotations, assignments, and returns", () => 
   assert.match(nativeConstraint.stderr, /i32 does not satisfy Measured for T in "constrained"/);
 });
 
+test("keeps distinct receiver evidence for each generic method specialization", () => {
+  const source = `
+    trait Readable { function read(): i32; }
+    readonly class First implements Readable {
+      value: i32;
+      function read(): i32 { return this.value + 1; }
+    }
+    readonly class Second implements Readable {
+      value: i32;
+      function read(): i32 { return this.value * 2; }
+    }
+    struct Reader {
+      function read<T: Readable>(value: T): i32 { return value.read(); }
+      static function inspect<T: Readable>(value: T): i32 { return value.read(); }
+    }
+    struct GenericReader<U> {
+      marker: U;
+      function read<T: Readable>(value: T): i32 { return value.read(); }
+    }
+    function main(): i32 {
+      const reader = Reader();
+      const generic = GenericReader({ marker: 0 });
+      const first = new First({ value: 19 });
+      const second = new Second({ value: 11 });
+      return reader.read(first) + reader.read(second)
+        + Reader.inspect(first) + Reader.inspect(second)
+        + generic.read(first) + generic.read(second) - 126;
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-generic-method-evidence-");
+  try {
+    const entry = resolve(directory, "main.zs");
+    writeFileSync(entry, source);
+    const result = spawnSync(process.execPath, [cli, "run", entry], {
+      encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+    });
+    assert.equal(result.status, 0, result.stderr || String(result.error));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("specializes separately generic instance and static methods", () => {
   const source = `
     struct Utility {
@@ -1699,7 +1741,7 @@ test("infers generic aggregate construction, class construction, and static fact
   const generated = compileToC(source, "aggregate-inference.zs");
   assert.match(generated, /Z___z_mono_Pair_i32/);
   assert.match(generated, /Z___z_mono_Envelope_i32_new\(int32_t value\)/);
-  assert.match(generated, /Z___z_mono_Holder_i32_new\(int32_t value\)/);
+  assert.match(generated, /Z___z_mono_Holder_i32_new\(int32_t _z_init_value\)/);
   assert.match(generated, /Z___z_mono_Container_i32_wrap\(int32_t value\)/);
   assert.match(generated, /Z___z_mono_Shelf_i32_new\(int32_t value\)/);
   assert.match(generated, /Z___z_mono_Marker_i32_create\(void\)/);

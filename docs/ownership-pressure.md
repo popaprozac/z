@@ -6605,6 +6605,50 @@ the final native compiler reaches a byte-identical fixed point (10,956,083 C
 bytes). The complete isolated Zapp Application.run gate passes again with this
 compiler, including both startup rollback paths and primary/secondary forwarding.
 
+## Entry-defined services and generated function links (2026-09-09)
+
+Zapp's startup service exposed module-boundary friction unrelated to ownership:
+an exported class beside `main` was valid source, but its generated dispatcher
+imported that class while call adaptation inserted an import back to the
+dispatcher. Both compilers rejected the artificial cycle. Requiring a separate
+service file would have hidden this upstream tool-integration problem.
+
+The approved distinction is now implemented: validated adapter references
+participate in normal name/export/type checking without becoming source
+initialization edges. Ordinary imports in generated code are not privileged.
+Generated roots retain their ordinary dependencies and are included in emission
+and cache inputs. The source parser cannot manufacture the internal provenance;
+names and filename prefixes cannot opt out of cycle checks.
+
+The same executable matrix runs through Stage 0 and the native driver. It uses
+an entry-defined move-only value, multiple adapter sites, a registration in an
+imported module, and exported constants. Construction/destruction output is
+exactly once per value. An edited generated-only dependency changes the result
+after reuse. Ordinary source cycles, generated-file cycles, private source types,
+unexported adapters, incompatible return types, and runtime module initializers
+remain rejected. Existing source-hash/target/internal-member gates remain.
+
+The complete app build exposed one more composition requirement: generated
+adapters return ARC implementation objects, not just scalars. Native lowering
+now supplies the checked generic-argument ABI/cleanup evidence at each adapted
+caller before emitting the generated definitions. Distinct adapters and one
+shared adapter requested from multiple modules are covered. A companion Stage-0
+fix gives every generic method instance fresh semantic source sites: two
+concrete trait receivers must not overwrite each other's member-call evidence.
+The independent instance/static/generic-owner test does not use generated code.
+
+This adds no runtime allocation, ownership exception, or source syntax. Zapp's
+isolated complete Application.run regression now declares its ARC service beside
+`main`, so the full application—not only a reduced linker fixture—exercises this
+boundary. General cyclic modules and arbitrary runtime initialization are not
+unlocked by generated function linking.
+
+Final checkpoint: 232 self-hosting, 97 module/collection, and 98 async tests pass;
+both drivers' expanded ARC adapter probes pass strict C/UBSan with exact cleanup.
+The rebuilt compiler reaches a byte-identical fixed point (10,965,112 C bytes).
+The complete signed native Zapp startup gate, both Zapp TypeScript checks, and
+the website build pass. No ASan probe or interactive app bundle was used.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

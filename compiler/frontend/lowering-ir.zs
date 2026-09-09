@@ -32852,6 +32852,46 @@ function lowerModulesIncludingTests(
         inout importedTypes
       );
     }
+    // A validated adapter can return its own nominal implementation type to a
+    // generic replacement in this module, even though its ordinary declaration
+    // dependencies put the generated module after this caller. Reuse checked
+    // generic-demand ABI/cleanup evidence before lowering the call site; the
+    // generated definitions and deferred method bodies still emit normally.
+    let hasGeneratedAdapterLink = false;
+    for (const declaration of parsed[moduleIndex].program.imports) {
+      if (declaration.generatedAdapterLink) hasGeneratedAdapterLink = true;
+    }
+    if (hasGeneratedAdapterLink) {
+      let consumerArguments = Array<String>();
+      let argumentModules = Array<usize>();
+      let argumentSymbols = Array<usize>();
+      // Use this caller's checked arguments, not the globally deduplicated
+      // specialization's first consumer: several modules can request the same
+      // implementation type and each needs its local ABI lookup evidence.
+      for (const resolution of graph.modules[moduleIndex].semanticEvidence.callResolutions) {
+        for (const argument of resolution.typeArguments) {
+          match (typeSymbolLocation(graph.modules, moduleIndex, argument)) {
+            some(location) => {
+              consumerArguments.push(copy argument);
+              argumentModules.push(location.moduleIndex);
+              argumentSymbols.push(location.symbolIndex);
+            }
+            none => {}
+          }
+        }
+      }
+      try appendGenericDemandArgumentTypes(
+        parsed,
+        graph,
+        structs,
+        enums,
+        privateTypeCollisionNames,
+        consumerArguments,
+        argumentModules,
+        argumentSymbols,
+        inout importedTypes
+      );
+    }
     try collectForeignResources(importedTypes, inout foreignResources);
     try collectForeignLowering(
       parsed[moduleIndex].program,
