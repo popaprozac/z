@@ -1,4 +1,5 @@
 import { TextBuffer } from "std/text";
+import { requireNativeAvailability, requireNativeReferenceAvailability } from "./semantic-native-availability.zs";
 import {
   nativeObjCSubclassBase,
   prepareNativeObjCSubclassTypes,
@@ -6270,6 +6271,11 @@ function inferExpressionNodeType(
     }
     match (aggregateFieldShape(modules, moduleIndex, receiverValueType, memberName)) {
       some(field) => {
+        const nativeSubclassContext = valueBindingType(bindings, "__z_native_objc_subclass_base");
+        if (nativeSubclassContext.byteLength > 0) {
+          try requireNativeReferenceAvailability(module, modules, moduleIndex, receiverValueType, node.line, node.column);
+          try requireNativeAvailability(module, field.objectiveCAvailability, field.name, node.line, node.column);
+        }
         match (typeSymbolLocation(modules, moduleIndex, receiverValueType)) {
           some(location) => {
             match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
@@ -10853,6 +10859,8 @@ function inferExpressionNodeType(
                 ? "objcSuperInitializer" : "objcSuper";
             }
             if (nativeBase.byteLength > 0 && method.objectiveCSelector.byteLength > 0) {
+              try requireNativeReferenceAvailability(module, modules, moduleIndex, ownerType, tree.nodes[index].line, tree.nodes[index].column);
+              try requireNativeAvailability(module, method.objectiveCAvailability, method.objectiveCSelector, tree.nodes[index].line, tree.nodes[index].column);
               if ((method.objectiveCConsumesSelf && callKind != "objcSuperInitializer")
                 || method.objectiveCConsumedParameters.length > 0) {
                 throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
@@ -11732,6 +11740,11 @@ function inferStatement(
               }
               match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
                 some(field) => {
+                  const nativeSubclassContext = valueBindingType(bindings, "__z_native_objc_subclass_base");
+                  if (nativeSubclassContext.byteLength > 0) {
+                    try requireNativeReferenceAvailability(module, modules, moduleIndex, receiverType, arena.nodes[index].line, arena.nodes[index].column);
+                    try requireNativeAvailability(module, field.objectiveCAvailability, field.name, arena.nodes[index].line, arena.nodes[index].column);
+                  }
                   if (
                     field.objectiveCGetter.byteLength > 0
                     || field.objectiveCSetter.byteLength > 0

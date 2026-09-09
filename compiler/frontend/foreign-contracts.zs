@@ -219,6 +219,7 @@ export struct NativeForeignObjCInterfaceContract {
   nativeName: String;
   superName: String;
   subclassingRestricted: boolean;
+  availability: Array<NativeForeignObjCAvailabilityContract>;
   executorAffinity: String;
   methods: Array<NativeForeignObjCMethodContract>;
   properties: Array<NativeForeignObjCPropertyContract>;
@@ -3475,6 +3476,18 @@ function normalizedObjCInterfaces(
 ): Array<NativeForeignObjCInterfaceContract> throws String {
   let interfaces = Array<NativeForeignObjCInterfaceContract>();
   for (const declaration of declarations.objectiveCInterfaces) {
+    let availability = Array<NativeForeignObjCAvailabilityContract>();
+    for (const item of declaration.availability) {
+      availability.push(NativeForeignObjCAvailabilityContract({
+        platform: copiedOptionalText(item.platform),
+        introduced: copiedOptionalText(item.introduced),
+        deprecated: item.deprecated,
+        deprecatedVersion: copiedOptionalText(item.deprecatedVersion),
+        obsoleted: copiedOptionalText(item.obsoleted),
+        unavailable: item.unavailable,
+        message: copiedOptionalText(item.message),
+      }));
+    }
     let superName = "";
     match (in declaration.superName) {
       some(name) => superName = name.copyBytes(0, name.byteLength);
@@ -3507,6 +3520,7 @@ function normalizedObjCInterfaces(
       ),
       superName,
       subclassingRestricted: declaration.subclassingRestricted,
+      availability,
       executorAffinity,
       methods: try normalizedObjCMethods(
         declarations,

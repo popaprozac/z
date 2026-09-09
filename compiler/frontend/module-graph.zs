@@ -69,6 +69,8 @@ export function parseModule(
   const module = ParsedModule({
     path: source.path.copyBytes(0, source.path.byteLength),
     packageIdentity: source.packageIdentity.copyBytes(0, source.packageIdentity.byteLength),
+    targetPlatform: copy source.targetPlatform,
+    targetMinimumVersion: copy source.targetMinimumVersion,
     packageSpecifiers: copy source.packageSpecifiers,
     program,
   });

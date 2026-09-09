@@ -6806,6 +6806,21 @@ retain checked `in` capabilities without changing calls through an imported base
 or `super`. The strict-Clang/UBSan fixture exercises the borrowed override call
 and still checks exact native destruction across repeated constructions.
 
+The availability follow-up found missing evidence at two boundaries: method and
+property availability survived, but interface availability did not, and the
+native resolver never received the driver's deployment target. ZFDCL v15 now
+carries interface-level facts through normalization into source-visible native
+type signatures. The driver passes the existing target platform/minimum version
+through module parsing; a compiler-private host probe supplies only the platform
+when no target is configured. No new stdlib or target-selection syntax was added.
+The checker compares dotted numeric versions without overflow and rejects
+unavailable, too-new, or obsoleted bases, overrides, initializers, calls, and
+properties. A foreign platform's restriction does not poison a matching host
+target. Tests use real Clang attributes, check both version boundaries, and
+exercise the full resolver and freshly bootstrapped manifest path. Deprecations
+remain retained metadata pending warning reporting. Full subclass execution and
+remaining body ownership/availability composition are still gated.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

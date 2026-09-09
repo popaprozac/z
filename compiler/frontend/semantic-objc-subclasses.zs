@@ -1,3 +1,4 @@
+import { requireNativeAvailability } from "./semantic-native-availability.zs";
 import {
   AggregateDeclaration, DeclarationKind, ExpressionKind, ExpressionTree,
   FunctionDeclaration, ParameterMode, ReceiverMode, StatementKind,
@@ -116,6 +117,7 @@ function inheritedMethods(
     visited.push(key);
     match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
       some(signature) => {
+        try requireNativeAvailability(module, signature.foreignObjCAvailability, current, aggregate.line, aggregate.column);
         if (signature.executorAffinity == "thread.main") mainIsolated = true;
         for (const method of signature.methods) {
           appendInheritedMethod(modules, location.moduleIndex, moduleIndex, method, inout methods);
@@ -160,6 +162,7 @@ function validateOverrideContract(
   in module: ParsedModule, in modules: Array<ResolvedModule>, moduleIndex: usize,
   in method: FunctionDeclaration, in native: ModuleMethodSignature
 ): void throws ModuleResolveError {
+  try requireNativeAvailability(module, native.objectiveCAvailability, native.objectiveCSelector, method.line, method.column);
   if (native.objectiveCDirect) throw subclassError(module,
     "a direct Objective-C method cannot be overridden", method.line, method.column);
   if (native.objectiveCConsumesSelf || native.objectiveCConsumedParameters.length > 0) {
@@ -267,6 +270,7 @@ function validateSuperclassCallContract(
     "superclass call must resolve to one imported Objective-C instance selector",
     call.line, call.column);
   const method = view methods[selected];
+  try requireNativeAvailability(module, method.objectiveCAvailability, method.objectiveCSelector, call.line, call.column);
   if (call.initializes) {
     if (!nativeInitializerSelector(method.objectiveCSelector) || !method.objectiveCDesignatedInitializer
       || !method.objectiveCReturnsInstanceType) throw subclassError(module,

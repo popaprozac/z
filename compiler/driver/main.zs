@@ -1,4 +1,5 @@
 import console from "std/console";
+import { compilerHostPlatform } from "./host-platform.zs";
 import { Set } from "std/collections";
 import fs from "std/fs";
 import process from "std/process";
@@ -256,10 +257,20 @@ function loadModule(
       packageSpecifiers.push(copy sourceImport.specifier);
     }
   }
+  const targetPlatform = match (in config.platform) {
+    some(value) => copy value;
+    none => compilerHostPlatform();
+  };
+  const targetMinimumVersion = match (in config.minimumVersion) {
+    some(value) => copy value;
+    none => "";
+  };
   const moduleSource = ModuleSource({
     path: copy canonical,
     source,
     packageIdentity: sourcePackageIdentity(config, canonical),
+    targetPlatform,
+    targetMinimumVersion,
     packageSpecifiers,
   });
   const parsedOutcome = attempt parseModule(moduleSource);

@@ -11,11 +11,19 @@ import {
   prepareNativeObjCSubclassTypes, validateNativeObjCSubclassDeclarations,
 } from "../../compiler/frontend/semantic-objc-subclasses.zs";
 import { resolveParsedModulesWithForeignContracts, validateNativeObjCSubclassBodyTypes } from "../../compiler/frontend/module-resolver.zs";
+import { compareNativeVersions } from "../../compiler/frontend/semantic-native-availability.zs";
 
-function inspect(in path: String, in sourcePath: String, in mode: String): i32 throws String {
+function inspect(in path: String, in sourcePath: String, in mode: String, in platform: String, in minimumVersion: String, in header: String): i32 throws String {
+  if (compareNativeVersions("14", "014.0.0") != 0
+    || compareNativeVersions("13.10", "13.2") != 1
+    || compareNativeVersions("13.0.9", "13.1") != -1
+    || compareNativeVersions("0", "0.0.0") != 0
+    || compareNativeVersions("999999999999999999999999", "1000000000000000000000000") != -1) {
+    throw "incorrect native availability version comparison";
+  }
   const source = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(source);
-  if (module.version != 14) throw "wrong foreign protocol version";
+  if (module.version != 15) throw "wrong foreign protocol version";
   let foundBase = false;
   let foundFinal = false;
   let observed: usize = 0;
@@ -59,9 +67,9 @@ function inspect(in path: String, in sourcePath: String, in mode: String): i32 t
   }
   if (!foundBase || !foundFinal || observed != 13) throw `missing native subclass evidence: ${observed}`;
   const contracts = try parseForeignContracts(
-    "declare module \"objc-subclass-wire.h\" {}", "wire.zd"
+    `declare module "${header}" {}`, "wire.zd"
   );
-  const normalized = try normalizeForeignContracts(contracts, module, "objc-subclass-wire.h");
+  const normalized = try normalizeForeignContracts(contracts, module, header);
   if (normalized.objectiveCInterfaces.length != module.objectiveCInterfaces.length) throw "lost normalized interfaces";
   let normalizedCount: usize = 0;
   for (const interface_ of normalized.objectiveCInterfaces) {
@@ -84,10 +92,11 @@ function inspect(in path: String, in sourcePath: String, in mode: String): i32 t
     }
   }
   if (normalizedCount != 13) throw "dropped normalized native methods";
-  let programSource = "import native from \"objc-subclass-wire.h\"; function main(): i32 { return 0; }";
+  let programSource = `import native from "${header}"; function main(): i32 { return 0; }`;
   if (sourcePath.byteLength > 0) programSource = try fs.readText(sourcePath);
   const moduleSource = ModuleSource({
     path: "probe.zs", source: programSource, packageSpecifiers: Array<String>(),
+    targetPlatform: copy platform, targetMinimumVersion: copy minimumVersion,
   });
   const parsed = match (attempt parseModule(moduleSource)) {
     success(value) => value;
@@ -172,10 +181,13 @@ function inspect(in path: String, in sourcePath: String, in mode: String): i32 t
 
 function main(): i32 {
   const arguments = process.args();
-  if (arguments.length < 1 || arguments.length > 3) return 2;
+  if (arguments.length < 1 || arguments.length > 6) return 2;
   const sourcePath = arguments.length > 1 ? copy arguments[1] : "";
-  const mode = arguments.length == 3 ? copy arguments[2] : "";
-  return match (attempt inspect(arguments[0], sourcePath, mode)) {
+  const mode = arguments.length >= 3 ? copy arguments[2] : "";
+  const platform = arguments.length >= 4 ? copy arguments[3] : "macos";
+  const minimumVersion = arguments.length >= 5 ? copy arguments[4] : "13.0";
+  const header = arguments.length >= 6 ? copy arguments[5] : "objc-subclass-wire.h";
+  return match (attempt inspect(arguments[0], sourcePath, mode, platform, minimumVersion, header)) {
     success(code) => code;
     failure(error) => { console.log(error); select 1; }
   };

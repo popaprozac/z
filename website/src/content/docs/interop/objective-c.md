@@ -140,8 +140,14 @@ expression blocks. A nested closure may still return to its own caller. The
 first native body-typing tier checks names, argument/result types, inherited
 properties, nominal base conversions, and receiver alias exclusivity using the
 ordinary checker. It also requires the imported `thread.main` capability.
-Execution still reports `Z0814` pending availability, complete body ownership
-parity, and native emission. This typed-body checkpoint does not enable native
+Native subclass checks also use the existing `z.json` deployment target to reject
+unavailable APIs and APIs introduced after, or obsoleted by, that minimum version.
+This includes superclass declarations, overrides, calls, and properties. Other
+platforms' restrictions are ignored. Without a configured minimum, version checks
+remain deferred just as in Stage 0; platform-only unavailability still applies.
+Native deprecation warnings remain pending.
+Execution still reports `Z0814` pending complete ownership/availability composition
+and native emission. This typed-body checkpoint does not enable native
 execution or stateful subclasses.
 
 ## Own target/action connections

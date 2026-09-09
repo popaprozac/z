@@ -108,7 +108,7 @@ recursive path.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `foreign-declaration-protocol.zs` decodes the versioned producer-facing
-  `ZFDCL` stream into owned flat Z declarations. Version 14 covers scalar
+  `ZFDCL` stream into owned flat Z declarations. Version 15 covers scalar
   typedef evidence, nominal and flag enums, typed native constants, record layouts and
   fields, canonical C record identity across typedef aliases, Objective-C
   interfaces/protocols/methods, method-parameter `id<Protocol>` qualifiers,
@@ -116,6 +116,7 @@ recursive path.
   recursive block-function signatures, native subclass restrictions,
   designated initializers, required-super/direct-dispatch markers, consuming
   receiver/parameter ownership, and variadic native methods,
+  interface-level availability,
   interface-property getter/setter, ownership, protocol, source, executor, and
   availability evidence, method availability/async indices, plus foreign
   functions, overloads, parameters, source locations, executor affinity, and
@@ -168,8 +169,13 @@ recursive path.
   initialization and dispatch from virtual calls. Tests reject invalid
   arguments/results, downcasts/sibling conversions, readonly property writes,
   alias reinitialization/overlap, and missing imported executor capabilities.
-  Typed checking requires attached superclass ABI evidence. Resolution still
-  rejects execution with `Z0814` pending availability, complete ownership parity,
+  Typed checking requires attached superclass ABI evidence. The driver supplies
+  the existing deployment target as parsed-module context;
+  `semantic-native-availability.zs` enforces applicable unavailable, introduced,
+  and obsoleted facts on bases, overrides, native body calls, and properties.
+  Version checks use the configured minimum rather than the SDK version; native
+  deprecation warnings remain pending. Resolution still rejects execution with
+  `Z0814` pending complete ownership/availability composition,
   and native lowering/emission; the first body slice is not a full safety proof.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,

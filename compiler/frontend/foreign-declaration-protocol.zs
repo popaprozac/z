@@ -99,6 +99,16 @@ export struct RawForeignFunction {
   overloadCount: usize;
 }
 
+export struct RawForeignObjCInterfaceAvailability {
+  platform: Option<String>;
+  introduced: Option<String>;
+  deprecated: boolean;
+  deprecatedVersion: Option<String>;
+  obsoleted: Option<String>;
+  unavailable: boolean;
+  message: Option<String>;
+}
+
 export struct RawForeignObjCInterface {
   interfaceIndex: usize;
   exportName: String;
@@ -106,6 +116,7 @@ export struct RawForeignObjCInterface {
   className: String;
   superName: Option<String>;
   subclassingRestricted: boolean;
+  availability: Array<RawForeignObjCInterfaceAvailability>;
   methodStart: usize;
   methodCount: usize;
   propertyStart: usize;
@@ -922,6 +933,22 @@ function appendObjCInterface(
   const executorAffinity = try readOptionalText(inout cursor);
   const methodCount = try readHexUsize(inout cursor);
   const propertyCount = try readHexUsize(inout cursor);
+  const availabilityCount = try readHexUsize(inout cursor);
+  let availability = Array<RawForeignObjCInterfaceAvailability>();
+  let availabilityIndex: usize = 0;
+  while (availabilityIndex < availabilityCount) {
+    const platform = try readOptionalText(inout cursor);
+    const introduced = try readOptionalText(inout cursor);
+    const deprecated = try readBoolean(inout cursor);
+    const deprecatedVersion = try readOptionalText(inout cursor);
+    const obsoleted = try readOptionalText(inout cursor);
+    const unavailable = try readBoolean(inout cursor);
+    const message = try readOptionalText(inout cursor);
+    availability.push(RawForeignObjCInterfaceAvailability({
+      platform, introduced, deprecated, deprecatedVersion, obsoleted, unavailable, message,
+    }));
+    availabilityIndex = availabilityIndex + 1;
+  }
   module.objectiveCInterfaces.push(RawForeignObjCInterface({
     interfaceIndex,
     exportName,
@@ -929,6 +956,7 @@ function appendObjCInterface(
     className,
     superName,
     subclassingRestricted,
+    availability,
     methodStart: module.objectiveCMethods.length,
     methodCount,
     propertyStart: module.objectiveCProperties.length,
@@ -1342,7 +1370,7 @@ export function decodeRawForeignDeclarations(
   try expectLiteral(inout cursor, "ZFDCL");
   let module = emptyRawForeignModule();
   module.version = try readHexUsize(inout cursor);
-  if (module.version != 14) {
+  if (module.version != 15) {
     throw `unsupported foreign declaration stream version ${module.version}`;
   }
   try endRecord(inout cursor);

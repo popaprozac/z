@@ -1,5 +1,6 @@
 import { assert, cli, compileToNative, completions, decodeSemanticTokens, diagnostics, hover, hostToolchainTest, mkdtempSync, positionForOffset, readFileSync, resolve, resolveForeignFunctionDeclarationStreams, rmSync, semanticTokens, semanticTokenTypes, spawnSync, writeFileSync, projectRoot } from "./support/bootstrap.ts";
 import { tmpdir } from "node:os";
+import { prepareProject } from "../compiler/src/project.ts";
 
 const fixture = resolve(projectRoot, "tests/fixtures/objc-subclass.zs");
 const baseline = `
@@ -22,7 +23,7 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       header: "objc-subclass-wire.h",
       location: { fileName: decoder, offset: 0, line: 1, column: 1 },
     }], decoder, [resolve(projectRoot, "tests/fixtures")]).get("native")!;
-    assert.match(stream, /^ZFDCL000000000000000e\n/);
+    assert.match(stream, /^ZFDCL000000000000000f\n/);
     const emission = spawnSync(process.execPath, [cli, "self-host-emit", decoder], {
       encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
     });
@@ -242,9 +243,69 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       assert.equal(checked.status, 1, checked.stdout + checked.stderr);
       assert.match(checked.stdout, /consuming Objective-C calls/);
     }
-    const obsolete = run(stream.replace("ZFDCL000000000000000e", "ZFDCL000000000000000d"));
+    const availabilityHeader = "objc-subclass-availability.h";
+    const availabilityStream = resolveForeignFunctionDeclarationStreams([{
+      kind: "import", moduleName: "native", bindings: null, header: availabilityHeader,
+      location: { fileName: decoder, offset: 0, line: 1, column: 1 },
+    }], decoder, [resolve(projectRoot, "tests/fixtures")]).get("native")!;
+    const availableBaseline = nativeBaseline.replace("objc-subclass-wire.h", availabilityHeader)
+      .replace("extends native.ZWireBase", "extends native.ZWireAvailable");
+    const availabilityBody = (body: string) => availableBaseline.replace("return super.value() + 2;", body);
+    const runAvailability = (source: string, version = "13.0", platform = "macos", mode = "types") => {
+      writeFileSync(input, availabilityStream);
+      writeFileSync(sourcePath, source);
+      return spawnSync(executable, [input, sourcePath, mode, platform, version, availabilityHeader], { encoding: "utf8", timeout: 5_000 });
+    };
+    for (const [name, source, version, expected] of [
+      ["base introduced", availableBaseline.replace("ZWireAvailable", "ZWireFuture"), "13.0", /ZWireFuture.*requires macos 14.0/],
+      ["base unavailable", availableBaseline.replace("ZWireAvailable", "ZWireUnavailable"), "13.0", /unavailable.*retired base/],
+      ["override introduced", availableBaseline.replace('as "value"', 'as "futureValue"'), "13.0", /futureValue.*requires macos 14.2/],
+      ["initializer introduced", availableBaseline.replace("super.initWithValue(value)", "super.initForFuture(value)"), "13.0", /initForFuture.*requires macos 14.1/],
+      ["super call introduced", availabilityBody("return super.futureValue();"), "13.0", /futureValue.*requires macos 14.2/],
+      ["virtual call introduced", availabilityBody("return this.futureValue();"), "13.0", /futureValue.*requires macos 14.2/],
+      ["obsoleted", availabilityBody("return this.removedValue();"), "13.1", /removedValue.*obsoleted.*13.1/],
+      ["unavailable method", availabilityBody("return this.forbiddenValue();"), "13.0", /unavailable.*retired method/],
+      ["getter introduced", availabilityBody("return this.futureProperty;"), "13.0", /futureProperty.*requires macos 14.3/],
+      ["setter introduced", availableBaseline.replace("super.initWithValue(value);", "super.initWithValue(value); this.futureProperty = value;"), "13.0", /futureProperty.*requires macos 14.3/],
+    ] satisfies [string, string, string, RegExp][]) {
+      const checked = runAvailability(source, version);
+      assert.equal(checked.status, 1, `${name}: ${checked.stdout}${checked.stderr}`);
+      assert.match(checked.stdout, /Z0802/, name);
+      assert.match(checked.stdout, expected, name);
+      assert.throws(() => compileToNative(source, decoder, {
+        projectBuild: { ...prepareProject(decoder), deploymentTarget: { platform: "macos", minimumVersion: version } },
+      }), (error: unknown) => typeof error === "object" && error !== null && "code" in error && error.code === "Z0802", `Stage 0 availability rejection: ${name}`);
+    }
+    for (const [source, version] of [
+      [availableBaseline.replace("ZWireAvailable", "ZWireFuture"), "14.0"],
+      [availabilityBody("return this.futureValue();"), "014.002.0"],
+      [availabilityBody("return this.removedValue();"), "13.0.9"],
+      [availabilityBody("return this.otherPlatform();"), "13.0"],
+      [availabilityBody("return this.deprecatedValue();"), "13.0"],
+      [availabilityBody("return this.futureProperty;"), "14.3"],
+      [availabilityBody("return this.futureValue();"), ""],
+    ]) {
+      const checked = runAvailability(source, version);
+      assert.equal(checked.status, 0, checked.stdout + checked.stderr);
+    }
+    const foreignPlatform = runAvailability(availabilityBody("return this.otherPlatform();"), "17.0", "ios");
+    assert.equal(foreignPlatform.status, 1, foreignPlatform.stdout + foreignPlatform.stderr);
+    assert.match(foreignPlatform.stdout, /Z0802:.*unavailable on ios/);
+    const absentPlatform = runAvailability(availableBaseline, "", "");
+    assert.equal(absentPlatform.status, 1, absentPlatform.stdout + absentPlatform.stderr);
+    assert.match(absentPlatform.stdout, /Z0814:.*target platform evidence/);
+    const gatedAvailability = runAvailability(availabilityBody("return this.futureValue();"), "13.0", "macos", "gate");
+    assert.equal(gatedAvailability.status, 1, gatedAvailability.stdout + gatedAvailability.stderr);
+    assert.match(gatedAvailability.stdout, /Z0802:.*futureValue/);
+    const availableRecordStart = availabilityStream.lastIndexOf("\nI", availabilityStream.indexOf("ZWireAvailable")) + 1;
+    const availableRecordEnd = availabilityStream.indexOf("\n", availableRecordStart);
+    const incompleteAvailability = run(availabilityStream.slice(0, availableRecordEnd - 2));
+    assert.equal(incompleteAvailability.status, 1, incompleteAvailability.stdout + incompleteAvailability.stderr);
+    assert.match(incompleteAvailability.stdout, /ended|expected|invalid/);
+
+    const obsolete = run(stream.replace("ZFDCL000000000000000f", "ZFDCL000000000000000e"));
     assert.equal(obsolete.status, 1, obsolete.stderr);
-    assert.match(obsolete.stdout, /unsupported foreign declaration stream version 13/);
+    assert.match(obsolete.stdout, /unsupported foreign declaration stream version 14/);
     // Skip the J record's owner, indices, selector, and base name, then its
     // instance/instancetype booleans. The next byte is the new initializer fact.
     let flagOffset = stream.indexOf("\nJ") + 2;

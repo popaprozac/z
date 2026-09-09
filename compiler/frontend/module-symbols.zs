@@ -33,6 +33,8 @@ import { genericTypeShape } from "./semantic-type-shapes.zs";
 export struct ParsedModule {
   path: String;
   packageIdentity: String;
+  targetPlatform: String = "";
+  targetMinimumVersion: String = "";
   packageSpecifiers: Array<String>;
   program: Program;
 }

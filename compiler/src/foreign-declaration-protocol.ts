@@ -6,7 +6,7 @@ import type {
   ForeignType,
 } from "./foreign-ir.ts";
 
-export const foreignDeclarationProtocolVersion = 14;
+export const foreignDeclarationProtocolVersion = 15;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -78,6 +78,8 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign declarations.
+ * Version 15 retains Objective-C interface availability, including unavailable
+ * and deployment-version restrictions on native superclasses.
  * Version 14 carries native subclass restrictions, designated-initializer,
  * required-super, direct-dispatch, consuming ownership, and variadic evidence.
  * Version 13 preserves Objective-C block parameter signatures so the native
@@ -400,6 +402,13 @@ export function encodeForeignFunctionDeclarationStream(
       optionalText(interface_.metadata.executorAffinity),
       hexNumber(interface_.methods.length),
       hexNumber(interface_.properties.length),
+      hexNumber(interface_.metadata.availability.length),
+      ...interface_.metadata.availability.flatMap((availability) => [
+        optionalText(availability.platform), optionalText(availability.introduced),
+        boolean(availability.deprecated), optionalText(availability.deprecatedVersion),
+        optionalText(availability.obsoleted), boolean(availability.unavailable),
+        optionalText(availability.message),
+      ]),
     ].join(""));
     appendObjCMethods("interface", interfaceIndex, interface_.methods);
     appendObjCProperties(interfaceIndex, interface_.properties);

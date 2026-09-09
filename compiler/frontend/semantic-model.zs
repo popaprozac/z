@@ -4,6 +4,8 @@ export struct ModuleSource {
   path: String;
   source: String;
   packageIdentity: String = "";
+  targetPlatform: String = "";
+  targetMinimumVersion: String = "";
   packageSpecifiers: Array<String>;
 }
 
@@ -359,6 +361,7 @@ export struct ModuleTypeSignature {
   foreignFallbackVariant: String = "";
   foreignObjCSuperName: String = "";
   foreignObjCSubclassingRestricted: boolean = false;
+  foreignObjCAvailability: Array<ModuleObjCAvailabilitySignature> = Array<ModuleObjCAvailabilitySignature>();
   // Retain rejected ABI declarations for subclass validation without making
   // them available through ordinary method lookup or completion.
   foreignObjCUnrepresentableMethods: Array<ModuleMethodSignature> =

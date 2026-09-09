@@ -448,6 +448,10 @@ function objcInterfaceTypeSignature(
   if (interface_.superName.byteLength > 0) {
     superName = `${namespace}.${interface_.superName}`;
   }
+  let availability = Array<ModuleObjCAvailabilitySignature>();
+  for (const fact of interface_.availability) {
+    availability.push(objcAvailabilitySignature(fact));
+  }
   return ModuleTypeSignature({
     nativeCName: "",
     nativeCUnderlyingType: "",
@@ -474,6 +478,7 @@ function objcInterfaceTypeSignature(
     foreignResourceRelease: "",
     foreignObjCSuperName: superName,
     foreignObjCSubclassingRestricted: interface_.subclassingRestricted,
+    foreignObjCAvailability: availability,
     foreignObjCUnrepresentableMethods: unrepresentableMethods,
   });
 }

@@ -8550,6 +8550,30 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   assert.equal(typedScalarConstant.status, 0, typedScalarConstant.stderr);
 
   if (process.platform === "darwin") {
+    const subclassAvailabilitySource = resolve(directory, "subclass-availability.zs");
+    const subclassAvailabilityManifest = resolve(directory, "z.json");
+    writeFileSync(subclassAvailabilitySource, `
+      import native from "objc-subclass-availability.h";
+      import { thread } from "std/thread";
+      class Future extends native.ZWireFuture on thread.main {
+        constructor(value: i32) { super.initWithValue(value); }
+      }
+      function main(): i32 { return 0; }
+    `);
+    for (const [minimumVersion, code, message] of [
+      ["13.0", "Z0802", /ZWireFuture.*requires macos 14.0/],
+      ["14.0", "Z0814", /native Objective-C subclass execution/],
+    ] as const) {
+      writeFileSync(subclassAvailabilityManifest, JSON.stringify({ target: {
+        name: "subclass-availability", kind: "executable", entry: "subclass-availability.zs", platform: "macos", minimumVersion,
+        includeDirectories: [resolve(projectRoot, "tests/fixtures")],
+      } }));
+      const checked = spawnSync(executable, ["check", subclassAvailabilitySource], { encoding: "utf8", timeout: 30_000 });
+      assert.equal(checked.status, 1, checked.stdout + checked.stderr);
+      assert.match(checked.stderr, new RegExp(code));
+      assert.match(checked.stderr, message);
+    }
+    rmSync(subclassAvailabilityManifest);
     const borrowedObjCString = spawnSync(
       executable,
       ["run", resolve(projectRoot, "tests/fixtures/objc-borrow-method.zs")],
@@ -9474,7 +9498,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL000000000000000e\nM/);
+  assert.match(encoded, /^ZFDCL000000000000000f\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -9602,7 +9626,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     [directory],
   ).get("native");
   assert.ok(objcStream);
-  assert.match(objcStream, /^ZFDCL000000000000000e\nM/);
+  assert.match(objcStream, /^ZFDCL000000000000000f\nM/);
   assert.match(objcStream, /\nQ/);
   assert.match(objcStream, /\nI/);
   assert.match(objcStream, /\nJ/);

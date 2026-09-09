@@ -44,6 +44,12 @@ executable, while static- and shared-library builds publish their named native
 artifact and generated header. The driver validates configured paths,
 deduplicates native libraries,
 and projects those settings into Clang.
+Native Objective-C subclass checks also receive that deployment context:
+unavailable declarations, APIs introduced after the configured minimum version,
+and APIs removed at or before it are rejected before emission. When no platform
+is configured, the driver supplies its host platform, but never invents a minimum
+OS version. Deprecation warnings and remaining native availability composition
+are separate parity work; native subclass execution remains gated.
 Swift target preparation, broader foreign declaration records, cross-platform
 target selection, custom profiles, polished diagnostics, cache eviction, and
 the complete production command options remain with Stage 0

@@ -16,6 +16,7 @@ import { substituteGenericType } from "./semantic-type-ownership.zs";
 import {
   ModuleFunctionSignature,
   ModuleMethodSignature,
+  ModuleObjCAvailabilitySignature,
   ModuleObjCParameterProtocolSignature,
   ModuleSymbolKind,
   ModuleTypeParameterConstraint,
@@ -59,6 +60,7 @@ export struct NativeFieldShape {
   viewLifetime: String;
   objectiveCGetter: String = "";
   objectiveCSetter: String = "";
+  objectiveCAvailability: Array<ModuleObjCAvailabilitySignature> = Array<ModuleObjCAvailabilitySignature>();
 }
 
 export struct NativeAggregateConstructionShape {
@@ -92,6 +94,7 @@ export struct NativeMethodCallShape {
   objectiveCConsumesSelf: boolean = false;
   objectiveCConsumedParameters: Array<usize> = Array<usize>();
   objectiveCVariadic: boolean = false;
+  objectiveCAvailability: Array<ModuleObjCAvailabilitySignature> = Array<ModuleObjCAvailabilitySignature>();
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
@@ -477,6 +480,7 @@ export function aggregateFieldShape(
                   0,
                   field.objectiveCSetter.byteLength
                 ),
+                objectiveCAvailability: copy field.objectiveCAvailability,
               }));
             }
           }
@@ -548,6 +552,7 @@ export function objectiveCClassPropertyShape(
                 0,
                 field.objectiveCSetter.byteLength
               ),
+              objectiveCAvailability: copy field.objectiveCAvailability,
             }));
           }
         }
@@ -843,6 +848,7 @@ export function methodCallShape(
               objectiveCConsumesSelf: method.objectiveCConsumesSelf,
               objectiveCConsumedParameters: copy method.objectiveCConsumedParameters,
               objectiveCVariadic: method.objectiveCVariadic,
+              objectiveCAvailability: copy method.objectiveCAvailability,
               objectiveCAsyncCallbackParameter:
                 method.objectiveCAsyncCallbackParameter,
               objectiveCAsyncResultParameter:

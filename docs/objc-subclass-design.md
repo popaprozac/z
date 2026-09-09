@@ -4,8 +4,9 @@ Status: declaration and construction direction approved, 2026-09-09. The first
 field-free, synchronous **Stage 0** tier is implemented and tested. The
 self-hosted frontend preserves the declaration syntax, checks imported
 declaration contracts and structural receiver rules, and uses the ordinary
-expression/call/loan checker for a first native body-typing tier. Native execution
-remains explicitly gated on availability, complete ownership parity, and emission.
+expression/call/loan checker for a first native body-typing tier. Target-aware
+Objective-C availability checks are present. Native execution remains explicitly
+gated on complete ownership/availability composition and emission.
 Stateful subclasses and production window
 integration remain separate checkpoints.
 
@@ -154,7 +155,7 @@ superclass/inherited member completion. No ASan is required.
 
 Native preparation now includes exact parser-shape parity for the superclass,
 override marker, selector, constructor, and native call syntax. `ZFDCL` version
-14 carries Clang's subclassing restriction, designated initializer, required
+15 carries interface availability alongside Clang's subclassing restriction, designated initializer, required
 super call, direct dispatch, consuming receiver/parameter ownership, and
 variadic facts into Z-owned declarations. Native normalization and module
 signatures retain those facts, including the unprojected result's nullability.
@@ -187,14 +188,30 @@ receiver loans. The literal `thread.main` affinity must resolve to the imported
 `std/thread` capability. Consuming and variadic native calls remain rejected in
 this body tier.
 
+The standalone driver now passes the existing project `target.platform` and
+`target.minimumVersion` into parsed module context. Without a configured target,
+compiler-private host evidence supplies the platform, not an invented minimum
+version. Native superclass hierarchies, overrides, initializers, superclass and
+virtual calls, and property reads/writes enforce applicable unavailable,
+introduced, and obsoleted facts with `Z0802`. Restrictions for other platforms
+do not apply. Numeric dotted versions compare component-wise (including trailing
+zeroes), not as decimals. Version-dependent checks require a configured minimum,
+matching Stage 0; platform-only bans still apply without one. Detached semantic
+probes lacking platform evidence fail closed when they need it.
+
+Deprecation metadata survives the decoder/normalizer/signature path but native
+warning reporting remains separate work. These checks are scoped to native
+subclass declarations and bodies, not a claim of complete availability checking
+for every native C-family call in the self-hosted compiler.
+
 These checks do not yet authorize native subclass execution: semantic resolution
 still reports `Z0814` before an executable graph can leave the resolver. A
 source-only probe without attached superclass ABI evidence cannot enter typed
-body checking. Availability and complete ownership parity are still required;
+body checking. Complete ownership and availability composition are still required;
 passing this limited typed oracle is not a claim that every body composition is
 safe to emit.
 
-Next: native availability and complete body ownership checks, then
+Next: complete body ownership checks and remaining availability/diagnostic composition, then
 lowering/emission parity; afterward
 deliberate and test owned state, initialization/teardown callbacks, and reentrancy
 before Zapp's window transition state moves into a subclass.
@@ -206,8 +223,9 @@ The remaining field-free native port is bounded by four gates:
 2. **In progress:** declaration contracts, structural receiver/initialization
    rules, superclass call/capture checks, nominal receiver identity, first
    argument/result/property typing, imported executor capability validation,
-   and alias-exclusivity tests are present. Complete availability and body
-   ownership parity before accepting a native subclass as checked executable Z.
+   alias-exclusivity tests, and target-aware Objective-C availability errors are
+   present. Complete body ownership and remaining availability/diagnostic parity
+   before accepting a native subclass as checked executable Z.
    The first typed-body slice reuses the loan checker but does not yet establish
    safety for every capture, move, return, or reentrant native call.
    Executable plans must require attached ABI evidence; the source-only
