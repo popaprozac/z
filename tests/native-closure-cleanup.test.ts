@@ -163,6 +163,116 @@ test("retains an owned callback returned through an in parameter beyond its crea
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
+for (const [name, source] of [
+  ["reads the current parent binding", `function main(): i32 {
+    let total = 10;
+    const read = (): i32 => total;
+    total = 42;
+    return read() - 42;
+  }`],
+  ["mutates the original binding through a helper", `
+    function increment(inout total: i32): i32 {
+      total = total + 21;
+      return total;
+    }
+    function main(): i32 {
+      let total = 0;
+      const add = (): i32 => increment(inout total);
+      if (add() != 21 || add() != 42) return 1;
+      return total - 42;
+    }`],
+  ["observes cleanup-free aggregate fields", `
+    struct Counter { count: i32; }
+    function main(): i32 {
+      let counter = Counter({ count: 10 });
+      const read = (): i32 => counter.count;
+      counter.count = 42;
+      return read() - 42;
+    }`],
+  ["borrows parent input and inout parameters", `
+    function add(inout total: i32, in amount: i32): i32 {
+      total = total + amount;
+      return total;
+    }
+    function update(inout total: i32, in amount: i32): i32 {
+      const increment = (): i32 => add(inout total, in amount);
+      if (increment() != 21) return 1;
+      return increment() - 42;
+    }
+    function main(): i32 {
+      let total = 0;
+      const amount = 21;
+      if (update(inout total, in amount) != 0) return 1;
+      return total - 42;
+    }`],
+  ["forwards nested borrowed expressions without capturing their bodies", `
+    function invoke(in callback: () => i32): i32 { return callback(); }
+    function main(): i32 {
+      let total = 10;
+      const read = (): i32 => invoke((): i32 => total);
+      total = 42;
+      return read() - 42;
+    }`],
+  ["separates nested parameter capabilities", `
+    function invoke(in callback: (value: i32) => i32): i32 { return callback(41); }
+    function calculate(inout value: i32): i32 {
+      const outer = (in value: i32): i32 => invoke((value: i32): i32 => value + 1);
+      return outer(in value) - 42;
+    }
+    function main(): i32 {
+      let value = 0;
+      return calculate(inout value);
+    }`],
+  ["borrows a mutable enclosing closure parameter", `
+    function increment(inout total: i32): i32 {
+      total = total + 21;
+      return total;
+    }
+    function invoke(in callback: () => i32): i32 { return callback(); }
+    function main(): i32 {
+      let count = 0;
+      const update = (inout total: i32): i32 => invoke((): i32 => increment(inout total));
+      if (update(inout count) != 21 || update(inout count) != 42) return 1;
+      return count - 42;
+    }`],
+  ["uses contextual closure parameter types instead of same-named parent locals", `
+    function increment(inout total: i32): i32 {
+      total = total + 21;
+      return total;
+    }
+    function invoke(in callback: () => i32): i32 { return callback(); }
+    function main(): i32 {
+      const total = false;
+      let count = 0;
+      const update: (inout total: i32) => i32 = (inout total): i32 => invoke((): i32 => increment(inout total));
+      if (update(inout count) != 21 || update(inout count) != 42 || total) return 1;
+      return count - 42;
+    }`],
+  ["preserves user names that resemble environment internals", `
+    function main(): i32 {
+      let environment = 1;
+      let refcount = 2;
+      const read = (): i32 => environment + refcount;
+      environment = 20;
+      refcount = 22;
+      return read() - 42;
+    }`],
+] as const) {
+  test(`borrowed expression closure ${name}`, () => {
+    const directory = mkdtempSync("/tmp/z-expression-captures-");
+    try {
+      const input = resolve(directory, "main.zs");
+      writeFileSync(input, source);
+      execute(compileToC(source, input), "", 0);
+      const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+      });
+      assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+      execute(emitted.stdout, "", 0);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 240_000);
+}
+
 test("mutates lexical block captures without replacing them with invocation-local snapshots", () => {
   const directory = mkdtempSync("/tmp/z-mutable-lexical-closure-");
   try {
@@ -342,6 +452,35 @@ for (const [suspension, rejection] of [
         add();
         return total - 42;
       }`);
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.notEqual(emitted.status, null, String(emitted.error));
+    assert.notEqual(emitted.status, 0, emitted.stdout);
+    assert.match(emitted.stderr, rejection);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+for (const [name, source, rejection] of [
+  ["cleanup-bearing borrowed expression capture", `function main(): i32 {
+    const text = "borrowed";
+    const read = (): i32 => i32(text.byteLength);
+    return read() - 8;
+  }`, /borrowed expression capture text requires cleanup-bearing borrow storage/],
+  ["borrowed expression in an async parent", `async function main(): i32 {
+    let total = 10;
+    const read = (): i32 => total;
+    total = 42;
+    return read() - 42;
+  }`, /borrowed expression environments in async functions require suspension-stable storage/],
+] as const) test(`gates unproven native storage for ${name}`, () => {
+  const directory = mkdtempSync("/tmp/z-expression-capture-gate-");
+  try {
+    const input = resolve(directory, "main.zs");
+    writeFileSync(input, source);
+    if (name === "borrowed expression in an async parent") {
+      assert.throws(() => compileToC(source, input), /needs owned task-frame lowering/);
+    } else execute(compileToC(source, input), "");
     const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
       encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
     });

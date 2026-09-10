@@ -81,10 +81,16 @@ const add = (value: i32): void => {
 };
 add(20);
 add(22); // total is 42
+
+const read = (): i32 => total;
+total = 100;
+const observed = read(); // 100, not the value when read was created
 ```
 
-This synchronous `void` block form executes through both compiler paths with a
-stack environment and no heap allocation. `move` gives the callback its own
+These synchronous `void` block and scalar-reading expression forms execute
+through both compiler paths with stack environments and no heap allocation.
+Expression closures may also mutate borrowed cleanup-free state by calling an
+`inout` helper. `move` gives the callback its own
 captured value instead; mutations to that owned state persist across calls and
 do not reassign the parent's Copy scalar. Native non-void block lowering and
 broader borrowed capture combinations remain tracked in [implementation

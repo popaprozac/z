@@ -535,7 +535,8 @@ function callableCaptureLiveFlag(in name: String): String {
 }
 
 function callableBorrowsEnvironment(in expression: LoweredExpression): boolean {
-  return expression.closureBlockBody && expression.labels.length > 1
+  return (expression.closureBlockBody || expression.closureCaptureModes.length > 0)
+    && expression.labels.length > 1
     && expression.labels[1] != "move";
 }
 
@@ -12817,7 +12818,9 @@ function appendCallableHelpers(
         output.append(";\n");
         parameter = parameter + 1;
       }
-      const callableEnvironmentName = expression.closureBlockBody
+      const addressedCaptures = expression.closureBlockBody
+        || expression.closureCaptureModes.length > 0;
+      const callableEnvironmentName = addressedCaptures
         ? "_z_stage1_callable_environment" : "environment";
       appendCallableCaptureLiveMacros(
         inout output,
@@ -12833,7 +12836,7 @@ function appendCallableHelpers(
       } else {
         output.append("  ");
         appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append(expression.closureBlockBody
+        output.append(addressedCaptures
           ? "_environment *_z_stage1_callable_environment = ("
           : "_environment *environment = (");
         appendCallableHelperName(inout output, owner, expressionIndex);
@@ -12841,7 +12844,7 @@ function appendCallableHelpers(
         appendCBindingName(inout output, contextName);
         output.append(";\n");
         let capture: usize = 0;
-        while (capture < expression.captureTypes.length && !expression.closureBlockBody) {
+        while (capture < expression.captureTypes.length && !addressedCaptures) {
           output.append("  ");
           const captureCType = try cType(expression.captureTypes[capture]);
           output.append(captureCType);

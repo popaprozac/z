@@ -2884,6 +2884,22 @@ borrow by default. `move` creates an owned capture when a closure must escape:
 const deferred: () => i32 = move () => resource.value;
 ```
 
+A borrowed capture observes the original binding rather than a creation-time
+snapshot, regardless of whether the closure has an expression or block body:
+
+```z
+let count = 10;
+const read = (): i32 => count;
+count = 42;
+const observed = read(); // 42
+```
+
+The native compiler executes synchronous borrowed scalar and cleanup-free
+value-aggregate captures with stack-backed environments, including mutation
+through `inout` helpers. Cleanup-bearing borrowed captures and environments
+inside async enclosing functions remain explicit native lowering boundaries;
+see [bootstrap status](bootstrap-status.md).
+
 A read-only `view` may be captured only where the destination proves that the
 closure cannot escape:
 

@@ -363,9 +363,13 @@ export struct LoweredExpression {
   moveSpreadOverrides: Array<LoweredField> = Array<LoweredField>();
   threadSafe: boolean = false;
   closureBlockBody: boolean = false;
+  closureAsynchronous: boolean = false;
   closureParameterCount: usize = 0;
   closureParameterModes: Array<String> = Array<String>();
   closureCaptureModes: Array<String> = Array<String>();
+  // Nonempty entries identify a capture of an enclosing closure parameter.
+  // These lexical bindings are not enclosing function locals or parameters.
+  closureCaptureSourceModes: Array<String> = Array<String>();
   objectiveCBlockNativeType: String = "";
   objectiveCReceiverNativeType: String = "";
   objectiveCOwnedPayload: boolean = false;
@@ -8618,7 +8622,8 @@ function collectCallableExpressionUses(
   in statements: Array<LoweredStatement>,
   index: usize,
   in locals: Array<String>,
-  inout uses: Array<usize>
+  inout uses: Array<usize>,
+  walkStatements: boolean
 ): void throws String {
   const expression = view expressions[index];
   if (expression.kind == LoweredExpressionKind.receiverValue) {
@@ -8641,10 +8646,10 @@ function collectCallableExpressionUses(
       && !expression.closureBlockBody)) child = 1;
   while (child < expression.children.length) {
     try collectCallableExpressionUses(expressions, statements,
-      expression.children[child], locals, inout uses);
+      expression.children[child], locals, inout uses, walkStatements);
     child = child + 1;
   }
-  if (expression.kind != LoweredExpressionKind.closureValue) {
+  if (walkStatements && expression.kind != LoweredExpressionKind.closureValue) {
     let nestedLocals = copy locals;
     try collectCallableStatementUses(expressions, statements,
       expression.statements, inout nestedLocals, inout uses);
@@ -8662,12 +8667,12 @@ function collectCallableStatementUses(
     const statement = view statements[root];
     match (in statement.expression) {
       some(index) => try collectCallableExpressionUses(
-        expressions, statements, index, locals, inout uses);
+        expressions, statements, index, locals, inout uses, true);
       none => {}
     }
     match (in statement.secondExpression) {
       some(index) => try collectCallableExpressionUses(
-        expressions, statements, index, locals, inout uses);
+        expressions, statements, index, locals, inout uses, true);
       none => {}
     }
     if (statement.kind == LoweredStatementKind.localStatement) {
@@ -8703,11 +8708,28 @@ function collectCallableBlockCaptures(
   statementStart: usize,
   useOffset: usize
 ): Array<LoweredClosureCapture> throws String {
-  let captures = Array<LoweredClosureCapture>();
   let uses = Array<usize>();
   let locals = copy parameterNames;
   try collectCallableStatementUses(expressions, statements, roots,
     inout locals, inout uses);
+  const hints = Array<LoweredClosureCapture>();
+  return try resolveCallableCaptures(program, importedTypes, evidence,
+    ownerName, expressions, uses, statements, statementStart, useOffset, hints);
+}
+
+function resolveCallableCaptures(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in ownerName: String,
+  in expressions: Array<LoweredExpression>,
+  in uses: Array<usize>,
+  in statements: Array<LoweredStatement>,
+  statementStart: usize,
+  useOffset: usize,
+  in hints: Array<LoweredClosureCapture>
+): Array<LoweredClosureCapture> throws String {
+  let captures = Array<LoweredClosureCapture>();
   for (const index of uses) {
     const captureName = expressions[index].value.copyBytes(
       0,
@@ -8721,6 +8743,18 @@ function collectCallableBlockCaptures(
         exists = true;
       }
       captureIndex = captureIndex + 1;
+    }
+    if (exists) continue;
+    for (const hint of hints) {
+      if (hint.name != captureName) continue;
+      captures.push(LoweredClosureCapture({
+        name: copy hint.name,
+        type: LoweredType({ kind: hint.type.kind, name: copy hint.type.name }),
+        owned: hint.owned,
+        mutableBinding: hint.mutableBinding,
+        uses: Array<usize>(index),
+      }));
+      exists = true;
     }
     if (exists) continue;
     let resolvedType = Option<LoweredType>.none;
@@ -8801,6 +8835,65 @@ function collectCallableBlockCaptures(
     }
   }
   return captures;
+}
+
+function expressionTreeContainsNode(in tree: ExpressionTree, root: usize, target: usize): boolean {
+  if (root == target) return true;
+  for (const child of tree.nodes[root].children) {
+    if (expressionTreeContainsNode(tree, child, target)) return true;
+  }
+  return false;
+}
+
+function enclosingClosureParameterCapture(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in name: String
+): Option<LoweredClosureCapture> throws String {
+  let found = Option<LoweredClosureCapture>.none;
+  let nearestOffset: usize = 0;
+  let ancestor: usize = 0;
+  while (ancestor < tree.nodes.length) {
+    if (ancestor == index || tree.nodes[ancestor].kind != ExpressionKind.closureExpression
+      || tree.nodes[ancestor].offset < nearestOffset
+      || !expressionTreeContainsNode(tree, ancestor, index)) {
+      ancestor = ancestor + 1;
+      continue;
+    }
+    let parameter: usize = 0;
+    for (const child of tree.nodes[ancestor].children) {
+      if (tree.nodes[child].kind != ExpressionKind.closureParameterExpression) continue;
+      if (tree.nodes[child].value == name) {
+        let typeName = copy tree.nodes[child].labels[1];
+        // Semantic evidence supplies contextual/inferred parameter types too.
+        match (resolvedExpressionTypeName(evidence, tree, ancestor)) {
+          some(callableType) => match (nativeFunctionSignature(callableType)) {
+            some(signature) => if (parameter < signature.parameterTypes.length) {
+              typeName = copy signature.parameterTypes[parameter];
+            }
+            none => {}
+          }
+          none => {}
+        }
+        if (typeName.byteLength == 0) {
+          throw `native enclosing closure parameter ${name} requires its checked type`;
+        }
+        const type = try lowerModuleTypeName(program, importedTypes, typeName);
+        const owned = moduleTypeNeedsCleanup(program, importedTypes, type);
+        found = Option.some(LoweredClosureCapture({
+          name: copy name, type, owned,
+          mutableBinding: tree.nodes[child].labels[0] == "inout",
+        }));
+        nearestOffset = tree.nodes[ancestor].offset;
+      }
+      parameter = parameter + 1;
+    }
+    ancestor = ancestor + 1;
+  }
+  return found;
 }
 
 function resolvedExpressionResolutionIndex(
@@ -17896,7 +17989,6 @@ function lowerExpressionExpected(
             }
           }
         }
-        const bodyStart = output.length;
         let body: usize = 0;
         if (asyncSuspension == "scheduler-yield") {
           body = pushExpression(
@@ -17929,25 +18021,28 @@ function lowerExpressionExpected(
             output[body].kind != LoweredExpressionKind.asyncFunctionAwait
           )
         ) throw "native stored async closure suspension currently requires one direct async call";
+        // Only this callable's executable body owns its parameters. Nested
+        // callable bodies have separate bindings even when names coincide.
+        let bodyUses = Array<usize>();
+        const emptyStatements = Array<LoweredStatement>();
+        const emptyLocals = Array<String>();
+        try collectCallableExpressionUses(output, emptyStatements, body,
+          emptyLocals, inout bodyUses, false);
         let callableParameter: usize = 0;
         while (callableParameter < parameterNames.length) {
-          if (signature.parameterModes[callableParameter] != "value") {
-            rewriteClosureParameterValues(
-              inout output,
-              bodyStart,
-              parameterNames[callableParameter]
-            );
+          for (const use of bodyUses) {
+            if (output[use].value != parameterNames[callableParameter]) continue;
+            output[use].labels.push("closure-parameter");
+            if (signature.parameterModes[callableParameter] != "value") {
+              output[use].kind = LoweredExpressionKind.parameterValue;
+            }
           }
           callableParameter = callableParameter + 1;
         }
         let captureNames = Array<String>();
         let captureTypes = Array<LoweredType>();
-        let scan = bodyStart;
-        while (scan < output.length) {
-          if (output[scan].kind != LoweredExpressionKind.localValue) {
-            scan = scan + 1;
-            continue;
-          }
+        let captureSourceModes = Array<String>();
+        for (const scan of bodyUses) {
           const candidate = output[scan].value.copyBytes(
             0,
             output[scan].value.byteLength
@@ -17956,43 +18051,36 @@ function lowerExpressionExpected(
           for (const parameterName of parameterNames) {
             if (parameterName == candidate) parameter = true;
           }
-          let directCallee = false;
-          let parent = bodyStart;
-          while (parent < output.length) {
-            if (
-              output[parent].kind == LoweredExpressionKind.directCall
-              && output[parent].children.length > 0
-              && output[parent].children[0] == scan
-            ) directCallee = true;
-            parent = parent + 1;
-          }
           let present = false;
           for (const captureName of captureNames) {
             if (captureName == candidate) present = true;
           }
-          if (parameter || directCallee || present) {
-            scan = scan + 1;
-            continue;
-          }
+          if (parameter || present) continue;
           const closureOffset = tree.nodes[index].offset;
-          const captureTypeName = match (namedValueTypeName(
-            program,
-            evidence,
-            "",
-            candidate,
-            closureOffset
-          )) {
-            some(name) => name;
-            none => throw `native callable closure cannot resolve capture ${candidate}`;
+          const enclosingParameter = try enclosingClosureParameterCapture(
+            program, importedTypes, evidence, tree, index, candidate
+          );
+          const captureType = match (enclosingParameter) {
+            some(parameterCapture) => {
+              captureSourceModes.push(parameterCapture.mutableBinding ? "inout" : "in");
+              select LoweredType({
+                kind: parameterCapture.type.kind,
+                name: copy parameterCapture.type.name,
+              });
+            }
+            none => {
+              captureSourceModes.push("");
+              const typeName = match (namedValueTypeName(
+                program, evidence, "", candidate, closureOffset
+              )) {
+                some(name) => name;
+                none => throw `native callable closure cannot resolve capture ${candidate}`;
+              };
+              select try lowerModuleTypeName(program, importedTypes, typeName);
+            }
           };
           captureNames.push(candidate.copyBytes(0, candidate.byteLength));
-          const captureType = try lowerModuleTypeName(
-            program,
-            importedTypes,
-            captureTypeName
-          );
           captureTypes.push(move captureType);
-          scan = scan + 1;
         }
         let children = Array<usize>();
         children.push(body);
@@ -18069,6 +18157,9 @@ function lowerExpressionExpected(
           labels
         );
         output[closure].threadSafe = signature.threadContract == "thread.any";
+        output[closure].closureAsynchronous = closureAsynchronous;
+        output[closure].closureParameterCount = parameterNames.length;
+        output[closure].closureCaptureSourceModes = move captureSourceModes;
         for (const captureType of captureTypes) {
           output[closure].captureTypes.push(LoweredType({
             kind: captureType.kind,
@@ -20448,6 +20539,20 @@ function rewriteCallableBlockReturns(
   }
 }
 
+function callableOwnerIsAsynchronous(in program: Program, in ownerName: String): boolean {
+  for (const declaration of program.functions) {
+    if (declaration.name == ownerName) return declaration.asynchronous;
+  }
+  for (const aggregate of program.aggregates) {
+    for (const method of aggregate.methods) {
+      if (semanticMethodOwnerMatches(ownerName, aggregate.name, method.name)) {
+        return method.asynchronous;
+      }
+    }
+  }
+  return false;
+}
+
 function completeNativeClosureBlocks(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -20463,6 +20568,69 @@ function completeNativeClosureBlocks(
   let expressionIndex = start;
   const expressionEnd = expressions.length;
   while (expressionIndex < expressionEnd) {
+    if (expressions[expressionIndex].kind == LoweredExpressionKind.closureValue
+      && !expressions[expressionIndex].closureBlockBody
+      && !expressions[expressionIndex].closureAsynchronous
+      && expressions[expressionIndex].labels[1] != "move"
+      && expressions[expressionIndex].captureTypes.length > 0
+      && expressions[expressionIndex].closureCaptureModes.length == 0) {
+      if (callableOwnerIsAsynchronous(program, ownerName)) {
+        throw "native borrowed expression environments in async functions require suspension-stable storage; this tier supports synchronous enclosing functions";
+      }
+      let parameterNames = Array<String>();
+      let parameter: usize = 0;
+      while (parameter < expressions[expressionIndex].closureParameterCount) {
+        parameterNames.push(copy expressions[expressionIndex].labels[3 + parameter]);
+        parameter = parameter + 1;
+      }
+      let uses = Array<usize>();
+      const body = expressions[expressionIndex].children[0];
+      try collectCallableExpressionUses(expressions, statements,
+        body, parameterNames, inout uses, true);
+      let hints = Array<LoweredClosureCapture>();
+      let hintIndex: usize = 0;
+      while (hintIndex < expressions[expressionIndex].closureCaptureSourceModes.length) {
+        if (expressions[expressionIndex].closureCaptureSourceModes[hintIndex].byteLength > 0) {
+          const type = LoweredType({
+            kind: expressions[expressionIndex].captureTypes[hintIndex].kind,
+            name: copy expressions[expressionIndex].captureTypes[hintIndex].name,
+          });
+          const owned = moduleTypeNeedsCleanup(program, importedTypes, type);
+          hints.push(LoweredClosureCapture({
+            name: copy expressions[expressionIndex].labels[
+              3 + expressions[expressionIndex].closureParameterCount + hintIndex],
+            type, owned,
+            mutableBinding: expressions[expressionIndex].closureCaptureSourceModes[hintIndex] == "inout",
+          }));
+        }
+        hintIndex = hintIndex + 1;
+      }
+      const statementCount = statements.length;
+      const captures = try resolveCallableCaptures(program, importedTypes,
+        evidence, ownerName, expressions, uses, statements, statementCount,
+        closureUseOffset, hints);
+      if (captures.length != expressions[expressionIndex].captureTypes.length) {
+        throw "native expression callable lost its lexical capture identity";
+      }
+      let captureIndex: usize = 0;
+      for (const capture of captures) {
+        if (capture.owned) {
+          throw `native borrowed expression capture ${capture.name} requires cleanup-bearing borrow storage; this tier supports cleanup-free captures`;
+        }
+        if (capture.name != expressions[expressionIndex].labels[
+          3 + expressions[expressionIndex].closureParameterCount + captureIndex]) {
+          throw "native expression callable changed its lexical capture order";
+        }
+        const mode = capture.type.kind == LoweredTypeKind.cstringType
+          ? "value" : capture.mutableBinding ? "inout" : "in";
+        expressions[expressionIndex].closureCaptureModes.push(copy mode);
+        for (const use of capture.uses) {
+          expressions[use].kind = LoweredExpressionKind.closureCaptureValue;
+          expressions[use].labels = Array<String>(copy mode);
+        }
+        captureIndex = captureIndex + 1;
+      }
+    }
     if (
       expressions[expressionIndex].kind
         == LoweredExpressionKind.closureValue
@@ -20551,18 +20719,7 @@ function completeNativeClosureBlocks(
       );
       const bodyExpressionEnd = expressions.length;
       if (captures.length > 0 && expressions[expressionIndex].labels[1] != "move") {
-        let asynchronousOwner = false;
-        for (const declaration of program.functions) {
-          if (declaration.name == ownerName) asynchronousOwner = declaration.asynchronous;
-        }
-        for (const aggregate of program.aggregates) {
-          for (const method of aggregate.methods) {
-            if (semanticMethodOwnerMatches(ownerName, aggregate.name, method.name)) {
-              asynchronousOwner = method.asynchronous;
-            }
-          }
-        }
-        if (asynchronousOwner) {
+        if (callableOwnerIsAsynchronous(program, ownerName)) {
           throw "native borrowed block environments in async functions require suspension-stable storage; this tier supports synchronous enclosing functions";
         }
       }

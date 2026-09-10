@@ -355,16 +355,17 @@ Native synchronous `void` block callables (including `throws E`) support owned
 invocation-local String, struct, enum payload, and destructured String storage.
 Locals clean up on normal fallthrough, return, throw, failed `try`, and scoped
 loop exits; captured environments retain their independent lifetime. Borrowed
-scalar and cleanup-free value-aggregate block captures use stack environments
-and address the original storage, including `inout` parent parameters. Owned
+scalar and cleanup-free value-aggregate captures in synchronous expression and
+`void` block bodies use stack environments and address the original storage,
+including `inout` parent parameters. Owned
 `move` block captures address their retained environment fields, preserving
 mutable state between invocations. Scope-aware discovery keeps nested callback
 parameters separate. Both emitters have exact-cleanup and allocation-balance
-regressions, and the basic borrowed accumulation probe asserts zero allocations.
-Borrowed cleanup-bearing block captures, broader expression-body capture storage
-parity, non-void and asynchronous native block callables remain staged work.
-Borrowed block environments in async enclosing functions explicitly reject until
-suspension-stable environment storage is proven.
+regressions; borrowed reads, mutation, nested forwarding, and parent-parameter
+probes assert zero allocations. Borrowed cleanup-bearing captures, mutable owned
+expression-body capture storage, non-void and asynchronous native block callables
+remain staged work. Borrowed expression and block environments in async enclosing
+functions explicitly reject until suspension-stable environment storage is proven.
 
 Ordinary object destructuring preserves Stage 0's conservative custom-cleanup
 boundary in native checking too: a root `deinit` or custom cleanup nested in

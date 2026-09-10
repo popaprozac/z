@@ -6974,6 +6974,56 @@ the fixed-point native bootstrap, and full frontend graph emission. The website
 build and test-tier audit pass. This is a focused regression sweep, not the full
 repository suite.
 
+### Native expression-capture storage follow-up
+
+Expression-bodied lexical closures exposed the same storage problem as block
+closures: the native emitter allocated a heap environment holding value
+snapshots, then loaded const invocation-local copies. A read after the parent
+updated its binding was stale; forwarding a captured scalar to an `inout`
+helper produced invalid C. Changing the body spelling must not change the
+capture's ownership semantics.
+
+```z
+let count = 10;
+const read = (): i32 => count;
+count = 42;
+const observed = read(); // must observe 42
+```
+
+Synchronous borrowed expression captures now share the scope-aware discovery,
+binding/type resolution, pointer-backed stack environments, and direct
+environment-field references used by block captures. Expression parameter
+rewriting also follows executable roots, so a nested callback's same-named
+parameter is not rewritten with its parent's capability. Nested callbacks
+contribute their capture operands, not their independently executed bodies.
+
+Nine dual-emitter strict-Clang/UBSan probes require zero allocations: updated
+parent reads, mutation through a helper, value-aggregate fields, parent `in` and
+`inout` parameters, nested synchronous forwarding, shadowing parameters, and
+user names resembling environment internals. The nested probes additionally
+capture an enclosing closure's `inout` parameter and resolve a contextually
+typed parameter instead of a same-named, differently typed parent local.
+Enclosing-closure ancestry and checked signature types provide that binding
+hint; it is not guessed from the nearest ordinary function declaration.
+Existing owned `move` snapshots
+and retained callbacks keep their independent storage. No syntax or capture
+permission has changed.
+
+Cleanup-bearing borrowed expression captures now fail explicitly instead of
+going through an unproven owned-environment representation. Async enclosing
+functions similarly reject borrowed expression environments until their
+storage can survive suspension; the Stage 0 async local-frame boundary is
+also tested. Mutable owned expression captures, non-void block return contexts,
+and broader cleanup-bearing/suspending captures remain next. Native subclass
+execution is still gated.
+
+Checkpoint validation: 254 targeted tests passed across core/async language,
+closure cleanup/nonescape, Objective-C, native C callbacks, and self-hosting.
+The native bootstrap reached a fixed point (11,312,023 generated C bytes), and
+the refreshed standalone `z` ran a borrowed read/mutation smoke successfully.
+Website build and test-tier coverage checks pass. This is targeted evidence,
+not a full-suite or compile-time performance claim.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
