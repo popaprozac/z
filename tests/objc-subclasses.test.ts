@@ -64,7 +64,7 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
     }
     const gated = runDeclaration(nativeBaseline, true);
     assert.equal(gated.status, 1, gated.stderr);
-    assert.match(gated.stdout, /Z0814:.*availability checks, complete body ownership parity, and native emission/);
+    assert.match(gated.stdout, /Z0814:.*checked native lowering and emission/);
     const invalidBeforeGate = runDeclaration(nativeBaseline.replace("super.initWithValue(value)", 'super.initWithValue("bad")'), true);
     assert.equal(invalidBeforeGate.status, 1, invalidBeforeGate.stdout + invalidBeforeGate.stderr);
     assert.match(invalidBeforeGate.stdout, /i32.*String|String.*i32/);
@@ -222,6 +222,9 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       ["copy native receiver", overrideBody("const alias = copy this; return alias.value();"), /cannot be explicitly copied/],
       ["moved String use", overrideBody('const message = "hello"; const moved = move message; return i32(message.byteLength);'), /use of moved value/],
       ["owned String capture use", overrideBody('const message = "hello"; const callback: () => i32 = move (): i32 => i32(message.byteLength); return i32(message.byteLength);'), /use of moved value/],
+      ["borrowed String move inside callback", overrideBody('const text = "hello"; const take = (): String => { return move text; }; return 42;'), /cannot transfer ownership|cannot move borrowed/],
+      ["async scope in synchronous override", overrideBody('async scope {} return 42;'), /async/],
+      ["async scope in native constructor", constructorTail('async scope {}'), /async/],
     ] satisfies [string, string, RegExp][]) {
       const checked = runDeclaration(source, "types");
       assert.equal(checked.status, 1, `${name}: ${checked.stdout}${checked.stderr}`);
@@ -242,6 +245,9 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       ["noncapturing function value", overrideBody("const callback: () => i32 = (): i32 => 42; return callback();")],
       ["owned scalar function value", overrideBody("const count = 42; const callback: () => i32 = move (): i32 => count; return callback();")],
       ["owned String capture", overrideBody('const message = "hello"; const callback: () => i32 = move (): i32 => i32(message.byteLength); return callback();')],
+      ["borrowed String storage", overrideBody('const source = "first second"; let text = source.copyBytes(0, 5); const read = (): usize => text.byteLength; text = source.copyBytes(6, 12); return i32(read());')],
+      ["borrowed cleanup-bearing block", overrideBody('let state = State({ count: 40, text: "owned" }); const add = (): i32 => { state.count = state.count + 1; return state.count; }; return add();') + '\nstruct State { count: i32; text: String; deinit {} }'],
+      ["locally handled typed error", overrideBody('const callback = (): i32 throws Failure => { throw Failure({ message: "rejected" }); }; return match (attempt callback()) { success(value) => value; failure(error) => i32(error.message.byteLength); };') + '\nstruct Failure { message: String; }'],
       ["ordinary Z ARC move and id shadowing", overrideBody("const item = new id({ value: 42 }); const other = move item; return other.value;") + "\nclass id { value: i32; }"],
       ["retained borrowed object capture", overrideBody("const callback: () => i32 on thread.main = move (): i32 => object.value(); return callback() + object.value();")
         .replace('override function value()', 'override function read(in object: native.ZWireBase)')
@@ -261,10 +267,20 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       "this.consume(); return 42;",
       "const alias: native.ZWireBase = this; alias.consume(); return 42;",
       "this.takeIndex(0, this); return 42;",
+      "const alias: native.ZWireBase = this; alias.initWithValue(1); return 42;",
+      "const alias: native.ZWireBase = this; const callback: () => i32 on thread.main = move (): i32 => { alias.consume(); return 42; }; return callback();",
     ]) {
       const checked = runDeclaration(overrideBody(body), "types");
       assert.equal(checked.status, 1, checked.stdout + checked.stderr);
       assert.match(checked.stdout, /consuming Objective-C calls/);
+      assert.throws(() => compileToNative(overrideBody(body), decoder), /consuming Objective-C calls/);
+    }
+    for (const body of ["this.log(1); return 42;", "const alias = this; alias.log(1); return 42;"]) {
+      const source = overrideBody(body);
+      const checked = runDeclaration(source, "types");
+      assert.equal(checked.status, 1, checked.stdout + checked.stderr);
+      assert.match(checked.stdout, /synchronous, non-variadic Objective-C calls/);
+      assert.throws(() => compileToNative(source, decoder), /synchronous, non-variadic Objective-C calls/);
     }
     // Inferred lexical closures retain environment provenance through generic
     // inference and owned storage. Rejection must precede the execution gate.
@@ -317,10 +333,13 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       ["unavailable method", availabilityBody("return this.forbiddenValue();"), "13.0", /unavailable.*retired method/],
       ["getter introduced", availabilityBody("return this.futureProperty;"), "13.0", /futureProperty.*requires macos 14.3/],
       ["setter introduced", availableBaseline.replace("super.initWithValue(value);", "super.initWithValue(value); this.futureProperty = value;"), "13.0", /futureProperty.*requires macos 14.3/],
+      ["aliased method introduced", availabilityBody("const alias = this; return alias.futureValue();"), "13.0", /futureValue.*requires macos 14.2/],
+      ["borrowed callback availability", availabilityBody("const alias = this; return inspect((): i32 => alias.futureValue());") + '\nfunction inspect(in callback: () => i32 on thread.main): i32 on thread.main { return callback(); }', "13.0", /futureValue.*requires macos 14.2/],
+      ["owned callback availability", availabilityBody("const alias = this; const read: () => i32 on thread.main = move (): i32 => alias.futureProperty; return read();"), "13.0", /futureProperty.*requires macos 14.3/],
     ] satisfies [string, string, string, RegExp][]) {
       const checked = runAvailability(source, version);
       assert.equal(checked.status, 1, `${name}: ${checked.stdout}${checked.stderr}`);
-      assert.match(checked.stdout, /Z0802/, name);
+      assert.match(checked.stdout, /Z0802/, `${name}: ${checked.stdout}${checked.stderr}`);
       assert.match(checked.stdout, expected, name);
       assert.throws(() => compileToNative(source, decoder, {
         projectBuild: { ...prepareProject(decoder), deploymentTarget: { platform: "macos", minimumVersion: version } },

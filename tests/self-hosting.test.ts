@@ -97,6 +97,33 @@ hostToolchainTest("preserves native subclass syntax while rejecting unimplemente
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 330_000);
 
+test("checks async scope against the innermost native function context", () => {
+  const directory = mkdtempSync("/tmp/z-async-scope-context-");
+  try {
+    const input = resolve(directory, "main.zs");
+    for (const source of [
+      "function main(): i32 { async scope {} return 0; }",
+      "struct Runner { function run(): void { async scope {} } } function main(): i32 { return 0; }",
+      "async function main(): i32 { const callback = (): void => { async scope {} }; return 0; }",
+    ]) {
+      writeFileSync(input, source);
+      assert.throws(() => check(source, input), /async scope requires.*async function/);
+      const result = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+        encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL",
+      });
+      assert.equal(result.status, 1, result.stderr || String(result.error));
+      assert.match(result.stderr, /Z0703.*async scope requires.*async function/);
+    }
+    const source = "async function main(): i32 { async scope {} return 0; }";
+    writeFileSync(input, source);
+    assert.doesNotThrow(() => check(source, input));
+    const valid = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL",
+    });
+    assert.equal(valid.status, 0, valid.stderr || String(valid.error));
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 hostToolchainTest("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
   const application = resolve(projectRoot, "examples/applications/source-inspector/main.zs");
   const lexer = resolve(projectRoot, "compiler/frontend/lexer.zs");

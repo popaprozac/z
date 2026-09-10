@@ -410,7 +410,7 @@ export function requireNativeObjCSubclassBodySupport(in parsed: Array<ParsedModu
       match (in aggregate.nativeBase) {
         some(base) => throw codedModuleResolutionError(
           ModuleResolveErrorKind.unsupportedLowering, "Z0814", module.path,
-          "native Objective-C subclass execution still requires availability checks, complete body ownership parity, and native emission; use Stage 0",
+          "native Objective-C subclass execution still requires checked native lowering and emission; use Stage 0",
           base.line, base.column, base.name.byteLength
         );
         none => {}

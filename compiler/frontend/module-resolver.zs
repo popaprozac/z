@@ -12488,6 +12488,12 @@ function inferStatement(
     return true;
   }
   if (kind == StatementKind.asyncScopeStatement) {
+    const asyncContext = valueBindingType(bindings, "__z_native_async_context");
+    if (asyncContext.byteLength == 0) {
+      throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0703", module.path,
+        "async scope requires an enclosing async function",
+        arena.nodes[index].line, arena.nodes[index].column, 1);
+    }
     let scopeBindings = copyValueBindings(bindings);
     if (arena.nodes[index].name.byteLength > 0) {
       addValueBinding(inout scopeBindings, arena.nodes[index].name, "TaskScope");

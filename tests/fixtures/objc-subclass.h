@@ -25,4 +25,7 @@ __attribute__((swift_attr("@MainActor")))
 @end
 
 int z_subclass_live_count(void);
+void z_subclass_enter_body(void);
+void z_subclass_leave_body(void);
+int z_subclass_body_balance(void);
 NS_ASSUME_NONNULL_END

@@ -3,6 +3,11 @@ import { thread } from "std/thread";
 
 type ReadValue = () => i32 on thread.main;
 
+struct BodyResource {
+  text: String;
+  deinit { native.z_subclass_leave_body(); }
+}
+
 class Counter extends native.ZSubclassFixture on thread.main {
   constructor(value: i32) {
     super.initWithValue(value);
@@ -14,6 +19,11 @@ class Counter extends native.ZSubclassFixture on thread.main {
   }
 
   override function value(): i32 as "value" {
+    native.z_subclass_enter_body();
+    const source = "first second";
+    const resource = BodyResource({ text: source.copyBytes(0, 5) });
+    const length = (): usize => resource.text.byteLength;
+    if (length() != 5) return -1;
     return super.value() + 2;
   }
 
@@ -50,6 +60,7 @@ function main(): i32 {
   while (index < 200) {
     if (exercise() != 0) return 1;
     if (exerciseEscapingReader() != 0) return 2;
+    if (native.z_subclass_body_balance() != 0) return 3;
     index = index + 1;
   }
   return native.z_subclass_live_count();

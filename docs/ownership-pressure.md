@@ -7127,6 +7127,47 @@ regression sweep. The refreshed native bootstrap reached a fixed point at
 This is targeted correctness and allocation evidence, not a full repository suite
 or a new runtime/compile-time benchmark claim.
 
+## Restricted native subclass body audit (2026-09-10)
+
+The final synchronous body audit puts the borrowed resource-capture work back
+inside its motivating native subclass context. Paired checker probes cover a
+String whose owner changes after capture, a borrowed custom-cleanup local,
+locally handled typed errors, forbidden capture consumption, and availability
+through receiver/base aliases plus owned and borrowed callbacks.
+
+It found two existing-rule gaps, not a need for new syntax:
+
+- Native semantic checking admitted `async scope {}` inside a synchronous
+  override or constructor. The ordinary statement checker now requires the
+  innermost function/closure to be async and reports `Z0703`. A synchronous
+  callback does not inherit permission from an enclosing async function.
+- Stage 0 permitted consuming Objective-C calls inside a native subclass body
+  after a receiver was viewed as its imported base. Native checking already
+  rejected that unsupported transfer. Stage 0 now checks the lexical native body
+  too, including nested callbacks, consuming parameters, reinitialization through
+  a base-typed alias, and variadic/projected native calls. The one designated
+  superclass initializer keeps its separately checked construction path.
+
+The executable Stage 0 fixture additionally creates a custom-cleanup local with
+a dynamically allocated String inside a real Objective-C override and borrows it
+through a callback. A native counter verifies balanced entry/local destruction
+after each of 200 iterations, alongside the existing native object-lifetime,
+virtual dispatch, superclass dispatch, and retained callback checks. Strict Clang
+and UBSan pass; no ASan startup probe is needed.
+
+This closes the bounded audit checkpoint, not every possible language composition.
+Native `Z0814` now accurately identifies checked native lowering/emission as the
+remaining execution gate. The next implementation must introduce explicit native
+subclass plans and constructor/superclass call lowering, preserve imported ABI
+evidence, and run this same fixture before removing the gate. Ordinary Z ARC
+record emission must never be used as a placeholder subclass representation.
+
+Validation: 283 distinct targeted tests passed across the subclass/Objective-C,
+closure/nonescape, core/async language, native callback, and selected self-hosting
+suites. The local compiler was refreshed with a fixed-point bootstrap
+(11,320,934 generated C bytes). The website build, diff check, and test-tier audit
+pass. This is bounded correctness evidence, not a full-suite or performance claim.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -4,9 +4,9 @@ Status: declaration and construction direction approved, 2026-09-09. The first
 field-free, synchronous **Stage 0** tier is implemented and tested. The
 self-hosted frontend preserves the declaration syntax, checks imported
 declaration contracts and structural receiver rules, and uses the ordinary
-expression/call/loan checker for a first native body-typing tier. Target-aware
-Objective-C availability checks are present. Native execution remains explicitly
-gated on complete ownership/availability composition and emission.
+expression/call/loan checker for a restricted native body-typing tier. Target-aware
+Objective-C availability checks and the synchronous body audit are present. Native
+execution remains explicitly gated on checked native lowering and emission.
 Stateful subclasses and production window
 integration remain separate checkpoints.
 
@@ -240,9 +240,9 @@ for every native C-family call in the self-hosted compiler.
 These checks do not yet authorize native subclass execution: semantic resolution
 still reports `Z0814` before an executable graph can leave the resolver. A
 source-only probe without attached superclass ABI evidence cannot enter typed
-body checking. Complete ownership and availability composition are still required;
-passing this limited typed oracle is not a claim that every body composition is
-safe to emit.
+body checking. Passing this restricted typed oracle is not a claim that every
+body composition is executable: lowering must continue rejecting unsupported
+expressions rather than substituting an ordinary Z-class representation.
 
 The mutable lexical block-capture gap is now closed for synchronous
 callbacks with scalar and cleanup-free value captures. Synchronous borrowed
@@ -263,8 +263,22 @@ without retaining, moving, or dropping it at callback exit. Exact cleanup and
 allocation probes cover replacement, typed failure, nested forwarding, and
 conditional invocation through both emitters.
 
-Next: a final audit of the restricted synchronous subclass body/diagnostic contract,
-then explicit native subclass lowering/emission and differential execution.
+The restricted synchronous body audit now additionally checks borrowed String and
+custom-cleanup local captures, locally handled typed errors, and availability
+through base/receiver aliases and both borrowed and owned callbacks. It closed two
+parity gaps: native checking admitted `async scope` in a synchronous body, and
+Stage 0 admitted consuming Objective-C calls through base-typed aliases in native
+subclass bodies. The latter now has the same lexical restriction as native
+checking, including nested callbacks and non-variadic call requirements. Neither
+fix introduces a new source rule. Native async-scope validation follows the
+innermost function/closure context, not an outer async function.
+
+The real Objective-C execution fixture now borrows a dynamically allocated String
+inside a custom-cleanup method local. A native balance counter must return to zero
+after every iteration, in addition to exact native object destruction. This is
+Stage 0 execution evidence until the same fixture passes through native emission.
+
+Next: explicit native subclass lowering/emission and differential execution.
 Afterward, deliberate and test owned state, initialization/teardown callbacks,
 and reentrancy before Zapp's window transition state moves into a subclass.
 General async closure completeness is **not** a prerequisite for this field-free,
@@ -281,14 +295,15 @@ The remaining field-free native port is bounded by four gates:
 
 1. **Complete:** carry raw safety facts through native foreign normalization and
    module signatures, without exposing unsupported native ABIs as callable.
-2. **In progress:** declaration contracts, structural receiver/initialization
+2. **Audited restricted tier:** declaration contracts, structural receiver/initialization
    rules, superclass call/capture checks, nominal receiver identity, first
    argument/result/property typing, imported executor capability validation,
    alias-exclusivity tests, and target-aware Objective-C availability errors are
-   present. Complete body ownership and remaining availability/diagnostic parity
-   before accepting a native subclass as checked executable Z.
-   The first typed-body slice reuses the loan checker but does not yet establish
-   safety for every capture, move, return, or reentrant native call.
+   present. Synchronous cleanup-bearing local/capture compositions, local error
+   handling, alias/callback availability, and rejected consuming/suspending
+   operations now have paired checker coverage. This does not establish support
+   for every expression or reentrant native call; unsupported executable shapes
+   must still fail closed during lowering.
    Executable plans must require attached ABI evidence; the source-only
    declaration deferral must never become a successful execution path.
 3. Lower checked constructor/super calls and native method entries into explicit
@@ -297,6 +312,14 @@ The remaining field-free native port is bounded by four gates:
 4. Run the same virtual-dispatch, superclass, alias, construction, and exact
    destruction fixture through a freshly built native compiler; only then remove
    the native `Z0814` implementation boundary.
+
+The immediate lowering work should keep native subclass plans separate from
+ordinary Z ARC aggregates: preserve the source identity, imported superclass ABI,
+checked override selectors/parameter types, and designated initializer site;
+lower constructor and superclass dispatch explicitly; then emit real Objective-C
+interfaces/implementations and the existing main-thread/initialization guards.
+Do not lift the resolver gate simply to route a subclass through the ordinary
+Z record/class emitter.
 
 ## References
 

@@ -2,6 +2,10 @@
 
 static int liveCount = 0;
 int z_subclass_live_count(void) { return liveCount; }
+static int bodyBalance = 0;
+void z_subclass_enter_body(void) { bodyBalance += 1; }
+void z_subclass_leave_body(void) { bodyBalance -= 1; }
+int z_subclass_body_balance(void) { return bodyBalance; }
 
 @implementation ZSubclassFixture {
   int _value;

@@ -28,8 +28,11 @@ production or compatibility-sensitive use.
   Native parsing, safety-fact normalization, declaration contract checks, and
   structural initialization/receiver checks, and first native body typing with
   property/alias checking are present. Target-aware Objective-C availability
-  errors cover subclass bases, overrides, native calls, and properties. Complete
-  ownership/availability composition, native emission, stateful subclasses, and
+  errors cover subclass bases, overrides, native calls, and properties, including
+  aliases and nested callbacks. The restricted body audit covers cleanup-bearing
+  borrowed locals and locally handled errors; synchronous bodies reject async
+  scopes, consuming Objective-C calls, and variadic/projected native calls in
+  both compiler paths. Checked native lowering/emission, stateful subclasses, and
   async composition remain
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,

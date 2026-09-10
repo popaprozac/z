@@ -13371,6 +13371,18 @@ function inferExpressionInner(
             && (/^init(?:$|[^a-z])/.test(method.selector) || /^(?:alloc|allocWithZone:|new|dealloc|retain|release|autorelease|retainCount)$/.test(method.selector))) {
             objcSubclassError(fileName, expression.location, "native subclass lifecycle operations must use `new` and the checked constructor, not an inherited lifecycle method");
           }
+          if (state.activeReceiver && state.objcSubclasses.has(state.activeReceiver)) {
+            // The field-free native-body tier does not transfer Objective-C
+            // ownership into consuming calls. Keep this check on the lexical
+            // native body, so upcasting or a nested callback cannot bypass it.
+            // The one designated super initializer is checked separately above.
+            if (method.consumesSelf || method.consumedParameters?.length) {
+              objcSubclassError(fileName, expression.location, "consuming Objective-C calls inside native subclass bodies require a later ownership tier");
+            }
+            if (selection.projected || method.variadic) {
+              objcSubclassError(fileName, expression.location, "native subclass bodies require synchronous, non-variadic Objective-C calls");
+            }
+          }
           requireMainExecutorContext(
             foreignInterfaceRequiresMain(objcReceiverType.declaration, state)
               || method.metadata.executorAffinity === "main",
