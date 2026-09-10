@@ -12,6 +12,10 @@ import {
 } from "../../compiler/frontend/semantic-objc-subclasses.zs";
 import { resolveParsedModulesWithForeignContracts, validateNativeObjCSubclassBodyTypes } from "../../compiler/frontend/module-resolver.zs";
 import { compareNativeVersions } from "../../compiler/frontend/semantic-native-availability.zs";
+import { planNativeObjCSubclasses } from "../../compiler/frontend/semantic-objc-subclass-plans.zs";
+import { emitNativeObjCSubclassInterfaces } from "../../compiler/frontend/c-emitter.zs";
+import { lowerProgram } from "../../compiler/frontend/lowering-ir.zs";
+import { emptySemanticEvidence } from "../../compiler/frontend/semantic-evidence.zs";
 
 function inspect(in path: String, in sourcePath: String, in mode: String, in platform: String, in minimumVersion: String, in header: String): i32 throws String {
   if (compareNativeVersions("14", "014.0.0") != 0
@@ -157,17 +161,68 @@ function inspect(in path: String, in sourcePath: String, in mode: String, in pla
     success => {}
     failure(error) => throw `${error.code}: ${error.message}`;
   }
-  if (mode == "types") {
+  if (mode == "types" || mode == "plans" || mode == "interfaces"
+    || mode == "missing-super" || mode == "wrong-dispatch" || mode == "wrong-abi") {
     match (attempt prepareNativeObjCSubclassTypes(parsedModules, inout resolved)) {
       success => {}
       failure(error) => throw `${error.code}: ${error.message}`;
     }
-    const evidence = match (attempt validateNativeObjCSubclassBodyTypes(parsedModules[0], resolved, 0)) {
+    let evidence = match (attempt validateNativeObjCSubclassBodyTypes(parsedModules[0], resolved, 0)) {
       success(value) => value;
       failure(error) => throw `${error.code}: ${error.message}`;
     };
-    for (const call of evidence.callResolutions) {
-      console.log(`${call.kind}:${call.objectiveCSelector}:${call.returnType}`);
+    if (mode == "types") {
+      for (const call of evidence.callResolutions) {
+        console.log(`${call.kind}:${call.objectiveCSelector}:${call.returnType}`);
+      }
+    } else {
+      let index: usize = 0;
+      while (index < evidence.callResolutions.length) {
+        if (evidence.callResolutions[index].kind == "objcSuper") {
+          if (mode == "missing-super") evidence.callResolutions[index].offset = 0;
+          if (mode == "wrong-dispatch") evidence.callResolutions[index].kind = "method";
+          if (mode == "wrong-abi") evidence.callResolutions[index].objectiveCNativeReturnType = "double";
+        }
+        index = index + 1;
+      }
+      const plans = match (attempt planNativeObjCSubclasses(parsedModules[0], resolved, 0, evidence)) {
+        success(value) => value;
+        failure(error) => throw `${error.code}: ${error.message}`;
+      };
+      // A caller assembling its own unchecked graph cannot accidentally get
+      // an ordinary Z ARC class from a native subclass declaration either.
+      const detachedSource = ModuleSource({ path: "unlinked.zs", source:
+        "class Probe extends MissingBase on thread.main { constructor() { super.init(); } } function main(): i32 { return 0; }",
+        packageSpecifiers: Array<String>(),
+      });
+      const detached = match (attempt parseModule(detachedSource)) {
+        success(value) => value;
+        failure(error) => throw copy error.message;
+      };
+      const empty = emptySemanticEvidence();
+      match (attempt lowerProgram(detached.program, empty)) {
+        success(_) => throw "native subclass incorrectly lowered as an ordinary Z ARC class";
+        failure(message) => {
+          if (message != "internal compiler error: native lowering: native Objective-C subclass bodies require dedicated native lowering and emission") throw message;
+        }
+      }
+      if (mode == "interfaces") {
+        const declarations = try emitNativeObjCSubclassInterfaces(plans);
+        console.log(declarations);
+      } else {
+        for (const plan of plans) {
+          console.log(`class ${plan.sourceName}:${plan.nativeName}:${plan.superclassNativeName}:${plan.foreignHeader}`);
+          console.log(`initializer ${plan.initializer.selector}:${plan.initializer.nativeReturnType}`);
+          for (const type of plan.initializer.nativeParameterTypes) { console.log(`argument ${type}`); }
+          for (const method of plan.methods) {
+            console.log(`entry ${method.sourceName}:${method.selector}:${method.nativeReturnType}`);
+            for (const type of method.nativeParameterTypes) { console.log(`parameter ${type}`); }
+          }
+          for (const call of plan.superCalls) {
+            console.log(`dispatch ${call.initializesReceiver}:${call.selector}:${call.nativeReturnType}`);
+          }
+        }
+      }
     }
   }
   if (mode == "gate") {

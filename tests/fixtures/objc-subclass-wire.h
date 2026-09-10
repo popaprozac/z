@@ -1,4 +1,6 @@
 // Header-only metadata oracle: no Foundation or native implementation required.
+typedef struct ZWirePoint { int x; double y; } ZWirePoint;
+typedef enum { ZWireChoiceFirst = 0, ZWireChoiceSecond = 1 } ZWireChoice;
 __attribute__((objc_root_class))
 __attribute__((swift_attr("@MainActor")))
 @interface ZWireBase
@@ -7,7 +9,7 @@ __attribute__((swift_attr("@MainActor")))
 - (int)requiredValue __attribute__((objc_requires_super));
 - (int)directValue __attribute__((objc_direct));
 - (void)consume __attribute__((ns_consumes_self));
-- (void)takeIndex:(int)index object:(ZWireBase * __attribute__((ns_consumed)))object;
+- (void)takeIndex:(int)index object:(ZWireBase * _Nonnull __attribute__((ns_consumed)))object;
 - (void)log:(int)count, ...;
 - (long double)extendedValue __attribute__((objc_direct));
 - (int)add:(int)left to:(int)right;

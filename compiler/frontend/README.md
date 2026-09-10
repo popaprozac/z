@@ -169,6 +169,12 @@ recursive path.
   initialization and dispatch from virtual calls. Tests reject invalid
   arguments/results, downcasts/sibling conversions, readonly property writes,
   alias reinitialization/overlap, and missing imported executor capabilities.
+  `semantic-objc-subclass-plans.zs` now retains distinct source/native/base
+  identities, exact constructor/override entry ABIs, inherited initializer
+  restrictions, main affinity, and typed superclass dispatch sites. Declaration
+  emission in `c-emitter.zs` passes strict Clang independently of body execution.
+  Both the resolver and ordinary aggregate lowering still reject executable
+  native subclasses until dedicated body lowering/implementation emission lands.
   Native Objective-C references cannot use explicit `move` (including nullable
   and transparent aliases); ordinary uses retain identity. Direct `this` capture
   stays rejected like Stage 0, while typed owned alias captures and inline

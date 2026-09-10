@@ -32,8 +32,9 @@ production or compatibility-sensitive use.
   aliases and nested callbacks. The restricted body audit covers cleanup-bearing
   borrowed locals and locally handled errors; synchronous bodies reject async
   scopes, consuming Objective-C calls, and variadic/projected native calls in
-  both compiler paths. Checked native lowering/emission, stateful subclasses, and
-  async composition remain
+  both compiler paths. Checked native class-entry plans and independently tested
+  Objective-C interface emission are present. Native body lowering/implementation
+  emission still gate execution; stateful subclasses and async composition remain
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler and owned `objc.adapt<P>` carrier with direct `id<P>` ABI,

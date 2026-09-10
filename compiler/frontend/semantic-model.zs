@@ -96,6 +96,42 @@ export struct ModuleSemanticEvidence {
     Array<ModuleObjCRegistrationResolution>();
   objectiveCAdapters: Array<ModuleObjCAdapterResolution> =
     Array<ModuleObjCAdapterResolution>();
+  objectiveCSubclasses: Array<ModuleObjCSubclassPlan> =
+    Array<ModuleObjCSubclassPlan>();
+}
+
+// Source-owned native classes are not Z ARC aggregates or protocol adapters.
+// These checked plans retain exact native entry ABIs and source-body locations.
+export struct ModuleObjCSubclassEntry {
+  sourceIndex: usize;
+  offset: usize;
+  sourceName: String;
+  selector: String;
+  nativeReturnType: String;
+  nativeParameterTypes: Array<String>;
+  parameterNames: Array<String>;
+}
+
+export struct ModuleObjCSubclassSuperCall {
+  offset: usize;
+  initializesReceiver: boolean;
+  selector: String;
+  nativeReturnType: String;
+  nativeParameterTypes: Array<String>;
+}
+
+export struct ModuleObjCSubclassPlan {
+  moduleIndex: usize;
+  aggregateIndex: usize;
+  sourceName: String;
+  nativeName: String;
+  superclassNativeName: String;
+  executorAffinity: String;
+  foreignHeader: String;
+  initializer: ModuleObjCSubclassEntry;
+  unavailableInitializers: Array<ModuleObjCSubclassEntry>;
+  methods: Array<ModuleObjCSubclassEntry>;
+  superCalls: Array<ModuleObjCSubclassSuperCall>;
 }
 
 export struct ModuleObjCProtocolMethodResolution {

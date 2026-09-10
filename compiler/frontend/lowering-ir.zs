@@ -31635,6 +31635,14 @@ function appendLoweredProgram(
   inout enums: Array<LoweredEnum>,
   inout functions: Array<LoweredFunction>
 ): void throws String {
+  // Even manually assembled graphs must not send a native subclass through
+  // the ordinary Z ARC record path while native body emission is incomplete.
+  for (const aggregate of program.aggregates) {
+    match (in aggregate.nativeBase) {
+      some(_) => throw "native Objective-C subclass bodies require dedicated native lowering and emission";
+      none => {}
+    }
+  }
   for (const declaration of program.constants) {
     const loweredConstant = try lowerModuleConstant(
       program,

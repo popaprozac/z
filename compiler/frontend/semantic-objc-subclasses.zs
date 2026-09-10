@@ -95,7 +95,7 @@ function appendInheritedMethod(
   methods.push(move rebound);
 }
 
-function inheritedMethods(
+export function nativeObjCSubclassInheritedMethods(
   in module: ParsedModule, in modules: Array<ResolvedModule>, moduleIndex: usize,
   in aggregate: AggregateDeclaration, in baseName: String
 ): Array<ModuleMethodSignature> throws ModuleResolveError {
@@ -375,7 +375,7 @@ function validateNativeObjCSubclassDeclaration(
     none => throw subclassError(module,
       "`extends` must name an imported Objective-C class; ordinary Z inheritance is not supported", base.line, base.column);
   }
-  const methods = try inheritedMethods(module, modules, moduleIndex, aggregate, base.name);
+  const methods = try nativeObjCSubclassInheritedMethods(module, modules, moduleIndex, aggregate, base.name);
   for (const method of aggregate.methods) {
     let found = false;
     for (const native of methods) {
@@ -445,7 +445,7 @@ export function prepareNativeObjCSubclassTypes(
         some(value) => value;
         none => throw subclassError(module, "missing native subclass type identity", aggregate.line, aggregate.column);
       };
-      const methods = try inheritedMethods(module, modules, moduleIndex, aggregate, baseName);
+      const methods = try nativeObjCSubclassInheritedMethods(module, modules, moduleIndex, aggregate, baseName);
       let signature = match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
         some(value) => copy value;
         none => throw subclassError(module, "missing native subclass signature", aggregate.line, aggregate.column);

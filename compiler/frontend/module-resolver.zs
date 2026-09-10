@@ -1,5 +1,6 @@
 import { TextBuffer } from "std/text";
 import { requireNativeAvailability, requireNativeReferenceAvailability } from "./semantic-native-availability.zs";
+import { planNativeObjCSubclasses } from "./semantic-objc-subclass-plans.zs";
 import {
   nativeObjCSubclassBase,
   prepareNativeObjCSubclassTypes,
@@ -13279,9 +13280,14 @@ export function resolveParsedModulesWithForeignContracts(
     for (const aggregate of parsed[subclassModuleIndex].program.aggregates) {
       match (in aggregate.nativeBase) {
         some(_) => {
-          modules[subclassModuleIndex].semanticEvidence = try validateNativeObjCSubclassBodyTypes(
+          let evidence = try validateNativeObjCSubclassBodyTypes(
             parsed[subclassModuleIndex], modules, subclassModuleIndex
           );
+          const plans = try planNativeObjCSubclasses(
+            parsed[subclassModuleIndex], modules, subclassModuleIndex, evidence
+          );
+          evidence.objectiveCSubclasses = move plans;
+          modules[subclassModuleIndex].semanticEvidence = move evidence;
           break;
         }
         none => {}

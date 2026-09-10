@@ -7168,6 +7168,54 @@ suites. The local compiler was refreshed with a fixed-point bootstrap
 (11,320,934 generated C bytes). The website build, diff check, and test-tier audit
 pass. This is bounded correctness evidence, not a full-suite or performance claim.
 
+## Native subclass entry planning (2026-09-10)
+
+The next concrete boundary is between checked bodies and native class emission.
+An ordinary Z ARC aggregate is the wrong representation even when its fields
+are empty: it would lose Objective-C identity, virtual dispatch, and superclass
+initialization semantics. Native class-entry plans now retain the source class,
+module-qualified generated class name, imported superclass/header, main affinity,
+constructor/method source locations, exact native entry types, unavailable
+inherited designated initializers, and explicit superclass call sites.
+
+Two details matter beyond this fixture:
+
+- The Z constructor signature is not the superclass initializer signature. It
+  may accept no arguments and supply a constant, or accept several arguments and
+  transform/select those sent to `super.init`. Native entry ABI must come from
+  the checked constructor's own types.
+- A source override alias changes its Z name, not its native selector. A borrowed
+  native object parameter remains one Objective-C pointer, not a pointer to a
+  Z wrapper or an extra pointer-to-pointer argument.
+
+The native interface emitter is tested independently under strict Clang for
+these shapes, inherited bases, native records/enums, and multiple classes.
+Corrupted-evidence probes reject missing superclass calls, accidental ordinary
+dispatch, and mismatched native ABI. The expanded multi-argument probe caught
+an end-offset-versus-length mistake in the new selector formatter; it is fixed
+and covered, not a new language restriction.
+
+Executable native subclass bodies are still gated. The normal resolver cannot
+return an executable subclass graph, and ordinary aggregate lowering now also
+rejects detached/hand-assembled native subclass ASTs. Next is dedicated body
+lowering and implementation emission, including real `super`, ARC initialization,
+main-entry guards, and the same 200-iteration dispatch/destruction oracle. This
+checkpoint does not establish stateful subclass safety or native execution.
+
+Validation: 114 distinct targeted tests pass across Objective-C/subclass,
+borrowed-callback, native closure-cleanup, and selected self-hosting coverage
+(the initial fixture-authoring failure was corrected and rerun). A fresh native
+driver reaches the intended `Z0814` gate with the real subclass fixture. Bootstrap
+reaches byte-identical output at 11,401,699 C bytes; the 33-page website build,
+test-tier audit, and diff checks pass. This is not a full-suite or performance run.
+
+Separate importer follow-up found while authoring the record probe: the
+header-only anonymous `typedef struct { int x; double y; } ZWirePoint;` was absent
+from the Clang producer's raw declaration stream, while a tagged `struct
+ZWirePoint` is retained. This checkpoint tests the tagged native record ABI;
+anonymous typedef-record discovery needs its own importer regression, not an
+assumption that this fixture covers it.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -32,6 +32,8 @@ import { ParsedModule } from "./module-symbols.zs";
 import { Program } from "./parser.zs";
 import {
   ModuleGraph,
+  ModuleObjCSubclassEntry,
+  ModuleObjCSubclassPlan,
   ModuleSemanticEvidence,
 } from "./semantic-model.zs";
 import { stringStartsWith } from "./semantic-type-shapes.zs";
@@ -283,6 +285,78 @@ function appendCBindingName(
 ): void {
   if (isCReservedWord(name)) output.append("z_");
   output.append(name);
+}
+
+function appendNativeObjCSubclassEntry(
+  inout output: TextBuffer, in entry: ModuleObjCSubclassEntry
+): void throws String {
+  if (entry.selector.byteLength == 0 || entry.nativeReturnType.byteLength == 0
+    || entry.parameterNames.length != entry.nativeParameterTypes.length) {
+    throw "native subclass entry requires complete selector/ABI evidence";
+  }
+  output.append("- (");
+  output.append(entry.nativeReturnType);
+  output.append(")");
+  let start: usize = 0;
+  let index: usize = 0;
+  let parameterIndex: usize = 0;
+  while (index < entry.selector.byteLength) {
+    if (entry.selector.byteAt(index) == 58) {
+      if (index == start || parameterIndex >= entry.parameterNames.length
+        || entry.nativeParameterTypes[parameterIndex].byteLength == 0) {
+        throw "native subclass selector does not match its parameter ABI";
+      }
+      if (parameterIndex > 0) output.append(" ");
+      output.append(entry.selector.copyBytes(start, index));
+      output.append(":(");
+      output.append(entry.nativeParameterTypes[parameterIndex]);
+      output.append(")");
+      appendCBindingName(inout output, entry.parameterNames[parameterIndex]);
+      parameterIndex = parameterIndex + 1;
+      start = index + 1;
+    }
+    index = index + 1;
+  }
+  if (entry.parameterNames.length == 0 && start == 0) {
+    output.append(entry.selector);
+  } else if (parameterIndex != entry.parameterNames.length || start != entry.selector.byteLength) {
+    throw "native subclass selector does not match its parameter ABI";
+  }
+}
+
+// Declaration emission is independently testable before body emission is
+// enabled. Callers import the plans' foreign headers before this fragment.
+// No implementation or ordinary Z ARC wrapper is synthesized here.
+export function emitNativeObjCSubclassInterfaces(
+  in plans: Array<ModuleObjCSubclassPlan>
+): String throws String {
+  let output = TextBuffer();
+  for (const plan of plans) {
+    output.append("@class ");
+    output.append(plan.nativeName);
+    output.append(";\n");
+  }
+  for (const plan of plans) {
+    if (plan.nativeName.byteLength == 0 || plan.superclassNativeName.byteLength == 0
+      || plan.foreignHeader.byteLength == 0) throw "native subclass interface requires native identity/header evidence";
+    output.append("@interface ");
+    output.append(plan.nativeName);
+    output.append(" : ");
+    output.append(plan.superclassNativeName);
+    output.append("\n");
+    try appendNativeObjCSubclassEntry(inout output, plan.initializer);
+    output.append(" __attribute__((objc_designated_initializer));\n");
+    for (const entry of plan.unavailableInitializers) {
+      try appendNativeObjCSubclassEntry(inout output, entry);
+      output.append(" __attribute__((unavailable));\n");
+    }
+    for (const entry of plan.methods) {
+      try appendNativeObjCSubclassEntry(inout output, entry);
+      output.append(";\n");
+    }
+    output.append("@end\n\n");
+  }
+  return output.finish();
 }
 
 // Z-owned storage only; imported ABI fields and JSON wire keys keep their spelling.

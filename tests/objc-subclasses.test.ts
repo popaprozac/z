@@ -44,7 +44,7 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
     const nativeBaseline = baseline.replace("./objc-subclass.h", "objc-subclass-wire.h")
       .replaceAll("ZSubclassFixture", "ZWireBase")
       .replace("counter.readVirtualValue()", "counter.value()");
-    const runDeclaration = (source: string, mode: false | true | "types" = false) => {
+    const runDeclaration = (source: string, mode: false | true | "types" | "plans" | "interfaces" | "missing-super" | "wrong-dispatch" | "wrong-abi" = false) => {
       writeFileSync(input, stream);
       writeFileSync(sourcePath, source);
       return spawnSync(executable, [input, sourcePath, ...(mode ? [mode === true ? "gate" : mode] : [])], {
@@ -73,6 +73,60 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
     assert.equal(typed.status, 0, typed.stdout + typed.stderr);
     assert.match(typed.stdout, /objcSuperInitializer:initWithValue::native.ZWireBase/);
     assert.match(typed.stdout, /objcSuper:value:i32/);
+    const planned = runDeclaration(nativeBaseline, "plans");
+    assert.equal(planned.status, 0, planned.stdout + planned.stderr);
+    assert.match(planned.stdout, /class Counter:ZNative_0_Counter:ZWireBase:objc-subclass-wire.h/);
+    assert.match(planned.stdout, /initializer initZGeneratedWithArgument0::instancetype/);
+    assert.match(planned.stdout, /argument int32_t/);
+    assert.match(planned.stdout, /entry value:value:int/);
+    assert.match(planned.stdout, /dispatch true:initWithValue:/);
+    assert.match(planned.stdout, /dispatch false:value:int/);
+    for (const mode of ["missing-super", "wrong-dispatch", "wrong-abi"] as const) {
+      const rejected = runDeclaration(nativeBaseline, mode);
+      assert.equal(rejected.status, 1, `${mode}: ${rejected.stdout}${rejected.stderr}`);
+      assert.match(rejected.stdout, /Z0814:.*(typed|ABI).*superclass|Z0814:.*superclass.*(typed|ABI)/);
+    }
+    const interfaces = runDeclaration(nativeBaseline, "interfaces");
+    assert.equal(interfaces.status, 0, interfaces.stdout + interfaces.stderr);
+    assert.match(interfaces.stdout, /@interface ZNative_0_Counter : ZWireBase/);
+    assert.match(interfaces.stdout, /initWithValue:.*unavailable/);
+    assert.match(interfaces.stdout, /initZGeneratedWithArgument0:.*objc_designated_initializer/);
+    assert.doesNotMatch(interfaces.stdout, /Z_Counter|z_refcount|@implementation/);
+    const checkInterfaces = (source: string) => {
+      const checked = spawnSync("clang", ["-x", "objective-c", "-fobjc-arc", "-fsyntax-only",
+        "-Wall", "-Wextra", "-Werror", "-I", resolve(projectRoot, "tests/fixtures"), "-"], {
+        encoding: "utf8", input: '#include <stdint.h>\n#include <stdbool.h>\n#import "objc-subclass-wire.h"\n' + source,
+        timeout: 10_000,
+      });
+      assert.equal(checked.status, 0, checked.stderr);
+    };
+    checkInterfaces(interfaces.stdout);
+    const entryShapes = [
+      nativeBaseline.replace("extends native.ZWireBase", "extends native.ZWireChild"),
+      nativeBaseline.replace("constructor(value: i32) { super.initWithValue(value); }", "constructor() { super.initWithValue(40); }"),
+      nativeBaseline.replace("constructor(value: i32)", "constructor(value: i32, point: native.ZWirePoint, choice: native.ZWireChoice, flag: boolean)"),
+      nativeBaseline.replace('override function value(): i32 as "value" { return super.value() + 2; }',
+        'override function sum(left: i32, right: i32): i32 as "add:to:" { return super.add(left, to: right); }'),
+      nativeBaseline.replace('override function value(): i32 as "value" { return super.value() + 2; }',
+        'override function read(in object: native.ZWireBase): i32 as "readObject:" { return object.value(); }'),
+      nativeBaseline.replace('override function value()', 'override function observed()'),
+      nativeBaseline.replace('function main()', 'class Other extends native.ZWireBase on thread.main { constructor(value: i32) { super.initWithValue(value); } }\nfunction main()'),
+    ];
+    for (const [index, source] of entryShapes.entries()) {
+      const emitted = runDeclaration(source, "interfaces");
+      assert.equal(emitted.status, 0, `entry ${index} (${emitted.signal}, ${emitted.error}): ${emitted.stdout}${emitted.stderr}`);
+      checkInterfaces(emitted.stdout);
+    }
+    const recordEntry = runDeclaration(entryShapes[2]!, "interfaces");
+    assert.match(recordEntry.stdout, /argument1:\(ZWirePoint\)point/);
+    assert.match(recordEntry.stdout, /argument2:\(ZWireChoice\)choice/);
+    assert.match(recordEntry.stdout, /argument3:\(bool\)flag/);
+    const borrowedEntry = runDeclaration(entryShapes[4]!, "interfaces");
+    assert.match(borrowedEntry.stdout, /readObject:\(ZWireBase \*\)object/);
+    assert.doesNotMatch(borrowedEntry.stdout, /ZWireBase \*\*/);
+    const renamedEntry = runDeclaration(entryShapes[5]!, "interfaces");
+    assert.match(renamedEntry.stdout, /- \(int\)value;/);
+    assert.doesNotMatch(renamedEntry.stdout, /observed/);
     const cases: [string, string, RegExp][] = [
       ["ordinary base", nativeBaseline.replace("native.ZWireBase", "Parent").replace("class Counter", "class Parent {}\nclass Counter"), /imported Objective-C class/],
       ["struct", nativeBaseline.replace("class Counter", "struct Counter"), /native Objective-C class declaration/],
