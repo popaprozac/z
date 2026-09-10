@@ -7064,6 +7064,69 @@ with shared handles and one final `deinit` at the expected counter value.
 Website build, source check, and test-tier coverage verification passed.
 This is targeted correctness evidence, not a full-suite or runtime-speed claim.
 
+## Borrowed cleanup-bearing capture storage (2026-09-10)
+
+The native synchronous closure port now borrows cleanup-bearing String, Array,
+value-struct, and ARC-handle storage through its stack environment. Merely having
+`deinit` does not make the callback an owner: there are no capture live flags,
+retain/release hooks, or invocation-exit destruction for that borrowed environment.
+The original scope remains responsible for the storage. Existing source-body
+nonescape evidence is still required when the callback crosses a helper boundary.
+
+```zs
+const source = "first second";
+let text = source.copyBytes(0, 5);
+const length = (): usize => text.byteLength;
+text = source.copyBytes(6, 12);
+const observed = length(); // 6, not a captured snapshot of "first"
+```
+
+Pressure testing found two additional representation gaps:
+
+- Stage 0 emitted a writable pointer to an immutable ARC *handle* when a callback
+  mutated only the object. Capture evidence now distinguishes instance mutation
+  from handle reassignment, preserving C pointer qualifiers without weakening Z
+  capabilities. Replacing a handle still requires a mutable binding.
+- Native whole-binding replacement through a borrowed capture leaked the former
+  value. Replacement now uses the resolved capture-use identity to attach a drop
+  at the assignment, independently of invocation-local cleanup. This avoids
+  assigning ownership to the callback and avoids matching a shadowed local by name.
+
+Inline native borrowed callables use addressable compound-literal storage at their
+expression use site. Hoisting that storage would either leave an undeclared
+temporary in conditions or change short-circuit/loop evaluation. Their environment
+has no destructor, so no hidden conditional cleanup is needed. The evaluation-order
+probe covers `&&`, `||`, ternary branches, and repeated `while` conditions, with
+zero heap allocations. This is a synchronous, non-owning case, not permission to
+hoist owned callback construction or let a stack environment survive suspension.
+
+The paired compiler probes use dynamically allocated Strings, exact destructor
+output, strict Clang warnings, UBSan, and an allocation ledger. They cover parent
+replacement, mutation, nested source-helper forwarding, borrowed parameters,
+throwing callbacks, owned snapshot results, and String/ARC replacement inside the
+callback. Negative checks retain escape, captured-owner consumption, and immutable
+receiver rejection. Borrowing contributes no heap environment allocation; explicit
+String copies and application-owned objects still have their ordinary costs.
+
+Two adjacent boundaries are recorded rather than silently expanding this slice:
+direct `Array.push` mutation is not yet inferred as a writable closure capture
+(explicit `inout` helper forwarding is supported), and Stage 0 still lacks argument
+preparation for inline callbacks in nested conditional/loop expressions. The latter
+has an explicit rejection probe alongside executable native coverage. Addressable
+move-only resources and borrowed environments in async frames remain separate work.
+
+The purpose remains the synchronous native-subclass body foundation needed for
+Zapp's smooth window resizing. General async closure completion is not on that
+critical path. Next is the bounded body/diagnostic audit and explicit native subclass
+IR/emission, followed by state/lifetime deliberation before framework integration.
+
+Checkpoint validation: 281 distinct targeted tests passed across the final closure
+suite and the core, async, nonescape, Objective-C, native callback, and self-hosting
+regression sweep. The refreshed native bootstrap reached a fixed point at
+11,320,112 generated C bytes. Website build and test-tier coverage checks pass.
+This is targeted correctness and allocation evidence, not a full repository suite
+or a new runtime/compile-time benchmark claim.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -911,7 +911,7 @@ export function generateC(
   }
   for (const closure of closures) {
     if (!closure.declaration.async) {
-      lines.push(`${generateFunctionSignature(closure.declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
+      lines.push(`${generateFunctionSignature(closure.declaration, structs, enums, null, semanticInfo.foreignNamedTypes, closure)};`);
     }
     if (closure.owned && !closure.scopedOneShot) {
       lines.push(`static void ${closureEnvironmentRetainName(closure)}(void *context);`);
@@ -3979,6 +3979,7 @@ function generateClosureEnvironmentDefinition(
       && capture.mode !== "value"
       && !(capture.mode === "in" && closureCaptureHasReferenceIdentity(capture.type, structs, semanticInfo.foreignNamedTypes));
     if (borrowedPointer) {
+      if (borrowedClassCaptureKeepsHandle(closure, capture, structs)) return `  ${type} const *${capture.name};`;
       return `  ${capture.mode === "in" ? "const " : ""}${type} *${capture.name};`;
     }
     return `  ${type} ${capture.name};`;
@@ -6710,7 +6711,9 @@ function generateFunction(
   }
   if (nativeMethod?.isInitializer) bodyParts.push("  return self;");
   const body = bodyParts.join("\n");
-  const signature = nativeMethod?.signature ?? generateFunctionSignature(declaration, structs, enums, receiver, semanticInfo.foreignNamedTypes);
+  const closure = semanticInfo.closures.get(declaration.location.offset);
+  const signature = nativeMethod?.signature ?? generateFunctionSignature(declaration, structs, enums, receiver, semanticInfo.foreignNamedTypes,
+    closure?.declaration.name === declaration.name ? closure : undefined);
   if (!receiver && declaration.name === "main" && semanticInfo.objectiveC) {
     return `${signature} {\n  @autoreleasepool {\n${indent(body, 2)}\n  }\n}`;
   }
@@ -6927,12 +6930,22 @@ ${indent(cases.join("\n"), 4)}
 }`;
 }
 
+function borrowedClassCaptureKeepsHandle(
+  closure: ClosureInfo,
+  capture: ClosureInfo["captures"][number],
+  structs: Map<string, StructDeclaration>,
+): boolean {
+  return !closure.owned && capture.mode === "inout" && capture.reassigned === false
+    && structs.get(capture.type)?.kind === "class";
+}
+
 function generateFunctionSignature(
   declaration: FunctionDeclaration,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   receiver: StructDeclaration | null,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+  closure?: ClosureInfo,
 ): string {
   const storage = receiver || declaration.name !== "main"
     ? "Z_UNUSED_FUNCTION static "
@@ -6956,6 +6969,10 @@ function generateFunctionSignature(
       return `${type}${type.endsWith("*") ? "" : " "}${name}`;
     }
     if (aggregate?.kind === "class") {
+      const capture = closure?.captures.find((item) => item.name === parameter.name);
+      if (capture && borrowedClassCaptureKeepsHandle(closure!, capture, structs)) {
+        return `${structName(aggregate.name)} *const *${name}`;
+      }
       if (parameter.mode === "in") return `const ${structName(aggregate.name)} *${name}`;
       if (parameter.mode === "inout" || parameter.mode === "out") return `${structName(aggregate.name)} **${name}`;
       return `${type}${name}`;

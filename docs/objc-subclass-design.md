@@ -258,12 +258,24 @@ temporaries. The callback does not inherit its containing function's result or
 error type. Invocation-owned parameters join the same cleanup plan as locals,
 including conditional transfer, failure, and void fallthrough.
 
-Next: remaining callable/body ownership and lowering parity—borrowed
-cleanup-bearing captures and broader nested/suspending contexts—and
-availability/diagnostic composition, then native subclass lowering/emission
-parity; afterward
-deliberate and test owned state, initialization/teardown callbacks, and reentrancy
-before Zapp's window transition state moves into a subclass.
+Synchronous borrowed cleanup-bearing captures now address their owner's storage
+without retaining, moving, or dropping it at callback exit. Exact cleanup and
+allocation probes cover replacement, typed failure, nested forwarding, and
+conditional invocation through both emitters.
+
+Next: a final audit of the restricted synchronous subclass body/diagnostic contract,
+then explicit native subclass lowering/emission and differential execution.
+Afterward, deliberate and test owned state, initialization/teardown callbacks,
+and reentrancy before Zapp's window transition state moves into a subclass.
+General async closure completeness is **not** a prerequisite for this field-free,
+synchronous native subclass tier. Unsupported suspension remains rejected rather
+than expanding this Zapp-driven task into a general async implementation project.
+
+Planning checkpoint (2026-09-10): approximately 3–5 focused compiler/design
+checkpoints to begin Zapp integration, then 1–3 integration and user visual-validation
+checkpoints. These are scope estimates, not calendar promises. The state/lifetime
+design review is the largest uncertainty, and any new API or syntax is a user
+deliberation point before implementation.
 
 The remaining field-free native port is bounded by four gates:
 

@@ -74,14 +74,19 @@ production or compatibility-sensitive use.
   invocation cleans up locals and owned parameters on return, failure, loop exit, or normal completion;
   returns, value-producing matches, and nested `try` use the callback's own
   result/error context rather than the containing function's signature.
-  Owned captures retain their separate environment lifetime. Borrowed scalar
-  and cleanup-free value-aggregate expression and block captures use stack
-  environments and address the original storage; owned `move` expression and block closures preserve
+  Owned captures retain their separate environment lifetime. Borrowed expression
+  and block captures use stack environments and address original scalar, String,
+  Array, cleanup-bearing value-struct, and ARC-handle storage. Mutable replacement
+  releases the former value without taking ownership of the binding. Inline
+  non-owning callbacks preserve conditional and loop evaluation without a heap
+  environment. Owned `move` expression and block closures preserve
   mutable captured state across calls. Exact cleanup-order, nonescape, and allocation-balance
   tests cover both compiler paths, including zero heap allocations for the
   borrowed reads, mutation, nested forwarding, and parent-parameter probes.
-  Async block return lowering and
-  cleanup-bearing borrowed captures remain staged. Borrowed environments in
+  Async block return lowering, direct Array-method mutation capture inference,
+  and addressable move-only resource captures remain staged. Stage 0 inline callbacks
+  in nested conditional/loop expressions still lack argument preparation; the
+  corresponding native non-owning form has separate execution tests. Borrowed environments in
   async enclosing functions reject until suspension-stable storage is proven.
   Ordinary object destructuring rejects root or nested inline custom cleanup
   in both semantic frontends, including aliased and generic payloads; supported

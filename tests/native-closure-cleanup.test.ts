@@ -686,12 +686,227 @@ for (const [suspension, rejection] of [
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
+for (const [name, source, expected, allocations] of [
+  ["String observes replaced owner storage", `function main(): i32 {
+    const source = "first second end";
+    let text = source.copyBytes(0, 5);
+    const read = (): usize => text.byteLength;
+    if (read() != 5) return 1;
+    text = source.copyBytes(6, 12);
+    return i32(read()) - 6;
+  }`, "", 2],
+  ["block mutation leaves custom cleanup with its owner", `
+    import console from "std/console";
+    struct Counter {
+      count: i32; label: String;
+      deinit { console.log(\`released \${this.count}\`); }
+    }
+    function main(): i32 {
+      const source = "owned";
+      let counter = Counter({ count: 0, label: source.copyBytes(0, 5) });
+      const add = (amount: i32): i32 => {
+        counter.count = counter.count + amount;
+        return counter.count;
+      };
+      if (add(20) != 20 || add(22) != 42) return 1;
+      return counter.count - 42;
+    }`, "released 42\n", undefined],
+  ["input parameters stay borrowed across synchronous forwarding", `
+    struct Counter { count: i32; label: String; }
+    function invoke(in callback: () => i32): i32 { return callback(); }
+    function increment(inout counter: Counter, in label: String): i32 {
+      counter.count = counter.count + i32(label.byteLength);
+      return counter.count;
+    }
+    function update(inout counter: Counter, in label: String): i32 {
+      return invoke((): i32 => increment(inout counter, in label));
+    }
+    function main(): i32 {
+      const source = "answer";
+      const label = source.copyBytes(0, 6);
+      let counter = Counter({ count: 30, label: "counter" });
+      if (update(inout counter, in label) != 36) return 1;
+      return update(inout counter, in label) - 42;
+    }`, "", 1],
+  ["Array mutation and subsequent parent use", `
+    function append(inout values: Array<i32>, value: i32): void { values.push(value); }
+    function main(): i32 {
+    let values = Array<i32>();
+    const add = (value: i32): void => { append(inout values, value); };
+    add(20);
+    add(22);
+    return values[0] + values[1] - 42;
+  }`, "", undefined],
+  ["throwing callback copies an error without consuming its captured String", `
+    import console from "std/console";
+    struct Failure { message: String; }
+    function invoke(in callback: () => i32 throws Failure): i32 throws Failure {
+      return try callback();
+    }
+    function main(): i32 {
+      const source = "failure";
+      const text = source.copyBytes(0, 7);
+      const observed = attempt invoke((): i32 throws Failure => {
+        throw Failure({ message: copy text });
+      });
+      match (observed) {
+        success(_) => return 1;
+        failure(error) => console.log(error.message);
+      }
+      return i32(text.byteLength) - 7;
+    }`, "failure\n", undefined],
+  ["nested expression forwarding borrows one String", `
+    function invoke(in callback: () => usize): usize { return callback(); }
+    function main(): i32 {
+      const source = "answer";
+      const text = source.copyBytes(0, 6);
+      const read = (): usize => invoke((): usize => text.byteLength);
+      return i32(read()) - 6;
+    }`, "", 1],
+  ["borrowed ARC identity survives callback invocation without an extra owner", `
+    import console from "std/console";
+    class Counter {
+      count: i32;
+      deinit { console.log(\`released \${this.count}\`); }
+      function add(inout this, amount: i32): i32 {
+        this.count = this.count + amount;
+        return this.count;
+      }
+    }
+    function main(): i32 {
+      const counter = new Counter({ count: 0 });
+      const add = (): i32 => counter.add(21);
+      if (add() != 21) return 1;
+      return add() - 42;
+    }`, "released 42\n", undefined],
+  ["block read and snapshot return keep the captured owner intact", `
+    function main(): i32 {
+      const source = "original source";
+      const text = source.copyBytes(0, 8);
+      const snapshot = (): String => { return copy text; };
+      const first = snapshot();
+      const second = snapshot();
+      if (first.byteLength != 8 || second.byteLength != 8) return 1;
+      return i32(text.byteLength) - 8;
+    }`, "", 3],
+  ["inline ARC mutation borrows the handle while reassignment still needs let", `
+    class Counter {
+      count: i32;
+      function add(inout this): i32 { this.count = this.count + 1; return this.count; }
+    }
+    function invoke(in callback: () => i32): i32 { return callback(); }
+    function main(): i32 {
+      const counter = new Counter({ count: 40 });
+      if (invoke((): i32 => counter.add()) != 41) return 1;
+      return invoke((): i32 => invoke((): i32 => counter.add())) - 42;
+    }`, "", 1],
+  ["ARC handle replacement remains writable for a let capture", `
+    import console from "std/console";
+    class Counter {
+      count: i32;
+      deinit { console.log(\`released \${this.count}\`); }
+    }
+    function main(): i32 {
+      let counter = new Counter({ count: 1 });
+      const reset = (): void => { counter = new Counter({ count: 42 }); };
+      reset();
+      return counter.count - 42;
+    }`, "released 1\nreleased 42\n", undefined],
+  ["String replacement inside the callback cleans the former borrowed value", `
+    function main(): i32 {
+      const source = "before after";
+      let text = source.copyBytes(0, 6);
+      const reset = (): void => { text = source.copyBytes(7, 12); };
+      reset();
+      reset();
+      return i32(text.byteLength) - 5;
+    }`, "", 3],
+] as const) test(`borrows cleanup-bearing capture: ${name}`, () => {
+  const directory = mkdtempSync("/tmp/z-owned-storage-borrow-");
+  try {
+    const input = resolve(directory, "main.zs");
+    writeFileSync(input, source);
+    execute(compileToC(source, input), expected, allocations);
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+    execute(emitted.stdout, expected, allocations);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("native inline borrowed callbacks preserve conditional and loop evaluation", () => {
+  const directory = mkdtempSync("/tmp/z-borrowed-loop-callback-");
+  const source = `function invoke(in callback: () => boolean): boolean { return callback(); }
+    function increment(inout count: i32): boolean { count = count + 1; return count < 3; }
+    function main(): i32 {
+      let count = 0;
+      if (false && invoke((): boolean => increment(inout count))) return 1;
+      if (true || invoke((): boolean => increment(inout count))) {
+        if (count != 0) return 2;
+      }
+      const selected = false ? invoke((): boolean => increment(inout count)) : true;
+      if (!selected || count != 0) return 3;
+      while (invoke((): boolean => increment(inout count))) {}
+      return count - 3;
+    }`;
+  try {
+    const input = resolve(directory, "main.zs");
+    writeFileSync(input, source);
+    // Stage 0's nested conditional/while argument-preparation gap is independent of
+    // native callback storage. Keep it explicit until that emitter is extended.
+    assert.throws(() => compileToC(source, input), /closure must be lowered from its const binding/);
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+    execute(emitted.stdout, "", 0);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 for (const [name, source, rejection] of [
-  ["cleanup-bearing borrowed expression capture", `function main(): i32 {
-    const text = "borrowed";
-    const read = (): i32 => i32(text.byteLength);
-    return read() - 8;
-  }`, /borrowed expression capture text requires cleanup-bearing borrow storage/],
+  ["borrowed String closure cannot escape its owner", `
+    function make(): () => usize {
+      const text = "owned source";
+      return (): usize => text.byteLength;
+    }
+    function main(): i32 { return 0; }
+  `, /borrowed capturing closure cannot become a function value/],
+  ["callback cannot consume a captured String", `
+    function main(): i32 {
+      const text = "owned source";
+      const take = (): String => { return move text; };
+      const result = take();
+      return 0;
+    }
+  `, /cannot move borrowed|cannot transfer ownership of "text" while it is borrowed/],
+  ["borrowed class capture cannot gain mutable instance access", `
+    class Counter {
+      count: i32;
+      function add(inout this): i32 { this.count = this.count + 1; return this.count; }
+    }
+    function read(in counter: Counter): i32 {
+      const mutate = (): i32 => counter.add();
+      return mutate();
+    }
+    function main(): i32 { return 0; }
+  `, /immutable capture|immutable borrowed|immutable binding "counter"/],
+] as const) test(`rejects invalid cleanup-bearing capture: ${name}`, () => {
+  const directory = mkdtempSync("/tmp/z-owned-storage-borrow-rejection-");
+  try {
+    const input = resolve(directory, "main.zs");
+    writeFileSync(input, source);
+    assert.throws(() => compileToC(source, input), rejection);
+    const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024,
+    });
+    assert.notEqual(native.status, null, String(native.error));
+    assert.notEqual(native.status, 0, native.stdout);
+    assert.match(native.stderr, rejection);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+for (const [name, source, rejection] of [
   ["borrowed expression in an async parent", `async function main(): i32 {
     let total = 10;
     const read = (): i32 => total;

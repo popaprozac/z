@@ -359,15 +359,21 @@ failed `try`, and scoped loop exits; returned or thrown ownership transfers out.
 Each callback carries its own result/error context through direct returns,
 value-producing matches, selecting blocks, and nested `try`, independently of
 the containing function. Captured environments retain their independent
-lifetime. Borrowed scalar and cleanup-free value-aggregate captures in synchronous expression and
-block bodies use stack environments and address the original storage,
-including `inout` parent parameters. Owned
+lifetime. Borrowed captures in synchronous expression and block bodies use stack
+environments and address the original storage, including String, Array, cleanup-bearing
+value structs, ARC class handles, and `inout` parent parameters. Replacement through
+a mutable capture destroys the former value without taking ownership of the binding.
+Inline non-owning callbacks stay at their expression use site, including conditions
+and loops; their environments add no heap allocation. Owned
 `move` expression and block captures address their retained environment fields,
 preserving mutable state between invocations. Scope-aware discovery keeps nested callback
 parameters separate. Both emitters have exact-cleanup and allocation-balance
 regressions; borrowed reads, mutation, nested forwarding, and parent-parameter
-probes assert zero allocations. Borrowed cleanup-bearing captures and
-asynchronous native block callables remain staged work. Borrowed expression and block environments in async enclosing
+probes assert zero allocations. Direct Array-method mutation capture inference and
+addressable move-only resource captures remain separate boundaries. Stage 0 inline
+callback argument preparation in nested conditional/loop expressions remains
+limited; native non-owning callback evaluation has independent executable coverage.
+Asynchronous native block callables remain staged work. Borrowed expression and block environments in async enclosing
 functions explicitly reject until suspension-stable environment storage is proven.
 
 Ordinary object destructuring preserves Stage 0's conservative custom-cleanup

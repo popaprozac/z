@@ -558,6 +558,7 @@ function appendCallableCaptureLiveMacros(
   captureLabelStart: usize,
   in environment: String
 ): void {
+  if (callableBorrowsEnvironment(expression)) return;
   let capture: usize = 0;
   while (capture < expression.captureTypes.length) {
     if (loweredTypeNeedsDeinit(program, expression.captureTypes[capture])) {
@@ -582,6 +583,7 @@ function appendCallableCaptureLiveMacroUndefs(
   in expression: LoweredExpression,
   captureLabelStart: usize
 ): void {
+  if (callableBorrowsEnvironment(expression)) return;
   let capture = expression.captureTypes.length;
   while (capture > 0) {
     capture = capture - 1;
@@ -5576,6 +5578,18 @@ function appendExpression(
     declaration.expressions[index].kind
       == LoweredExpressionKind.borrowedTemporary
   ) {
+    if (isInlineBorrowedCallableTemporary(declaration, index)) {
+      // A synchronous borrowed callable has no owned environment to clean up.
+      // Keep its addressable storage at the use site, including short-circuit
+      // conditions and loops, rather than hoisting evaluation into a prelude.
+      output.append("((Z_");
+      output.append(declaration.expressions[index].value);
+      output.append("[]){");
+      const initializer = declaration.expressions[index].children[0];
+      try appendExpression(inout output, declaration, initializer);
+      output.append("}[0])");
+      return;
+    }
     output.append(`_z_stage1_borrow_${index}`);
     return;
   }
@@ -6933,10 +6947,25 @@ function appendExpression(
   throw "native C emission does not support this lowered expression yet";
 }
 
+function isInlineBorrowedCallableTemporary(
+  in declaration: LoweredFunction,
+  index: usize
+): boolean {
+  if (declaration.expressions[index].kind != LoweredExpressionKind.borrowedTemporary
+    || declaration.expressions[index].children.length != 1
+    || !stringStartsWith(declaration.expressions[index].value, "Function_")) return false;
+  const initializer = declaration.expressions[index].children[0];
+  return declaration.expressions[initializer].kind == LoweredExpressionKind.closureValue
+    && !declaration.expressions[initializer].closureAsynchronous
+    && declaration.expressions[initializer].labels.length >= 2
+    && declaration.expressions[initializer].labels[1] != "move";
+}
+
 function containsBorrowedTemporary(
   in declaration: LoweredFunction,
   index: usize
 ): boolean {
+  if (isInlineBorrowedCallableTemporary(declaration, index)) return false;
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.closureValue
@@ -6957,6 +6986,7 @@ function appendBorrowedTemporaryInitializers(
   index: usize,
   depth: usize
 ): void throws String {
+  if (isInlineBorrowedCallableTemporary(declaration, index)) return;
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.closureValue
@@ -7007,6 +7037,7 @@ function appendBorrowedTemporaryCleanups(
   index: usize,
   depth: usize
 ): void {
+  if (isInlineBorrowedCallableTemporary(declaration, index)) return;
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.closureValue
@@ -10951,7 +10982,8 @@ function appendCallableEnvironmentTypes(
           output.append(" ");
           appendCBindingName(inout output, expression.labels[labelStart + capture]);
           output.append(";\n");
-          if (loweredTypeNeedsDeinit(program, expression.captureTypes[capture])) {
+          if (!callableBorrowsEnvironment(expression)
+            && loweredTypeNeedsDeinit(program, expression.captureTypes[capture])) {
             const liveFlag = callableCaptureLiveFlag(expression.labels[labelStart + capture]);
             output.append("  bool ");
             appendCBindingName(inout output, liveFlag);
@@ -13003,7 +13035,7 @@ function appendCallableHelpers(
           );
           output.append(` = _z_stage1_capture_argument_${capture}`);
           output.append(";\n");
-          if (loweredTypeNeedsDeinit(
+          if (!borrowedEnvironment && loweredTypeNeedsDeinit(
             program,
             expression.captureTypes[capture]
           )) {

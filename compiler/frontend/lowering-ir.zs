@@ -20649,9 +20649,6 @@ function completeNativeClosureBlocks(
       }
       let captureIndex: usize = 0;
       for (const capture of captures) {
-        if (capture.owned && !ownsEnvironment) {
-          throw `native borrowed expression capture ${capture.name} requires cleanup-bearing borrow storage; this tier supports cleanup-free captures`;
-        }
         if (capture.name != expressions[expressionIndex].labels[
           3 + expressions[expressionIndex].closureParameterCount + captureIndex]) {
           throw "native expression callable changed its lexical capture order";
@@ -20763,12 +20760,6 @@ function completeNativeClosureBlocks(
         }
       }
       for (const capture of captures) {
-        if (
-          capture.owned
-          && expressions[expressionIndex].labels[1] != "move"
-        ) {
-          throw `native escaping callable requires a move closure to capture ${capture.name}`;
-        }
         const local = pushExpression(
           inout expressions,
           LoweredExpressionKind.localValue,
@@ -20872,6 +20863,35 @@ function completeNativeClosureBlocks(
       for (const capture of captures) {
         const mode = copy expressions[expressionIndex]
           .closureCaptureModes[captureIndex];
+        if (mode == "inout" && capture.owned) {
+          // Replacement drops the old value in the borrowed storage, but the
+          // callback must never acquire an invocation-exit cleanup for it.
+          // Match resolved expression identities, not potentially shadowed names.
+          let statementIndex = bodyStatementStart;
+          while (statementIndex < statements.length) {
+            if (statements[statementIndex].kind == LoweredStatementKind.assignmentStatement
+              && statements[statementIndex].cleanups.length == 0) {
+              let replacesCapture = false;
+              match (in statements[statementIndex].expression) {
+                some(target) => {
+                  for (const use of capture.uses) {
+                    if (target == use) {
+                      replacesCapture = true;
+                      break;
+                    }
+                  }
+                }
+                none => {}
+              }
+              if (replacesCapture) statements[statementIndex].cleanups.push(LoweredCleanup({
+                name: "",
+                type: LoweredType({ kind: capture.type.kind, name: copy capture.type.name }),
+                guard: "",
+              }));
+            }
+            statementIndex = statementIndex + 1;
+          }
+        }
         for (const use of capture.uses) {
           expressions[use].kind = LoweredExpressionKind.closureCaptureValue;
           expressions[use].labels = Array<String>(copy mode);

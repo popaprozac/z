@@ -172,6 +172,8 @@ export type ClosureCaptureInfo = {
   readonly type: string;
   readonly mode: "value" | "in" | "inout";
   readonly moved: boolean;
+  // Mutating an ARC instance need not reassign the captured handle itself.
+  readonly reassigned?: boolean;
   readonly location: SourceLocation;
 };
 
@@ -6325,6 +6327,7 @@ function inferClosureExpression(
       type,
       mode,
       moved: expression.captureMode === "move",
+      reassigned: capture.reassigned,
       location: capture.location,
     });
     const captureBorrow = expression.captureMode === "borrow" || (cleanupBearing && !oneShotOwnedCaptures)

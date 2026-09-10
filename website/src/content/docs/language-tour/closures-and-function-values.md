@@ -89,8 +89,19 @@ const observed = read(); // 100, not the value when read was created
 
 These synchronous block and scalar-reading expression forms execute
 through both compiler paths with stack environments and no heap allocation.
-Expression closures may also mutate borrowed cleanup-free state by calling an
-`inout` helper. `move` gives the callback its own
+Expression closures may also mutate borrowed state by calling an
+`inout` helper. Borrowed String, Array, cleanup-bearing value structs, and ARC
+handles stay owned by their original scope. For example:
+
+```z
+const source = "first second";
+let text = source.copyBytes(0, 5);
+const length = (): usize => text.byteLength;
+text = source.copyBytes(6, 12);
+const observed = length(); // 6; no captured String snapshot or heap environment
+```
+
+`move` gives the callback its own
 captured value instead; mutations to that owned state persist across calls and
 do not reassign the parent's Copy scalar. This applies to expression bodies as
 well as block bodies. Synchronous block callbacks can return owned values and
@@ -105,9 +116,11 @@ const title = describe(42);
 ```
 
 Each invocation cleans up its own locals and by-value parameters, except
-ownership transferred out of those bindings. Borrowed cleanup-bearing
-captures and asynchronous block lowering remain tracked in [implementation
-status](/reference/status/).
+ownership transferred out of those bindings. Replacing an owner through a mutable
+borrowed capture releases its former value; returning from the callback does not
+destroy the captured binding. Borrowed capture consumption and escape still reject.
+Async borrowed environments and other remaining storage boundaries are tracked in
+[implementation status](/reference/status/).
 
 Both compilers inspect the receiving Z helper, not just the `in` spelling:
 
