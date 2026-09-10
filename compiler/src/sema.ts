@@ -82,6 +82,7 @@ import {
   weakTypeName,
 } from "./weak-types.ts";
 import { collectPlacementCaptures } from "./placement-captures.ts";
+import { callbackParameterDoesNotEscape } from "./callback-nonescape.ts";
 import {
   isNullableObjCTypeName,
   nullableObjCTypeName,
@@ -14442,6 +14443,26 @@ function checkArguments(
         parameter.mode === "in",
       );
       const closure = state.closures.get(argument.location.offset)!;
+      if (closure.captures.length > 0 && argument.captureMode !== "move" && parameter.mode === "in") {
+        const sameSource = (candidate: FunctionDeclaration): boolean =>
+          candidate.location.fileName === target.location.fileName
+          && candidate.location.offset === target.location.offset;
+        const globalTarget = globals.get(target.name);
+        const knownBody = (globalTarget?.kind === "function" && sameSource(globalTarget.declaration))
+          || [...structs.values()].some((owner) => owner.methods.some(sameSource));
+        if (!knownBody || !callbackParameterDoesNotEscape(target, index, (callee) => {
+          if (callee.kind !== "identifier") return null;
+          const symbol = globals.get(callee.name);
+          return symbol?.kind === "function" ? symbol.declaration : null;
+        })) {
+          throw new DiagnosticError(fileName, argument.location,
+            `borrowed callback cannot enter ${JSON.stringify(target.name)} without a proven non-escaping parameter`, {
+              code: "Z0212",
+              notes: ["an in parameter may retain an owned function value; in alone does not prove a stack-backed callback stays within the call"],
+              helps: ["use a move closure with an owned environment, or keep the helper limited to synchronous invocation and proven borrowed forwarding"],
+            });
+        }
+      }
       for (const capture of closure.captures) {
         const aliases = classAliasIdentitiesForRoot(capture.name, state);
         if (!aliases) continue;

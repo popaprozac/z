@@ -16304,6 +16304,24 @@ function lowerExpressionContextual(
         );
       }
       if (
+        parameterModes.length >= argument
+        && parameterModes[argument - 1] == "in"
+        && output[value].kind == LoweredExpressionKind.closureValue
+        && output[value].labels.length > 0
+      ) {
+        // A closure maker returns a value, not addressable C storage. Keep its
+        // owner alive for this call, then release it even when the call throws.
+        const temporaryType = output[value].labels[0].copyBytes(
+          0, output[value].labels[0].byteLength
+        );
+        let temporaryChildren = Array<usize>();
+        temporaryChildren.push(value);
+        value = pushExpression(
+          inout output, LoweredExpressionKind.borrowedTemporary,
+          temporaryType, temporaryChildren, Array<String>()
+        );
+      }
+      if (
         callLabels.length >= argument
         && callLabels[argument - 1] == "in"
       ) {

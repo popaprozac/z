@@ -4657,6 +4657,17 @@ function inferSignatureCallType(
         inout bindings,
         inout evidence
       );
+      if (mode == "in" && stringStartsWith(argumentType, "__z_native_function:borrowed ")) {
+        let proven = false;
+        for (const parameter of signature.nonEscapingParameters) {
+          if (parameter == argumentIndex) proven = true;
+        }
+        if (!proven) throw codedModuleResolutionError(
+          ModuleResolveErrorKind.typeMismatch, "Z0212", module.path,
+          `borrowed callback cannot enter "${functionName}" without a proven non-escaping parameter; use a move closure with an owned environment`,
+          tree.nodes[nodeIndex].line, tree.nodes[nodeIndex].column, 1
+        );
+      }
       if (tree.nodes[nodeIndex].kind == ExpressionKind.closureExpression) {
         for (const capture of inlineClosureCaptures) {
           const captureIdentity = valueBindingClassAlias(bindings, capture);

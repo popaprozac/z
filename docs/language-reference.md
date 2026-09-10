@@ -2893,6 +2893,31 @@ const observed = inspect(() => item.value); // inspect takes `in operation`
 store.append(next);                         // valid after inspect returns
 ```
 
+For a capturing inline callback passed to a synchronous Z `in` parameter, both
+checkers inspect the receiving implementation. Direct invocation and forwarding
+to another proven synchronous named helper are accepted. Returning, storing,
+aliasing, or capturing that callback is not a nonescape proof. Recursive,
+dynamic, raw, and deferred forwarding remain conservative: use an owned `move`
+closure when the call cannot be proven bounded. This proof is attached to the
+known implementation, not to the structural function type.
+
+`in` does **not** promise that every callable can never be retained. An already
+owned callback can be copied safely; an inline stack-backed environment cannot:
+
+```z
+function preserve(in callback: () => i32): () => i32 {
+  return callback;
+}
+
+const count = 42;
+// preserve((): i32 => count);       // rejected: borrowed environment may escape
+const saved = preserve(move (): i32 => count); // owns its captured snapshot
+```
+
+Imported Objective-C blocks with ARC-backed retain/release hooks remain
+retainable. The nonescape check does not replace their native ownership contract
+with the rules for a stack-backed Z closure. No runtime escape check is added.
+
 Owned closure environments use ARC. Noncapturing closures can lower directly to
 native function pointers where the foreign ABI permits it. `weak` captures may
 break class/closure cycles.

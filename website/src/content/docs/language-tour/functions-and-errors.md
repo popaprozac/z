@@ -45,6 +45,11 @@ caller's storage or ownership.
 The complete capability matrix is in
 [Ownership capabilities](/language-tour/ownership/).
 
+For callback parameters, `in` alone is not a guarantee that the implementation
+never retains a function value. See
+[Borrowed captures](/language-tour/closures-and-function-values/#borrowed-captures-by-default)
+for the source-body proof that makes stack-backed inline callbacks safe.
+
 ## Success and failure
 
 A throwing function names its error type:

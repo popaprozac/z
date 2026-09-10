@@ -152,8 +152,11 @@ platforms' restrictions are ignored. Without a configured minimum, version check
 remain deferred just as in Stage 0; platform-only unavailability still applies.
 The native checker also rejects borrowed captures becoming owned function
 values, including through generic arguments, containers, returns, and nested
-owned captures. Synchronous borrowed-callback forwarding still needs a complete
-escape proof in both frontends; direct conversion checks alone are not enough.
+owned captures. Both frontends also check a known synchronous Z helper's body
+before passing it a stack-backed callback. Direct invocation and proven named
+forwarding remain supported; returning, storing, or capturing the callback
+requires an owned environment at the call site. This does not forbid retaining
+received Objective-C blocks whose adapters supply ARC-backed retain/release hooks.
 Native deprecation warnings remain pending.
 Execution still reports `Z0814` pending complete ownership/availability composition
 and native emission. This typed-body checkpoint does not enable native

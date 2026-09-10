@@ -6853,8 +6853,8 @@ returns, and owned nested captures. Direct lexical invocation, typed `move`
 captures, noncapturing function values, and inline synchronous `in` callbacks
 remain accepted. This is checker metadata, not new syntax or runtime overhead.
 
-The broader audit also found an **open safety gap in both frontends**, not only
-native subclass parity:
+The broader audit also found a **safety gap in both frontends**, not only
+native subclass parity (closed by the source-body proof checkpoint below):
 
 ```zs
 function preserve(in callback: () => i32): () => i32 {
@@ -6872,20 +6872,46 @@ function main(): i32 {
 }
 ```
 
-Stage 0 accepts this program and emits a stack-backed borrowed closure with
+Before that fix, Stage 0 accepted this program and emitted a stack-backed borrowed closure with
 null environment retain/release hooks. The returned managed function value can
 therefore outlive its environment. Copying the callback to a typed local or
-capturing it in an owned closure inside `preserve` is also accepted. Treat this
-as a checker hole, not permission to write those patterns. A successful compile
+capturing it in an owned closure inside `preserve` was also accepted. This was
+a checker hole, not permission to write those patterns. A successful compile
 or one lucky runtime result is not a lifetime proof.
 
-**Immediate next gate:** prove callback nonescape through synchronous Z helpers
-in both frontends. Preserve the distinct case of imported Objective-C blocks,
-whose adapter intentionally supplies an ARC-backed retainable environment;
-blanket rejection of all copied `in` function parameters would break that
-documented behavior. Audit owned calls, returns, storage, nested captures, and
-forwarding chains before subclass emission. No new keyword or callable contract
-has been decided by this implementation checkpoint.
+**Closed: synchronous helper forwarding.** Before accepting a capturing inline
+borrowed callback, both frontends now require body-derived evidence about its
+destination parameter. The proof accepts direct invocation, conditional uses,
+and synchronous forwarding through known named functions, including selective
+imports and aliases. Direct method parameters retain the evidence when their
+signatures are rebased. Returning, typed aliasing, aggregate storage, owned nested
+capture, and forwarding into an unproven helper reject with `Z0212` at the
+borrowed closure's call site. Recursive, dynamic, raw, and deferred uses fail
+closed; lexical shadowing must not accidentally resolve a global helper.
+
+This is implementation evidence, not a new property of the callable ABI and not
+a claim that `in` universally forbids retaining a function value. Owned `move`
+callbacks can still be returned through `in` parameters. Imported Objective-C
+blocks retain their distinct ARC-backed adapter environment. Tests preserve that
+behavior rather than banning all copies of `in` function values. The proof adds
+no runtime tags or escape checks and does not change source syntax.
+
+The owned-forwarding runtime probe also found a separate native emission gap:
+an inline owned closure maker is a C rvalue, so passing its address as an `in`
+argument is invalid C. Native lowering now gives inline callable arguments
+call-scoped storage, using the existing borrowed-temporary initialization and
+cleanup path. Strict Clang, UBSan, and the allocation ledger check retained
+callbacks after their creator returns and final environment/String destruction.
+The native subclass execution gate remains; no broader subclass support is
+claimed by these closure fixes.
+
+Checkpoint validation: 200 distinct targeted tests passed across language core,
+callback nonescape/editor diagnostics, native closure cleanup, native subclass
+checks, Objective-C interop, Mutex/memory ownership, fixed-point bootstrapping,
+and full frontend graph emission. One Arena test initially hit Bun's default
+five-second timeout and passed with the project's 60-second timeout. Website
+build and test-tier coverage also pass. This is focused evidence, not a claim
+that the entire repository test suite ran.
 
 Broader executable probes also exposed native callable lowering boundaries:
 non-void block closures are explicitly gated, while a void lexical closure

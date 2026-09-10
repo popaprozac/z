@@ -125,3 +125,37 @@ test("keeps inferred lexical environments callable without converting them to ow
     execute(emitted.stdout, "");
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
+
+test("retains an owned callback returned through an in parameter beyond its creator", () => {
+  const directory = mkdtempSync("/tmp/z-owned-callback-forwarding-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const source = `type Callback = () => i32;
+      struct Failure { code: i32; }
+      function preserve(in callback: Callback): Callback { return callback; }
+      function make(): Callback {
+        const text = "snapshot";
+        return preserve(move (): i32 => i32(text.byteLength));
+      }
+      function reject(in callback: Callback): void throws Failure {
+        throw Failure({ code: callback() });
+      }
+      function rejected(): i32 {
+        const text = "rejected";
+        const result = attempt reject(move (): i32 => i32(text.byteLength));
+        return match (result) { success => 1; failure(error) => error.code - 8; };
+      }
+      function main(): i32 {
+        const callback = make();
+        if (callback() != 8) return 1;
+        return rejected();
+      }`;
+    writeFileSync(input, source);
+    execute(compileToC(source, input), "");
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+    execute(emitted.stdout, "");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);

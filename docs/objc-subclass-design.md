@@ -209,16 +209,17 @@ owned captures, and inline synchronous `in` callbacks retain positive parity
 coverage. Named inferred closures still cannot convert to managed callback
 parameters, matching Stage 0's current boundary.
 
-This closes direct conversion parity, not the complete nonescaping-callback
-proof. A follow-up probe found that both checkers accept a synchronous helper
-which returns its `in` callback, including when the caller passes a borrowed
-capturing closure. Stage 0 emits a stack environment with no retain/release
-hooks for that closure, so forwarding it can outlive its environment. See the
-reproducer in [ownership pressure](ownership-pressure.md#borrowed-callback-forwarding-follow-up).
-Audit this ordinary-Z boundary in both frontends before native subclass
-execution; native blocks with ARC-backed managed copies must keep their distinct
-provenance. Do not mistake a successful typed oracle for executable ownership
-safety.
+The follow-up source-body proof closes the ordinary-Z forwarding hole found
+after direct conversion parity. Both checkers reject passing an inline borrowed
+capturing closure to a helper that returns, stores, aliases, or captures that
+callback. Direct synchronous invocation and proven named forwarding remain
+accepted, including cross-module aliases and generic helpers. Unknown, dynamic,
+recursive, raw, and deferred forwarding remain conservative. The proof stays on
+the known implementation rather than the structural function type. Owned `move`
+callbacks and native blocks with ARC-backed environments remain retainable.
+Native inline callback arguments also receive call-scoped storage with cleanup
+on normal and typed-error paths. See the evidence in
+[ownership pressure](ownership-pressure.md#borrowed-callback-forwarding-follow-up).
 
 The standalone driver now passes the existing project `target.platform` and
 `target.minimumVersion` into parsed module context. Without a configured target,
@@ -243,8 +244,9 @@ body checking. Complete ownership and availability composition are still require
 passing this limited typed oracle is not a claim that every body composition is
 safe to emit.
 
-Next: interprocedural borrowed-callback escape proof in both frontends, remaining
-body ownership checks, and availability/diagnostic composition, then
+Next: remaining callable/body ownership and lowering parity—starting with the
+recorded mutable lexical block-capture emission gap—and availability/diagnostic
+composition, then native subclass
 lowering/emission parity; afterward
 deliberate and test owned state, initialization/teardown callbacks, and reentrancy
 before Zapp's window transition state moves into a subclass.

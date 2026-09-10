@@ -6940,6 +6940,7 @@ function appendBorrowedTemporaryInitializers(
       declaration.expressions[index].value,
       "__z_Array_"
     )
+    && !stringStartsWith(declaration.expressions[index].value, "Function_")
   ) {
     throw "native C emission received an unsupported borrowed temporary type";
   }

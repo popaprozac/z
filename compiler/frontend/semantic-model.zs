@@ -370,6 +370,8 @@ export struct ModuleTypeSignature {
 }
 
 export struct ModuleFunctionSignature {
+  // Source-body proof; deliberately absent from structural function types.
+  nonEscapingParameters: Array<usize> = Array<usize>();
   // Internal provenance of an inferred lexical closure, not source syntax or ABI.
   borrowedEnvironment: boolean = false;
   asynchronous: boolean;

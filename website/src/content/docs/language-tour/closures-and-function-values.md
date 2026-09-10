@@ -72,6 +72,34 @@ store.append(next); // valid after inspect and the borrow end
 This gives synchronous higher-order APIs concise call sites while preserving
 the same escape and invalidation checks as explicit views.
 
+Both compilers inspect the receiving Z helper, not just the `in` spelling:
+
+```z
+function inspect(in operation: () => i32): i32 {
+  return operation();
+}
+```
+
+Direct invocation and forwarding through proven synchronous named helpers are
+accepted. A helper that returns, stores, aliases, or captures its callback
+cannot receive an inline stack-backed environment. When retention is intended,
+pass an owned closure:
+
+```z
+function preserve(in operation: () => i32): () => i32 {
+  return operation;
+}
+
+const count = 42;
+const saved = preserve(move (): i32 => count);
+```
+
+The helper borrows the owned callable and returns a retained copy. Recursive,
+dynamic, raw, or deferred forwarding is not inferred nonescaping in this tier.
+This is proof about a known implementation, not a structural function-type
+property or a runtime escape check. Received Objective-C blocks with ARC-backed
+adapter environments remain retainable under their native ownership contract.
+
 ## Owned captures with `move`
 
 Use a `move` closure when the callable must escape its defining scope:

@@ -1,4 +1,5 @@
 import { tokenize } from "./lexer.zs";
+import { inferCallbackNonescape } from "./semantic-callback-nonescape.zs";
 import { Arena } from "std/memory";
 import {
   parseProgram,
@@ -205,6 +206,7 @@ export function buildResolvedModules(
     }));
     index = index + 1;
   }
+  inferCallbackNonescape(parsed, inout modules);
   return modules;
 }
 

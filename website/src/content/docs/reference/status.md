@@ -14,6 +14,12 @@ production or compatibility-sensitive use.
 - Value structs, ARC-managed classes, weak references, explicit ownership
   capabilities, deterministic cleanup, and conservative non-escaping views
 - Native C-family code generation through Clang
+- Source-body nonescape checking for inline borrowed callbacks in both frontends.
+  Direct synchronous invocation and proven named helper forwarding are accepted;
+  returning, storing, or capturing the callback requires an owned environment.
+  Owned `move` callbacks and ARC-backed received Objective-C blocks stay
+  retainable. Native inline callable arguments use call-scoped storage and
+  deterministic cleanup, including typed failure
 - Header-first C and Objective-C interop, substantial `.zd` contracts, and
   selected C++ values, methods, namespaces, RAII, and move-only resources
 - An experimental Stage 0 native subclass tier: field-free main-isolated
