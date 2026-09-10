@@ -370,6 +370,8 @@ export struct ModuleTypeSignature {
 }
 
 export struct ModuleFunctionSignature {
+  // Internal provenance of an inferred lexical closure, not source syntax or ABI.
+  borrowedEnvironment: boolean = false;
   asynchronous: boolean;
   executorAffinity: String;
   threadContract: String;

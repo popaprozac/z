@@ -1,6 +1,6 @@
 import {
   assert, cli, compileToC, mkdtempSync, projectRoot, readFileSync,
-  resolve, rmSync, spawnSync, test,
+  resolve, rmSync, spawnSync, test, writeFileSync,
 } from "./support/bootstrap.ts";
 
 function execute(source: string, expected: string): void {
@@ -101,4 +101,27 @@ test("keeps nested block-callable cleanup and same-named parameters in separate 
   });
   assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
   execute(emitted.stdout, expected);
+}, 240_000);
+
+test("keeps inferred lexical environments callable without converting them to owned function values", () => {
+  const directory = mkdtempSync("/tmp/z-lexical-closures-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const source = `function main(): i32 {
+      const offset = 2;
+      const add = (value: i32): i32 => value + offset;
+      let seed = 10;
+      const snapshot = move (value: i32): i32 => seed + value;
+      seed = 100;
+      if (add(40) == 42 && snapshot(5) == 15 && seed == 100) return 0;
+      return 1;
+    }`;
+    writeFileSync(input, source);
+    execute(compileToC(source, input), "");
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+    execute(emitted.stdout, "");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);

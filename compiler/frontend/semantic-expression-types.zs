@@ -1,5 +1,8 @@
 import { requireSettledExpressionType } from "./semantic-call-contracts.zs";
-import { expressionStorageRootName } from "./semantic-expression-ownership.zs";
+import {
+  expressionStorageRootName,
+  requireOwnedClosureEnvironment,
+} from "./semantic-expression-ownership.zs";
 import {
   equivalentTypes,
   isUnresolvedExternalType,
@@ -17,6 +20,7 @@ import {
   isNullableTypeName,
   isNumericTypeName,
   nativeFunctionSignature,
+  nativeFunctionTypeName,
   nullableTargetType,
   qualifiedTypeMember,
   stringStartsWith,
@@ -130,6 +134,8 @@ function nativeFunctionSignaturesCompatible(
       match (nativeFunctionSignature(expandedActual)) {
         some(actualSignature) => {
           if (
+            (actualSignature.borrowedEnvironment && !expectedSignature.borrowedEnvironment)
+            ||
             expectedSignature.parameterTypes.length
               != actualSignature.parameterTypes.length
             || expectedSignature.returnType.byteLength == 0
@@ -180,6 +186,24 @@ function nativeFunctionSignaturesCompatible(
       }
     }
     none => return false;
+  }
+}
+
+// Only a synchronous immutable callback parameter can accept a lexical
+// environment without turning it into an owning function value.
+export function nativeBorrowedCallbackType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): String {
+  const expanded = transparentTypeName(modules, moduleIndex, typeName);
+  match (nativeFunctionSignature(expanded)) {
+    some(signature) => {
+      let borrowed = move signature;
+      borrowed.borrowedEnvironment = true;
+      return nativeFunctionTypeName(borrowed);
+    }
+    none => return typeName.copyBytes(0, typeName.byteLength);
   }
 }
 
@@ -333,6 +357,18 @@ export function requireExpressionType(
   in actual: String
 ): void throws ModuleResolveError {
   try requireSettledExpressionType(module, tree, index, actual);
+  if (stringStartsWith(actual, "__z_native_function:borrowed ")) {
+    const expandedExpected = transparentTypeName(modules, moduleIndex, expected);
+    match (nativeFunctionSignature(expandedExpected)) {
+      some(signature) => {
+        if (!signature.borrowedEnvironment) try requireOwnedClosureEnvironment(
+          module, modules, moduleIndex, actual,
+          tree.nodes[index].line, tree.nodes[index].column
+        );
+      }
+      none => {}
+    }
+  }
   if (
     nativeFunctionSignaturesCompatible(
       modules,

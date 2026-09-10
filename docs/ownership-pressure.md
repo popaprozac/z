@@ -6841,6 +6841,62 @@ is explicitly tested to remain gated, so this is evidence to close before native
 emission, not an executable safety claim. Continue with stored/returned/passed
 closures and nested nonescaping callbacks before lifting that boundary.
 
+### Borrowed-callback forwarding follow-up
+
+The next native closure checkpoint closes the direct conversion gap recorded
+above. Inferred lexical closures carry internal borrowed-environment provenance,
+preserved through function-signature rebasing and semantic identity. An owning
+boundary rejects that provenance before generic inference or a type annotation
+can erase it. Tests cover typed storage, aliases, owned/generic arguments,
+aggregate fields (including inferred generic fields), fixed arrays, `Option`,
+returns, and owned nested captures. Direct lexical invocation, typed `move`
+captures, noncapturing function values, and inline synchronous `in` callbacks
+remain accepted. This is checker metadata, not new syntax or runtime overhead.
+
+The broader audit also found an **open safety gap in both frontends**, not only
+native subclass parity:
+
+```zs
+function preserve(in callback: () => i32): () => i32 {
+  return callback;
+}
+
+function make(): () => i32 {
+  const count = 42;
+  return preserve((): i32 => count);
+}
+
+function main(): i32 {
+  const callback = make();
+  return callback() - 42;
+}
+```
+
+Stage 0 accepts this program and emits a stack-backed borrowed closure with
+null environment retain/release hooks. The returned managed function value can
+therefore outlive its environment. Copying the callback to a typed local or
+capturing it in an owned closure inside `preserve` is also accepted. Treat this
+as a checker hole, not permission to write those patterns. A successful compile
+or one lucky runtime result is not a lifetime proof.
+
+**Immediate next gate:** prove callback nonescape through synchronous Z helpers
+in both frontends. Preserve the distinct case of imported Objective-C blocks,
+whose adapter intentionally supplies an ARC-backed retainable environment;
+blanket rejection of all copied `in` function parameters would break that
+documented behavior. Audit owned calls, returns, storage, nested captures, and
+forwarding chains before subclass emission. No new keyword or callable contract
+has been decided by this implementation checkpoint.
+
+Broader executable probes also exposed native callable lowering boundaries:
+non-void block closures are explicitly gated, while a void lexical closure
+mutating an outer scalar reaches Clang with that capture emitted as `const`.
+For example, `let total = 0; const add = (value: i32): void => {
+total = total + value; }; add(42);` checks but fails native C compilation.
+The retained runtime regression for this checkpoint deliberately proves the
+supported expression-bodied lexical read and `move` snapshot paths under strict
+Clang, UBSan, and an allocation ledger; it does not claim mutable block-capture
+emission. Preserve this reproducer for the callable lowering follow-up.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

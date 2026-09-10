@@ -199,12 +199,26 @@ in an explicitly typed `move` closure retains that alias instead. Tests preserve
 owned String moves/captures, borrowed object-parameter retention, and inline
 synchronous `in` callbacks while rejecting use after a String move.
 
-One concrete open parity gap is borrowed-capture conversion into a stored
-function value. Stage 0 rejects it without an owned environment; the limited
-native typed oracle does not yet carry that escape proof. A regression test
-requires the full resolver to remain gated for this case. Complete that proof
-before enabling native subclass emission; do not mistake a successful typed
-oracle for executable ownership safety.
+Native inferred closures now retain compiler-internal environment provenance.
+The checker rejects borrowed captures entering typed function values, generic
+owned arguments, aggregate fields, arrays, enum payloads, returns, and owned
+nested captures with `Z0212`, before the execution gate. Signature rebasing and
+type identity preserve the provenance; it does not add public syntax or a runtime
+field. Direct inferred lexical invocation, noncapturing function values, typed
+owned captures, and inline synchronous `in` callbacks retain positive parity
+coverage. Named inferred closures still cannot convert to managed callback
+parameters, matching Stage 0's current boundary.
+
+This closes direct conversion parity, not the complete nonescaping-callback
+proof. A follow-up probe found that both checkers accept a synchronous helper
+which returns its `in` callback, including when the caller passes a borrowed
+capturing closure. Stage 0 emits a stack environment with no retain/release
+hooks for that closure, so forwarding it can outlive its environment. See the
+reproducer in [ownership pressure](ownership-pressure.md#borrowed-callback-forwarding-follow-up).
+Audit this ordinary-Z boundary in both frontends before native subclass
+execution; native blocks with ARC-backed managed copies must keep their distinct
+provenance. Do not mistake a successful typed oracle for executable ownership
+safety.
 
 The standalone driver now passes the existing project `target.platform` and
 `target.minimumVersion` into parsed module context. Without a configured target,
@@ -229,8 +243,8 @@ body checking. Complete ownership and availability composition are still require
 passing this limited typed oracle is not a claim that every body composition is
 safe to emit.
 
-Next: borrowed-closure escape/owned-environment proof, remaining body ownership
-checks, and availability/diagnostic composition, then
+Next: interprocedural borrowed-callback escape proof in both frontends, remaining
+body ownership checks, and availability/diagnostic composition, then
 lowering/emission parity; afterward
 deliberate and test owned state, initialization/teardown callbacks, and reentrancy
 before Zapp's window transition state moves into a subclass.

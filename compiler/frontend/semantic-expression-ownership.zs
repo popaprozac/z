@@ -17,12 +17,14 @@ import {
   typeExpressionName,
 } from "./semantic-member-lookups.zs";
 import { typeMovesOnOwnedUse } from "./semantic-type-ownership.zs";
-import { typeSymbolLocation } from "./semantic-type-identities.zs";
+import { typeSymbolLocation, transparentTypeName } from "./semantic-type-identities.zs";
+import { nativeFunctionSignature, stringStartsWith } from "./semantic-type-shapes.zs";
 import {
   ModuleResolveError,
   ModuleResolveErrorKind,
   ModuleSymbolKind,
   ResolvedModule,
+  codedModuleResolutionError,
   moduleResolutionError,
 } from "./semantic-model.zs";
 import { ParsedModule } from "./module-symbols.zs";
@@ -119,6 +121,34 @@ export function expressionStorageRootName(
   return "";
 }
 
+export function requireOwnedClosureEnvironment(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  line: usize,
+  column: usize
+): void throws ModuleResolveError {
+  // This qualifier is inferred, never declared through a source type alias.
+  // Avoid resolving ordinary value types on this hot ownership path.
+  if (!stringStartsWith(typeName, "__z_native_function:borrowed ")) return;
+  const expanded = transparentTypeName(modules, moduleIndex, typeName);
+  match (nativeFunctionSignature(expanded)) {
+    some(signature) => {
+      if (signature.borrowedEnvironment) throw codedModuleResolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        "Z0212",
+        module.path,
+        "a borrowed capturing closure cannot become a function value; use move to own its environment",
+        line,
+        column,
+        1
+      );
+    }
+    none => {}
+  }
+}
+
 export function consumeOwnedExpressionNode(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -129,6 +159,10 @@ export function consumeOwnedExpressionNode(
   force: boolean,
   inout bindings: Array<NativeValueBinding>
 ): void throws ModuleResolveError {
+  try requireOwnedClosureEnvironment(
+    module, modules, moduleIndex, typeName,
+    tree.nodes[index].line, tree.nodes[index].column
+  );
   // Contextual NSString -> String conversion creates fresh owned Z storage.
   // The source Objective-C reference is observed, not moved out of its owner.
   if (expressionCopiesObjectiveCString(bindings, tree.nodes[index].offset)) return;

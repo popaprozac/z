@@ -313,10 +313,12 @@ export function nativeClosureFunctionType(
   in returnType: String,
   in errorType: String,
   in threadContract: String,
-  asynchronous: boolean
+  asynchronous: boolean,
+  borrowedEnvironment: boolean
 ): String {
   let output = TextBuffer();
   output.append("__z_native_function:");
+  if (borrowedEnvironment) output.append("borrowed ");
   if (asynchronous) output.append("async ");
   output.append("(");
   let first = true;

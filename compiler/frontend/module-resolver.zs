@@ -136,10 +136,12 @@ import {
   identifierLookupName,
   requireInitializedBinding,
   requireInitializedOutputParameters,
+  requireOwnedClosureEnvironment,
 } from "./semantic-expression-ownership.zs";
 import {
   isContextualNumericLiteral,
   isNativeObjectiveCStringType,
+  nativeBorrowedCallbackType,
   requireExpressionSyntaxType,
   requireExpressionType,
 } from "./semantic-expression-types.zs";
@@ -4593,6 +4595,12 @@ function inferSignatureCallType(
         0,
         expectedArgumentType.byteLength
       );
+      if (mode == "in" && !signature.asynchronous
+        && tree.nodes[inferredNode].kind == ExpressionKind.closureExpression) {
+        inferenceExpectedType = nativeBorrowedCallbackType(
+          modules, moduleIndex, inferenceExpectedType
+        );
+      }
       if (mode == "in" && tree.nodes[inferredNode].kind == ExpressionKind.identifierExpression) {
         const inferredName = identifierLookupName(tree.nodes[inferredNode].value);
         const inferredBindingType = valueBindingType(bindings, inferredName);
@@ -4776,6 +4784,12 @@ function inferSignatureCallType(
       substitutions
     );
     let requiredExpected = expected.copyBytes(0, expected.byteLength);
+    if (signature.parameterModes[parameterIndex] == "in" && !signature.asynchronous
+      && tree.nodes[argumentNodes[parameterIndex]].kind == ExpressionKind.closureExpression) {
+      requiredExpected = nativeBorrowedCallbackType(
+        modules, moduleIndex, requiredExpected
+      );
+    }
     if (
       signature.parameterModes[parameterIndex] == "in"
       && stringStartsWith(argumentTypes[parameterIndex], "view ")
@@ -7422,6 +7436,9 @@ function inferExpressionNodeType(
           );
         }
       }
+      if (value == "move") try requireOwnedClosureEnvironment(
+        module, modules, moduleIndex, captureType, node.line, node.column
+      );
       if (typeIsBorrowedForeignResource(
         modules,
         moduleIndex,
@@ -7595,7 +7612,8 @@ function inferExpressionNodeType(
       returnType,
       closureSignature.errorType,
       closureSignature.threadContract,
-      closureSignature.asynchronous
+      closureSignature.asynchronous,
+      captures.length > 0 && value != "move"
     );
   }
   if (kind == ExpressionKind.callExpression && children.length > 0) {
@@ -9467,7 +9485,8 @@ function inferExpressionNodeType(
               "void",
               "",
               "",
-              true
+              true,
+              false
             );
             let taskScopeBindings = copyValueBindings(bindings);
             addValueBinding(
@@ -10029,7 +10048,8 @@ function inferExpressionNodeType(
                 contextualReturnType,
                 errorType,
                 "",
-                false
+                false,
+                true
               );
               let withLockBindings = copyValueBindings(bindings);
               const inheritedExecutorContext = currentExecutorContext(
@@ -11319,7 +11339,17 @@ function inferStatement(
     }
     match (in arena.nodes[index].expression) {
       some(expression) => {
-        if (inferred.byteLength > 0) {
+        // A directly inferred lexical closure is not an owning function value.
+        // Keep its environment provenance until a later storage/call boundary.
+        let lexicalClosure = false;
+        match (in arena.nodes[index].typeAnnotation) {
+          none => match (in expression.tree) {
+            some(tree) => lexicalClosure = tree.nodes[tree.root].kind == ExpressionKind.closureExpression;
+            none => {}
+          }
+          some(type) => {}
+        }
+        if (inferred.byteLength > 0 && !lexicalClosure) {
           try consumeOwnedExpressionSyntax(
             module,
             modules,

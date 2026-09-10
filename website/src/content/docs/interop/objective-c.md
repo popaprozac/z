@@ -150,7 +150,11 @@ unavailable APIs and APIs introduced after, or obsoleted by, that minimum versio
 This includes superclass declarations, overrides, calls, and properties. Other
 platforms' restrictions are ignored. Without a configured minimum, version checks
 remain deferred just as in Stage 0; platform-only unavailability still applies.
-Native deprecation warnings and borrowed-closure escape proof remain pending.
+The native checker also rejects borrowed captures becoming owned function
+values, including through generic arguments, containers, returns, and nested
+owned captures. Synchronous borrowed-callback forwarding still needs a complete
+escape proof in both frontends; direct conversion checks alone are not enough.
+Native deprecation warnings remain pending.
 Execution still reports `Z0814` pending complete ownership/availability composition
 and native emission. This typed-body checkpoint does not enable native
 execution or stateful subclasses.

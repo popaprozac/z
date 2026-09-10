@@ -659,6 +659,7 @@ export function rebaseTypeName(
         );
       }
       const rebased = ModuleFunctionSignature({
+        borrowedEnvironment: signature.borrowedEnvironment,
         asynchronous: signature.asynchronous,
         executorAffinity: signature.executorAffinity.copyBytes(
           0,
@@ -869,6 +870,7 @@ export function semanticTypeIdentity(
     some(signature) => {
       let output = TextBuffer();
       output.append("@function:");
+      if (signature.borrowedEnvironment) output.append("borrowed:");
       if (signature.asynchronous) output.append("async:");
       output.append("(");
       let index: usize = 0;

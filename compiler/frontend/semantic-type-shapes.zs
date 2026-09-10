@@ -20,6 +20,7 @@ export function nativeFunctionTypeName(
 ): String {
   let output = TextBuffer();
   output.append("__z_native_function:");
+  if (signature.borrowedEnvironment) output.append("borrowed ");
   if (signature.asynchronous) output.append("async ");
   output.append("(");
   let index: usize = 0;
@@ -323,6 +324,10 @@ export function nullableTargetType(in name: String): String {
 export function nativeFunctionDisplayType(in typeName: String): String {
   const prefix = "__z_native_function:";
   if (!stringStartsWith(typeName, prefix)) return "";
+  const borrowedPrefix = "__z_native_function:borrowed ";
+  if (stringStartsWith(typeName, borrowedPrefix)) {
+    return typeName.copyBytes(borrowedPrefix.byteLength, typeName.byteLength);
+  }
   return typeName.copyBytes(prefix.byteLength, typeName.byteLength);
 }
 
@@ -504,6 +509,7 @@ export function nativeFunctionSignature(
     }
   }
   return Option.some(ModuleFunctionSignature({
+    borrowedEnvironment: stringStartsWith(typeName, "__z_native_function:borrowed "),
     asynchronous,
     executorAffinity: "",
     threadContract,

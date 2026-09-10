@@ -238,6 +238,9 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       ["ordinary retained argument", overrideBody("consume(this); return this.value();") + "\nfunction consume(value: Counter): void {}"],
       ["owned native alias capture", overrideBody("const alias = this; const callback: () => i32 on thread.main = move (): i32 => alias.value(); return callback() + alias.value();")],
       ["inline borrowed alias capture", overrideBody("const alias = this; return inspect((): i32 => alias.value());") + "\nfunction inspect(in callback: () => i32 on thread.main): i32 on thread.main { return callback(); }"],
+      ["inferred lexical scalar capture", overrideBody("const count = 42; const callback = (): i32 => count; return callback();")],
+      ["noncapturing function value", overrideBody("const callback: () => i32 = (): i32 => 42; return callback();")],
+      ["owned scalar function value", overrideBody("const count = 42; const callback: () => i32 = move (): i32 => count; return callback();")],
       ["owned String capture", overrideBody('const message = "hello"; const callback: () => i32 = move (): i32 => i32(message.byteLength); return callback();')],
       ["ordinary Z ARC move and id shadowing", overrideBody("const item = new id({ value: 42 }); const other = move item; return other.value;") + "\nclass id { value: i32; }"],
       ["retained borrowed object capture", overrideBody("const callback: () => i32 on thread.main = move (): i32 => object.value(); return callback() + object.value();")
@@ -263,13 +266,33 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       assert.equal(checked.status, 1, checked.stdout + checked.stderr);
       assert.match(checked.stdout, /consuming Objective-C calls/);
     }
-    // Borrowed-closure escape proof is still a required ownership slice. Do not
-    // let the limited typed oracle's accepted result authorize execution.
-    const borrowedEscape = overrideBody("const alias = this; const callback: () => i32 on thread.main = (): i32 => alias.value(); return callback();");
-    assert.throws(() => compileToNative(borrowedEscape, decoder), /borrowed capturing closure cannot become a function value/);
-    const gatedBorrowedEscape = runDeclaration(borrowedEscape, true);
-    assert.equal(gatedBorrowedEscape.status, 1, gatedBorrowedEscape.stdout + gatedBorrowedEscape.stderr);
-    assert.match(gatedBorrowedEscape.stdout, /Z0814:.*execution still requires/);
+    // Inferred lexical closures retain environment provenance through generic
+    // inference and owned storage. Rejection must precede the execution gate.
+    const capturedScalar = "const count = 42; const callback = (): i32 => count; ";
+    for (const [name, source] of [
+      ["typed receiver capture", overrideBody("const alias = this; const callback: () => i32 on thread.main = (): i32 => alias.value(); return callback();")],
+      ["typed scalar capture", overrideBody("const count = 42; const callback: () => i32 = (): i32 => count; return callback();")],
+      ["inferred alias conversion", overrideBody(capturedScalar + "const stored: () => i32 = callback; return stored();")],
+      ["transparent alias conversion", overrideBody(capturedScalar + "const stored: Callback = callback; return stored();") + "\ntype Callback = () => i32;"],
+      ["owned argument", overrideBody("const count = 42; save((): i32 => count); return 0;") + "\nfunction save(callback: () => i32): void {}"],
+      ["generic owned argument", overrideBody(capturedScalar + "save(callback); return 0;") + "\nfunction save<T>(value: T): void {}"],
+      ["aggregate field", overrideBody(capturedScalar + "const holder = Holder({ callback }); return 0;") + "\nstruct Holder { callback: () => i32; }"],
+      ["generic aggregate field", overrideBody(capturedScalar + "const holder = Holder({ callback }); return 0;") + "\nstruct Holder<T> { callback: T; }"],
+      ["fixed array element", overrideBody(capturedScalar + "const callbacks = [callback]; return 0;")],
+      ["optional payload", overrideBody(capturedScalar + "const stored = Option.some(callback); return 0;")],
+      ["owned nested capture", overrideBody(capturedScalar + "const stored: () => i32 = move (): i32 => callback(); return stored();")],
+      ["return boundary", overrideBody("const factory: () => () => i32 = (): () => i32 => { const count = 42; const callback = (): i32 => count; return callback; }; return 0;")],
+      ["named lexical callback conversion", overrideBody(capturedScalar + "return inspect(in callback);") + "\nfunction inspect(in callback: () => i32): i32 { return callback(); }"],
+    ]) {
+      const checked = runDeclaration(source, "types");
+      assert.equal(checked.status, 1, `${name}: ${checked.stdout}${checked.stderr}`);
+      assert.match(checked.stdout, /Z0212:.*borrowed capturing closure cannot become a function value/, name);
+      assert.throws(() => compileToNative(source, decoder), undefined, `Stage 0 rejects ${name}`);
+      const gated = runDeclaration(source, true);
+      assert.equal(gated.status, 1, `${name}: ${gated.stdout}${gated.stderr}`);
+      assert.match(gated.stdout, /Z0212:/, name);
+      assert.doesNotMatch(gated.stdout, /execution still requires/, name);
+    }
     const availabilityHeader = "objc-subclass-availability.h";
     const availabilityStream = resolveForeignFunctionDeclarationStreams([{
       kind: "import", moduleName: "native", bindings: null, header: availabilityHeader,
