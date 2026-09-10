@@ -23,7 +23,7 @@ import {
 
 // Declaration validation is separate from body ownership and native emission.
 // No successful declaration check may turn a native subclass into a Z ARC
-// record. The resolver keeps an explicit execution gate after this pass.
+// record. Dedicated checked plans and native entry lowering preserve that split.
 function subclassError(
   in module: ParsedModule, in message: String, line: usize, column: usize
 ): ModuleResolveError {
@@ -404,25 +404,9 @@ export function validateNativeObjCSubclassDeclarations(
   }
 }
 
-export function requireNativeObjCSubclassBodySupport(in parsed: Array<ParsedModule>): void throws ModuleResolveError {
-  for (const module of parsed) {
-    for (const aggregate of module.program.aggregates) {
-      match (in aggregate.nativeBase) {
-        some(base) => throw codedModuleResolutionError(
-          ModuleResolveErrorKind.unsupportedLowering, "Z0814", module.path,
-          "native Objective-C subclass execution still requires checked native lowering and emission; use Stage 0",
-          base.line, base.column, base.name.byteLength
-        );
-        none => {}
-      }
-    }
-  }
-}
-
 // This source-owned reference has nominal Z identity and an imported native
 // base ABI. It is deliberately not an ordinary Z ARC record or an alias of the
-// imported class. No executable graph may leave the resolver until the later
-// subclass emission gate is removed. Declaration validation must run first.
+// imported class. Declaration validation must run before preparing its identity.
 export function prepareNativeObjCSubclassTypes(
   in parsed: Array<ParsedModule>, inout modules: Array<ResolvedModule>
 ): void throws ModuleResolveError {
@@ -454,13 +438,13 @@ export function prepareNativeObjCSubclassTypes(
       signature.foreignLayout = "reference";
       signature.foreignObjCSuperName = copy baseName;
       signature.customDeinit = true;
-      // Native calls can use the imported base pointer ABI without collapsing
-      // the source subclass's nominal identity into that base type.
+      // Native allocation and owned storage name the generated Objective-C
+      // class, while the base identity remains available for checked conversion.
       const baseSignature = match (in modules[baseLocation.moduleIndex].symbols[baseLocation.symbolIndex].typeSignature) {
         some(value) => copy value;
         none => throw subclassError(module, "missing imported superclass signature", aggregate.line, aggregate.column);
       };
-      signature.foreignNativeName = copy baseSignature.foreignNativeName;
+      signature.foreignNativeName = `ZNative_${moduleIndex}_${aggregate.name}`;
       for (const field of baseSignature.fields) {
         let property = copy field;
         property.typeName = rebaseTypeName(modules, baseLocation.moduleIndex, moduleIndex, field.typeName);

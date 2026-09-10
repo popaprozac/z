@@ -173,8 +173,10 @@ recursive path.
   identities, exact constructor/override entry ABIs, inherited initializer
   restrictions, main affinity, and typed superclass dispatch sites. Declaration
   emission in `c-emitter.zs` passes strict Clang independently of body execution.
-  Both the resolver and ordinary aggregate lowering still reject executable
-  native subclasses until dedicated body lowering/implementation emission lands.
+  Dedicated native construction/super/method-entry IR now emits real Objective-C
+  implementations. Native references never become Z ARC records. The same
+  200-iteration dispatch/capture/cleanup fixture runs under both emitters, strict
+  Clang, and UBSan. Detached subclass ASTs without checked plans remain rejected.
   Native Objective-C references cannot use explicit `move` (including nullable
   and transparent aliases); ordinary uses retain identity. Direct `this` capture
   stays rejected like Stage 0, while typed owned alias captures and inline
@@ -182,16 +184,18 @@ recursive path.
   internal environment provenance through type identity and rebasing; borrowed
   environments cannot enter typed function values, generic owned arguments,
   aggregate/array/enum storage, returns, or owned captures. This closes direct
-  conversion parity, not callback forwarding through a synchronous `in` helper;
-  that cross-frontend escape proof remains required before lifting the gate.
+  conversion parity; known synchronous `in` helpers also undergo the established
+  non-escaping callback audit before stack-backed closures can enter them.
   Typed checking requires attached superclass ABI evidence. The driver supplies
   the existing deployment target as parsed-module context;
   `semantic-native-availability.zs` enforces applicable unavailable, introduced,
   and obsoleted facts on bases, overrides, native body calls, and properties.
   Version checks use the configured minimum rather than the SDK version; native
-  deprecation warnings remain pending. Resolution still rejects execution with
-  `Z0814` pending complete ownership/availability composition,
-  and native lowering/emission; the first body slice is not a full safety proof.
+  deprecation warnings remain pending. Generated native entries guard main-thread
+  execution; initialization guards nil/replacement-class results. Raw functions
+  cannot access generated subclass/constructor identities. Owned native closure
+  captures are initialized to nil and cleared before freeing the environment.
+  Fields, teardown/reentrancy, weak identity, and async subclass composition remain.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies

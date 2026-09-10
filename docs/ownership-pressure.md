@@ -7216,6 +7216,56 @@ ZWirePoint` is retained. This checkpoint tests the tagged native record ABI;
 anonymous typedef-record discovery needs its own importer regression, not an
 assumption that this fixture covers it.
 
+## Field-free native subclass execution and owned native captures (2026-09-10)
+
+The real `objc-subclass.zs` fixture now runs through both Stage 0 and the native
+Z resolver/lowerer/emitter, not just a hand-assembled interface oracle. Its 200
+iterations combine native virtual and superclass dispatch, inherited property
+writes, source selector aliases, nested constructor closures, cleanup-bearing
+borrowed method locals, and a retained callback that outlives construction.
+Live-object and body-resource counters must return to zero exactly.
+
+This found three concrete implementation problems:
+
+- Native semantic evidence contains ownership-bearing lookup maps. Copying the
+  whole evidence object was unnecessary; subclass evidence is now built first,
+  then ordinary function evidence is appended without discarding or copying it.
+- Heap closure environments containing native ARC references were not initialized
+  before strong assignment or cleared before free. They now use zeroed slots and
+  explicit nil cleanup. Ordinary non-native environments keep their existing
+allocation path. This fixes an actual native-reference leak without adding a
+  new source rule or wrapper allocation.
+- An exported subclass renamed at import lost its native constructor identity.
+  Explicit imported-type facts and canonical aliases now carry that identity
+  across the boundary; construction and dispatch pass strict Clang and execution.
+
+Native subclass entries are real Objective-C methods. `super` is lexical native
+dispatch, constructors validate nil/replacement identity, and entry points check
+main-thread execution. Generated class/constructor names are rejected in raw
+functions while native `Z_OK`-style names, comments, and strings remain valid.
+These are internal-ABI checks, not a sandbox for arbitrary native source.
+
+The real NSWindow compile probe also exposed source-symbol ordering: inherited
+properties were materialized before imported typedefs such as NSWindowDepth.
+Subclass property metadata is now populated after the foreign ABI type pass,
+with an inherited enum-property regression in the native fixture. Properties are
+message metadata, not inline Z aggregate storage.
+
+The field-free execution gate is removed. This does **not** establish stateful
+subclass safety: owned fields, initialization/teardown callbacks, reentrancy,
+weak identity, and the production Zapp resize-state migration still require their
+own deliberation and tests. General async closure completeness is not a prerequisite.
+
+Validation: 117 distinct targeted tests pass across subclass/Objective-C,
+callback escape, native closure cleanup, native async Objective-C storage,
+symbol hygiene, and selected self-hosting coverage. The import-alias failure in
+the first broad run was fixed; all six subclass tests then passed together.
+Fresh bootstrap reaches byte-identical output at 11,457,501 C bytes. That driver
+emits the 200-iteration fixture, which passes strict Clang/UBSan execution, and
+an actual field-free NSWindow subclass, which passes strict compile-only checking
+without opening an application. The 33-page website build, tier/fixture audit,
+and diff checks pass. This is not a full-suite or performance benchmark.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -1,10 +1,10 @@
 import { TextBuffer } from "std/text";
 import { requireNativeAvailability, requireNativeReferenceAvailability } from "./semantic-native-availability.zs";
 import { planNativeObjCSubclasses } from "./semantic-objc-subclass-plans.zs";
+import { validateNativeObjCSubclassRawAccess } from "./semantic-objc-subclass-hygiene.zs";
 import {
   nativeObjCSubclassBase,
   prepareNativeObjCSubclassTypes,
-  requireNativeObjCSubclassBodySupport,
   validateNativeObjCSubclassDeclarations,
 } from "./semantic-objc-subclasses.zs";
 import {
@@ -12709,6 +12709,16 @@ function validateExpressionTypesAndLocals(
   moduleIndex: usize
 ): ModuleSemanticEvidence throws ModuleResolveError {
   let evidence = emptySemanticEvidence();
+  for (const aggregate of module.program.aggregates) {
+    match (in aggregate.nativeBase) {
+      some(_) => {
+        evidence = try validateNativeObjCSubclassBodyTypes(module, modules, moduleIndex);
+        evidence.objectiveCSubclasses = try planNativeObjCSubclasses(module, modules, moduleIndex, evidence);
+        break;
+      }
+      none => {}
+    }
+  }
   const noTypeParameters = Array<TypeParameter>();
   for (const declaration of module.program.functions) {
     try inferFunctionExpressions(
@@ -12723,6 +12733,7 @@ function validateExpressionTypesAndLocals(
     );
   }
   for (const aggregate of module.program.aggregates) {
+    match (in aggregate.nativeBase) { some(_) => continue; none => {} }
     match (in aggregate.constructorDeclaration) {
       some(initializer) => {
         let bindings = functionValueBindings(initializer.parameters);
@@ -13275,27 +13286,8 @@ export function resolveParsedModulesWithForeignContracts(
   try attachForeignContracts(parsed, foreignContracts, inout modules);
   try validateNativeObjCSubclassDeclarations(parsed, modules);
   try prepareNativeObjCSubclassTypes(parsed, inout modules);
-  let subclassModuleIndex: usize = 0;
-  while (subclassModuleIndex < parsed.length) {
-    for (const aggregate of parsed[subclassModuleIndex].program.aggregates) {
-      match (in aggregate.nativeBase) {
-        some(_) => {
-          let evidence = try validateNativeObjCSubclassBodyTypes(
-            parsed[subclassModuleIndex], modules, subclassModuleIndex
-          );
-          const plans = try planNativeObjCSubclasses(
-            parsed[subclassModuleIndex], modules, subclassModuleIndex, evidence
-          );
-          evidence.objectiveCSubclasses = move plans;
-          modules[subclassModuleIndex].semanticEvidence = move evidence;
-          break;
-        }
-        none => {}
-      }
-    }
-    subclassModuleIndex = subclassModuleIndex + 1;
-  }
-  try requireNativeObjCSubclassBodySupport(parsed);
+  // Checked native entries retain their body evidence through ordinary module
+  // validation; dedicated lowering must not reinterpret them as Z ARC records.
   try validateNativeCLayouts(parsed, modules);
   try validateNativeCExports(parsed, modules);
   let index: usize = 0;
@@ -13310,6 +13302,7 @@ export function resolveParsedModulesWithForeignContracts(
     index = index + 1;
   }
 
+  try validateNativeObjCSubclassRawAccess(parsed, modules);
   const dependencyOrder = try resolveModuleOrder(parsed, modules, entry);
   return ModuleGraph({ modules, dependencyOrder, entry });
 }

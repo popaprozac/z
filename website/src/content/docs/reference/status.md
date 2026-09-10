@@ -22,7 +22,7 @@ production or compatibility-sensitive use.
   deterministic cleanup, including typed failure
 - Header-first C and Objective-C interop, substantial `.zd` contracts, and
   selected C++ values, methods, namespaces, RAII, and move-only resources
-- An experimental Stage 0 native subclass tier: field-free main-isolated
+- An experimental native subclass tier in both compilers: field-free main-isolated
   Objective-C `extends`, checked `override`/selector signatures, designated
   superclass construction, real `super` dispatch, and native ARC identity.
   Native parsing, safety-fact normalization, declaration contract checks, and
@@ -33,8 +33,10 @@ production or compatibility-sensitive use.
   borrowed locals and locally handled errors; synchronous bodies reject async
   scopes, consuming Objective-C calls, and variadic/projected native calls in
   both compiler paths. Checked native class-entry plans and independently tested
-  Objective-C interface emission are present. Native body lowering/implementation
-  emission still gate execution; stateful subclasses and async composition remain
+  Objective-C interface emission are present. Dedicated native body lowering and
+  implementation emission pass the same 200-iteration dispatch/capture/cleanup
+  oracle as Stage 0 under strict Clang and UBSan; stateful subclasses and async
+  composition remain
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler and owned `objc.adapt<P>` carrier with direct `id<P>` ABI,

@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
+typedef enum ZSubclassDepth { ZSubclassDepthLow = 0 } ZSubclassDepth;
 __attribute__((swift_attr("@MainActor")))
 @interface ZSubclassFixture : NSObject
 - (instancetype)init NS_UNAVAILABLE;
@@ -10,6 +11,7 @@ __attribute__((swift_attr("@MainActor")))
 - (int)readObject:(ZSubclassFixture *)object;
 - (int)add:(int)left to:(int)right;
 @property int configuredValue;
+@property ZSubclassDepth configuredDepth;
 - (int)requiredValue NS_REQUIRES_SUPER;
 - (int)directValue __attribute__((objc_direct));
 - (void)takeObject:(NSObject * __attribute__((ns_consumed)))object;

@@ -63,8 +63,7 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       assert.equal(checked.status, 0, checked.stdout + checked.stderr);
     }
     const gated = runDeclaration(nativeBaseline, true);
-    assert.equal(gated.status, 1, gated.stderr);
-    assert.match(gated.stdout, /Z0814:.*checked native lowering and emission/);
+    assert.equal(gated.status, 0, gated.stdout + gated.stderr);
     const invalidBeforeGate = runDeclaration(nativeBaseline.replace("super.initWithValue(value)", 'super.initWithValue("bad")'), true);
     assert.equal(invalidBeforeGate.status, 1, invalidBeforeGate.stdout + invalidBeforeGate.stderr);
     assert.match(invalidBeforeGate.stdout, /i32.*String|String.*i32/);
@@ -569,5 +568,57 @@ hostToolchainTest("executes a field-free native subclass with true virtual and s
     assert.equal(built.status, 0, built.stderr);
     const run = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000 });
     assert.equal(run.status, 0, run.stderr);
+    const oracleSource = resolve(projectRoot, "tests/fixtures/self-host-objc-subclass-execution.zs");
+    const oracleC = spawnSync(process.execPath, [cli, "self-host-emit", oracleSource], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 24 * 1024 * 1024,
+    });
+    assert.equal(oracleC.status, 0, oracleC.stderr);
+    const oracle = resolve(directory, "native-emitter");
+    const oracleBuild = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", oracle], {
+      input: oracleC.stdout, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+    });
+    assert.equal(oracleBuild.status, 0, oracleBuild.stderr);
+    const stream = resolveForeignFunctionDeclarationStreams([{
+      kind: "import", moduleName: "native", bindings: null, header: "./objc-subclass.h",
+      location: { fileName: file, offset: 0, line: 1, column: 1 },
+    }], file, [resolve(projectRoot, "tests/fixtures")]).get("native")!;
+    const wire = resolve(directory, "native.zfdcl");
+    writeFileSync(wire, stream);
+    const native = spawnSync(oracle, [wire, file], { encoding: "utf8", timeout: 15_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
+    assert.equal(native.status, 0, native.stderr);
+    assert.match(native.stdout, /@implementation ZNative_0_Counter/);
+    assert.match(native.stdout, /\[super value\]/);
+    assert.match(native.stdout, /object_getClass\(self\) != \[ZNative_0_Counter class\]/);
+    assert.doesNotMatch(native.stdout, /Z_Counter.*_z_refcount|typedef struct Z_ZNative_0_Counter/);
+    writeFileSync(generated, native.stdout);
+    const nativeBuild = spawnSync("xcrun", ["clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-I", resolve(projectRoot, "tests/fixtures"), "-framework", "Foundation", generated, resolve(projectRoot, "tests/fixtures/objc-subclass.m"), "-o", executable], {
+      encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+    });
+    assert.equal(nativeBuild.status, 0, nativeBuild.stderr);
+    const nativeRun = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+    assert.equal(nativeRun.status, 0, nativeRun.stderr);
+    const rawProbe = resolve(directory, "raw-probe.zs");
+    const emitRaw = (body: string) => {
+      writeFileSync(rawProbe, baseline + `\nfunction rawProbe(): i32 = raw c { ${body} }\n`);
+      return spawnSync(oracle, [wire, rawProbe], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
+    };
+    for (const name of ["ZNative_0_Counter", "ZNative_0_Counter_new"]) {
+      const rejected = emitRaw(`return (int)sizeof(${name});`);
+      assert.equal(rejected.status, 1, rejected.stdout + rejected.stderr);
+      assert.match(rejected.stderr, /Z0820: raw native source cannot reference compiler-owned symbol/);
+    }
+    const allowed = emitRaw('int Z_OK = 0; /* ZNative_0_Counter */ const char *message = "ZNative_0_Counter_new"; (void)message; return Z_OK;');
+    assert.equal(allowed.status, 0, allowed.stderr);
+    const companion = resolve(directory, "counter.zs");
+    const entry = resolve(directory, "imported.zs");
+    writeFileSync(companion, baseline.slice(0, baseline.indexOf("function main")).replace("class Counter", "export class Counter"));
+    writeFileSync(entry, 'import { Counter as Reading } from "./counter.zs"; function main(): i32 { const counter = new Reading(40); return counter.value() - 42; }');
+    const imported = spawnSync(oracle, [wire, entry, companion], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
+    assert.equal(imported.status, 0, imported.stderr);
+    writeFileSync(generated, imported.stdout);
+    const importedBuild = spawnSync("xcrun", ["clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", resolve(projectRoot, "tests/fixtures"), "-framework", "Foundation", generated, resolve(projectRoot, "tests/fixtures/objc-subclass.m"), "-o", executable], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+    assert.equal(importedBuild.status, 0, importedBuild.stderr);
+    const importedRun = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+    assert.equal(importedRun.status, 0, importedRun.stderr);
   } finally { rmSync(directory, { recursive: true, force: true }); }
-}, 60_000);
+}, 240_000);

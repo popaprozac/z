@@ -40,6 +40,8 @@ import {
   ModuleFieldSignature,
   ModuleFunctionSignature,
   ModuleObjCProtocolMethodResolution,
+  ModuleObjCSubclassEntry,
+  ModuleObjCSubclassPlan,
   ModuleSemanticEvidence,
   ModuleSymbolKind,
   ModuleTypeIdentity,
@@ -271,6 +273,9 @@ export enum LoweredExpressionKind {
   closureValue,
   methodCall,
   objectiveCMessageCall,
+  objectiveCSuperCall,
+  objectiveCSuperInitializer,
+  nativeObjCConstruction,
   objectiveCDataCopy,
   objectiveCDataBorrow,
   objectiveCInstanceOf,
@@ -481,6 +486,8 @@ struct LoweredClosureCapture {
 }
 
 export struct LoweredFunction {
+  nativeObjCClass: String = "";
+  nativeObjCEntry: Option<ModuleObjCSubclassEntry> = Option<ModuleObjCSubclassEntry>.none;
   name: String;
   testName: String;
   sourcePath: String;
@@ -580,6 +587,7 @@ export struct LoweredEmbeddedBytes {
 }
 
 export struct LoweredProgram {
+  objectiveCSubclasses: Array<ModuleObjCSubclassPlan> = Array<ModuleObjCSubclassPlan>();
   foreignHeaders: Array<String>;
   foreignFunctions: Array<LoweredForeignFunction>;
   foreignResources: Array<LoweredForeignResource>;
@@ -859,6 +867,7 @@ struct LoweredImportedType {
   targetName: String;
   nativeTypeName: String;
   kind: LoweredTypeKind;
+  nativeObjCSubclass: boolean = false;
   executorBound: boolean;
   threadShareable: boolean;
   workerDestructible: boolean;
@@ -7474,7 +7483,8 @@ function lowerObjectiveCMessageCall(
   const callKind = resolvedCallKind(evidence, tree, index);
   if (
     objectiveCSelector.byteLength == 0
-    || (callKind != "method" && callKind != "staticMethod")
+    || (callKind != "method" && callKind != "staticMethod"
+      && callKind != "objcSuper" && callKind != "objcSuperInitializer")
     || tree.nodes[calleeInput].kind != ExpressionKind.memberExpression
     || tree.nodes[calleeInput].children.length != 1
   ) throw "native Objective-C lowering lost its resolved message call";
@@ -7497,6 +7507,10 @@ function lowerObjectiveCMessageCall(
       Array<String>()
     ));
     labels.push("class");
+  } else if (callKind == "objcSuper" || callKind == "objcSuperInitializer") {
+    children.push(pushExpression(inout output, LoweredExpressionKind.localValue,
+      "super", Array<usize>(), Array<String>()));
+    labels.push("super");
   } else {
     const receiverInput = tree.nodes[calleeInput].children[0];
     const receiver = try lowerExpression(
@@ -7645,7 +7659,9 @@ function lowerObjectiveCMessageCall(
   }
   return pushExpression(
     inout output,
-    LoweredExpressionKind.objectiveCMessageCall,
+    callKind == "objcSuperInitializer" ? LoweredExpressionKind.objectiveCSuperInitializer
+      : callKind == "objcSuper" ? LoweredExpressionKind.objectiveCSuperCall
+      : LoweredExpressionKind.objectiveCMessageCall,
     objectiveCSelector,
     children,
     labels
@@ -11421,7 +11437,12 @@ function lowerExpressionContextual(
         Array<String>()
       );
     }
-    if (classType.kind != LoweredTypeKind.classType) {
+    let nativeSubclass = false;
+    for (const imported of importedTypes) {
+      if (classType.kind == LoweredTypeKind.foreignObjCType
+        && imported.nativeObjCSubclass && imported.nativeTypeName == classType.name) nativeSubclass = true;
+    }
+    if (classType.kind != LoweredTypeKind.classType && !nativeSubclass) {
       throw `native new lowering requires a class, found ${tree.nodes[index].value}`;
     }
     // Generic bodies retain their source spelling (for example Box<T>) in
@@ -11483,7 +11504,7 @@ function lowerExpressionContextual(
       }
       return pushExpression(
         inout output,
-        LoweredExpressionKind.classValue,
+        nativeSubclass ? LoweredExpressionKind.nativeObjCConstruction : LoweredExpressionKind.classValue,
         className,
         children,
         labels
@@ -15566,6 +15587,9 @@ function lowerExpressionContextual(
       index
     );
     const callKind = resolvedCallKind(evidence, tree, index);
+    if (callKind == "objcSuper" || callKind == "objcSuperInitializer") {
+      return try lowerObjectiveCMessageCall(program, importedTypes, evidence, tree, index, inout output);
+    }
     if (
       callKind == "objectiveCDataCopy"
       || callKind == "objectiveCDataBorrow"
@@ -29590,6 +29614,7 @@ function copyImportedTypeAlias(
       declaration.nativeTypeName.byteLength
     ),
     kind: declaration.kind,
+    nativeObjCSubclass: declaration.nativeObjCSubclass,
     executorBound: declaration.executorBound,
     threadShareable: declaration.threadShareable,
     workerDestructible: declaration.workerDestructible,
@@ -29740,6 +29765,14 @@ function appendHiddenConcreteTypeIdentities(
         privateName,
         types.length
       );
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          if (signature.foreignKind == "objcSubclass") sourceIndex = indexedImportedType(
+            targetIndices, signature.foreignNativeName, types.length
+          );
+        }
+        none => {}
+      }
       if (sourceIndex >= types.length) {
         sourceIndex = indexedImportedType(
           targetIndices,
@@ -29935,7 +29968,7 @@ function importedTypesForModule(
     ) continue;
     match (in symbol.typeSignature) {
       some(signature) => {
-        const objcInterface = signature.foreignKind == "objcInterface"
+        const objcInterface = (signature.foreignKind == "objcInterface" || signature.foreignKind == "objcSubclass")
           && symbol.kind == ModuleSymbolKind.classSymbol;
         const objcProtocol = signature.foreignKind == "objcProtocol"
           && symbol.kind == ModuleSymbolKind.traitSymbol;
@@ -29961,6 +29994,7 @@ function importedTypesForModule(
           ),
           nativeTypeName: loweredNativeName,
           kind: LoweredTypeKind.foreignObjCType,
+          nativeObjCSubclass: signature.foreignKind == "objcSubclass",
           executorBound: signature.executorAffinity.byteLength > 0,
           threadShareable: false,
           workerDestructible: false,
@@ -29990,7 +30024,7 @@ function importedTypesForModule(
       ) continue;
       match (in symbol.typeSignature) {
         some(signature) => {
-          const objcInterface = signature.foreignKind == "objcInterface"
+          const objcInterface = (signature.foreignKind == "objcInterface" || signature.foreignKind == "objcSubclass")
             && symbol.kind == ModuleSymbolKind.classSymbol;
           const objcProtocol = signature.foreignKind == "objcProtocol"
             && symbol.kind == ModuleSymbolKind.traitSymbol;
@@ -30017,6 +30051,7 @@ function importedTypesForModule(
             ),
             nativeTypeName: loweredNativeName,
             kind: LoweredTypeKind.foreignObjCType,
+            nativeObjCSubclass: signature.foreignKind == "objcSubclass",
             executorBound: signature.executorAffinity.byteLength > 0,
             threadShareable: false,
             workerDestructible: false,
@@ -30045,9 +30080,13 @@ function importedTypesForModule(
         some(signature) => {
           if (
             symbol.kind == ModuleSymbolKind.classSymbol
-            && signature.foreignKind == "objcInterface"
+            && (signature.foreignKind == "objcInterface" || signature.foreignKind == "objcSubclass")
             && signature.foreignNativeName.byteLength > 0
           ) {
+            // Source subclasses precede imported scalar/record declarations in
+            // symbol order. Populate their inherited properties after the ABI
+            // types below, not as if those properties were inline Z storage.
+            if (signature.foreignKind == "objcSubclass") continue;
             let importedIndex: usize = 0;
             while (
               importedIndex < types.length
@@ -30236,6 +30275,25 @@ function importedTypesForModule(
       symbol.importedName
     );
     if (targetSymbol >= graph.modules[targetModule].symbols.length) continue;
+    match (in graph.modules[targetModule].symbols[targetSymbol].typeSignature) {
+      some(signature) => {
+        if (signature.foreignKind == "objcSubclass") {
+          let alias = Option<LoweredImportedType>.none;
+          for (const type of types) {
+            if (type.nativeObjCSubclass && type.nativeTypeName == signature.foreignNativeName) {
+              alias = Option.some(copyImportedTypeAlias(type, symbol.name));
+              break;
+            }
+          }
+          match (alias) {
+            some(type) => types.push(move type);
+            none => throw "native subclass import lost its native type identity";
+          }
+          continue;
+        }
+      }
+      none => {}
+    }
     if (
       graph.modules[targetModule].symbols[targetSymbol].kind
         == ModuleSymbolKind.structSymbol
@@ -30315,6 +30373,33 @@ function importedTypesForModule(
         }
         none => {}
       }
+    }
+  }
+  for (const symbol of graph.modules[moduleIndex].symbols) {
+    match (in symbol.typeSignature) {
+      some(signature) => {
+        if (signature.foreignKind != "objcSubclass") continue;
+        let fields = Array<LoweredField>();
+        for (const field of signature.fields) {
+          fields.push(LoweredField({
+            name: copy field.name,
+            type: try lowerModuleTypeName(program, types, field.typeName),
+            optionalField: false, borrowedView: false, defaultTarget: "",
+            classProperty: field.classProperty,
+            objectiveCGetter: copy field.objectiveCGetter,
+            objectiveCSetter: copy field.objectiveCSetter,
+          }));
+        }
+        let typeIndex: usize = 0;
+        while (typeIndex < types.length) {
+          if (types[typeIndex].nativeObjCSubclass
+            && types[typeIndex].nativeTypeName == signature.foreignNativeName) {
+            types[typeIndex].fields = copy fields;
+          }
+          typeIndex = typeIndex + 1;
+        }
+      }
+      none => {}
     }
   }
   // Visible public or package-internal types can flow through an imported
@@ -31639,7 +31724,13 @@ function appendLoweredProgram(
   // the ordinary Z ARC record path while native body emission is incomplete.
   for (const aggregate of program.aggregates) {
     match (in aggregate.nativeBase) {
-      some(_) => throw "native Objective-C subclass bodies require dedicated native lowering and emission";
+      some(_) => {
+        let planned = false;
+        for (const plan of evidence.objectiveCSubclasses) {
+          if (plan.sourceName == aggregate.name && plan.moduleIndex == moduleIndex) planned = true;
+        }
+        if (!planned) throw "native Objective-C subclass bodies require dedicated native lowering and emission";
+      }
       none => {}
     }
   }
@@ -31685,6 +31776,7 @@ function appendLoweredProgram(
     }));
   }
   for (const aggregate of program.aggregates) {
+    match (in aggregate.nativeBase) { some(_) => continue; none => {} }
     if (
       (
         aggregate.kind != DeclarationKind.structDeclaration
@@ -31848,6 +31940,7 @@ function appendLoweredProgram(
 
   for (const aggregate of program.aggregates) {
     if (aggregate.typeParameters.length > 0) continue;
+    match (in aggregate.nativeBase) { some(_) => continue; none => {} }
     const emittedName = privateTypeNeedsMangle(
       program,
       privateTypeCollisionNames,
@@ -32357,16 +32450,36 @@ function appendLoweredProgram(
 
   for (const aggregate of program.aggregates) {
     if (aggregate.typeParameters.length > 0) continue;
-    const emittedName = privateTypeNeedsMangle(
-      program,
-      privateTypeCollisionNames,
-      aggregate.name
-    )
-      ? emittedPrivateTypeName(moduleIndex, aggregate.name)
-      : aggregate.name.copyBytes(0, aggregate.name.byteLength);
-    const receiverKind = aggregate.kind == DeclarationKind.classDeclaration
-      ? LoweredTypeKind.classType
-      : LoweredTypeKind.structType;
+    let nativePlan = Option<ModuleObjCSubclassPlan>.none;
+    for (const plan of evidence.objectiveCSubclasses) {
+      if (plan.sourceName == aggregate.name) nativePlan = Option.some(copy plan);
+    }
+    let emittedName = privateTypeNeedsMangle(program, privateTypeCollisionNames, aggregate.name)
+      ? emittedPrivateTypeName(moduleIndex, aggregate.name) : copy aggregate.name;
+    let receiverKind = aggregate.kind == DeclarationKind.classDeclaration
+      ? LoweredTypeKind.classType : LoweredTypeKind.structType;
+    match (in nativePlan) {
+      some(plan) => {
+        emittedName = copy plan.nativeName;
+        receiverKind = LoweredTypeKind.foreignObjCType;
+        match (in aggregate.constructorDeclaration) {
+          some(source) => {
+            let body = try lowerConstructor(program, importedTypes, evidence,
+              sourcePath, aggregate.name, emittedName, source);
+            body.name = `${emittedName}___initializer`;
+            body.receiverType = Option.some(LoweredType({kind: LoweredTypeKind.foreignObjCType, name: copy emittedName}));
+            body.nativeObjCClass = copy emittedName;
+            body.nativeObjCEntry = Option.some(copy plan.initializer);
+            body.compilerIntrinsic = "objcInitializer";
+            rewritePrivateCallTargets(program, privateFunctionCollisionNames,
+              moduleIndex, entryIndex, inout body);
+            functions.push(move body);
+          }
+          none => throw "native subclass lowering lost its constructor";
+        }
+      }
+      none => {}
+    }
     for (const method of aggregate.methods) {
       const ownerName = semanticMethodOwnerName(
         aggregate.name,
@@ -32399,6 +32512,19 @@ function appendLoweredProgram(
       };
       loweredMethod.name = userMethodTarget(emittedName, method.name, "");
       loweredMethod.nativeCExportName = "";
+      match (in nativePlan) {
+        some(plan) => {
+          loweredMethod.nativeObjCClass = copy plan.nativeName;
+          for (const entry of plan.methods) {
+            if (entry.offset == method.offset) loweredMethod.nativeObjCEntry = Option.some(copy entry);
+          }
+          match (in loweredMethod.nativeObjCEntry) {
+            some(_) => {}
+            none => throw "native subclass lowering lost its checked override entry";
+          }
+        }
+        none => {}
+      }
       rewritePrivateCallTargets(
         program,
         privateFunctionCollisionNames,
@@ -33160,6 +33286,12 @@ function lowerModulesIncludingTests(
   includeTests: boolean
 ): LoweredProgram throws String {
   let alignedModuleIndex: usize = 0;
+  let objectiveCSubclasses = Array<ModuleObjCSubclassPlan>();
+  for (const module of graph.modules) {
+    for (const plan of module.semanticEvidence.objectiveCSubclasses) {
+      objectiveCSubclasses.push(copy plan);
+    }
+  }
   while (
     alignedModuleIndex < parsed.length
     && alignedModuleIndex < graph.modules.length
@@ -33180,6 +33312,11 @@ function lowerModulesIncludingTests(
   let sets = Array<LoweredSet>();
   let functionTypes = Array<LoweredFunctionType>();
   let foreignHeaders = Array<String>();
+  for (const plan of objectiveCSubclasses) {
+    let present = false;
+    for (const header of foreignHeaders) { if (header == plan.foreignHeader) present = true; }
+    if (!present) foreignHeaders.push(copy plan.foreignHeader);
+  }
   let foreignFunctions = Array<LoweredForeignFunction>();
   let foreignResources = Array<LoweredForeignResource>();
   let objectiveCProtocolAdapters = Array<LoweredObjCProtocolAdapter>();
@@ -33505,6 +33642,7 @@ function lowerModulesIncludingTests(
     objectiveCProtocolAdapters,
     objectiveCAdapterFactories,
     objectiveCRegistrations,
+    objectiveCSubclasses,
     embeddedBytes,
     constants,
     fixedArrays,

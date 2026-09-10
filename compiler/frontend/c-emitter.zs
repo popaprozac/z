@@ -359,6 +359,49 @@ export function emitNativeObjCSubclassInterfaces(
   return output.finish();
 }
 
+function appendNativeObjCConstructor(
+  inout output: TextBuffer, in plan: ModuleObjCSubclassPlan, definition: boolean
+): void throws String {
+  output.append("static __attribute__((unused)) ");
+  output.append(plan.nativeName);
+  output.append(" *");
+  output.append(plan.nativeName);
+  output.append("_new(");
+  const entry = view plan.initializer;
+  let parameter: usize = 0;
+  while (parameter < entry.parameterNames.length) {
+    if (parameter > 0) output.append(", ");
+    output.append(entry.nativeParameterTypes[parameter]);
+    output.append(" ");
+    appendCBindingName(inout output, entry.parameterNames[parameter]);
+    parameter = parameter + 1;
+  }
+  if (parameter == 0) output.append("void");
+  output.append(")");
+  if (!definition) { output.append(";\n"); return; }
+  output.append(" {\n  if (![NSThread isMainThread]) abort();\n  return [[");
+  output.append(plan.nativeName);
+  output.append(" alloc] ");
+  if (parameter == 0) output.append(entry.selector);
+  else {
+    let start: usize = 0;
+    let index: usize = 0;
+    parameter = 0;
+    while (index < entry.selector.byteLength) {
+      if (entry.selector.byteAt(index) == 58) {
+        if (parameter > 0) output.append(" ");
+        output.append(entry.selector.copyBytes(start, index));
+        output.append(":");
+        appendCBindingName(inout output, entry.parameterNames[parameter]);
+        parameter = parameter + 1;
+        start = index + 1;
+      }
+      index = index + 1;
+    }
+  }
+  output.append("];\n}\n\n");
+}
+
 // Z-owned storage only; imported ABI fields and JSON wire keys keep their spelling.
 function appendCFieldName(inout output: TextBuffer, in name: String): void {
   if (
@@ -623,6 +666,25 @@ function callableCaptureCType(
     if (expression.closureCaptureModes[index] == "inout") return `${type} *`;
   }
   return type;
+}
+
+function callableOwnsObjectiveCCapture(in expression: LoweredExpression, index: usize): boolean {
+  return expression.captureTypes[index].kind == LoweredTypeKind.foreignObjCType
+    && (index >= expression.closureCaptureModes.length
+      || (expression.closureCaptureModes[index] != "in" && expression.closureCaptureModes[index] != "inout"));
+}
+
+function appendCallableEnvironmentAllocation(inout output: TextBuffer, in expression: LoweredExpression): void {
+  let objectiveC = false;
+  let index: usize = 0;
+  while (index < expression.captureTypes.length) {
+    if (callableOwnsObjectiveCCapture(expression, index)) objectiveC = true;
+    index = index + 1;
+  }
+  // ARC assignment reads/releases the previous strong slot. Heap slots must
+  // therefore start at nil, and be cleared before their environment is freed.
+  output.append(objectiveC ? "_environment *environment = calloc(1, sizeof(*environment));\n" : "_environment *environment = malloc(sizeof(*environment));\n");
+  output.append("  if (environment == NULL) abort();\n  environment->_z_refcount = 1;\n");
 }
 
 function appendCallableCaptureLiveMacros(
@@ -4696,7 +4758,8 @@ function appendExpression(
     let valueReceiver = false;
     match (in declaration.receiverType) {
       some(type) => {
-        classReceiver = type.kind == LoweredTypeKind.classType;
+        classReceiver = type.kind == LoweredTypeKind.classType
+          || type.kind == LoweredTypeKind.foreignObjCType;
         valueReceiver = declaration.receiverMode == LoweredParameterMode.value;
       }
       none => {}
@@ -6082,17 +6145,18 @@ function appendExpression(
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.objectiveCMessageCall
+    || declaration.expressions[index].kind == LoweredExpressionKind.objectiveCSuperCall
+    || declaration.expressions[index].kind == LoweredExpressionKind.objectiveCSuperInitializer
   ) {
     if (declaration.expressions[index].children.length == 0) {
       throw "native Objective-C emission received a malformed message send";
     }
     output.append("[");
     const receiver = declaration.expressions[index].children[0];
-    try appendExpression(
-      inout output,
-      declaration,
-      receiver
-    );
+    if (declaration.expressions[index].kind != LoweredExpressionKind.objectiveCMessageCall) {
+      if (declaration.nativeObjCClass.byteLength == 0) throw "native super dispatch requires an Objective-C method entry";
+      output.append("super");
+    } else try appendExpression(inout output, declaration, receiver);
     const selector = declaration.expressions[index].value.copyBytes(
       0,
       declaration.expressions[index].value.byteLength
@@ -6449,8 +6513,9 @@ function appendExpression(
     output.append(")");
     return;
   }
-  if (declaration.expressions[index].kind == LoweredExpressionKind.classValue) {
-    output.append("Z_");
+  if (declaration.expressions[index].kind == LoweredExpressionKind.classValue
+    || declaration.expressions[index].kind == LoweredExpressionKind.nativeObjCConstruction) {
+    if (declaration.expressions[index].kind == LoweredExpressionKind.classValue) output.append("Z_");
     output.append(declaration.expressions[index].value);
     output.append("_new(");
     let field: usize = 0;
@@ -8418,6 +8483,23 @@ function appendStatement(
   }
   if (declaration.statements[index].kind == LoweredStatementKind.expressionStatement) {
     match (in declaration.statements[index].expression) {
+      some(expression) => {
+        if (declaration.expressions[expression].kind == LoweredExpressionKind.objectiveCSuperInitializer) {
+          if (declaration.compilerIntrinsic != "objcInitializer") throw "native super initialization requires a designated initializer";
+          appendIndent(inout output, depth);
+          output.append("self = ");
+          try appendExpression(inout output, declaration, expression);
+          output.append(";\n");
+          appendIndent(inout output, depth);
+          output.append("if (self == nil || object_getClass(self) != [");
+          output.append(declaration.nativeObjCClass);
+          output.append(" class]) abort();\n");
+          return;
+        }
+      }
+      none => {}
+    }
+    match (in declaration.statements[index].expression) {
       some(expression) => try appendBorrowedTemporaryInitializers(
         inout output,
         declaration,
@@ -8707,6 +8789,14 @@ function appendFunctionSignature(
   in declaration: LoweredFunction,
   processArguments: boolean
 ): void throws String {
+  match (in declaration.nativeObjCEntry) {
+    some(entry) => {
+      if (declaration.nativeObjCClass.byteLength == 0) throw "native entry lost its Objective-C class identity";
+      try appendNativeObjCSubclassEntry(inout output, entry);
+      return;
+    }
+    none => {}
+  }
   const returnType = try cType(declaration.returnType);
   const throwingMain = isThrowingMain(declaration);
   let method = false;
@@ -10691,6 +10781,7 @@ function appendFunction(
     some(_) => output.append("  (void)self;\n");
     none => {}
   }
+  if (declaration.nativeObjCClass.byteLength > 0) output.append("  if (![NSThread isMainThread]) abort();\n");
   for (const parameter of declaration.parameters) {
     output.append("  (void)");
     appendCBindingName(inout output, parameter.name);
@@ -10754,6 +10845,7 @@ function appendFunction(
     }
   }
   try appendFunctionTail(inout output, declaration);
+  if (declaration.compilerIntrinsic == "objcInitializer") output.append("  return self;\n");
   output.append("}\n\n");
   appendThrowingMainWrapper(
     inout output,
@@ -11150,7 +11242,11 @@ function appendCallableHelpers(
         while (capture > 0) {
           capture = capture - 1;
           const captureType = view expression.captureTypes[capture];
-          if (loweredTypeNeedsDeinit(program, captureType)) {
+          if (callableOwnsObjectiveCCapture(expression, capture)) {
+            output.append("  environment->");
+            appendCBindingName(inout output, expression.labels[captureLabelStart + capture]);
+            output.append(" = nil;\n");
+          } else if (loweredTypeNeedsDeinit(program, captureType)) {
             const liveFlag = callableCaptureLiveFlag(
               expression.labels[captureLabelStart + capture]
             );
@@ -12765,7 +12861,7 @@ function appendCallableHelpers(
           }
           output.append(") {\n  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_environment *environment = malloc(sizeof(*environment));\n  if (environment == NULL) abort();\n  environment->_z_refcount = 1;\n");
+          appendCallableEnvironmentAllocation(inout output, expression);
           capture = 0;
           while (capture < expression.captureTypes.length) {
             output.append("  environment->");
@@ -13098,7 +13194,7 @@ function appendCallableHelpers(
         if (!borrowedEnvironment) {
           output.append("  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_environment *environment = malloc(sizeof(*environment));\n  if (environment == NULL) abort();\n  environment->_z_refcount = 1;\n");
+          appendCallableEnvironmentAllocation(inout output, expression);
         }
         capture = 0;
         while (capture < expression.captureTypes.length) {
@@ -24430,6 +24526,14 @@ function emitLoweredC(
     output.append(header);
     output.append("\"\n");
   }
+  if (program.objectiveCSubclasses.length > 0) {
+    output.append("#import <Foundation/Foundation.h>\n#import <objc/runtime.h>\n");
+    const interfaces = try emitNativeObjCSubclassInterfaces(program.objectiveCSubclasses);
+    output.append(interfaces);
+    for (const plan of program.objectiveCSubclasses) {
+      try appendNativeObjCConstructor(inout output, plan, false);
+    }
+  }
   if (
     usesLock
     || usesReadBytes
@@ -25174,6 +25278,7 @@ function emitLoweredC(
   // in the generated translation unit. Make every Z callable visible first
   // so constructor bodies can use the same direct calls as ordinary code.
   for (const declaration of program.functions) {
+    if (declaration.nativeObjCClass.byteLength > 0) continue;
     try appendFunctionSignature(
       inout output,
       declaration,
@@ -25743,12 +25848,23 @@ function emitLoweredC(
     }
   }
   for (const declaration of program.functions) {
+    if (declaration.nativeObjCClass.byteLength > 0) continue;
     try appendFunction(
       inout output,
       program,
       declaration,
       usesProcessArguments
     );
+  }
+  for (const plan of program.objectiveCSubclasses) {
+    output.append("@implementation ");
+    output.append(plan.nativeName);
+    output.append("\n");
+    for (const declaration of program.functions) {
+      if (declaration.nativeObjCClass == plan.nativeName) try appendFunction(inout output, program, declaration, false);
+    }
+    output.append("@end\n\n");
+    try appendNativeObjCConstructor(inout output, plan, true);
   }
   try appendTestRunner(
     inout output,

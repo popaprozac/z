@@ -96,7 +96,7 @@ The placement is useful even when the function may be called from different
 executors: the call site proves where the native operation runs rather than
 depending on a convention in documentation.
 
-## Native subclasses (experimental Stage 0 tier)
+## Native subclasses (experimental)
 
 A protocol adapter does not become an `NSWindow`. When native virtual dispatch
 is required, the first subclass tier creates a real native ARC object:
@@ -130,8 +130,8 @@ The superclass designated initializer must be first and non-nullable. Generated
 code checks the returned identity and the main thread, without scheduling a hop.
 This tier is field-free and synchronous: Z-stored fields, `deinit`, `Weak`,
 fallible constructors, object-returning overrides, and async composition remain
-future work. Ordinary Z-to-Z inheritance is not supported. Use the TypeScript
-Stage 0 compiler for execution. The native frontend now parses these declarations
+future work. Ordinary Z-to-Z inheritance is not supported. Both the TypeScript
+Stage 0 compiler and the native compiler execute this tier. The native frontend parses these declarations
 and checks imported declaration contracts, including restricted bases, inherited
 override signatures, and designated/nonnullable initializer selection. Structural
 checks also reject repeated initialization, receiver use in initializer
@@ -158,9 +158,12 @@ forwarding remain supported; returning, storing, or capturing the callback
 requires an owned environment at the call site. This does not forbid retaining
 received Objective-C blocks whose adapters supply ARC-backed retain/release hooks.
 Native deprecation warnings remain pending.
-Execution still reports `Z0814` pending complete ownership/availability composition
-and native emission. This typed-body checkpoint does not enable native
-execution or stateful subclasses.
+Dedicated native lowering emits real method entries and constructor wrappers,
+not a Z ARC record. The same 200-iteration dispatch and lifetime fixture passes
+both compilers under strict Clang checks and UBSan. Owned native captures keep
+their receiver alive until the closure's final release. Internal generated class
+and constructor names cannot be referenced from raw source. This is a field-free
+execution checkpoint, not support for stateful subclasses or general async bodies.
 
 ## Own target/action connections
 

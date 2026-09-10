@@ -2774,6 +2774,10 @@ function validateNativeAggregate(
   in graph: ModuleGraph,
   in aggregate: AggregateDeclaration
 ): void throws ModuleResolveError {
+  let nativeSubclass = false;
+  for (const plan of graph.modules[moduleIndex].semanticEvidence.objectiveCSubclasses) {
+    if (plan.sourceName == aggregate.name) nativeSubclass = true;
+  }
   match (in aggregate.constructorDeclaration) {
     some(initializer) => {
       if (aggregate.kind != DeclarationKind.classDeclaration) {
@@ -2798,6 +2802,9 @@ function validateNativeAggregate(
         none => {}
       }
       for (const statement of initializer.body.nodes) {
+        // Native subclass validation walks lexical scopes and rejects returns
+        // from the initializer itself, while allowing nested closure returns.
+        if (nativeSubclass) break;
         if (statement.kind != StatementKind.returnStatement) continue;
         throw loweringBoundary(
           path,

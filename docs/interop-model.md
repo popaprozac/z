@@ -241,7 +241,7 @@ boundary**, not a claim that every bridge operation is free:
 | C scalar or function call | Native ABI call; no wrapper or allocation |
 | C record by value or scoped borrow | Native layout and calling convention; no wrapper allocation |
 | Objective-C method or property | Ordinary `objc_msgSend`-family dispatch under Clang ARC |
-| Field-free native Objective-C subclass (Stage 0) | One native object allocation and native ARC; no Z wrapper. Generated entries check main-thread execution, and construction checks the initializer result |
+| Field-free native Objective-C subclass | One native object allocation and native ARC; no Z wrapper in either compiler. Generated entries check main-thread execution, and construction checks the initializer result |
 | `objc.connect` target/action bridge | One ARC connection allocation, indirect closure call, and an owned environment allocation only when the closure captures; the connection retains the native control |
 | `objc.pool` lexical temporary scope | Native autorelease-pool push/pop only; no Z wrapper or heap allocation |
 | Z-defined Objective-C protocol conformance | One ARC adapter allocation per distinct bound Z controller; selector dispatch forwards directly to generated Z method functions |
@@ -830,12 +830,12 @@ richer metadata.
 
 ## Direct Objective-C imports versus `std/objc`
 
-For APIs that require a genuine native subclass, Stage 0 now has a field-free
+For APIs that require a genuine native subclass, both compilers now have a field-free
 `class ... extends NativeClass on thread.main` tier. `constructor` begins with a
 checked designated `super.init...(...)`; explicit `override function ... as
 "selector:"` bodies use native dispatch and ARC identity, not a protocol adapter.
 See [native subclass construction and restrictions](objc-subclass-design.md).
-The native frontend and stateful/async subclass composition remain unimplemented;
+Stateful/async subclass composition remains unimplemented;
 ordinary header imports and protocol adaptation do not depend on this new tier.
 
 The default Objective-C experience remains header-first. Importing AppKit is
