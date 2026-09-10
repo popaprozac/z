@@ -12914,16 +12914,21 @@ function appendCallableHelpers(
           expression.kind == LoweredExpressionKind.closureValue
           && expression.closureBlockBody
         ) {
+          for (const flag of expression.closureParameterLiveFlags) {
+            output.append("  bool ");
+            output.append(flag);
+            output.append(" = true;\n");
+          }
           for (const statement of expression.statements) {
             try appendStatement(inout output, owner, statement, 1);
           }
-          if (expression.labels[2] == "throwing") {
+          if (expression.closureReturnType == "void" && expression.labels[2] == "throwing") {
             output.append("  return (Z_");
             output.append(functionType.returnType.name);
             output.append("){ .tag = Z_");
             output.append(functionType.returnType.name);
             output.append("Tag_success };\n");
-          } else output.append("  return;\n");
+          } else if (expression.closureReturnType == "void") output.append("  return;\n");
         } else {
           output.append("  return ");
         }

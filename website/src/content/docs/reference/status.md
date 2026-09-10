@@ -69,16 +69,18 @@ production or compatibility-sensitive use.
   conservative. The hybrid `bun run z check <source> --native-frontend` retains
   native semantic parity coverage. Unbounded and rendezvous storage, selection, timeouts, and
   concurrent receive loans remain future tiers
-- Native synchronous `void` block callbacks, including typed throwing callbacks,
+- Native synchronous block callbacks, including non-void and typed throwing callbacks,
   can own local Strings, value aggregates, and consuming match payloads. Each
-  invocation cleans up on return, failure, loop exit, or normal completion;
-  owned captures retain their separate environment lifetime. Borrowed scalar
+  invocation cleans up locals and owned parameters on return, failure, loop exit, or normal completion;
+  returns, value-producing matches, and nested `try` use the callback's own
+  result/error context rather than the containing function's signature.
+  Owned captures retain their separate environment lifetime. Borrowed scalar
   and cleanup-free value-aggregate expression and block captures use stack
-  environments and address the original storage; owned `move` blocks preserve
+  environments and address the original storage; owned `move` expression and block closures preserve
   mutable captured state across calls. Exact cleanup-order, nonescape, and allocation-balance
   tests cover both compiler paths, including zero heap allocations for the
   borrowed reads, mutation, nested forwarding, and parent-parameter probes.
-  Non-void/async block return lowering, mutable owned expression captures, and
+  Async block return lowering and
   cleanup-bearing borrowed captures remain staged. Borrowed environments in
   async enclosing functions reject until suspension-stable storage is proven.
   Ordinary object destructuring rejects root or nested inline custom cleanup

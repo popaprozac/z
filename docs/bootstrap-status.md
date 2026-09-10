@@ -351,20 +351,23 @@ functions unavailable to C++; Z does not bypass that limit through private ABI.
 
 ## Async and concurrency
 
-Native synchronous `void` block callables (including `throws E`) support owned
-invocation-local String, struct, enum payload, and destructured String storage.
-Locals clean up on normal fallthrough, return, throw, failed `try`, and scoped
-loop exits; captured environments retain their independent lifetime. Borrowed
-scalar and cleanup-free value-aggregate captures in synchronous expression and
-`void` block bodies use stack environments and address the original storage,
+Native synchronous block callables (including non-void results and `throws E`)
+support owned invocation-local String, struct, enum payload, and destructured
+String storage.
+Locals and by-value parameters clean up on normal fallthrough, return, throw,
+failed `try`, and scoped loop exits; returned or thrown ownership transfers out.
+Each callback carries its own result/error context through direct returns,
+value-producing matches, selecting blocks, and nested `try`, independently of
+the containing function. Captured environments retain their independent
+lifetime. Borrowed scalar and cleanup-free value-aggregate captures in synchronous expression and
+block bodies use stack environments and address the original storage,
 including `inout` parent parameters. Owned
-`move` block captures address their retained environment fields, preserving
-mutable state between invocations. Scope-aware discovery keeps nested callback
+`move` expression and block captures address their retained environment fields,
+preserving mutable state between invocations. Scope-aware discovery keeps nested callback
 parameters separate. Both emitters have exact-cleanup and allocation-balance
 regressions; borrowed reads, mutation, nested forwarding, and parent-parameter
-probes assert zero allocations. Borrowed cleanup-bearing captures, mutable owned
-expression-body capture storage, non-void and asynchronous native block callables
-remain staged work. Borrowed expression and block environments in async enclosing
+probes assert zero allocations. Borrowed cleanup-bearing captures and
+asynchronous native block callables remain staged work. Borrowed expression and block environments in async enclosing
 functions explicitly reject until suspension-stable environment storage is proven.
 
 Ordinary object destructuring preserves Stage 0's conservative custom-cleanup

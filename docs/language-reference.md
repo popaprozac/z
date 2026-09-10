@@ -1407,6 +1407,16 @@ For a sequential direct await, a fresh aggregate constructor may be passed
 directly: Z materializes an address-stable owner in the parent task frame and
 cleans it after child teardown. Named async-function conversion remains staged.
 
+Synchronous block callbacks execute in both compilers with their own return and
+error context. A callback returning `String` inside an `i32` function still
+returns `String`; its `throws E` does not inherit the parent's error type.
+Ordinary returns, selecting match arms, nested `try`, and invocation-local
+cleanup preserve this boundary. By-value parameters are owned by the invocation
+and destroyed unless their ownership has been transferred. Owned `move`
+expression and block callbacks mutate their retained environment directly;
+invocation does not reset their captures to temporary snapshots. Borrowed
+cleanup-free environments remain stack-backed and nonescaping.
+
 The fixed-point native compiler executes completed expression closures and the
 first honest suspension shape: a void closure consisting of one direct
 `await scheduler.yield()`. That closure owns a heap frame, yields to a local

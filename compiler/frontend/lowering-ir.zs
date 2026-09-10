@@ -363,9 +363,12 @@ export struct LoweredExpression {
   moveSpreadOverrides: Array<LoweredField> = Array<LoweredField>();
   threadSafe: boolean = false;
   closureBlockBody: boolean = false;
+  closureReturnType: String = "";
   closureAsynchronous: boolean = false;
   closureParameterCount: usize = 0;
   closureParameterModes: Array<String> = Array<String>();
+  closureParameterTypes: Array<LoweredType> = Array<LoweredType>();
+  closureParameterLiveFlags: Array<String> = Array<String>();
   closureCaptureModes: Array<String> = Array<String>();
   // Nonempty entries identify a capture of an enclosing closure parameter.
   // These lexical bindings are not enclosing function locals or parameters.
@@ -5558,19 +5561,35 @@ function throwingFunctionResult(
   return Option<LoweredEnum>.none;
 }
 
+// A nested callable keeps lexical name lookup in its containing source owner,
+// but owns its return/error boundary. An explicit nonthrowing callable must
+// never inherit the containing function's Result representation.
+struct CallableReturnContext {
+  returnType: String = "";
+  resultType: String = "";
+}
+
+function contextualReturnTypeName(
+  in program: Program, in ownerName: String, in context: CallableReturnContext
+): Option<String> {
+  if (context.returnType.byteLength > 0) return Option.some(copy context.returnType);
+  return ownerReturnTypeName(program, ownerName);
+}
+
 function contextualThrowingFunctionResult(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in ownerName: String,
-  resultTypeName: String
+  in context: CallableReturnContext
 ): Option<LoweredEnum> throws String {
-  if (resultTypeName.byteLength > 0) {
+  if (context.resultType.byteLength > 0) {
     return try intrinsicResultDeclaration(
       program,
       importedTypes,
-      resultTypeName
+      context.resultType
     );
   }
+  if (context.returnType.byteLength > 0) return Option<LoweredEnum>.none;
   return try throwingFunctionResult(
     program,
     importedTypes,
@@ -17901,11 +17920,8 @@ function lowerExpressionExpected(
           throw "native callable closure lost its parameter shape";
         }
         if (bodyKind == "block") {
-          if (
-            closureAsynchronous
-            || signature.returnType != "void"
-          ) {
-            throw "native block callable closures currently require a synchronous void signature";
+          if (closureAsynchronous) {
+            throw "native block callable closures currently require a synchronous signature";
           }
           let labels = Array<String>();
           labels.push(functionType.name.copyBytes(
@@ -17926,7 +17942,7 @@ function lowerExpressionExpected(
             ));
           }
           const resultTypeName = signature.errorType.byteLength > 0
-            ? `Result<void, ${signature.errorType}>`
+            ? `Result<${signature.returnType}, ${signature.errorType}>`
             : "";
           const closure = pushExpression(
             inout output,
@@ -17939,10 +17955,16 @@ function lowerExpressionExpected(
             output[closure].statements.push(statement);
           }
           output[closure].closureBlockBody = true;
+          output[closure].closureReturnType = copy signature.returnType;
           output[closure].closureParameterCount = parameterNames.length;
           for (const parameterMode of signature.parameterModes) {
             output[closure].closureParameterModes.push(
               parameterMode.copyBytes(0, parameterMode.byteLength)
+            );
+          }
+          for (const parameterType of signature.parameterTypes) {
+            output[closure].closureParameterTypes.push(
+              try lowerModuleTypeName(program, importedTypes, parameterType)
             );
           }
           output[closure].threadSafe = signature.threadContract
@@ -19424,6 +19446,7 @@ function lowerValueDestination(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
+  in context: CallableReturnContext,
   sourceStatementIndex: usize,
   in expression: ExpressionSyntax,
   returnValue: boolean,
@@ -19441,6 +19464,7 @@ function lowerValueDestination(
           evidence,
           arena,
           ownerName,
+          context,
           sourceStatementIndex,
           tree,
           root,
@@ -19471,10 +19495,11 @@ function lowerValueDestination(
             ownerName
           );
         };
-        const outerResult = try throwingFunctionResult(
+        const outerResult = try contextualThrowingFunctionResult(
           program,
           importedTypes,
-          ownerName
+          ownerName,
+          context
         );
         const outer = match (outerResult) {
           some(declaration) => declaration;
@@ -19549,7 +19574,7 @@ function lowerValueDestination(
   }
   let expectedTypeName = "";
   if (returnValue) {
-    match (ownerReturnTypeName(program, ownerName)) {
+    match (contextualReturnTypeName(program, ownerName, context)) {
       some(name) => expectedTypeName = move name;
       none => {}
     }
@@ -19633,10 +19658,11 @@ function lowerValueDestination(
   const loweredBody = statements.length;
   if (returnValue) {
     let returnedValue = value;
-    const outerResult = try throwingFunctionResult(
+    const outerResult = try contextualThrowingFunctionResult(
       program,
       importedTypes,
-      ownerName
+      ownerName,
+      context
     );
     match (outerResult) {
       some(declaration) => {
@@ -19700,6 +19726,7 @@ function lowerValueArmStatement(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
+  in context: CallableReturnContext,
   index: usize,
   returnValue: boolean,
   in valueBinding: String,
@@ -19717,6 +19744,7 @@ function lowerValueArmStatement(
             evidence,
             arena,
             ownerName,
+            context,
             index,
             tree,
             root,
@@ -19735,12 +19763,13 @@ function lowerValueArmStatement(
     arena.nodes[index].kind == StatementKind.returnStatement
     || arena.nodes[index].kind == StatementKind.throwStatement
   ) {
-    return try lowerStatement(
+    return try lowerStatementWithResult(
       program,
       importedTypes,
       evidence,
       arena,
       ownerName,
+      context,
       index,
       inout expressions,
       inout statements
@@ -19757,6 +19786,7 @@ function lowerValueArmStatement(
         evidence,
         arena,
         ownerName,
+        context,
         index,
         expression,
         returnValue,
@@ -19790,6 +19820,7 @@ function lowerValueArmStatement(
           evidence,
           arena,
           ownerName,
+          context,
           sourceChild,
           returnValue,
           valueBinding,
@@ -19797,12 +19828,13 @@ function lowerValueArmStatement(
           inout statements
         );
       } else {
-        loweredChild = try lowerStatement(
+        loweredChild = try lowerStatementWithResult(
           program,
           importedTypes,
           evidence,
           arena,
           ownerName,
+          context,
           sourceChild,
           inout expressions,
           inout statements
@@ -19902,6 +19934,7 @@ function lowerMatchTree(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
+  in context: CallableReturnContext,
   sourceStatementIndex: usize,
   in tree: ExpressionTree,
   root: usize,
@@ -20073,6 +20106,7 @@ function lowerMatchTree(
         evidence,
         arena,
         ownerName,
+        context,
         bodyIndex,
         returnValueArms,
         valueBinding,
@@ -20082,12 +20116,13 @@ function lowerMatchTree(
       children.push(loweredBody);
     } else {
       for (const bodyIndex of tree.nodes[arm].statements) {
-        const loweredBody = try lowerStatement(
+        const loweredBody = try lowerStatementWithResult(
           program,
           importedTypes,
           evidence,
           arena,
           ownerName,
+          context,
           bodyIndex,
           inout expressions,
           inout statements
@@ -20571,10 +20606,10 @@ function completeNativeClosureBlocks(
     if (expressions[expressionIndex].kind == LoweredExpressionKind.closureValue
       && !expressions[expressionIndex].closureBlockBody
       && !expressions[expressionIndex].closureAsynchronous
-      && expressions[expressionIndex].labels[1] != "move"
       && expressions[expressionIndex].captureTypes.length > 0
       && expressions[expressionIndex].closureCaptureModes.length == 0) {
-      if (callableOwnerIsAsynchronous(program, ownerName)) {
+      const ownsEnvironment = expressions[expressionIndex].labels[1] == "move";
+      if (!ownsEnvironment && callableOwnerIsAsynchronous(program, ownerName)) {
         throw "native borrowed expression environments in async functions require suspension-stable storage; this tier supports synchronous enclosing functions";
       }
       let parameterNames = Array<String>();
@@ -20614,14 +20649,14 @@ function completeNativeClosureBlocks(
       }
       let captureIndex: usize = 0;
       for (const capture of captures) {
-        if (capture.owned) {
+        if (capture.owned && !ownsEnvironment) {
           throw `native borrowed expression capture ${capture.name} requires cleanup-bearing borrow storage; this tier supports cleanup-free captures`;
         }
         if (capture.name != expressions[expressionIndex].labels[
           3 + expressions[expressionIndex].closureParameterCount + captureIndex]) {
           throw "native expression callable changed its lexical capture order";
         }
-        const mode = capture.type.kind == LoweredTypeKind.cstringType
+        const mode = ownsEnvironment || capture.type.kind == LoweredTypeKind.cstringType
           ? "value" : capture.mutableBinding ? "inout" : "in";
         expressions[expressionIndex].closureCaptureModes.push(copy mode);
         for (const use of capture.uses) {
@@ -20645,6 +20680,10 @@ function completeNativeClosureBlocks(
       const bodyStatementStart = statements.length;
       const closureResultTypeName = expressions[expressionIndex].value
         .copyBytes(0, expressions[expressionIndex].value.byteLength);
+      const context = CallableReturnContext({
+        returnType: copy expressions[expressionIndex].closureReturnType,
+        resultType: copy closureResultTypeName,
+      });
       for (const source of sourceStatements) {
         const lowered = try lowerStatementWithResult(
           program,
@@ -20652,7 +20691,7 @@ function completeNativeClosureBlocks(
           evidence,
           arena,
           ownerName,
-          copy closureResultTypeName,
+          context,
           source,
           inout expressions,
           inout statements
@@ -20663,7 +20702,7 @@ function completeNativeClosureBlocks(
       // callable; throwing blocks preserve the Result wrappers installed by
       // lowerStatementWithResult so `try` and `throw` propagate locally.
       const returnTypeName = closureResultTypeName.byteLength == 0
-        ? "void" : copy closureResultTypeName;
+        ? copy expressions[expressionIndex].closureReturnType : copy closureResultTypeName;
       const closureReturnType = try lowerModuleTypeName(
         program, importedTypes, returnTypeName
       );
@@ -20784,11 +20823,31 @@ function completeNativeClosureBlocks(
       // that owns the captures. Reuse ordinary lexical cleanup planning for
       // return/try edges, match payloads, nested scopes, and loop exits.
       let closureLiveFlags = Array<LoweredLiveFlag>();
-      const inherited = Array<LoweredCleanup>();
+      let inherited = Array<LoweredCleanup>();
       const loopCleanups = Array<LoweredCleanup>();
       const closureMoveIndex = cleanupMoveIndex(
         program, evidence, arena, expressions, statements
       );
+      parameter = 0;
+      while (parameter < expressions[expressionIndex].closureParameterTypes.length) {
+        const parameterType = LoweredType({
+          kind: expressions[expressionIndex].closureParameterTypes[parameter].kind,
+          name: copy expressions[expressionIndex].closureParameterTypes[parameter].name,
+        });
+        if (expressions[expressionIndex].closureParameterModes[parameter] == "value"
+          && moduleTypeNeedsCleanup(program, importedTypes, parameterType)) {
+          const name = copy parameterNames[parameter];
+          const guard = ownerLiveFlag(name);
+          closureLiveFlags.push(LoweredLiveFlag({ owner: copy name, name: copy guard, parameter: true }));
+          inherited.push(LoweredCleanup({
+            name: copy name,
+            type: LoweredType({ kind: parameterType.kind, name: copy parameterType.name }),
+            guard: copy guard,
+          }));
+          expressions[expressionIndex].closureParameterLiveFlags.push(copy guard);
+        }
+        parameter = parameter + 1;
+      }
       const introduced = try planCleanupSequence(
         program, importedTypes, evidence, arena, ownerName,
         sourceStatements, loweredStatements, inherited,
@@ -20820,11 +20879,12 @@ function completeNativeClosureBlocks(
         captureIndex = captureIndex + 1;
       }
       if (
-        introduced.length > 0
+        (introduced.length > 0 || inherited.length > 0)
         && sequenceFallsThrough(arena, sourceStatements)
         && loweredSequenceFallsThrough(statements, loweredStatements)
       ) {
         let bodyCleanups = Array<LoweredCleanup>();
+        appendCleanupCopies(inout bodyCleanups, inherited);
         appendCleanupCopies(inout bodyCleanups, introduced);
         const body = statements.length;
         statements.push(LoweredStatement({
@@ -20884,6 +20944,7 @@ function completeNativeClosureBlocks(
         .byteLength > 0
         ? `Result<${expressions[expressionIndex].labels[5]}, ${expressions[expressionIndex].labels[3]}>`
         : "";
+      const workerContext = CallableReturnContext({ resultType: copy workerResultName });
       for (const source of sourceStatements) {
         const lowered = try lowerStatementWithResult(
           program,
@@ -20891,7 +20952,7 @@ function completeNativeClosureBlocks(
           evidence,
           arena,
           ownerName,
-          copy workerResultName,
+          workerContext,
           source,
           inout expressions,
           inout statements
@@ -21340,6 +21401,7 @@ function completeNativeClosureBlocks(
     const callbackResult = callbackErrorType.byteLength > 0
       ? `Result<${callbackReturnType}, ${callbackErrorType}>`
       : "void";
+    const callbackContext = CallableReturnContext({ resultType: copy callbackResult });
     for (const source of sourceStatements) {
       const lowered = try lowerStatementWithResult(
         program,
@@ -21347,7 +21409,7 @@ function completeNativeClosureBlocks(
         evidence,
         arena,
         ownerName,
-        copy callbackResult,
+        callbackContext,
         source,
         inout expressions,
         inout statements
@@ -22951,6 +23013,7 @@ function appendNestedConditionalBranch(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
+  in context: CallableReturnContext,
   in tree: ExpressionTree,
   branchInput: usize,
   in destinationName: String,
@@ -22965,6 +23028,7 @@ function appendNestedConditionalBranch(
     evidence,
     arena,
     ownerName,
+    context,
     tree,
     branchInput,
     true,
@@ -23069,6 +23133,7 @@ function appendNestedConditionalPrelude(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
+  in context: CallableReturnContext,
   in tree: ExpressionTree,
   index: usize,
   inout expressions: Array<LoweredExpression>,
@@ -23122,6 +23187,7 @@ function appendNestedConditionalPrelude(
     evidence,
     arena,
     ownerName,
+    context,
     tree,
     thenInput,
     destinationName,
@@ -23135,6 +23201,7 @@ function appendNestedConditionalPrelude(
     evidence,
     arena,
     ownerName,
+    context,
     tree,
     elseInput,
     destinationName,
@@ -23190,6 +23257,7 @@ function appendNestedTryPreludeTree(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
+  in context: CallableReturnContext,
   in tree: ExpressionTree,
   root: usize,
   includeRoot: boolean,
@@ -23205,10 +23273,11 @@ function appendNestedTryPreludeTree(
     inout nested
   );
   if (nested.length == 0) return;
-  const outerResult = try throwingFunctionResult(
+  const outerResult = try contextualThrowingFunctionResult(
         program,
         importedTypes,
-        ownerName
+        ownerName,
+        context
       );
       const outer = match (outerResult) {
         some(declaration) => declaration;
@@ -23225,6 +23294,7 @@ function appendNestedTryPreludeTree(
         evidence,
         arena,
         ownerName,
+        context,
         tree,
         nestedTry,
         inout expressions,
@@ -23365,6 +23435,7 @@ function appendNestedTryPreludeRoots(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
+  in context: CallableReturnContext,
   in syntax: ExpressionSyntax,
   includeRoot: boolean,
   inout expressions: Array<LoweredExpression>,
@@ -23380,6 +23451,7 @@ function appendNestedTryPreludeRoots(
         evidence,
         arena,
         ownerName,
+        context,
         tree,
         root,
         includeRoot,
@@ -23533,13 +23605,14 @@ function lowerStatement(
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  const context = CallableReturnContext();
   return try lowerStatementWithResult(
     program,
     importedTypes,
     evidence,
     arena,
     ownerName,
-    "",
+    context,
     index,
     inout expressions,
     inout statements
@@ -23552,7 +23625,7 @@ function lowerStatementWithResult(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
-  activeResult: String,
+  in context: CallableReturnContext,
   index: usize,
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
@@ -23585,6 +23658,7 @@ function lowerStatementWithResult(
         evidence,
         arena,
         ownerName,
+        context,
         syntax,
         includeRoot,
         inout expressions,
@@ -23612,6 +23686,7 @@ function lowerStatementWithResult(
         evidence,
         arena,
         ownerName,
+        context,
         syntax,
         includeRoot,
         inout expressions,
@@ -23628,7 +23703,7 @@ function lowerStatementWithResult(
       evidence,
       arena,
       ownerName,
-      copy activeResult,
+      context,
       index,
       inout expressions,
       inout statements
@@ -23640,7 +23715,7 @@ function lowerStatementWithResult(
     evidence,
     arena,
     ownerName,
-    copy activeResult,
+    context,
     index,
     inout expressions,
     inout statements
@@ -23686,7 +23761,7 @@ function lowerStatementCore(
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
-  activeResult: String,
+  in context: CallableReturnContext,
   index: usize,
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
@@ -24291,7 +24366,7 @@ function lowerStatementCore(
                 program,
                 importedTypes,
                 ownerName,
-                copy activeResult
+                context
               );
               const result = match (resultOutcome) {
                 some(declaration) => declaration;
@@ -24532,7 +24607,7 @@ function lowerStatementCore(
               program,
               importedTypes,
               ownerName,
-              copy activeResult
+              context
             );
             const outer = match (outerResult) {
               some(declaration) => declaration;
@@ -24687,7 +24762,7 @@ function lowerStatementCore(
                 program,
                 importedTypes,
                 ownerName,
-                copy activeResult
+                context
               );
               const outer = match (outerResult) {
                 some(declaration) => declaration;
@@ -24755,7 +24830,7 @@ function lowerStatementCore(
                 program,
                 importedTypes,
                 ownerName,
-                copy activeResult
+                context
               );
               const outer = match (outerResult) {
                 some(declaration) => declaration;
@@ -24889,6 +24964,7 @@ function lowerStatementCore(
                 evidence,
                 arena,
                 ownerName,
+                context,
                 index,
                 tree,
                 root,
@@ -25099,7 +25175,7 @@ function lowerStatementCore(
               directTryReturn = true;
             } else {
               let expectedTypeName = "";
-              match (ownerReturnTypeName(program, ownerName)) {
+              match (contextualReturnTypeName(program, ownerName, context)) {
                 some(name) => expectedTypeName = move name;
                 none => {}
               }
@@ -25268,7 +25344,7 @@ function lowerStatementCore(
           program,
           importedTypes,
           ownerName,
-          copy activeResult
+          context
         );
         match (in result) {
           some(declaration) => {
@@ -25313,7 +25389,7 @@ function lowerStatementCore(
       program,
       importedTypes,
       ownerName,
-      copy activeResult
+      context
     );
     match (in result) {
       some(declaration) => {
@@ -25466,7 +25542,7 @@ function lowerStatementCore(
       evidence,
       arena,
       ownerName,
-      copy activeResult,
+      context,
       child,
       inout expressions,
       inout statements

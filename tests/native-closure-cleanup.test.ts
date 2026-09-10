@@ -294,7 +294,232 @@ test("mutates lexical block captures without replacing them with invocation-loca
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
+for (const [name, source, expected] of [
+  ["shares persistent scalar state across retained handles", `
+    function increment(inout count: i32): i32 { count = count + 1; return count; }
+    function make(): () => i32 {
+      let count = 40;
+      return move (): i32 => increment(inout count);
+    }
+    function main(): i32 {
+      const next = make();
+      const same = next;
+      if (next() != 41) return 1;
+      return same() - 42;
+    }`, ""],
+  ["keeps the parent scalar independent", `
+    function increment(inout count: i32): i32 { count = count + 21; return count; }
+    function main(): i32 {
+      let count = 0;
+      const next: () => i32 = move (): i32 => increment(inout count);
+      count = 100;
+      if (next() != 21 || next() != 42) return 1;
+      return count - 100;
+    }`, ""],
+  ["owns mutable cleanup-bearing state exactly once", `
+    import console from "std/console";
+    struct Counter {
+      count: i32;
+      label: String;
+      deinit { console.log(\`released \${this.label} at \${this.count}\`); }
+    }
+    function increment(inout counter: Counter): i32 {
+      counter.count = counter.count + 1;
+      return counter.count;
+    }
+    function make(): () => i32 {
+      let counter = Counter({ count: 40, label: "counter" });
+      return move (): i32 => increment(inout counter);
+    }
+    function main(): i32 {
+      const next = make();
+      const same = next;
+      if (next() != 41) return 1;
+      return same() - 42;
+    }`, "released counter at 42\n"],
+  ["forwards nested lexical mutation into its owned environment", `
+    function increment(inout count: i32): i32 { count = count + 21; return count; }
+    function invoke(in callback: () => i32): i32 { return callback(); }
+    function make(): () => i32 {
+      let count = 0;
+      return move (): i32 => invoke((): i32 => increment(inout count));
+    }
+    function main(): i32 {
+      const next = make();
+      if (next() != 21) return 1;
+      return next() - 42;
+    }`, ""],
+] as const) test(`owned expression closure ${name}`, () => {
+  const directory = mkdtempSync("/tmp/z-owned-expression-captures-");
+  try {
+    const input = resolve(directory, "main.zs");
+    writeFileSync(input, source);
+    execute(compileToC(source, input), expected);
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+    execute(emitted.stdout, expected);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 for (const [name, body, expected] of [
+  ["non-void return type independent of its enclosing function", `
+    import console from "std/console";
+    struct Receipt { label: String; deinit { console.log(this.label); } }
+    function main(): i32 {
+      const answer = (): u8 => {
+        const receipt = Receipt({ label: "narrow return" });
+        return 42;
+      };
+      return i32(answer()) - 42;
+    }`, "narrow return\n"],
+  ["owned String result and invocation-local cleanup", `
+    import console from "std/console";
+    struct Receipt { label: String; deinit { console.log(this.label); } }
+    function main(): i32 {
+      const message = (early: boolean): String => {
+        const receipt = Receipt({ label: "released invocation" });
+        const text = "answer";
+        if (early) return text;
+        const other = "later";
+        return other;
+      };
+      const first = message(true);
+      console.log(first);
+      const second = message(false);
+      console.log(second);
+      return 0;
+    }`, "released invocation\nanswer\nreleased invocation\nlater\n"],
+  ["plain result inside a differently throwing parent", `
+    struct ParentError { code: i32; }
+    function check(): i32 throws ParentError {
+      const answer = (): String => { return "answer"; };
+      const text = answer();
+      return i32(text.byteLength) - 6;
+    }
+    function main(): i32 {
+      return match (attempt check()) { success(value) => value; failure(error) => error.code; };
+    }`, ""],
+  ["independent callback error and nested try result", `
+    import console from "std/console";
+    struct ParentError { message: String; }
+    struct CallbackError { code: i32; }
+    struct Receipt { label: String; deinit { console.log(this.label); } }
+    function fetch(fail: boolean): i32 throws CallbackError {
+      if (fail) throw CallbackError({ code: 7 });
+      return 42;
+    }
+    function check(): i32 throws ParentError {
+      const answer = (fail: boolean): i64 throws CallbackError => {
+        const receipt = Receipt({ label: "released callback" });
+        return i64(try fetch(fail));
+      };
+      const success = attempt answer(false);
+      match (success) { success(value) => { if (value != 42) return 1; } failure(_) => return 2; }
+      const failure = attempt answer(true);
+      return match (failure) { success(_) => 3; failure(error) => error.code - 7; };
+    }
+    function main(): i32 {
+      return match (attempt check()) { success(value) => value; failure(_) => 4; };
+    }`, "released callback\nreleased callback\n"],
+  ["value matches and selecting blocks use the callback return type", `
+    import console from "std/console";
+    struct Receipt { label: String; deinit { console.log(this.label); } }
+    function main(): i32 {
+      const answer = (option: Option<i32>): i64 => {
+        const receipt = Receipt({ label: "released match" });
+        return match (option) {
+          some(value) => { const text = "payload"; console.log(text); select i64(value); }
+          none => 42;
+        };
+      };
+      if (answer(Option<i32>.some(42)) != 42) return 1;
+      return i32(answer(Option<i32>.none)) - 42;
+    }`, "payload\nreleased match\nreleased match\n"],
+  ["owned parameters on returned, unused, and throwing paths", `
+    import console from "std/console";
+    struct Failure { message: String; }
+    struct Receipt { label: String; deinit { console.log(this.label); } }
+    function main(): i32 {
+      const choose = (text: String, keep: boolean): String => {
+        if (keep) return text;
+        return "fallback";
+      };
+      const input = "answer source";
+      const returnedInput = input.copyBytes(0, 6);
+      const unusedInput = input.copyBytes(0, 6);
+      const first = choose(move returnedInput, true);
+      const second = choose(move unusedInput, false);
+      console.log(first);
+      console.log(second);
+      const reject = (text: String): i32 throws Failure => {
+        throw Failure({ message: text });
+      };
+      const failureSource = "failure source";
+      const failureInput = failureSource.copyBytes(0, 7);
+      const inspect = (receipt: Receipt): i32 => { return i32(receipt.label.byteLength); };
+      const receipt = Receipt({ label: "released parameter" });
+      if (inspect(move receipt) != 18) return 5;
+      const result = attempt reject(move failureInput);
+      return match (result) {
+        success(_) => 1;
+        failure(error) => { console.log(error.message); select 0; }
+      };
+    }`, "answer\nfallback\nreleased parameter\nfailure\n"],
+  ["nested conditional try and explicit match-arm returns", `
+    struct Failure { code: i32; }
+    function fetch(fail: boolean): i32 throws Failure {
+      if (fail) throw Failure({ code: 7 });
+      return 42;
+    }
+    function main(): i32 {
+      const choose = (option: Option<boolean>): i64 throws Failure => {
+        return match (option) {
+          some(fail) => { return i64(fail ? try fetch(true) : try fetch(false)); }
+          none => 0;
+        };
+      };
+      const first = attempt choose(Option<boolean>.some(false));
+      match (first) { success(value) => { if (value != 42) return 1; } failure(_) => return 2; }
+      return match (attempt choose(Option<boolean>.some(true))) {
+        success(_) => 3; failure(error) => error.code - 7;
+      };
+    }`, ""],
+  ["direct try returns and borrowed owned results", `
+    import console from "std/console";
+    struct ParentError { code: i32; }
+    struct Failure { message: String; }
+    function fetch(fail: boolean): String throws Failure {
+      const source = "answer";
+      if (fail) throw Failure({ message: source.copyBytes(0, 6) });
+      return source.copyBytes(0, 6);
+    }
+    function check(): i32 throws ParentError {
+      const forward = (fail: boolean): String throws Failure => { return try fetch(fail); };
+      const borrowed = (in source: String): String => { return copy source; };
+      const observed = attempt forward(false);
+      match (observed) {
+        success(text) => { const result = borrowed(in text); console.log(result); }
+        failure(_) => return 1;
+      }
+      return match (attempt forward(true)) {
+        success(_) => 2;
+        failure(error) => { console.log(error.message); select 0; }
+      };
+    }
+    function main(): i32 {
+      return match (attempt check()) { success(value) => value; failure(error) => error.code; };
+    }`, "answer\nanswer\n"],
+  ["void callbacks release owned parameters on fallthrough", `
+    import console from "std/console";
+    struct Receipt { label: String; deinit { console.log(this.label); } }
+    function main(): i32 {
+      const inspect = (receipt: Receipt): void => { console.log(receipt.label); };
+      const receipt = Receipt({ label: "owned parameter" });
+      inspect(move receipt);
+      return 0;
+    }`, "owned parameter\nowned parameter\n"],
   ["borrowed value fields and later parent updates", `
     struct Counter { count: i32; }
     function main(): i32 {

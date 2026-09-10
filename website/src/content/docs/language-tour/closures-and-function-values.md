@@ -87,13 +87,26 @@ total = 100;
 const observed = read(); // 100, not the value when read was created
 ```
 
-These synchronous `void` block and scalar-reading expression forms execute
+These synchronous block and scalar-reading expression forms execute
 through both compiler paths with stack environments and no heap allocation.
 Expression closures may also mutate borrowed cleanup-free state by calling an
 `inout` helper. `move` gives the callback its own
 captured value instead; mutations to that owned state persist across calls and
-do not reassign the parent's Copy scalar. Native non-void block lowering and
-broader borrowed capture combinations remain tracked in [implementation
+do not reassign the parent's Copy scalar. This applies to expression bodies as
+well as block bodies. Synchronous block callbacks can return owned values and
+declare their own `throws E`, independently of the enclosing function:
+
+```z
+const describe = (count: i32): String => {
+  if (count == 0) return "No notes";
+  return `Notes: ${count}`;
+};
+const title = describe(42);
+```
+
+Each invocation cleans up its own locals and by-value parameters, except
+ownership transferred out of those bindings. Borrowed cleanup-bearing
+captures and asynchronous block lowering remain tracked in [implementation
 status](/reference/status/).
 
 Both compilers inspect the receiving Z helper, not just the `in` spelling:

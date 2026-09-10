@@ -244,25 +244,26 @@ body checking. Complete ownership and availability composition are still require
 passing this limited typed oracle is not a claim that every body composition is
 safe to emit.
 
-The mutable lexical block-capture gap is now closed for synchronous `void`
+The mutable lexical block-capture gap is now closed for synchronous
 callbacks with scalar and cleanup-free value captures. Synchronous borrowed
 expression captures also address the original binding, including nested
 forwarding and parent input/inout parameters, with zero-allocation probes.
-Borrowed environments use stack storage; owned `move` block environments preserve
-mutable state across invocations. Both emitters retain cleanup and nonescape
+Borrowed environments use stack storage; owned `move` expression and block
+environments preserve mutable state across invocations. Both emitters retain cleanup and nonescape
 regression coverage.
 
+Synchronous non-void block callbacks now carry an explicit return/error context
+through ordinary returns, selecting match arms, nested `try`, and cleanup
+temporaries. The callback does not inherit its containing function's result or
+error type. Invocation-owned parameters join the same cleanup plan as locals,
+including conditional transfer, failure, and void fallthrough.
+
 Next: remaining callable/body ownership and lowering parity—borrowed
-cleanup-bearing captures, mutable owned expression captures, and non-void block
-return contexts—and availability/diagnostic composition, then native subclass
-lowering/emission parity; afterward
+cleanup-bearing captures and broader nested/suspending contexts—and
+availability/diagnostic composition, then native subclass lowering/emission
+parity; afterward
 deliberate and test owned state, initialization/teardown callbacks, and reentrancy
 before Zapp's window transition state moves into a subclass.
-
-Non-void block returns require an explicit callable return context through
-ordinary returns, selecting match arms, error propagation, and cleanup
-temporaries. Those paths still consult the containing named function in places;
-removing the current signature gate alone would not establish correct ownership.
 
 The remaining field-free native port is bounded by four gates:
 

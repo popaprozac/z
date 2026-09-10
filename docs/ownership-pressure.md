@@ -7024,6 +7024,46 @@ the refreshed standalone `z` ran a borrowed read/mutation smoke successfully.
 Website build and test-tier coverage checks pass. This is targeted evidence,
 not a full-suite or compile-time performance claim.
 
+## Owned expression state and independent block return contexts
+
+Native owned expression callbacks still copied captured fields into `const`
+locals at each invocation, even after borrowed expressions and owned blocks
+were made addressable. An `inout` helper therefore either targeted a snapshot
+or failed strict C compilation. Owned expressions now address their retained
+environment fields too: repeated calls through two callable handles see one
+persistent counter, while a parent Copy scalar stays independent. A moved
+cleanup-bearing Counter is destroyed exactly once with its final mutated value.
+Nested synchronous forwarding reaches that same field, not another snapshot.
+
+Removing the native non-void block gate also required separating lexical name
+lookup from callable return ownership. A dedicated context now carries the
+callback's return and error types through ordinary returns, selecting matches,
+explicit match-arm returns, and nested/conditional `try`. A nonthrowing callback
+inside a throwing parent never inherits the parent's Result layout. A callback
+may likewise throw a different error type, handled at its own call boundary.
+
+The first owned-parameter probe used String literals and passed the allocation
+ledger: those literals required no allocation. Replacing them with allocated
+`copyBytes` values exposed a leak on the unused-parameter branch. A custom-deinit
+parameter additionally made missing destruction observable. Block invocation
+planning now includes by-value parameters with move guards, covering conditional
+return transfer, throw transfer, unused parameters, and void fallthrough. This
+is why balanced heap counts alone are not sufficient evidence for cleanup.
+
+The dual-emitter probes combine strict Clang warnings, UBSan, exact destructor
+output, dynamically allocated Strings, and an allocation ledger. No new source
+syntax or runtime ownership permission is introduced. Borrowed cleanup-bearing
+captures, async block callbacks, and broader nested/suspending contexts remain
+separate work; native Objective-C subclass execution remains gated.
+
+Checkpoint validation: 267 targeted tests passed across closure cleanup,
+nonescape, core/async language, Objective-C, native C callbacks, and
+self-hosting. The native bootstrap reached a fixed point (11,317,051 generated
+C bytes); the refreshed standalone compiler ran an owned non-void callback
+with shared handles and one final `deinit` at the expected counter value.
+Website build, source check, and test-tier coverage verification passed.
+This is targeted correctness evidence, not a full-suite or runtime-speed claim.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
