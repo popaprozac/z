@@ -244,9 +244,14 @@ body checking. Complete ownership and availability composition are still require
 passing this limited typed oracle is not a claim that every body composition is
 safe to emit.
 
-Next: remaining callable/body ownership and lowering parity—starting with the
-recorded mutable lexical block-capture emission gap—and availability/diagnostic
-composition, then native subclass
+The mutable lexical block-capture gap is now closed for synchronous `void`
+callbacks with scalar and cleanup-free value captures. Borrowed environments use
+stack storage; owned `move` block environments preserve mutable state across
+invocations. Both emitters retain cleanup and nonescape regression coverage.
+
+Next: remaining callable/body ownership and lowering parity—borrowed
+cleanup-bearing captures, expression-body capture storage, and non-void block
+return contexts—and availability/diagnostic composition, then native subclass
 lowering/emission parity; afterward
 deliberate and test owned state, initialization/teardown callbacks, and reentrancy
 before Zapp's window transition state moves into a subclass.

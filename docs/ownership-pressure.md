@@ -6914,14 +6914,65 @@ build and test-tier coverage also pass. This is focused evidence, not a claim
 that the entire repository test suite ran.
 
 Broader executable probes also exposed native callable lowering boundaries:
-non-void block closures are explicitly gated, while a void lexical closure
-mutating an outer scalar reaches Clang with that capture emitted as `const`.
-For example, `let total = 0; const add = (value: i32): void => {
-total = total + value; }; add(42);` checks but fails native C compilation.
-The retained runtime regression for this checkpoint deliberately proves the
-supported expression-bodied lexical read and `move` snapshot paths under strict
-Clang, UBSan, and an allocation ledger; it does not claim mutable block-capture
-emission. Preserve this reproducer for the callable lowering follow-up.
+non-void block closures are explicitly gated, and a void lexical closure
+mutating an outer scalar originally reached Clang with a copied `const` capture.
+The block-capture follow-up below closes the latter without lifting the return
+type or native subclass execution gates.
+
+### Native block-capture storage follow-up
+
+The small accumulation probe exposed a representation error, not a missing
+language rule:
+
+```zs
+let total = 0;
+const add = (value: i32): void => {
+  total = total + value;
+};
+add(20);
+add(22); // total is now 42
+```
+
+Native synchronous `void` block closures now borrow scalar and cleanup-free
+value-aggregate storage through pointers in a stack environment. Repeated calls
+update the original binding, and a later parent update is visible to the next
+call. Immutable captures use const-qualified pointers; `inout` parent parameters
+preserve their writable capability. The basic accumulation regression asserts
+**zero heap allocations** in both emitters, not merely a balanced allocation
+count. The environment has no retain/release hooks and still cannot escape.
+
+Owned `move` block closures instead address their own environment fields. A
+mutable captured scalar therefore retains its state between invocations rather
+than being copied into a fresh invocation-local variable. The parent's Copy
+scalar stays independent. Cleanup-bearing owned captures retain their existing
+live guards and deterministic destruction.
+
+Capture discovery now walks executable roots with lexical bindings rather than
+scanning a flattened arena. Nested callback bodies and parameter names must not
+be mistaken for captures of the outer invocation. Parameter capability rewriting
+uses the same scope-aware walk. Additional probes cover nested lexical callbacks,
+same-named closure parameters with different capabilities, `inout` helper calls,
+typed-error forwarding, and invocation-local cleanup. A hygiene probe also found
+that a user capture named `refcount` collided with the environment header in
+Stage 0; both emitters now use compiler-reserved counter fields, and native maker
+arguments no longer collide with a capture named `environment`.
+
+This does not expand capture permissions. Immutable mutation and borrowed
+callback retention still reject in both checkers. Borrowed cleanup-bearing
+block captures, broader expression-body capture storage parity, non-void block
+return lowering, and asynchronous block callables remain follow-ups. Native
+borrowed block environments inside async enclosing functions are explicitly
+gated until suspension-stable storage is proven; their C stack lifetime must not
+be mistaken for the lifetime of a suspended task frame. Native
+subclass execution remains gated until those relevant body compositions and
+availability/diagnostic checks have their own evidence.
+
+Checkpoint validation: 243 distinct targeted tests passed across closure
+storage/nonescape, core language, async runtime, Objective-C, native C callbacks,
+and self-hosting. This includes strict Clang/UBSan plus the allocation ledger,
+the fixed-point native bootstrap, and full frontend graph emission. The website
+build and test-tier audit pass. This is a focused regression sweep, not the full
+repository suite.
 
 ## Not tested yet
 

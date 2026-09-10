@@ -10924,7 +10924,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.match(anyThreadCallbackC, /runtime_retain/);
   assert.match(
     anyThreadCallbackC,
-    /__atomic_add_fetch\(&environment->refcount, 1, __ATOMIC_RELAXED\)/,
+    /__atomic_add_fetch\(&environment->_z_refcount, 1, __ATOMIC_RELAXED\)/,
   );
 
   const recursiveDriver = resolve(directory, "z-native-generation-2");
@@ -17598,7 +17598,7 @@ test("defers generic thread-any capture proof until concrete specialization", ()
     { encoding: "utf8" },
   );
   assert.equal(emission.status, 0, emission.stderr);
-  assert.match(emission.stdout, /__atomic_add_fetch\(&environment->refcount/);
+  assert.match(emission.stdout, /__atomic_add_fetch\(&environment->_z_refcount/);
 
   const directory = mkdtempSync("/tmp/z-generic-thread-any-callable-");
   const executable = resolve(directory, "program");
@@ -18638,11 +18638,11 @@ test("preserves thread-any callable contracts and emits atomic closure environme
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(
     emission.stdout,
-    /__atomic_add_fetch\(&environment->refcount, 1, __ATOMIC_RELAXED\)/,
+    /__atomic_add_fetch\(&environment->_z_refcount, 1, __ATOMIC_RELAXED\)/,
   );
   assert.match(
     emission.stdout,
-    /__atomic_sub_fetch\(&environment->refcount, 1, __ATOMIC_ACQ_REL\)/,
+    /__atomic_sub_fetch\(&environment->_z_refcount, 1, __ATOMIC_ACQ_REL\)/,
   );
   assert.match(emission.stdout, /_retain\(captured\)/);
 
@@ -18719,9 +18719,9 @@ test("preserves thread.main callable placement through native resolution and emi
     { encoding: "utf8" },
   );
   assert.equal(emission.status, 0, emission.stderr);
-  assert.match(emission.stdout, /environment->refcount \+= 1/);
-  assert.match(emission.stdout, /environment->refcount -= 1/);
-  assert.doesNotMatch(emission.stdout, /__atomic_(?:add|sub)_fetch\(&environment->refcount/);
+  assert.match(emission.stdout, /environment->_z_refcount \+= 1/);
+  assert.match(emission.stdout, /environment->_z_refcount -= 1/);
+  assert.doesNotMatch(emission.stdout, /__atomic_(?:add|sub)_fetch\(&environment->_z_refcount/);
   assert.match(
     emission.stdout,
     /Z_Controller \* const stored = Z_Controller_retain\(\(\*Z___z_Array_Controller_at/,

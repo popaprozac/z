@@ -3689,8 +3689,8 @@ test("publishes frozen routers with explicit thread-any callable contracts", () 
   assert.equal(diagnostics(source, example).length, 0);
 
   const generated = compileToC(source, example);
-  assert.match(generated, /__atomic_add_fetch\(&environment->refcount, 1, __ATOMIC_RELAXED\)/);
-  assert.match(generated, /__atomic_sub_fetch\(&environment->refcount, 1, __ATOMIC_ACQ_REL\)/);
+  assert.match(generated, /__atomic_add_fetch\(&environment->_z_refcount, 1, __ATOMIC_RELAXED\)/);
+  assert.match(generated, /__atomic_sub_fetch\(&environment->_z_refcount, 1, __ATOMIC_ACQ_REL\)/);
   assert.match(generated, /Z_Router_retain\(frame->value_router\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

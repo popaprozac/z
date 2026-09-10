@@ -148,3 +148,35 @@ test("keeps explicitly owned callbacks legal at retaining boundaries", () => {
     }
     function main(): i32 { const stored = make(); return stored() - 42; }`);
 }, 240_000);
+
+test("rejects borrowed mutable block callbacks at retaining boundaries", () => {
+  checkBoth(`type Callback = () => void;
+    function preserve(in callback: Callback): Callback { return callback; }
+    function main(): i32 {
+      let total = 0;
+      const retained = preserve((): void => { total = total + 1; });
+      retained();
+      return total;
+    }`, true);
+}, 240_000);
+
+test("keeps immutable captures immutable in block callbacks", () => {
+  const source = `function main(): i32 {
+    const total = 0;
+    const add = (): void => { total = total + 1; };
+    add();
+    return total;
+  }`;
+  assert.throws(() => compileToC(source, "immutable.zs"), /immutable capture/);
+  const directory = mkdtempSync("/tmp/z-immutable-block-capture-");
+  try {
+    const input = resolve(directory, "main.zs");
+    writeFileSync(input, source);
+    const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024,
+    });
+    assert.notEqual(native.status, null, String(native.error));
+    assert.notEqual(native.status, 0, native.stdout);
+    assert.match(native.stderr, /immutable/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);

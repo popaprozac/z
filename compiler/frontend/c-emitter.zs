@@ -534,6 +534,22 @@ function callableCaptureLiveFlag(in name: String): String {
   return `_z_stage1_live_${name}`;
 }
 
+function callableBorrowsEnvironment(in expression: LoweredExpression): boolean {
+  return expression.closureBlockBody && expression.labels.length > 1
+    && expression.labels[1] != "move";
+}
+
+function callableCaptureCType(
+  in expression: LoweredExpression, index: usize
+): String throws String {
+  const type = try cType(expression.captureTypes[index]);
+  if (index < expression.closureCaptureModes.length) {
+    if (expression.closureCaptureModes[index] == "in") return `${type} const *`;
+    if (expression.closureCaptureModes[index] == "inout") return `${type} *`;
+  }
+  return type;
+}
+
 function appendCallableCaptureLiveMacros(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -4621,6 +4637,14 @@ function appendExpression(
     );
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.closureCaptureValue) {
+    output.append("(");
+    if (declaration.expressions[index].labels[0] != "value") output.append("*");
+    output.append("_z_stage1_callable_environment->");
+    appendCBindingName(inout output, declaration.expressions[index].value);
+    output.append(")");
+    return;
+  }
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.directFunctionValue
@@ -4651,6 +4675,14 @@ function appendExpression(
       && declaration.expressions[index].captureTypes.length > 0
     ) {
       output.append("_make(");
+      const borrowedEnvironment = callableBorrowsEnvironment(
+        declaration.expressions[index]
+      );
+      if (borrowedEnvironment) {
+        output.append("&(");
+        appendCallableHelperName(inout output, declaration, index);
+        output.append("_environment){0}, ");
+      }
       let capture: usize = declaration.expressions[index].closureBlockBody
         ? usize(0)
         : usize(1);
@@ -4661,7 +4693,13 @@ function appendExpression(
             : usize(1))
         ) output.append(", ");
         const value = declaration.expressions[index].children[capture];
+        const modeIndex = capture - (declaration.expressions[index].closureBlockBody
+          ? usize(0) : usize(1));
+        const pointer = modeIndex < declaration.expressions[index].closureCaptureModes.length
+          && declaration.expressions[index].closureCaptureModes[modeIndex] != "value";
+        if (pointer) output.append("&(");
         try appendExpression(inout output, declaration, value);
+        if (pointer) output.append(")");
         capture = capture + 1;
       }
       output.append(")");
@@ -10887,6 +10925,48 @@ function appendObjCBlockArgumentHelpers(
   }
 }
 
+function appendCallableEnvironmentTypes(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const owner of program.functions) {
+    let index: usize = 0;
+    while (index < owner.expressions.length) {
+      const expression = view owner.expressions[index];
+      if (expression.kind == LoweredExpressionKind.closureValue
+        && expression.captureTypes.length > 0) {
+        const captureStart = 3 + expression.closureParameterCount;
+        // Expression-bodied closures retain their original label layout.
+        const labelStart = expression.closureBlockBody ? captureStart
+          : expression.labels.length - expression.captureTypes.length;
+        output.append("typedef struct ");
+        appendCallableHelperName(inout output, owner, index);
+        output.append("_environment {\n");
+        if (!callableBorrowsEnvironment(expression)) output.append("  size_t _z_refcount;\n");
+        let capture: usize = 0;
+        while (capture < expression.captureTypes.length) {
+          output.append("  ");
+          output.append(try callableCaptureCType(expression, capture));
+          output.append(" ");
+          appendCBindingName(inout output, expression.labels[labelStart + capture]);
+          output.append(";\n");
+          if (loweredTypeNeedsDeinit(program, expression.captureTypes[capture])) {
+            const liveFlag = callableCaptureLiveFlag(expression.labels[labelStart + capture]);
+            output.append("  bool ");
+            appendCBindingName(inout output, liveFlag);
+            output.append(";\n");
+          }
+          capture = capture + 1;
+        }
+        output.append("} ");
+        appendCallableHelperName(inout output, owner, index);
+        output.append("_environment;\n\n");
+      }
+      index = index + 1;
+    }
+  }
+}
+
 function appendCallableHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -10932,37 +11012,7 @@ function appendCallableHelpers(
         in expression,
         parameterLabelStart
       );
-      if (expression.captureTypes.length > 0) {
-        output.append("typedef struct ");
-        appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_environment {\n  size_t refcount;\n");
-        let capture: usize = 0;
-        while (capture < expression.captureTypes.length) {
-          output.append("  ");
-          const captureCType = try cType(expression.captureTypes[capture]);
-          output.append(captureCType);
-          output.append(" ");
-          appendCBindingName(
-            inout output,
-            expression.labels[captureLabelStart + capture]
-          );
-          output.append(";\n");
-          if (loweredTypeNeedsDeinit(
-            program,
-            expression.captureTypes[capture]
-          )) {
-            const liveFlag = callableCaptureLiveFlag(
-              expression.labels[captureLabelStart + capture]
-            );
-            output.append("  bool ");
-            appendCBindingName(inout output, liveFlag);
-            output.append(";\n");
-          }
-          capture = capture + 1;
-        }
-        output.append("} ");
-        appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_environment;\n\n");
+      if (expression.captureTypes.length > 0 && !callableBorrowsEnvironment(expression)) {
         output.append("static void ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_retain(void *context) {\n  ");
@@ -10971,9 +11021,9 @@ function appendCallableHelpers(
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_environment *)context;\n  ");
         if (expression.threadSafe) {
-          output.append("(void)__atomic_add_fetch(&environment->refcount, 1, __ATOMIC_RELAXED);");
+          output.append("(void)__atomic_add_fetch(&environment->_z_refcount, 1, __ATOMIC_RELAXED);");
         } else {
-          output.append("environment->refcount += 1;");
+          output.append("environment->_z_refcount += 1;");
         }
         output.append("\n}\n\n");
         output.append("static void ");
@@ -10984,12 +11034,12 @@ function appendCallableHelpers(
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_environment *)context;\n  ");
         if (expression.threadSafe) {
-          output.append("if (__atomic_sub_fetch(&environment->refcount, 1, __ATOMIC_ACQ_REL) != 0) return;");
+          output.append("if (__atomic_sub_fetch(&environment->_z_refcount, 1, __ATOMIC_ACQ_REL) != 0) return;");
         } else {
-          output.append("environment->refcount -= 1;\n  if (environment->refcount != 0) return;");
+          output.append("environment->_z_refcount -= 1;\n  if (environment->_z_refcount != 0) return;");
         }
         output.append("\n");
-        capture = expression.captureTypes.length;
+        let capture = expression.captureTypes.length;
         while (capture > 0) {
           capture = capture - 1;
           const captureType = view expression.captureTypes[capture];
@@ -12608,7 +12658,7 @@ function appendCallableHelpers(
           }
           output.append(") {\n  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_environment *environment = malloc(sizeof(*environment));\n  if (environment == NULL) abort();\n  environment->refcount = 1;\n");
+          output.append("_environment *environment = malloc(sizeof(*environment));\n  if (environment == NULL) abort();\n  environment->_z_refcount = 1;\n");
           capture = 0;
           while (capture < expression.captureTypes.length) {
             output.append("  environment->");
@@ -12767,12 +12817,14 @@ function appendCallableHelpers(
         output.append(";\n");
         parameter = parameter + 1;
       }
+      const callableEnvironmentName = expression.closureBlockBody
+        ? "_z_stage1_callable_environment" : "environment";
       appendCallableCaptureLiveMacros(
         inout output,
         program,
         expression,
         captureLabelStart,
-        "environment"
+        callableEnvironmentName
       );
       if (expression.captureTypes.length == 0) {
         output.append("  (void)");
@@ -12781,13 +12833,15 @@ function appendCallableHelpers(
       } else {
         output.append("  ");
         appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_environment *environment = (");
+        output.append(expression.closureBlockBody
+          ? "_environment *_z_stage1_callable_environment = ("
+          : "_environment *environment = (");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_environment *)");
         appendCBindingName(inout output, contextName);
         output.append(";\n");
         let capture: usize = 0;
-        while (capture < expression.captureTypes.length) {
+        while (capture < expression.captureTypes.length && !expression.closureBlockBody) {
           output.append("  ");
           const captureCType = try cType(expression.captureTypes[capture]);
           output.append(captureCType);
@@ -12913,21 +12967,25 @@ function appendCallableHelpers(
         output.append(" ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_make(");
+        const borrowedEnvironment = callableBorrowsEnvironment(expression);
+        if (borrowedEnvironment) {
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_environment *environment, ");
+        }
         let capture: usize = 0;
         while (capture < expression.captureTypes.length) {
           if (capture > 0) output.append(", ");
-          const captureCType = try cType(expression.captureTypes[capture]);
+          const captureCType = try callableCaptureCType(expression, capture);
           output.append(captureCType);
-          output.append(" ");
-          appendCBindingName(
-            inout output,
-            expression.labels[captureLabelStart + capture]
-          );
+          output.append(` _z_stage1_capture_argument_${capture}`);
           capture = capture + 1;
         }
-        output.append(") {\n  ");
-        appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_environment *environment = malloc(sizeof(*environment));\n  if (environment == NULL) abort();\n  environment->refcount = 1;\n");
+        output.append(") {\n");
+        if (!borrowedEnvironment) {
+          output.append("  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_environment *environment = malloc(sizeof(*environment));\n  if (environment == NULL) abort();\n  environment->_z_refcount = 1;\n");
+        }
         capture = 0;
         while (capture < expression.captureTypes.length) {
           output.append("  environment->");
@@ -12935,11 +12993,7 @@ function appendCallableHelpers(
             inout output,
             expression.labels[captureLabelStart + capture]
           );
-          output.append(" = ");
-          appendCBindingName(
-            inout output,
-            expression.labels[captureLabelStart + capture]
-          );
+          output.append(` = _z_stage1_capture_argument_${capture}`);
           output.append(";\n");
           if (loweredTypeNeedsDeinit(
             program,
@@ -12959,10 +13013,13 @@ function appendCallableHelpers(
         output.append("){ .call = ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_call, .context = environment, .retain = ");
-        appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_retain, .release = ");
-        appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_release };\n}\n\n");
+        if (borrowedEnvironment) output.append("NULL, .release = NULL };\n}\n\n");
+        else {
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_retain, .release = ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release };\n}\n\n");
+        }
       } else if (
         expression.kind == LoweredExpressionKind.directFunctionValue
       ) {
@@ -13022,10 +13079,14 @@ function appendCallableValuePrototypes(
       appendCallableHelperName(inout output, owner, expressionIndex);
       if (expression.captureTypes.length > 0) {
         output.append("_make(");
+        if (callableBorrowsEnvironment(expression)) {
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_environment *, ");
+        }
         let capture: usize = 0;
         while (capture < expression.captureTypes.length) {
           if (capture > 0) output.append(", ");
-          output.append(try cType(expression.captureTypes[capture]));
+          output.append(try callableCaptureCType(expression, capture));
           capture = capture + 1;
         }
         output.append(");\n");
@@ -25290,6 +25351,7 @@ function emitLoweredC(
   try appendSetRuntime(inout output, program);
   appendAsyncCallableRuntime(inout output, program);
   appendTaskScopeRuntime(inout output, program);
+  try appendCallableEnvironmentTypes(inout output, program);
   try appendCallableValuePrototypes(inout output, program);
   try appendThreadSpawnPrototypes(inout output, program);
   try appendTaskScopeScheduleHelpers(inout output, program);

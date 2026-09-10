@@ -2694,7 +2694,7 @@ test("passes contextual inline closures directly to imported C callbacks", () =>
   assert.match(generated, /z_apply_i32\(6, 7, __z_closure_call_[0-9]+\)/);
   assert.match(generated, /z_apply_context_i32\(40, \(void \*\)&\(_z_argument_[0-9]+\), __z_c_callback_/);
   assert.match(generated, /z_register_context_callback\(__z_c_callback_[^,]+, Z_Function_[0-9a-f]+_c_escape_box\(_z_argument_[0-9]+\)/);
-  assert.doesNotMatch(generated, /__atomic_(?:add|sub)_fetch\(&environment->refcount/);
+  assert.doesNotMatch(generated, /__atomic_(?:add|sub)_fetch\(&environment->_z_refcount/);
 
   const parameter = source.indexOf("(left, right)") + 2;
   assert.match(hover(source, fixture, parameter)?.contents.value ?? "", /left: i32/);
@@ -2890,8 +2890,8 @@ test("owns arbitrary-thread native callback environments atomically and checks c
   const fixture = resolve(projectRoot, "tests/fixtures/callbacks-any-thread.zs");
   const source = readFileSync(fixture, "utf8");
   const generated = compileToC(source, fixture);
-  assert.match(generated, /__atomic_add_fetch\(&environment->refcount, 1, __ATOMIC_RELAXED\)/);
-  assert.match(generated, /__atomic_sub_fetch\(&environment->refcount, 1, __ATOMIC_ACQ_REL\)/);
+  assert.match(generated, /__atomic_add_fetch\(&environment->_z_refcount, 1, __ATOMIC_RELAXED\)/);
+  assert.match(generated, /__atomic_sub_fetch\(&environment->_z_refcount, 1, __ATOMIC_ACQ_REL\)/);
 
   const declarationFile = resolve(projectRoot, "tests/fixtures/callbacks-any-thread.h.zd");
   const declarationSource = readFileSync(declarationFile, "utf8");

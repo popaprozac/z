@@ -7013,7 +7013,7 @@ function emitPreparedFrameExpression(
           : `${environmentType} ${environment};`);
         if (heapOwned) {
           prefix.push(`if (${environment} == NULL) abort();`);
-          prefix.push(`${environment}->refcount = 1;`);
+          prefix.push(`${environment}->_z_refcount = 1;`);
         }
         const captureInitializers: string[] = [];
         for (const capture of closure.captures) {
@@ -7238,7 +7238,7 @@ function emitAsyncObjCCall(
       lines.push(
         `${environmentType} *${environment} = (${environmentType} *)calloc(1, sizeof(${environmentType}));`,
         `if (${environment} == NULL) abort();`,
-        `${environment}->refcount = 1;`,
+        `${environment}->_z_refcount = 1;`,
       );
       for (const capture of closure.captures) {
         const captured: Expression = {

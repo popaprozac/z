@@ -1354,8 +1354,8 @@ test("returns, copies, shares, and deterministically destroys owned closure envi
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /typedef struct Z_ClosureEnv_[0-9]+/);
-  assert.match(generated, /environment->refcount \+= 1/);
-  assert.match(generated, /environment->refcount -= 1/);
+  assert.match(generated, /environment->_z_refcount \+= 1/);
+  assert.match(generated, /environment->_z_refcount -= 1/);
   assert.match(generated, /Z_Resource_deinit\(&\(environment->resource\)\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

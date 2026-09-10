@@ -72,8 +72,13 @@ production or compatibility-sensitive use.
 - Native synchronous `void` block callbacks, including typed throwing callbacks,
   can own local Strings, value aggregates, and consuming match payloads. Each
   invocation cleans up on return, failure, loop exit, or normal completion;
-  captures remain owned by the separately retained closure environment. Exact
-  cleanup-order and allocation-balance tests cover both compiler paths.
+  owned captures retain their separate environment lifetime. Borrowed scalar
+  and cleanup-free value-aggregate block captures use stack environments and
+  address the original storage; owned `move` blocks preserve mutable captured
+  state across calls. Exact cleanup-order, nonescape, and allocation-balance
+  tests cover both compiler paths, including zero heap allocations for the
+  basic borrowed accumulation probe. Non-void/async block return lowering and
+  broader borrowed capture storage remain staged.
   Ordinary object destructuring rejects root or nested inline custom cleanup
   in both semantic frontends, including aliased and generic payloads; supported
   owned value fields and ARC aliases remain available

@@ -72,6 +72,24 @@ store.append(next); // valid after inspect and the borrow end
 This gives synchronous higher-order APIs concise call sites while preserving
 the same escape and invalidation checks as explicit views.
 
+Borrowing state is not taking a snapshot:
+
+```z
+let total = 0;
+const add = (value: i32): void => {
+  total = total + value;
+};
+add(20);
+add(22); // total is 42
+```
+
+This synchronous `void` block form executes through both compiler paths with a
+stack environment and no heap allocation. `move` gives the callback its own
+captured value instead; mutations to that owned state persist across calls and
+do not reassign the parent's Copy scalar. Native non-void block lowering and
+broader borrowed capture combinations remain tracked in [implementation
+status](/reference/status/).
+
 Both compilers inspect the receiving Z helper, not just the `in` spelling:
 
 ```z

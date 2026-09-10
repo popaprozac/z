@@ -3,7 +3,7 @@ import {
   resolve, rmSync, spawnSync, test, writeFileSync,
 } from "./support/bootstrap.ts";
 
-function execute(source: string, expected: string): void {
+function execute(source: string, expected: string, expectedAllocations?: number): void {
   const directory = mkdtempSync("/tmp/z-closure-cleanup-");
   try {
     const executable = resolve(directory, "program");
@@ -15,6 +15,7 @@ function execute(source: string, expected: string): void {
 #include <stdio.h>
 static void *allocations[4096];
 static size_t allocation_count;
+static size_t allocation_calls;
 static size_t allocation_index(void *pointer) {
   for (size_t i = 0; i < allocation_count; ++i) if (allocations[i] == pointer) return i;
   fprintf(stderr, "untracked allocation\\n"); exit(90);
@@ -22,6 +23,7 @@ static size_t allocation_index(void *pointer) {
 static void record_allocation(void *pointer) {
   if (!pointer || allocation_count == 4096) exit(91);
   allocations[allocation_count++] = pointer;
+  allocation_calls += 1;
 }
 static __attribute__((unused)) void *probe_malloc(size_t size) {
   void *pointer = malloc(size); record_allocation(pointer); return pointer;
@@ -52,6 +54,7 @@ ${source}
 int main(void) {
   const int status = fixture_main(${/\bmain\(int argc/.test(source) ? "0, NULL" : ""});
   if (allocation_count) { fprintf(stderr, "leaked %zu allocations\\n", allocation_count); return 93; }
+  ${expectedAllocations === undefined ? "" : `if (allocation_calls != ${expectedAllocations}) { fprintf(stderr, "unexpected allocation count %zu\\n", allocation_calls); return 94; }`}
   return status;
 }
 `;
@@ -157,5 +160,193 @@ test("retains an owned callback returned through an in parameter beyond its crea
     });
     assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
     execute(emitted.stdout, "");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("mutates lexical block captures without replacing them with invocation-local snapshots", () => {
+  const directory = mkdtempSync("/tmp/z-mutable-lexical-closure-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const source = `function main(): i32 {
+      let total = 0;
+      const add = (value: i32): void => { total = total + value; };
+      add(20);
+      add(22);
+      return total - 42;
+    }`;
+    writeFileSync(input, source);
+    execute(compileToC(source, input), "", 0);
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+    execute(emitted.stdout, "", 0);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+for (const [name, body, expected] of [
+  ["borrowed value fields and later parent updates", `
+    struct Counter { count: i32; }
+    function main(): i32 {
+      let counter = Counter({ count: 10 });
+      const add = (value: i32): void => { counter.count = counter.count + value; };
+      counter.count = 20;
+      add(22);
+      return counter.count - 42;
+    }`, ""],
+  ["borrowed parent parameters", `
+    function update(inout total: i32, in amount: i32): void {
+      const add = (): void => { total = total + amount; };
+      add();
+      add();
+    }
+    function main(): i32 {
+      let total = 0;
+      const amount = 21;
+      update(inout total, in amount);
+      return total - 42;
+    }`, ""],
+  ["borrowed mutation through an inout call", `
+    function increment(inout value: i32): void { value = value + 21; }
+    function main(): i32 {
+      let total = 0;
+      const add = (): void => { increment(inout total); };
+      add();
+      add();
+      return total - 42;
+    }`, ""],
+  ["compiler environment name hygiene", `
+    import console from "std/console";
+    function main(): i32 {
+      let environment = 0;
+      const add = (): void => { environment = environment + 21; };
+      add();
+      add();
+      let refcount = 40;
+      const snapshot: () => void = move (): void => {
+        refcount = refcount + 2;
+        console.log(\`\${refcount}\`);
+      };
+      snapshot();
+      return environment + refcount - 82;
+    }`, "42\n"],
+  ["persistent owned scalar state", `
+    import console from "std/console";
+    function main(): i32 {
+      let total = 10;
+      const add: (value: i32) => void = move (value: i32): void => {
+        total = total + value;
+        console.log(\`\${total}\`);
+      };
+      total = 100;
+      add(20);
+      add(12);
+      return total - 100;
+    }`, "30\n42\n"],
+  ["closure parameter shadowing", `
+    function main(): i32 {
+      let total = 40;
+      let observed = 0;
+      const add = (total: i32): void => {
+        observed = observed + total;
+      };
+      add(2);
+      return total + observed - 42;
+    }`, ""],
+  ["nested lexical invocation scopes", `
+    import console from "std/console";
+    function main(): i32 {
+      const outer = (value: i32): void => {
+        let total = value;
+        const inner = (amount: i32): void => { total = total + amount; };
+        inner(20);
+        inner(22);
+        console.log(\`\${total}\`);
+      };
+      outer(0);
+      outer(1);
+      return 0;
+    }`, "42\n43\n"],
+  ["nested parameter capability shadowing", `
+    import console from "std/console";
+    function main(): i32 {
+      const outer = (in value: i32): void => {
+        const inner = (value: i32): void => { console.log(\`\${value}\`); };
+        inner(21);
+        console.log(\`\${value}\`);
+      };
+      const value = 42;
+      outer(in value);
+      return 0;
+    }`, "21\n42\n"],
+  ["enclosing function parameter shadowing", `
+    import console from "std/console";
+    function update(inout value: i32): void {
+      const inner = (value: i32): void => { console.log(\`\${value}\`); };
+      inner(21);
+      value = 42;
+    }
+    function main(): i32 {
+      let value = 0;
+      update(inout value);
+      return value - 42;
+    }`, "21\n"],
+  ["proven synchronous forwarding and error cleanup", `
+    import console from "std/console";
+    struct Failure { message: String; }
+    function invoke(in callback: () => void throws Failure): void throws Failure {
+      try callback();
+    }
+    function main(): i32 {
+      let total = 0;
+      const result = attempt invoke((): void throws Failure => {
+        const text = "invocation";
+        total = total + 42;
+        console.log(text);
+        throw Failure({ message: "failed" });
+      });
+      match (result) {
+        success => return 1;
+        failure(error) => console.log(error.message);
+      }
+      return total - 42;
+    }`, "invocation\nfailed\n"],
+] as const) {
+  test(`preserves block capture storage through ${name}`, () => {
+    const directory = mkdtempSync("/tmp/z-block-capture-storage-");
+    try {
+      const input = resolve(directory, "main.zs");
+      writeFileSync(input, body);
+      execute(compileToC(body, input), expected);
+      const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+      });
+      assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+      execute(emitted.stdout, expected);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 240_000);
+}
+
+for (const [suspension, rejection] of [
+  ["", /borrowed block environments in async functions require suspension-stable storage/],
+  ["await scheduler.yield();", /native yield-frame local "add" requires supported owned frame storage/],
+] as const) test(`gates native borrowed callback frame storage (${suspension || "async parent"})`, () => {
+  const directory = mkdtempSync("/tmp/z-async-borrowed-block-environment-");
+  try {
+    const input = resolve(directory, "main.zs");
+    writeFileSync(input, `import { scheduler } from "std/async";
+      async function main(): i32 {
+        let total = 0;
+        const add = (): void => { total = total + 42; };
+        ${suspension}
+        add();
+        return total - 42;
+      }`);
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.notEqual(emitted.status, null, String(emitted.error));
+    assert.notEqual(emitted.status, 0, emitted.stdout);
+    assert.match(emitted.stderr, rejection);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);

@@ -3984,7 +3984,7 @@ function generateClosureEnvironmentDefinition(
     return `  ${type} ${capture.name};`;
   });
   return `typedef struct ${name} {
-${closure.owned && !closure.scopedOneShot ? "  size_t refcount;\n" : ""}
+${closure.owned && !closure.scopedOneShot ? "  size_t _z_refcount;\n" : ""}
 ${fields.join("\n")}
 } ${name};`;
 }
@@ -4002,12 +4002,12 @@ function generateClosureEnvironmentLifecycle(
     generateOwnedEnvironmentCleanup(`environment->${capture.name}`, capture.type, structs, enums, semanticInfo, cleanupCounter)
   )).filter(Boolean).map((line) => indent(line, 4));
   const retain = closure.threadSafe
-    ? "__atomic_add_fetch(&environment->refcount, 1, __ATOMIC_RELAXED);"
-    : "environment->refcount += 1;";
+    ? "__atomic_add_fetch(&environment->_z_refcount, 1, __ATOMIC_RELAXED);"
+    : "environment->_z_refcount += 1;";
   const release = closure.threadSafe
-    ? "if (__atomic_sub_fetch(&environment->refcount, 1, __ATOMIC_ACQ_REL) != 0) return;"
-    : `environment->refcount -= 1;
-  if (environment->refcount != 0) return;`;
+    ? "if (__atomic_sub_fetch(&environment->_z_refcount, 1, __ATOMIC_ACQ_REL) != 0) return;"
+    : `environment->_z_refcount -= 1;
+  if (environment->_z_refcount != 0) return;`;
   return `static void ${closureEnvironmentRetainName(closure)}(void *context) {
   ${name} *environment = (${name} *)context;
   ${retain}
@@ -7031,7 +7031,7 @@ function generateStatement(statement: Statement, context: GenerationContext): st
           const liveFlag = ensureLiveFlag(statement.name, context);
           return `${environmentType} *${environment} = (${environmentType} *)calloc(1, sizeof(${environmentType}));
 if (${environment} == NULL) abort();
-${environment}->refcount = 1;
+${environment}->_z_refcount = 1;
 ${captures.join("\n")}
 ${declaration} = ${value};
 bool ${liveFlag} = true;`;
@@ -8723,7 +8723,7 @@ ${consumeValue(value, context)}`;
   }
   return `${environmentType} *${environment} = (${environmentType} *)calloc(1, sizeof(${environmentType}));
 if (${environment} == NULL) abort();
-${environment}->refcount = 1;
+${environment}->_z_refcount = 1;
 ${captures.join("\n")}
 ${consumeValue(value, context)}`;
 }
