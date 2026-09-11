@@ -72,6 +72,7 @@ int main(void) {
 }
 
 for (const [fixture, expected] of [
+  ["named-callback-fields.zs", "callbacks reset\n"],
   ["self-host-emit-block-closure-owners.zs",
     'notes: {"text":"early"}\nreleased early\n'
     + 'notes: {"text":"move"}\nconsumed move\nreleased move\n'

@@ -927,6 +927,13 @@ export function generateC(
     lines.push("");
   }
 
+  // Methods, constructors, and runtime helpers can store a named function in
+  // callback fields. Define its adapter after prototypes but before any of
+  // those bodies, not only before top-level function implementations.
+  for (const declaration of program.functions.filter((candidate) => candidate.name !== "main")) {
+    lines.push(generateFunctionAdapter(declaration, structs, enums, semanticInfo.foreignNamedTypes), "");
+  }
+
   for (const type of dynamicArrayTypes) {
     lines.push(generateDynamicArrayClear(type, structs, enums, semanticInfo), "");
   }
@@ -1025,9 +1032,6 @@ export function generateC(
   }
   for (const closure of closures.filter((candidate) => candidate.storable && !candidate.declaration.async)) {
     lines.push(generateClosureAdapter(closure, structs, enums, semanticInfo.foreignNamedTypes), "");
-  }
-  for (const declaration of program.functions.filter((candidate) => candidate.name !== "main")) {
-    lines.push(generateFunctionAdapter(declaration, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const name of new Set(semanticInfo.standardFunctionReferences.values())) {
     if (standardFunctionSignature(name).async) continue;

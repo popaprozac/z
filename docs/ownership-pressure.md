@@ -8320,6 +8320,59 @@ but reported as an unknown name by Stage 0. Explicit
 contextual-constructor parity test in the future compiler queue rather than
 expanding this bounded event-performance checkpoint into a language redesign.
 
+## Zapp context-menu sessions: callback fields and retirement (2026-09-11)
+
+The first context-menu checkpoint models presentation lifetime independently of
+AppKit tracking: one active session per application, owner-window invalidation,
+at-most-once selection, idempotent dismissal, and stale-generation rejection.
+It does not yet expose a working popup API. Menu definitions are borrowed during
+validation/construction; the eventual native presentation owns its command
+connections. A session need not clone an ownership-bearing `Menu` just to keep
+shared ARC `Command` identity alive.
+
+The concrete Z pattern is an ordinary stored callback, reset to a named no-op:
+
+```z
+function ignoreDismiss(): void on thread.main {}
+// In a session method:
+this.dismiss = ignoreDismiss;
+```
+
+This exposed a Stage 0 C declaration-order bug: named-function adapters followed
+class method bodies that used them. Adapters now precede those bodies. Extending
+the regression to a custom constructor exposed a native-emitter omission:
+initializer expressions were absent from callable-helper discovery. Initializer
+helpers and their early prototypes now use the same per-owner emission path as
+ordinary functions, without copying the lowered program graph. The focused
+`named-callback-fields.zs` fixture verifies class construction, static struct
+construction, and field replacement through both emitters under strict Clang,
+UBSan, and the allocation ledger in `native-closure-cleanup.test.ts`.
+
+Zapp's `native/z/testing/context-menu.ts` runs the real session fixture through
+both emitters at `-O0` and `-O2` under UBSan, with process deadlines. This is
+ownership-policy evidence, not yet native tracking-loop or navigation-hook
+integration evidence.
+
+Adjacent exploratory probes remain **open**, rather than being silently
+claimed by the callback-field fix:
+
+- A local named callable invoked in a custom `deinit` still needs native
+  lifecycle-body lowering and helper-name hygiene: a `Controller.deinit` owner
+  can reach a generated C identifier with a dot, and `callback()` can remain
+  an ordinary call instead of function-value dispatch.
+- A captured callable created inside a custom constructor still needs native
+  constructor-local callable resolution; merely discovering its helper does
+  not prove the complete expression lowering path.
+- `console.log(value.callback() + controller.callback())` in the reduced
+  native-emitter fixture reports `expected String, found i32`. The regression
+  uses explicit numeric assertions and a literal success message to isolate
+  callback storage. Keep console contextual-callable typing as a separate
+  reduced parity follow-up.
+
+None of these exploratory shapes is used as a framework workaround. The
+working session uses existing borrowed parameters, retained ARC lookup, and
+named callback assignment; no new Z syntax or ownership exception is required.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

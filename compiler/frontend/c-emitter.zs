@@ -11376,6 +11376,21 @@ function appendCallableEnvironmentTypes(
   in program: LoweredProgram
 ): void throws String {
   for (const owner of program.functions) {
+    try appendCallableOwnerEnvironmentTypes(inout output, program, owner);
+  }
+  for (const aggregate of program.structs) {
+    match (in aggregate.initializer) {
+      some(owner) => try appendCallableOwnerEnvironmentTypes(inout output, program, owner);
+      none => {}
+    }
+  }
+}
+
+function appendCallableOwnerEnvironmentTypes(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in owner: LoweredFunction
+): void throws String {
     let index: usize = 0;
     while (index < owner.expressions.length) {
       const expression = view owner.expressions[index];
@@ -11411,7 +11426,6 @@ function appendCallableEnvironmentTypes(
       }
       index = index + 1;
     }
-  }
 }
 
 function appendCallableHelpers(
@@ -11419,6 +11433,21 @@ function appendCallableHelpers(
   in program: LoweredProgram
 ): void throws String {
   for (const owner of program.functions) {
+    try appendCallableOwnerHelpers(inout output, program, owner);
+  }
+  for (const aggregate of program.structs) {
+    match (in aggregate.initializer) {
+      some(owner) => try appendCallableOwnerHelpers(inout output, program, owner);
+      none => {}
+    }
+  }
+}
+
+function appendCallableOwnerHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in owner: LoweredFunction
+): void throws String {
     let expressionIndex: usize = 0;
     while (expressionIndex < owner.expressions.length) {
       const expression = view owner.expressions[expressionIndex];
@@ -13501,15 +13530,28 @@ function appendCallableHelpers(
       }
       expressionIndex = expressionIndex + 1;
     }
-  }
 }
 
 function appendCallableValuePrototypes(
   inout output: TextBuffer,
   in program: LoweredProgram
 ): void throws String {
-  let emitted = false;
   for (const owner of program.functions) {
+    try appendCallableOwnerValuePrototypes(inout output, owner);
+  }
+  for (const aggregate of program.structs) {
+    match (in aggregate.initializer) {
+      some(owner) => try appendCallableOwnerValuePrototypes(inout output, owner);
+      none => {}
+    }
+  }
+}
+
+function appendCallableOwnerValuePrototypes(
+  inout output: TextBuffer,
+  in owner: LoweredFunction
+): void throws String {
+  let emitted = false;
     let expressionIndex: usize = 0;
     while (expressionIndex < owner.expressions.length) {
       const expression = view owner.expressions[expressionIndex];
@@ -13554,7 +13596,6 @@ function appendCallableValuePrototypes(
       emitted = true;
       expressionIndex = expressionIndex + 1;
     }
-  }
   if (emitted) output.append("\n");
 }
 
@@ -25565,6 +25606,10 @@ function emitLoweredC(
     output.append(";\n");
   }
   if (program.functions.length > 0) output.append("\n");
+  // Initializers contain callable values too, but are emitted in
+  // the class runtime before ordinary function bodies and callable helpers.
+  try appendCallableEnvironmentTypes(inout output, program);
+  try appendCallableValuePrototypes(inout output, program);
   try appendMutexWithLockHelpers(inout output, program, true);
   try appendChannelRuntime(inout output, program, true);
   try appendClassAndOnceRuntime(inout output, program);
@@ -25848,8 +25893,6 @@ function emitLoweredC(
   try appendSetRuntime(inout output, program);
   appendAsyncCallableRuntime(inout output, program);
   appendTaskScopeRuntime(inout output, program);
-  try appendCallableEnvironmentTypes(inout output, program);
-  try appendCallableValuePrototypes(inout output, program);
   try appendThreadSpawnPrototypes(inout output, program);
   try appendTaskScopeScheduleHelpers(inout output, program);
   try appendAsyncMethodAwaitStartPrototypes(inout output, program);
