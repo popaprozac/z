@@ -22,13 +22,40 @@ function invalidateDisplay(in link: QuartzCore.CADisplayLink | null): void on th
   if (link != null) link.invalidate();
 }
 
+function equalFrames(left: AppKit.NSRect, right: AppKit.NSRect): boolean {
+  return left.origin.x == right.origin.x && left.origin.y == right.origin.y
+    && left.size.width == right.size.width && left.size.height == right.size.height;
+}
+
+function equalSizes(left: AppKit.NSRect, right: AppKit.NSRect): boolean {
+  return left.size.width == right.size.width && left.size.height == right.size.height;
+}
+
+function createDisplay(in window: SmoothWindow): QuartzCore.CADisplayLink on thread.main {
+  const link = window.displayLinkWithTarget(window, selector: objc.selector(SmoothWindow.onDisplay));
+  const screen = window.screen;
+  if (screen != null) {
+    const maximum = f32(screen.maximumFramesPerSecond);
+    if (maximum > 0) {
+      link.preferredFrameRateRange = QuartzCore.CAFrameRateRangeMake(maximum < 60 ? maximum : f32(60), maximum, maximum);
+    }
+  }
+  link.addToRunLoop(AppKit.NSRunLoop.mainRunLoop, forMode: AppKit.NSRunLoopCommonModes);
+  return link;
+}
+
 // An integration probe, not yet Zapp's production window implementation.
 class SmoothWindow extends AppKit.NSWindow on thread.main {
   private displayLink: QuartzCore.CADisplayLink | null;
   private startFrame: AppKit.NSRect;
   private targetFrame: AppKit.NSRect;
-  private restartFrame: AppKit.NSRect;
-  private restarting: boolean;
+  private restoreFrame: AppKit.NSRect;
+  private hasRestoreFrame: boolean;
+  private preparingZoom: boolean;
+  private applyingFrame: boolean;
+  private zoomTransition: boolean;
+  private targetIsZoomed: boolean;
+  private updateRestoreOnCompletion: boolean;
   private startedAt: f64;
   private duration: f64;
   private animating: boolean;
@@ -43,8 +70,13 @@ class SmoothWindow extends AppKit.NSWindow on thread.main {
     this.displayLink = null;
     this.startFrame = frame;
     this.targetFrame = frame;
-    this.restartFrame = frame;
-    this.restarting = false;
+    this.restoreFrame = frame;
+    this.hasRestoreFrame = false;
+    this.preparingZoom = false;
+    this.applyingFrame = false;
+    this.zoomTransition = false;
+    this.targetIsZoomed = false;
+    this.updateRestoreOnCompletion = false;
     this.startedAt = 0;
     this.duration = 0;
     this.animating = false;
@@ -54,73 +86,156 @@ class SmoothWindow extends AppKit.NSWindow on thread.main {
     this.releasedWhenClosed = false;
   }
 
+  override function isZoomed(): boolean as "isZoomed" {
+    if (this.animating && this.zoomTransition) return this.targetIsZoomed;
+    return super.isZoomed();
+  }
+
+  override function animationResizeTime(frame: AppKit.NSRect): f64 as "animationResizeTime:" {
+    if (this.preparingZoom) return 0;
+    return super.animationResizeTime(frame);
+  }
+
   override function resize(inout this, frame: AppKit.NSRect, display: boolean, animate: boolean): void as "setFrame:display:animate:" {
+    if (this.preparingZoom || this.applyingFrame) {
+      super.setFrame(frame, display: display, animate: false);
+      return;
+    }
     // Replacing a transition always disconnects its old tick source first.
     invalidateDisplay(this.displayLink);
     this.displayLink = null;
     this.animating = false;
+    this.zoomTransition = false;
+    const start = this.frame;
+    const wasZoomed = super.isZoomed();
+    const updateRestore = this.hasRestoreFrame && !wasZoomed && !equalSizes(start, frame);
     const duration = super.animationResizeTime(frame);
-    if (!animate || this.shuttingDown || AppKit.NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion || duration <= 0) {
+    const screen = this.screen;
+    if (!animate || this.shuttingDown || AppKit.NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion || duration <= 0 || screen == null || equalFrames(start, frame)) {
+      this.applyingFrame = true;
       super.setFrame(frame, display: display);
+      this.applyingFrame = false;
+      if (updateRestore) this.restoreFrame = this.frame;
       return;
     }
-    this.startFrame = this.restarting ? this.restartFrame : this.frame;
+    this.startFrame = start;
     this.targetFrame = frame;
     this.duration = duration;
     this.startedAt = clock.CACurrentMediaTime();
     this.needsDisplay = display;
+    this.updateRestoreOnCompletion = updateRestore;
     this.animating = true;
-    if (this.restarting) {
-      const visible = this.startFrame;
-      super.setFrame(visible, display: display);
-    }
-    const link = this.displayLinkWithTarget(this, selector: objc.selector(SmoothWindow.onDisplay));
-    this.displayLink = link;
-    const screen = this.screen;
-    if (screen != null) {
-      const maximum = f32(screen.maximumFramesPerSecond);
-      if (maximum > 0) {
-        link.preferredFrameRateRange = QuartzCore.CAFrameRateRangeMake(maximum < 60 ? maximum : f32(60), maximum, maximum);
-      }
-    }
-    link.addToRunLoop(AppKit.NSRunLoop.mainRunLoop, forMode: AppKit.NSRunLoopCommonModes);
+    this.displayLink = createDisplay(this);
   }
 
   override function setFrame(inout this, frame: AppKit.NSRect, display: boolean): void as "setFrame:display:" {
+    if (this.preparingZoom || this.applyingFrame) {
+      super.setFrame(frame, display: display);
+      return;
+    }
     this.animating = false;
     invalidateDisplay(this.displayLink);
     this.displayLink = null;
+    const start = this.frame;
+    const wasZoomed = super.isZoomed();
+    const updateRestore = this.hasRestoreFrame && !wasZoomed && !equalSizes(start, frame);
     super.setFrame(frame, display: display);
+    if (updateRestore) this.restoreFrame = this.frame;
   }
 
   override function zoom(inout this, in sender: objc.Object | null): void as "zoom:" {
-    if (this.animating) {
-      // Let AppKit observe the preceding intended state before choosing the
-      // next zoom/restore target. Preserve the visible frame for interpolation.
-      this.restartFrame = this.frame;
-      this.restarting = true;
-      this.animating = false;
-      invalidateDisplay(this.displayLink);
-      this.displayLink = null;
-      const intended = this.targetFrame;
-      super.setFrame(intended, display: false);
+    const start = this.frame;
+    const startIsZoomed = super.isZoomed();
+    const interrupted = this.animating;
+    const previousTarget = this.targetFrame;
+    this.animating = false;
+    invalidateDisplay(this.displayLink);
+    this.displayLink = null;
+    if (interrupted) {
+      this.applyingFrame = true;
+      super.setFrame(previousTarget, display: false);
+      this.applyingFrame = false;
     }
+    // Let AppKit commit its standard/user-frame state before reading the
+    // intended target. Our nested overrides suppress only that preparation's
+    // animation; normal delegates and native constraints still run.
+    this.preparingZoom = true;
     super.zoom(sender);
-    this.restarting = false;
+    this.preparingZoom = false;
+    let target = this.frame;
+    let targetZoomed = super.isZoomed();
+    if (equalFrames(start, target)) {
+      if (startIsZoomed && this.hasRestoreFrame) {
+        target = this.restoreFrame;
+        targetZoomed = false;
+      } else return;
+    }
+    if (targetZoomed) {
+      if (!this.hasRestoreFrame) {
+        this.restoreFrame = start;
+        this.hasRestoreFrame = true;
+      }
+    } else if (this.hasRestoreFrame) target = this.restoreFrame;
+
+    const screen = this.screen;
+    if (this.shuttingDown || AppKit.NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion || screen == null) {
+      this.applyingFrame = true;
+      super.setFrame(target, display: true);
+      this.applyingFrame = false;
+      if (!targetZoomed) this.hasRestoreFrame = false;
+      return;
+    }
+    this.applyingFrame = true;
+    super.setFrame(start, display: true);
+    this.applyingFrame = false;
+    // AppKit computes duration from the current frame to the requested frame.
+    // Asking while still at the prepared target can yield a zero duration.
+    const duration = super.animationResizeTime(target);
+    if (duration <= 0) {
+      this.applyingFrame = true;
+      super.setFrame(target, display: true);
+      this.applyingFrame = false;
+      if (!targetZoomed) this.hasRestoreFrame = false;
+      return;
+    }
+    this.startFrame = start;
+    this.targetFrame = target;
+    this.duration = duration;
+    this.startedAt = clock.CACurrentMediaTime();
+    this.needsDisplay = true;
+    this.zoomTransition = true;
+    this.targetIsZoomed = targetZoomed;
+    this.updateRestoreOnCompletion = false;
+    this.animating = true;
+    this.displayLink = createDisplay(this);
   }
 
   function onDisplay(inout this, in link: QuartzCore.CADisplayLink): void as "display:" {
+    // Count every delivered callback so shutdown tests detect a live source,
+    // even when the controller ignores the callback after invalidation.
     this.callbacks = this.callbacks + 1;
+    const active = this.displayLink;
+    // Native reference identity comparison is a pending language-design
+    // decision. The active-link identity guard must land before integration.
+    if (active == null) {
+      link.invalidate();
+      return;
+    }
     if (!this.animating || this.shuttingDown) return;
-    const progress = (link.targetTimestamp - this.startedAt) / this.duration;
+    const reducedMotion = AppKit.NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+    const progress = reducedMotion ? 1.0 : (link.targetTimestamp - this.startedAt) / this.duration;
     const frame = interpolateFrame(this.startFrame, this.targetFrame, progress);
     if (progress >= 1) {
       this.animating = false;
       invalidateDisplay(this.displayLink);
       this.displayLink = null;
+      if (this.zoomTransition && !this.targetIsZoomed) this.hasRestoreFrame = false;
     }
     const display = this.needsDisplay;
+    this.applyingFrame = true;
     super.setFrame(frame, display: display);
+    this.applyingFrame = false;
+    if (progress >= 1 && this.updateRestoreOnCompletion) this.restoreFrame = this.frame;
   }
 
   override function close(inout this): void as "close" {

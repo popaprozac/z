@@ -7998,6 +7998,65 @@ screens, and accessibility changes during an active transition need targeted
 evidence. Event coalescing or a public animation knob still require deliberation.
 Zapp production behavior is unchanged here.
 
+## Display-link native-state correctness follow-up (2026-09-11)
+
+The user confirmed the real Z WebView demo looks good, then asked us to compare
+the original Wails implementation again before Zapp integration. Reviewing
+Wails #5856, #5900, and #5945 distinguished the successful visual mechanism from
+native zoom/restore semantics that still needed evidence. This is an example
+correctness checkpoint, not a new language surface or Zapp production cutover.
+
+The controller now asks AppKit to commit its target without animation before
+interpolating the visible frame. The overridden getter reports intended zoom
+state during that interpolation. Independent restore storage survives moving a
+maximized window; subsequent nonstandard-frame size changes update that stored
+user frame. Reduce Motion is checked during each active tick, and a missing
+screen or an unchanged requested frame does not create a ticker. The existing
+checked selector, native subclass ownership, and full-expression `super`
+handoff suffice for these additions: no handwritten native implementation or
+weakened receiver guard was needed.
+
+The expanded geometry matrix passes twelve scenarios through both emitters at
+`-O0` and `-O2` (48 bounded strict-Clang/UBSan runs). Initial test expectations
+incorrectly required a moved maximized window to restore on the very next zoom.
+AppKit can consider that moved frame nonstandard and maximize again first; the
+test now follows native zoom state and verifies the eventual exact restore.
+It also verifies the later manually sized restore frame and mid-transition
+Reduce Motion with test-only inputs. Actual system setting changes, display
+migration, and framework event/delegate behavior are separate evidence gates.
+The headless controller/interpolation test passes as well. No ASan was used.
+
+The real-WebView check caught a bug masked by forced test durations: querying
+AppKit's animation duration while still at the prepared target can yield zero,
+collapsing the interpolation into a snap. The controller now restores its visible
+start frame before querying that duration, matching the native dependency order.
+The WebView failure report now prints observed viewport widths and edge geometry
+instead of only saying `failed`. Keep real-duration WebView evidence in addition
+to deterministic geometry tests.
+After the correction, both emitters pass the actual WebView readiness,
+intermediate-layout, and clean-shutdown check at `-O0` and `-O2`. The callback
+counter measures every delivered entry, including ignored late entries, so the
+cleanup assertions cannot pass merely because the handler ignores a live ticker.
+The 33-page website build and diff checks pass; this is not a full compiler-suite
+or performance benchmark result.
+
+One general language gap is **not resolved**: rejecting an old display-link
+callback while a replacement is active needs object identity comparison. Z
+currently compares native references with null, but rejects `link != active`.
+There is no existing `std/objc` identity helper. The operation must neither
+consume the references nor dispatch value equality (`isEqual:`), and its
+spelling/general equality semantics need user design agreement. The example
+remains runnable with its existing invalidation and inactive-source checks;
+those checks are not claimed to reject a stale source during a newer transition.
+Do not move it into Zapp until that guard and a stale-callback regression land.
+
+The diagnostic work also reproduced two unrelated native formatting boundaries:
+direct `console.error(f64)` is not accepted by the native standard-library
+surface (String interpolation is accepted), and borrowing a conditional String
+rvalue directly into `console.log` can emit an invalid C address-of-rvalue.
+Keep the latter in the native expression-composition backlog; it did not require
+changing the controller algorithm.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

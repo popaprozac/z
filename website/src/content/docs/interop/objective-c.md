@@ -262,6 +262,11 @@ observer after the loop returns. Bounded tests in both compilers cover native
 geometry/cleanup and real WebView readiness, intermediate viewport layout, and
 shutdown. Visual presentation quality and framework integration remain separate
 from those tests.
+The correctness follow-up covers intended zoom state, saved user restore frames,
+and Reduce Motion changes during a transition. Native object identity comparison
+is still a language-design gap: the probe cannot yet distinguish a stale link
+from the replacement link while a newer animation is active. That guard remains
+a prerequisite for Zapp integration; native value equality is not a substitute.
 
 ### New native callback methods
 

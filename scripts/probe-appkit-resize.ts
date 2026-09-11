@@ -37,6 +37,9 @@ function sameFrame(left: AppKit.NSRect, right: AppKit.NSRect): boolean {
   return near(left.origin.x, right.origin.x) && near(left.origin.y, right.origin.y)
     && near(left.size.width, right.size.width) && near(left.size.height, right.size.height);
 }
+function printFrame(frame: AppKit.NSRect): void {
+  console.error(\`(\${frame.origin.x}, \${frame.origin.y}, \${frame.size.width}, \${frame.size.height})\`);
+}
 function main(): i32 {
   probe.z_subclass_catch_abort();
   const app = AppKit.NSApplication.sharedApplication;
@@ -48,6 +51,7 @@ function main(): i32 {
     return 3;
   }
   const original = window.frame;
+  let expected = original;
   const enlarged = AppKit.NSMakeRect(original.origin.x, original.origin.y, original.size.width + 150, original.size.height + 100);
   const scenario = probe.z_subclass_access_scenario();
   if (scenario == 0) {
@@ -73,9 +77,11 @@ function main(): i32 {
     if (window.isAnimating()) return 20;
   } else if (scenario == 3) {
     window.zoom(null);
+    if (!window.isAnimating() || !window.zoomed) return 31;
     pump(0.5);
-    if (sameFrame(window.frame, original) || window.isAnimating()) return 30;
+    if (sameFrame(window.frame, original) || window.isAnimating() || !window.zoomed) return 30;
     window.zoom(null);
+    if (!window.isAnimating() || window.zoomed) return 32;
   } else if (scenario == 4) {
     window.zoom(null);
     pump(0.08);
@@ -93,11 +99,62 @@ function main(): i32 {
     window.resize(enlarged, true, true);
     if (window.isAnimating() || !sameFrame(window.frame, enlarged) || window.displayCallbacks() != 0) return 60;
     window.setFrame(original, true);
+  } else if (scenario == 7 || scenario == 8) {
+    window.zoom(null);
+    pump(0.5);
+    if (!window.zoomed) return 71;
+    const maximized = window.frame;
+    // Moving a maximized window must not replace the saved user frame.
+    window.setFrameOrigin(AppKit.NSMakePoint(maximized.origin.x + 12, maximized.origin.y - 12));
+    const movedIsZoomed = window.zoomed;
+    if (scenario == 8) {
+      // Once outside the standard frame, a subsequent user size change is
+      // the new restore geometry rather than the original pre-zoom geometry.
+      window.setFrame(enlarged, true);
+      expected = window.frame;
+      window.zoom(null);
+      pump(0.5);
+      if (!window.zoomed) return 81;
+    }
+    window.zoom(null);
+    if (scenario == 7 && !movedIsZoomed) {
+      // AppKit may regard the moved frame as nonstandard and maximize again
+      // first. Preserve that native toggle, then verify the saved user frame.
+      pump(0.5);
+      if (!window.zoomed) return 72;
+      window.zoom(null);
+    }
+  } else if (scenario == 9) {
+    window.resize(original, true, true);
+    if (window.isAnimating() || window.displayCallbacks() != 0) return 91;
+  } else if (scenario == 10) {
+    window.resize(enlarged, true, true);
+    pump(0.08);
+    if (!window.isAnimating()) return 101;
+    window.reduceMotion();
+    pump(0.1);
+    if (window.isAnimating() || !sameFrame(window.frame, enlarged)) return 102;
+    const callbacks = window.displayCallbacks();
+    pump(0.1);
+    if (window.displayCallbacks() != callbacks) return 103;
+    window.setFrame(original, true);
+  } else if (scenario == 11) {
+    window.resize(enlarged, true, true);
+    if (window.isAnimating() || !sameFrame(window.frame, enlarged) || window.displayCallbacks() != 0) return 111;
+    window.setFrame(original, true);
   }
   pump(0.5);
-  if (!sameFrame(window.frame, original) || window.isAnimating()) return 70;
+  if (!sameFrame(window.frame, expected) || window.isAnimating()) {
+    console.error("expected frame (x, y, width, height):");
+    printFrame(expected);
+    console.error("observed frame:");
+    printFrame(window.frame);
+    if (window.isAnimating()) console.error("still animating");
+    window.close();
+    return 70;
+  }
   window.close();
-  console.log("reached original frame and stopped");
+  console.log("reached expected frame and stopped");
   return 0;
 }
 `;
@@ -131,10 +188,11 @@ function observe(){sizes.add(innerWidth);requestAnimationFrame(observe)}
 requestAnimationFrame(()=>requestAnimationFrame(()=>{
   observe();webkit.messageHandlers.probe.postMessage('ready');
   setTimeout(()=>{const edge=document.getElementById('edge').getBoundingClientRect();
-    webkit.messageHandlers.probe.postMessage(sizes.size>3&&innerWidth>initial&&Math.abs(edge.right-innerWidth)<2?'resized':'failed');
+    const passed=sizes.size>3&&innerWidth>initial&&Math.abs(edge.right-innerWidth)<2;
+    webkit.messageHandlers.probe.postMessage(passed?'resized':'failed: '+JSON.stringify({initial,final:innerWidth,sizes:[...sizes],edgeRight:edge.right}));
   },1200);
 }));</script>`;
-const webviewSource = original.replace("AppKit.NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion", "false")
+const webviewSource = original.replaceAll("AppKit.NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion", "false")
   .replace("function main(): i32 {", `${pageObserver}\nfunction main(): i32 {\n  probe.z_subclass_catch_abort();`)
   .replace("  window.contentView = webview;", `  window.contentView = webview;
   const observer = new PageObserver({ window, status: 0 });
@@ -163,8 +221,14 @@ try {
     const input = resolve(temporary, "main.zs");
     // Deterministic test inputs only: do not change the user's accessibility
     // preference or turn the forced test duration into a production policy.
-    const candidate = webview ? webviewSource : controller.replace("AppKit.NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion", String(reduced))
-      .replace("const duration = super.animationResizeTime(frame);", "const duration: f64 = 0.25;") + scenarios;
+    const candidate = webview ? webviewSource : controller
+      .replace("  private displayLink:", "  private testReducedMotion: boolean;\n  private displayLink:")
+      .replace("    this.displayLink = null;", `    this.testReducedMotion = ${reduced};\n    this.displayLink = null;`)
+      .replace("  function isAnimating()", '  function reduceMotion(inout this): void as "zResizeReduceMotion" { this.testReducedMotion = true; }\n  function isAnimating()')
+      .replaceAll("AppKit.NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion", "this.testReducedMotion")
+      .replaceAll("const screen = this.screen;", `let screen: AppKit.NSScreen | null = this.screen;
+    if (probe.z_subclass_access_scenario() == 11) screen = null;`)
+      .replace(/const duration = super\.animationResizeTime\((frame|target)\);/g, "const duration: f64 = 0.25;") + scenarios;
     writeFileSync(input, candidate);
     const generated = resolve(temporary, "main.m");
     writeFileSync(generated, native ? command(resolve(root, ".z-cache/bootstrap/z"), ["emit", input], 60_000)
@@ -181,7 +245,7 @@ try {
         "-fsanitize=undefined", "-fno-sanitize-recover=all", "-I", resolve(root, "tests/fixtures"),
         "-framework", "AppKit", "-framework", "QuartzCore", "-framework", "WebKit",
         generated, resolve(root, "tests/fixtures/objc-subclass.m"), "-o", executable]);
-      for (const scenario of webview ? [0] : reduced ? [6] : [0, 1, 2, 3, 4, 5]) {
+      for (const scenario of webview ? [0] : reduced ? [6] : [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11]) {
         const result = spawnSync(executable, [], { encoding: "utf8", timeout: webview ? 15_000 : 8_000, killSignal: "SIGKILL",
           env: { ...process.env, Z_SUBCLASS_ACCESS_SCENARIO: String(scenario) } });
         assert.equal(result.status, 0, `${native ? "native" : "stage0"} ${optimization} scenario ${scenario}: ${result.stdout} ${result.stderr} ${result.error ?? ""}`);

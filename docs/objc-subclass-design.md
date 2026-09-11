@@ -809,6 +809,34 @@ delegate/constraint/shutdown integration are next. System-owned transitions and
 event coalescing remain distinct work. See the current ownership-pressure log
 for surfaced cross-header record and native lowering limitations.
 
+## Wails correctness follow-up (2026-09-11)
+
+Rechecking Wails [#5856](https://github.com/wailsapp/wails/pull/5856),
+[#5900](https://github.com/wailsapp/wails/pull/5900), and
+[#5945](https://github.com/wailsapp/wails/pull/5945) separated the demonstrated
+viewport improvement from the remaining native-state invariants. The Z probe
+now prepares AppKit's target before interpolation, reports intended `isZoomed`
+state during a transition, preserves a separate user restore frame, updates it
+on later nonstandard-frame size changes, and rechecks Reduce Motion on ticks.
+No-screen and equal-frame requests do not create an animation source.
+
+Twelve bounded geometry scenarios pass through both emitters at `-O0` and `-O2`
+(48 runs, strict Clang/UBSan). They include moved-maximized restoration, updated
+manual restore geometry, and injected mid-transition accessibility/no-screen
+conditions; they do not modify the user's system preferences. AppKit may first
+maximize a moved nonstandard frame again; tests preserve that native decision
+and verify the eventual restore, rather than require a one-click policy.
+
+**Pending design gate:** the stale-display-link check needs native reference
+identity comparison. Current Z equality accepts native references against null,
+not against another native reference. No new operator semantics or `std/objc`
+helper has been selected. Value equality (`isEqual:`) is not an identity guard.
+The controller keeps its prior invalidation/inactive-source checks, but Zapp
+cutover is deferred until the active-source identity guard and its negative
+regression are implemented. User visual validation passed for the preceding
+WebView checkpoint; real framework menu/delegate/constraint/shutdown validation
+remains next, not implied by these geometry tests.
+
 ## References
 
 - [Current Objective-C interop](interop-model.md)
