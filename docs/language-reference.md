@@ -4006,8 +4006,11 @@ class before member access. Owned references use native ARC without an erasure
 wrapper or deep copy, and `in` borrows. Erasure does not grant thread transfer
 or executor permissions. Import aliases and exported type aliases preserve
 this identity. An inherited `id` override parameter can be written
-`in sender: objc.Object | null`; this does not extend receiver handoff to
-borrowed native arguments or enable native-subclass async composition.
+`in sender: objc.Object | null`. Checked synchronous full-expression `super`
+delegation snapshots native object arguments with native ARC before releasing
+the current receiver entry guard, and restores it before those snapshots are
+destroyed. It does not permit escaping storage loans, nested-expression
+handoffs, or native-subclass async composition.
 
 `objc.pool(() => { ... })` runs one synchronous inline closure inside a lexical
 Objective-C autorelease pool. It returns independently owned or cleanup-free

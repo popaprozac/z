@@ -140,7 +140,11 @@ export type ObjCCallInfo = {
   readonly className: string;
   readonly superDispatch?: boolean;
   readonly initializesSubclass?: boolean;
-  readonly receiverHandoff?: { readonly parameterCTypes: readonly string[]; readonly returnCType: string };
+  readonly receiverHandoff?: {
+    readonly parameterCTypes: readonly string[];
+    readonly parameterObjects: readonly boolean[];
+    readonly returnCType: string;
+  };
   readonly bridge: "dataCopy" | "dataBorrow" | null;
   readonly async: {
     readonly callbackParameter: number;
@@ -10851,9 +10855,8 @@ function inferExpressionInner(
           && plan.declaration.methods.includes(state.activeFunction)
           && isObjCSubclassHandoffBoundary(state.activeFunction, expression.location.offset)
           && isObjCSubclassHandoffValue(method.returnType)
-          && method.parameters.every((parameter, index) => parameter.access !== "inout" && parameter.access !== "out"
-            && (isObjCSubclassHandoffValue(parameter.type)
-              || (parameter.type.kind === "object" && expression.arguments[index].kind === "null")));
+          && method.parameters.every((parameter) => parameter.access !== "inout" && parameter.access !== "out"
+            && (isObjCSubclassHandoffValue(parameter.type) || parameter.type.kind === "object"));
         if (handoff) {
           const loan = activeAccessLoanForRoot(state.activeLoans, "this", state, () => true);
           if (loan) objcSubclassError(fileName, expression.location,
@@ -10867,6 +10870,7 @@ function inferExpressionInner(
           bridge: null, async: null, superDispatch: true, initializesSubclass: initializes,
           ...(handoff ? { receiverHandoff: {
             parameterCTypes: method.parameters.map((parameter) => parameter.type.cName),
+            parameterObjects: method.parameters.map((parameter) => parameter.type.kind === "object"),
             returnCType: method.returnType.cName,
           } } : {}),
         });

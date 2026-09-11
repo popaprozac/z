@@ -4,6 +4,7 @@
 import AppKit from "AppKit/AppKit.h";
 import probe from "./objc-subclass.h";
 import console from "std/console";
+import objc from "std/objc";
 import { thread } from "std/thread";
 
 class ProbeWindow extends AppKit.NSWindow on thread.main {
@@ -23,11 +24,11 @@ class ProbeWindow extends AppKit.NSWindow on thread.main {
     super.setFrame(frame, display: display, animate: animate);
   }
 
-  // Keep the literal-null handoff here. objc.Object now names the native `id`
-  // sender, but forwarding a borrowed sender still retains the receiver guard.
-  function requestZoom(inout this): void as "requestZoom" {
+  // Native identity is retained for this delegation, without borrowing the
+  // source field or allowing reentry during argument evaluation or cleanup.
+  override function zoom(inout this, in sender: objc.Object | null): void as "zoom:" {
     this.changes = this.changes + 1;
-    super.zoom(null);
+    super.zoom(sender);
   }
 
   override function animationResizeTime(frame: AppKit.NSRect): f64 as "animationResizeTime:" {
@@ -45,7 +46,7 @@ function main(): i32 {
   if (probe.z_subclass_access_scenario() == 1) {
     window.resize(AppKit.NSMakeRect(100, 100, 480, 360), true, true);
   } else {
-    window.requestZoom();
+    window.zoom(null);
   }
   console.log("after native operation");
   window.close();

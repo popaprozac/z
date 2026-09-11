@@ -91,6 +91,16 @@ int z_subclass_source_deinits(void) { return sourceDeinits; }
 - (int)readAccess:(int)mode { return mode; }
 - (int)writeAccess:(int)mode { return mode; }
 - (int)delegatedWrite:(int)value { return [self writeAccess:value]; }
+- (void)attachResource:(ZSubclassStoredResource *)resource { [resource attach:self]; }
+- (int)delegatedObject:(__unsafe_unretained id)object increment:(int)value {
+  // Deliberately do not add a native strong owner: the generated caller must
+  // keep a field snapshot alive when virtual reentry replaces that field.
+  __weak id observed = object;
+  const BOOL hadObject = object != nil;
+  [self writeAccess:value];
+  if (hadObject && observed == nil) return -100;
+  return object ? [(ZSubclassStoredResource *)object value] : [self value];
+}
 - (void)delegatedPhase:(int)value { [self recordPhase:value]; }
 - (int)requiredValue { return 0; }
 - (int)directValue { return 0; }
@@ -102,6 +112,10 @@ int z_subclass_source_deinits(void) { return sourceDeinits; }
   liveCount -= 1;
 }
 @end
+
+int z_subclass_call_forward_alias(ZSubclassFixture *object) {
+  return [object delegatedObject:object increment:0];
+}
 
 void z_subclass_check_constructing(ZSubclassFixture *object) {
   [object checkBaseDispatch:2];

@@ -387,6 +387,7 @@ export struct LoweredExpression {
   objectiveCReceiverHandoff: boolean = false;
   objectiveCHandoffReturnType: String = "";
   objectiveCHandoffParameterTypes: Array<String> = Array<String>();
+  objectiveCHandoffParameterObjects: Array<boolean> = Array<boolean>();
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
@@ -7699,12 +7700,14 @@ function lowerObjectiveCMessageCall(
     && evidence.callResolutions[resolutionIndex].objectiveCReceiverHandoff) {
     const call = view evidence.callResolutions[resolutionIndex];
     if (callKind != "objcSuper" || call.objectiveCNativeReturnType.byteLength == 0
-      || call.objectiveCParameterNativeTypes.length + 1 != output[lowered].children.length) {
+      || call.objectiveCParameterNativeTypes.length + 1 != output[lowered].children.length
+      || call.objectiveCHandoffParameterObjects.length != call.objectiveCParameterNativeTypes.length) {
       throw "native superclass handoff lost checked dispatch/ABI evidence";
     }
     output[lowered].objectiveCReceiverHandoff = true;
     output[lowered].objectiveCHandoffReturnType = copy call.objectiveCNativeReturnType;
     output[lowered].objectiveCHandoffParameterTypes = copy call.objectiveCParameterNativeTypes;
+    output[lowered].objectiveCHandoffParameterObjects = copy call.objectiveCHandoffParameterObjects;
   }
   return lowered;
 }

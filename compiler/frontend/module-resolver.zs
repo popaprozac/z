@@ -11013,7 +11013,8 @@ function inferExpressionNodeType(
                   if (evidence.callResolutions[resolutionIndex].offset == tree.nodes[index].offset) {
                     const handoff = try checkedNativeSuperclassHandoff(module, modules, moduleIndex,
                       arena, tree, index, bindings, evidence.callResolutions[resolutionIndex]);
-                    evidence.callResolutions[resolutionIndex].objectiveCReceiverHandoff = handoff;
+                    evidence.callResolutions[resolutionIndex].objectiveCReceiverHandoff = handoff.eligible;
+                    evidence.callResolutions[resolutionIndex].objectiveCHandoffParameterObjects = copy handoff.parameterObjects;
                   }
                   resolutionIndex = resolutionIndex + 1;
                 }

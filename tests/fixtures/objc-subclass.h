@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
+@class ZSubclassStoredResource;
 typedef enum ZSubclassDepth { ZSubclassDepthLow = 0 } ZSubclassDepth;
 typedef struct ZSubclassPoint { double x; double y; } ZSubclassPoint;
 __attribute__((swift_attr("@MainActor")))
@@ -22,6 +23,8 @@ __attribute__((swift_attr("@MainActor")))
 - (int)readAccess:(int)mode;
 - (int)writeAccess:(int)mode;
 - (int)delegatedWrite:(int)value;
+- (int)delegatedObject:(nullable id)object increment:(int)value;
+- (void)attachResource:(nullable ZSubclassStoredResource *)resource;
 - (void)delegatedPhase:(int)value;
 @property(readonly) int recordedPhase;
 @property int configuredValue;
@@ -61,6 +64,7 @@ int z_subclass_stored_destroyed(void);
 ZSubclassAccessCleanup *z_subclass_access_cleanup(ZSubclassFixture *object, int write) NS_RETURNS_RETAINED;
 int z_subclass_call_read(ZSubclassFixture *object, int mode);
 int z_subclass_call_write(ZSubclassFixture *object, int mode);
+int z_subclass_call_forward_alias(ZSubclassFixture *object);
 void z_subclass_publish(ZSubclassFixture *object);
 void z_subclass_drop_published(void);
 int z_subclass_call_published(void);

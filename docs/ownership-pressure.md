@@ -7777,6 +7777,73 @@ C bytes; its erased-object example prints `15` and `0`. The website builds
 33 pages; tier coverage and diff checks pass. This is not a full-suite run or
 a performance benchmark.
 
+## Borrowed native sender delegation (2026-09-11)
+
+The next Zapp pressure point is the real `zoom:` override:
+
+```zs
+override function zoom(inout this, in sender: objc.Object | null): void as "zoom:" {
+  super.zoom(sender);
+}
+```
+
+Both compilers now materialize each native object argument as a precisely scoped
+strong ARC snapshot before handing off the current receiver entry. This holds
+reference identity, not a borrow into the originating storage. It covers named
+`in` parameters, nullable references, owned locals, `this`, and native field
+values without new source syntax. Scalars/plain records remain copied values;
+results still require the existing POD tier.
+
+The order matters twice: all arguments are evaluated under the original guard,
+and the guard is reacquired before **argument** destruction, not merely before
+the next source statement. Emitted `objc_precise_lifetime` temporaries prohibit
+optimized ARC from moving a last release ahead of reacquisition. A last-release
+destructor that reenters must encounter the restored receiver guard.
+
+The adversarial fixture passes a field's last object reference to native code,
+which holds no extra strong owner and virtually calls back to clear that field.
+A weak native observation detects premature destruction. The snapshot survives
+and is destroyed once before the following Z statement. A separate resource
+destructor reenters at temporary cleanup and must hit the restored guard. Native
+code also passes the receiver as its own erased sender; delegation succeeds.
+This does not legalize an ordinary Z call overlapping an `inout` receiver and
+an `in` argument. Other active receiver readers still prohibit a reentrant writer.
+
+The independent native oracle consumes raw Clang declarations, not Stage 0
+semantic evidence. The native subclass planner checks snapshot flags against
+the inherited signature and typed call, and corruption probes reject omitted
+or false lifetime flags. Field-storage views, writable/output arguments,
+blocks, consuming calls, nested expressions, and object-valued results do not
+gain a handoff. Existing field-view negatives reject earlier than the boundary;
+they are not evidence of new field-borrow support.
+
+Cost: ordinary native ARC retain/release per object argument plus the existing
+stack handoff and access checks. There is no new wrapper allocation or deep
+copy. This checkpoint is not a runtime benchmark. The real AppKit probe now
+uses the borrowed sender signature instead of a literal-null-only entry.
+Native-subclass/async-program composition remains the next integration gate
+before Zapp's display-link state machine.
+
+Two harness observations preserve the limits of this evidence: a nullable
+concrete-object C free-function parameter also hit the previously logged raw
+function qualifier gap (the native Objective-C method metadata does preserve
+it). The fixture uses a real native method for that lifecycle operation, not an
+application shim. Copying the whole semantic evidence aggregate reaches a
+native ownership-bearing Map-copy gap; the corruption test copies only the
+call-evidence Array consumed by the planner, leaving the unrelated lookup Maps
+alone. Neither limitation is claimed fixed by this handoff work.
+
+Validation: 69 targeted tests across nine Objective-C, native subclass,
+selector, native-async-storage, and editor suites pass after the AppKit
+diagnostic expectation was updated to the public `objc.Object` spelling. The
+handoff matrix runs eight scenarios through two emitters at `-O0`/`-O2`
+(32 bounded strict-Clang/UBSan executions); the erased-object matrix adds 24.
+No ASan or GUI execution was used. Both Stage 0 and the freshly bootstrapped
+native compiler pass strict compile-only AppKit checks for mutable and reader
+overrides. The fixed-point bootstrap emits 11,728,542 byte-identical C bytes;
+its erased-object example prints `15` and `0`. The website builds 33 pages;
+tier coverage and diff checks pass. This is not a full-suite run.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -11531,11 +11531,14 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
         if (objcCall.receiverHandoff) {
           const proof = objcCall.receiverHandoff;
-          if (!objcCall.superDispatch || objcCall.initializesSubclass || proof.parameterCTypes.length !== args.length) {
+          if (!objcCall.superDispatch || objcCall.initializesSubclass || proof.parameterCTypes.length !== args.length
+            || proof.parameterObjects.length !== args.length) {
             throw new Error("native superclass handoff lost checked dispatch/ABI evidence");
           }
           const names = args.map((_, index) => `_z_handoff_argument_${index}`);
-          const setup = args.map((argument, index) => `${proof.parameterCTypes[index]} ${names[index]} = ${argument};`);
+          // Hold object identity through reacquisition, not merely its last
+          // use in the native call. Its destructor must see the restored guard.
+          const setup = args.map((argument, index) => `${proof.parameterObjects[index] ? "__attribute__((objc_precise_lifetime)) __strong " : ""}${proof.parameterCTypes[index]} ${names[index]} = ${argument};`);
           const call = generateObjCMessage("super", objcCall.selector, names);
           return `({ ${setup.join(" ")} _z_native_subclass_handoff _z_handoff __attribute__((cleanup(_z_native_subclass_handoff_end))) = _z_native_subclass_handoff_begin(&_z_native_subclass_loan); ${proof.returnCType === "void" ? `${call};` : `${proof.returnCType} _z_handoff_result = ${call};`} _z_native_subclass_handoff_end(&_z_handoff); ${proof.returnCType === "void" ? "(void)0" : "_z_handoff_result"}; })`;
         }

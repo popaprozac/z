@@ -45,26 +45,32 @@ function handoffValue(in modules: Array<ResolvedModule>, moduleIndex: usize, in 
 }
 
 // Typed, synchronous, nonconsuming superclass dispatch is checked by the caller.
-// The first handoff accepts only full-expression calls with by-value POD
-// arguments/results (and literal nil). Argument storage is materialized before
-// releasing the current entry. Borrowed objects/blocks/pointers keep the guard.
+// Object parameters cross as precisely scoped strong snapshots, not as loans
+// into their source storage. Blocks, raw pointers, and writable arguments keep
+// the guard; results remain POD. No partially evaluated enclosing expression.
+export struct NativeSuperclassHandoff {
+  eligible: boolean = false;
+  parameterObjects: Array<boolean> = Array<boolean>();
+}
+
 export function checkedNativeSuperclassHandoff(
   in module: ParsedModule, in modules: Array<ResolvedModule>, moduleIndex: usize,
   in arena: StatementArena, in tree: ExpressionTree, index: usize,
   in bindings: Array<NativeValueBinding>, in call: ModuleCallResolution
-): boolean throws ModuleResolveError {
-  if (call.kind != "objcSuper" || valueBindingType(bindings, "__z_native_function_name") == "constructor") return false;
+): NativeSuperclassHandoff throws ModuleResolveError {
+  if (call.kind != "objcSuper" || valueBindingType(bindings, "__z_native_function_name") == "constructor") return NativeSuperclassHandoff();
   let atBoundary = false;
   for (const root of arena.roots) { if (boundary(arena, root, tree.nodes[index].offset)) atBoundary = true; }
-  if (!atBoundary || !handoffValue(modules, moduleIndex, call.returnType)) return false;
-  if (call.parameterTypes.length + 1 != tree.nodes[index].children.length) return false;
+  if (!atBoundary || !handoffValue(modules, moduleIndex, call.returnType)) return NativeSuperclassHandoff();
+  if (call.parameterTypes.length + 1 != tree.nodes[index].children.length
+    || call.parameterModes.length != call.parameterTypes.length) return NativeSuperclassHandoff();
+  let objects = Array<boolean>();
   let argument: usize = 0;
   while (argument < call.parameterTypes.length) {
-    const child = tree.nodes[index].children[argument + 1];
-    const nilObject = tree.nodes[child].kind == ExpressionKind.nullExpression
-      && nativeObjCObjectType(modules, moduleIndex, call.parameterTypes[argument]);
-    if (!nilObject && !handoffValue(modules, moduleIndex, call.parameterTypes[argument])) return false;
-    if (call.parameterModes[argument] == "inout" || call.parameterModes[argument] == "out") return false;
+    const object = nativeObjCObjectType(modules, moduleIndex, call.parameterTypes[argument]);
+    if (!object && !handoffValue(modules, moduleIndex, call.parameterTypes[argument])) return NativeSuperclassHandoff();
+    if (call.parameterModes[argument] == "inout" || call.parameterModes[argument] == "out") return NativeSuperclassHandoff();
+    objects.push(object);
     argument = argument + 1;
   }
   const liveView = liveViewBindingForOwner(bindings, "this");
@@ -75,5 +81,5 @@ export function checkedNativeSuperclassHandoff(
   }
   // Flow narrowing currently applies to named locals, not receiver fields.
   // Those locals are snapshots; fields must be freshly loaded after reentry.
-  return true;
+  return NativeSuperclassHandoff({ eligible: true, parameterObjects: move objects });
 }

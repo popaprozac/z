@@ -7,7 +7,7 @@ import {
 } from "./semantic-model.zs";
 import { typeSymbolLocation, transparentTypeName } from "./semantic-type-identities.zs";
 import { inspectNativeSubclassBodies } from "./semantic-objc-subclass-bodies.zs";
-import { nativeObjCSubclassInheritedMethods, nativeObjCStoredObjectABI } from "./semantic-objc-subclasses.zs";
+import { nativeObjCSubclassInheritedMethods, nativeObjCStoredObjectABI, nativeObjCObjectType } from "./semantic-objc-subclasses.zs";
 import { objcMethodLabelsMatch } from "./semantic-member-lookups.zs";
 
 function sameNativeTypes(in left: Array<String>, in right: Array<String>): boolean {
@@ -219,6 +219,21 @@ export function planNativeObjCSubclasses(
             && native.objectiveCNativeReturnType == call.objectiveCNativeReturnType
             && sameNativeTypes(native.objectiveCParameterNativeTypes, call.objectiveCParameterNativeTypes)) {
             nativeMatches = nativeMatches + 1;
+            if (call.objectiveCReceiverHandoff) {
+              if (call.objectiveCHandoffParameterObjects.length != native.signature.parameterTypes.length
+                || call.parameterTypes.length != native.signature.parameterTypes.length) {
+                throw planError(module, "native superclass handoff lost object lifetime evidence");
+              }
+              let parameter: usize = 0;
+              while (parameter < native.signature.parameterTypes.length) {
+                const object = nativeObjCObjectType(modules, moduleIndex, native.signature.parameterTypes[parameter]);
+                if (call.objectiveCHandoffParameterObjects[parameter] != object
+                  || nativeObjCObjectType(modules, moduleIndex, call.parameterTypes[parameter]) != object) {
+                  throw planError(module, "native superclass handoff object lifetime evidence disagrees with the checked parameter type");
+                }
+                parameter = parameter + 1;
+              }
+            }
           }
         }
         if (nativeMatches != 1) throw planError(module,

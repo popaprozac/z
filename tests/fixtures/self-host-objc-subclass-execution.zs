@@ -9,10 +9,12 @@ import { ModuleSource } from "../../compiler/frontend/semantic-model.zs";
 import { NativeForeignModuleContract } from "../../compiler/frontend/semantic-foreign.zs";
 import { resolveParsedModulesWithForeignContracts } from "../../compiler/frontend/module-resolver.zs";
 import { emitModulesC } from "../../compiler/frontend/c-emitter.zs";
+import { planNativeObjCSubclasses } from "../../compiler/frontend/semantic-objc-subclass-plans.zs";
+import { emptySemanticEvidence } from "../../compiler/frontend/semantic-evidence.zs";
 
 // The host supplies raw Clang declarations, never Stage 0 semantic/lowering
 // evidence. Resolve, own, lower, and emit the real subclass entirely in Z.
-function emit(in wirePath: String, in sourcePath: String, in companionPath: String, in contractPath: String): String throws String {
+function emit(in wirePath: String, in sourcePath: String, in companionPath: String, in contractPath: String, in corruption: String): String throws String {
   const wire = try fs.readText(wirePath);
   const raw = try decodeRawForeignDeclarations(wire);
   const contractSource = contractPath.byteLength > 0 ? try fs.readText(contractPath) : `declare module "./objc-subclass.h" {}`;
@@ -47,15 +49,43 @@ function emit(in wirePath: String, in sourcePath: String, in companionPath: Stri
     success(value) => value;
     failure(error) => throw `${error.code}: ${error.message}`;
   };
+  if (corruption.byteLength > 0) {
+    // The planner consumes call evidence only. Keep this a minimal corrupted
+    // proof, not a deep copy of the resolver's ownership-bearing lookup Maps.
+    let evidence = emptySemanticEvidence();
+    evidence.callResolutions = copy graph.modules[0].semanticEvidence.callResolutions;
+    let call: usize = 0;
+    let changed = false;
+    while (call < evidence.callResolutions.length) {
+      if (evidence.callResolutions[call].objectiveCReceiverHandoff
+        && evidence.callResolutions[call].objectiveCHandoffParameterObjects.length > 0
+        && evidence.callResolutions[call].objectiveCHandoffParameterObjects[0]) {
+        if (corruption == "missing-lifetime") {
+          evidence.callResolutions[call].objectiveCHandoffParameterObjects = Array<boolean>();
+        } else if (corruption == "wrong-lifetime") {
+          evidence.callResolutions[call].objectiveCHandoffParameterObjects[0] = false;
+        } else throw "unknown evidence corruption";
+        changed = true;
+        break;
+      }
+      call = call + 1;
+    }
+    if (!changed) throw "no object handoff available for corruption";
+    match (attempt planNativeObjCSubclasses(modules[0], graph.modules, 0, evidence)) {
+      success(plans) => throw "corrupt lifetime evidence was accepted";
+      failure(error) => throw copy error.message;
+    }
+  }
   return try emitModulesC(modules, graph);
 }
 
 function main(): i32 {
   const arguments = process.args();
-  if (arguments.length < 2 || arguments.length > 4) return 2;
+  if (arguments.length < 2 || arguments.length > 5) return 2;
   const companion = arguments.length >= 3 ? copy arguments[2] : "";
-  const contract = arguments.length == 4 ? copy arguments[3] : "";
-  return match (attempt emit(arguments[0], arguments[1], companion, contract)) {
+  const contract = arguments.length >= 4 ? copy arguments[3] : "";
+  const corruption = arguments.length == 5 ? copy arguments[4] : "";
+  return match (attempt emit(arguments[0], arguments[1], companion, contract, corruption)) {
     success(source) => { console.write(source); select 0; }
     failure(error) => { console.error(error); select 1; }
   };

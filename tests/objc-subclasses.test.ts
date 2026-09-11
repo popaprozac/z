@@ -583,19 +583,15 @@ hostToolchainTest("records the real AppKit zoom integration boundaries without o
   const file = resolve(projectRoot, "tests/fixtures/objc-subclass-appkit-reentry.zs");
   const source = readFileSync(file, "utf8");
   const artifact = compileToNative(source, file);
-  assert.match(artifact.source, /id _z_handoff_argument_0 = NULL/);
+  assert.match(artifact.source, /objc_precise_lifetime\)\) __strong id _z_handoff_argument_0 = sender/);
   assert.match(artifact.source, /\[super zoom:_z_handoff_argument_0\]/);
   assert.match(artifact.source, /access_begin\(&self->_z_native_subclass_access, true\)/);
   assert.match(artifact.source, /\[super setFrame:_z_handoff_argument_0 display:_z_handoff_argument_1 animate:_z_handoff_argument_2\]/);
   // NSObject is not a sound substitute for Objective-C id: a native sender
-  // need not inherit from NSObject. Keep this rejected until the source type
-  // for erased native identity is designed, rather than weakening ABI checks.
-  const narrowSender = source.replace("  function requestZoom", `
-    override function zoom(in sender: AppKit.NSObject | null): void as "zoom:" {
-      super.zoom(sender);
-    }
-    function requestZoom`);
-  assert.throws(() => compileToNative(narrowSender, file), /parameter 1 expects id \| null, found AppKit.NSObject \| null/);
+  // need not inherit from NSObject. Source-nameable objc.Object preserves the
+  // exact native signature; a narrowed substitute remains unsound.
+  const narrowSender = source.replace("in sender: objc.Object | null", "in sender: AppKit.NSObject | null");
+  assert.throws(() => compileToNative(narrowSender, file), /parameter 1 expects objc\.Object \| null, found AppKit.NSObject \| null/);
   assert.throws(() => compileToNative(source.replace("function main()", "async function main()"), file),
     /native Objective-C subclasses cannot compose with async lowering yet/);
 }, 60_000);

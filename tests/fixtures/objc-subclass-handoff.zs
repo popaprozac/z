@@ -1,4 +1,5 @@
 import native from "./objc-subclass.h";
+import objc from "std/objc";
 import { thread } from "std/thread";
 
 class HandoffCounter extends native.ZSubclassFixture on thread.main {
@@ -65,6 +66,19 @@ class HandoffCounter extends native.ZSubclassFixture on thread.main {
   function borrowedArgument(inout this): i32 as "borrowedArgument" {
     return super.readObject(this);
   }
+  override function forward(inout this, in sender: objc.Object | null, value: i32): i32 as "delegatedObject:increment:" {
+    return super.delegatedObject(sender, increment: value);
+  }
+  function fieldSnapshot(inout this): i32 as "fieldSnapshot" {
+    const before = native.z_subclass_stored_destroyed();
+    const result = super.delegatedObject(this.pending, increment: 0);
+    if (native.z_subclass_stored_destroyed() != before + 1) return -101;
+    return result;
+  }
+  function senderCleanup(inout this): i32 as "senderCleanup" {
+    super.attachResource(this.pending);
+    return super.delegatedObject(this.pending, increment: 0);
+  }
 }
 
 function exercise(): i32 on thread.main {
@@ -75,11 +89,24 @@ function exercise(): i32 on thread.main {
   if (scenario == 3) return counter.cleanupHandoff();
   if (scenario == 4) return counter.readAccess(1);
   if (scenario == 5) return counter.nestedHandoff();
-  if (scenario == 6) return counter.borrowedArgument();
+  if (scenario == 6) return counter.borrowedArgument() == 40 ? 0 : 8;
+  if (scenario == 7) return counter.senderCleanup();
   if (counter.update(1) != 42) return 1;
   if (counter.readerDelegate() != 43) return 2;
   if (counter.readAccess(0) != 43) return 3;
   if (counter.conditionalDelegate(1) != 44) return 7;
+  return objectSnapshots();
+}
+
+function objectSnapshots(): i32 on thread.main {
+  const counter = new HandoffCounter(40);
+  if (counter.fieldSnapshot() != 1) return 9;
+  const sender: native.ZSubclassStoredResource = native.z_subclass_stored_resource(7);
+  if (counter.forward(sender, 0) != 7) return 10;
+  if (counter.forward(null, 0) != 40) return 11;
+  // Native code can supply the receiver itself as a borrowed sender. An
+  // ordinary Z inout receiver + in argument alias remains statically rejected.
+  if (native.z_subclass_call_forward_alias(counter) != 40) return 12;
   return 0;
 }
 

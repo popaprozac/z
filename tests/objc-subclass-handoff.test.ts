@@ -44,16 +44,22 @@ hostToolchainTest("delegates native superclass calls without dropping other loan
       location: { fileName: fixture, offset: 0, line: 1, column: 1 },
     }], fixture, [directory]).get("native")!);
     const input = resolve(temporary, "input.zs");
-    const native = (candidate: string) => {
+    const native = (candidate: string, corruption = "") => {
       writeFileSync(input, candidate);
-      return spawnSync(oracle, [wire, input, "", contract], {
+      return spawnSync(oracle, [wire, input, "", contract, corruption], {
         encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024,
       });
     };
     const emitted = native(source);
     assert.equal(emitted.status, 0, emitted.stderr);
+    for (const corruption of ["missing-lifetime", "wrong-lifetime"]) {
+      const rejected = native(source, corruption);
+      assert.equal(rejected.status, 1, rejected.stderr);
+      assert.match(rejected.stderr, /handoff.*(lost object lifetime evidence|object lifetime evidence disagrees)/);
+    }
     for (const [compiler, output] of [["stage0", compileToNative(source, fixture).source], ["native", emitted.stdout]]) {
       assert.match(output, /_z_native_subclass_handoff_begin\(&_z_native_subclass_loan\)/);
+      assert.match(output, /objc_precise_lifetime\)\) __strong id[^;]*_z_handoff_argument_0/);
       const generated = resolve(temporary, `${compiler}.m`);
       writeFileSync(generated, output);
       for (const optimization of ["-O0", "-O2"]) {
@@ -67,16 +73,19 @@ hostToolchainTest("delegates native superclass calls without dropping other loan
         //    conditional return, retained snapshot survives field replacement,
         //    ARC cleanup, and the last external owner released during reentry.
         // 1: restored guard; 2: argument evaluation; 3: local ARC destruction;
-        // 4: another reader still active; 5: nested expression; 6: borrowed object.
-        for (let scenario = 0; scenario <= 6; scenario++) {
+        // 4: another reader still active; 5: nested expression;
+        // 6: safe receiver-as-object snapshot; 7: sender destructor reentry
+        // after argument-temp cleanup (must happen AFTER guard reacquisition).
+        for (let scenario = 0; scenario <= 7; scenario++) {
           const result = spawnSync(executable, [], {
             encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL",
             env: { ...process.env, Z_SUBCLASS_ACCESS_SCENARIO: String(scenario) },
           });
           assert.equal(result.error, undefined);
           assert.equal(result.signal, null);
-          assert.equal(result.status, scenario === 0 ? 0 : 86, `${compiler} ${optimization} scenario ${scenario}: ${result.stderr}`);
-          if (scenario > 0) assert.match(result.stderr, /reentrant native subclass access conflicts with inout this/);
+          const succeeds = scenario === 0 || scenario === 6;
+          assert.equal(result.status, succeeds ? 0 : 86, `${compiler} ${optimization} scenario ${scenario}: ${result.stderr}`);
+          if (!succeeds) assert.match(result.stderr, /reentrant native subclass access conflicts with inout this/);
           else assert.doesNotMatch(result.stderr, /runtime error|UndefinedBehaviorSanitizer/);
         }
       }

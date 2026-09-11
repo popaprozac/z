@@ -6260,12 +6260,16 @@ function appendExpression(
     if (handoff) {
       if (declaration.expressions[index].kind != LoweredExpressionKind.objectiveCSuperCall
         || declaration.expressions[index].objectiveCHandoffReturnType.byteLength == 0
-        || declaration.expressions[index].objectiveCHandoffParameterTypes.length + 1 != declaration.expressions[index].children.length) {
+        || declaration.expressions[index].objectiveCHandoffParameterTypes.length + 1 != declaration.expressions[index].children.length
+        || declaration.expressions[index].objectiveCHandoffParameterObjects.length != declaration.expressions[index].objectiveCHandoffParameterTypes.length) {
         throw "native superclass handoff lost checked dispatch/ABI evidence";
       }
       output.append("({ ");
       let argument: usize = 1;
       while (argument < declaration.expressions[index].children.length) {
+        if (declaration.expressions[index].objectiveCHandoffParameterObjects[argument - 1]) {
+          output.append("__attribute__((objc_precise_lifetime)) __strong ");
+        }
         output.append(declaration.expressions[index].objectiveCHandoffParameterTypes[argument - 1]);
         output.append(` _z_handoff_argument_${argument - 1} = `);
         const argumentIndex = declaration.expressions[index].children[argument];

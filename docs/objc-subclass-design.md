@@ -367,28 +367,30 @@ delegation boundary below. The same six manual cases now complete; the initial
 failure remains useful evidence for why whole-entry exclusivity alone was too
 restrictive for ordinary native superclass behavior.
 
-Two independent composition gaps also remain before production integration:
-`zoom:` accepts nullable Objective-C `id`, not `NSObject *`; its erased native
-identity needs an approved source annotation rather than a narrowed signature.
-Also, the Stage 0 async emitter currently rejects any program containing a
-native subclass, even when that subclass's own methods are synchronous. Neither
-gap is closed by selector registration or receiver handoff support.
+The erased native sender is now source-nameable as `objc.Object | null`, and
+borrowed sender delegation is supported below. One independent composition gap
+remains before production integration: the Stage 0 async emitter rejects any
+program containing a native subclass, even when that subclass's own methods are
+synchronous. Selector registration and receiver handoff do not close that gap.
 
 #### Checked synchronous superclass delegation (2026-09-11)
 
 Both compilers automatically hand off the current entry's receiver access for
 a checked synchronous, nonconsuming `super` call when it is the entire expression
-of a statement, local initializer, or return. The initial tier accepts scalar,
-enum, and plain native record arguments/results, plus literal `null` for native
-object arguments. It excludes constructors, nested expressions, writable/output
-arguments, and borrowed native objects, blocks, pointers, or cleanup-bearing
-values. These other calls keep the original guard; there is no blanket `super`
-bypass and no new syntax.
+of a statement, local initializer, or return. It accepts scalar, enum, and plain
+native record arguments/results, plus native object arguments (including
+nullable erased `objc.Object`). Each object argument becomes a precisely scoped
+strong ARC snapshot before delegation, whether sourced from an `in` parameter,
+an owned local, `this`, or a field value. This copies reference identity, not the
+object or a loan into its source storage. Constructors, nested expressions,
+writable/output arguments, blocks, raw pointers, consuming calls, and other
+cleanup-bearing values remain outside this tier. Ineligible calls keep the
+original guard or are rejected; there is no blanket `super` bypass or new syntax.
 
 ```zs
-function requestZoom(inout this): void as "requestZoom" {
+override function zoom(inout this, in sender: objc.Object | null): void as "zoom:" {
   this.changes = this.changes + 1;
-  super.zoom(null); // AppKit may reenter a guarded Z setFrame override here.
+  super.zoom(sender); // AppKit may reenter a guarded Z setFrame override here.
   // Receiver access has been reacquired before this continuation.
 }
 ```
@@ -399,7 +401,10 @@ add field-borrowing support. Arguments are evaluated and materialized under the
 original guard before delegation. Only that entry's access is released, not the
 receiver's entire access count: another active reader still prevents a writer.
 The existing precise-lifetime receiver hold remains active. Access is reacquired
-immediately after native return, before Z resumes or body-local cleanup runs.
+immediately after native return, before Z resumes or argument/body-local cleanup
+runs. Object argument temporaries use `objc_precise_lifetime`: their final
+release cannot move ahead of reacquisition, even in optimized code. A native
+destructor that reenters at that point is subject to the restored guard.
 
 This is a possible mutation boundary, not an atomic operation. A copied scalar
 or retained object local is a snapshot; reentry may replace the field it came
@@ -408,12 +413,18 @@ fresh field reads still use their declared type. Any future field-based flow
 facts must be invalidated here.
 
 The handoff adds a small stack token and release/reacquire checks, but no new
-heap allocation or receiver hold beyond the existing entry guard. Its cost has
-not been benchmarked. Differential strict-Clang/UBSan tests at `-O0` and `-O2`
+heap allocation or receiver hold beyond the existing entry guard. Object
+arguments add ordinary ARC retain/release work; this is intentional lifetime
+safety, not a zero-cost claim. Its cost has not been benchmarked.
+Differential strict-Clang/UBSan tests at `-O0` and `-O2`
 cover reader/writer delegation, value/void returns, snapshots, final outside
 owner release, restoration, guarded argument evaluation and local destruction,
-nested readers, and excluded call shapes. The opt-in AppKit runner accepts
-`--native` to exercise the freshly bootstrapped compiler as well as Stage 0.
+nested readers, borrowed/nullable/receiver-alias object arguments, field snapshot
+survival and exact cleanup, argument-destructor reentry, and excluded call
+shapes. Missing or contradictory native object-lifetime evidence is rejected.
+The AppKit runner accepts `--check` for strict Clang validation without opening
+windows, or explicit `--run` in a GUI session. Add `--native` to exercise the
+freshly bootstrapped compiler rather than Stage 0.
 
 ### Implemented inline owned storage
 

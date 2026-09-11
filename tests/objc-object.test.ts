@@ -60,7 +60,7 @@ hostToolchainTest("names erased native Objective-C identity without boxing or lo
   assert.deepEqual(diagnostics(stored, fixture), []);
   assert.deepEqual(diagnostics(shadowed, fixture), []);
   assert.deepEqual(diagnostics(subclassSource, fixture), []);
-  assert.doesNotMatch(compileToNative(subclassSource, fixture).source, /_z_native_subclass_handoff_begin\(&_z_native_subclass_loan\)/);
+  assert.match(compileToNative(subclassSource, fixture).source, /_z_native_subclass_handoff_begin\(&_z_native_subclass_loan\)/);
   const memberOffset = source.indexOf("objc.Object") + "objc.".length;
   assert.match(hover(source, fixture, memberOffset + 2)?.contents.value ?? "", /native Objective-C id/);
   const choices = completions(source, fixture, memberOffset);
@@ -117,7 +117,7 @@ hostToolchainTest("executes erased objects through independent native lowering a
     for (const candidate of [source, aliased, modular, stored, shadowed, subclassSource]) {
       const emitted = native(candidate);
       assert.equal(emitted.status, 0, emitted.stderr);
-      if (candidate === subclassSource) assert.doesNotMatch(emitted.stdout, /_z_native_subclass_handoff_begin\(&_z_native_subclass_loan\)/);
+      if (candidate === subclassSource) assert.match(emitted.stdout, /_z_native_subclass_handoff_begin\(&_z_native_subclass_loan\)/);
       for (const [compiler, output] of [["stage0", compileToNative(candidate, fixture).source], ["native", emitted.stdout]]) {
         const generated = resolve(temporary, `${compiler}.m`);
         writeFileSync(generated, output);

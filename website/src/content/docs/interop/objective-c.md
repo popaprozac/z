@@ -103,14 +103,15 @@ Inherited native overrides can now name a nullable sender accurately:
 
 ```z
 override function zoom(inout this, in sender: objc.Object | null): void as "zoom:" {
-  // The sender's concrete native class is unknown.
+  super.zoom(sender);
 }
 ```
 
-This does **not** broaden superclass handoff: forwarding a borrowed `sender`
-through `super.zoom(sender)` still keeps the receiver access guard. Literal
-`super.zoom(null)` is in the checked handoff tier. Async native-subclass
-composition remains separate work.
+For this checked synchronous full-expression delegation, the compiler keeps a
+strong ARC snapshot of `sender`, then releases only the current receiver entry's
+access. It restores access before releasing the snapshot. Native reentry can
+therefore reach a guarded override without turning the sender into an escaping
+storage loan. Async native-subclass composition remains separate work.
 
 String bridging also composes with conditional values:
 
@@ -197,18 +198,20 @@ allocation. This conservative safety tier is not zero overhead.
 
 There is one checked delegation exception: a synchronous `super` call used as
 a whole statement, local initializer, or return can temporarily release the
-current entry's access. The first tier permits scalar, enum, and plain native
-record values, plus literal `null` native object arguments. Arguments are
-evaluated first while guarded; the receiver stays alive; access is restored
-before Z continues or destroys locals. Other active readers remain protected.
-This lets AppKit's `super.zoom(null)` reenter a mutable `setFrame` override
-without disabling its guard. Nested expressions and borrowed native arguments
-keep the original guard, and live receiver-field loans are rejected.
+current entry's access. It permits scalar, enum, and plain native record values,
+plus native object arguments, including borrowed nullable senders and field
+references. Arguments are evaluated first while guarded; object references get
+precise-lifetime strong snapshots; the receiver stays alive; access is restored
+before argument destruction, Z continuation, or local cleanup. Other active
+readers remain protected. This lets AppKit's `super.zoom(sender)` reenter a
+mutable `setFrame` override without disabling its guard. Nested expressions,
+blocks, and writable arguments remain outside the tier, and live receiver-field
+storage loans are rejected.
 
 Reentry may change fields. Retained or copied locals remain snapshots, not
 proof that the receiver is unchanged. This boundary adds stack state and access
-checks, not another heap allocation. It does not yet enable native subclasses
-in async programs or source annotations for erased Objective-C `id`.
+checks plus native ARC retain/release for object arguments, not another heap
+allocation. It does not yet enable native subclasses in async programs.
 
 Private stored scalars, imported enums/plain native records, owned `String`, and
 strong imported Objective-C references are supported. They live inline in the

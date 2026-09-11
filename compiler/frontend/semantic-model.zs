@@ -245,6 +245,7 @@ export struct ModuleCallResolution {
   objectiveCReceiverNativeType: String = "";
   objectiveCNativeReturnType: String = "";
   objectiveCReceiverHandoff: boolean = false;
+  objectiveCHandoffParameterObjects: Array<boolean> = Array<boolean>();
   objectiveCParameterNativeTypes: Array<String> = Array<String>();
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
