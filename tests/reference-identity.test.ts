@@ -131,6 +131,12 @@ hostToolchainTest("compares class identity without consuming owners and cleans c
           if (native.z_identity_make(3) == native.z_identity_make(4)) return 6;
           if (false && native.z_identity_make(5) == first) return 7;
           if (first.value != 1 || alias.value != 1) return 8;
+          const optional = native.ZIdentityObject.optionalWithValue(6);
+          if (optional == null || optional.value != 6) return 9;
+          const optionalChild = native.ZIdentityChild.optionalWithValue(7);
+          if (optionalChild == null || optionalChild.value != 7) return 10;
+          const missing = native.ZIdentityChild.optionalWithValue(-1);
+          if (missing != null) return 11;
           return native.z_identity_equal_calls();
         }
         function main(): i32 {

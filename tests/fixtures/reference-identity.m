@@ -2,6 +2,9 @@
 static int live = 0;
 static int equalCalls = 0;
 @implementation ZIdentityObject
++ (instancetype)optionalWithValue:(int)value {
+  return value < 0 ? nil : [[self alloc] initWithValue:value];
+}
 - (instancetype)initWithValue:(int)value {
   self = [super init];
   if (self) { _value = value; live++; }

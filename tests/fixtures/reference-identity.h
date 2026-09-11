@@ -2,6 +2,7 @@
 NS_ASSUME_NONNULL_BEGIN
 @interface ZIdentityObject : NSObject
 - (instancetype)initWithValue:(int)value;
++ (instancetype _Nullable)optionalWithValue:(int)value;
 @property(readonly) int value;
 @end
 @interface ZIdentityChild : ZIdentityObject

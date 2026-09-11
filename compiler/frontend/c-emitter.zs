@@ -5706,6 +5706,36 @@ function appendExpression(
     }
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.classOutputSlot) {
+    const expression = view declaration.expressions[index];
+    if (expression.children.length != 1 || expression.labels.length == 0) {
+      throw "native C emission received a malformed class output slot";
+    }
+    const operand = expression.children[0];
+    // Keep this an lvalue: ordinary call lowering takes its address. Evaluation
+    // stays inside the call's branch, including short-circuit expressions.
+    output.append("*({ ");
+    if (expression.value.byteLength > 0) {
+      output.append("if (");
+      output.append(expression.value);
+      output.append(") ");
+    }
+    output.append("Z_");
+    output.append(expression.labels[0]);
+    output.append("_release(");
+    try appendExpression(inout output, declaration, operand);
+    output.append("); ");
+    try appendExpression(inout output, declaration, operand);
+    output.append(" = NULL; ");
+    if (expression.value.byteLength > 0) {
+      output.append(expression.value);
+      output.append(" = true; ");
+    }
+    output.append("&(");
+    try appendExpression(inout output, declaration, operand);
+    output.append("); })");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.moveValue) {
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received a malformed move expression";
@@ -7868,7 +7898,8 @@ function appendLocalStatementStorage(
     }
     none => match (in declaration.statements[index].type) {
       some(storageType) => {
-        if (storageType.kind == LoweredTypeKind.foreignHandleType) {
+        if (storageType.kind == LoweredTypeKind.foreignHandleType
+          || storageType.kind == LoweredTypeKind.classType) {
           output.append(" = NULL");
         }
       }

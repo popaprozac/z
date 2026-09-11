@@ -1297,6 +1297,17 @@ fields and mutable method receivers, dynamic indexes, array-to-Slice projection,
 and any borrow that crosses async suspension remain conservative because their
 address or alias stability needs stronger proof.
 
+For synchronous ARC class output, a callee may fill either a fresh `let` binding
+or an existing one. Passing an existing binding with `out` releases that
+binding's former reference before the call; other aliases keep their ordinary
+ARC lifetime. Repeated assignments inside the callee release the prior output,
+and the final output belongs to the caller. The same rule applies when output
+is forwarded through another function or method, or a binding is reinitialized
+after `move`. Output preparation follows normal expression evaluation, including
+short-circuiting. It does not allocate an extra owner or weaken definite
+initialization. Throwing Z functions with `out`, `out` closure parameters, and
+ownership-bearing async output remain outside the current tier.
+
 ### Callable thread contracts
 
 An ordinary function value is executor-local. When a callable may be stored in

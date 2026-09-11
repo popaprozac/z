@@ -11,6 +11,7 @@ import {
 } from "./semantic-type-identities.zs";
 import {
   genericTypeShape,
+  isNullableTypeName,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import { substituteGenericType } from "./semantic-type-ownership.zs";
@@ -942,10 +943,9 @@ export function methodCallShape(
                 rebound.ownerModuleIndex = location.moduleIndex;
                 rebound.ownerSymbolIndex = location.symbolIndex;
                 if (rebound.objectiveCReturnsInstanceType) {
-                  rebound.signature.returnType = ownerType.copyBytes(
-                    0,
-                    ownerType.byteLength
-                  );
+                  rebound.signature.returnType = isNullableTypeName(rebound.signature.returnType)
+                    ? `${ownerType} | null`
+                    : ownerType.copyBytes(0, ownerType.byteLength);
                 }
                 return Option.some(move rebound);
               }

@@ -275,6 +275,10 @@ identity here, whereas Z `String` uses UTF-8 content equality. Comparing two
 named references needs only a pointer comparison; nontrivial operands keep
 temporary references alive through the comparison and clean them up afterward.
 
+Nullable `instancetype` factories preserve both the receiver's class and the
+possibility of `null`, including inherited factories. Check the result before
+accessing members; for example, `NSURL.URLWithString(...)` may return `null`.
+
 ### New native callback methods
 
 A native subclass can also introduce a method that the superclass does not have:

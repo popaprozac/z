@@ -59,7 +59,7 @@ import { selfHostExecutableDifferentialCorpus } from "./support/self-host-fixtur
 import { createHash } from "node:crypto";
 import { exerciseGeneratedAdapterLinking } from "./support/generated-adapter-linking.ts";
 
-hostToolchainTest("preserves native subclass syntax while rejecting unimplemented native semantics", () => {
+hostToolchainTest("preserves native subclass syntax while requiring ABI evidence for stored native fields", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/objc-subclass.zs");
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture], {
     encoding: "utf8", timeout: 120_000,
@@ -71,7 +71,7 @@ hostToolchainTest("preserves native subclass syntax while rejecting unimplemente
   });
   assert.equal(resolution.status, 1, resolution.stderr);
   assert.match(resolution.stderr, /Z0814/);
-  assert.match(resolution.stderr, /native subclass body checking requires attached Objective-C superclass ABI evidence/);
+  assert.match(resolution.stderr, /native stored fields currently support owned String, scalars, plain native value records, and strong imported Objective-C references/);
   const directory = mkdtempSync("/tmp/z-subclass-parser-");
   try {
     const vocabulary = resolve(directory, "main.zs");
@@ -1349,7 +1349,7 @@ test("specializes exported trait adapters for private downstream types", () => {
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(
     emission.stdout,
-    /Z_PrivateLifecycle_start\(&\(service\), &\(\(\*context\)\)\)/,
+    /Z_PrivateLifecycle_start\(&\(\(_z_stage1_callable_environment->service\)\), &\(\(\*context\)\)\)/,
   );
   assert.doesNotMatch(emission.stdout, /service\.start/);
 
@@ -8587,18 +8587,17 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       }
       function main(): i32 { return 0; }
     `);
-    for (const [minimumVersion, code, message] of [
-      ["13.0", "Z0802", /ZWireFuture.*requires macos 14.0/],
-      ["14.0", "Z0814", /native Objective-C subclass execution/],
-    ] as const) {
+    for (const minimumVersion of ["13.0", "14.0"]) {
       writeFileSync(subclassAvailabilityManifest, JSON.stringify({ target: {
         name: "subclass-availability", kind: "executable", entry: "subclass-availability.zs", platform: "macos", minimumVersion,
         includeDirectories: [resolve(projectRoot, "tests/fixtures")],
       } }));
       const checked = spawnSync(executable, ["check", subclassAvailabilitySource], { encoding: "utf8", timeout: 30_000 });
-      assert.equal(checked.status, 1, checked.stdout + checked.stderr);
-      assert.match(checked.stderr, new RegExp(code));
-      assert.match(checked.stderr, message);
+      assert.equal(checked.status, minimumVersion === "13.0" ? 1 : 0, checked.stdout + checked.stderr);
+      if (minimumVersion === "13.0") {
+        assert.match(checked.stderr, /Z0802/);
+        assert.match(checked.stderr, /ZWireFuture.*requires macos 14.0/);
+      }
     }
     rmSync(subclassAvailabilityManifest);
     const borrowedObjCString = spawnSync(

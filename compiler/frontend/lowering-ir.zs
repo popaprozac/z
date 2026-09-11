@@ -253,6 +253,7 @@ export enum LoweredExpressionKind {
   wrappingMultiplyInteger,
   fsLockUnlock,
   moveValue,
+  classOutputSlot,
   copyValue,
   emptyValue,
   retainValue,
@@ -6106,9 +6107,13 @@ function cleanupMoveIndex(
   }
   for (const expression of expressions) {
     if (
-      expression.kind != LoweredExpressionKind.moveValue
+      (expression.kind != LoweredExpressionKind.moveValue
+        && expression.kind != LoweredExpressionKind.classOutputSlot)
       || expression.children.length != 1
     ) continue;
+    // An out call revives a possibly moved slot. Keep its lexical cleanup and
+    // track availability even in an otherwise straight-line function.
+    if (expression.kind == LoweredExpressionKind.classOutputSlot) hasControlFlow = true;
     const operand = expression.children[0];
     const root = loweredExpressionStorageRoot(expressions, operand);
     if (root.byteLength > 0) movedNames.add(move root);
@@ -6276,9 +6281,9 @@ function attachReplacementCleanup(
               return;
             }
           }
-          // An inout parameter does not own its caller's slot at function exit,
-          // but assignment still destroys the initialized value being replaced.
-          // Out parameters deliberately do not enter this path.
+          // Borrowed parameters do not own the caller's slot at function exit,
+          // but assignment destroys the value being replaced. Class out slots
+          // arrive empty (NULL), so repeated writes use the same cleanup rule.
           const needsReplacementCleanup = match (in statements[loweredIndex].type) {
             some(type) => moduleTypeNeedsCleanup(program, importedTypes, type);
             none => false;
@@ -6286,12 +6291,17 @@ function attachReplacementCleanup(
           // Most assignments are scalar locals: avoid scanning declarations
           // for parameter provenance when no destructor can be needed.
           if (!needsReplacementCleanup) return;
+          const classOutput = match (in statements[loweredIndex].type) {
+            some(type) => type.kind == LoweredTypeKind.classType;
+            none => false;
+          };
           let initializedParameter = false;
           for (const declaration of program.functions) {
             if (declaration.name != ownerName) continue;
             for (const parameter of declaration.parameters) {
               if (parameter.name == tree.nodes[tree.root].value
-                && parameter.mode == ParameterMode.inputOutput) {
+                && (parameter.mode == ParameterMode.inputOutput
+                  || (classOutput && parameter.mode == ParameterMode.output))) {
                 initializedParameter = true;
               }
             }
@@ -6301,7 +6311,8 @@ function attachReplacementCleanup(
               if (!semanticMethodOwnerMatches(ownerName, aggregate.name, method.name)) continue;
               for (const parameter of method.parameters) {
                 if (parameter.name == tree.nodes[tree.root].value
-                  && parameter.mode == ParameterMode.inputOutput) {
+                  && (parameter.mode == ParameterMode.inputOutput
+                    || (classOutput && parameter.mode == ParameterMode.output))) {
                   initializedParameter = true;
                 }
               }
@@ -7061,7 +7072,8 @@ function attachMoveLiveFlagsRange(
   let index = start;
   while (index < end) {
     if (
-      expressions[index].kind == LoweredExpressionKind.moveValue
+      (expressions[index].kind == LoweredExpressionKind.moveValue
+        || expressions[index].kind == LoweredExpressionKind.classOutputSlot)
       && expressions[index].children.length == 1
       && !expressionHasLabel(expressions[index], "worker-owned-scope")
     ) {
@@ -7118,7 +7130,8 @@ function markWorkerOwnedMoveRange(
   let index = start;
   while (index < end) {
     if (
-      expressions[index].kind == LoweredExpressionKind.moveValue
+      (expressions[index].kind == LoweredExpressionKind.moveValue
+        || expressions[index].kind == LoweredExpressionKind.classOutputSlot)
       && !expressionHasLabel(expressions[index], "worker-owned-scope")
     ) expressions[index].labels.push("worker-owned-scope");
     index = index + 1;
@@ -8352,7 +8365,8 @@ function attachThreadCaptureMoveFlags(
   let index = start;
   while (index < end) {
     if (
-      expressions[index].kind != LoweredExpressionKind.moveValue
+      (expressions[index].kind != LoweredExpressionKind.moveValue
+        && expressions[index].kind != LoweredExpressionKind.classOutputSlot)
       || expressions[index].children.length != 1
     ) {
       index = index + 1;
@@ -11367,6 +11381,19 @@ function lowerExpressionContextual(
       if (output[lowered].labels.length > 0) {
         output[lowered].labels[0] = move referencedType;
       } else output[lowered].labels.push(move referencedType);
+      return lowered;
+    }
+    if (tree.nodes[index].value == "out" && referencedType.byteLength > 0) {
+      const type = try lowerModuleTypeName(program, importedTypes, referencedType);
+      if (type.kind == LoweredTypeKind.classType) {
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.classOutputSlot,
+          "",
+          Array<usize>(lowered),
+          Array<String>(copy type.name)
+        );
+      }
     }
     return lowered;
   }

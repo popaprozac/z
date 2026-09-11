@@ -56,6 +56,26 @@ tier because its owner provenance cannot be exchanged independently. Direct
 ARC bindings preserve alias identity through the exchange; aggregates containing
 nested ARC identities wait for complete whole-value provenance transfer.
 
+## Initialize or replace through `out`
+
+```z
+class Session { id: i32; }
+
+function open(out session: Session): void {
+  session = new Session({ id: 42 });
+}
+
+let session: Session;
+open(out session);
+open(out session); // Releases this binding's old reference before filling it.
+```
+
+The caller owns the final reference. Other aliases keep their normal ARC
+lifetime. A callee that assigns an output more than once releases each displaced
+reference. A previously moved binding can also be initialized again with `out`.
+These rules apply to synchronous class output; throwing Z functions with `out`,
+`out` closure parameters, and ownership-bearing async output remain deferred.
+
 ## Views
 
 A view borrows part of an owner without retaining or copying it:

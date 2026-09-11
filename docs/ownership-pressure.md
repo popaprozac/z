@@ -8136,6 +8136,50 @@ still expecting supported native subclass checking to fail. Keep these as a
 separate test-maintenance follow-up; this checkpoint is not a claim that the
 entire suite is green.
 
+### ARC output storage transitions (2026-09-11)
+
+The class-identity checkpoint's two `out` follow-ups are now closed in both
+emitters. Fresh ARC locals have an internal NULL sentinel, avoiding Clang's
+guarded-read warning without exposing nullable class values in Z. An `out`
+argument releases the caller's previous reference, clears the slot, and revives
+its cleanup state. A native callee also releases displaced outputs on repeated
+assignment. Forwarding preserves this convention without making the callee own
+the slot at function exit.
+
+The expanded probe caught a Stage 0 leak in `true && fill(out value)`: cleanup
+had only been attached to statement-level calls. Class output preparation now
+lives at argument evaluation in both compilers, preserving selected-branch and
+loop behavior. Native callback-local cleanup flags also remain local when an
+output reinitializes a moved binding inside a block callable.
+
+`tests/native-out-cleanup.test.ts` checks fresh and initialized bindings,
+repeated assignment, out-to-out and inout-to-out forwarding, methods, named
+function values, conditional calls, loops, and callback-local move/revival. Its
+strict Clang/UBSan runs use `-O0` and `-O2` and exact destructor traces. No new
+syntax or ownership permission is added. Throwing Z `out` functions, closure
+`out` parameters, and ownership-bearing async output remain rejected rather
+than being silently included in this synchronous fix.
+
+Updating the three stale self-hosting assertions allowed the full bootstrap
+test to reach another gap: normalization discarded nullability when rebinding
+Objective-C `instancetype`. Native contracts and inherited method lookup now
+preserve that fact; the identity fixture exercises present/absent direct and
+inherited factories in addition to the real `NSURL.URLWithString` bootstrap
+case. These are checked nullability facts, not a relaxation of comparison rules.
+
+Validation: 384 tests pass across the full self-hosting suite (165), the
+ownership/core batch (171), and Objective-C/subclass batches (48). The local
+native compiler was rebuilt to a fixed point of 11,776,323 emitted C bytes.
+Stage 0 and native smooth-window compile checks pass with Reduce Motion on and
+off; the rebuilt standalone driver checks the example. Tier coverage, diff
+checks, and the 33-page website build pass. This checkpoint did not repeat GUI
+presentation measurements or claim a full-repository test run.
+
+Next: resume Zapp integration of the verified display-link controller, keeping
+its real delegate, window constraints, interruption, and shutdown behavior in
+scope. Public animation options and broader fullscreen/display experiments
+remain separate decisions.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -19,6 +19,7 @@ import {
   ModuleObjCSelectorCallbackSignature,
 } from "./semantic-model.zs";
 import {
+  isNullableTypeName,
   nativeFunctionSignature,
   nativeFunctionTypeName,
   nativeObjCObjectTypeName,
@@ -3397,7 +3398,9 @@ function normalizedObjCMethod(
     method.returnTypeName
   );
   if (method.returnsInstanceType) {
-    returnType = ownerType.copyBytes(0, ownerType.byteLength);
+    returnType = isNullableTypeName(returnType)
+      ? `${ownerType} | null`
+      : ownerType.copyBytes(0, ownerType.byteLength);
   }
   let asyncCallbackParameter = method.asyncCallbackParameter;
   let asyncResultParameter = method.asyncResultParameter;

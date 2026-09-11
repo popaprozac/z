@@ -7134,7 +7134,8 @@ bool ${liveFlag} = true;`;
       if (!statement.initializer) {
         if (!hasExplicitCleanupType(zType, context.structs, context.enums, context.semanticInfo)) return `${declaration};`;
         const liveFlag = ensureLiveFlag(statement.name, context);
-        const initialization = context.semanticInfo.foreignTypes.has(zType) ? " = NULL" : "";
+        const initialization = context.semanticInfo.foreignTypes.has(zType)
+          || context.structs.get(zType)?.kind === "class" ? " = NULL" : "";
         return `${declaration}${initialization};\nbool ${liveFlag} = false;`;
       }
       let initialized: string;
@@ -9262,6 +9263,9 @@ function generateNativeOutCall(
     if (access !== "out") continue;
     if (argument.kind !== "argumentReference") throw new Error("native out argument must name storage");
     const type = context.localTypes.get(argument.name)!;
+    // Class slots prepare themselves where the argument is evaluated, so this
+    // also works in nested calls and short-circuit expressions.
+    if (context.structs.get(type)?.kind === "class") continue;
     if (!hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) continue;
     const value = generateStoredValue(argument.name, context);
     const liveFlag = context.liveFlags.get(argument.name) ?? null;
@@ -10844,6 +10848,12 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
     case "argumentReference":
       if (expression.name === "this") return context.owner.receiverMode === "move" ? "&(self)" : "self";
       const argumentType = context.localTypes.get(expression.name) ?? "";
+      if (expression.access === "out" && context.structs.get(argumentType)?.kind === "class") {
+        const value = generateStoredValue(expression.name, context);
+        const liveFlag = context.liveFlags.get(expression.name) ?? null;
+        const cleanup = generateValueCleanup(value, argumentType, liveFlag, context);
+        return `({ ${cleanup} ${value} = NULL; ${liveFlag ? `${liveFlag} = true; ` : ""}&(${value}); })`;
+      }
       if (parseSliceType(argumentType)) return cBindingName(expression.name);
       if (
         expression.access === "in"
