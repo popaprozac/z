@@ -11688,6 +11688,7 @@ function inferExpressionInner(
                 }
                 const capturedClass = structs.get(String(underlyingType(capture.type)));
                 const executorBound = capturedClass?.kind === "class"
+                  && !capturedClass.nativeBase
                   && state.aggregateExecutorAffinities.has(capturedClass.name);
                 const transfer = executorBound
                   ? "executorBound"

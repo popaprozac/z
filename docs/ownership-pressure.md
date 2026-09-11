@@ -7844,6 +7844,76 @@ overrides. The fixed-point bootstrap emits 11,728,542 byte-identical C bytes;
 its erased-object example prints `15` and `0`. The website builds 33 pages;
 tier coverage and diff checks pass. This is not a full-suite run.
 
+### Native subclass identity across async storage (2026-09-11)
+
+Consumer: Zapp's synchronous AppKit subclass must live in an otherwise async
+application. The Stage 0 emitter's blanket rejection is removed without making
+native entries async. Its task planner now keeps native subclasses out of the
+ordinary Z class layout/retain/release map and uses their checked Objective-C
+identity. `new` calls the existing native constructor helper. Class properties
+such as `NSApplication.sharedApplication` and custom property getters use their
+checked Objective-C metadata in async frames too.
+
+This pressure exposed two native-backend bugs, not a reason to add a framework
+wrapper. Async native-local cleanup could call an ARC helper whose runtime
+dependency was not emitted. More importantly, malloc-backed main-delay frame
+locals retained strong Objective-C slots without clearing them on completion.
+Native cleanup now clears direct and recursively contained strong slots after
+Z cleanup; owned argument slots also clear on completion/cancellation rather
+than waiting for frame destruction. Guard disarming alone is not Clang ARC
+destruction. Repeated cleanup remains safe because the slots become nil/zero.
+
+The paired `objc-subclass-async.zs` fixture exercises direct native locals,
+an owned native parameter, a native reference inside a value struct, ordinary
+child continuation, superclass virtual reentry after resumption, typed failure,
+TaskScope cancellation after native-state initialization, and cancellation
+before the child starts. Both compilers run the same source. Seven native
+subclass objects and seven stored native resources are created and destroyed
+per execution; no live native resources remain after each completed operation.
+The independent native oracle receives only raw Clang declarations and `.zd`
+source, not Stage 0 semantic evidence. Paired negative probes reject async
+overrides, construction outside main, and opaque `thread.spawn` capture.
+
+The last negative closed an adjacent classification hole in Stage 0: a
+main-isolated native subclass must not select the ordinary Z executor-bound
+class transport mechanism. Native Objective-C retention and destruction need
+their own future cross-thread proof. No native thread permission is added here.
+
+Several *existing* native async shape limits surfaced while building the test:
+
+- A main-isolated helper with `await delay(1)` followed by awaiting another
+  helper is outside the current main-delay/continuation split.
+- Main-isolated `scheduler.yield()` is outside the native yield-frame tier.
+- A direct `await delay(10)` in native `main` falls through to an unhelpful
+  named-Task emission diagnostic; a supported main-isolated timer helper is a
+  different lowering path.
+- Direct `task linger()` for the tested main-isolated helper cannot resolve its
+  native callable task type. The implemented TaskScope scheduling path does.
+
+These are reproducible follow-ups, not new restrictions introduced by native
+subclasses and not a claim of general async parity. The test uses the existing
+TaskScope and main-isolated helper paths because those are the intended Zapp
+integration seam; it does not replace them with a native application shim.
+
+Cost: existing task-frame allocations plus native strong slots and ARC traffic;
+no extra Z object wrapper, cross-thread proxy, or deep copy. Native method entry
+and superclass handoff guards are unchanged. This is correctness evidence, not
+a new runtime benchmark. The AppKit probe supports `--async --check` to compile
+the real window across a timer-helper await without opening a GUI.
+
+Validation: 53 unique targeted tests across 11 suites pass, including the
+corrected AppKit compile-only header search path and three ordinary Z ARC async
+regressions. The new matrix runs both emitters at `-O0`/`-O2` five times each
+(20 bounded strict-Clang/UBSan executions, 140 native subclass objects and 140
+stored resources). Both fresh-native and Stage 0 async AppKit compile checks
+pass; no GUI or ASan run was used. Bootstrap reaches 11,731,815 byte-identical
+C bytes. The website builds 33 pages, tier coverage and diff checks pass. This
+is targeted validation, not a full-suite run.
+
+Next: use this bounded composition in the AppKit display-link controller and
+measure the real resize path before broadening unrelated async shapes. Keep the
+four native async follow-ups above visible for the next async-completeness pass.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

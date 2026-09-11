@@ -10,14 +10,21 @@ import { spawnSync } from "node:child_process";
 import { compileToNative } from "../compiler/src/compiler.ts";
 
 if (process.platform !== "darwin" || !["--run", "--check"].includes(process.argv[2] ?? "")
-  || process.argv.slice(3).some((argument) => argument !== "--native")) {
-  console.error("Usage: bun scripts/probe-appkit-subclass-reentry.ts --check|--run [--native] (--run opens windows)");
+  || process.argv.slice(3).some((argument) => !["--native", "--async"].includes(argument))) {
+  console.error("Usage: bun scripts/probe-appkit-subclass-reentry.ts --check|--run [--native] [--async] (--run opens windows)");
   process.exit(2);
 }
 
 const root = resolve(import.meta.dir, "..");
 const file = resolve(root, "tests/fixtures/objc-subclass-appkit-reentry.zs");
-const source = readFileSync(file, "utf8");
+const fixture = readFileSync(file, "utf8");
+const asynchronous = process.argv.includes("--async");
+const source = asynchronous ? fixture
+  .replace("function main()", "async function main()")
+  .replace('import console from "std/console";', 'import console from "std/console";\nimport { delay } from "std/time";')
+  .replace('console.log("before native operation");', 'const resumed = await resumeProbe();\n  console.log("before native operation");')
+  .concat('\nasync function resumeProbe(): i32 on thread.main { await delay(1); return 0; }\n')
+  : fixture;
 const directory = mkdtempSync(resolve(tmpdir(), "z-appkit-reentry-"));
 const native = process.argv.includes("--native");
 try {
@@ -47,7 +54,7 @@ try {
         encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
       });
       assert.equal(checked.status, 0, `${mode}: ${checked.stderr} ${checked.error ?? ""}`);
-      console.log(`${native ? "native" : "stage0"} ${mode}: checked without opening windows`);
+      console.log(`${native ? "native" : "stage0"} ${asynchronous ? "async" : "sync"} ${mode}: checked without opening windows`);
       continue;
     }
     for (const optimization of ["-O0", "-O2"]) {

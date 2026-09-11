@@ -109,7 +109,17 @@ The first tier deliberately rejects:
   native ownership contracts, and explicit manual ARC lifecycle calls;
 - methods marked `NS_REQUIRES_SUPER` until path validation exists;
 - capturing `super`, treating it as a value, or using it outside the native class;
-- composition with async lowering.
+- transferring native subclass identity through `thread.spawn` (including as
+  an opaque main-isolated capture). Ordinary Z executor-bound classes have a
+  separate transfer mechanism; it is not native Objective-C ARC.
+
+Synchronous native subclasses may coexist with async Z code. Construction,
+native method calls, and checked property getters work in Stage 0 task frames;
+the native compiler preserves the same Objective-C identity through its
+supported main-isolated timer and continuation frames. Owned parameters and
+local references, including references inside value structs, retain the native
+object until completion or cancellation. This does not enable async overrides
+or relax executor checking.
 
 Selector and ABI compatibility, subclass restrictions, designated initializer
 metadata, native availability, and executor requirements come from imported
@@ -368,10 +378,12 @@ failure remains useful evidence for why whole-entry exclusivity alone was too
 restrictive for ordinary native superclass behavior.
 
 The erased native sender is now source-nameable as `objc.Object | null`, and
-borrowed sender delegation is supported below. One independent composition gap
-remains before production integration: the Stage 0 async emitter rejects any
-program containing a native subclass, even when that subclass's own methods are
-synchronous. Selector registration and receiver handoff do not close that gap.
+borrowed sender delegation is supported below. The separate blanket rejection
+of subclasses in async programs has also been removed. Native subclasses stay
+Objective-C objects in async storage, not ordinary Z ARC classes. The general
+native async lowering boundaries still apply: main-isolated timer bodies and
+supported continuation bodies are distinct tiers, not arbitrary suspension
+composition. See the ownership-pressure checkpoint for the remaining probes.
 
 #### Checked synchronous superclass delegation (2026-09-11)
 

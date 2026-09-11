@@ -211,7 +211,16 @@ storage loans are rejected.
 Reentry may change fields. Retained or copied locals remain snapshots, not
 proof that the receiver is unchanged. This boundary adds stack state and access
 checks plus native ARC retain/release for object arguments, not another heap
-allocation. It does not yet enable native subclasses in async programs.
+allocation.
+
+Synchronous native subclasses can coexist with async Z programs. Their identity
+remains a native Objective-C reference in task storage, including owned
+parameters and references inside value structs. Supported main-isolated timer
+and continuation frames retain that identity across suspension and release it
+on completion or cancellation. No extra Z object wrapper is allocated.
+Subclass methods themselves remain synchronous and main-isolated; this does not
+enable native-object transfer through `thread.spawn` or remove the native
+compiler's broader async composition limits.
 
 Private stored scalars, imported enums/plain native records, owned `String`, and
 strong imported Objective-C references are supported. They live inline in the
@@ -280,8 +289,8 @@ run loop for delivery, and explicitly invalidate it during live shutdown to
 break any target/link cycle. Registration itself does not schedule a hop.
 
 Broader owned resource fields, escaping field views/captures, `Weak`, fallible
-constructors, object-returning overrides, and async composition remain future
-work. Ordinary Z-to-Z inheritance is not supported. Both the TypeScript
+constructors, object-returning or async overrides, and general suspension
+composition remain future work. Ordinary Z-to-Z inheritance is not supported. Both the TypeScript
 Stage 0 compiler and the native compiler execute this tier. The native frontend parses these declarations
 and checks imported declaration contracts, including restricted bases, inherited
 override signatures, and designated/nonnullable initializer selection. Structural

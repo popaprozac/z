@@ -48,8 +48,11 @@ production or compatibility-sensitive use.
   Checked synchronous full-expression `super` delegation releases only the
   current receiver loan and restores it before continuation/cleanup, enabling
   mutable AppKit zoom reentry without bypassing other active loans.
-  Broader resource fields, escaping field loans, and
-  async composition remain future work.
+  Synchronous subclasses also coexist with async code: native ARC references
+  survive supported main-isolated timer/continuation frames and are cleaned up
+  on completion and cancellation. Broader resource fields, escaping field loans,
+  async overrides, native-object thread transfer, and general suspension
+  composition remain future work.
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler and owned `objc.adapt<P>` carrier with direct `id<P>` ABI,

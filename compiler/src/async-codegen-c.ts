@@ -11,7 +11,6 @@ import type {
   MatchStatement,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import { objcSubclassError } from "./objc-subclasses.ts";
 import { parseTaskType } from "./async-types.ts";
 import { dynamicArrayTypeName, parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { generatorStepTypeName, parseAsyncGeneratorType } from "./generator-types.ts";
@@ -329,8 +328,6 @@ export function generateAsyncC(
   fileName: string,
   semanticInfo: SemanticInfo,
 ): AsyncCGeneration {
-  const nativeSubclass = program.structs.find((declaration) => declaration.nativeBase);
-  if (nativeSubclass) objcSubclassError(fileName, nativeSubclass.location, "native Objective-C subclasses cannot compose with async lowering yet; use a synchronous Stage 0 program for this first tier");
   const sourceTargets: AsyncTarget[] = [
     ...program.functions.filter((declaration) => declaration.async).map((declaration) => ({
       declaration,
@@ -425,7 +422,11 @@ export function generateAsyncC(
       },
     });
   }
-  const structsByName = new Map(program.structs.map((declaration) => [declaration.name, declaration]));
+  // Native subclasses keep their checked Objective-C identity in task frames.
+  // Do not select Z class layout, retain/release, or direct method helpers for
+  // them. Their synchronous definitions remain in synchronousProgram below.
+  const structsByName = new Map(program.structs.filter((declaration) => !declaration.nativeBase)
+    .map((declaration) => [declaration.name, declaration]));
   const channelTargetByShape = new Map<string, AsyncTarget>();
   const channelTargets = new Map<number, AsyncTarget>();
   for (const [callOffset, call] of semanticInfo.channelCalls) {
@@ -7763,6 +7764,12 @@ function emitFrameExpressionInner(
         : value;
     }
     case "member": {
+      const objcClassName = plan.types.semanticInfo.objcClassNames.get(expression.location.offset);
+      if (objcClassName) return objcClassName;
+      const objcProperty = plan.types.semanticInfo.objcProperties.get(expression.location.offset);
+      if (objcProperty) {
+        return `[${emitFrameExpression(expression.object, plan, fileName)} ${objcProperty.getter}]`;
+      }
       if (expression.object.kind === "identifier") {
         const enumeration = plan.types.enums.get(expression.object.name);
         const variant = enumeration?.variants.find((candidate) => candidate.name === expression.property);
@@ -8095,6 +8102,13 @@ function emitFrameExpressionInner(
     case "new": {
       if (plan.types.semanticInfo.taskScopeConstructors.has(expression.location.offset)) {
         return "z_task_scope_new(frame->task.executor)";
+      }
+      const nativeSubclass = plan.types.semanticInfo.objcSubclasses.get(expression.typeName);
+      if (nativeSubclass) {
+        const arguments_ = expression.arguments.map((argument, index) => emitFrameCallArgument(
+          argument, plan, fileName, nativeSubclass.declaration.constructor!.parameters[index],
+        ));
+        return `Z_${asyncNativeSymbolPart(expression.typeName)}_new(${arguments_.join(", ")})`;
       }
       const declaration = plan.types.structs.get(expression.typeName);
       if (declaration?.kind !== "class") {

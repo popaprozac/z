@@ -2046,27 +2046,35 @@ function appendAsyncStoredParameterCleanups(
   while (parameter > 0) {
     parameter = parameter - 1;
     const stored = view functionType.parameters[parameter];
-    if (
-      stored.mode != LoweredParameterMode.value
-      || !loweredTypeNeedsDeinit(program, stored.type)
-    ) continue;
-    appendIndent(inout output, depth);
-    output.append("if (frame->live_argument");
-    output.append(`${parameter}`);
-    output.append(") { Z_");
-    output.append(stored.type.name);
-    if (stored.type.kind == LoweredTypeKind.classType) {
-      output.append("_release(frame->argument");
+    if (stored.mode != LoweredParameterMode.value) continue;
+    if (loweredTypeNeedsDeinit(program, stored.type)) {
+      appendIndent(inout output, depth);
+      output.append("if (frame->live_argument");
       output.append(`${parameter}`);
-      output.append(");");
-    } else {
-      output.append("_deinit(&frame->argument");
+      output.append(") { Z_");
+      output.append(stored.type.name);
+      if (stored.type.kind == LoweredTypeKind.classType) {
+        output.append("_release(frame->argument");
+        output.append(`${parameter}`);
+        output.append(");");
+      } else {
+        output.append("_deinit(&frame->argument");
+        output.append(`${parameter}`);
+        output.append(");");
+      }
+      output.append(" frame->live_argument");
       output.append(`${parameter}`);
-      output.append(");");
+      output.append(" = false; }\n");
     }
-    output.append(" frame->live_argument");
-    output.append(`${parameter}`);
-    output.append(" = false; }\n");
+    // ARC heap slots own their reference independently of Z's live flag.
+    // Clear them on completion/cancellation, not just when freeing the frame.
+    if (typeContainsObjectiveCStrongSlot(program, stored.type)) {
+      appendIndent(inout output, depth);
+      output.append(`frame->argument${parameter} = `);
+      if (stored.type.kind == LoweredTypeKind.foreignObjCType) output.append("nil");
+      else output.append(`(Z_${stored.type.name}){0}`);
+      output.append(";\n");
+    }
   }
 }
 
@@ -16804,21 +16812,34 @@ function appendMainFrameRootCleanups(
       });
       none => throw "native main frame received an untyped local";
     };
-    if (!loweredTypeNeedsDeinit(program, localType)) continue;
-    appendIndent(inout output, depth);
-    output.append("if (context->");
-    appendMainFrameLocalLiveFieldName(inout output, root);
-    output.append(") { Z_");
-    output.append(localType.name);
-    if (localType.kind == LoweredTypeKind.classType) {
-      output.append("_release(context->");
-    } else {
-      output.append("_deinit(&context->");
+    if (loweredTypeNeedsDeinit(program, localType)) {
+      appendIndent(inout output, depth);
+      output.append("if (context->");
+      appendMainFrameLocalLiveFieldName(inout output, root);
+      output.append(") { Z_");
+      output.append(localType.name);
+      if (localType.kind == LoweredTypeKind.classType) {
+        output.append("_release(context->");
+      } else {
+        output.append("_deinit(&context->");
+      }
+      appendMainFrameLocalFieldName(inout output, root);
+      output.append("); context->");
+      appendMainFrameLocalLiveFieldName(inout output, root);
+      output.append(" = false; }\n");
     }
-    appendMainFrameLocalFieldName(inout output, root);
-    output.append("); context->");
-    appendMainFrameLocalLiveFieldName(inout output, root);
-    output.append(" = false; }\n");
+    if (typeContainsObjectiveCStrongSlot(program, localType)) {
+      appendIndent(inout output, depth);
+      output.append("context->");
+      appendMainFrameLocalFieldName(inout output, root);
+      output.append(" = ");
+      if (localType.kind == LoweredTypeKind.foreignObjCType) output.append("nil");
+      else {
+        const type = try cType(localType);
+        output.append(`(${type}){0}`);
+      }
+      output.append(";\n");
+    }
   }
 }
 
@@ -24480,6 +24501,18 @@ function programUsesObjCOwnedStorage(in program: LoweredProgram): boolean {
     }
   }
   for (const declaration of program.functions) {
+    // Async frame locals (including Z-defined native subclasses) use explicit
+    // strong-slot cleanup even when no enum or completion callback needs ARC.
+    if (declaration.asynchronous) {
+      for (const statement of declaration.statements) {
+        match (in statement.type) {
+          some(type) => {
+            if (type.kind == LoweredTypeKind.foreignObjCType) return true;
+          }
+          none => {}
+        }
+      }
+    }
     for (const expression of declaration.expressions) {
       match (expression.objectiveCAsyncCallbackParameter) {
         some(_) => return true;

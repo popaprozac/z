@@ -516,7 +516,6 @@ hostToolchainTest("rejects unsupported native subclass construction, effects, an
     ["captured super", baseline.replace("return super.value() + 2;", "const callback = (): i32 => super.value(); return callback();"), /cannot be captured/],
     ["reinit after construction", baseline.replace("return counter.readVirtualValue() - 42;", "counter.initWithValue(1); return 0;"), /checked constructor/],
     ["native weak", baseline.replace("return counter.readVirtualValue() - 42;", "const observed = weak counter; return 0;"), /native weak-reference tier/],
-    ["async composition", baseline.replace("function main", "async function main"), /cannot compose with async lowering/],
   ];
   for (const [name, source, expected] of cases) {
     assert.throws(() => compileToNative(source, fixture), expected, name);
@@ -592,8 +591,12 @@ hostToolchainTest("records the real AppKit zoom integration boundaries without o
   // exact native signature; a narrowed substitute remains unsound.
   const narrowSender = source.replace("in sender: objc.Object | null", "in sender: AppKit.NSObject | null");
   assert.throws(() => compileToNative(narrowSender, file), /parameter 1 expects objc\.Object \| null, found AppKit.NSObject \| null/);
-  assert.throws(() => compileToNative(source.replace("function main()", "async function main()"), file),
-    /native Objective-C subclasses cannot compose with async lowering yet/);
+  const asynchronous = compileToNative(source.replace("function main()", "async function main()"), file);
+  assert.match(asynchronous.source, /@interface ZNative_.* : NSWindow/);
+  const checked = spawnSync("xcrun", ["clang", "-x", "objective-c", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-I", resolve(projectRoot, "tests/fixtures"), "-fsyntax-only", "-"], {
+    input: asynchronous.source, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+  });
+  assert.equal(checked.status, 0, checked.stderr);
 }, 60_000);
 
 hostToolchainTest("executes native subclass lifecycle and reentrant receiver access guards", () => {

@@ -837,9 +837,12 @@ checked designated `super.init...(...)`; explicit `override function ... as
 See [native subclass construction and restrictions](objc-subclass-design.md).
 Private scalar/plain-native-value, owned `String`, and strong imported Objective-C
 reference fields (nullable or nonnullable) plus source `deinit`
-are supported with guarded access and automatic cleanup. Broader resource storage,
-escaping field loans, and async subclass composition remain unimplemented;
-ordinary header imports and protocol adaptation do not depend on this new tier.
+are supported with guarded access and automatic cleanup. Synchronous subclasses
+can coexist with async code, retaining native identity across supported
+main-isolated suspension points without a Z wrapper. Broader resource storage,
+escaping field loans, async overrides, and native-object thread transfer remain
+unimplemented; ordinary header imports and protocol adaptation do not depend on
+this new tier.
 
 The default Objective-C experience remains header-first. Importing AppKit is
 enough for ordinary nominal types, class and instance methods, properties,
