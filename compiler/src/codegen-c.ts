@@ -2488,6 +2488,16 @@ static __attribute__((unused)) void _z_native_subclass_access_end(_z_native_subc
     if (*guard->state <= 0) abort();
     *guard->state -= 1;
   }
+}
+typedef struct { _z_native_subclass_access_guard *entry; bool active; } _z_native_subclass_handoff;
+static __attribute__((unused)) _z_native_subclass_handoff _z_native_subclass_handoff_begin(_z_native_subclass_access_guard *entry) {
+  _z_native_subclass_access_end(entry);
+  return (_z_native_subclass_handoff){ entry, true };
+}
+static __attribute__((unused)) void _z_native_subclass_handoff_end(_z_native_subclass_handoff *handoff) {
+  if (!handoff->active) return;
+  *handoff->entry = _z_native_subclass_access_begin(handoff->entry->state, handoff->entry->exclusive);
+  handoff->active = false;
 }`;
 }
 
@@ -11519,6 +11529,16 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         }
         const receiver = objcCall.superDispatch ? "super" : generateExpression(expression.callee.object, context);
         const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
+        if (objcCall.receiverHandoff) {
+          const proof = objcCall.receiverHandoff;
+          if (!objcCall.superDispatch || objcCall.initializesSubclass || proof.parameterCTypes.length !== args.length) {
+            throw new Error("native superclass handoff lost checked dispatch/ABI evidence");
+          }
+          const names = args.map((_, index) => `_z_handoff_argument_${index}`);
+          const setup = args.map((argument, index) => `${proof.parameterCTypes[index]} ${names[index]} = ${argument};`);
+          const call = generateObjCMessage("super", objcCall.selector, names);
+          return `({ ${setup.join(" ")} _z_native_subclass_handoff _z_handoff __attribute__((cleanup(_z_native_subclass_handoff_end))) = _z_native_subclass_handoff_begin(&_z_native_subclass_loan); ${proof.returnCType === "void" ? `${call};` : `${proof.returnCType} _z_handoff_result = ${call};`} _z_native_subclass_handoff_end(&_z_handoff); ${proof.returnCType === "void" ? "(void)0" : "_z_handoff_result"}; })`;
+        }
         return generateObjCMessage(receiver, objcCall.selector, args);
       }
       const cxxMethod = context.semanticInfo.foreignCxxMethodCalls.get(expression.location.offset);

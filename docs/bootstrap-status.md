@@ -164,6 +164,17 @@ Bare/stored selectors remain rejected at this boundary. Explicit invalidation
 still owns shutdown and cycle breaking; live display-link integration and
 escaping field loans/captures remain separate work.
 
+Checked superclass delegation (2026-09-11) now releases only the current
+entry's receiver access around a synchronous full-expression `super` call with
+by-value scalar/enum/plain-record arguments and results, or literal native
+object `null` arguments. Arguments are materialized before release, the receiver
+stays alive, other active readers remain protected, and access is restored
+before Z continuation or cleanup. Borrowed native arguments and nested call
+expressions retain the original guard. The real AppKit mutable zoom-reentry
+probe now completes; source-nameable erased `id` and native subclasses in async
+programs remain separate integration gaps. This is no new syntax or blanket
+reentry permission; see [the exact boundary](objc-subclass-design.md#checked-synchronous-superclass-delegation-2026-09-11).
+
 The fixed-point async boundary has narrowed since the compact self-hosting row
 was written: a direct call to an imported async free function with a
 cleanup-free signature now uses a heap-owned task adapter. It may complete

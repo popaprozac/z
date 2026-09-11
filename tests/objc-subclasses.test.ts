@@ -583,9 +583,10 @@ hostToolchainTest("records the real AppKit zoom integration boundaries without o
   const file = resolve(projectRoot, "tests/fixtures/objc-subclass-appkit-reentry.zs");
   const source = readFileSync(file, "utf8");
   const artifact = compileToNative(source, file);
-  assert.match(artifact.source, /\[super zoom:NULL\]/);
+  assert.match(artifact.source, /id _z_handoff_argument_0 = NULL/);
+  assert.match(artifact.source, /\[super zoom:_z_handoff_argument_0\]/);
   assert.match(artifact.source, /access_begin\(&self->_z_native_subclass_access, true\)/);
-  assert.match(artifact.source, /\[super setFrame:frame display:display animate:animate\]/);
+  assert.match(artifact.source, /\[super setFrame:_z_handoff_argument_0 display:_z_handoff_argument_1 animate:_z_handoff_argument_2\]/);
   // NSObject is not a sound substitute for Objective-C id: a native sender
   // need not inherit from NSObject. Keep this rejected until the source type
   // for erased native identity is designed, rather than weakening ABI checks.

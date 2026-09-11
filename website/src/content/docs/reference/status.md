@@ -43,7 +43,12 @@ production or compatibility-sensitive use.
   scalars/plain native values, owned `String`, and strong imported Objective-C
   reference fields (including nullable slots) plus source `deinit` work,
   with checked initialization, guarded direct access, and reverse-order cleanup.
-  Broader resource fields, new callback selectors, escaping field loans, and
+  New native callback selectors and checked inline `objc.selector(Type.method)`
+  registrations preserve target signature, Ready state, and executor proof.
+  Checked synchronous full-expression `super` delegation releases only the
+  current receiver loan and restores it before continuation/cleanup, enabling
+  mutable AppKit zoom reentry without bypassing other active loans.
+  Broader resource fields, escaping field loans, and
   async composition remain future work.
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,

@@ -73,6 +73,7 @@ import {
   throwingGeneratorHandleType,
 } from "./semantic-intrinsics.zs";
 import { nativeStandardCall } from "./semantic-standard-library.zs";
+import { checkedNativeSuperclassHandoff } from "./semantic-objc-handoffs.zs";
 import {
   NativeInitializationState,
   NativeOwnershipState,
@@ -10978,6 +10979,17 @@ function inferExpressionNodeType(
                 method,
                 inout evidence
               );
+              if (callKind == "objcSuper") {
+                let resolutionIndex: usize = 0;
+                while (resolutionIndex < evidence.callResolutions.length) {
+                  if (evidence.callResolutions[resolutionIndex].offset == tree.nodes[index].offset) {
+                    const handoff = try checkedNativeSuperclassHandoff(module, modules, moduleIndex,
+                      arena, tree, index, bindings, evidence.callResolutions[resolutionIndex]);
+                    evidence.callResolutions[resolutionIndex].objectiveCReceiverHandoff = handoff;
+                  }
+                  resolutionIndex = resolutionIndex + 1;
+                }
+              }
             }
             if (
               !method.staticMethod

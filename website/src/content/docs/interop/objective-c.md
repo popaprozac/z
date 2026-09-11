@@ -142,14 +142,29 @@ entry branch, not another heap object.
 Ready entries also enforce receiver exclusivity across native callbacks. Nested
 `in this` reads are allowed; reentry involving an active or incoming `inout this`
 traps before the conflicting Z body runs. This is a nonblocking contract check,
-not a lock or executor hop. Explicit `super` calls are unchanged, but virtual
-callbacks made by the superclass check the same access rule.
+not a lock or executor hop. Virtual callbacks made by a superclass check the
+same access rule.
 
 Access remains held during local cleanup, including ARC destructors and early
 returns. A scoped strong native reference keeps the receiver alive through the
 check's cleanup. The current cost is one additional pointer-sized native field,
 a stack guard, entry/exit checks, and a native retain/release—not another heap
 allocation. This conservative safety tier is not zero overhead.
+
+There is one checked delegation exception: a synchronous `super` call used as
+a whole statement, local initializer, or return can temporarily release the
+current entry's access. The first tier permits scalar, enum, and plain native
+record values, plus literal `null` native object arguments. Arguments are
+evaluated first while guarded; the receiver stays alive; access is restored
+before Z continues or destroys locals. Other active readers remain protected.
+This lets AppKit's `super.zoom(null)` reenter a mutable `setFrame` override
+without disabling its guard. Nested expressions and borrowed native arguments
+keep the original guard, and live receiver-field loans are rejected.
+
+Reentry may change fields. Retained or copied locals remain snapshots, not
+proof that the receiver is unchanged. This boundary adds stack state and access
+checks, not another heap allocation. It does not yet enable native subclasses
+in async programs or source annotations for erased Objective-C `id`.
 
 Private stored scalars, imported enums/plain native records, owned `String`, and
 strong imported Objective-C references are supported. They live inline in the

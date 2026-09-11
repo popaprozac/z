@@ -61,11 +61,11 @@ function plainNativeValue(
   };
 }
 
-function nativeObjectType(
+export function nativeObjCObjectType(
   in modules: Array<ResolvedModule>, moduleIndex: usize, in name: String
 ): boolean {
   const nullable = nullableTargetType(name);
-  if (nullable.byteLength > 0) return nativeObjectType(modules, moduleIndex, nullable);
+  if (nullable.byteLength > 0) return nativeObjCObjectType(modules, moduleIndex, nullable);
   if (name == "id" || stringStartsWith(name, "__z_objc:")) return true;
   const location = match (typeSymbolLocation(modules, moduleIndex, name)) {
     some(value) => value;
@@ -255,7 +255,7 @@ function validateNewEntry(
   for (const parameter of method.parameters) {
     const abi = try newEntryABI(module, modules, moduleIndex, parameter.type.name, false, parameter.line, parameter.column);
     const typeName = transparentTypeName(modules, moduleIndex, parameter.type.name);
-    const object = nativeObjectType(modules, moduleIndex, typeName);
+    const object = nativeObjCObjectType(modules, moduleIndex, typeName);
     if ((object && parameter.mode != ParameterMode.input) || (!object && parameter.mode != ParameterMode.value)) {
       throw subclassError(module, "new native entry parameter has incompatible passing capability; objects require in and scalar values require value passing", parameter.line, parameter.column);
     }
@@ -283,7 +283,7 @@ function validateOverrideContract(
   }
   let blockResult = false;
   match (nativeFunctionSignature(native.objectiveCNativeResultType)) { some(_) => blockResult = true; none => {} }
-  if (blockResult || nativeObjectType(modules, moduleIndex, native.objectiveCNativeResultType)) {
+  if (blockResult || nativeObjCObjectType(modules, moduleIndex, native.objectiveCNativeResultType)) {
     throw subclassError(module,
       "object- or block-returning native overrides require the later return-ownership tier",
       method.line, method.column);
@@ -310,7 +310,7 @@ function validateOverrideContract(
         `Objective-C selector "${native.objectiveCSelector}" parameter ${index + 1} expects ${expected}, found ${parameter.type.name}`,
         parameter.line, parameter.column);
     }
-    const borrowed = nativeObjectType(modules, moduleIndex, expected);
+    const borrowed = nativeObjCObjectType(modules, moduleIndex, expected);
     if ((borrowed && parameter.mode != ParameterMode.input)
       || (!borrowed && parameter.mode != ParameterMode.value)) throw subclassError(module,
       `Objective-C override parameter "${parameter.name}" has incompatible passing capability`,

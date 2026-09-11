@@ -15,7 +15,7 @@ import type {
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DiagnosticError, type DiagnosticLabel } from "./diagnostics.ts";
-import { isSuperCall, nativeSubclassClassName, newObjCSubclassEntry, objcSubclassError, validateObjCSubclassShape, type ObjCSubclassPlan } from "./objc-subclasses.ts";
+import { isSuperCall, isObjCSubclassHandoffBoundary, isObjCSubclassHandoffValue, nativeSubclassClassName, newObjCSubclassEntry, objcSubclassError, validateObjCSubclassShape, type ObjCSubclassPlan } from "./objc-subclasses.ts";
 import {
   compareTargetVersions,
   displayTargetPlatform,
@@ -138,6 +138,7 @@ export type ObjCCallInfo = {
   readonly className: string;
   readonly superDispatch?: boolean;
   readonly initializesSubclass?: boolean;
+  readonly receiverHandoff?: { readonly parameterCTypes: readonly string[]; readonly returnCType: string };
   readonly bridge: "dataCopy" | "dataBorrow" | null;
   readonly async: {
     readonly callbackParameter: number;
@@ -10832,9 +10833,28 @@ function inferExpressionInner(
         if (selected.projected || method.variadic) objcSubclassError(fileName, expression.location, "superclass calls must use a synchronous, non-variadic native ABI");
         checkForeignAvailability(method.metadata, method.selector, expression.location, fileName, state);
         checkObjCArguments(method, expression.arguments, locals, globals, structs, enums, fileName, state);
+        const handoff = !initializes && state.activeFunction
+          && plan.declaration.methods.includes(state.activeFunction)
+          && isObjCSubclassHandoffBoundary(state.activeFunction, expression.location.offset)
+          && isObjCSubclassHandoffValue(method.returnType)
+          && method.parameters.every((parameter, index) => parameter.access !== "inout" && parameter.access !== "out"
+            && (isObjCSubclassHandoffValue(parameter.type)
+              || (parameter.type.kind === "object" && expression.arguments[index].kind === "null")));
+        if (handoff) {
+          const loan = activeAccessLoanForRoot(state.activeLoans, "this", state, () => true);
+          if (loan) objcSubclassError(fileName, expression.location,
+            "cannot delegate a superclass call while receiver-field storage is borrowed; finish the borrow or use an owned snapshot");
+          // Current null/instanceof flow facts describe named locals only.
+          // Receiver members are always reloaded and checked at their declared
+          // type; adding field narrowing must invalidate it at this boundary.
+        }
         state.objcCalls.set(expression.location.offset, {
           selector: method.selector, instance: true, className: plan.base.className,
           bridge: null, async: null, superDispatch: true, initializesSubclass: initializes,
+          ...(handoff ? { receiverHandoff: {
+            parameterCTypes: method.parameters.map((parameter) => parameter.type.cName),
+            returnCType: method.returnType.cName,
+          } } : {}),
         });
         const result = initializes ? "void" : foreignValueType(method.returnType);
         if (result === "unknown") objcSubclassError(fileName, expression.location, "unsupported superclass return ABI");

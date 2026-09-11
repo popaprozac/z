@@ -1,4 +1,4 @@
-import type { Expression, FunctionDeclaration, SourceLocation, StructDeclaration } from "./ast.ts";
+import type { Expression, FunctionDeclaration, SourceLocation, Statement, StructDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ForeignNamedType, ForeignObjectType, ForeignObjCInterface, ForeignObjCMethod, ForeignType } from "./foreign-ir.ts";
 
@@ -20,6 +20,31 @@ export function objcSubclassError(fileName: string, location: SourceLocation, me
 export function isSuperCall(expression: Expression): boolean {
   return expression.kind === "call" && expression.callee.kind === "member"
     && expression.callee.object.kind === "identifier" && expression.callee.object.name === "super";
+}
+
+// A full-expression boundary has no surrounding partially evaluated call or
+// assignment that could still hold a receiver-field address. Nested super
+// expressions keep the ordinary entry guard in this first delegation tier.
+export function isObjCSubclassHandoffBoundary(method: FunctionDeclaration, offset: number): boolean {
+  const visit = (node: Statement): boolean => {
+    const expression = node.kind === "variable" ? node.initializer
+      : node.kind === "return" || node.kind === "expressionStatement" ? node.expression : null;
+    if (expression?.location.offset === offset && isSuperCall(expression)) return true;
+    switch (node.kind) {
+      case "block": return node.statements.some(visit);
+      case "if": return visit(node.thenBranch) || (node.elseBranch !== null && visit(node.elseBranch));
+      case "while": case "for": case "unsafe": case "asyncScope": return visit(node.body);
+      case "match": return node.arms.some((arm) => visit(arm.body));
+      default: return false;
+    }
+  };
+  return method.body.some(visit);
+}
+
+export function isObjCSubclassHandoffValue(type: ForeignType): boolean {
+  if (type.kind === "z") return /^(void|boolean|[iu](8|16|32|64)|[iu]size|f(32|64))$/.test(type.name);
+  return type.kind === "named" && (type.type.kind === "scalar" || type.type.kind === "enum"
+    || (type.type.kind === "record" && type.type.layout === "struct" && !type.type.viewOnly && !type.type.resource));
 }
 
 /** Validate the syntax-only boundary before ordinary class analysis can accept it. */

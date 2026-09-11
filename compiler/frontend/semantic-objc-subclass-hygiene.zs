@@ -75,6 +75,9 @@ export function validateNativeObjCSubclassRawAccess(
   names.add("_z_native_subclass_access_conflict");
   names.add("_z_native_subclass_access_begin");
   names.add("_z_native_subclass_access_end");
+  names.add("_z_native_subclass_handoff");
+  names.add("_z_native_subclass_handoff_begin");
+  names.add("_z_native_subclass_handoff_end");
   names.add("_z_native_subclass_owner");
   names.add("_z_native_subclass_loan");
   for (const module of parsed) {

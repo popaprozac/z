@@ -378,6 +378,11 @@ function appendNativeObjCSubclassAccessRuntime(inout output: TextBuffer): void {
   output.append("static __attribute__((unused)) void _z_native_subclass_access_end(_z_native_subclass_access_guard *guard) {\n");
   output.append("  if (guard->exclusive) {\n    if (*guard->state != -1) abort();\n    *guard->state = 0;\n");
   output.append("  } else {\n    if (*guard->state <= 0) abort();\n    *guard->state -= 1;\n  }\n}\n\n");
+  output.append("typedef struct { _z_native_subclass_access_guard *entry; bool active; } _z_native_subclass_handoff;\n");
+  output.append("static __attribute__((unused)) _z_native_subclass_handoff _z_native_subclass_handoff_begin(_z_native_subclass_access_guard *entry) {\n");
+  output.append("  _z_native_subclass_access_end(entry);\n  return (_z_native_subclass_handoff){ entry, true };\n}\n");
+  output.append("static __attribute__((unused)) void _z_native_subclass_handoff_end(_z_native_subclass_handoff *handoff) {\n");
+  output.append("  if (!handoff->active) return;\n  *handoff->entry = _z_native_subclass_access_begin(handoff->entry->state, handoff->entry->exclusive);\n  handoff->active = false;\n}\n");
 }
 
 function appendNativeObjCStoredCleanup(inout output: TextBuffer, in plan: ModuleObjCSubclassPlan): void {
@@ -6251,6 +6256,29 @@ function appendExpression(
     if (declaration.expressions[index].children.length == 0) {
       throw "native Objective-C emission received a malformed message send";
     }
+    const handoff = declaration.expressions[index].objectiveCReceiverHandoff;
+    if (handoff) {
+      if (declaration.expressions[index].kind != LoweredExpressionKind.objectiveCSuperCall
+        || declaration.expressions[index].objectiveCHandoffReturnType.byteLength == 0
+        || declaration.expressions[index].objectiveCHandoffParameterTypes.length + 1 != declaration.expressions[index].children.length) {
+        throw "native superclass handoff lost checked dispatch/ABI evidence";
+      }
+      output.append("({ ");
+      let argument: usize = 1;
+      while (argument < declaration.expressions[index].children.length) {
+        output.append(declaration.expressions[index].objectiveCHandoffParameterTypes[argument - 1]);
+        output.append(` _z_handoff_argument_${argument - 1} = `);
+        const argumentIndex = declaration.expressions[index].children[argument];
+        try appendExpression(inout output, declaration, argumentIndex);
+        output.append("; ");
+        argument = argument + 1;
+      }
+      output.append("_z_native_subclass_handoff _z_handoff __attribute__((cleanup(_z_native_subclass_handoff_end))) = _z_native_subclass_handoff_begin(&_z_native_subclass_loan); ");
+      if (declaration.expressions[index].objectiveCHandoffReturnType != "void") {
+        output.append(declaration.expressions[index].objectiveCHandoffReturnType);
+        output.append(" _z_handoff_result = ");
+      }
+    }
     output.append("[");
     const receiver = declaration.expressions[index].children[0];
     if (declaration.expressions[index].kind != LoweredExpressionKind.objectiveCMessageCall) {
@@ -6282,7 +6310,8 @@ function appendExpression(
         output.append(selector.copyBytes(selectorStart, separator));
         output.append(": ");
         const value = declaration.expressions[index].children[argument];
-        try appendExpression(
+        if (handoff) output.append(`_z_handoff_argument_${argument - 1}`);
+        else try appendExpression(
           inout output,
           declaration,
           value
@@ -6295,6 +6324,10 @@ function appendExpression(
       }
     }
     output.append("]");
+    if (handoff) {
+      output.append("; _z_native_subclass_handoff_end(&_z_handoff); ");
+      output.append(declaration.expressions[index].objectiveCHandoffReturnType == "void" ? "(void)0; })" : "_z_handoff_result; })");
+    }
     return;
   }
   if (

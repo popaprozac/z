@@ -121,6 +121,7 @@ export struct ModuleObjCSubclassSuperCall {
   selector: String;
   nativeReturnType: String;
   nativeParameterTypes: Array<String>;
+  receiverHandoff: boolean = false;
 }
 
 export struct ModuleObjCSubclassField {
@@ -243,6 +244,7 @@ export struct ModuleCallResolution {
   objectiveCSelector: String = "";
   objectiveCReceiverNativeType: String = "";
   objectiveCNativeReturnType: String = "";
+  objectiveCReceiverHandoff: boolean = false;
   objectiveCParameterNativeTypes: Array<String> = Array<String>();
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;

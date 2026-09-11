@@ -383,6 +383,9 @@ export struct LoweredExpression {
   objectiveCBlockNativeType: String = "";
   objectiveCReceiverNativeType: String = "";
   objectiveCOwnedPayload: boolean = false;
+  objectiveCReceiverHandoff: boolean = false;
+  objectiveCHandoffReturnType: String = "";
+  objectiveCHandoffParameterTypes: Array<String> = Array<String>();
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
@@ -7672,7 +7675,7 @@ function lowerObjectiveCMessageCall(
       : "value");
     argument = argument + 1;
   }
-  return pushExpression(
+  const lowered = pushExpression(
     inout output,
     callKind == "objcSuperInitializer" ? LoweredExpressionKind.objectiveCSuperInitializer
       : callKind == "objcSuper" ? LoweredExpressionKind.objectiveCSuperCall
@@ -7681,6 +7684,19 @@ function lowerObjectiveCMessageCall(
     children,
     labels
   );
+  const resolutionIndex = resolvedCallResolutionIndex(evidence, tree, index);
+  if (resolutionIndex < evidence.callResolutions.length
+    && evidence.callResolutions[resolutionIndex].objectiveCReceiverHandoff) {
+    const call = view evidence.callResolutions[resolutionIndex];
+    if (callKind != "objcSuper" || call.objectiveCNativeReturnType.byteLength == 0
+      || call.objectiveCParameterNativeTypes.length + 1 != output[lowered].children.length) {
+      throw "native superclass handoff lost checked dispatch/ABI evidence";
+    }
+    output[lowered].objectiveCReceiverHandoff = true;
+    output[lowered].objectiveCHandoffReturnType = copy call.objectiveCNativeReturnType;
+    output[lowered].objectiveCHandoffParameterTypes = copy call.objectiveCParameterNativeTypes;
+  }
+  return lowered;
 }
 
 function resolvedGenericMethodSuffix(

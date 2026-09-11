@@ -1,5 +1,6 @@
 // Manual GUI pressure probe; run through scripts/probe-appkit-subclass-reentry.ts.
-// This records a supported guard rejecting real AppKit reentry, not a resize fix.
+// Checked superclass delegation permits real AppKit reentry; this is not yet
+// a display-driven resize controller or a WebView smoothness measurement.
 import AppKit from "AppKit/AppKit.h";
 import probe from "./objc-subclass.h";
 import console from "std/console";

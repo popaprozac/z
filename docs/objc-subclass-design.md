@@ -307,6 +307,8 @@ not a mutex: there is no waiting, scheduling, or implicit hop. A conflict prints
 `reentrant native subclass access conflicts with inout this` and traps before
 entering the second Z body. An explicit `super` call still calls the superclass;
 if that implementation calls back virtually, the callback checks the same rule.
+The checked delegation boundary below temporarily releases only the delegating
+entry's access; it does not exempt the callback from this check.
 Construction/destruction forwarding happens before this access check.
 
 The access lasts through return-value evaluation and all body-local cleanup,
@@ -360,21 +362,58 @@ and caught expected aborts. The GUI probe is opt-in, not an ordinary CI test.
 It establishes dispatch behavior, not WebView smoothness or zoom/restore
 correctness. The test suite separately checks the fixture without opening a GUI.
 
-**Design decision required, not implemented:** consider a checked native-call
-delegation boundary that temporarily suspends the current receiver loan only
-when no receiver-field loan/reference can remain live across that call. The
-outer entry reacquires access before continuing. Other live loans must remain
-protected; borrowed native arguments, nested reader entries, ARC destructor
-reentry, and early exits all need independent evidence. A blanket exception for
-`super`, same-thread access, or native callbacks is not sufficient. This would
-change the current whole-entry rule and therefore requires user deliberation.
+This initial result motivated the subsequently approved, implemented checked
+delegation boundary below. The same six manual cases now complete; the initial
+failure remains useful evidence for why whole-entry exclusivity alone was too
+restrictive for ordinary native superclass behavior.
 
 Two independent composition gaps also remain before production integration:
 `zoom:` accepts nullable Objective-C `id`, not `NSObject *`; its erased native
 identity needs an approved source annotation rather than a narrowed signature.
 Also, the Stage 0 async emitter currently rejects any program containing a
 native subclass, even when that subclass's own methods are synchronous. Neither
-gap is closed by selector registration support.
+gap is closed by selector registration or receiver handoff support.
+
+#### Checked synchronous superclass delegation (2026-09-11)
+
+Both compilers automatically hand off the current entry's receiver access for
+a checked synchronous, nonconsuming `super` call when it is the entire expression
+of a statement, local initializer, or return. The initial tier accepts scalar,
+enum, and plain native record arguments/results, plus literal `null` for native
+object arguments. It excludes constructors, nested expressions, writable/output
+arguments, and borrowed native objects, blocks, pointers, or cleanup-bearing
+values. These other calls keep the original guard; there is no blanket `super`
+bypass and no new syntax.
+
+```zs
+function requestZoom(inout this): void as "requestZoom" {
+  this.changes = this.changes + 1;
+  super.zoom(null); // AppKit may reenter a guarded Z setFrame override here.
+  // Receiver access has been reacquired before this continuation.
+}
+```
+
+The compiler rejects live receiver-field loans at an eligible boundary. Current
+native subclass field views are already conservatively rejected; this does not
+add field-borrowing support. Arguments are evaluated and materialized under the
+original guard before delegation. Only that entry's access is released, not the
+receiver's entire access count: another active reader still prevents a writer.
+The existing precise-lifetime receiver hold remains active. Access is reacquired
+immediately after native return, before Z resumes or body-local cleanup runs.
+
+This is a possible mutation boundary, not an atomic operation. A copied scalar
+or retained object local is a snapshot; reentry may replace the field it came
+from. Current flow narrowing applies to named locals, not receiver fields, so
+fresh field reads still use their declared type. Any future field-based flow
+facts must be invalidated here.
+
+The handoff adds a small stack token and release/reacquire checks, but no new
+heap allocation or receiver hold beyond the existing entry guard. Its cost has
+not been benchmarked. Differential strict-Clang/UBSan tests at `-O0` and `-O2`
+cover reader/writer delegation, value/void returns, snapshots, final outside
+owner release, restoration, guarded argument evaluation and local destruction,
+nested readers, and excluded call shapes. The opt-in AppKit runner accepts
+`--native` to exercise the freshly bootstrapped compiler as well as Stage 0.
 
 ### Implemented inline owned storage
 

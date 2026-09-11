@@ -21,6 +21,8 @@ __attribute__((swift_attr("@MainActor")))
 - (ZSubclassPoint)adjustPoint:(ZSubclassPoint)point;
 - (int)readAccess:(int)mode;
 - (int)writeAccess:(int)mode;
+- (int)delegatedWrite:(int)value;
+- (void)delegatedPhase:(int)value;
 @property(readonly) int recordedPhase;
 @property int configuredValue;
 @property ZSubclassDepth configuredDepth;
@@ -62,6 +64,7 @@ int z_subclass_call_write(ZSubclassFixture *object, int mode);
 void z_subclass_publish(ZSubclassFixture *object);
 void z_subclass_drop_published(void);
 int z_subclass_call_published(void);
+int z_subclass_call_published_handoff(void);
 int z_subclass_access_scenario(void);
 void z_subclass_catch_abort(void);
 int z_subclass_call_entry(ZSubclassFixture *object, int value);

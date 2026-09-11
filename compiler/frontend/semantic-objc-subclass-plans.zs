@@ -228,6 +228,7 @@ export function planNativeObjCSubclasses(
           selector: copy call.objectiveCSelector,
           nativeReturnType: copy call.objectiveCNativeReturnType,
           nativeParameterTypes: copy call.objectiveCParameterNativeTypes,
+          receiverHandoff: call.objectiveCReceiverHandoff,
         }));
       }
       if (!found) throw planError(module, "native subclass plan requires typed evidence for every superclass call");

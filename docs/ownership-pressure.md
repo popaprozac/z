@@ -7670,6 +7670,56 @@ three on the integration checklist. Zapp still uses ordinary `NSWindow`; do
 not claim the smooth-resize controller has migrated, or reintroduce a native
 production shim to conceal these gaps.
 
+## Checked superclass receiver handoff (2026-09-11)
+
+The approved follow-up to the AppKit result above is implemented in both
+compilers. A synchronous `super` call at a whole statement, initializer, or
+return boundary may release only the current entry's receiver access, then
+reacquire it immediately after native return. Scalar/enum/plain-native-record
+values and literal native object `null` are admitted. Nested expressions,
+borrowed native objects/blocks/pointers, writable outputs, and cleanup-bearing
+boundary values retain the original guard. No new source syntax was needed.
+
+The compiler-owned handoff token does not reset the receiver's access state.
+It removes one reader or the current writer, preserving other active entries.
+Arguments are evaluated into native temporaries before release; the existing
+receiver hold survives throughout; access is restored before continuation,
+return cleanup, or native ARC local destruction. A callback that drops the last
+external native owner cannot destroy the still-executing receiver.
+
+The safety boundary is also a coherence boundary: copied values and retained
+nullable locals remain usable snapshots after a callback replaces their source
+fields. Fresh field reads must still be checked. Both current flow checkers
+narrow named locals only, so no field-based fact survives the handoff today;
+future field narrowing must explicitly invalidate those facts here.
+
+Field-view negatives currently reject before reaching this handoff check:
+native subclass field views themselves remain unsupported. Do not report these
+as proof of a broader field-borrowing tier. The new boundary also checks active
+receiver-root loans so future admitted views cannot silently span delegation.
+
+The regression fixture executes 200 iterations plus a last-external-owner
+release case. Six caught conflict paths verify restoration, guarded argument
+evaluation, local ARC destruction, an additional nested reader, a nested
+expression, and a borrowed native object argument. Both emitters run these at
+`-O0`/`-O2` with strict Clang/UBSan and bounded processes; no ASan is used.
+The real AppKit mutable zoom probe now completes at both optimization levels.
+This establishes native dispatch compatibility, not WebView presentation,
+interrupted animation correctness, or production Zapp adoption.
+
+There is no new heap allocation or receiver retain beyond the existing entry
+hold; stack state and access release/reacquire checks are intentional costs.
+This checkpoint is not a performance benchmark. The remaining integration
+gates are source-nameable erased `id`, native-subclass/async-program composition,
+and then the real display-link state machine in Zapp.
+
+Validation: 66 targeted tests pass across eight subclass, selector, editor,
+native-async-storage, and Objective-C interop suites; the final conditional-return
+handoff regression also passes in both emitters. The fresh fixed-point bootstrap
+emits 11,693,203 byte-identical C bytes. Both Stage 0 and that native executable
+complete all six bounded AppKit cases (12 runs total). The website builds all
+33 pages, and tier coverage and diff checks pass. This is not a full-suite run.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

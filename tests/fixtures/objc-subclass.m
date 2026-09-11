@@ -90,6 +90,8 @@ int z_subclass_source_deinits(void) { return sourceDeinits; }
 - (ZSubclassPoint)adjustPoint:(ZSubclassPoint)point { return point; }
 - (int)readAccess:(int)mode { return mode; }
 - (int)writeAccess:(int)mode { return mode; }
+- (int)delegatedWrite:(int)value { return [self writeAccess:value]; }
+- (void)delegatedPhase:(int)value { [self recordPhase:value]; }
 - (int)requiredValue { return 0; }
 - (int)directValue { return 0; }
 - (void)takeObject:(NSObject * __attribute__((ns_consumed)))object { (void)object; }
@@ -189,6 +191,10 @@ int z_subclass_call_published(void) {
   // its own receiver alive when a callback clears the last outside owner.
   __unsafe_unretained ZSubclassFixture *receiver = published;
   return [receiver writeAccess:3];
+}
+int z_subclass_call_published_handoff(void) {
+  __unsafe_unretained ZSubclassFixture *receiver = published;
+  return ((int (*)(id, SEL))objc_msgSend)(receiver, sel_registerName("releaseDuringHandoff"));
 }
 int z_subclass_access_scenario(void) {
   const char *value = getenv("Z_SUBCLASS_ACCESS_SCENARIO");
