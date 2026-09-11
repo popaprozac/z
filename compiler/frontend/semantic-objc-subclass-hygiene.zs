@@ -68,6 +68,7 @@ export function validateNativeObjCSubclassRawAccess(
     }
   }
   if (names.length == 0) return;
+  names.add("_z_native_subclass_ready");
   for (const module of parsed) {
     for (const declaration of module.program.functions) {
       try checkRawFunction(module, declaration, names);

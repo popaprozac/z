@@ -195,7 +195,14 @@ recursive path.
   execution; initialization guards nil/replacement-class results. Raw functions
   cannot access generated subclass/constructor identities. Owned native closure
   captures are initialized to nil and cleared before freeing the environment.
-  Fields, teardown/reentrancy, weak identity, and async subclass composition remain.
+  Native entries now forward to the superclass during construction and teardown.
+  A private readiness byte opens only after the constructor's generated inner
+  scope has completed both Z and native ARC local cleanup, and closes in generated
+  `dealloc` before superclass teardown. The shared execution fixture covers all
+  those callback points, including void/record results, at `-O0` and `-O2`.
+  Raw access to the gate and reserved `_z_` source bindings are rejected in native
+  subclass bodies. Fields, source `deinit`, reentrant field loans, weak identity,
+  and async subclass composition remain.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies

@@ -2480,7 +2480,7 @@ function generateObjCSubclassInterface(plan: ObjCSubclassPlan, structs: Map<stri
   const methods = plan.declaration.methods.map((method) => `${generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name)))};`);
   const initializers = plan.base.methods.filter((method) => method.instance && method.designatedInitializer)
     .map((method) => `${generateObjCProtocolMethodDeclaration({ ...method, required: true }, method.parameters.map((_, index) => `argument${index}`))} NS_UNAVAILABLE;`);
-  return `@interface ${plan.className} : ${plan.base.className}\n${objcSubclassInitializerSignature(plan, structs, enums, semanticInfo)} NS_DESIGNATED_INITIALIZER;\n${initializers.join("\n")}\n${methods.join("\n")}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)};`;
+  return `@interface ${plan.className} : ${plan.base.className} {\n@private\n  unsigned char _z_native_subclass_ready;\n}\n${objcSubclassInitializerSignature(plan, structs, enums, semanticInfo)} NS_DESIGNATED_INITIALIZER;\n${initializers.join("\n")}\n${methods.join("\n")}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)};`;
 }
 
 function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>, functions: Map<string, FunctionDeclaration>, semanticInfo: SemanticInfo, omitRawNativeBodies: boolean): string {
@@ -2495,9 +2495,10 @@ function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, Struc
   });
   const methods = plan.declaration.methods.map((method) => generateFunction(method, structs, enums, functions, plan.declaration, semanticInfo, omitRawNativeBodies, {
     signature: generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name))),
+    superclassFallback: generateObjCMessage("super", plan.methods.get(method.location.offset)!.selector, method.parameters.map((parameter) => cBindingName(parameter.name))),
   }));
   const arguments_ = constructor.parameters.map((parameter) => cBindingName(parameter.name));
-  return `@implementation ${plan.className}\n${initializer}\n\n${methods.join("\n\n")}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)} {\n  if (![NSThread isMainThread]) abort();\n  return ${generateObjCMessage(`[${plan.className} alloc]`, objcSubclassInitializerSelector(plan), arguments_)};\n}`;
+  return `@implementation ${plan.className}\n${initializer}\n\n${methods.join("\n\n")}\n\n- (void)dealloc {\n  if (![NSThread isMainThread]) abort();\n  self->_z_native_subclass_ready = 0;\n}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)} {\n  if (![NSThread isMainThread]) abort();\n  return ${generateObjCMessage(`[${plan.className} alloc]`, objcSubclassInitializerSelector(plan), arguments_)};\n}`;
 }
 
 function generateObjCProtocolAdapter(
@@ -6610,7 +6611,7 @@ function generateFunction(
   receiver: StructDeclaration | null,
   semanticInfo: SemanticInfo,
   omitRawNativeBody = false,
-  nativeMethod?: { readonly signature: string; readonly isInitializer?: boolean },
+  nativeMethod?: { readonly signature: string; readonly isInitializer?: boolean; readonly superclassFallback?: string },
 ): string {
   if (!receiver && isGeneratorFunction(declaration)) {
     return generateGeneratorFunction(declaration, structs, enums, functions, semanticInfo);
@@ -6681,7 +6682,15 @@ function generateFunction(
     return generateDerivedJsonEncode(declaration, context);
   }
   const bodyParts = [
+    // ARC destroys native strong locals at their C lexical scope boundary.
+    // Keep that boundary before activation, not after `return self`.
+    ...(nativeMethod?.isInitializer ? ["  {"] : []),
     ...(nativeMethod ? ["if (![NSThread isMainThread]) abort();"] : []),
+    ...(nativeMethod?.superclassFallback ? [
+      `if (!self->_z_native_subclass_ready) { ${declaration.returnType.name === "void"
+        ? `${nativeMethod.superclassFallback}; return;`
+        : `return ${nativeMethod.superclassFallback};`} }`,
+    ] : []),
     ...(!receiver && declaration.name === "main"
       ? [
           "(void)argc;",
@@ -6709,7 +6718,9 @@ function generateFunction(
       bodyParts.push(indent(`return ${generateCompilerVariantConstruction(result, "success", null, context)};`, 2));
     }
   }
-  if (nativeMethod?.isInitializer) bodyParts.push("  return self;");
+  // The gate opens only after constructor-local cleanup: that cleanup may
+  // itself enter native code and trigger virtual calls on this receiver.
+  if (nativeMethod?.isInitializer) bodyParts.push("  }", "  self->_z_native_subclass_ready = 1;", "  return self;");
   const body = bodyParts.join("\n");
   const closure = semanticInfo.closures.get(declaration.location.offset);
   const signature = nativeMethod?.signature ?? generateFunctionSignature(declaration, structs, enums, receiver, semanticInfo.foreignNamedTypes,
@@ -7278,7 +7289,7 @@ bool ${liveFlag} = true;`;
     case "expressionStatement":
       if (statement.expression.kind === "call" && context.semanticInfo.objcCalls.get(statement.expression.location.offset)?.initializesSubclass) {
         const plan = context.semanticInfo.objcSubclasses.get(context.receiver!.name)!;
-        return `self = ${generateExpression(statement.expression, context)};\nif (self == nil || object_getClass(self) != [${plan.className} class]) abort();`;
+        return `self = ${generateExpression(statement.expression, context)};\nif (self == nil || object_getClass(self) != [${plan.className} class] || self->_z_native_subclass_ready) abort();`;
       }
       if (statement.expression.kind === "executorPlacement") {
         throw new Error("executor placement must be lowered through task frames");

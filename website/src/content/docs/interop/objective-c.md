@@ -128,6 +128,14 @@ Z ARC allocation or protocol-adapter wrapper.
 
 The superclass designated initializer must be first and non-nullable. Generated
 code checks the returned identity and the main thread, without scheduling a hop.
+Virtual calls during construction and destruction invoke the superclass, **not**
+the Z override. Z overrides become active only after the constructor body and
+its local cleanup finish, including cleanup of native ARC temporaries. This also
+applies to `this.method()` calls from the constructor after `super.init`.
+It is Z's deliberate lifecycle rule, not ordinary Objective-C dispatch; libraries
+requiring subclass callbacks during initialization need a later explicit tier.
+The gate adds one byte-sized native field (plus possible layout padding) and an
+entry branch, not another heap object. It is not a reentrancy lock.
 This tier is field-free and synchronous: Z-stored fields, `deinit`, `Weak`,
 fallible constructors, object-returning overrides, and async composition remain
 future work. Ordinary Z-to-Z inheritance is not supported. Both the TypeScript
@@ -160,9 +168,10 @@ received Objective-C blocks whose adapters supply ARC-backed retain/release hook
 Native deprecation warnings remain pending.
 Dedicated native lowering emits real method entries and constructor wrappers,
 not a Z ARC record. The same 200-iteration dispatch and lifetime fixture passes
-both compilers under strict Clang checks and UBSan. Owned native captures keep
+both compilers at `-O0` and `-O2` under strict Clang checks and UBSan, including
+construction/teardown callbacks and constructor-local ARC cleanup. Owned native captures keep
 their receiver alive until the closure's final release. Internal generated class
-and constructor names cannot be referenced from raw source. This is a field-free
+and constructor names, plus lifecycle storage, cannot be referenced from raw source. This is a field-free
 execution checkpoint, not support for stateful subclasses or general async bodies.
 
 ## Own target/action connections

@@ -7266,6 +7266,57 @@ an actual field-free NSWindow subclass, which passes strict compile-only checkin
 without opening an application. The 33-page website build, tier/fixture audit,
 and diff checks pass. This is not a full-suite or performance benchmark.
 
+## Native subclass lifecycle before owned fields (2026-09-10)
+
+The approved model forwards native virtual callbacks to the superclass while
+constructing or destroying a Z native subclass; only ready objects enter Z
+overrides. This intentionally differs from ordinary Objective-C dispatch and
+applies to field-free subclasses too. It needs no new source keyword or wrapper.
+
+The field-free regression fixture is now adversarial about those phases. The
+base initializer and deallocator call scalar, multiargument, void, borrowed-object,
+and plain-record methods virtually. The Z constructor calls back after `super.init`
+but before returning. Across 200 iterations / 400 objects per run, exact native
+construction/destruction counts and ready override results must agree.
+
+The useful surprise was **constructor-local ARC cleanup**. Opening the gate just
+before `return self` looked sufficient, but Clang released native strong locals
+after that statement. A retained temporary with a weak link to the constructing
+receiver reentered from its destructor and observed the override prematurely.
+The test failed under the first gate implementation. Both emitters now enclose
+constructor locals in an inner C/Objective-C scope and activate only after it
+ends, covering explicit Z cleanup and Clang's ARC cleanup. The same 400 temporary
+destructors per run now observe only base behavior at `-O0` and `-O2` under UBSan.
+
+The native gate is receiver-qualified private byte storage (plus layout padding),
+not another allocation. Existing main-thread guards remain before entry, and
+ready nested virtual calls remain legal: this is not a reentrancy lock. Generated
+`dealloc` closes the gate before automatic superclass teardown. Returning an
+already-ready receiver from superclass initialization fails closed. Raw access to
+the generated gate is rejected; the native subclass body checker also now honors
+the existing `_z_` source-binding reservation already enforced by Stage 0.
+
+**Do not overread this evidence:** Z-stored fields and source `deinit` still fail
+closed. Next is definite initialization, inline owned-field storage and exact
+cleanup, together with rejection/guarding of field loans across reentrant native
+calls. Weak subclass identity, fallible initialization, and general async bodies
+are not established here. This is the first implementation checkpoint of the
+approved state/lifetime model, before the Zapp window transition integration.
+
+One separate inference seam remains visible: the native-object result of the C
+cleanup factory needs an explicit type annotation in this constructor fixture;
+the initial header-deferred analysis otherwise reports an unknown result. That
+is not a lifetime workaround or a prerequisite for owned-field storage.
+
+Validation: all six native subclass tests plus 105 interop/closure/nonescape
+regressions pass. A fresh fixed-point native compiler (11,461,992 emitted C bytes)
+emits the same lifecycle fixture, which compiles and runs at `-O2` under UBSan;
+an actual field-free NSWindow subclass also passes native emission and strict
+Clang compile-only checking. Website build (33 pages), fixture/tier audit, and
+diff checks pass. This is targeted validation, not a full-suite or performance
+benchmark claim. The byte flag adds no heap allocation; it still has layout and
+branch costs.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

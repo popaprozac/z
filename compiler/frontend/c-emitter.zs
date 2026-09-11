@@ -343,7 +343,7 @@ export function emitNativeObjCSubclassInterfaces(
     output.append(plan.nativeName);
     output.append(" : ");
     output.append(plan.superclassNativeName);
-    output.append("\n");
+    output.append(" {\n@private\n  unsigned char _z_native_subclass_ready;\n}\n");
     try appendNativeObjCSubclassEntry(inout output, plan.initializer);
     output.append(" __attribute__((objc_designated_initializer));\n");
     for (const entry of plan.unavailableInitializers) {
@@ -357,6 +357,44 @@ export function emitNativeObjCSubclassInterfaces(
     output.append("@end\n\n");
   }
   return output.finish();
+}
+
+// Native virtual dispatch can arrive from a superclass initializer/deallocator.
+// Use the checked selector/ABI directly until the Z constructor has completed,
+// and again once generated teardown begins. No Z body or local cleanup runs on
+// this path. The gate is not a reentrancy lock for ready methods.
+function appendNativeObjCSubclassFallback(
+  inout output: TextBuffer, in entry: ModuleObjCSubclassEntry
+): void throws String {
+  output.append("  if (!self->_z_native_subclass_ready) { ");
+  if (entry.nativeReturnType != "void") output.append("return ");
+  output.append("[super ");
+  if (entry.parameterNames.length == 0) output.append(entry.selector);
+  else {
+    let start: usize = 0;
+    let parameter: usize = 0;
+    let index: usize = 0;
+    while (index < entry.selector.byteLength) {
+      if (entry.selector.byteAt(index) == 58) {
+        if (index == start || parameter >= entry.parameterNames.length) {
+          throw "native lifecycle fallback requires checked selector/parameter evidence";
+        }
+        if (parameter > 0) output.append(" ");
+        output.append(entry.selector.copyBytes(start, index));
+        output.append(":");
+        appendCBindingName(inout output, entry.parameterNames[parameter]);
+        start = index + 1;
+        parameter = parameter + 1;
+      }
+      index = index + 1;
+    }
+    if (parameter != entry.parameterNames.length || start != entry.selector.byteLength) {
+      throw "native lifecycle fallback requires checked selector/parameter evidence";
+    }
+  }
+  output.append("];");
+  if (entry.nativeReturnType == "void") output.append(" return;");
+  output.append(" }\n");
 }
 
 function appendNativeObjCConstructor(
@@ -8493,7 +8531,7 @@ function appendStatement(
           appendIndent(inout output, depth);
           output.append("if (self == nil || object_getClass(self) != [");
           output.append(declaration.nativeObjCClass);
-          output.append(" class]) abort();\n");
+          output.append(" class] || self->_z_native_subclass_ready) abort();\n");
           return;
         }
       }
@@ -10777,11 +10815,21 @@ function appendFunction(
     processArguments
   );
   output.append(" {\n");
+  // Close native ARC locals' lexical scope before enabling Z virtual bodies.
+  if (declaration.compilerIntrinsic == "objcInitializer") output.append("  {\n");
   match (in declaration.receiverType) {
     some(_) => output.append("  (void)self;\n");
     none => {}
   }
-  if (declaration.nativeObjCClass.byteLength > 0) output.append("  if (![NSThread isMainThread]) abort();\n");
+  if (declaration.nativeObjCClass.byteLength > 0) {
+    output.append("  if (![NSThread isMainThread]) abort();\n");
+    if (declaration.compilerIntrinsic != "objcInitializer") {
+      match (in declaration.nativeObjCEntry) {
+        some(entry) => try appendNativeObjCSubclassFallback(inout output, entry);
+        none => throw "native lifecycle fallback lost its checked method entry";
+      }
+    }
+  }
   for (const parameter of declaration.parameters) {
     output.append("  (void)");
     appendCBindingName(inout output, parameter.name);
@@ -10845,7 +10893,7 @@ function appendFunction(
     }
   }
   try appendFunctionTail(inout output, declaration);
-  if (declaration.compilerIntrinsic == "objcInitializer") output.append("  return self;\n");
+  if (declaration.compilerIntrinsic == "objcInitializer") output.append("  }\n  self->_z_native_subclass_ready = 1;\n  return self;\n");
   output.append("}\n\n");
   appendThrowingMainWrapper(
     inout output,
@@ -25863,7 +25911,7 @@ function emitLoweredC(
     for (const declaration of program.functions) {
       if (declaration.nativeObjCClass == plan.nativeName) try appendFunction(inout output, program, declaration, false);
     }
-    output.append("@end\n\n");
+    output.append("- (void)dealloc {\n  if (![NSThread isMainThread]) abort();\n  self->_z_native_subclass_ready = 0;\n}\n@end\n\n");
     try appendNativeObjCConstructor(inout output, plan, true);
   }
   try appendTestRunner(

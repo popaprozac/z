@@ -11,11 +11,14 @@ struct BodyResource {
 class Counter extends native.ZSubclassFixture on thread.main {
   constructor(value: i32) {
     super.initWithValue(value);
+    const cleanup: native.ZSubclassConstructorCleanup = native.z_subclass_constructor_cleanup(this);
     const configuration = (): i32 => {
       const initial = (): i32 => { return 1; };
       return initial();
     };
     this.configuredValue = configuration();
+    native.z_subclass_check_constructing(this);
+    cleanup.touch();
   }
 
   override function value(): i32 as "value" {
@@ -35,6 +38,14 @@ class Counter extends native.ZSubclassFixture on thread.main {
     const callback: ReadValue = move (): i32 => object.value();
     return callback();
   }
+
+  override function record(phase: i32): void as "recordPhase:" {
+    super.recordPhase(phase + 10);
+  }
+
+  override function adjust(point: native.ZSubclassPoint): native.ZSubclassPoint as "adjustPoint:" {
+    return native.ZSubclassPoint({ x: point.x + 1, y: point.y + 2 });
+  }
 }
 
 function retainedReader(): ReadValue on thread.main {
@@ -51,6 +62,10 @@ function exerciseEscapingReader(): i32 on thread.main {
 function exercise(): i32 on thread.main {
   const counter = new Counter(40);
   const base: native.ZSubclassFixture = counter;
+  counter.record(4);
+  if (counter.recordedPhase != 14) return 4;
+  const point = counter.adjust(native.ZSubclassPoint({ x: 1, y: 2 }));
+  if (point.x != 2 || point.y != 4) return 5;
   return base.readVirtualValue() + counter.sum(20, to: 21) + counter.configuredValue
     + counter.read(in base) - 127;
 }
@@ -63,5 +78,9 @@ function main(): i32 {
     if (native.z_subclass_body_balance() != 0) return 3;
     index = index + 1;
   }
+  if (native.z_subclass_construction_callbacks() != 400) return 6;
+  if (native.z_subclass_teardown_callbacks() != 400) return 7;
+  if (native.z_subclass_constructor_cleanups() != 400) return 8;
+  if (native.z_subclass_lifecycle_failures() != 0) return 9;
   return native.z_subclass_live_count();
 }

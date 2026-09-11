@@ -138,6 +138,12 @@ Dedicated body lowering and implementation emission now execute the restricted
 tier. A real native fixture verifies dispatch and exact cleanup, and a freshly
 bootstrapped standalone driver emits the same working program. Detached subclass
 ASTs without checked plans cannot fall back to the ordinary Z ARC aggregate emitter.
+The approved lifecycle gate is now executable in both emitters: constructing and
+destroying receivers forward to the superclass, and ready receivers enter Z
+overrides. An inner constructor scope keeps native ARC local cleanup before
+activation. The paired `-O0`/`-O2` fixture verifies initialization, cleanup,
+teardown, and ordinary ready dispatch. Fields, source `deinit`, and reentrant
+field-loan enforcement remain the next owned-storage checkpoint.
 
 The fixed-point async boundary has narrowed since the compact self-hosting row
 was written: a direct call to an imported async free function with a

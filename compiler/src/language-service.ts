@@ -1151,13 +1151,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (nativeOwner?.nativeBase && ["extends", "override", "super"].includes(word.text)) {
     const details = {
       extends: `extends ${nativeOwner.nativeBase.name}  // real Objective-C subclass identity, managed by native ARC`,
-      override: "override function  // compiler-checked inherited Objective-C selector and ABI; native entry requires thread.main",
+      override: "override function  // compiler-checked inherited Objective-C selector and ABI; native entry requires thread.main\n// calls the superclass during construction and destruction, not the Z override body",
       super: `super: ${nativeOwner.nativeBase.name}  // calls the superclass implementation on this same native object`,
     };
     return markdownHover(details[word.text as keyof typeof details], source, word.start, word.end);
   }
   const nativeClass = context.sourceProgram.structs.find((declaration) => declaration.nativeBase && declaration.name === word.text);
-  if (nativeClass?.nativeBase) return markdownHover(`class ${nativeClass.name} extends ${nativeClass.nativeBase.name} on thread.main\n// native Objective-C ARC identity; first tier has no Z-stored fields`, source, word.start, word.end);
+  if (nativeClass?.nativeBase) return markdownHover(`class ${nativeClass.name} extends ${nativeClass.nativeBase.name} on thread.main\n// native Objective-C ARC identity; first tier has no Z-stored fields\n// Z overrides become active after constructor cleanup; construction and destruction call the superclass`, source, word.start, word.end);
   const immediateMemberOwner = source.slice(0, word.start)
     .match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?)\.$/)?.[1];
   const immediateChannel = immediateMemberOwner

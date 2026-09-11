@@ -10,8 +10,10 @@ lowering preserves explicit native construction, method entries, and superclass
 dispatch. Checked entry plans drive real Objective-C interfaces and implementations,
 with no Z ARC record wrapper. The same 200-iteration virtual-dispatch and exact
 cleanup fixture passes both emitters under strict Clang and UBSan.
-Stateful subclasses and production window
-integration remain separate checkpoints.
+The lifecycle-forwarding direction is approved and implemented in both emitters:
+construction and destruction dispatch to the superclass, while ready instances
+enter Z overrides. Stateful subclasses and production window integration remain
+separate checkpoints.
 
 ## Motivation
 
@@ -86,8 +88,8 @@ Constructor arguments currently accept scalars, enums, and plain native records
 early in this first tier.
 
 The generated initializer assigns the native result back to `self`; it does not
-discard the returned object. Nil or replacement objects with a different dynamic
-class fail closed at runtime. Nullable initializer contracts are rejected before
+discard the returned object. Nil, replacement objects with a different dynamic
+class, or already-ready receivers fail closed at runtime. Nullable initializer contracts are rejected before
 emission pending an explicitly fallible construction tier. Inherited initializer
 entry points cannot bypass `new`, and reinitialization is rejected on a known Z
 native subclass receiver. Every generated native entry checks the main thread.
@@ -104,18 +106,79 @@ The first tier deliberately rejects:
   native ownership contracts, and explicit manual ARC lifecycle calls;
 - methods marked `NS_REQUIRES_SUPER` until path validation exists;
 - capturing `super`, treating it as a value, or using it outside the native class;
-- composition with async lowering or the self-hosted frontend.
+- composition with async lowering.
 
 Selector and ABI compatibility, subclass restrictions, designated initializer
 metadata, native availability, and executor requirements come from imported
 declarations. Behavioral assumptions about a native initializer or callback are
 still trusted native contracts, not proved by reading a header.
 
-## Remaining state and safety decisions
+## Approved state and lifecycle direction (2026-09-10)
+
+The user approved ordinary stored fields and existing `deinit` syntax, with
+native-entry lifecycle forwarding rather than an initialization-state API:
+
+| Receiver phase | Virtual call behavior |
+| --- | --- |
+| Constructing | Invoke the superclass implementation, not the Z override. |
+| Ready | Invoke the Z override. |
+| Destroying | Invoke the superclass implementation again. |
+
+This applies to native subclasses with or without fields. It is a deliberate Z
+rule, not ordinary Objective-C dispatch. It includes explicit virtual calls made
+by the Z constructor after `super.init`. Libraries requiring subclass callbacks
+during initialization do not fit this first tier; do not silently claim compatibility.
+`super` remains an unconditional superclass call when the object is ready too.
+
+The field tier must prove every required field initialized before readiness.
+Fields keep ordinary Z ownership and automatic cleanup. Existing `deinit` provides
+extra synchronous cleanup; users never call `super.dealloc`. Destruction closes
+the native-entry gate before cleanup, and cannot resurrect or publish `this`.
+Main isolation is not a reentrancy proof: callbacks must not invalidate an
+outstanding field view or exclusive loan. Reject unsupported combinations or
+guard the boundary; do not silently weaken `inout` or add a reentrancy lock.
+Display callbacks must stop during explicit close/shutdown while the owner is
+live; final destruction cannot break a cycle that prevents it from starting.
+
+### Implemented gate; owned storage remains next
+
+Both emitters add a private byte-sized readiness flag, subject to native layout
+padding, in the native object. Allocation zero-initializes it. The initializer
+opens the gate only after the constructor body **and local cleanup** finish.
+Generated ARC `dealloc` closes it before the superclass deallocator; no explicit
+`[super dealloc]` is emitted. The existing main-thread check precedes forwarding.
+Fallback sends use checked native selector/parameter/result evidence, including
+void and plain-record returns. The gate adds no wrapper or per-call heap allocation;
+the flag and entry branch are intentional runtime costs, not zero overhead.
+
+Constructor locals occupy an inner generated scope. Explicit Z cleanup alone
+is insufficient: Clang also releases strong Objective-C locals at scope exit,
+and their destructors can reenter the constructing receiver. Opening the gate
+before that scope ended failed the regression oracle. The gate name is protected
+by raw-source generated-symbol hygiene. Native subclass bindings also enforce Z's
+existing reserved `_z_` prefix, and generated accesses qualify the receiver. A
+superclass initializer returning an already-ready receiver is rejected instead
+of letting another construction operate on its live state. This is internal ABI
+hygiene and lifecycle enforcement, not a raw sandbox.
+
+The differential fixture checks 200 iterations / 400 objects per run, with
+callbacks from native initialization, the Z constructor after `super.init`, a
+constructor-local ARC temporary's destructor, and native base teardown. Ready
+dispatch includes nested calls and an escaping retained callback. Scalar,
+multiargument, void, selector-alias, and plain-record forwarding run at `-O0`
+and `-O2` under strict Clang and UBSan, with exact construction, temporary cleanup,
+and destruction counts. No GUI or ASan is needed.
+
+This is the first implementation checkpoint of the approved model, **not stored
+field support**. Fields and source `deinit` remain rejected until initialization,
+owned storage cleanup, and reentrant loan enforcement are implemented together.
+
+## Remaining state and safety work
 
 The first fixture should separate field-free override/super dispatch from the
 later stateful window implementation. A passing stateless fixture does not
-establish stateful subclass safety. Before fields or cleanup hooks ship, settle:
+establish stateful subclass safety. Before fields or cleanup hooks ship, implement
+and validate the approved lifetime rule while keeping these wider cases explicit:
 
 1. Broader inherited construction entry points and constructor argument ownership.
 2. Nullable/replacement initializer results and cleanup on failed construction.
@@ -279,7 +342,7 @@ innermost function/closure context, not an outer async function.
 The real Objective-C execution fixture now borrows a dynamically allocated String
 inside a custom-cleanup method local. A native balance counter must return to zero
 after every iteration, in addition to exact native object destruction. This is
-Stage 0 execution evidence until the same fixture passes through native emission.
+paired Stage 0/native execution evidence as of the executable-body checkpoint.
 
 Native class-entry planning now preserves module-qualified generated identity,
 the imported superclass identity/header, main affinity, source constructor/method
@@ -300,8 +363,9 @@ below. Ordinary aggregate lowering still rejects manually assembled subclass AST
 without checked native plans, so bypassing the resolver cannot silently select
 the wrong representation.
 
-Next: deliberate and test owned state, initialization/teardown callbacks,
-and reentrancy before Zapp's window transition state moves into a subclass.
+Next: implement owned state, definite initialization, exact storage cleanup,
+and reentrant loan enforcement before Zapp's window transition state moves into
+a subclass. The approved lifecycle-forwarding gate is implemented and tested.
 General async closure completeness is **not** a prerequisite for this field-free,
 synchronous native subclass tier. Unsupported suspension remains rejected rather
 than expanding this Zapp-driven task into a general async implementation project.
@@ -316,7 +380,9 @@ Update after executable native bodies: the field-free port and differential
 execution gates below are complete, including a freshly bootstrapped NSWindow
 compile-only probe. Next is the user review of subclass-owned state and callback
 lifetimes, then implementation/teardown tests and the Zapp resize integration.
-The earlier range included the now-completed native body port.
+The earlier range included the now-completed native body port. The lifecycle
+review and field-free forwarding gate are now complete too; owned storage and
+reentrant loan enforcement remain before production integration.
 
 The field-free native port was bounded by four gates:
 
@@ -373,8 +439,9 @@ allocation path. This is an implementation fix, not a new ownership rule.
 Raw native functions cannot name this compilation's generated subclass or
 constructor symbols (`Z0820`); legitimate native names such as `Z_OK`, comments,
 and string literals remain accepted. This protects internal ABI hygiene, not a
-sandbox against arbitrary raw native code. Stateful subclasses, teardown/reentrancy,
-and production Zapp integration remain separate design/validation checkpoints.
+sandbox against arbitrary raw native code. Owned-field initialization/cleanup,
+reentrant field loans, and production Zapp integration remain separate
+implementation/validation checkpoints under the approved lifecycle direction.
 
 ## References
 

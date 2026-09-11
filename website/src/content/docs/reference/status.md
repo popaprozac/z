@@ -35,8 +35,10 @@ production or compatibility-sensitive use.
   both compiler paths. Checked native class-entry plans and independently tested
   Objective-C interface emission are present. Dedicated native body lowering and
   implementation emission pass the same 200-iteration dispatch/capture/cleanup
-  oracle as Stage 0 under strict Clang and UBSan; stateful subclasses and async
-  composition remain
+  oracle as Stage 0 at `-O0` and `-O2` under strict Clang and UBSan. Native entries
+  forward to the superclass during construction (including local ARC cleanup)
+  and destruction; only ready instances execute Z overrides. Stored fields,
+  source `deinit`, reentrant field loans, and async composition remain
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler and owned `objc.adapt<P>` carrier with direct `id<P>` ABI,

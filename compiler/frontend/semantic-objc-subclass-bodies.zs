@@ -51,6 +51,9 @@ function nativeLifecycleSelector(in name: String): boolean {
 function checkBinding(
   in module: ParsedModule, in name: String, line: usize, column: usize
 ): void throws ModuleResolveError {
+  if (stringStartsWith(name, "_z_")) throw bodyError(module,
+    "names beginning with `_z_` are reserved for compiler-generated storage",
+    line, column);
   if (name == "self" || name == "_cmd") throw bodyError(module,
     "native implicit receiver names `self` and `_cmd` cannot be shadowed in a native subclass",
     line, column);
