@@ -7742,7 +7742,9 @@ function emitFrameExpressionInner(
         ) {
           return `((${emitFrameExpression(expression.left, plan, fileName)}).tag ${expression.operator} (${emitFrameExpression(expression.right, plan, fileName)}).tag)`;
         }
-        if (!safeBinaryOperators.has(expression.operator)) {
+        const floatingArithmetic = (leftType === "f32" || leftType === "f64")
+          && ["+", "-", "*", "/"].includes(expression.operator);
+        if (!safeBinaryOperators.has(expression.operator) && !floatingArithmetic) {
           unsupported(fileName, expression.location, "this arithmetic expression is not executable in an async frame yet");
         }
         return `(${emitFrameExpression(expression.left, plan, fileName)} ${expression.operator} ${emitFrameExpression(expression.right, plan, fileName)})`;

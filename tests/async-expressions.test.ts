@@ -49,6 +49,28 @@ import {
   utimesSync,
   writeFileSync,
 } from "./support/bootstrap.ts";
+
+test("executes checked floating-point arithmetic in async frames", () => {
+  const directory = mkdtempSync("/tmp/z-async-float-");
+  try {
+    const file = resolve(directory, "main.zs");
+    writeFileSync(file, `
+      function time(): f64 { return 1.25; }
+      async function main(): i32 {
+        const began = time();
+        const elapsed = (time() + 0.5 - began) * 1000 / 2;
+        const small: f32 = 1.5;
+        const scaled = (small + 0.5) * 4 / 2 - 1;
+        if (elapsed != 250 || scaled != 3) return 1;
+        return 0;
+      }
+    `);
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 60_000);
 import type {
   ForeignFunctionDeclaration,
   ForeignModuleDeclarations,
