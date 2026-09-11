@@ -59,4 +59,6 @@ void z_subclass_check_constructing(ZSubclassFixture *object);
 int z_subclass_lifecycle_failures(void);
 int z_subclass_construction_callbacks(void);
 int z_subclass_teardown_callbacks(void);
+void z_subclass_source_deinit(size_t length, int offset);
+int z_subclass_source_deinits(void);
 NS_ASSUME_NONNULL_END

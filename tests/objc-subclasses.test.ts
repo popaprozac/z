@@ -136,8 +136,8 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       ["struct", nativeBaseline.replace("class Counter", "struct Counter"), /native Objective-C class declaration/],
       ["generic", nativeBaseline.replace("class Counter", "class Counter<T>"), /generic native subclasses/],
       ["affinity", nativeBaseline.replace(" on thread.main", ""), /must declare `on thread.main`/],
-      ["state", nativeBaseline.replace("constructor(value", "stored: i32; constructor(value"), /state-lifetime tier/],
-      ["deinit", nativeBaseline.replace("constructor(value", "deinit {} constructor(value"), /state-lifetime tier/],
+      ["state", nativeBaseline.replace("constructor(value", "stored: i32; constructor(value"), /must be private/],
+      ["dying receiver", nativeBaseline.replace("constructor(value", "deinit { const alias = this; } constructor(value"), /dying receiver/],
       ["constructor", nativeBaseline.replace("constructor(value: i32) { super.initWithValue(value); }", ""), /explicit constructor/],
       ["first initializer", nativeBaseline.replace("{ super.initWithValue", "{ const before = 1; super.initWithValue"), /must begin/],
       ["throwing initializer", nativeBaseline.replace("constructor(value: i32)", "constructor(value: i32) throws i32"), /fallible native subclass construction/],
@@ -485,8 +485,8 @@ hostToolchainTest("rejects unsupported native subclass construction, effects, an
     ["ordinary inheritance", baseline.replace("native.ZSubclassFixture", "Parent").replace("class Counter", "class Parent {}\nclass Counter"), /imported Objective-C class/],
     ["struct inheritance", baseline.replace("class Counter", "struct Counter"), /native Objective-C class declaration/],
     ["missing affinity", baseline.replace(" on thread.main", ""), /must declare `on thread.main`/],
-    ["stored state", baseline.replace("constructor(value", "stored: i32; constructor(value"), /state-lifetime tier/],
-    ["deinit", baseline.replace("constructor(value", "deinit {} constructor(value"), /state-lifetime tier/],
+    ["public stored state", baseline.replace("constructor(value", "stored: i32; constructor(value"), /must be private/],
+    ["dying receiver", baseline.replace("constructor(value", "deinit { const alias = this; } constructor(value"), /dying receiver/],
     ["missing constructor", baseline.replace("constructor(value: i32) { super.initWithValue(value); }", ""), /explicit constructor/],
     ["non-first init", baseline.replace("{ super.initWithValue", "{ const before = 1; super.initWithValue"), /must begin/],
     ["double init", baseline.replace("super.initWithValue(value);", "super.initWithValue(value); super.initWithValue(value);"), /exactly once/],
@@ -620,12 +620,66 @@ hostToolchainTest("executes native subclass lifecycle and reentrant receiver acc
     assert.match(native.stdout, /\[super value\]/);
     assert.match(native.stdout, /object_getClass\(self\) != \[ZNative_0_Counter class\]/);
     assert.match(native.stdout, /if \(!self->_z_native_subclass_ready\) \{ return \[super value\]; \}/);
-    assert.match(native.stdout, /- \(void\)dealloc \{\s+if \(!\[NSThread isMainThread\]\) abort\(\);\s+self->_z_native_subclass_ready = 0;/);
+    assert.match(native.stdout, /- \(void\)dealloc \{\s+(?:\(void\)self;\s+)?if \(!\[NSThread isMainThread\]\) abort\(\);\s+self->_z_native_subclass_ready = 0;/);
     assert.doesNotMatch(native.stdout, /Z_Counter.*_z_refcount|typedef struct Z_ZNative_0_Counter/);
     assert.match(native.stdout, /access_begin\(&self->_z_native_subclass_access, true\)/);
     assert.match(native.stdout, /ns_returns_retained.*ZNative_0_Counter_new/);
     compileAndRun(native.stdout, "native");
     compileAndRun(native.stdout, "native", "-O2");
+    for (const source of [artifact.source, native.stdout]) {
+      assert.match(source, /Z_String _z_native_field_title;/);
+      assert.match(source, /ZSubclassPoint _z_native_field_point;/);
+      assert.match(source, /free\(\(void \*\).*_z_native_field_title/);
+      assert.doesNotMatch(source, /\[super dealloc\]/);
+    }
+    const stored = baseline.replace("constructor(value", "private readonly offset: i32; private text: String; constructor(value")
+      .replace("super.initWithValue(value);", 'super.initWithValue(value); this.offset = 2; this.text = "ok";')
+      .replace("super.value() + 2", "super.value() + this.offset");
+    const storageProbe = resolve(directory, "storage.zs");
+    const emitStorage = (source: string) => {
+      writeFileSync(storageProbe, source);
+      return spawnSync(oracle, [wire, storageProbe], { encoding: "utf8", timeout: 5_000,
+        killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
+    };
+    for (const source of [stored, stored.replace("constructor(value", "deinit {} constructor(value")]) {
+      const checked = emitStorage(source);
+      assert.equal(checked.status, 0, checked.stderr);
+      compileToNative(source, fixture);
+      writeFileSync(generated, checked.stdout);
+      const compiled = spawnSync("clang", ["-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-fsyntax-only",
+        "-I", resolve(projectRoot, "tests/fixtures"), generated], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+      assert.equal(compiled.status, 0, compiled.stderr);
+    }
+    const storageCases: [string, string, RegExp][] = [
+      ["uninitialized", stored.replace(' this.text = "ok";', ""), /not initialized/],
+      ["initialization order", stored.replace("this.offset = 2;", "const before = 2; this.offset = before;"), /directly after super/],
+      ["partial receiver", stored.replace("this.offset = 2;", "this.offset = this.value();"), /partially initialized|before superclass initialization/],
+      ["readonly replacement", stored.replace('this.text = "ok";', 'this.text = "ok"; this.offset = 3;'), /readonly/],
+      ["shared write", stored.replace("return super.value() + this.offset;", 'this.text = "bad"; return 0;'), /immutable|inout this|borrowed/],
+      ["nested shared write", stored.replace("private text: String;", "private text: String; private point: native.ZSubclassPoint;")
+        .replace('this.text = "ok";', 'this.text = "ok"; this.point = native.ZSubclassPoint({ x: 1, y: 2 });')
+        .replace("return super.value() + this.offset;", "this.point.x = 4; return 0;"), /immutable|inout this|borrowed/],
+      ["alias field", stored.replace("return super.value() + this.offset;", "const alias = this; return alias.offset;"), /direct this access/],
+      ["move field", stored.replace("return super.value() + this.offset;", "const moved = move this.text; return 0;"), /borrow|move|consum/],
+      ["captured field", stored.replace("return super.value() + this.offset;", "const callback = (): i32 => this.offset; return callback();"), /captur/],
+      ["unsupported storage", stored.replace("private text: String;", "private text: Array<String>;"), /stored fields currently support/],
+      ["field default", stored.replace("private text: String;", 'private text: String = "default";'), /defaults or optional fields/],
+      ["writable argument", stored.replace("return super.value() + this.offset;", "alter(inout this.text); return 0;")
+        + '\nfunction alter(inout text: String): void { text = "updated"; }', /borrow|mutable|inout|locally contained ARC identity/],
+      ["dying native call", stored.replace("constructor(value", "deinit { this.value(); } constructor(value"), /dying receiver/],
+      ["dying super call", stored.replace("constructor(value", "deinit { super.value(); } constructor(value"), /dying receiver/],
+      ["dying native property", stored.replace("constructor(value", "deinit { const v = this.configuredValue; } constructor(value"), /dying receiver/],
+      ["dying capture", stored.replace("constructor(value", "deinit { const callback = (): usize => this.text.byteLength; } constructor(value"), /dying receiver|captur/],
+      ["dying field move", stored.replace("constructor(value", "deinit { const taken = move this.text; } constructor(value"), /borrow|move|consum/],
+      ["exclusive field move", stored.replace('override function value(): i32', 'override function value(inout this): i32')
+        .replace("return super.value() + this.offset;", "const taken = move this.text; return 0;"), /borrow|move|consum/],
+    ];
+    for (const [name, source, expected] of storageCases) {
+      assert.throws(() => compileToNative(source, fixture), expected, `Stage 0 ${name}`);
+      const rejected = emitStorage(source);
+      assert.equal(rejected.status, 1, `native ${name}: ${rejected.stderr}`);
+      assert.match(rejected.stderr, expected, `native ${name}`);
+    }
     const rawProbe = resolve(directory, "raw-probe.zs");
     const emitRaw = (body: string) => {
       writeFileSync(rawProbe, baseline + `\nfunction rawProbe(): i32 = raw c { ${body} }\n`);
@@ -650,7 +704,7 @@ hostToolchainTest("executes native subclass lifecycle and reentrant receiver acc
     assert.equal(allowed.status, 0, allowed.stderr);
     const companion = resolve(directory, "counter.zs");
     const entry = resolve(directory, "imported.zs");
-    writeFileSync(companion, baseline.slice(0, baseline.indexOf("function main")).replace("class Counter", "export class Counter"));
+    writeFileSync(companion, stored.slice(0, stored.indexOf("function main")).replace("class Counter", "export class Counter"));
     writeFileSync(entry, 'import { Counter as Reading } from "./counter.zs"; function main(): i32 { const counter = new Reading(40); return counter.value() - 42; }');
     const imported = spawnSync(oracle, [wire, entry, companion], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
     assert.equal(imported.status, 0, imported.stderr);

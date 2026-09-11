@@ -65,6 +65,7 @@ export function validateNativeObjCSubclassRawAccess(
     for (const plan of module.semanticEvidence.objectiveCSubclasses) {
       names.add(copy plan.nativeName);
       names.add(`${plan.nativeName}_new`);
+      for (const field of plan.fields) { names.add(`_z_native_field_${field.name}`); }
     }
   }
   if (names.length == 0) return;

@@ -2509,7 +2509,8 @@ function generateObjCSubclassInterface(plan: ObjCSubclassPlan, structs: Map<stri
   const methods = plan.declaration.methods.map((method) => `${generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name)))};`);
   const initializers = plan.base.methods.filter((method) => method.instance && method.designatedInitializer)
     .map((method) => `${generateObjCProtocolMethodDeclaration({ ...method, required: true }, method.parameters.map((_, index) => `argument${index}`))} NS_UNAVAILABLE;`);
-  return `@interface ${plan.className} : ${plan.base.className} {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n}\n${objcSubclassInitializerSignature(plan, structs, enums, semanticInfo)} NS_DESIGNATED_INITIALIZER;\n${initializers.join("\n")}\n${methods.join("\n")}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)};`;
+  const fields = plan.declaration.fields.map((field) => `  ${mapType(field.type.name, structs, enums, semanticInfo.foreignNamedTypes)} _z_native_field_${field.name};`).join("\n");
+  return `@interface ${plan.className} : ${plan.base.className} {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n${fields}\n}\n${objcSubclassInitializerSignature(plan, structs, enums, semanticInfo)} NS_DESIGNATED_INITIALIZER;\n${initializers.join("\n")}\n${methods.join("\n")}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)};`;
 }
 
 function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>, functions: Map<string, FunctionDeclaration>, semanticInfo: SemanticInfo, omitRawNativeBodies: boolean): string {
@@ -2527,7 +2528,8 @@ function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, Struc
     superclassFallback: generateObjCMessage("super", plan.methods.get(method.location.offset)!.selector, method.parameters.map((parameter) => cBindingName(parameter.name))),
   }));
   const arguments_ = constructor.parameters.map((parameter) => cBindingName(parameter.name));
-  return `@implementation ${plan.className}\n${initializer}\n\n${methods.join("\n\n")}\n\n- (void)dealloc {\n  if (![NSThread isMainThread]) abort();\n  self->_z_native_subclass_ready = 0;\n}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)} {\n  if (![NSThread isMainThread]) abort();\n  return ${generateObjCMessage(`[${plan.className} alloc]`, objcSubclassInitializerSelector(plan), arguments_)};\n}`;
+  const deinit = generateDeinit(plan.declaration, structs, enums, functions, semanticInfo, true);
+  return `@implementation ${plan.className}\n${initializer}\n\n${methods.join("\n\n")}\n\n${deinit}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)} {\n  if (![NSThread isMainThread]) abort();\n  return ${generateObjCMessage(`[${plan.className} alloc]`, objcSubclassInitializerSelector(plan), arguments_)};\n}`;
 }
 
 function generateObjCProtocolAdapter(
@@ -6826,6 +6828,7 @@ function generateDeinit(
   enums: Map<string, EnumDeclaration>,
   functions: Map<string, FunctionDeclaration>,
   semanticInfo: SemanticInfo,
+  nativeSubclass = false,
 ): string {
   const lifecycle = declaration.deinitializer;
   const owner: FunctionDeclaration = {
@@ -6861,23 +6864,24 @@ function generateDeinit(
     objectTypeOverrides: new Map(),
     semanticInfo,
   };
-  const body = ["  (void)self;", ...owner.body.map((statement) => {
+  const body = [...(nativeSubclass ? ["  if (![NSThread isMainThread]) abort();", "  self->_z_native_subclass_ready = 0;", "  {"] : ["  (void)self;"]), ...owner.body.map((statement) => {
     const generated = generateStatement(statement, context);
     recordVariableType(statement, context);
-    return indent(generated, 2);
+    return indent(generated, nativeSubclass ? 4 : 2);
   })];
   const localCleanup = generateCleanup(context.cleanupScopes, context);
-  if (localCleanup) body.push(indent(localCleanup, 2));
+  if (localCleanup) body.push(indent(localCleanup, nativeSubclass ? 4 : 2));
+  if (nativeSubclass) body.push("  }");
   const cleanupFields = [
     ...declaration.fields.filter((field) => field.type.name !== "Arena").reverse(),
     ...declaration.fields.filter((field) => field.type.name === "Arena").reverse(),
   ];
   for (const field of cleanupFields) {
     if (hasSemanticCleanupType(field.type.name, structs, enums, semanticInfo)) {
-      body.push(indent(generateValueCleanup(`self->${cFieldName(field.name)}`, field.type.name, null, context), 2));
+      body.push(indent(generateValueCleanup(`self->${nativeSubclass ? `_z_native_field_${field.name}` : cFieldName(field.name)}`, field.type.name, null, context), 2));
     }
   }
-  return `Z_UNUSED_FUNCTION static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self) {\n${body.join("\n")}\n}`;
+  return `${nativeSubclass ? "- (void)dealloc" : `Z_UNUSED_FUNCTION static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self)`} {\n${body.join("\n")}\n}`;
 }
 
 function typeRecursivelyReferences(
@@ -9430,7 +9434,7 @@ function generateAssignmentTarget(expression: Expression, context: GenerationCon
   if (expression.kind === "identifier") return generateStoredValue(expression.name, context);
   if (expression.kind === "member") {
     if (expression.object.kind === "identifier" && expression.object.name === "this") {
-      if (context.receiver?.kind === "class" || context.owner.receiverMode !== "move") return `self->${cFieldName(expression.property)}`;
+      if (context.receiver?.kind === "class" || context.owner.receiverMode !== "move") return `self->${context.receiver?.nativeBase ? `_z_native_field_${expression.property}` : cFieldName(expression.property)}`;
       return `self.${cFieldName(expression.property)}`;
     }
     const ownerType = inferExpressionType(expression.object, context);
@@ -11208,7 +11212,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (isForeignMember(expression, context)) return expression.property;
       if (expression.object.kind === "identifier" && expression.object.name === "this") {
         const value = context.receiver?.kind === "class"
-          ? `self->${cFieldName(expression.property)}`
+          ? `self->${context.receiver.nativeBase ? `_z_native_field_${expression.property}` : cFieldName(expression.property)}`
           : context.owner.receiverMode === "move"
           ? `self.${cFieldName(expression.property)}`
           : `self->${cFieldName(expression.property)}`;

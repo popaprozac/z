@@ -3,14 +3,25 @@ import { thread } from "std/thread";
 
 type ReadValue = () => i32 on thread.main;
 
+function storedTitle(): String {
+  const source = "first second";
+  return source.copyBytes(0, 5);
+}
+
 struct BodyResource {
   text: String;
   deinit { native.z_subclass_leave_body(); }
 }
 
 class Counter extends native.ZSubclassFixture on thread.main {
+  private offset: i32;
+  private title: String;
+  private point: native.ZSubclassPoint;
   constructor(value: i32) {
     super.initWithValue(value);
+    this.offset = 2;
+    this.title = storedTitle();
+    this.point = native.ZSubclassPoint({ x: 1, y: 2 });
     const cleanup: native.ZSubclassConstructorCleanup = native.z_subclass_constructor_cleanup(this);
     const configuration = (): i32 => {
       const initial = (): i32 => { return 1; };
@@ -27,7 +38,8 @@ class Counter extends native.ZSubclassFixture on thread.main {
     const resource = BodyResource({ text: source.copyBytes(0, 5) });
     const length = (): usize => resource.text.byteLength;
     if (length() != 5) return -1;
-    return super.value() + 2;
+    if (this.title.byteLength != 5) return -2;
+    return super.value() + this.offset;
   }
 
   override function sum(left: i32, right: i32): i32 as "add:to:" {
@@ -40,11 +52,13 @@ class Counter extends native.ZSubclassFixture on thread.main {
   }
 
   override function record(inout this, phase: i32): void as "recordPhase:" {
+    this.title = storedTitle();
+    this.offset = 2;
     super.recordPhase(phase + 10);
   }
 
   override function adjust(point: native.ZSubclassPoint): native.ZSubclassPoint as "adjustPoint:" {
-    return native.ZSubclassPoint({ x: point.x + 1, y: point.y + 2 });
+    return native.ZSubclassPoint({ x: point.x + this.point.x, y: point.y + this.point.y });
   }
 
   override function readAccess(mode: i32): i32 as "readAccess:" {
@@ -76,6 +90,11 @@ class Counter extends native.ZSubclassFixture on thread.main {
       return native.z_subclass_call_read(other, 0);
     }
     return super.writeAccess(mode);
+  }
+
+  deinit {
+    const observed = copy this.title;
+    native.z_subclass_source_deinit(observed.byteLength, this.offset);
   }
 }
 
@@ -137,6 +156,7 @@ function main(): i32 {
   if (native.z_subclass_construction_callbacks() != 403) return 6;
   if (native.z_subclass_teardown_callbacks() != 403) return 7;
   if (native.z_subclass_constructor_cleanups() != 403) return 8;
+  if (native.z_subclass_source_deinits() != 403) return 15;
   if (native.z_subclass_lifecycle_failures() != 0) return 9;
   return native.z_subclass_live_count();
 }

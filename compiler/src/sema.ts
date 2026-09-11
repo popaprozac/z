@@ -2993,6 +2993,14 @@ function registerObjCSubclasses(program: Program, globals: Map<string, SymbolVal
       continue;
     }
     const initializer = validateObjCSubclassShape(declaration, fileName);
+    for (const field of declaration.fields) {
+      const native = state.foreignNamedTypes.get(field.type.name);
+      const plainRecord = native?.kind === "record" && !native.resource && !native.viewOnly && native.layout !== "union";
+      if (field.type.name !== "String" && field.type.name !== "boolean"
+        && !isNumericType(canonicalType(field.type.name, state.foreignNamedTypes)) && !plainRecord && native?.kind !== "enum") {
+        objcSubclassError(fileName, field.location, "native stored fields currently support owned String, scalars, and plain native value records");
+      }
+    }
     for (const parameter of declaration.constructor!.parameters) {
       const native = state.foreignNamedTypes.get(parameter.type.name);
       const plainRecord = native?.kind === "record" && !native.resource && !native.viewOnly;
@@ -10663,7 +10671,12 @@ function inferExpressionInner(
       const objcReceiverType = objcReceiver(receiverType, state)
         ?? objcProtocolReceiver(receiverType, state);
       rejectNullableObjCReceiver(receiverType, expression.object.location, fileName, state);
-      if (objcReceiverType) {
+      const nativeStoredField = state.objcSubclasses.get(receiverValueType)?.declaration.fields
+        .find((field) => field.name === expression.property);
+      if (nativeStoredField && (expression.object.kind !== "identifier" || expression.object.name !== "this")) {
+        objcSubclassError(fileName, expression.location, "native stored fields require direct this access inside a guarded receiver body");
+      }
+      if (objcReceiverType && !nativeStoredField) {
         const property = findObjCProperty(objcReceiverType, expression.property, state);
         if (!property) {
           throw new DiagnosticError(fileName, expression.location, `Objective-C ${JSON.stringify(objcReceiverType.declaration.className)} has no ${objcReceiverType.instance ? "instance" : "class"} property ${JSON.stringify(expression.property)}`);

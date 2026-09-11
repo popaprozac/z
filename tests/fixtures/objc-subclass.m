@@ -16,6 +16,12 @@ int z_subclass_lifecycle_failures(void) { return lifecycleFailures; }
 int z_subclass_construction_callbacks(void) { return constructionCallbacks; }
 int z_subclass_teardown_callbacks(void) { return teardownCallbacks; }
 int z_subclass_constructor_cleanups(void) { return constructorCleanups; }
+static int sourceDeinits = 0;
+void z_subclass_source_deinit(size_t length, int offset) {
+  if (length != 5 || offset != 2) lifecycleFailures += 1;
+  sourceDeinits += 1;
+}
+int z_subclass_source_deinits(void) { return sourceDeinits; }
 
 @implementation ZSubclassFixture {
   int _value;

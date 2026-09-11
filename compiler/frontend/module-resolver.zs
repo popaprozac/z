@@ -11709,6 +11709,26 @@ function inferStatement(
             const mutationRoot = expressionStorageRootName(tree, root);
             const mutationPath = expressionDirectFieldPath(tree, root);
             if (mutationRoot.byteLength > 0) {
+              const mutationType = mutationRoot == "this" ? valueBindingType(bindings, mutationRoot) : "";
+              const nativeBase = mutationType.byteLength > 0 ? nativeObjCSubclassBase(modules, moduleIndex, mutationType) : "";
+              if (nativeBase.byteLength > 0) {
+                let member = root;
+                while (tree.nodes[member].kind == ExpressionKind.memberExpression && tree.nodes[member].children.length == 1
+                  && tree.nodes[tree.nodes[member].children[0]].kind == ExpressionKind.memberExpression) {
+                  member = tree.nodes[member].children[0];
+                }
+                if (tree.nodes[member].kind == ExpressionKind.memberExpression) {
+                  match (aggregateFieldShape(modules, moduleIndex, mutationType, tree.nodes[member].value)) {
+                    some(field) => {
+                      if (field.nativeSubclassStorage && !valueBindingIsMutable(bindings, mutationRoot)) {
+                        throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+                          "native stored field mutation requires inout this", tree.nodes[root].line, tree.nodes[root].column);
+                      }
+                    }
+                    none => {}
+                  }
+                }
+              }
               markClosureCaptureMutation(inout bindings, mutationRoot);
               const liveView = liveViewBindingForStoragePath(
                 bindings,
@@ -11782,6 +11802,7 @@ function inferStatement(
               }
               match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
                 some(field) => {
+                  if (field.nativeSubclassStorage) assignmentObjectiveCProperty = false;
                   const nativeSubclassContext = valueBindingType(bindings, "__z_native_objc_subclass_base");
                   if (nativeSubclassContext.byteLength > 0) {
                     try requireNativeReferenceAvailability(module, modules, moduleIndex, receiverType, arena.nodes[index].line, arena.nodes[index].column);
@@ -11810,9 +11831,16 @@ function inferStatement(
                   const initializesThis = tree.nodes[receiverIndex].kind
                     == ExpressionKind.identifierExpression
                     && tree.nodes[receiverIndex].value == "this";
+                  let nativeFieldInitialization = false;
+                  if (field.nativeSubclassStorage && field.readonlyField) {
+                    const initializationKey = `__z_native_field_init_${arena.nodes[index].offset}`;
+                    nativeFieldInitialization = valueBindingType(bindings, initializationKey) == "true";
+                  }
                   if (
                     field.readonlyField
-                    && (constructorType.byteLength == 0 || !initializesThis)
+                    && (field.nativeSubclassStorage
+                      ? !nativeFieldInitialization
+                      : (constructorType.byteLength == 0 || !initializesThis))
                   ) {
                     throw resolutionError(
                       ModuleResolveErrorKind.unknownMember,
@@ -12884,6 +12912,12 @@ export function validateNativeObjCSubclassBodyTypes(
         addValueBinding(inout bindings, "__z_native_executor_context", "thread.main");
         addValueBinding(inout bindings, "__z_native_objc_subclass_base", base);
         addBorrowedValueBinding(inout bindings, "this", aggregate.name, true);
+        let fieldIndex: usize = 0;
+        while (fieldIndex < aggregate.fields.length && fieldIndex + 1 < initializer.body.roots.length) {
+          const assignment = view initializer.body.nodes[initializer.body.roots[fieldIndex + 1]];
+          addValueBinding(inout bindings, `__z_native_field_init_${assignment.offset}`, "true");
+          fieldIndex = fieldIndex + 1;
+        }
         addBorrowedValueBinding(inout bindings, "super", base, false);
         const alias = localClassAliasIdentity(initializer.offset);
         setValueBindingClassAlias(inout bindings, "this", alias);
@@ -12904,6 +12938,19 @@ export function validateNativeObjCSubclassBodyTypes(
     for (const method of aggregate.methods) {
       try inferFunctionExpressions(module, modules, moduleIndex, method,
         aggregate.name, aggregate.executorAffinity, aggregate.typeParameters, inout evidence);
+    }
+    match (in aggregate.deinitializer) {
+      some(deinitializer) => {
+        let bindings = Array<NativeValueBinding>();
+        addValueBinding(inout bindings, "__z_native_function_name", "deinit");
+        addValueBinding(inout bindings, "__z_native_return_type", "void");
+        addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
+        addValueBinding(inout bindings, "__z_native_executor_context", "thread.main");
+        addBorrowedValueBinding(inout bindings, "this", aggregate.name, false);
+        try inferStatementSequence(module, modules, moduleIndex, deinitializer.body,
+          deinitializer.body.roots, inout bindings, inout evidence, "void");
+      }
+      none => {}
     }
   }
   return evidence;

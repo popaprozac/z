@@ -22,7 +22,7 @@ production or compatibility-sensitive use.
   deterministic cleanup, including typed failure
 - Header-first C and Objective-C interop, substantial `.zd` contracts, and
   selected C++ values, methods, namespaces, RAII, and move-only resources
-- An experimental native subclass tier in both compilers: field-free main-isolated
+- An experimental native subclass tier in both compilers: main-isolated
   Objective-C `extends`, checked `override`/selector signatures, designated
   superclass construction, real `super` dispatch, and native ARC identity.
   Native parsing, safety-fact normalization, declaration contract checks, and
@@ -39,8 +39,10 @@ production or compatibility-sensitive use.
   forward to the superclass during construction (including local ARC cleanup)
   and destruction; only ready instances execute Z overrides. Ready entries allow
   nested shared reads and trap reentrant `inout this` conflicts, including during
-  local cleanup. A scoped native ARC hold preserves receiver lifetime. Stored fields,
-  source `deinit`, reentrant field loans, and async composition remain
+  local cleanup. A scoped native ARC hold preserves receiver lifetime. Private inline
+  scalars/plain native values and owned `String` fields plus source `deinit` work,
+  with checked initialization, guarded direct access, and reverse-order cleanup.
+  Broader resource fields, escaping field loans, and async composition remain
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler and owned `objc.adapt<P>` carrier with direct `id<P>` ABI,

@@ -151,9 +151,22 @@ check's cleanup. The current cost is one additional pointer-sized native field,
 a stack guard, entry/exit checks, and a native retain/release—not another heap
 allocation. This conservative safety tier is not zero overhead.
 
-This tier is field-free and synchronous: Z-stored fields, `deinit`, `Weak`,
-fallible constructors, object-returning overrides, and async composition remain
-future work. Ordinary Z-to-Z inheritance is not supported. Both the TypeScript
+Private stored scalars, imported enums/plain native records, and owned `String`
+fields are supported. They live inline in the native object, not a second wrapper.
+Initialize every field directly after `super.init`, before other receiver use or
+control flow. Access is direct `this.field` inside a guarded entry; writes require
+`inout this`. Copy snapshots when a value needs to outlive the entry.
+
+Existing `deinit { ... }` runs after the readiness gate closes. Its local cleanup
+finishes before automatic reverse-order field cleanup. You may inspect/copy
+fields during teardown, but cannot publish or call through dying `this`, and
+must never call `super.dealloc`. Automatic cleanup also works without `deinit`.
+See the [stateful compiler fixture](https://github.com/popaprozac/z/blob/main/tests/fixtures/objc-subclass.zs)
+for construction, replacement, and cleanup examples.
+
+Broader owned resource fields, escaping field views/captures, `Weak`, fallible
+constructors, object-returning overrides, and async composition remain future
+work. Ordinary Z-to-Z inheritance is not supported. Both the TypeScript
 Stage 0 compiler and the native compiler execute this tier. The native frontend parses these declarations
 and checks imported declaration contracts, including restricted bases, inherited
 override signatures, and designated/nonnullable initializer selection. Structural
@@ -186,8 +199,8 @@ not a Z ARC record. The same 200-iteration dispatch and lifetime fixture passes
 both compilers at `-O0` and `-O2` under strict Clang checks and UBSan, including
 construction/teardown callbacks and constructor-local ARC cleanup. Owned native captures keep
 their receiver alive until the closure's final release. Internal generated class
-and constructor names, plus lifecycle storage, cannot be referenced from raw source. This is a field-free
-execution checkpoint, not support for stateful subclasses or general async bodies.
+and constructor names, plus lifecycle and owned-field storage, cannot be referenced from raw source. This is a bounded
+storage checkpoint, not support for arbitrary resource graphs or general async bodies.
 
 ## Own target/action connections
 

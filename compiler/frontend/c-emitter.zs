@@ -343,7 +343,15 @@ export function emitNativeObjCSubclassInterfaces(
     output.append(plan.nativeName);
     output.append(" : ");
     output.append(plan.superclassNativeName);
-    output.append(" {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n}\n");
+    output.append(" {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n");
+    for (const field of plan.fields) {
+      output.append("  ");
+      output.append(field.nativeType);
+      output.append(" _z_native_field_");
+      output.append(field.name);
+      output.append(";\n");
+    }
+    output.append("}\n");
     try appendNativeObjCSubclassEntry(inout output, plan.initializer);
     output.append(" __attribute__((objc_designated_initializer));\n");
     for (const entry of plan.unavailableInitializers) {
@@ -369,6 +377,19 @@ function appendNativeObjCSubclassAccessRuntime(inout output: TextBuffer): void {
   output.append("static __attribute__((unused)) void _z_native_subclass_access_end(_z_native_subclass_access_guard *guard) {\n");
   output.append("  if (guard->exclusive) {\n    if (*guard->state != -1) abort();\n    *guard->state = 0;\n");
   output.append("  } else {\n    if (*guard->state <= 0) abort();\n    *guard->state -= 1;\n  }\n}\n\n");
+}
+
+function appendNativeObjCStoredCleanup(inout output: TextBuffer, in plan: ModuleObjCSubclassPlan): void {
+  let index = plan.fields.length;
+  while (index > 0) {
+    index = index - 1;
+    if (!plan.fields[index].ownedString) continue;
+    output.append("  if (self->_z_native_field_");
+    output.append(plan.fields[index].name);
+    output.append(".capacity > 0) free((void *)self->_z_native_field_");
+    output.append(plan.fields[index].name);
+    output.append(".data);\n");
+  }
 }
 
 // Native virtual dispatch can arrive from a superclass initializer/deallocator.
@@ -6939,7 +6960,10 @@ function appendExpression(
       }
       if (valueReceiver) output.append("self.");
       else output.append("self->");
-      appendCFieldName(inout output, declaration.expressions[index].value);
+      if (declaration.nativeObjCClass.byteLength > 0) {
+        output.append("_z_native_field_");
+        output.append(declaration.expressions[index].value);
+      } else appendCFieldName(inout output, declaration.expressions[index].value);
       return;
     }
     if (
@@ -10837,7 +10861,9 @@ function appendFunction(
   }
   if (declaration.nativeObjCClass.byteLength > 0) {
     output.append("  if (![NSThread isMainThread]) abort();\n");
-    if (declaration.compilerIntrinsic != "objcInitializer") {
+    if (declaration.compilerIntrinsic == "objcDeinitializer") {
+      output.append("  self->_z_native_subclass_ready = 0;\n  {\n");
+    } else if (declaration.compilerIntrinsic != "objcInitializer") {
       match (in declaration.nativeObjCEntry) {
         some(entry) => {
           try appendNativeObjCSubclassFallback(inout output, entry);
@@ -10917,6 +10943,12 @@ function appendFunction(
   }
   try appendFunctionTail(inout output, declaration);
   if (declaration.compilerIntrinsic == "objcInitializer") output.append("  }\n  self->_z_native_subclass_ready = 1;\n  return self;\n");
+  if (declaration.compilerIntrinsic == "objcDeinitializer") {
+    output.append("  }\n");
+    for (const plan of program.objectiveCSubclasses) {
+      if (plan.nativeName == declaration.nativeObjCClass) appendNativeObjCStoredCleanup(inout output, plan);
+    }
+  }
   output.append("}\n\n");
   appendThrowingMainWrapper(
     inout output,
@@ -24599,8 +24631,9 @@ function emitLoweredC(
   }
   if (program.objectiveCSubclasses.length > 0) {
     output.append("#import <Foundation/Foundation.h>\n#import <objc/runtime.h>\n");
-    const interfaces = try emitNativeObjCSubclassInterfaces(program.objectiveCSubclasses);
-    output.append(interfaces);
+    for (const plan of program.objectiveCSubclasses) {
+      output.append("@class "); output.append(plan.nativeName); output.append(";\n");
+    }
     appendNativeObjCSubclassAccessRuntime(inout output);
     for (const plan of program.objectiveCSubclasses) {
       try appendNativeObjCConstructor(inout output, plan, false);
@@ -25162,6 +25195,9 @@ function emitLoweredC(
   if (program.foreignResources.length > 0) output.append("\n");
   appendWeakRuntime(inout output);
   try appendTypeDefinitions(inout output, program);
+  if (program.objectiveCSubclasses.length > 0) {
+    output.append(try emitNativeObjCSubclassInterfaces(program.objectiveCSubclasses));
+  }
   if (usesObjCConnection) {
     appendObjCConnectionRuntime(inout output, program);
   }
@@ -25932,10 +25968,17 @@ function emitLoweredC(
     output.append("@implementation ");
     output.append(plan.nativeName);
     output.append("\n");
+    let hasDeinitializer = false;
     for (const declaration of program.functions) {
       if (declaration.nativeObjCClass == plan.nativeName) try appendFunction(inout output, program, declaration, false);
+      if (declaration.nativeObjCClass == plan.nativeName && declaration.compilerIntrinsic == "objcDeinitializer") hasDeinitializer = true;
     }
-    output.append("- (void)dealloc {\n  if (![NSThread isMainThread]) abort();\n  self->_z_native_subclass_ready = 0;\n}\n@end\n\n");
+    if (!hasDeinitializer) {
+      output.append("- (void)dealloc {\n  if (![NSThread isMainThread]) abort();\n  self->_z_native_subclass_ready = 0;\n");
+      appendNativeObjCStoredCleanup(inout output, plan);
+      output.append("}\n");
+    }
+    output.append("@end\n\n");
     try appendNativeObjCConstructor(inout output, plan, true);
   }
   try appendTestRunner(

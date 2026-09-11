@@ -1,7 +1,7 @@
 import { requireNativeAvailability } from "./semantic-native-availability.zs";
 import {
   AggregateDeclaration, DeclarationKind, ExpressionKind, ExpressionTree,
-  FunctionDeclaration, ParameterMode, ReceiverMode, StatementKind,
+  FunctionDeclaration, ParameterMode, ReceiverMode, StatementKind, Visibility,
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import {
@@ -314,13 +314,17 @@ function validateNativeObjCSubclassDeclaration(
     "generic native subclasses are not supported in the first tier", aggregate.line, aggregate.column);
   if (aggregate.executorAffinity != "thread.main") throw subclassError(module,
     "a native subclass must declare `on thread.main`", aggregate.line, aggregate.column);
-  if (aggregate.fields.length > 0) throw subclassError(module,
-    "native subclass fields require the later initialization and state-lifetime tier",
-    aggregate.fields[0].line, aggregate.fields[0].column);
-  match (in aggregate.deinitializer) {
-    some(value) => throw subclassError(module,
-      "native subclass deinit requires the later state-lifetime tier", value.line, value.column);
-    none => {}
+  for (const field of aggregate.fields) {
+    if (field.visibility != Visibility.privateVisibility) throw subclassError(module,
+      "native subclass stored fields must be private; expose state through guarded overrides", field.line, field.column);
+    let hasDefault = false;
+    match (in field.defaultValue) { some(_) => hasDefault = true; none => {} }
+    if (field.optionalField || hasDefault) throw subclassError(module,
+      "native stored fields require explicit constructor initialization, without defaults or optional fields", field.line, field.column);
+    if (field.type.name != "String" && !plainNativeValue(modules, moduleIndex, field.type.name)) {
+      throw subclassError(module,
+        "native stored fields currently support owned String, scalars, and plain native value records", field.line, field.column);
+    }
   }
   if (aggregate.implementedTraits.length > 0) throw subclassError(module,
     "native subclass protocol and trait conformance is not supported in the first tier",

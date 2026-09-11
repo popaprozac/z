@@ -1,7 +1,7 @@
 import { ParsedModule } from "./module-symbols.zs";
 import { ReceiverMode } from "./parser.zs";
 import {
-  ModuleObjCSubclassEntry, ModuleObjCSubclassPlan, ModuleObjCSubclassSuperCall,
+  ModuleObjCSubclassEntry, ModuleObjCSubclassPlan, ModuleObjCSubclassSuperCall, ModuleObjCSubclassField,
   ModuleResolveError, ModuleResolveErrorKind, ModuleSemanticEvidence,
   ResolvedModule, codedModuleResolutionError,
 } from "./semantic-model.zs";
@@ -231,13 +231,32 @@ export function planNativeObjCSubclasses(
       }
       if (!found) throw planError(module, "native subclass plan requires typed evidence for every superclass call");
     }
+    let fields = Array<ModuleObjCSubclassField>();
+    for (const field of aggregate.fields) {
+      let matchingFields: usize = 0;
+      for (const checked of signature.fields) {
+        if (checked.name != field.name) continue;
+        // Inherited property metadata is not inline source storage, even if
+        // the source uses the same private name.
+        if (checked.objectiveCGetter.byteLength > 0 || checked.objectiveCSetter.byteLength > 0) continue;
+        if (checked.typeName != field.type.name || checked.visibility != "private") {
+          throw planError(module, "native subclass stored field lost checked type/visibility evidence");
+        }
+        matchingFields = matchingFields + 1;
+      }
+      if (matchingFields != 1) throw planError(module, "native subclass stored field requires one checked identity");
+      fields.push(ModuleObjCSubclassField({ name: copy field.name,
+        nativeType: field.type.name == "String" ? "Z_String"
+          : try constructorNativeType(module, modules, moduleIndex, field.type.name),
+        ownedString: field.type.name == "String" }));
+    }
     plans.push(ModuleObjCSubclassPlan({
       moduleIndex, aggregateIndex: sourceIndex, sourceName: copy aggregate.name,
       nativeName: `ZNative_${moduleIndex}_${aggregate.name}`,
       superclassNativeName: move superclassNativeName,
       executorAffinity: copy signature.executorAffinity, foreignHeader: move header,
       initializer: move initializer, unavailableInitializers: move unavailableInitializers,
-      methods: move methods, superCalls: move superCalls,
+      methods: move methods, superCalls: move superCalls, fields: move fields,
     }));
   }
   return plans;

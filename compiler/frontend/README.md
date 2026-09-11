@@ -206,9 +206,12 @@ recursive path.
   conflicts without waiting; lexical cleanup retains the access through local
   destruction and ends it before a precise-lifetime native receiver hold releases.
   The fixture covers five conflict paths and releasing the last outside owner
-  during an entry, at both optimization levels. Fields, source `deinit`, escaping
-  field loans/captures, weak identity,
-  and async subclass composition remain.
+  during an entry, at both optimization levels. Private inline scalar/plain-native
+  value and owned `String` fields plus source `deinit` now execute too. A checked
+  initialization prefix precedes Ready; source/local cleanup precedes reverse
+  field destruction. Direct guarded field access rejects receiver aliases,
+  shared writes, and dying-receiver escape. Broader resource fields, escaping
+  field loans/captures, weak identity, and async subclass composition remain.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies

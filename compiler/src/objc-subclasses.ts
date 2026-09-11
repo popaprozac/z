@@ -13,7 +13,7 @@ export type ObjCSubclassPlan = {
 export function objcSubclassError(fileName: string, location: SourceLocation, message: string): never {
   throw new DiagnosticError(fileName, location, message, {
     code: "Z0814",
-    notes: ["the first native subclass tier supports field-free, main-isolated Objective-C subclasses with synchronous overrides"],
+    notes: ["native subclasses use main-isolated inline storage and synchronous guarded overrides"],
   });
 }
 
@@ -28,8 +28,10 @@ export function validateObjCSubclassShape(declaration: StructDeclaration, fileNa
   if (declaration.kind !== "class" || declaration.nativeLayout) reject(declaration.location, "`extends` requires a native Objective-C class declaration");
   if (declaration.typeParameters?.length) reject(declaration.location, "generic native subclasses are not supported in the first tier");
   if (!declaration.executorAffinity) reject(declaration.location, "a native subclass must declare `on thread.main`");
-  if (declaration.fields.length) reject(declaration.fields[0].location, "native subclass fields require the later initialization and state-lifetime tier");
-  if (declaration.deinitializer) reject(declaration.deinitializer.location, "native subclass deinit requires the later state-lifetime tier");
+  for (const field of declaration.fields) {
+    if (field.visibility !== "private") reject(field.location, "native subclass stored fields must be private; expose state through guarded overrides");
+    if (field.optional || field.defaultValue) reject(field.location, "native stored fields require explicit constructor initialization, without defaults or optional fields");
+  }
   if (declaration.implements.length) reject(declaration.implements[0].location, "native subclass protocol and trait conformance is not supported in the first tier");
   const constructor = declaration.constructor;
   if (!constructor) reject(declaration.location, "a native subclass requires an explicit constructor and superclass initializer");
@@ -45,6 +47,7 @@ export function validateObjCSubclassShape(declaration: StructDeclaration, fileNa
   };
   rejectImplicitReceiverShadow(constructor);
   rejectImplicitReceiverShadow(declaration.methods);
+  rejectImplicitReceiverShadow(declaration.deinitializer);
   const first = constructor.body[0];
   if (first?.kind !== "expressionStatement" || !isSuperCall(first.expression)) {
     objcSubclassError(fileName, first?.location ?? constructor.location, "a native subclass constructor must begin with exactly one `super.init...(...)` call");
@@ -73,6 +76,7 @@ export function validateObjCSubclassShape(declaration: StructDeclaration, fileNa
     for (const child of Object.values(value)) inspect(child, insideClosure || node.kind === "closure");
   };
   inspect(constructor.body);
+  if (declaration.deinitializer) inspect(declaration.deinitializer.body);
   for (const method of declaration.methods) {
     if (!method.override || !method.nativeSelector) reject(method.location, "a native subclass method requires `override function` and an explicit `as \"selector:\"`");
     if (method.static || method.async || method.errorType || method.rawBody || method.receiverMode === "move" || method.typeParameters?.length) {
@@ -94,6 +98,39 @@ export function validateObjCSubclassShape(declaration: StructDeclaration, fileNa
     const location = usesThis(argument);
     if (location) reject(location, "the native receiver cannot be used before superclass initialization succeeds");
   }
+  // Until native field loans have their own escaping representation, receiver
+  // identity cannot be captured and dying identity cannot be published at all.
+  const checkReceiver = (value: unknown, dying = false, closure = false): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) { for (const child of value) checkReceiver(child, dying, closure); return; }
+    const node = value as Expression;
+    if (node.kind === "member" && node.object.kind === "identifier" && node.object.name === "this"
+      && declaration.fields.some((field) => field.name === node.property) && !closure) return;
+    if (node.kind === "identifier" && (node.name === "this" || node.name === "super") && (dying || closure)) {
+      reject(node.location, dying ? "native subclass deinit cannot publish or call through the dying receiver; use its stored fields"
+        : "native subclass receiver captures require escaping field-loan support");
+    }
+    for (const child of Object.values(value)) checkReceiver(child, dying, closure || node.kind === "closure");
+  };
+  checkReceiver(constructor.body);
+  checkReceiver(declaration.methods);
+  if (declaration.deinitializer) checkReceiver(declaration.deinitializer.body, true);
+  // A fail-closed first storage tier: initialize the fields in a straight-line
+  // prefix, before receiver use/control flow. Ordinary sema then checks moves,
+  // field types, mutability, and all subsequent uses.
+  const pending = new Set(declaration.fields.map((field) => field.name));
+  for (const statement of constructor.body.slice(1)) {
+    if (!pending.size) break;
+    if (statement.kind !== "assignment" || statement.target.kind !== "member"
+      || statement.target.object.kind !== "identifier" || statement.target.object.name !== "this"
+      || !pending.has(statement.target.property)) {
+      reject(statement.location, "initialize every native stored field directly after super.init before other receiver use or control flow");
+    }
+    const use = usesThis(statement.expression);
+    if (use) reject(use, "native stored field initialization cannot use the partially initialized receiver");
+    pending.delete(statement.target.property);
+  }
+  if (pending.size) reject(constructor.location, `native stored fields are not initialized: ${[...pending].join(", ")}`);
   return initializer;
 }
 

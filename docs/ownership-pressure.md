@@ -7385,6 +7385,62 @@ Clang/UBSan execution and an actual NSWindow subclass for compile-only checking.
 Website build (33 pages), fixture/tier coverage, and diff checks pass. This is
 targeted validation, not a full-suite or runtime benchmark claim.
 
+## Native inline stored state and source teardown (2026-09-10)
+
+The native subclass fixture now exercises real owned state in both compilers:
+private scalar and native-record fields plus an allocated `String`. Construction
+initializes the fields before Ready, an `inout this` entry replaces the string,
+read entries inspect it, and source `deinit` copies/reads it before automatic
+cleanup. There is still one native ARC object, with inline ivars rather than a
+second Z allocation. String creation/copy retains its ordinary allocation cost.
+
+This tier intentionally limits fields to scalars, imported enums/plain native
+records, and owned `String`. An immediate straight-line initialization prefix
+after `super.init` is required. Public fields, broader owned resources, escaping
+receiver captures, moved-out borrowed fields, and indirect alias field access
+remain rejected. These are current implementation boundaries, not new syntax.
+Read-only entries cannot mutate direct or nested stored fields. Source `deinit`
+cannot publish or call through the dying receiver; it can inspect/copy fields
+and perform synchronous extra cleanup. Closure-local returns remain ordinary
+closure returns, not exits from teardown.
+
+The first compile found that a plain ivar named `point` collides with a method
+parameter under Clang's strict shadow checks. Stored ivars now use the compiler's
+reserved `_z_native_field_` namespace, with direct mapped accesses and raw-symbol
+hygiene. Source names and the native header's ABI names remain unchanged.
+
+Teardown requires the same lexical care as construction: native ARC locals in
+source `deinit` must die before the owned fields they may borrow. Both emitters
+put source/local teardown in an inner scope, then emit automatic reverse-order
+field cleanup with the readiness gate already closed. Native field plans retain
+checked storage type/visibility evidence, separate from inherited property
+getter/setter metadata. Field assignment must use owned transfer semantics,
+not the imported-property setter path merely because its receiver is native.
+
+One bootstrap-expression issue surfaced while writing this checker: a borrowed
+interpolated temporary inside a ternary condition produced an out-of-scope
+generated temporary in Stage 0. Naming the diagnostic lookup key explicitly
+keeps this implementation correct. General conditional borrowed-temporary
+lowering remains a separate regression to close, not a new language rule.
+
+The regression oracle checks 403 source destructors alongside the existing
+construction/local-cleanup/base-teardown counts, at `-O0` and `-O2` with UBSan.
+Negative tests cover partial initialization, shared/nested writes, readonly
+replacement, receiver aliases/captures, field moves, and dying-receiver escape.
+No ASan process or GUI probe is needed for this compiler checkpoint.
+
+Validation: six subclass tests and 105 related interop/closure/nonescape tests
+pass. The final native compiler reaches a fixed point at 11,515,687 emitted C
+bytes; its standalone output passes strict Clang/UBSan execution and all five
+expected reentry traps. A real NSWindow subclass passes compile-only checking,
+and renamed cross-module imports execute with private owned fields. Website
+build (33 pages), fixture/tier coverage, and diff checks pass. This is targeted
+correctness validation, not a new runtime performance benchmark or full suite.
+
+Next: audit the resize controller's concrete remaining resource/callback needs,
+then integrate in Zapp. Do not expand unrelated native inheritance features just
+because this storage seam is now available.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

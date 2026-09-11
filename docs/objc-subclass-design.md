@@ -1,7 +1,7 @@
 # Native Objective-C subclass design
 
 Status: declaration and construction direction approved, 2026-09-09. The first
-field-free, synchronous tier executes in **Stage 0 and the native compiler**. The
+stateful, synchronous tier executes in **Stage 0 and the native compiler**. The
 self-hosted frontend preserves the declaration syntax, checks imported
 declaration contracts and structural receiver rules, and uses the ordinary
 expression/call/loan checker for a restricted native body-typing tier. Target-aware
@@ -12,8 +12,9 @@ with no Z ARC record wrapper. The same 200-iteration virtual-dispatch and exact
 cleanup fixture passes both emitters under strict Clang and UBSan.
 The lifecycle-forwarding direction is approved and implemented in both emitters:
 construction and destruction dispatch to the superclass, while ready instances
-enter Z overrides. Stateful subclasses and production window integration remain
-separate checkpoints.
+enter Z overrides. Private scalar/plain-native-value and owned `String` fields,
+plus source `deinit`, are implemented. Broader resource fields and production
+window integration remain separate checkpoints.
 
 ## Motivation
 
@@ -99,7 +100,8 @@ The first tier deliberately rejects:
 
 - ordinary Z inheritance, generic subclasses, missing main affinity, and
   imported classes that forbid subclassing;
-- Z-stored fields, `deinit`, `Weak`, and protocol/trait composition;
+- public stored fields, storage beyond scalars/plain native values/owned `String`,
+  escaping field loans, `Weak`, and protocol/trait composition;
 - asynchronous, throwing, consuming, static, generic, block-receiving, or
   object-returning overrides, plus variadic native signatures;
 - native lifecycle/runtime overrides, direct (`objc_direct`) methods, consuming
@@ -169,9 +171,8 @@ multiargument, void, selector-alias, and plain-record forwarding run at `-O0`
 and `-O2` under strict Clang and UBSan, with exact construction, temporary cleanup,
 and destruction counts. No GUI or ASan is needed.
 
-This is the first implementation checkpoint of the approved model, **not stored
-field support**. Fields and source `deinit` remain rejected until initialization,
-owned storage cleanup, and reentrant loan enforcement are implemented together.
+The lifecycle gate is also used by the stored-field tier below; readiness is
+never enabled merely because the native superclass initializer returned.
 
 ### Implemented native-entry exclusivity
 
@@ -222,23 +223,72 @@ Both emitters now annotate the helper's declaration and definition with the
 owned-return fact, so Z `new` does not depend on an optimized autorelease
 return-value handshake for timely cleanup.
 
-This closes the **entry** boundary, not all field borrowing. Stored fields and
-source `deinit` remain fail-closed. Their next checkpoint must combine definite
-initialization, inline owned storage, exactly-once cleanup, visibility, and
-restrictions on field views/captures that could outlive the guarded entry.
+This closes the **entry** boundary, not escaping field borrowing. The implemented
+storage tier keeps its fields behind those guarded entries.
+
+### Implemented inline owned storage
+
+```zs
+class Counter extends native.CounterBase on thread.main {
+  private offset: i32;
+  private title: String;
+
+  constructor(value: i32) {
+    super.initWithValue(value);
+    this.offset = 2;
+    this.title = makeOwnedTitle();
+  }
+
+  override function value(): i32 as "value" {
+    return super.value() + this.offset;
+  }
+
+  deinit {
+    console.log(this.title);
+  }
+}
+```
+
+`CounterBase`, its imported initializer/selector, and `makeOwnedTitle` are
+illustrative; the executable fixture is `tests/fixtures/objc-subclass.zs`.
+There is one native allocation, with private inline ivars. Supported fields are
+scalars, imported enums/plain native records, and owned `String`. Other storage
+shapes fail closed; this does not yet promise arbitrary ARC/resource graphs.
+
+Every field must be assigned once in a straight-line prefix immediately after
+`super.init`, before other receiver use or control flow. Initializer expressions
+may call helpers but cannot inspect the partially initialized receiver. The
+first tier does not accept field defaults or optional-field shorthand. The
+ordinary checker still checks types, transfers, readonly fields, and subsequent
+uses. Access is direct `this.field` inside the native receiver body; source
+privacy and generated ivar names keep external aliases out of this storage path.
+Writing requires `inout this`; read entries remain shared. Receiver captures and
+moved-out borrowed fields remain rejected. Copy a value snapshot when an owned
+value needs to survive the entry.
+
+Destruction closes the readiness gate, runs source `deinit`, finishes its Z and
+native ARC local cleanup, then destroys fields in reverse declaration order.
+Automatic field cleanup also runs without a source `deinit`. Source teardown
+may inspect/copy fields but cannot call through or publish the dying receiver;
+`super.dealloc` is never written or generated. Explicit close/shutdown is still
+necessary for registrations or cycles that can prevent final ARC destruction.
+
+The shared 403-object fixture now owns an allocated string, replaces it through
+an exclusive entry, reads native-record fields, and counts source destruction.
+The native emitter uses checked field type/visibility plans. Tests reject partial
+initialization, shared writes (including nested fields), receiver aliases,
+escaping captures, readonly replacement, unsupported storage, and resurrection.
 
 ## Remaining state and safety work
 
-The first fixture should separate field-free override/super dispatch from the
-later stateful window implementation. A passing stateless fixture does not
-establish stateful subclass safety. Before fields or cleanup hooks ship, implement
-and validate the approved lifetime rule while keeping these wider cases explicit:
+The stateful compiler fixture is not yet the production window implementation.
+Keep these wider cases explicit as storage expands:
 
 1. Broader inherited construction entry points and constructor argument ownership.
 2. Nullable/replacement initializer results and cleanup on failed construction.
 3. Native virtual callbacks during initialization or teardown: ordinary Z
    definite-assignment analysis alone cannot prove these callbacks safe.
-4. Owned-field lifetime, native ARC destruction, and weak references.
+4. Broader owned resource/ARC fields, native destruction ordering, and weak references.
 5. Native reentrancy while an exclusive Z borrow is active, even on main.
 6. Header restrictions on subclassing/overriding and required superclass calls.
 7. Exception, suspension, ownership, and executor compatibility at each native
@@ -417,10 +467,10 @@ below. Ordinary aggregate lowering still rejects manually assembled subclass AST
 without checked native plans, so bypassing the resolver cannot silently select
 the wrong representation.
 
-Next: implement owned state, definite initialization, exact storage cleanup,
-and reentrant loan enforcement before Zapp's window transition state moves into
-a subclass. The approved lifecycle-forwarding gate is implemented and tested.
-General async closure completeness is **not** a prerequisite for this field-free,
+The approved lifecycle gate, reentrant loan enforcement, and bounded inline state
+are implemented and tested. Before moving Zapp's transition state into a subclass,
+finish the concrete native-resource and display-callback lifetime audit.
+General async closure completeness is **not** a prerequisite for this bounded,
 synchronous native subclass tier. Unsupported suspension remains rejected rather
 than expanding this Zapp-driven task into a general async implementation project.
 
@@ -435,8 +485,10 @@ execution gates below are complete, including a freshly bootstrapped NSWindow
 compile-only probe. Next is the user review of subclass-owned state and callback
 lifetimes, then implementation/teardown tests and the Zapp resize integration.
 The earlier range included the now-completed native body port. The lifecycle
-review and field-free forwarding gate are now complete too; owned storage and
-reentrant loan enforcement remain before production integration.
+review, forwarding gate, reentrant entry enforcement, and bounded inline owned
+storage are now complete. Next, audit the actual resize controller's remaining
+storage/callback needs, then return to production integration; do not use this
+checkpoint as a reason to expand unrelated subclass features.
 
 The field-free native port was bounded by four gates:
 

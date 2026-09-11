@@ -1157,7 +1157,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover(details[word.text as keyof typeof details], source, word.start, word.end);
   }
   const nativeClass = context.sourceProgram.structs.find((declaration) => declaration.nativeBase && declaration.name === word.text);
-  if (nativeClass?.nativeBase) return markdownHover(`class ${nativeClass.name} extends ${nativeClass.nativeBase.name} on thread.main\n// native Objective-C ARC identity; first tier has no Z-stored fields\n// Z overrides become active after constructor cleanup; construction and destruction call the superclass`, source, word.start, word.end);
+  if (nativeClass?.nativeBase) return markdownHover(`class ${nativeClass.name} extends ${nativeClass.nativeBase.name} on thread.main\n// native Objective-C ARC identity with private inline stored fields\n// Z overrides become active after constructor cleanup; construction and destruction call the superclass\n// deinit runs before automatic field cleanup; stored field access stays inside the guarded receiver body`, source, word.start, word.end);
   const immediateMemberOwner = source.slice(0, word.start)
     .match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?)\.$/)?.[1];
   const immediateChannel = immediateMemberOwner

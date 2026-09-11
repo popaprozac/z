@@ -32477,6 +32477,22 @@ function appendLoweredProgram(
           }
           none => throw "native subclass lowering lost its constructor";
         }
+        match (in aggregate.deinitializer) {
+          some(source) => {
+            let body = try lowerDeinitializer(program, importedTypes, evidence, aggregate.name, source.body);
+            body.name = `${emittedName}___deinitializer`;
+            body.receiverType = Option.some(LoweredType({ kind: LoweredTypeKind.foreignObjCType, name: copy emittedName }));
+            body.receiverMode = LoweredParameterMode.input;
+            body.nativeObjCClass = copy emittedName;
+            body.compilerIntrinsic = "objcDeinitializer";
+            body.nativeObjCEntry = Option.some(ModuleObjCSubclassEntry({ sourceIndex: 0,
+              offset: source.offset, sourceName: "deinit", selector: "dealloc", nativeReturnType: "void",
+              nativeParameterTypes: Array<String>(), parameterNames: Array<String>() }));
+            rewritePrivateCallTargets(program, privateFunctionCollisionNames, moduleIndex, entryIndex, inout body);
+            functions.push(move body);
+          }
+          none => {}
+        }
       }
       none => {}
     }

@@ -57,6 +57,7 @@ export struct NativeFieldShape {
   readonlyField: boolean;
   optionalField: boolean;
   foreignUnion: boolean;
+  nativeSubclassStorage: boolean = false;
   viewLifetime: String;
   objectiveCGetter: String = "";
   objectiveCSetter: String = "";
@@ -463,6 +464,7 @@ export function aggregateFieldShape(
                 visibility: field.visibility.copyBytes(0, field.visibility.byteLength),
                 readonlyField: field.readonlyField,
                 optionalField: field.optionalField,
+                nativeSubclassStorage: signature.foreignKind == "objcSubclass" && field.objectiveCGetter.byteLength == 0,
                 foreignUnion: signature.foreignKind == "union"
                   || (
                     signature.foreignKind == "record"

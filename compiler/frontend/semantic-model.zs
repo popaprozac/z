@@ -121,6 +121,12 @@ export struct ModuleObjCSubclassSuperCall {
   nativeParameterTypes: Array<String>;
 }
 
+export struct ModuleObjCSubclassField {
+  name: String;
+  nativeType: String;
+  ownedString: boolean;
+}
+
 export struct ModuleObjCSubclassPlan {
   moduleIndex: usize;
   aggregateIndex: usize;
@@ -133,6 +139,7 @@ export struct ModuleObjCSubclassPlan {
   unavailableInitializers: Array<ModuleObjCSubclassEntry>;
   methods: Array<ModuleObjCSubclassEntry>;
   superCalls: Array<ModuleObjCSubclassSuperCall>;
+  fields: Array<ModuleObjCSubclassField> = Array<ModuleObjCSubclassField>();
 }
 
 export struct ModuleObjCProtocolMethodResolution {

@@ -35,7 +35,7 @@ import {
 } from "./semantic-model.zs";
 import { recordBindingResolution } from "./semantic-evidence.zs";
 import { ParsedModule } from "./module-symbols.zs";
-import { ExpressionTree } from "./parser.zs";
+import { ExpressionKind, ExpressionTree } from "./parser.zs";
 
 export function requireObjectDestructureCleanup(
   in module: ParsedModule,
@@ -146,6 +146,17 @@ export function requireVisibleField(
   in bindings: Array<NativeValueBinding>,
   in field: NativeFieldShape
 ): void throws ModuleResolveError {
+  if (field.nativeSubclassStorage) {
+    let direct = false;
+    const node = view tree.nodes[index];
+    if (node.kind == ExpressionKind.memberExpression && node.children.length == 1) {
+      const receiver = view tree.nodes[node.children[0]];
+      direct = receiver.kind == ExpressionKind.identifierExpression && receiver.value == "this";
+    }
+    if (!direct) throw moduleResolutionError(ModuleResolveErrorKind.unknownMember,
+      module.path, "native stored fields require direct this access inside a guarded receiver body",
+      node.line, node.column);
+  }
   if (field.visibility == "public") return;
   if (field.visibility == "private" && activeOwnerMatches(modules, moduleIndex, bindings, field)) return;
   if (

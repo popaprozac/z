@@ -830,12 +830,14 @@ richer metadata.
 
 ## Direct Objective-C imports versus `std/objc`
 
-For APIs that require a genuine native subclass, both compilers now have a field-free
+For APIs that require a genuine native subclass, both compilers now have a bounded stateful
 `class ... extends NativeClass on thread.main` tier. `constructor` begins with a
 checked designated `super.init...(...)`; explicit `override function ... as
 "selector:"` bodies use native dispatch and ARC identity, not a protocol adapter.
 See [native subclass construction and restrictions](objc-subclass-design.md).
-Stateful/async subclass composition remains unimplemented;
+Private scalar/plain-native-value and owned `String` fields plus source `deinit`
+are supported with guarded access and automatic cleanup. Broader resource storage,
+escaping field loans, and async subclass composition remain unimplemented;
 ordinary header imports and protocol adaptation do not depend on this new tier.
 
 The default Objective-C experience remains header-first. Importing AppKit is
