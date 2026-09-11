@@ -12,6 +12,12 @@ __attribute__((swift_attr("@MainActor")))
 - (int)readObject:(ZSubclassFixture *)object;
 - (int)add:(int)left to:(int)right;
 - (void)recordPhase:(int)phase;
+- (void)registerTarget:(id)target selector:(SEL)selector;
+- (void)registerObjectTarget:(id)target selector:(SEL)selector;
+- (int)fireWithObject:(ZSubclassFixture *)object;
+- (int)fireWithValue:(int)value;
+- (void)invalidate;
+- (SEL)bareSelector;
 - (ZSubclassPoint)adjustPoint:(ZSubclassPoint)point;
 - (int)readAccess:(int)mode;
 - (int)writeAccess:(int)mode;

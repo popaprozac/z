@@ -46,6 +46,8 @@ int z_subclass_source_deinits(void) { return sourceDeinits; }
 
 @implementation ZSubclassFixture {
   int _value;
+  id _callbackTarget;
+  SEL _callbackSelector;
 }
 - (void)checkBaseDispatch:(int)phase {
   // These deliberately use virtual dispatch, including nested dispatch through
@@ -74,6 +76,17 @@ int z_subclass_source_deinits(void) { return sourceDeinits; }
 - (int)readObject:(ZSubclassFixture *)object { return [object value]; }
 - (int)add:(int)left to:(int)right { return left + right; }
 - (void)recordPhase:(int)phase { _recordedPhase = phase; }
+- (void)registerTarget:(id)target selector:(SEL)selector { _callbackTarget = target; _callbackSelector = selector; }
+- (void)registerObjectTarget:(id)target selector:(SEL)selector { _callbackTarget = target; _callbackSelector = selector; }
+- (int)fireWithObject:(ZSubclassFixture *)object {
+  return ((int (*)(id, SEL, ZSubclassFixture *))objc_msgSend)(_callbackTarget, _callbackSelector, object);
+}
+- (int)fireWithValue:(int)value {
+  if (!_callbackTarget) return -1;
+  return ((int (*)(id, SEL, int))objc_msgSend)(_callbackTarget, _callbackSelector, value);
+}
+- (void)invalidate { _callbackTarget = nil; _callbackSelector = NULL; }
+- (SEL)bareSelector { return sel_registerName("receive:"); }
 - (ZSubclassPoint)adjustPoint:(ZSubclassPoint)point { return point; }
 - (int)readAccess:(int)mode { return mode; }
 - (int)writeAccess:(int)mode { return mode; }

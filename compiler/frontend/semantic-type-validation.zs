@@ -551,27 +551,22 @@ function validateTypeNameShape(
     none => {}
   }
   if (allowInferredGeneric) return;
-  match (intrinsicTypeArity(name)) {
-    some(arity) => try requireTypeArity(module, name, arity, 0, line, column);
-    none => {}
-  }
   match (typeSymbolLocation(modules, moduleIndex, name)) {
     some(location) => {
       match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
-        some(signature) => try requireTypeArity(
-          module,
-          name,
-          NativeTypeArity({
-            minimum: signature.typeParameters.length,
-            maximum: signature.typeParameters.length,
-          }),
-          0,
-          line,
-          column
-        );
+        some(signature) => {
+          try requireTypeArity(module, name, NativeTypeArity({ minimum: signature.typeParameters.length, maximum: signature.typeParameters.length }), 0, line, column);
+          return;
+        }
         none => {}
       }
     }
+    none => {}
+  }
+  // A resolved source declaration (for example a user's Receiver class) owns
+  // its arity. Only unresolved intrinsic names use the standard fallback.
+  match (intrinsicTypeArity(name)) {
+    some(arity) => try requireTypeArity(module, name, arity, 0, line, column);
     none => {}
   }
 }

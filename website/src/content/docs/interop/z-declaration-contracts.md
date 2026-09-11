@@ -93,7 +93,7 @@ pointer type.
 | `fixed CONSTANT;` | Hide a policy argument and always pass the header constant |
 | `borrowed from owner;` | Tie a returned view to one borrowed input owner |
 | `invalidates owner;` | Reject the call while derived views remain live |
-| `target receiver;` | Pair a native `SEL` callback with an object parameter; declaration validation is implemented, executable selector references are pending |
+| `target receiver;` | Pair a native `SEL` callback with an object parameter; checked inline `objc.selector(Type.method)` references preserve method/target evidence |
 | `type (in value: NativeObject) => void on thread.main;` | Assert the signature erased by `SEL`; main is a callback requirement, not an automatic hop |
 
 `owned` and `borrowed` have no implicit default for resource-classified return
@@ -123,12 +123,14 @@ values and borrowed imported Objective-C object parameters, with scalar/enum
 or `void` returns. `target target;` reads as the fact followed by the native
 parameter's name.
 
-This is a **contract-validation checkpoint**, not an executable selector API
-yet. New guarded native method entries execute, but the approved
-`objc.selector(Type.method)` utility and paired target checks are next;
-registration remains unavailable until those checks
-are in place. No closure environment, automatic hop, or implicit invalidation
-is introduced. Display links still need explicit main-run-loop registration
+Callers use `objc.selector(Type.method)` inline in the selector argument.
+Both compilers check method visibility, concrete signature and capabilities,
+the non-null native subclass target, and main-executor context. Known
+constructing/dying receiver aliases are rejected; a direct Ready check also
+protects registrations reached indirectly through helper functions.
+Bare/stored `SEL` values cannot substitute for this evidence. No closure
+environment, automatic hop, or implicit invalidation is introduced.
+Display links still need explicit main-run-loop registration
 and invalidation during shutdown.
 
 ## Returned resources

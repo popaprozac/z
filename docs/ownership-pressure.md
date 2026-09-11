@@ -7575,6 +7575,63 @@ standalone native driver checks the new-entry fixture; website build passes
 33 pages. These are targeted correctness checks, not a full-suite run or a
 new performance benchmark.
 
+## Checked native selector registration without erased evidence (2026-09-10)
+
+Both compilers now execute the agreed `objc.selector(Type.method)` shape as an
+inline argument to a `.zd`-contracted target/selector method. The declaration
+reference preserves the method's owner and exact callback ABI until the paired
+target is checked. Strings, stored/bare `SEL` values, bound methods, ordinary
+method invocations, private methods, signature mismatches, nullable targets, and
+off-main registration cannot bypass that check. The selector lowers directly
+to `@selector(...)`; no closure environment or adapter object is allocated.
+
+Known constructing receiver aliases fail at compile time. An indirect helper
+can hide construction phase from local checking, so registration additionally
+performs a direct native Ready/main preflight before the target reaches native
+retention. This is an intentional runtime safety cost, not a claim that the
+entire registration is free. The preflight does not acquire a field loan;
+callback entries still enforce their ordinary shared/exclusive receiver guard.
+Teardown cannot publish `this`, including through a helper, under the existing
+native-subclass deinit boundary.
+
+The independent native-emitter fixture uses raw Clang metadata, not Stage 0
+semantic evidence. Repeated scalar and borrowed-object callbacks, scalar
+results, retained target identity, explicit invalidation, balanced destruction,
+and renamed cross-module references execute in both outputs at `-O0` and `-O2`
+with strict Clang/UBSan. The indirect-construction case traps before native
+registration; bounded probes catch expected aborts without OS crash reports.
+The actual `NSWindow.displayLinkWithTarget:selector:` shape also passes strict
+compile-only checking. No ASan or GUI probe is part of this checkpoint.
+
+Two compiler-maintenance lessons were exposed by this slice:
+
+- Native arity validation treated a source class named `Receiver` as the
+  intrinsic channel endpoint. Resolved source declarations now own their arity
+  before intrinsic fallback, matching Stage 0.
+- Native Objective-C message lowering has two paths. Testing only emitted
+  helper definitions missed a registration path that did not call the Ready
+  helper. The behavioral indirect-construction test caught it; both paths now
+  share the target-wrapping helper. Emitted text alone is insufficient evidence
+  for lifecycle enforcement.
+
+Editor completion treats `Type.method` as a declaration reference and inserts
+the method name without `()`. It works while the member is only partially typed;
+hover and semantic coloring preserve the class/method distinction.
+
+Validation: 229 targeted tests pass across seven selector, subclass, editor,
+language, and native-interop suites. The final empty-member completion check
+and 13 editor regressions also pass. Fixed-point bootstrap emits 11,671,504 C
+bytes; that standalone compiler checks and emits the registration fixture, and
+its output executes under strict Clang/UBSan. The website builds all 33 pages;
+tier coverage and diff checks pass. This is not a full-suite run or a new
+performance benchmark.
+
+Next: integrate the real Zapp display-link resize controller. Test interrupted
+and retargeted animations, zoom/restore, close-time invalidation, Reduce Motion,
+idle ticker shutdown, and native reentry before claiming that migration done.
+This slice does not broaden field loans, add stored selector values, or infer
+cycle-breaking cleanup from ARC.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

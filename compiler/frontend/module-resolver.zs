@@ -1,6 +1,7 @@
 import { TextBuffer } from "std/text";
 import { requireNativeAvailability, requireNativeReferenceAvailability } from "./semantic-native-availability.zs";
 import { planNativeObjCSubclasses } from "./semantic-objc-subclass-plans.zs";
+import { prepareObjCSelectorReferences, validateObjCSelectorTargets } from "./semantic-objc-selectors.zs";
 import { validateNativeObjCSubclassRawAccess } from "./semantic-objc-subclass-hygiene.zs";
 import {
   nativeObjCSubclassBase,
@@ -4758,6 +4759,11 @@ function inferSignatureCallType(
       }
       argumentTypes.push(argumentType);
     }
+    let selectorArgument = false;
+    for (const plan of evidence.objectiveCSelectors) {
+      if (plan.targetOffset == tree.nodes[nodeIndex].offset || plan.offset == tree.nodes[nodeIndex].offset) selectorArgument = true;
+    }
+    if (selectorArgument) recordExpressionResolution(modules, moduleIndex, tree, nodeIndex, argumentTypes[argumentIndex], inout evidence);
     if (!explicitTypeArguments) {
       let genericArgumentType = argumentTypes[argumentIndex].copyBytes(
         0,
@@ -8999,6 +9005,18 @@ function inferExpressionNodeType(
           copyBindingFlowStates(inout bindings, workerBindings);
           return "";
         }
+        const shadowedSelectorNamespace = memberName == "selector" ? valueBindingType(bindings, namespaceName) : "";
+        if (memberName == "selector" && importedStandardNamespace(module, namespaceName, "std/objc")
+          && shadowedSelectorNamespace.byteLength == 0) {
+          // The hybrid source-only graph cannot prove a foreign registration;
+          // defer it without inferring Type.method as an executable value.
+          if (!hasNativeObjCRegistrationMetadata(modules)) return "";
+          for (const plan of evidence.objectiveCSelectors) {
+            if (plan.offset == tree.nodes[index].offset && plan.line == tree.nodes[index].line && plan.column == tree.nodes[index].column) return "objc.Selector";
+          }
+          throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+            "objc.selector must be an inline argument of a checked target/selector registration", tree.nodes[index].line, tree.nodes[index].column, 1);
+        }
         if (
           memberName == "adapt"
           && importedStandardNamespace(
@@ -10921,6 +10939,7 @@ function inferExpressionNodeType(
                   tree.nodes[index].line, tree.nodes[index].column, 1);
               }
             }
+            try prepareObjCSelectorReferences(module, modules, moduleIndex, tree, argumentNodes, method, bindings, inout evidence);
             const callType = try inferSignatureCallType(
               module,
               modules,
@@ -10941,6 +10960,7 @@ function inferExpressionNodeType(
               callKind,
               inout evidence
             );
+            try validateObjCSelectorTargets(module, modules, moduleIndex, tree, argumentNodes, method, bindings, evidence);
             try requireResolvedObjCAdapterProtocols(
               module,
               modules,

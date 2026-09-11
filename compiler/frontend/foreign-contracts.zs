@@ -3343,9 +3343,8 @@ function normalizedObjCMethod(
 ): NativeForeignObjCMethodContract throws String {
   const selectorCallbacks = try normalizedSelectorCallbacks(declarations, method, ownerType, contracts);
   let parameters = Array<NativeForeignObjCParameterContract>();
-  // Retain the checked evidence, but do not expose a callable bare-SEL boundary
-  // until executable selector references validate the paired target/method.
-  let representable = method.returnTypeName.byteLength > 0 && selectorCallbacks.length == 0;
+  // Paired selector evidence is validated at the call, not erased into SEL.
+  let representable = method.returnTypeName.byteLength > 0;
   let parameterIndex: usize = 0;
   while (parameterIndex < method.parameterCount) {
     const capability = objcMethodParameterCapability(

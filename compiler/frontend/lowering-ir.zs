@@ -282,6 +282,8 @@ export enum LoweredExpressionKind {
   objectiveCStringFromZ,
   objectiveCStringToZ,
   objectiveCProtocolAdapter,
+  objectiveCSelectorReference,
+  objectiveCSelectorTarget,
   objectiveCConnection,
   objectiveCRegistration,
   fieldValue,
@@ -7462,6 +7464,18 @@ function nativeTypeIsObjectiveCBlock(in typeName: String): boolean {
   return false;
 }
 
+function wrapObjCSelectorTarget(
+  in evidence: ModuleSemanticEvidence, in tree: ExpressionTree, index: usize,
+  value: usize, inout output: Array<LoweredExpression>
+): usize {
+  for (const plan of evidence.objectiveCSelectors) {
+    if (plan.targetOffset == tree.nodes[index].offset) {
+      return pushExpression(inout output, LoweredExpressionKind.objectiveCSelectorTarget, "", Array<usize>(value), Array<String>());
+    }
+  }
+  return value;
+}
+
 function lowerObjectiveCMessageCall(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -7648,6 +7662,7 @@ function lowerObjectiveCMessageCall(
         );
       }
     }
+    value = wrapObjCSelectorTarget(evidence, tree, argumentInput, value, inout output);
     children.push(value);
     labels.push(parameterModes.length >= argument
       ? parameterModes[argument - 1].copyBytes(
@@ -12483,6 +12498,11 @@ function lowerExpressionContextual(
     );
   }
   if (tree.nodes[index].kind == ExpressionKind.callExpression) {
+    for (const plan of evidence.objectiveCSelectors) {
+      if (plan.offset == tree.nodes[index].offset && plan.line == tree.nodes[index].line && plan.column == tree.nodes[index].column) {
+        return pushExpression(inout output, LoweredExpressionKind.objectiveCSelectorReference, plan.selector, Array<usize>(), Array<String>());
+      }
+    }
     if (tree.nodes[index].children.length == 0) {
       throw "native lowering received a malformed call expression";
     }
@@ -15792,6 +15812,7 @@ function lowerExpressionContextual(
             );
           }
         }
+        value = wrapObjCSelectorTarget(evidence, tree, argumentInput, value, inout output);
         children.push(value);
         labels.push(parameterModes.length >= argument
           ? parameterModes[argument - 1].copyBytes(

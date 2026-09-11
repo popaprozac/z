@@ -1,0 +1,16 @@
+declare module "./objc-subclass.h" {
+  export function ZSubclassFixture.registerTarget(target: _, selector: _): _ {
+    callback selector {
+      target target;
+      type (value: i32) => i32 on thread.main;
+      invoked repeatedly;
+    }
+  }
+  export function ZSubclassFixture.registerObjectTarget(target: _, selector: _): _ {
+    callback selector {
+      target target;
+      type (in object: ZSubclassFixture) => i32 on thread.main;
+      invoked repeatedly;
+    }
+  }
+}

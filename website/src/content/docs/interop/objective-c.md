@@ -195,10 +195,27 @@ New entries enforce the same main-thread and receiver-exclusivity checks as
 overrides. Before Ready or during teardown they trap—there is no superclass
 method to forward to. No adapter or closure allocation is introduced.
 
-This declaration does **not** register a display link. The approved
-`objc.selector(Type.method)` reference and paired target/selector registration
-checks are still pending; `.zd` selector contracts remain unavailable to calls
-until that boundary is implemented.
+This declaration does **not** register a display link. With an adjacent
+[selector callback contract](/interop/z-declaration-contracts/), registration
+uses an explicit declaration reference:
+
+```z
+import objc from "std/objc";
+
+const link = window.displayLinkWithTarget(
+  window,
+  selector: objc.selector(SmoothWindow.onDisplay)
+);
+```
+
+The first tier requires the reference inline at the contracted call. Z checks
+the method signature, visibility, target type, and main context; it does not
+call the method, capture a receiver, or allocate a closure. Known
+constructing/dying target aliases are rejected, and a direct Ready check runs
+before registration even through a helper. A bare `SEL` cannot bypass this.
+Native ARC retention remains native behavior. Add the display link to the main
+run loop for delivery, and explicitly invalidate it during live shutdown to
+break any target/link cycle. Registration itself does not schedule a hop.
 
 Broader owned resource fields, escaping field views/captures, `Weak`, fallible
 constructors, object-returning overrides, and async composition remain future

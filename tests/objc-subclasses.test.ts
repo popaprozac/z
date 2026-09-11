@@ -541,6 +541,7 @@ hostToolchainTest("compiles an actual AppKit subclass without launching an appli
   const source = `
     import AppKit from "AppKit/AppKit.h";
     import QuartzCore from "QuartzCore/CADisplayLink.h";
+    import objc from "std/objc";
     import { thread } from "std/thread";
     class SmoothWindow extends AppKit.NSWindow on thread.main {
       private displayLink: QuartzCore.CADisplayLink | null;
@@ -556,13 +557,25 @@ hostToolchainTest("compiles an actual AppKit subclass without launching an appli
       function onDisplay(inout this, in link: QuartzCore.CADisplayLink): void as "display:" {
         const timestamp = link.timestamp;
       }
+      function startDisplay(inout this): void as "startDisplay" {
+        this.displayLink = this.displayLinkWithTarget(this, selector: objc.selector(SmoothWindow.onDisplay));
+      }
     }
     function main(): i32 { return 0; }
   `;
-  const artifact = compileToNative(source, "/tmp/z-subclass-appkit.zs");
-  assert.match(artifact.source, /@interface ZNative_.* : NSWindow/);
-  const built = spawnSync("xcrun", ["clang", "-x", "objective-c", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-"], { input: artifact.source, encoding: "utf8", timeout: 30_000 });
-  assert.equal(built.status, 0, built.stderr);
+  const temporary = mkdtempSync(resolve(tmpdir(), "z-selector-appkit-"));
+  try {
+    writeFileSync(resolve(temporary, "AppKit.h.zd"), `declare module "AppKit/AppKit.h" {
+      export function NSWindow.displayLinkWithTarget(target: _, selector: _): _ {
+        callback selector { target target; type (in link: CADisplayLink) => void on thread.main; invoked repeatedly; }
+      }
+    }`);
+    const artifact = compileToNative(source, resolve(temporary, "main.zs"));
+    assert.match(artifact.source, /@interface ZNative_.* : NSWindow/);
+    assert.match(artifact.source, /@selector\(display:\)/);
+    const built = spawnSync("xcrun", ["clang", "-x", "objective-c", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-"], { input: artifact.source, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+    assert.equal(built.status, 0, built.stderr);
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
 }, 60_000);
 
 hostToolchainTest("executes native subclass lifecycle and reentrant receiver access guards", () => {

@@ -18,6 +18,7 @@ import {
   ModuleMethodSignature,
   ModuleObjCAvailabilitySignature,
   ModuleObjCParameterProtocolSignature,
+  ModuleObjCSelectorCallbackSignature,
   ModuleSymbolKind,
   ModuleTypeParameterConstraint,
   ResolvedModule,
@@ -92,6 +93,7 @@ export struct NativeMethodCallShape {
   objectiveCNativeReturnType: String;
   objectiveCParameterNativeTypes: Array<String>;
   objectiveCParameterProtocols: Array<ModuleObjCParameterProtocolSignature>;
+  objectiveCSelectorCallbacks: Array<ModuleObjCSelectorCallbackSignature> = Array<ModuleObjCSelectorCallbackSignature>();
   objectiveCConsumesSelf: boolean = false;
   objectiveCConsumedParameters: Array<usize> = Array<usize>();
   objectiveCVariadic: boolean = false;
@@ -817,6 +819,12 @@ export function methodCallShape(
                 })
               );
             }
+            let selectorCallbacks = copy method.objectiveCSelectorCallbacks;
+            let selectorIndex: usize = 0;
+            while (selectorIndex < selectorCallbacks.length) {
+              selectorCallbacks[selectorIndex].signature = rebaseModuleFunctionSignature(modules, location.moduleIndex, moduleIndex, method.objectiveCSelectorCallbacks[selectorIndex].signature);
+              selectorIndex = selectorIndex + 1;
+            }
             const shape = NativeMethodCallShape({
               name: method.name.copyBytes(0, method.name.byteLength),
               ownerName: modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
@@ -849,6 +857,7 @@ export function methodCallShape(
               ),
               objectiveCParameterNativeTypes: nativeParameterTypes,
               objectiveCParameterProtocols: nativeParameterProtocols,
+              objectiveCSelectorCallbacks: selectorCallbacks,
               objectiveCConsumesSelf: method.objectiveCConsumesSelf,
               objectiveCConsumedParameters: copy method.objectiveCConsumedParameters,
               objectiveCVariadic: method.objectiveCVariadic,

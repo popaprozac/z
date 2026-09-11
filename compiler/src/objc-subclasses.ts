@@ -79,6 +79,7 @@ export function validateObjCSubclassShape(declaration: StructDeclaration, fileNa
   if (declaration.deinitializer) inspect(declaration.deinitializer.body);
   for (const method of declaration.methods) {
     if (!method.nativeSelector) reject(method.location, "a native subclass method requires an explicit `as \"selector:\"`");
+    if (method.nativeSelector.startsWith("_z_")) reject(method.location, "compiler-owned native selectors beginning with `_z_` cannot be declared");
     if (method.static || method.async || method.errorType || method.rawBody || method.receiverMode === "move" || method.typeParameters?.length) {
       reject(method.location, "a native override must be a synchronous, non-throwing, non-consuming instance method");
     }

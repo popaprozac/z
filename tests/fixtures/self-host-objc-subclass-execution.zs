@@ -12,11 +12,10 @@ import { emitModulesC } from "../../compiler/frontend/c-emitter.zs";
 
 // The host supplies raw Clang declarations, never Stage 0 semantic/lowering
 // evidence. Resolve, own, lower, and emit the real subclass entirely in Z.
-function emit(in wirePath: String, in sourcePath: String, in companionPath: String): String throws String {
+function emit(in wirePath: String, in sourcePath: String, in companionPath: String, in contractPath: String): String throws String {
   const wire = try fs.readText(wirePath);
   const raw = try decodeRawForeignDeclarations(wire);
-  const declarations = try parseForeignContracts(`declare module "./objc-subclass.h" {}`, "empty.zd");
-  const contracts = try normalizeForeignContracts(declarations, raw, "./objc-subclass.h");
+  const contractSource = contractPath.byteLength > 0 ? try fs.readText(contractPath) : `declare module "./objc-subclass.h" {}`;
   const source = try fs.readText(sourcePath);
   const input = ModuleSource({ path: copy sourcePath, source, packageSpecifiers: Array<String>(), targetPlatform: "macos", targetMinimumVersion: "14.0" });
   const parsed = match (attempt parseModule(input)) {
@@ -33,9 +32,17 @@ function emit(in wirePath: String, in sourcePath: String, in companionPath: Stri
     };
     modules.push(companion);
   }
-  const foreign = Array<NativeForeignModuleContract>(NativeForeignModuleContract({
-    modulePath: companionPath.byteLength > 0 ? copy companionPath : copy sourcePath, cacheKey: "subclass-execution", dependencyPath: "", contracts,
-  }));
+  let foreign = Array<NativeForeignModuleContract>();
+  for (const module of modules) {
+    for (const declaration of module.program.imports) {
+      if (declaration.header != "./objc-subclass.h") continue;
+      const declarations = try parseForeignContracts(copy contractSource, "objc-subclass.h.zd");
+      const contracts = try normalizeForeignContracts(declarations, raw, "./objc-subclass.h");
+      foreign.push(NativeForeignModuleContract({
+        modulePath: copy module.path, cacheKey: "subclass-execution", dependencyPath: "", contracts,
+      }));
+    }
+  }
   const graph = match (attempt resolveParsedModulesWithForeignContracts(modules, sourcePath, foreign)) {
     success(value) => value;
     failure(error) => throw `${error.code}: ${error.message}`;
@@ -45,9 +52,10 @@ function emit(in wirePath: String, in sourcePath: String, in companionPath: Stri
 
 function main(): i32 {
   const arguments = process.args();
-  if (arguments.length != 2 && arguments.length != 3) return 2;
-  const companion = arguments.length == 3 ? copy arguments[2] : "";
-  return match (attempt emit(arguments[0], arguments[1], companion)) {
+  if (arguments.length < 2 || arguments.length > 4) return 2;
+  const companion = arguments.length >= 3 ? copy arguments[2] : "";
+  const contract = arguments.length == 4 ? copy arguments[3] : "";
+  return match (attempt emit(arguments[0], arguments[1], companion, contract)) {
     success(source) => { console.write(source); select 0; }
     failure(error) => { console.error(error); select 1; }
   };

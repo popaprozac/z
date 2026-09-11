@@ -2510,7 +2510,7 @@ function generateObjCSubclassInterface(plan: ObjCSubclassPlan, structs: Map<stri
   const initializers = plan.base.methods.filter((method) => method.instance && method.designatedInitializer)
     .map((method) => `${generateObjCProtocolMethodDeclaration({ ...method, required: true }, method.parameters.map((_, index) => `argument${index}`))} NS_UNAVAILABLE;`);
   const fields = plan.declaration.fields.map((field) => `  ${semanticInfo.foreignNamedTypes.get(field.type.name)?.kind === "object" ? "__strong " : ""}${mapType(field.type.name, structs, enums, semanticInfo.foreignNamedTypes)} _z_native_field_${field.name};`).join("\n");
-  return `@interface ${plan.className} : ${plan.base.className} {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n${fields}\n}\n${objcSubclassInitializerSignature(plan, structs, enums, semanticInfo)} NS_DESIGNATED_INITIALIZER;\n${initializers.join("\n")}\n${methods.join("\n")}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)};`;
+  return `@interface ${plan.className} : ${plan.base.className} {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n${fields}\n}\n- (instancetype)_z_checkedSelectorTarget __attribute__((objc_direct));\n${objcSubclassInitializerSignature(plan, structs, enums, semanticInfo)} NS_DESIGNATED_INITIALIZER;\n${initializers.join("\n")}\n${methods.join("\n")}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)};`;
 }
 
 function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>, functions: Map<string, FunctionDeclaration>, semanticInfo: SemanticInfo, omitRawNativeBodies: boolean): string {
@@ -2527,6 +2527,7 @@ function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, Struc
     signature: generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name))),
     ...(method.override ? { superclassFallback: generateObjCMessage("super", plan.methods.get(method.location.offset)!.selector, method.parameters.map((parameter) => cBindingName(parameter.name))) } : {}),
   }));
+  methods.push(`- (instancetype)_z_checkedSelectorTarget {\n  if (![NSThread isMainThread]) abort();\n  if (!_z_native_subclass_ready) { fputs("selector registration requires a Ready native target\\n", stderr); abort(); }\n  return self;\n}`);
   const arguments_ = constructor.parameters.map((parameter) => cBindingName(parameter.name));
   const deinit = generateDeinit(plan.declaration, structs, enums, functions, semanticInfo, true);
   return `@implementation ${plan.className}\n${initializer}\n\n${methods.join("\n\n")}\n\n${deinit}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)} {\n  if (![NSThread isMainThread]) abort();\n  return ${generateObjCMessage(`[${plan.className} alloc]`, objcSubclassInitializerSelector(plan), arguments_)};\n}`;
@@ -10758,6 +10759,9 @@ function generateObjectExpressionAs(
 function generateExpression(expression: Expression, context: GenerationContext): string {
   const override = context.expressionOverrides.get(expression.location.offset);
   let value = override ?? generateExpressionInner(expression, context);
+  if (context.semanticInfo.objcSelectorTargets.has(expression.location.offset)) {
+    value = `[(${value}) _z_checkedSelectorTarget]`;
+  }
   if (context.semanticInfo.viewLoadExpressions.has(expression.location.offset)) {
     value = `(*(${value}))`;
   }
@@ -11334,6 +11338,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         return `z_objc_connect(${generateExpression(expression.arguments[0], context)}, ${generateExpression(expression.arguments[1], context)})`;
       }
       const objcAdapter = context.semanticInfo.objcAdapterCalls.get(expression.location.offset);
+      const objcSelector = context.semanticInfo.objcSelectorCalls.get(expression.location.offset);
+      if (objcSelector) return `@selector(${objcSelector.native.selector})`;
       if (objcAdapter) {
         return `[[${objcProtocolAdapterName(objcAdapter.ownerType)} alloc] initWithOwner:${generateExpression(objcAdapter.ownerExpression, context)}]`;
       }

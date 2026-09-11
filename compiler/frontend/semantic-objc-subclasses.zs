@@ -109,6 +109,13 @@ function appendInheritedMethod(
   }
   let rebound = copy method;
   rebound.signature = rebaseModuleFunctionSignature(modules, sourceIndex, targetIndex, method.signature);
+  let callbackIndex: usize = 0;
+  while (callbackIndex < rebound.objectiveCSelectorCallbacks.length) {
+    rebound.objectiveCSelectorCallbacks[callbackIndex].signature = rebaseModuleFunctionSignature(
+      modules, sourceIndex, targetIndex, method.objectiveCSelectorCallbacks[callbackIndex].signature
+    );
+    callbackIndex = callbackIndex + 1;
+  }
   rebound.objectiveCNativeResultType = rebaseTypeName(
     modules, sourceIndex, targetIndex, method.objectiveCNativeResultType
   );
@@ -164,6 +171,8 @@ function validateOverrideShape(
       "a native subclass method requires an explicit `as \"selector:\"`",
       method.line, method.column);
   }
+  if (stringStartsWith(method.objectiveCSelector, "_z_")) throw subclassError(module,
+    "compiler-owned native selectors beginning with `_z_` cannot be declared", method.line, method.column);
   let throwing = false;
   match (in method.errorType) { some(_) => throwing = true; none => {} }
   if (method.staticMethod || method.asynchronous || throwing

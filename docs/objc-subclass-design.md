@@ -130,20 +130,22 @@ const link = window.displayLinkWithTarget(
 );
 ```
 
-**Approved direction, not implemented yet.** The utility references the method
-declaration, not a receiver instance. It neither invokes the method nor creates
+The utility references the method declaration, not a receiver instance. It
+neither invokes the method nor creates
 a closure. The compiler must preserve receiver/signature evidence through the
 checked registration boundary before emitting the ordinary native `SEL`.
 No raw string-to-selector conversion is implied. Existing inherited overrides
-continue to use `override function ... as "selector:"`; the proposed new native
+continue to use `override function ... as "selector:"`; a new native
 callback uses `function ... as "selector:"` without `override`. New entries now
 execute in both compilers. A collision with an inherited selector requires
 `override`, rather than silently replacing it.
 
-The registration contract is approved. Both compilers now parse and validate
-the declaration below and retain the target/signature evidence. Executable
-`objc.selector` references and paired registration checking remain the next slice;
-registration calls stay unavailable rather than accepting an unchecked `SEL`.
+Both compilers parse and validate the declaration below and preserve the
+target/signature evidence through executable registration. The first tier
+requires `objc.selector(Type.method)` inline in the contracted selector argument.
+A stored/bare `SEL`, string, bound instance method, or ordinary method call
+cannot substitute for that evidence. First-class stored selector evidence is
+not part of this tier.
 
 ```zs
 declare module "AppKit/AppKit.h" {
@@ -165,8 +167,8 @@ it with the native object parameter, and allows an inline function type after
 `type`. No callback/context argument is removed or synthesized at the call.
 The header proves the outer object/SEL/result ABI; the callback shape is a
 trusted assertion from native documentation because `SEL` erases that shape.
-The executable slice will check the referenced method's signature and the target's receiver type
-against that assertion. This is not an independently Clang-verified callback
+The executable slice checks the referenced method's signature and the target's
+receiver type against that assertion. This is not an independently Clang-verified callback
 typedef, unlike the existing C callback contract.
 
 The function type's `on thread.main` is an inbound requirement, not a claim
@@ -182,16 +184,18 @@ No Z closure environment is created in this direct-native target tier.
 Object retention remains native ARC behavior, not ownership of a generated
 adapter. Explicit invalidation during live close/shutdown is still required;
 this contract does not synthesize cycle collection or automatic registration
-shutdown. Registration of the constructing/dying receiver must be rejected;
-an unexpected new-selector invocation outside Ready must fail closed rather
+shutdown. Known constructing/dying receiver aliases are rejected at registration;
+an additional direct native readiness check runs before the target reaches the
+native call, including through an indirect helper. It creates no object or
+closure. It does not take an exclusive loan over the target's stored fields.
+An unexpected new-selector invocation outside Ready must fail closed rather
 than forward to a nonexistent superclass implementation.
 
 The independent native contract decoder checks the same malformed contracts as
 Stage 0 using raw Clang declarations, including target kind, argument names,
 capabilities, missing facts, and executor requirements. `.zd` completion and
 hover explain the trust boundary rather than describing a closure environment.
-Next: checked selector references, paired registration and
-lifetime tests, then the real resize integration. Native reentry during AppKit superclass operations
+Next: real resize integration. Native reentry during AppKit superclass operations
 is a concrete integration test, not permission to weaken the approved guard.
 
 ### Implemented new native entries
@@ -223,7 +227,8 @@ The independent native emitter and Stage 0 each pass 200 lifecycle iterations
 at `-O0` and `-O2` under strict Clang/UBSan. Expected construction, teardown,
 wrong-thread, and conflicting reentry traps are caught without crash reports.
 An actual AppKit subclass with a borrowed `CADisplayLink` callback passes
-compile-only validation; real display-link registration is still pending.
+compile-only validation; live display-link run-loop integration is a separate
+application pressure test.
 
 ## Approved state and lifecycle direction (2026-09-10)
 

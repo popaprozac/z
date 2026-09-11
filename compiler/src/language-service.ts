@@ -919,6 +919,11 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       });
       continue;
     }
+    if (previous?.kind === "dot" && tokens[index - 2]
+      && inObjCSelectorReference(source, tokens[index - 2].location.offset, context)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 0 });
+      continue;
+    }
     const namedBindings = (bindingsByName.get(token.text) ?? []).filter((candidate) => (
       !candidate.fileName || resolve(candidate.fileName) === resolve(fileName)
     ));
@@ -1054,12 +1059,12 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("type"), modifiers: 4 });
       continue;
     }
-    if (structNames.has(token.text) || context.semanticInfo.foreignNamedTypes.has(token.text)) {
-      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("type"), modifiers: previous?.kind === "struct" ? 1 : 0 });
-      continue;
-    }
     if (classNames.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("class"), modifiers: previous?.kind === "class" ? 1 : 0 });
+      continue;
+    }
+    if (structNames.has(token.text) || context.semanticInfo.foreignNamedTypes.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("type"), modifiers: previous?.kind === "struct" ? 1 : 0 });
       continue;
     }
     if (traitNames.has(token.text)) {
@@ -1836,6 +1841,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         word.end,
       );
     }
+    if (standardOwner === "objc" && word.text === "selector") {
+      return markdownHover("selector(Type.method): objc.Selector  // checked declaration reference; use inline with a contracted native target/selector pair; no closure or automatic executor hop", source, word.start, word.end);
+    }
     if (standardOwner === "objc" && word.text === "pool") {
       return markdownHover(
         "pool<T, E?>(operation: () => T throws E?): T throws E?  // runs synchronously inside a lexical Objective-C autorelease pool",
@@ -1929,6 +1937,10 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       return markdownHover(foreignCxxStaticMethodDetail(foreignStaticMethod), source, word.start, word.end);
     }
     const staticOwner = sourceAggregateForType(context, memberText);
+    if (staticOwner?.declaration.nativeBase && inObjCSelectorReference(source, memberReceiver.start, context)) {
+      const method = staticOwner.declaration.methods.find((item) => !item.static && item.nativeSelector && item.name === word.text);
+      if (method) return markdownHover(`${methodDetail(method, context.typeDisplayNames, staticOwner.substitutions)}\n// native selector declaration reference; target/signature checked at registration`, source, word.start, word.end);
+    }
     const staticMethod = staticOwner?.declaration.methods.find((item) => item.static && item.name === word.text);
     if (staticOwner && staticMethod) {
       const includePrivate = insideAggregateBody(source, fileName, word.start, staticOwner.declaration.name);
@@ -5506,6 +5518,20 @@ function memberCompletions(
   }
   const importContext = importAnalysis(source, fileName);
   if (!importContext) return [];
+  if (inObjCSelectorReference(source, receiverStart, importContext)) {
+    // An unfinished method name is expected here. Completion only needs the
+    // authored declaration, not successful analysis of the registration call.
+    try {
+      const probe = prefix.length === 0
+        ? `${source.slice(0, offset)}__z_selector_completion${source.slice(offset)}`
+        : source;
+      const program = parse(lex(probe, fileName), fileName);
+      const owner = sourceAggregateForType(importContext, receiverText, program);
+      if (owner?.declaration.nativeBase) {
+        return filterCompletions(selectorMethodCompletions(owner.declaration, importContext, source, fileName, offset), prefix, 1000);
+      }
+    } catch { /* The ordinary recovery probes below handle incomplete syntax. */ }
+  }
   const staticChannel = channelTypeFromSourceSpelling(importContext, receiverText);
   if (staticChannel?.kind === "factory") {
     return filterCompletions(
@@ -5586,6 +5612,8 @@ function memberCompletions(
           : completionKinds.method,
         detail: standardModule === "thread" && member === "spawn"
           ? "spawn<T, E?>(operation: () => T throws E?): Task<T, E?>  // starts one native thread; sync or worker-affine async closure"
+          : standardModule === "objc" && member === "selector"
+            ? "selector(Type.method): objc.Selector  // checked inline native target/selector registration"
           : standardModule === "objc" && member === "pool"
             ? "pool<T, E?>(operation: () => T throws E?): T throws E?  // synchronous lexical autorelease pool"
           : standardModule === "objc" && member === "connect"
@@ -5834,6 +5862,9 @@ function memberCompletions(
   const staticContext = safeAnalysis(staticProbe, fileName);
   const staticOwner = staticContext ? sourceAggregateForType(staticContext, receiverText) : null;
   if (staticOwner) {
+    if (staticOwner.declaration.nativeBase && inObjCSelectorReference(source, receiverStart, staticContext)) {
+      return filterCompletions(selectorMethodCompletions(staticOwner.declaration, staticContext, source, fileName, offset), prefix, 1000);
+    }
     const includePrivate = insideAggregateBody(source, fileName, offset, staticOwner.declaration.name);
     return filterCompletions(
       staticCompletions(staticOwner.declaration, staticContext.typeDisplayNames, staticOwner.substitutions, includePrivate, canAccessInternalMembers(staticContext, staticOwner.declaration)),
@@ -7713,6 +7744,20 @@ function objCDataBorrowHover(
     start,
     end,
   );
+}
+
+function inObjCSelectorReference(source: string, ownerStart: number, context: AnalyzedSource): boolean {
+  const match = source.slice(0, ownerStart).match(/([A-Za-z_][A-Za-z0-9_]*)\.selector\s*\(\s*$/);
+  return Boolean(match && context.semanticInfo.standardModuleBindings.get(match[1]) === "objc");
+}
+
+function selectorMethodCompletions(declaration: StructDeclaration, context: AnalyzedSource, source: string, fileName: string, offset: number): CompletionItem[] {
+  const includePrivate = insideAggregateBody(source, fileName, offset, declaration.name);
+  const includeInternal = canAccessInternalMembers(context, declaration);
+  return declaration.methods.filter((method) => !method.static && method.nativeSelector
+    && ((method.visibility ?? "public") === "public" || includePrivate || (method.visibility === "internal" && includeInternal)))
+    .map((method) => ({ label: method.name, kind: completionKinds.method,
+      detail: `${methodDetail(method, context.typeDisplayNames)}  // selector declaration, not an invocation`, insertText: method.name }));
 }
 
 function structCompletions(

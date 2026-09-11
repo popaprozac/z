@@ -220,8 +220,12 @@ recursive path.
   signature. Native `.zd` parsing/normalization verifies the outer ABI, concrete
   types, passing modes, and target identity independently from Stage 0. The
   signature erased by `SEL` is a trusted declaration fact. It is retained in
-  native method metadata, but registration is withheld until checked
-  `objc.selector(Type.method)` references and paired registration checks land.
+  native method metadata. `semantic-objc-selectors.zs` validates inline
+  `objc.selector(Type.method)` references, method visibility, exact callback
+  signature/capabilities, target identity, main context, and known lifecycle
+  aliases. Lowering emits the checked selector and a direct Ready preflight
+  on the target before native registration; no closure environment is created.
+  Stored/bare SEL values cannot bypass the inline contract boundary.
   New `function ... as "selector:"` native entries now execute without an
   inherited override. Their source-declared scalar/enum/borrowed-object ABI is
   checked, including transparent aliases. Native plans retain whether an entry

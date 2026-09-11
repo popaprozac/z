@@ -503,6 +503,8 @@ export type SemanticInfo = {
   readonly objcBindingCalls: ReadonlyMap<number, ObjCBindingPlan>;
   readonly objcRegistrationCalls: ReadonlyMap<number, ObjCRegistrationPlan>;
   readonly objcAdapterCalls: ReadonlyMap<number, ObjCAdapterPlan>;
+  readonly objcSelectorCalls: ReadonlyMap<number, { readonly ownerType: string; readonly method: FunctionDeclaration; readonly native: ForeignObjCMethod }>;
+  readonly objcSelectorTargets: ReadonlyMap<number, string>;
   readonly objcClassNames: ReadonlyMap<number, string>;
   readonly objcInstanceOf: ReadonlyMap<number, {
     readonly className: string;
@@ -686,6 +688,8 @@ type AnalysisState = {
   readonly objcBindingCalls: Map<number, ObjCBindingPlan>;
   readonly objcRegistrationCalls: Map<number, ObjCRegistrationPlan>;
   readonly objcAdapterCalls: Map<number, ObjCAdapterPlan>;
+  readonly objcSelectorCalls: Map<number, { readonly ownerType: string; readonly method: FunctionDeclaration; readonly native: ForeignObjCMethod }>;
+  readonly objcSelectorTargets: Map<number, string>;
   readonly objcClassNames: Map<number, string>;
   readonly objcInstanceOf: Map<number, {
     readonly className: string;
@@ -1336,6 +1340,8 @@ export function analyze(
     objcBindingCalls: new Map(),
     objcRegistrationCalls: new Map(),
     objcAdapterCalls: new Map(),
+    objcSelectorCalls: new Map(),
+    objcSelectorTargets: new Map(),
     objcClassNames: new Map(),
     objcInstanceOf: new Map(),
     objcProperties: new Map(),
@@ -11280,6 +11286,12 @@ function inferExpressionInner(
           const owner = globals.get(localModuleName);
           if (owner?.kind === "standardModule") {
             if (owner.module === "objc") {
+              if (expression.callee.property === "selector") {
+                if (!state.objcSelectorCalls.has(expression.location.offset)) {
+                  objcSubclassError(fileName, expression.location, "objc.selector must be an inline argument of a checked target/selector registration");
+                }
+                return objcSelectorTypeName;
+              }
               const adapterCall = parseGenericType(expression.callee.property);
               if (adapterCall?.base === "adapt") {
                 rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -18405,9 +18417,47 @@ function checkObjCArguments(
   fileName: string,
   state: AnalysisState,
 ): void {
-  if (target.selectorCallbacks?.length) {
-    throw new DiagnosticError(fileName, args[target.selectorCallbacks[0].selectorParameter].location,
-      "selector registration requires checked objc.selector method evidence; executable selector references are not implemented yet", { code: "Z0814" });
+  for (const callback of target.selectorCallbacks ?? []) {
+    const argument = args[callback.selectorParameter];
+    if (argument.kind !== "call" || argument.callee.kind !== "member"
+      || argument.callee.property !== "selector" || argument.callee.object.kind !== "identifier"
+      || locals.has(argument.callee.object.name)) {
+      objcSubclassError(fileName, argument.location, "selector registration requires checked objc.selector(Type.method) evidence, not a bare SEL");
+    }
+    const module = globals.get(argument.callee.object.name);
+    if (module?.kind !== "standardModule" || module.module !== "objc") {
+      objcSubclassError(fileName, argument.location, "selector registration requires checked objc.selector(Type.method) evidence from std/objc");
+    }
+    rejectLabeledArguments(argument.argumentLabels, argument.location, fileName);
+    const reference = argument.arguments[0];
+    if (argument.arguments.length !== 1 || reference.kind !== "member" || reference.object.kind !== "identifier"
+      || locals.has(reference.object.name)) {
+      objcSubclassError(fileName, argument.location, "objc.selector expects a native subclass method declaration, Type.method, not a bound method or call");
+    }
+    const owner = state.objcSubclasses.get(reference.object.name);
+    const method = owner?.declaration.methods.find((method) => method.name === reference.property);
+    const native = method && owner?.methods.get(method.location.offset);
+    if (!owner || !method || !native) {
+      objcSubclassError(fileName, reference.location, "objc.selector requires an explicitly declared native subclass method with an as selector");
+    }
+    requireMemberVisibility(method.visibility, "method", method.name, owner.declaration, method.location, reference.location, fileName, state);
+    checkForeignAvailability(native.metadata, native.selector, reference.location, fileName, state);
+    const sameType = (left: ForeignType, right: ForeignType): boolean => {
+      if (left.kind === "object" && right.kind === "object") return left.className === right.className && left.nullable === right.nullable;
+      return foreignValueType(left) === foreignValueType(right);
+    };
+    if (native.parameters.length !== callback.parameters.length || !sameType(native.returnType, callback.returnType)
+      || native.parameters.some((parameter, index) => !sameType(parameter.type, callback.parameters[index].type)
+        || method.parameters[index].mode !== callback.parameters[index].mode)) {
+      objcSubclassError(fileName, reference.location, `objc.selector method ${JSON.stringify(method.name)} does not match the registration callback signature`);
+    }
+    requireMainExecutorContext(true, argument.location, "native selector registration", fileName, state);
+    state.objcSelectorCalls.set(argument.location.offset, { ownerType: owner.declaration.name, method, native });
+    state.expressionTypes.set(reference.object.location.offset, owner.declaration.name);
+    state.expressionTypes.set(reference.location.offset, functionTypeName(
+      method.parameters.map((parameter) => ({ name: parameter.name, mode: parameter.mode, type: parameter.type.name })),
+      method.returnType.name, null, "main",
+    ));
   }
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -18533,6 +18583,22 @@ function checkObjCArguments(
       actual = "cstring";
     }
     requireObjCAssignable(parameter.type, actual, argument, structs, enums, fileName, state, target.selector);
+  }
+  for (const callback of target.selectorCallbacks ?? []) {
+    const selector = state.objcSelectorCalls.get(args[callback.selectorParameter].location.offset)!;
+    const argument = args[callback.targetParameter];
+    const actual = state.expressionTypes.get(argument.location.offset) ?? "unknown";
+    const object = foreignObject(actual, state);
+    const expected = state.foreignObjectTypes.get(selector.ownerType)!;
+    if (!object || object.nullable || !isObjCSubclass(object, expected, state)) {
+      objcSubclassError(fileName, argument.location, `selector target must be a non-null ${displayAssignableType(selector.ownerType, state)}, found ${displayAssignableType(actual, state)}`);
+    }
+    if (state.activeReceiver && state.objcSubclasses.has(state.activeReceiver)
+      && (state.activeFunction?.name === "constructor" || state.activeFunction?.name === "deinit")
+      && aliasIdentitySetsOverlap(classAliasIdentitiesForExpression(argument, actual, structs, state) ?? undefined, state.classAliasIdentities.get("this"))) {
+      objcSubclassError(fileName, argument.location, "cannot register the constructing or dying native receiver as a selector target; register after new returns");
+    }
+    state.objcSelectorTargets.set(argument.location.offset, state.objcSubclasses.get(selector.ownerType)!.className);
   }
 }
 

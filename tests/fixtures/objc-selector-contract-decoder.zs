@@ -14,7 +14,7 @@ function inspect(in wirePath: String, in contractPath: String): i32 throws Strin
   for (const object of normalized.objectiveCInterfaces) {
     for (const method of object.methods) {
       for (const callback of method.selectorCallbacks) {
-        if (method.representable) throw "selector registration exposed before checked method evidence";
+        if (!method.representable) throw "checked selector registration was not exposed to call-site validation";
         if (callback.selectorParameter != 1 || callback.targetParameter != 0) throw "lost target/selector pairing";
         if (callback.signature.executorAffinity != "thread.main") throw "lost callback affinity";
         if (method.executorAffinity.byteLength != 0) throw "callback affinity changed registration affinity";

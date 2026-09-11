@@ -96,6 +96,7 @@ export struct ModuleSemanticEvidence {
     Array<ModuleObjCRegistrationResolution>();
   objectiveCAdapters: Array<ModuleObjCAdapterResolution> =
     Array<ModuleObjCAdapterResolution>();
+  objectiveCSelectors: Array<ModuleObjCSelectorResolution> = Array<ModuleObjCSelectorResolution>();
   objectiveCSubclasses: Array<ModuleObjCSubclassPlan> =
     Array<ModuleObjCSubclassPlan>();
 }
@@ -183,6 +184,15 @@ export struct ModuleObjCAdapterResolution {
   protocolType: String;
   protocolNativeNames: Array<String>;
   protocolMethods: Array<ModuleObjCProtocolMethodResolution>;
+}
+
+export struct ModuleObjCSelectorResolution {
+  offset: usize;
+  line: usize;
+  column: usize;
+  targetOffset: usize;
+  ownerType: String;
+  selector: String;
 }
 
 export struct ModuleExpressionResolution {

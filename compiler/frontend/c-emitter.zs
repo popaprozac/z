@@ -352,7 +352,7 @@ export function emitNativeObjCSubclassInterfaces(
       output.append(field.name);
       output.append(";\n");
     }
-    output.append("}\n");
+    output.append("}\n- (instancetype)_z_checkedSelectorTarget __attribute__((objc_direct));\n");
     try appendNativeObjCSubclassEntry(inout output, plan.initializer);
     output.append(" __attribute__((objc_designated_initializer));\n");
     for (const entry of plan.unavailableInitializers) {
@@ -6146,6 +6146,20 @@ function appendExpression(
       argument = argument + 1;
     }
     output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.objectiveCSelectorReference) {
+    output.append("@selector(");
+    output.append(declaration.expressions[index].value);
+    output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.objectiveCSelectorTarget) {
+    if (declaration.expressions[index].children.length != 1) throw "native selector target lost its checked receiver";
+    output.append("[(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, receiver);
+    output.append(") _z_checkedSelectorTarget]");
     return;
   }
   if (
@@ -25980,7 +25994,7 @@ function emitLoweredC(
   for (const plan of program.objectiveCSubclasses) {
     output.append("@implementation ");
     output.append(plan.nativeName);
-    output.append("\n");
+    output.append("\n- (instancetype)_z_checkedSelectorTarget {\n  if (![NSThread isMainThread]) abort();\n  if (!_z_native_subclass_ready) { fputs(\"selector registration requires a Ready native target\\n\", stderr); abort(); }\n  return self;\n}\n");
     let hasDeinitializer = false;
     for (const declaration of program.functions) {
       if (declaration.nativeObjCClass == plan.nativeName) try appendFunction(inout output, program, declaration, false);
