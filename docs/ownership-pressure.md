@@ -8217,6 +8217,59 @@ presentation. The first application rebuild refreshed substantial foreign
 metadata; repeat-build latency remains a separate performance concern, not a
 runtime animation result.
 
+## Zapp listener cancellation: custom cleanup needs a thread contract
+
+Consumer: Zapp's single-instance listener, 2026-09-11. Accepted windows now hide
+before close notifications, but listener cancellation can still wait for a
+one-second socket deadline. A pipe-backed wakeup should interrupt accept and
+partial-frame read/write waits without faster polling or cross-thread socket
+closure.
+
+The implementation reached a deliberate language boundary: a shared readonly
+owner containing `Mutex<WakePipe>` cannot cross a native thread when `WakePipe`
+has a custom `deinit`. The pipe's two descriptors must remain owned until every
+request/wait has finished; removing cleanup or sharing unowned descriptor
+integers would conceal, rather than solve, the lifetime problem.
+
+The minimal reproducer needs no native code:
+
+```z
+import { Mutex } from "std/sync";
+import { thread } from "std/thread";
+
+struct Resource {
+  value: i32;
+  deinit {}
+}
+
+async function main(): i32 {
+  const resource = Mutex(Resource({ value: 42 }));
+  const worker = thread.spawn(move (): i32 => resource.withLock(
+    (in value): i32 => value.value
+  ));
+  return await worker;
+}
+```
+
+Stage 0 rejects this with Z0704: the custom deinitializer's thread affinity is
+unknown. The fixed-point native driver rejects it with Z1000: ownership-bearing
+`Mutex<Resource>` capture is not executable. The existing stdlib-sync negative
+test already protects the Stage 0 rule; this is not a regression to remove by
+blindly accepting every deinitializer.
+
+Decision pending: a checked thread-independent cleanup contract, potentially
+reusing `on thread.any` on `deinit`, versus inference for a provable subset.
+No syntax is approved or implemented by this entry. Any extension must check
+the body and nested field cleanup, reject main-affine destruction, and preserve
+exactly-once cleanup on whichever thread releases the last owner. This does not
+make mutable fields shareable or permit concurrent destruction.
+
+The incomplete Zapp implementation is preserved locally on
+`codex/launch-listener-wakeup-prototype` at `72e8139`; its main branch remains at
+the verified close-ordering implementation. The prototype includes proposed
+idle, partial-header, partial-body, repeated-cancellation, and endpoint-release
+tests; these have not passed, because compilation stops at this safety check.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
