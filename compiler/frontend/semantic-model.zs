@@ -125,6 +125,7 @@ export struct ModuleObjCSubclassField {
   name: String;
   nativeType: String;
   ownedString: boolean;
+  strongObject: boolean = false;
 }
 
 export struct ModuleObjCSubclassPlan {

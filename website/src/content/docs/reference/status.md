@@ -40,9 +40,11 @@ production or compatibility-sensitive use.
   and destruction; only ready instances execute Z overrides. Ready entries allow
   nested shared reads and trap reentrant `inout this` conflicts, including during
   local cleanup. A scoped native ARC hold preserves receiver lifetime. Private inline
-  scalars/plain native values and owned `String` fields plus source `deinit` work,
+  scalars/plain native values, owned `String`, and strong imported Objective-C
+  reference fields (including nullable slots) plus source `deinit` work,
   with checked initialization, guarded direct access, and reverse-order cleanup.
-  Broader resource fields, escaping field loans, and async composition remain
+  Broader resource fields, new callback selectors, escaping field loans, and
+  async composition remain future work.
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler and owned `objc.adapt<P>` carrier with direct `id<P>` ABI,

@@ -7441,6 +7441,54 @@ Next: audit the resize controller's concrete remaining resource/callback needs,
 then integrate in Zapp. Do not expand unrelated native inheritance features just
 because this storage seam is now available.
 
+### Strong native subclass fields and nullable receiver parity (2026-09-10)
+
+The concrete resize probe needs a retained `CADisplayLink` slot and a callback
+selector. Strong storage is now implemented under the approved ordinary-field
+design; declaring/registering a new callback selector remains a separate review.
+This is not a reason to expand unrelated inheritance or async features.
+
+Private concrete imported Objective-C fields, including `NativeClass | null`,
+use inline strong native ARC ivars. No separate Z identity/wrapper is allocated.
+Assignment retains the replacement before releasing the old value; a retained
+local snapshot remains valid after the slot is replaced or cleared. Explicit
+`move` is still rejected for native ARC identity. Writes require `inout this`.
+Source teardown and all locals finish before reverse field cleanup; strong
+slots are cleared with the lifecycle gate closed, before native superclass
+teardown. A resource destructor can call virtually back into its owner, but
+must not enter a Z body after the gate closes. Replacement-time callbacks stay
+under the ready entry's exclusivity guard and trap on conflicting reentry.
+
+The paired runtime fixture creates/destroys 403 subclass objects and 803 native
+resources, at `-O0` and `-O2` with strict Clang/UBSan. A sixth isolated expected
+trap covers resource destruction during field replacement. Checked native
+plans carry both exact native field ABI and strong-ownership cleanup facts.
+Tests also cover nullable/nonnullable slots, retained snapshots, readonly and
+shared-write rejection, unchecked nullable access, and renamed cross-module
+imports. Tests use bounded child processes and no ASan or GUI.
+
+A negative test exposed an existing native checker gap: a nullable receiver
+could reach ordinary method lookup without a null check. Stage 0 rejected it.
+The native member and method paths now reject nullable receivers, including
+transparent aliases, before lookup. A named, retained snapshot narrowed by an
+ordinary `!= null` check remains valid; this closes parity without inventing
+new borrowing syntax or moving safety work into Zapp.
+
+The actual Apple SDK documents that adding a display link to a run loop retains
+the link, and `invalidate` removes it and releases its target. Automatic ARC
+field cleanup is therefore not sufficient to stop the registration or break a
+target cycle. Production integration must explicitly invalidate on close or
+shutdown while the owner is live. No display-specific cleanup method is inferred
+by this language feature.
+
+Validation: all six subclass tests pass after the nullable parity fix, alongside
+105 related interop/closure/nonescape tests. The native compiler reaches a stable
+fixed point at 11,523,297 emitted C bytes. Its standalone fixture output passes
+strict Clang/UBSan execution plus all six expected reentry traps. A real NSWindow
+subclass with nullable CADisplayLink storage passes compile-only checking.
+Website build (33 pages), fixture/tier coverage, and diff checks pass. This is
+targeted correctness evidence, not a new runtime benchmark or full-suite claim.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

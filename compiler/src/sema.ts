@@ -2996,9 +2996,12 @@ function registerObjCSubclasses(program: Program, globals: Map<string, SymbolVal
     for (const field of declaration.fields) {
       const native = state.foreignNamedTypes.get(field.type.name);
       const plainRecord = native?.kind === "record" && !native.resource && !native.viewOnly && native.layout !== "union";
+      const nativeObject = native?.kind === "object"
+        && state.foreignInterfaces.has(publicObjCTypeName(field.type.name))
+        && !state.objcSubclasses.has(publicObjCTypeName(field.type.name));
       if (field.type.name !== "String" && field.type.name !== "boolean"
-        && !isNumericType(canonicalType(field.type.name, state.foreignNamedTypes)) && !plainRecord && native?.kind !== "enum") {
-        objcSubclassError(fileName, field.location, "native stored fields currently support owned String, scalars, and plain native value records");
+        && !isNumericType(canonicalType(field.type.name, state.foreignNamedTypes)) && !plainRecord && native?.kind !== "enum" && !nativeObject) {
+        objcSubclassError(fileName, field.location, "native stored fields currently support owned String, scalars, plain native value records, and strong imported Objective-C references");
       }
     }
     for (const parameter of declaration.constructor!.parameters) {

@@ -2509,7 +2509,7 @@ function generateObjCSubclassInterface(plan: ObjCSubclassPlan, structs: Map<stri
   const methods = plan.declaration.methods.map((method) => `${generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name)))};`);
   const initializers = plan.base.methods.filter((method) => method.instance && method.designatedInitializer)
     .map((method) => `${generateObjCProtocolMethodDeclaration({ ...method, required: true }, method.parameters.map((_, index) => `argument${index}`))} NS_UNAVAILABLE;`);
-  const fields = plan.declaration.fields.map((field) => `  ${mapType(field.type.name, structs, enums, semanticInfo.foreignNamedTypes)} _z_native_field_${field.name};`).join("\n");
+  const fields = plan.declaration.fields.map((field) => `  ${semanticInfo.foreignNamedTypes.get(field.type.name)?.kind === "object" ? "__strong " : ""}${mapType(field.type.name, structs, enums, semanticInfo.foreignNamedTypes)} _z_native_field_${field.name};`).join("\n");
   return `@interface ${plan.className} : ${plan.base.className} {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n${fields}\n}\n${objcSubclassInitializerSignature(plan, structs, enums, semanticInfo)} NS_DESIGNATED_INITIALIZER;\n${initializers.join("\n")}\n${methods.join("\n")}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)};`;
 }
 

@@ -77,6 +77,26 @@ function nativeObjectType(
   };
 }
 
+// Inline strong storage needs a concrete imported class ABI, not an opaque
+// object spelling or an ordinary Z ARC class. Nullability changes checking,
+// not the native pointer layout or ownership.
+export function nativeObjCStoredObjectABI(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in sourceName: String
+): String {
+  const name = transparentTypeName(modules, moduleIndex, sourceName);
+  const nullable = nullableTargetType(name);
+  if (nullable.byteLength > 0) return nativeObjCStoredObjectABI(modules, moduleIndex, nullable);
+  const location = match (typeSymbolLocation(modules, moduleIndex, name)) {
+    some(value) => value;
+    none => return "";
+  };
+  return match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+    some(signature) => signature.foreignKind == "objcInterface"
+      && signature.foreignNativeName.byteLength > 0 ? `${signature.foreignNativeName} *` : "";
+    none => "";
+  };
+}
+
 function appendInheritedMethod(
   in modules: Array<ResolvedModule>, sourceIndex: usize, targetIndex: usize,
   in method: ModuleMethodSignature, inout methods: Array<ModuleMethodSignature>
@@ -322,8 +342,9 @@ function validateNativeObjCSubclassDeclaration(
     if (field.optionalField || hasDefault) throw subclassError(module,
       "native stored fields require explicit constructor initialization, without defaults or optional fields", field.line, field.column);
     if (field.type.name != "String" && !plainNativeValue(modules, moduleIndex, field.type.name)) {
-      throw subclassError(module,
-        "native stored fields currently support owned String, scalars, and plain native value records", field.line, field.column);
+      const objectABI = nativeObjCStoredObjectABI(modules, moduleIndex, field.type.name);
+      if (objectABI.byteLength == 0) throw subclassError(module,
+          "native stored fields currently support owned String, scalars, plain native value records, and strong imported Objective-C references", field.line, field.column);
     }
   }
   if (aggregate.implementedTraits.length > 0) throw subclassError(module,

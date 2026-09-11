@@ -12,9 +12,9 @@ with no Z ARC record wrapper. The same 200-iteration virtual-dispatch and exact
 cleanup fixture passes both emitters under strict Clang and UBSan.
 The lifecycle-forwarding direction is approved and implemented in both emitters:
 construction and destruction dispatch to the superclass, while ready instances
-enter Z overrides. Private scalar/plain-native-value and owned `String` fields,
-plus source `deinit`, are implemented. Broader resource fields and production
-window integration remain separate checkpoints.
+enter Z overrides. Private scalar/plain-native-value, owned `String`, and strong
+imported Objective-C reference fields, plus source `deinit`, are implemented.
+Broader resource fields and production window integration remain separate checkpoints.
 
 ## Motivation
 
@@ -100,8 +100,9 @@ The first tier deliberately rejects:
 
 - ordinary Z inheritance, generic subclasses, missing main affinity, and
   imported classes that forbid subclassing;
-- public stored fields, storage beyond scalars/plain native values/owned `String`,
-  escaping field loans, `Weak`, and protocol/trait composition;
+- public stored fields, storage beyond scalars/plain native values/owned `String`
+  and strong imported Objective-C references, escaping field loans, `Weak`, and
+  protocol/trait composition;
 - asynchronous, throwing, consuming, static, generic, block-receiving, or
   object-returning overrides, plus variadic native signatures;
 - native lifecycle/runtime overrides, direct (`objc_direct`) methods, consuming
@@ -206,9 +207,10 @@ retain/release. There is no additional heap object or wrapper. This is a
 conservative correctness tier, not a zero-overhead claim; reducing provably
 unnecessary holds/checks is a later measured optimization.
 
-The shared fixture now destroys 403 objects per successful run. Five separate
+The shared fixture now destroys 403 subclass objects per successful run. Six separate
 conflict scenarios cover read→write, write→read, write→write, a read-local
-destructor attempting a write, and a write-local destructor attempting a read.
+destructor attempting a write, a write-local destructor attempting a read, and
+a replaced native field's destructor reentering the exclusive receiver.
 Positive cases cover read reentry, reader cleanup reentry, repeated exclusive
 entries after return, void fallthrough, independent receivers, and final-owner
 release from inside a method. Both emitters
@@ -252,7 +254,8 @@ class Counter extends native.CounterBase on thread.main {
 `CounterBase`, its imported initializer/selector, and `makeOwnedTitle` are
 illustrative; the executable fixture is `tests/fixtures/objc-subclass.zs`.
 There is one native allocation, with private inline ivars. Supported fields are
-scalars, imported enums/plain native records, and owned `String`. Other storage
+scalars, imported enums/plain native records, owned `String`, and concrete
+imported Objective-C references (including `NativeClass | null`). Other storage
 shapes fail closed; this does not yet promise arbitrary ARC/resource graphs.
 
 Every field must be assigned once in a straight-line prefix immediately after
@@ -273,8 +276,30 @@ may inspect/copy fields but cannot call through or publish the dying receiver;
 `super.dealloc` is never written or generated. Explicit close/shutdown is still
 necessary for registrations or cycles that can prevent final ARC destruction.
 
+Native object fields are strong ARC slots, not Z wrappers. Assignment retains
+the new identity and releases the old one; assigning `null` clears a nullable
+slot. A separate local snapshot retains its own identity, so clearing the field
+does not invalidate that snapshot. Explicit `move` of native ARC identity remains
+unsupported, as for ordinary native references. Clearing/replacing a field still
+requires `inout this`, and native destruction that reenters a ready writer traps.
+Generated teardown clears strong fields under the closed lifecycle gate before
+superclass teardown. ARC's own ivar destruction then sees nil, avoiding duplicate
+release. Source `deinit` may invoke a stored resource's cleanup method, but this
+does not infer an API-specific `invalidate` or `close` operation for users.
+
+For example, a display link can be represented by ordinary private nullable
+storage, initialized to `null` immediately after `super.init`. Explicit shutdown
+must invalidate its registration while the owner is still live. Retention is not
+cycle collection: storing a link which retains its target can keep both alive.
+Declaring a new callback selector such as `display:` (rather than overriding an
+inherited selector) is the next design review, not part of this field checkpoint.
+
 The shared 403-object fixture now owns an allocated string, replaces it through
 an exclusive entry, reads native-record fields, and counts source destruction.
+It also creates/destroys exactly 803 native resources, exercises nullable
+replacement/clearing with a retained snapshot, and dispatches from a field's
+destructor before superclass teardown. No callback is allowed to enter Z after
+the destruction gate closes.
 The native emitter uses checked field type/visibility plans. Tests reject partial
 initialization, shared writes (including nested fields), receiver aliases,
 escaping captures, readonly replacement, unsupported storage, and resurrection.
@@ -467,9 +492,11 @@ below. Ordinary aggregate lowering still rejects manually assembled subclass AST
 without checked native plans, so bypassing the resolver cannot silently select
 the wrong representation.
 
-The approved lifecycle gate, reentrant loan enforcement, and bounded inline state
-are implemented and tested. Before moving Zapp's transition state into a subclass,
-finish the concrete native-resource and display-callback lifetime audit.
+The approved lifecycle gate, reentrant loan enforcement, bounded inline state,
+and strong native-resource storage are implemented and tested. Before moving
+Zapp's transition state into a subclass, deliberate the new callback-selector
+declaration and typed target/selector registration boundary. The resource audit
+establishes explicit display-link invalidation during live close/shutdown.
 General async closure completeness is **not** a prerequisite for this bounded,
 synchronous native subclass tier. Unsupported suspension remains rejected rather
 than expanding this Zapp-driven task into a general async implementation project.
@@ -486,9 +513,10 @@ compile-only probe. Next is the user review of subclass-owned state and callback
 lifetimes, then implementation/teardown tests and the Zapp resize integration.
 The earlier range included the now-completed native body port. The lifecycle
 review, forwarding gate, reentrant entry enforcement, and bounded inline owned
-storage are now complete. Next, audit the actual resize controller's remaining
-storage/callback needs, then return to production integration; do not use this
-checkpoint as a reason to expand unrelated subclass features.
+storage are now complete, including strong imported native object fields. Next,
+review the actual display callback's declaration/registration contract, then
+return to production integration; do not use this checkpoint as a reason to
+expand unrelated subclass features.
 
 The field-free native port was bounded by four gates:
 

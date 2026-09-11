@@ -34,6 +34,19 @@ __attribute__((objc_subclassing_restricted))
 ZSubclassConstructorCleanup *z_subclass_constructor_cleanup(ZSubclassFixture *object) NS_RETURNS_RETAINED;
 int z_subclass_constructor_cleanups(void);
 
+// Inline owned native state: its destructor deliberately dispatches through
+// the owner while the owner's generated dealloc is clearing stored fields.
+@interface ZSubclassStoredResource : NSObject
+- (int)value;
+@property(readonly) int storedValue;
+- (void)attach:(ZSubclassFixture *)receiver;
+- (void)touch;
+@end
+ZSubclassStoredResource *z_subclass_stored_resource(int value) NS_RETURNS_RETAINED;
+int z_subclass_stored_live(void);
+int z_subclass_stored_created(void);
+int z_subclass_stored_destroyed(void);
+
 @interface ZSubclassAccessCleanup : NSObject
 - (void)touch;
 @end

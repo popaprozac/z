@@ -205,11 +205,14 @@ recursive path.
   access. Native entry guards allow nested readers and trap reentrant `inout`
   conflicts without waiting; lexical cleanup retains the access through local
   destruction and ends it before a precise-lifetime native receiver hold releases.
-  The fixture covers five conflict paths and releasing the last outside owner
+  The fixture covers six conflict paths and releasing the last outside owner
   during an entry, at both optimization levels. Private inline scalar/plain-native
-  value and owned `String` fields plus source `deinit` now execute too. A checked
+  value, owned `String`, and strong imported Objective-C reference fields
+  (including nullable slots) plus source `deinit` now execute too. A checked
   initialization prefix precedes Ready; source/local cleanup precedes reverse
-  field destruction. Direct guarded field access rejects receiver aliases,
+  field destruction. Strong fields are cleared before superclass teardown;
+  replacement/clearing retains independent snapshots and keeps reentry guarded.
+  Direct guarded field access rejects receiver aliases,
   shared writes, and dying-receiver escape. Broader resource fields, escaping
   field loans/captures, weak identity, and async subclass composition remain.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It

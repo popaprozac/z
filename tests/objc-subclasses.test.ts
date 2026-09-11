@@ -540,11 +540,14 @@ hostToolchainTest("compiles an actual AppKit subclass without launching an appli
   if (process.platform !== "darwin") return;
   const source = `
     import AppKit from "AppKit/AppKit.h";
+    import QuartzCore from "QuartzCore/CADisplayLink.h";
     import { thread } from "std/thread";
     class SmoothWindow extends AppKit.NSWindow on thread.main {
+      private displayLink: QuartzCore.CADisplayLink | null;
       constructor(frame: AppKit.NSRect) {
         super.initWithContentRect(frame, styleMask: AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskResizable,
           backing: AppKit.NSBackingStoreBuffered, defer: false);
+        this.displayLink = null;
         this.releasedWhenClosed = false;
       }
       override function animationResizeTime(frame: AppKit.NSRect): f64 as "animationResizeTime:" {
@@ -586,7 +589,7 @@ hostToolchainTest("executes native subclass lifecycle and reentrant receiver acc
       assert.equal(built.status, 0, `${label} ${optimization}: ${built.stderr}`);
       const run = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", env: { ...process.env, Z_SUBCLASS_ACCESS_SCENARIO: "0" } });
       assert.equal(run.status, 0, `${label} ${optimization}: ${run.stderr} ${run.error ?? ""} ${run.signal ?? ""}`);
-      for (const scenario of [1, 2, 3, 4, 5]) {
+      for (const scenario of [1, 2, 3, 4, 5, 6]) {
         const rejected = spawnSync(executable, [], {
           encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL",
           env: { ...process.env, Z_SUBCLASS_ACCESS_SCENARIO: String(scenario) },
@@ -629,19 +632,27 @@ hostToolchainTest("executes native subclass lifecycle and reentrant receiver acc
     for (const source of [artifact.source, native.stdout]) {
       assert.match(source, /Z_String _z_native_field_title;/);
       assert.match(source, /ZSubclassPoint _z_native_field_point;/);
+      assert.match(source, /__strong ZSubclassStoredResource \* _z_native_field_resource;/);
+      assert.match(source, /__strong ZSubclassStoredResource \* _z_native_field_pending;/);
+      assert.match(source, /self->_z_native_field_resource = nil;/);
+      assert.match(source, /self->_z_native_field_pending = nil;/);
       assert.match(source, /free\(\(void \*\).*_z_native_field_title/);
       assert.doesNotMatch(source, /\[super dealloc\]/);
     }
     const stored = baseline.replace("constructor(value", "private readonly offset: i32; private text: String; constructor(value")
       .replace("super.initWithValue(value);", 'super.initWithValue(value); this.offset = 2; this.text = "ok";')
       .replace("super.value() + 2", "super.value() + this.offset");
+    const nativeStored = stored.replace("private text: String;",
+      "private text: String; private readonly owned: native.ZSubclassStoredResource; private optional: native.ZSubclassStoredResource | null;")
+      .replace('this.text = "ok";', 'this.text = "ok"; this.owned = native.z_subclass_stored_resource(1); this.optional = null;');
     const storageProbe = resolve(directory, "storage.zs");
     const emitStorage = (source: string) => {
       writeFileSync(storageProbe, source);
       return spawnSync(oracle, [wire, storageProbe], { encoding: "utf8", timeout: 5_000,
         killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
     };
-    for (const source of [stored, stored.replace("constructor(value", "deinit {} constructor(value")]) {
+    for (const source of [stored, stored.replace("constructor(value", "deinit {} constructor(value"), nativeStored,
+      nativeStored.replace("constructor(value", "deinit { const snapshot = this.owned; snapshot.touch(); } constructor(value")]) {
       const checked = emitStorage(source);
       assert.equal(checked.status, 0, checked.stderr);
       compileToNative(source, fixture);
@@ -663,6 +674,18 @@ hostToolchainTest("executes native subclass lifecycle and reentrant receiver acc
       ["move field", stored.replace("return super.value() + this.offset;", "const moved = move this.text; return 0;"), /borrow|move|consum/],
       ["captured field", stored.replace("return super.value() + this.offset;", "const callback = (): i32 => this.offset; return callback();"), /captur/],
       ["unsupported storage", stored.replace("private text: String;", "private text: Array<String>;"), /stored fields currently support/],
+      ["source subclass storage", baseline.slice(baseline.indexOf("class Counter"), baseline.indexOf("function main")).replaceAll("Counter", "Companion")
+        + stored.replace("private text: String;", "private text: Companion;"), /stored fields currently support/],
+      ["nonnull field initialized null", nativeStored.replace("this.owned = native.z_subclass_stored_resource(1)", "this.owned = null"), /null|assign|expected/],
+      ["nullable field dereference", nativeStored.replace("return super.value() + this.offset;", "return this.optional.value();"), /null/],
+      ["nullable property dereference", nativeStored.replace("return super.value() + this.offset;", "return this.optional.storedValue;"), /null/],
+      ["nullable local dereference", nativeStored.replace("return super.value() + this.offset;", "const snapshot = this.optional; return snapshot.value();"), /null/],
+      ["nullable alias dereference", nativeStored.replace("native.ZSubclassStoredResource | null", "MaybeResource")
+        .replace("return super.value() + this.offset;", "return this.optional.value();")
+        + "\ntype MaybeResource = native.ZSubclassStoredResource | null;", /null/],
+      ["readonly native field", nativeStored.replace('this.optional = null;', 'this.optional = null; this.owned = native.z_subclass_stored_resource(2);'), /readonly/],
+      ["shared native field write", nativeStored.replace("return super.value() + this.offset;", "this.optional = null; return 0;"), /immutable|inout this|borrowed/],
+      ["native field move", nativeStored.replace("return super.value() + this.offset;", "const taken = move this.owned; return 0;"), /borrow|move|consum|ARC/],
       ["field default", stored.replace("private text: String;", 'private text: String = "default";'), /defaults or optional fields/],
       ["writable argument", stored.replace("return super.value() + this.offset;", "alter(inout this.text); return 0;")
         + '\nfunction alter(inout text: String): void { text = "updated"; }', /borrow|mutable|inout|locally contained ARC identity/],
@@ -704,7 +727,7 @@ hostToolchainTest("executes native subclass lifecycle and reentrant receiver acc
     assert.equal(allowed.status, 0, allowed.stderr);
     const companion = resolve(directory, "counter.zs");
     const entry = resolve(directory, "imported.zs");
-    writeFileSync(companion, stored.slice(0, stored.indexOf("function main")).replace("class Counter", "export class Counter"));
+    writeFileSync(companion, nativeStored.slice(0, nativeStored.indexOf("function main")).replace("class Counter", "export class Counter"));
     writeFileSync(entry, 'import { Counter as Reading } from "./counter.zs"; function main(): i32 { const counter = new Reading(40); return counter.value() - 42; }');
     const imported = spawnSync(oracle, [wire, entry, companion], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
     assert.equal(imported.status, 0, imported.stderr);

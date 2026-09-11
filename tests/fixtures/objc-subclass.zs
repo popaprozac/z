@@ -17,11 +17,16 @@ class Counter extends native.ZSubclassFixture on thread.main {
   private offset: i32;
   private title: String;
   private point: native.ZSubclassPoint;
+  private resource: native.ZSubclassStoredResource;
+  private pending: native.ZSubclassStoredResource | null;
   constructor(value: i32) {
     super.initWithValue(value);
     this.offset = 2;
     this.title = storedTitle();
     this.point = native.ZSubclassPoint({ x: 1, y: 2 });
+    this.resource = native.z_subclass_stored_resource(1);
+    this.pending = null;
+    this.resource.attach(this);
     const cleanup: native.ZSubclassConstructorCleanup = native.z_subclass_constructor_cleanup(this);
     const configuration = (): i32 => {
       const initial = (): i32 => { return 1; };
@@ -39,6 +44,7 @@ class Counter extends native.ZSubclassFixture on thread.main {
     const length = (): usize => resource.text.byteLength;
     if (length() != 5) return -1;
     if (this.title.byteLength != 5) return -2;
+    if (this.resource.value() != 1) return -3;
     return super.value() + this.offset;
   }
 
@@ -52,6 +58,13 @@ class Counter extends native.ZSubclassFixture on thread.main {
   }
 
   override function record(inout this, phase: i32): void as "recordPhase:" {
+    this.pending = native.z_subclass_stored_resource(2);
+    const snapshot = this.pending;
+    this.pending = native.z_subclass_stored_resource(3);
+    this.pending = null;
+    if (snapshot != null) {
+      if (snapshot.value() != 2) return;
+    }
     this.title = storedTitle();
     this.offset = 2;
     super.recordPhase(phase + 10);
@@ -89,10 +102,17 @@ class Counter extends native.ZSubclassFixture on thread.main {
       const other = new Counter(1);
       return native.z_subclass_call_read(other, 0);
     }
+    if (mode == 6) {
+      // Releasing the attached resource reenters a writer. The entry guard
+      // must still be active; replacing a field cannot silently bypass it.
+      this.resource = native.z_subclass_stored_resource(1);
+      return 0;
+    }
     return super.writeAccess(mode);
   }
 
   deinit {
+    this.resource.touch();
     const observed = copy this.title;
     native.z_subclass_source_deinit(observed.byteLength, this.offset);
   }
@@ -110,6 +130,7 @@ function exerciseAccess(scenario: i32): i32 on thread.main {
   if (scenario == 3) return native.z_subclass_call_write(counter, 2);
   if (scenario == 4) return native.z_subclass_call_read(counter, 2);
   if (scenario == 5) return native.z_subclass_call_write(counter, 4);
+  if (scenario == 6) return native.z_subclass_call_write(counter, 6);
   if (native.z_subclass_call_read(counter, 4) != 0) return 10;
   if (native.z_subclass_call_read(counter, 3) != 0) return 11;
   if (native.z_subclass_call_write(counter, 0) != 0) return 12;
@@ -157,6 +178,9 @@ function main(): i32 {
   if (native.z_subclass_teardown_callbacks() != 403) return 7;
   if (native.z_subclass_constructor_cleanups() != 403) return 8;
   if (native.z_subclass_source_deinits() != 403) return 15;
+  if (native.z_subclass_stored_created() != 803) return 16;
+  if (native.z_subclass_stored_destroyed() != 803) return 17;
+  if (native.z_subclass_stored_live() != 0) return 18;
   if (native.z_subclass_lifecycle_failures() != 0) return 9;
   return native.z_subclass_live_count();
 }

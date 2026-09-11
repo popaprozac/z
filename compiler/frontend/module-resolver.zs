@@ -3994,6 +3994,20 @@ function optionalReceiverPayloadType(in typeName: String): Option<String> {
   return Option<String>.none;
 }
 
+function requireNonnullableMemberReceiver(
+  in module: ParsedModule, in modules: Array<ResolvedModule>, moduleIndex: usize,
+  in tree: ExpressionTree, index: usize,
+  in receiverType: String
+): void throws ModuleResolveError {
+  const canonical = transparentTypeName(modules, moduleIndex, receiverType);
+  const nullable = nullableTargetType(canonical);
+  if (nullable.byteLength > 0) throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch, module.path,
+    `cannot access a member through nullable receiver "${receiverType}"; bind a snapshot and check it against null`,
+    tree.nodes[index].line, tree.nodes[index].column
+  );
+}
+
 function optionalValueType(in typeName: String): String {
   if (typeName == "void") return "void";
   match (optionalReceiverPayloadType(typeName)) {
@@ -6143,6 +6157,7 @@ function inferExpressionNodeType(
       inout evidence
     );
     try requireSettledExpressionType(module, tree, children[0], receiverType);
+    if (!node.optionalAccess) try requireNonnullableMemberReceiver(module, modules, moduleIndex, tree, children[0], receiverType);
     recordExpressionResolution(
       modules,
       moduleIndex,
@@ -9227,6 +9242,7 @@ function inferExpressionNodeType(
         inout evidence
       );
       try requireSettledExpressionType(module, tree, receiverIndex, ownerType);
+      if (!optionalMethodCall) try requireNonnullableMemberReceiver(module, modules, moduleIndex, tree, receiverIndex, ownerType);
       recordExpressionResolution(
         modules,
         moduleIndex,

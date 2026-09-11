@@ -835,7 +835,8 @@ For APIs that require a genuine native subclass, both compilers now have a bound
 checked designated `super.init...(...)`; explicit `override function ... as
 "selector:"` bodies use native dispatch and ARC identity, not a protocol adapter.
 See [native subclass construction and restrictions](objc-subclass-design.md).
-Private scalar/plain-native-value and owned `String` fields plus source `deinit`
+Private scalar/plain-native-value, owned `String`, and strong imported Objective-C
+reference fields (nullable or nonnullable) plus source `deinit`
 are supported with guarded access and automatic cleanup. Broader resource storage,
 escaping field loans, and async subclass composition remain unimplemented;
 ordinary header imports and protocol adaptation do not depend on this new tier.

@@ -69,6 +69,37 @@ void z_subclass_check_constructing(ZSubclassFixture *object) {
   [object checkBaseDispatch:2];
 }
 
+static int storedLive = 0;
+static int storedCreated = 0;
+static int storedDestroyed = 0;
+int z_subclass_stored_live(void) { return storedLive; }
+int z_subclass_stored_created(void) { return storedCreated; }
+int z_subclass_stored_destroyed(void) { return storedDestroyed; }
+@implementation ZSubclassStoredResource {
+  int _value;
+  // Test oracle only: the field owner outlives this precise field-release
+  // callback. A zeroing weak reference is already nil during owner dealloc.
+  __unsafe_unretained ZSubclassFixture *_receiver;
+}
+- (instancetype)initWithValue:(int)value {
+  self = [super init];
+  if (self) { _value = value; storedLive += 1; storedCreated += 1; }
+  return self;
+}
+- (int)value { return _value; }
+- (void)attach:(ZSubclassFixture *)receiver { _receiver = receiver; }
+- (int)storedValue { return _value; }
+- (void)touch {}
+- (void)dealloc {
+  if (_receiver) [_receiver checkBaseDispatch:6];
+  storedLive -= 1;
+  storedDestroyed += 1;
+}
+@end
+ZSubclassStoredResource *z_subclass_stored_resource(int value) {
+  return [[ZSubclassStoredResource alloc] initWithValue:value];
+}
+
 @implementation ZSubclassConstructorCleanup {
   __weak ZSubclassFixture *_receiver;
 }

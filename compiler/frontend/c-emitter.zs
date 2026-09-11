@@ -346,6 +346,7 @@ export function emitNativeObjCSubclassInterfaces(
     output.append(" {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n");
     for (const field of plan.fields) {
       output.append("  ");
+      if (field.strongObject) output.append("__strong ");
       output.append(field.nativeType);
       output.append(" _z_native_field_");
       output.append(field.name);
@@ -383,6 +384,14 @@ function appendNativeObjCStoredCleanup(inout output: TextBuffer, in plan: Module
   let index = plan.fields.length;
   while (index > 0) {
     index = index - 1;
+    if (plan.fields[index].strongObject) {
+      // ARC clears the slot before releasing the old owner. Native teardown
+      // may call back, so do this with the lifecycle gate already closed.
+      output.append("  self->_z_native_field_");
+      output.append(plan.fields[index].name);
+      output.append(" = nil;\n");
+      continue;
+    }
     if (!plan.fields[index].ownedString) continue;
     output.append("  if (self->_z_native_field_");
     output.append(plan.fields[index].name);

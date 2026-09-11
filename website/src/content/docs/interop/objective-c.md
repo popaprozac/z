@@ -151,16 +151,25 @@ check's cleanup. The current cost is one additional pointer-sized native field,
 a stack guard, entry/exit checks, and a native retain/release—not another heap
 allocation. This conservative safety tier is not zero overhead.
 
-Private stored scalars, imported enums/plain native records, and owned `String`
-fields are supported. They live inline in the native object, not a second wrapper.
+Private stored scalars, imported enums/plain native records, owned `String`, and
+strong imported Objective-C references are supported. They live inline in the
+native object, not a second wrapper. Native reference fields may be nullable:
+`private link: QuartzCore.CADisplayLink | null;`.
 Initialize every field directly after `super.init`, before other receiver use or
 control flow. Access is direct `this.field` inside a guarded entry; writes require
 `inout this`. Copy snapshots when a value needs to outlive the entry.
+Native reference snapshots retain identity; clearing the original nullable
+field with `null` does not destroy another retained snapshot. Native field
+replacement remains protected against reentrant receiver access.
 
 Existing `deinit { ... }` runs after the readiness gate closes. Its local cleanup
 finishes before automatic reverse-order field cleanup. You may inspect/copy
 fields during teardown, but cannot publish or call through dying `this`, and
 must never call `super.dealloc`. Automatic cleanup also works without `deinit`.
+Strong fields are cleared before superclass teardown. For registrations such as
+display links, explicitly invalidate during close/shutdown: ARC cannot break a
+cycle that prevents `deinit` from running, and Z does not infer native shutdown
+methods from an object's type.
 See the [stateful compiler fixture](https://github.com/popaprozac/z/blob/main/tests/fixtures/objc-subclass.zs)
 for construction, replacement, and cleanup examples.
 
