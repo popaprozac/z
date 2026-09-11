@@ -8040,15 +8040,10 @@ cleanup assertions cannot pass merely because the handler ignores a live ticker.
 The 33-page website build and diff checks pass; this is not a full compiler-suite
 or performance benchmark result.
 
-One general language gap is **not resolved**: rejecting an old display-link
-callback while a replacement is active needs object identity comparison. Z
-currently compares native references with null, but rejects `link != active`.
-There is no existing `std/objc` identity helper. The operation must neither
-consume the references nor dispatch value equality (`isEqual:`), and its
-spelling/general equality semantics need user design agreement. The example
-remains runnable with its existing invalidation and inactive-source checks;
-those checks are not claimed to reject a stale source during a newer transition.
-Do not move it into Zapp until that guard and a stale-callback regression land.
+That checkpoint left one general language gap: rejecting an old display-link
+callback while a replacement is active needed object identity comparison.
+The follow-up below records the approved rule and its implementation; native
+value equality (`isEqual:`) is deliberately not used for the guard.
 
 The diagnostic work also reproduced two unrelated native formatting boundaries:
 direct `console.error(f64)` is not accepted by the native standard-library
@@ -8056,6 +8051,90 @@ surface (String interpolation is accepted), and borrowing a conditional String
 rvalue directly into `console.log` can emit an invalid C address-of-rvalue.
 Keep the latter in the native expression-composition backlog; it did not require
 changing the controller algorithm.
+
+### Class-reference identity and stale display callbacks (2026-09-11)
+
+The approved surface reuses `==` and `!=` for same-object identity on compatible
+class references. It does not add a helper, coerce String to NSString, consume
+named operands, or synthesize field/value equality. Ordinary Z classes require
+the same nominal type; imported classes support canonical same-class identity,
+base/derived references, erased Objective-C objects, and nullable references.
+Unrelated class comparisons remain errors. `String` retains byte equality.
+
+Checking the operator alone would leak owned class rvalues. Both emitters now
+keep a comparison-local lifetime scope for nontrivial operands, sequence left
+before right, and release owned snapshots after producing the boolean. Two
+plain named references retain the direct pointer-comparison path. The tests
+exercise ordinary/async bodies, aliases, generic classes, stored class fields,
+explicit moves, skipped short-circuit branches, loops, and mutation of a binding
+by the right operand. Borrowing a member of an unbound cleanup-bearing temporary
+still requires a named owner; native checking now enforces that existing Stage 0
+rule instead of allowing the temporary owner to leak.
+
+The right-operand mutation test also caught two native cleanup discrepancies:
+replacing an initialized `inout` class slot skipped the old slot's release, and
+returning a named class reference emitted a retain while move planning omitted
+the local release. Native replacement and return planning now agree with the
+existing shared-identity semantics. Explicit `move` still transfers ownership;
+the replacement cleanup change applies to initialized `inout` parameters, not
+`out` parameters.
+
+Separate follow-up: a synchronous `let value: Class; initialize(out value)`
+probe still makes Stage 0 emit a guarded release of an uninitialized C pointer
+before the call, which strict Clang rejects with `-Wuninitialized` even though
+the live flag is false. Initializing that local before the `out` call instead
+exposes a second discrepancy: native call lowering omits cleanup of the former
+class owner (a destructor-count probe drops the new object but not the old one).
+These are separate `out` transition regressions, not fixed by class identity;
+close them in a focused follow-up with both uninitialized and initialized
+caller storage, rather than weakening the expected destructor counts. The
+identity suite continues to test `in` returns, `inout` replacement, and explicit
+`move` returns.
+
+Minimal `out` follow-up (import `console` from `std/console`):
+
+```z
+class Item { id: i32; deinit { console.log(`${this.id}`); } }
+function initialize(out value: Item): void { value = new Item({ id: 14 }); }
+function main(): i32 {
+  let value = new Item({ id: 15 }); // Or `let value: Item;` for the Clang warning.
+  initialize(out value);
+  return 0;
+}
+```
+
+The initialized form must print `15`, then `14`, in both compilers; the
+uninitialized form must compile under strict Clang and print only `14`.
+
+The header fixture exposed existing normalization gaps: Stage 0 inferred an
+unknown result for object-returning C functions, namespace qualification erased
+Clang nullability, and native C-function contract inference omitted erased `id`
+and depended on qualifier order. Those paths now preserve the header's object
+identity and nullability. Known imported class operands no longer bypass native
+operator checking merely because the header namespace has no Z target module.
+The source-only hybrid graph may still defer absent Clang evidence.
+
+The resize controller's `active == null || link != active` check rejects a stale
+native source without disturbing the current animation. The bounded matrix now
+has thirteen geometry scenarios, plus the separate real-WebView readiness,
+intermediate-layout, and clean AppKit-loop return checks. Framework integration
+and the previously listed fullscreen/display/accessibility experiments remain
+separate evidence gates. No ASan probes are used.
+
+Validation: both backends pass all thirteen geometry scenarios at `-O0` and
+`-O2` (52 runs), plus the four real-WebView runs. The rebuilt native compiler
+reaches a fixed point; the identity/cleanup regression, header-composition
+tests, and 33-page website build pass. The raw-foreign-contract fixture now
+expects the canonical erased-object Z type rather than the old untyped `id`
+spelling; its complete decoder/normalization/emission test passes again.
+
+Broader validation also reproduces three existing self-hosting test failures
+on the untouched `f2f04a7e` parent, not only the identity branch: the source-only
+subclass diagnostic assertion, the private-trait adapter assertion (now an
+environment field instead of a local `service`), and the bootstrap assertion
+still expecting supported native subclass checking to fail. Keep these as a
+separate test-maintenance follow-up; this checkpoint is not a claim that the
+entire suite is green.
 
 ## Not tested yet
 

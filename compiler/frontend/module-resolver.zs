@@ -224,6 +224,7 @@ import {
   typeHasCustomConstructor,
   typeIsBorrowedForeignResource,
   typeIsForeignResource,
+  typeIsNativeObjCReference,
   typeIsForeignViewOnlyRecord,
   typeIsRetainedParameterViewAggregate,
   typeIsThreadShareable,
@@ -6328,6 +6329,14 @@ function inferExpressionNodeType(
     }
     match (aggregateFieldShape(modules, moduleIndex, receiverValueType, memberName)) {
       some(field) => {
+        let receiverCleanupVisiting = Array<String>();
+        const receiverRoot = expressionStorageRootName(tree, children[0]);
+        if (receiverRoot.byteLength == 0 && !typeIsNativeObjCReference(modules, moduleIndex, receiverValueType)
+          && typeHasCleanup(modules, moduleIndex, receiverValueType, receiverCleanupVisiting)) {
+          throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+            "a cleanup-bearing temporary must be bound before borrowing one of its members",
+            tree.nodes[children[0]].line, tree.nodes[children[0]].column);
+        }
         const nativeSubclassContext = valueBindingType(bindings, "__z_native_objc_subclass_base");
         if (nativeSubclassContext.byteLength > 0) {
           try requireNativeReferenceAvailability(module, modules, moduleIndex, receiverValueType, node.line, node.column);

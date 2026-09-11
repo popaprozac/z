@@ -1,3 +1,4 @@
+import { emitReferenceIdentity, identityBorrowsStorage } from "./reference-identity-codegen.ts";
 import type {
   CallExpression,
   Expression,
@@ -7704,6 +7705,22 @@ function emitFrameExpressionInner(
       }
     case "binary":
       {
+        const identity = plan.types.semanticInfo.referenceIdentityComparisons.get(expression.location.offset);
+        if (identity) {
+          const operand = (value: Expression, type: string) => {
+            const borrowed = Boolean(plan.expressionBindings?.has(value.location.offset))
+              || (identityBorrowsStorage(value) && !plan.types.semanticInfo.managedCopies.has(value.location.offset)
+                && !plan.types.semanticInfo.movedExpressions.has(value.location.offset));
+            return {
+              value: emitFrameExpression(value, plan, fileName), borrowed,
+              plainBinding: borrowed && (value.kind === "identifier" || value.kind === "argumentReference"),
+              cType: cFrameType(type, plan.types),
+              retain: `Z_${asyncNativeSymbolPart(type)}_retain`, release: `Z_${asyncNativeSymbolPart(type)}_release`,
+            };
+          };
+          return emitReferenceIdentity(expression.operator, identity.native,
+            operand(expression.left, identity.leftType), operand(expression.right, identity.rightType));
+        }
         const integerOperation = plan.types.semanticInfo.integerOperations.get(expression.location.offset);
         if (integerOperation) {
           return `${asyncIntegerOperationName(integerOperation.kind, integerOperation.type)}(${emitFrameExpression(expression.left, plan, fileName)}, ${emitFrameExpression(expression.right, plan, fileName)})`;

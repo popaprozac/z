@@ -215,9 +215,9 @@ class SmoothWindow extends AppKit.NSWindow on thread.main {
     // even when the controller ignores the callback after invalidation.
     this.callbacks = this.callbacks + 1;
     const active = this.displayLink;
-    // Native reference identity comparison is a pending language-design
-    // decision. The active-link identity guard must land before integration.
-    if (active == null) {
+    // A queued callback from an invalidated source must not advance a newer
+    // animation. This compares object identity, without invoking isEqual:.
+    if (active == null || link != active) {
       link.invalidate();
       return;
     }

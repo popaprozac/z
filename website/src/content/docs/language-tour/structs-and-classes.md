@@ -104,6 +104,12 @@ const same = session;
 `new` makes heap-backed identity visible. Assigning `session` to `same` shares
 the same ARC-managed instance; it does not deep-clone the fields.
 
+`session == same` is true: class `==` and `!=` compare object identity, not
+fields. A separately constructed session with identical fields is a different
+object. Comparison borrows both references, so both bindings remain usable.
+Transparent aliases preserve the same nominal class type; unrelated classes
+cannot be compared. `String`, in contrast, compares UTF-8 content.
+
 Use a class when the design needs identity shared across owners, weak
 references, or long-lived framework state. Do not choose a class merely because
 the type has methods.

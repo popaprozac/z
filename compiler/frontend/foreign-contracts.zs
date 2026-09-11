@@ -1901,11 +1901,43 @@ function stringContainsBytes(
   return false;
 }
 
+function unqualifiedObjCNativeType(in nativeType: String): String {
+  let output = TextBuffer();
+  let index: usize = 0;
+  while (index < nativeType.byteLength) {
+    const byte = nativeType.byteAt(index);
+    if ((byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95) {
+      const start = index;
+      index = index + 1;
+      while (index < nativeType.byteLength) {
+        const next = nativeType.byteAt(index);
+        if (!((next >= 65 && next <= 90) || (next >= 97 && next <= 122) || (next >= 48 && next <= 57) || next == 95)) break;
+        index = index + 1;
+      }
+      const word = nativeType.copyBytes(start, index);
+      if (word != "_Nonnull" && word != "_Nullable" && word != "_Null_unspecified"
+        && word != "__strong" && word != "__weak" && word != "__unsafe_unretained"
+        && word != "__autoreleasing" && word != "NS_RETURNS_RETAINED" && word != "NS_RETURNS_NOT_RETAINED") {
+        output.append(word);
+      }
+    } else {
+      if (byte > 32) output.appendAscii(byte);
+      index = index + 1;
+    }
+  }
+  return output.finish();
+}
+
 function foreignObjCValueTypeName(
   in declarations: RawForeignModuleDeclarations,
   in nativeType: String
 ): Option<String> {
-  const compact = compactNativeType(nativeType);
+  const compact = unqualifiedObjCNativeType(nativeType);
+  const nullable = stringContainsBytes(nativeType, "_Nullable") || stringContainsBytes(nativeType, "_Null_unspecified");
+  if (compact == "id") {
+    if (nullable) return Option.some(`${nativeObjCObjectTypeName} | null`);
+    return Option.some(copy nativeObjCObjectTypeName);
+  }
   let pointer: usize = 0;
   while (pointer < compact.byteLength && compact.byteAt(pointer) != 42) {
     pointer = pointer + 1;
@@ -1920,31 +1952,15 @@ function foreignObjCValueTypeName(
     declarations.objectiveCInterfaces.length
   );
   if (interfaceIndex < declarations.objectiveCInterfaces.length) {
-    const qualifiers = compact.copyBytes(pointer + 1, compact.byteLength);
-    if (
-      qualifiers.byteLength > 0
-      && qualifiers != "__strong"
-      && qualifiers != "__weak"
-      && qualifiers != "__unsafe_unretained"
-      && qualifiers != "__autoreleasing"
-      && qualifiers != "_Nonnull"
-      && qualifiers != "_Nullable"
-      && qualifiers != "__strong_Nonnull"
-      && qualifiers != "__strong_Nullable"
-      && qualifiers != "__weak_Nonnull"
-      && qualifiers != "__weak_Nullable"
-      && qualifiers != "__unsafe_unretained_Nonnull"
-      && qualifiers != "__unsafe_unretained_Nullable"
-      && qualifiers != "__autoreleasing_Nonnull"
-      && qualifiers != "__autoreleasing_Nullable"
-    ) return Option<String>.none;
+    // Exactly one object pointer; T** and unsupported suffixes are not values.
+    if (pointer + 1 != compact.byteLength) return Option<String>.none;
     const typeName = declarations.objectiveCInterfaces[
       interfaceIndex
     ].exportName.copyBytes(
       0,
       declarations.objectiveCInterfaces[interfaceIndex].exportName.byteLength
     );
-    if (stringContainsBytes(qualifiers, "Nullable")) {
+    if (nullable) {
       return Option.some(`${typeName} | null`);
     }
     return Option.some(typeName);

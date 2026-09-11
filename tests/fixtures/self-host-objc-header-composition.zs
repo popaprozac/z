@@ -22,7 +22,7 @@ function emit(in directory: String, in sourcePath: String): String throws String
   let foreign = Array<NativeForeignModuleContract>();
   for (const declaration of parsed.program.imports) {
     if (declaration.header != "./objc-forward.h" && declaration.header != "./objc-subclass.h"
-      && declaration.header != "./objc-registration.h") continue;
+      && declaration.header != "./objc-registration.h" && declaration.header != "./reference-identity.h") continue;
     const wire = try fs.readText(`${directory}/${declaration.header}.zfdcl`);
     const raw = try decodeRawForeignDeclarations(wire);
     const declarationSource = try fs.readText(`${directory}/${declaration.header}.zd`);

@@ -262,6 +262,7 @@ export enum LoweredExpressionKind {
   borrowedTemporary,
   unaryOperation,
   binaryOperation,
+  referenceIdentity,
   conditionalValue,
   optionalFieldValue,
   optionalCallValue,
@@ -5946,6 +5947,19 @@ function syntaxIsIdentifier(
   };
 }
 
+function syntaxIsSharedClassReference(
+  in program: Program, in evidence: ModuleSemanticEvidence,
+  in expression: ExpressionSyntax
+): boolean {
+  return match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      select treeIsSharedClassReference(program, evidence, tree, root);
+    }
+    none => false;
+  };
+}
+
 function statementMovesName(
   in program: Program,
   in evidence: ModuleSemanticEvidence,
@@ -5963,6 +5977,8 @@ function statementMovesName(
           || statement.kind == StatementKind.yieldStatement
         )
         && syntaxIsIdentifier(expression, name)
+        && (statement.kind != StatementKind.returnStatement
+          || !syntaxIsSharedClassReference(program, evidence, expression))
       ) return true;
       if (syntaxMovesName(program, evidence, expression, name)) return true;
     }
@@ -5973,6 +5989,7 @@ function statementMovesName(
       if (
         statement.kind == StatementKind.assignmentStatement
         && syntaxIsIdentifier(expression, name)
+        && !syntaxIsSharedClassReference(program, evidence, expression)
       ) return true;
       if (syntaxMovesName(program, evidence, expression, name)) return true;
     }
@@ -6014,9 +6031,12 @@ function collectDirectStatementMovedNames(
       ) {
         match (in expression.tree) {
           some(tree) => {
+            const root = tree.root;
             if (
               tree.nodes[tree.root].kind
                 == ExpressionKind.identifierExpression
+              && (statement.kind != StatementKind.returnStatement
+                || !treeIsSharedClassReference(program, evidence, tree, root))
             ) movedNames.add(tree.nodes[tree.root].value.copyBytes(
               0,
               tree.nodes[tree.root].value.byteLength
@@ -6039,9 +6059,11 @@ function collectDirectStatementMovedNames(
       if (statement.kind == StatementKind.assignmentStatement) {
         match (in expression.tree) {
           some(tree) => {
+            const root = tree.root;
             if (
               tree.nodes[tree.root].kind
                 == ExpressionKind.identifierExpression
+              && !treeIsSharedClassReference(program, evidence, tree, root)
             ) movedNames.add(tree.nodes[tree.root].value.copyBytes(
               0,
               tree.nodes[tree.root].value.byteLength
@@ -6231,6 +6253,7 @@ function appendStatementCleanupCopies(
 function attachReplacementCleanup(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
+  in ownerName: String,
   in arena: StatementArena,
   index: usize,
   in cleanups: Array<LoweredCleanup>,
@@ -6253,9 +6276,40 @@ function attachReplacementCleanup(
               return;
             }
           }
-          return;
+          // An inout parameter does not own its caller's slot at function exit,
+          // but assignment still destroys the initialized value being replaced.
+          // Out parameters deliberately do not enter this path.
+          const needsReplacementCleanup = match (in statements[loweredIndex].type) {
+            some(type) => moduleTypeNeedsCleanup(program, importedTypes, type);
+            none => false;
+          };
+          // Most assignments are scalar locals: avoid scanning declarations
+          // for parameter provenance when no destructor can be needed.
+          if (!needsReplacementCleanup) return;
+          let initializedParameter = false;
+          for (const declaration of program.functions) {
+            if (declaration.name != ownerName) continue;
+            for (const parameter of declaration.parameters) {
+              if (parameter.name == tree.nodes[tree.root].value
+                && parameter.mode == ParameterMode.inputOutput) {
+                initializedParameter = true;
+              }
+            }
+          }
+          for (const aggregate of program.aggregates) {
+            for (const method of aggregate.methods) {
+              if (!semanticMethodOwnerMatches(ownerName, aggregate.name, method.name)) continue;
+              for (const parameter of method.parameters) {
+                if (parameter.name == tree.nodes[tree.root].value
+                  && parameter.mode == ParameterMode.inputOutput) {
+                  initializedParameter = true;
+                }
+              }
+            }
+          }
+          if (!initializedParameter) return;
         }
-        if (tree.nodes[tree.root].kind != ExpressionKind.memberExpression) {
+        else if (tree.nodes[tree.root].kind != ExpressionKind.memberExpression) {
           return;
         }
         let memberType = Option<LoweredType>.none;
@@ -6958,6 +7012,7 @@ function planCleanupSequence(
       attachReplacementCleanup(
         program,
         importedTypes,
+        ownerName,
         arena,
         sourceIndex,
         live,
@@ -7239,6 +7294,34 @@ function expressionBorrowsStoredReference(
     || kind == ExpressionKind.argumentReferenceExpression
     || kind == ExpressionKind.memberExpression
     || kind == ExpressionKind.indexExpression;
+}
+
+function referenceIdentityOperandLabels(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in tree: ExpressionTree,
+  input: usize,
+  value: usize,
+  in output: Array<LoweredExpression>,
+  in typeName: String
+): Array<String> throws String {
+  const type = try lowerModuleTypeName(program, importedTypes, typeName);
+  if (type.kind != LoweredTypeKind.classType && type.kind != LoweredTypeKind.foreignObjCType) return Array<String>();
+  const borrowed = expressionBorrowsStoredReference(tree, input)
+    || (output[value].kind == LoweredExpressionKind.localValue && (
+      expressionHasLabel(output[value], "nested-try-binding")
+      || expressionHasLabel(output[value], "nested-conditional-binding")
+    ));
+  const plain = borrowed && (
+    tree.nodes[input].kind == ExpressionKind.identifierExpression
+    || tree.nodes[input].kind == ExpressionKind.argumentReferenceExpression
+    || tree.nodes[input].kind == ExpressionKind.argumentBindingExpression
+  );
+  return Array<String>(
+    type.kind == LoweredTypeKind.foreignObjCType ? "objc" : "class",
+    copy type.name,
+    plain ? "plain" : borrowed ? "borrowed" : "owned"
+  );
 }
 
 function wrapOwnedStorage(
@@ -11956,6 +12039,29 @@ function lowerExpressionContextual(
           else labels.push("value");
         }
         none => labels.push("value");
+      }
+    }
+    if (kind == LoweredExpressionKind.binaryOperation && (tree.nodes[index].value == "==" || tree.nodes[index].value == "!=")) {
+      match (in leftType) {
+        some(leftName) => {
+          match (in rightType) {
+            some(rightName) => {
+              // The checker has already established nominal compatibility.
+              // Preserve operand ownership separately from the boolean result.
+              if (leftName != "null" && rightName != "null") {
+                const leftLabels = try referenceIdentityOperandLabels(program, importedTypes, tree, leftInput, left, output, leftName);
+                const rightLabels = try referenceIdentityOperandLabels(program, importedTypes, tree, rightInput, right, output, rightName);
+                if (leftLabels.length == 3 && rightLabels.length == 3) {
+                  kind = LoweredExpressionKind.referenceIdentity;
+                  for (const label of leftLabels) { labels.push(label.copyBytes(0, label.byteLength)); }
+                  for (const label of rightLabels) { labels.push(label.copyBytes(0, label.byteLength)); }
+                }
+              }
+            }
+            none => {}
+          }
+        }
+        none => {}
       }
     }
     const operation = (

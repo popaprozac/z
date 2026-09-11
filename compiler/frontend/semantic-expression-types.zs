@@ -268,7 +268,7 @@ export function nativeObjectiveCStringConversionCopiesSource(
   return isNativeObjectiveCStringType(modules, moduleIndex, expected);
 }
 
-function nativeObjectiveCReferenceAssignable(
+export function nativeObjectiveCReferenceAssignable(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
   in expectedSource: String,

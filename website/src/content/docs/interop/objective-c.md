@@ -263,10 +263,17 @@ geometry/cleanup and real WebView readiness, intermediate viewport layout, and
 shutdown. Visual presentation quality and framework integration remain separate
 from those tests.
 The correctness follow-up covers intended zoom state, saved user restore frames,
-and Reduce Motion changes during a transition. Native object identity comparison
-is still a language-design gap: the probe cannot yet distinguish a stale link
-from the replacement link while a newer animation is active. That guard remains
-a prerequisite for Zapp integration; native value equality is not a substitute.
+and Reduce Motion changes during a transition. The `link != active` guard
+distinguishes a stale display-link callback from the current source, even during
+a newer animation.
+
+`==` and `!=` on compatible native class references compare **object identity**,
+without consuming either reference or calling `isEqual:`. Same-class,
+base/derived, erased `objc.Object`, and nullable reference comparisons are
+supported; unrelated concrete classes are rejected. A native `NSString` uses
+identity here, whereas Z `String` uses UTF-8 content equality. Comparing two
+named references needs only a pointer comparison; nontrivial operands keep
+temporary references alive through the comparison and clean them up afterward.
 
 ### New native callback methods
 

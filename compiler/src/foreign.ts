@@ -2296,19 +2296,25 @@ function qualifyNativeTypeSpelling(
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
 ): string {
   const normalized = normalizeCType(spelling);
+  // Canonical spelling is useful for namespace lookup, but Clang nullability
+  // is semantic input to Objective-C object and pointer mapping. Do not erase
+  // it from the raw declaration stream before those mappings run.
+  const retainedSpelling = /\b_(?:Nullable|Nonnull|Null_unspecified)\b/.test(spelling)
+    ? spelling.trim()
+    : normalized;
   const reference = /^(?:const\s+)?(.+?)\s*&&?$/.exec(normalized);
   const pointer = /^(.+?)\s*\*$/.exec(normalized);
   const base = stripValueQualifiers(reference?.[1] ?? pointer?.[1] ?? normalized);
-  if (namedTypes.has(base)) return normalized;
+  if (namedTypes.has(base)) return retainedSpelling;
   for (let depth = namespacePath.length; depth > 0; depth -= 1) {
     const qualified = `${namespacePath.slice(0, depth).join("::")}::${base}`;
     if (!namedTypes.has(qualified)) continue;
-    const offset = normalized.lastIndexOf(base);
+    const offset = retainedSpelling.lastIndexOf(base);
     return offset < 0
-      ? normalized
-      : `${normalized.slice(0, offset)}${qualified}${normalized.slice(offset + base.length)}`;
+      ? retainedSpelling
+      : `${retainedSpelling.slice(0, offset)}${qualified}${retainedSpelling.slice(offset + base.length)}`;
   }
-  return normalized;
+  return retainedSpelling;
 }
 
 function mapForeignType(

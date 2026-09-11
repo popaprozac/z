@@ -456,6 +456,7 @@ export type SemanticInfo = {
   readonly viewBindingOwners: ReadonlyMap<number, string>;
   readonly movedExpressions: ReadonlySet<number>;
   readonly managedCopies: ReadonlySet<number>;
+  readonly referenceIdentityComparisons: ReadonlyMap<number, { readonly leftType: string; readonly rightType: string; readonly native: boolean }>;
   readonly explicitCopies: ReadonlyMap<number, ExplicitCopyPlan>;
   readonly rawExpressions: ReadonlyMap<number, RawExpressionPlan>;
   readonly optionalChains: ReadonlyMap<number, OptionalChainPlan>;
@@ -630,6 +631,7 @@ type AnalysisState = {
   readonly connectionOrigins: Map<string, { readonly owner: string; readonly location: SourceLocation }>;
   readonly movedExpressions: Set<number>;
   readonly managedCopies: Set<number>;
+  readonly referenceIdentityComparisons: Map<number, { readonly leftType: string; readonly rightType: string; readonly native: boolean }>;
   readonly explicitCopies: Map<number, ExplicitCopyPlan>;
   readonly rawExpressions: Map<number, RawExpressionPlan>;
   readonly optionalChains: Map<number, OptionalChainPlan>;
@@ -1310,6 +1312,7 @@ export function analyze(
     connectionOrigins: new Map(),
     movedExpressions: new Set(),
     managedCopies: new Set(),
+    referenceIdentityComparisons: new Map(),
     explicitCopies: new Map(),
     rawExpressions: new Map(),
     optionalChains: new Map(),
@@ -9715,6 +9718,13 @@ function inferExpressionInner(
         return "boolean";
       }
       if (["==", "!="].includes(expression.operator)) {
+        if (referenceIdentityComparable(left, right, structs, state)) {
+          state.referenceIdentityComparisons.set(expression.location.offset, {
+            leftType: String(underlyingType(left)), rightType: String(underlyingType(right)),
+            native: Boolean(foreignObject(left, state)),
+          });
+          return "boolean";
+        }
         const leftNullableReference = nullableForeignReference(left, state);
         const rightNullableReference = nullableForeignReference(right, state);
         const leftUnsafePointer = Boolean(parseUnsafeNativeType(String(underlyingType(left))));
@@ -9734,7 +9744,7 @@ function inferExpressionInner(
         const comparableString = (parseViewType(canonicalLeft)?.target ?? canonicalLeft) === "String"
           && (parseViewType(canonicalRight)?.target ?? canonicalRight) === "String";
         if ((!comparableString && canonicalLeft !== canonicalRight) || (!isNumericType(canonicalLeft) && canonicalLeft !== "boolean" && !comparableNamed && !comparableZEnum && !comparableString)) {
-          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching numeric, boolean, String, payload-free enum, or native enum operands`);
+          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching numeric, boolean, String, payload-free enum, native enum, or compatible class-reference operands`);
         }
         return "boolean";
       }
@@ -16638,6 +16648,28 @@ function nullableForeignReference(type: ValueType, state: AnalysisState): boolea
   return foreignPointer(type, state)?.nullable === true || foreignObject(type, state)?.nullable === true;
 }
 
+// Equality borrows reference identity; it never bridges String values, invokes
+// native value equality, or makes unrelated nominal classes interchangeable.
+function referenceIdentityComparable(
+  left: ValueType,
+  right: ValueType,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  state: AnalysisState,
+): boolean {
+  const leftObject = foreignObject(left, state);
+  const rightObject = foreignObject(right, state);
+  if (leftObject || rightObject) {
+    return Boolean(leftObject && rightObject && (
+      leftObject.className === rightObject.className
+      || isObjCSubclass(leftObject, rightObject, state)
+      || isObjCSubclass(rightObject, leftObject, state)
+    ));
+  }
+  const leftType = String(underlyingType(left));
+  const rightType = String(underlyingType(right));
+  return leftType === rightType && structs.get(leftType)?.kind === "class";
+}
+
 function replaceUnderlyingType(type: ValueType, replacement: ValueType): ValueType {
   const stored = `${isBorrowedBinding(type) ? borrowedPrefix : ""}${isMutableBinding(type) ? mutablePrefix : ""}${replacement}`;
   const owned = ownershipState(type) === "moved"
@@ -20082,6 +20114,8 @@ function checkForeignCall(
   }
   let result = target.returnType.kind === "z"
     ? target.returnType.name
+    : target.returnType.kind === "object"
+    ? target.returnType.typeName
     : target.returnType.kind === "swiftString"
       ? swiftStringTypeName
     : target.returnType.kind === "named"

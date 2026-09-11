@@ -13,6 +13,8 @@ class Reader extends complete.ZSubclassFixture on thread.main {
 function main(): i32 {
   complete.z_subclass_catch_abort();
   const object = forward.ZForwardFactory.makeObject();
+  const completed: complete.ZSubclassFixture = object;
+  if (object != completed || !(completed == object)) return 90;
   // No source annotation needed to complete the forward-declared native type.
   object.configuredValue = 42;
   if (object.value() != 21 || object.configuredValue != 42) return 1;

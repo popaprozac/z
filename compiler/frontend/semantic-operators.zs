@@ -1,13 +1,16 @@
 import {
   equivalentTypes,
+  inferredTypeSymbolLocation,
   isUnresolvedExternalType,
   typeSymbolLocation,
   transparentTypeName,
 } from "./semantic-type-identities.zs";
+import { nativeObjectiveCReferenceAssignable } from "./semantic-expression-types.zs";
 import {
   isIntegerTypeName,
   isNullableTypeName,
   isNumericTypeName,
+  nullableTargetType,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import {
@@ -39,6 +42,25 @@ function invalidOperator(
     node.line,
     node.column
   );
+}
+
+function unresolvedOperatorType(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in name: String
+): boolean {
+  if (!isUnresolvedExternalType(modules, moduleIndex, name)) return false;
+  const nullable = nullableTargetType(name);
+  const target = nullable.byteLength > 0 ? copy nullable : copy name;
+  // A header namespace has no Z targetModule even when Clang metadata is
+  // present. Known object references must use the checked identity rules;
+  // preserve existing deferral for the other foreign operator tiers.
+  return match (typeSymbolLocation(modules, moduleIndex, target)) {
+    some(location) => match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+      some(signature) => signature.foreignKind != "objcInterface"
+        && signature.foreignKind != "objcSubclass" && signature.foreignKind != "objcProtocol";
+      none => true;
+    }
+    none => true;
+  };
 }
 
 function isKnownEnumType(
@@ -82,6 +104,55 @@ function flagEnumUnderlyingType(
     }
     none => return "";
   }
+}
+
+function identityClassReference(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in source: String
+): boolean {
+  if (!typeIsNativeObjCReference(modules, moduleIndex, source)) return false;
+  const target = nullableTargetType(source);
+  const actual = target.byteLength > 0 ? copy target : copy source;
+  match (inferredTypeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          // Protocol existentials have separate conformance/erasure rules;
+          // this tier agrees with Stage 0's class-reference boundary.
+          if (signature.foreignKind == "objcProtocol") return false;
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return true;
+}
+
+function referenceIdentityComparable(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in left: String,
+  in right: String
+): boolean {
+  const leftNative = identityClassReference(modules, moduleIndex, left);
+  const rightNative = identityClassReference(modules, moduleIndex, right);
+  if (leftNative || rightNative) {
+    if (!leftNative || !rightNative) return false;
+    let leftObject = copy left;
+    let rightObject = copy right;
+    const leftTarget = nullableTargetType(left);
+    const rightTarget = nullableTargetType(right);
+    if (leftTarget.byteLength > 0) leftObject = copy leftTarget;
+    if (rightTarget.byteLength > 0) rightObject = copy rightTarget;
+    return equivalentTypes(modules, moduleIndex, leftObject, rightObject)
+      || nativeObjectiveCReferenceAssignable(modules, moduleIndex, leftObject, rightObject)
+      || nativeObjectiveCReferenceAssignable(modules, moduleIndex, rightObject, leftObject);
+  }
+  if (!equivalentTypes(modules, moduleIndex, left, right)) return false;
+  return match (inferredTypeSymbolLocation(modules, moduleIndex, left)) {
+    some(location) => modules[location.moduleIndex].symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol;
+    none => false;
+  };
 }
 
 export function unaryOperatorType(
@@ -205,8 +276,8 @@ export function binaryOperatorType(
     ) return left.copyBytes(0, left.byteLength);
   }
   if (
-    isUnresolvedExternalType(modules, moduleIndex, left)
-    || isUnresolvedExternalType(modules, moduleIndex, right)
+    unresolvedOperatorType(modules, moduleIndex, left)
+    || unresolvedOperatorType(modules, moduleIndex, right)
   ) return "";
   if (operator == "&&" || operator == "||") {
     if (left == "boolean" && right == "boolean") return "boolean";
@@ -266,6 +337,7 @@ export function binaryOperatorType(
     );
   }
   if (operator == "==" || operator == "!=") {
+    if (referenceIdentityComparable(modules, moduleIndex, left, right)) return "boolean";
     const leftString = left == "String" || left == "view String";
     const rightString = right == "String" || right == "view String";
     if (leftString && rightString) {

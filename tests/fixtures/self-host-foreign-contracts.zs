@@ -17,6 +17,7 @@ import {
 import {
   NativeForeignModuleContract,
 } from "../../compiler/frontend/semantic-foreign.zs";
+import { nativeObjCObjectTypeName } from "../../compiler/frontend/semantic-type-shapes.zs";
 import {
   emitModulesC,
 } from "../../compiler/frontend/c-emitter.zs";
@@ -64,7 +65,7 @@ function inspectObjC(
   if (affinityInterface.executorAffinity != "thread.main") return 135;
   if (interface_.methods.length != 8) return 90;
   if (interface_.methods[0].selector != "addHandler:name:") return 91;
-  if (interface_.methods[0].parameters[0].typeName != "id") return 92;
+  if (interface_.methods[0].parameters[0].typeName != nativeObjCObjectTypeName) return 92;
   if (interface_.methods[0].parameters[0].protocols.length != 1) return 93;
   if (
     interface_.methods[0].parameters[0].protocols[0]

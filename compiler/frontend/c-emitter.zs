@@ -5859,6 +5859,48 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.referenceIdentity) {
+    if (declaration.expressions[index].children.length != 2 || declaration.expressions[index].labels.length != 6) {
+      throw "native C emission received malformed reference identity evidence";
+    }
+    const left = declaration.expressions[index].children[0];
+    const right = declaration.expressions[index].children[1];
+    const plain = declaration.expressions[index].labels[2] == "plain"
+      && declaration.expressions[index].labels[5] == "plain";
+    if (plain) {
+      output.append("(");
+      try appendExpression(inout output, declaration, left);
+      output.append(` ${declaration.expressions[index].value} `);
+      try appendExpression(inout output, declaration, right);
+      output.append(")");
+      return;
+    }
+    // Statement expressions are an internal Clang lowering technique, not Z
+    // syntax. They keep short-circuiting and loop conditions lazy while giving
+    // temporary references a precise evaluation/cleanup scope.
+    output.append("({ ");
+    let side: usize = 0;
+    while (side < 2) {
+      const offset = side * 3;
+      const name = side == 0 ? "_z_identity_left" : "_z_identity_right";
+      const native = declaration.expressions[index].labels[offset] == "objc";
+      const type = view declaration.expressions[index].labels[offset + 1];
+      const borrowed = declaration.expressions[index].labels[offset + 2] != "owned";
+      if (native) output.append(`__attribute__((objc_precise_lifetime)) __strong id ${name} = `);
+      else output.append(`Z_${type} *${name} = `);
+      if (!native && borrowed) output.append(`Z_${type}_retain(`);
+      const child = declaration.expressions[index].children[side];
+      try appendExpression(inout output, declaration, child);
+      if (!native && borrowed) output.append(")");
+      output.append("; ");
+      side = side + 1;
+    }
+    output.append(`bool _z_identity_result = (_z_identity_left ${declaration.expressions[index].value} _z_identity_right); `);
+    if (declaration.expressions[index].labels[3] == "class") output.append(`Z_${declaration.expressions[index].labels[4]}_release(_z_identity_right); `);
+    if (declaration.expressions[index].labels[0] == "class") output.append(`Z_${declaration.expressions[index].labels[1]}_release(_z_identity_left); `);
+    output.append("_z_identity_result; })");
+    return;
+  }
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.conditionalValue

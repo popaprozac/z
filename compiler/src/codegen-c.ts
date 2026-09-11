@@ -1,3 +1,4 @@
+import { emitReferenceIdentity, identityBorrowsStorage } from "./reference-identity-codegen.ts";
 import type {
   Expression,
   EnumDeclaration,
@@ -8245,7 +8246,9 @@ function generateIf(statement: Extract<Statement, { kind: "if" }>, context: Gene
 }
 
 function controlCondition(value: string): string {
-  return value.startsWith("(") && value.endsWith(")") ? value : `(${value})`;
+  // A Clang statement expression needs its own parentheses inside the
+  // condition's parentheses: if (({ ...; result; })), not if ({ ... }).
+  return value.startsWith("(") && !value.startsWith("({") && value.endsWith(")") ? value : `(${value})`;
 }
 
 function generateDirectValue(
@@ -11017,6 +11020,22 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       const leftType = inferExpressionType(expression.left, context);
       const rightType = inferExpressionType(expression.right, context);
+      const identity = context.semanticInfo.referenceIdentityComparisons.get(expression.location.offset);
+      if (identity) {
+        const operand = (value: Expression, type: string) => {
+          const borrowed = context.expressionOverrides.has(value.location.offset)
+            || (identityBorrowsStorage(value) && !context.semanticInfo.managedCopies.has(value.location.offset)
+              && !context.semanticInfo.movedExpressions.has(value.location.offset));
+          return {
+            value: generateExpression(value, context), borrowed,
+            plainBinding: borrowed && (value.kind === "identifier" || value.kind === "argumentReference"),
+            cType: mapType(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes),
+            retain: retainName(type), release: releaseName(type),
+          };
+        };
+        return emitReferenceIdentity(expression.operator, identity.native,
+          operand(expression.left, identity.leftType), operand(expression.right, identity.rightType));
+      }
       if (
         (expression.operator === "==" || expression.operator === "!=")
         && (parseViewType(leftType)?.target ?? leftType) === "String"

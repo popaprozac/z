@@ -1882,6 +1882,30 @@ Payload-free Z enums support `==` and `!=` by nominal tag. Payload-bearing
 enums require `match`; Z does not implicitly synthesize equality for their
 contents.
 
+Class references support `==` and `!=` by **object identity**:
+
+```z
+const first = new Session({ id: 42 });
+const alias = first;
+const other = new Session({ id: 42 });
+// first == alias is true; first == other is false.
+// Comparing them does not consume any of these bindings.
+```
+
+Z classes must have the same nominal type (transparent aliases are accepted).
+Native Objective-C class references may also compare across compatible
+base/derived types, erased `objc.Object`, and nullable/non-null forms. Null is
+still accepted only for nullable references. Unrelated classes, value structs,
+weak references, and protocol existentials do not gain implicit equality.
+There is no field comparison or hidden Objective-C `isEqual:` call.
+`String` remains a value type with UTF-8 content equality; imported `NSString`
+references use object identity and do not implicitly bridge in a comparison.
+
+Named reference comparison lowers directly to a pointer comparison. Nontrivial
+operands are evaluated left to right with lifetime-safe snapshots; owned
+temporaries are released after comparison, including in short-circuit and loop
+conditions. An explicit `move` still consumes its operand.
+
 An expression arm may be concise or use a block with `select value`. `return`
 and `throw` always target the enclosing function. `yield` is reserved for
 generators rather than overloaded for match blocks.

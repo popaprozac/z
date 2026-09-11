@@ -827,15 +827,13 @@ conditions; they do not modify the user's system preferences. AppKit may first
 maximize a moved nonstandard frame again; tests preserve that native decision
 and verify the eventual restore, rather than require a one-click policy.
 
-**Pending design gate:** the stale-display-link check needs native reference
-identity comparison. Current Z equality accepts native references against null,
-not against another native reference. No new operator semantics or `std/objc`
-helper has been selected. Value equality (`isEqual:`) is not an identity guard.
-The controller keeps its prior invalidation/inactive-source checks, but Zapp
-cutover is deferred until the active-source identity guard and its negative
-regression are implemented. User visual validation passed for the preceding
-WebView checkpoint; real framework menu/delegate/constraint/shutdown validation
-remains next, not implied by these geometry tests.
+**Resolved design gate:** `==`/`!=` compare compatible class references by object
+identity, non-consumingly and without an `isEqual:` dispatch. The controller now
+checks `link != active`. A thirteenth scenario manually delivers a distinct,
+unscheduled display link while a real animation is active and verifies that
+the stale source cannot advance or cancel it. Zapp cutover is the next step;
+framework menu/delegate/constraint/shutdown validation is not implied by the
+standalone geometry or WebView checks.
 
 ## References
 

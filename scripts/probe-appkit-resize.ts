@@ -142,6 +142,20 @@ function main(): i32 {
     window.resize(enlarged, true, true);
     if (window.isAnimating() || !sameFrame(window.frame, enlarged) || window.displayCallbacks() != 0) return 111;
     window.setFrame(original, true);
+  } else if (scenario == 12) {
+    // A different native link represents a late callback from an old source.
+    // Never schedule it: only the controller's current link may move the frame.
+    const stale = window.displayLinkWithTarget(window, selector: objc.selector(SmoothWindow.onDisplay));
+    window.resize(enlarged, true, true);
+    if (!window.isAnimating()) return 121;
+    const before = window.frame;
+    const callbacks = window.displayCallbacks();
+    window.onDisplay(stale);
+    if (!sameFrame(window.frame, before) || !window.isAnimating()) return 122;
+    if (window.displayCallbacks() != callbacks + 1) return 123;
+    pump(0.5);
+    if (!sameFrame(window.frame, enlarged) || window.isAnimating()) return 124;
+    window.setFrame(original, true);
   }
   pump(0.5);
   if (!sameFrame(window.frame, expected) || window.isAnimating()) {
@@ -245,7 +259,7 @@ try {
         "-fsanitize=undefined", "-fno-sanitize-recover=all", "-I", resolve(root, "tests/fixtures"),
         "-framework", "AppKit", "-framework", "QuartzCore", "-framework", "WebKit",
         generated, resolve(root, "tests/fixtures/objc-subclass.m"), "-o", executable]);
-      for (const scenario of webview ? [0] : reduced ? [6] : [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11]) {
+      for (const scenario of webview ? [0] : reduced ? [6] : [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]) {
         const result = spawnSync(executable, [], { encoding: "utf8", timeout: webview ? 15_000 : 8_000, killSignal: "SIGKILL",
           env: { ...process.env, Z_SUBCLASS_ACCESS_SCENARIO: String(scenario) } });
         assert.equal(result.status, 0, `${native ? "native" : "stage0"} ${optimization} scenario ${scenario}: ${result.stdout} ${result.stderr} ${result.error ?? ""}`);

@@ -73,7 +73,8 @@ The GUI matrix covers completion/idle cleanup, retargeting, immediate interrupti
 normal zoom/restore, interrupted zoom/restore, close during animation, and forced
 Reduce Motion. It also checks intended zoom state, saved restore geometry after
 moving a maximized window, subsequent manual size changes, no-op transitions,
-Reduce Motion enabled during a resize, and a missing-screen path. Moving a
+Reduce Motion enabled during a resize, a missing-screen path, and a stale
+display-link callback while a newer animation is active. Moving a
 maximized window may make AppKit consider it nonstandard: the next zoom can
 maximize again before a later zoom restores. The controller preserves that
 native target choice rather than imposing a different toggle rule.
@@ -86,13 +87,12 @@ return from `app.run()`. Its children have a fifteen-second deadline. Both check
 run debug and optimized code. Sandboxed
 processes without WindowServer access cannot supply useful GUI evidence.
 
-The user has visually confirmed the responsive WebView implementation. Before
-Zapp integration, one correctness gate remains: reject a callback from a replaced
-display link by **object identity**, even while another transition is active.
-Z currently supports native-reference/null comparison, but not comparison between
-two native object references. The spelling and general equality rule require
-language-design agreement; the example does not substitute `isEqual:` or a raw
-pointer shim. The inactive-link check is present, but is not that identity guard.
+The user has visually confirmed the responsive WebView implementation. The
+controller uses `link != active` to reject a callback from a replaced display
+link by **object identity**, even while another transition is active. Comparison
+does not consume either reference or invoke native `isEqual:` value equality.
+The stale-source regression delivers a distinct unscheduled link and verifies
+that it neither advances nor cancels the current animation.
 
 Then: Zapp integration and its menu/delegate/constraint/shutdown tests.
 Fullscreen/Spaces, tiling, titlebar drag during an active animation, mixed-refresh

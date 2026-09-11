@@ -15,6 +15,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
     timeoutMilliseconds: 60_000,
     files: [
       "tests/language-core.test.ts",
+      "tests/reference-identity.test.ts",
       "tests/callback-nonescape.test.ts",
       "tests/module-constants.test.ts",
       "tests/stdlib-sync.test.ts",
