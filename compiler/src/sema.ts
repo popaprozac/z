@@ -1189,6 +1189,22 @@ export function analyze(
     if (module.objectiveC) objectiveC = true;
     if (module.cPlusPlus) cPlusPlus = true;
   }
+  // A header may only @class-declare a returned object. If another imported
+  // header defines that same native class, its checked members are available
+  // through the inferred return type too. Do not merge competing full
+  // definitions or replace module-specific contracts on a defined interface.
+  const definedObjCInterfaces = new Map<string, ForeignObjCInterface>();
+  for (const declaration of foreignInterfaces.values()) {
+    if (declaration.superName || declaration.methods.length || declaration.properties.length) {
+      if (!definedObjCInterfaces.has(declaration.className)) definedObjCInterfaces.set(declaration.className, declaration);
+    }
+  }
+  for (const [name, declaration] of foreignInterfaces) {
+    if (!declaration.superName && !declaration.methods.length && !declaration.properties.length) {
+      const definition = definedObjCInterfaces.get(declaration.className);
+      if (definition) foreignInterfaces.set(name, definition);
+    }
+  }
   if (program.imports.some((declaration) => declaration.header === "std/objc")) {
     objectiveC = true;
     frameworks.add("Foundation");

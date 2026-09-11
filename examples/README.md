@@ -206,6 +206,7 @@ support or producing language-server diagnostics from hypothetical imports.
 
 - [`nswindow.zs`](interop/objc/nswindow.zs), [`objc-nullability.zs`](interop/objc/objc-nullability.zs), and [`appkit-events.zs`](interop/objc/appkit-events.zs)
 - [`desktop-ownership`](interop/objc/desktop-ownership): application-shaped ownership and view probes
+- [`smooth-window`](interop/objc/smooth-window): real native subclass with display-driven zoom/restore, checked selector registration, and explicit callback cleanup (macOS 14+ visual probe)
 - [`swift-interop`](interop/swift/swift-interop): Swift class through a generated Objective-C header
 - [`swift-task-scope`](interop/swift/swift-task-scope): Swift global-queue callbacks through generated Objective-C blocks, `.zd` async projection, bounded Z runtime entry, synchronized application-root access, and structured publication on `thread.main`
 - [`swift-value-interop`](interop/swift/swift-value-interop): Swift value and owned string return through a generated C++ header

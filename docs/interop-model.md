@@ -844,6 +844,20 @@ escaping field loans, async overrides, and native-object thread transfer remain
 unimplemented; ordinary header imports and protocol adaptation do not depend on
 this new tier.
 
+The [display-driven window probe](../examples/interop/objc/smooth-window/README.md)
+combines private native state, a checked `objc.selector`, superclass reentry,
+retargeting, and explicit display-link invalidation in one Z implementation.
+AppKit's forward-declared `CADisplayLink` return gains its checked members when
+the complete QuartzCore header is imported, without a return annotation or cast.
+Both frontends compare selector object parameters by native class identity across
+imports, preserving nullability and passing capabilities. Existing full interface
+contracts are not merged or replaced by this forward-declaration completion.
+The executable demo uses `NSApplication.run`, not a Foundation-only run-loop
+pump. Its retained close observer stops/wakes that loop so Z cleanup runs after
+the window closes. `objc.register` applies normal string bridging to native
+registration arguments and retains their native values for teardown; converting
+an owned Z `String` to `NSString` does not consume its source binding.
+
 The default Objective-C experience remains header-first. Importing AppKit is
 enough for ordinary nominal types, class and instance methods, properties,
 constants, nullability, ARC identity, and block parameters:

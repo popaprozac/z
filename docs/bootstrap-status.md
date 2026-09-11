@@ -161,8 +161,8 @@ main-executor context, and known constructing/dying aliases are checked.
 Registration also checks Ready before exposing the target to native retention;
 the selector itself emits `@selector(...)`, with no closure environment.
 Bare/stored selectors remain rejected at this boundary. Explicit invalidation
-still owns shutdown and cycle breaking; live display-link integration and
-escaping field loans/captures remain separate work.
+still owns shutdown and cycle breaking; the display-link probe below exercises
+that path. Escaping field loans/captures remain separate work.
 
 Checked superclass delegation (2026-09-11) now releases only the current
 entry's receiver access around a synchronous full-expression `super` call with
@@ -185,6 +185,23 @@ async overrides remain rejected. Main-isolated helpers mixing timers with
 child awaits, main-isolated `scheduler.yield`, direct timer awaits in native
 `main`, and direct named-task creation outside the native callable-task tier
 remain separate native async composition work; this is not general async parity.
+
+The real [display-link resize probe](../examples/interop/objc/smooth-window/README.md)
+now builds in both compilers. It also closed two cross-header composition gaps:
+an inferred forward-declared Objective-C return can use the complete class from
+another imported header, and native selector matching uses canonical class
+identity rather than import-local symbol slots. Nullability, receiver identity,
+and callback capabilities stay checked. Full definitions retain their own
+contracts; this is not a merge of conflicting header contracts.
+Both emitters pass the seven-case bounded AppKit geometry/cleanup matrix at
+`-O0`/`-O2`, including interrupted zoom/restore and Reduce Motion. A separate real
+WebView check exercises page readiness, intermediate viewport layouts, and clean
+shutdown through `NSApplication.run`. The demo's earlier Foundation-only run-loop
+pump was insufficient for interactive AppKit dispatch and has been replaced.
+Native `objc.register` now applies contextual `String` to `NSString` conversion
+to stored arguments; that conversion copies rather than consuming the Z string.
+Visual feedback and Zapp integration remain next; these tests do not establish
+presentation FPS.
 
 Erased Objective-C identity is source-nameable as `objc.Object` from `std/objc`
 in both frontends. The non-null and `| null` forms share the importer's native

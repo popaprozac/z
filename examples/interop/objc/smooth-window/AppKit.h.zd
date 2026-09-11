@@ -1,0 +1,9 @@
+declare module "AppKit/AppKit.h" {
+  export function NSWindow.displayLinkWithTarget(target: _, selector: _): _ {
+    callback selector {
+      target target;
+      type (in link: CADisplayLink) => void on thread.main;
+      invoked repeatedly;
+    }
+  }
+}

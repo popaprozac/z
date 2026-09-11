@@ -12873,14 +12873,33 @@ function lowerExpressionContextual(
       let argumentIndex: usize = 0;
       while (argumentIndex + 1 < tree.nodes[addCall].children.length) {
         const argumentInput = tree.nodes[addCall].children[argumentIndex + 1];
-        let value = try lowerExpression(
-          program,
-          importedTypes,
-          evidence,
-          tree,
-          argumentInput,
-          inout output
-        );
+        // Registration helpers receive the native add-method ABI. Preserve
+        // ordinary contextual conversions (notably String -> NSString) before
+        // the helper retains arguments for the matching remove operation.
+        let value: usize = 0;
+        if (
+          argumentIndex != plan.handlerParameter
+          && argumentIndex < addParameterTypes.length
+        ) {
+          value = try lowerExpressionExpected(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            argumentInput,
+            addParameterTypes[argumentIndex],
+            inout output
+          );
+        } else {
+          value = try lowerExpression(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            argumentInput,
+            inout output
+          );
+        }
         if (
           argumentIndex != plan.handlerParameter
           && argumentIndex < addParameterTypes.length

@@ -1,0 +1,9 @@
+declare module "./objc-forward.h" {
+  export function ZForwardFactory.registerTarget(target: _, selector: _): _ {
+    callback selector {
+      target target;
+      type (in object: ZSubclassFixture) => i32 on thread.main;
+      invoked repeatedly;
+    }
+  }
+}

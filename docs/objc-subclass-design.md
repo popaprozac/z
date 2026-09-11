@@ -236,9 +236,9 @@ cannot silently invent superclass dispatch. No adapter or closure is allocated.
 The independent native emitter and Stage 0 each pass 200 lifecycle iterations
 at `-O0` and `-O2` under strict Clang/UBSan. Expected construction, teardown,
 wrong-thread, and conflicting reentry traps are caught without crash reports.
-An actual AppKit subclass with a borrowed `CADisplayLink` callback passes
-compile-only validation; live display-link run-loop integration is a separate
-application pressure test.
+An actual AppKit subclass with a borrowed `CADisplayLink` callback also passes
+compile-only validation. Live display-link and WebView integration are covered
+by the later [application checkpoint](#display-link-integration-checkpoint-2026-09-11).
 
 ## Approved state and lifecycle direction (2026-09-10)
 
@@ -786,6 +786,28 @@ and string literals remain accepted. This protects internal ABI hygiene, not a
 sandbox against arbitrary raw native code. Owned-field initialization/cleanup,
 reentrant field loans, and production Zapp integration remain separate
 implementation/validation checkpoints under the approved lifecycle direction.
+
+## Display-link integration checkpoint (2026-09-11)
+
+The [real Z controller](../examples/interop/objc/smooth-window/README.md) now
+combines the approved native subclass, private state, checked selector, and
+superclass handoff. Both emitters pass seven bounded AppKit geometry/cleanup
+scenarios at `-O0` and `-O2`, including interrupted zoom/restore, immediate
+interruption, close, and Reduce Motion. Forward-declared return objects and
+selector signatures now compose across AppKit/QuartzCore imports using the
+existing native class identity, with no new language surface.
+The actual WebView path is checked separately for readiness, intermediate
+viewport layout, and clean `NSApplication.run` shutdown in both emitters and
+optimization modes. The user-caught unresponsive demo exposed an inadequate
+Foundation-only event-loop harness, not a reason to accept geometry tests as
+proof of an interactive application.
+
+This supersedes the earlier integration-blocker notes as a progress checkpoint,
+not as a claim that every native async shape is implemented. Zapp still creates
+ordinary NSWindow instances. User visual validation and the real framework's
+delegate/constraint/shutdown integration are next. System-owned transitions and
+event coalescing remain distinct work. See the current ownership-pressure log
+for surfaced cross-header record and native lowering limitations.
 
 ## References
 

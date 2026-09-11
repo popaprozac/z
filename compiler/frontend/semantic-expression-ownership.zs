@@ -163,8 +163,8 @@ export function consumeOwnedExpressionNode(
     module, modules, moduleIndex, typeName,
     tree.nodes[index].line, tree.nodes[index].column
   );
-  // Contextual NSString -> String conversion creates fresh owned Z storage.
-  // The source Objective-C reference is observed, not moved out of its owner.
+  // Contextual NSString <-> String conversion creates fresh owned storage.
+  // The source reference/string is observed, not moved out of its owner.
   if (expressionCopiesObjectiveCString(bindings, tree.nodes[index].offset)) return;
   if (!force && !typeMovesOnOwnedUse(modules, moduleIndex, typeName)) return;
   const kind = tree.nodes[index].kind;

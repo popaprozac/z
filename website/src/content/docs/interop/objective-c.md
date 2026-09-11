@@ -35,6 +35,13 @@ namespace that surfaced it. If Foundation and a vendor header both mention
 introduced. A non-null Z `String` can satisfy either a non-null or nullable
 `NSString` argument while remaining non-null itself.
 
+An inferred object returned through a forward declaration gains its checked
+members when you import the complete class header. For example, AppKit returns
+`CADisplayLink`, while `QuartzCore/CADisplayLink.h` defines its run-loop methods.
+You do not need a cast or a redundant local type annotation. Selector callback
+signatures also recognize the same native class across these imports, without
+weakening nullability or capability checks.
+
 ## ARC identity remains explicit
 
 Imported Objective-C objects behave as shared reference identities. Assigning
@@ -111,7 +118,9 @@ For this checked synchronous full-expression delegation, the compiler keeps a
 strong ARC snapshot of `sender`, then releases only the current receiver entry's
 access. It restores access before releasing the snapshot. Native reentry can
 therefore reach a guarded override without turning the sender into an escaping
-storage loan. Async native-subclass composition remains separate work.
+storage loan. Synchronous native subclasses can also live in supported async
+task frames; their methods do not become async and native-object thread transfer
+stays restricted.
 
 String bridging also composes with conditional values:
 
@@ -243,6 +252,16 @@ cycle that prevents `deinit` from running, and Z does not infer native shutdown
 methods from an object's type.
 See the [stateful compiler fixture](https://github.com/popaprozac/z/blob/main/tests/fixtures/objc-subclass.zs)
 for construction, replacement, and cleanup examples.
+
+For an application-shaped example, the
+[display-driven window probe](https://github.com/popaprozac/z/tree/main/examples/interop/objc/smooth-window)
+implements an AppKit zoom/restore controller in Z, with private geometry state,
+checked display-link registration, retargeting, and explicit close-time
+invalidation. It uses AppKit's full application event loop and removes its close
+observer after the loop returns. Bounded tests in both compilers cover native
+geometry/cleanup and real WebView readiness, intermediate viewport layout, and
+shutdown. Visual presentation quality and framework integration remain separate
+from those tests.
 
 ### New native callback methods
 

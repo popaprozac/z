@@ -143,7 +143,7 @@ import {
 } from "./semantic-expression-ownership.zs";
 import {
   isContextualNumericLiteral,
-  isNativeObjectiveCStringType,
+  nativeObjectiveCStringConversionCopiesSource,
   nativeBorrowedCallbackType,
   requireExpressionSyntaxType,
   requireExpressionType,
@@ -4086,10 +4086,9 @@ function inferExpressionNodeTypeExpected(
     tree.nodes[index].offset
   );
   copyBindingFlowStates(inout bindings, expressionBindings);
-  if (
-    expectedType == "String"
-    && isNativeObjectiveCStringType(modules, moduleIndex, inferred)
-  ) markObjectiveCStringCopy(inout bindings, tree.nodes[index].offset);
+  if (nativeObjectiveCStringConversionCopiesSource(
+    modules, moduleIndex, expectedType, inferred
+  )) markObjectiveCStringCopy(inout bindings, tree.nodes[index].offset);
   if (viewOwner.byteLength > 0) {
     setExpressionViewOrigin(
       inout bindings,
@@ -11154,10 +11153,9 @@ function inferExpressionTypeExpected(
         tree.nodes[root].offset
       );
       copyBindingFlowStates(inout bindings, expressionBindings);
-      if (
-        expectedType == "String"
-        && isNativeObjectiveCStringType(modules, moduleIndex, inferred)
-      ) markObjectiveCStringCopy(inout bindings, tree.nodes[root].offset);
+      if (nativeObjectiveCStringConversionCopiesSource(
+        modules, moduleIndex, expectedType, inferred
+      )) markObjectiveCStringCopy(inout bindings, tree.nodes[root].offset);
       if (viewOwner.byteLength > 0) {
         setExpressionViewOrigin(
           inout bindings,

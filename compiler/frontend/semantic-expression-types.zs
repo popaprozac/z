@@ -251,6 +251,23 @@ export function isNativeObjectiveCStringType(
   }
 }
 
+export function nativeObjectiveCStringConversionCopiesSource(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in expected: String,
+  in actual: String
+): boolean {
+  if (expected == "String") return isNativeObjectiveCStringType(
+    modules, moduleIndex, actual
+  );
+  if (actual != "String") return false;
+  const nullableTarget = nullableTargetType(expected);
+  if (nullableTarget.byteLength > 0) return isNativeObjectiveCStringType(
+    modules, moduleIndex, nullableTarget
+  );
+  return isNativeObjectiveCStringType(modules, moduleIndex, expected);
+}
+
 function nativeObjectiveCReferenceAssignable(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

@@ -7914,6 +7914,90 @@ Next: use this bounded composition in the AppKit display-link controller and
 measure the real resize path before broadening unrelated async shapes. Keep the
 four native async follow-ups above visible for the next async-completeness pass.
 
+### Display-link window controller and cross-header identity (2026-09-11)
+
+Consumer: `examples/interop/objc/smooth-window`, before Zapp integration. Its
+native subclass holds start/target geometry and a nullable strong display link.
+It uses the agreed checked selector and superclass receiver handoff; no new
+public API, syntax, raw block, or production Objective-C shim was added.
+Completion, replacement, immediate frame writes, and close invalidate and clear
+the link. `deinit` alone cannot break a link retaining its own target.
+
+The implementation keeps the measured simple interpolation policy. Interrupted
+zoom presents the previous intended frame to AppKit's native zoom logic, then
+interpolates from the preceding visible frame. This avoids the earlier
+delegate-only probe's failed restoration. Reduce Motion bypasses animation.
+The manual example disables fullscreen; system-owned transitions need separate
+integration tests, not an assumption that every animated frame request is ours.
+
+Required upstream gaps were fixed:
+
+- AppKit returns a forward-declared `CADisplayLink`. An inferred local could
+  not find `addToRunLoop` despite the QuartzCore import. Both checkers now
+  complete empty forward interfaces from an imported definition of the same
+  native class. Full definitions and their contracts remain attached to their
+  original imports; this is not category/contract merging.
+- Native selector compatibility compared import-local symbol coordinates,
+  rejecting AppKit's callback contract against QuartzCore's identical class.
+  It now uses existing canonical type identity, retaining nullability, parameter
+  modes, and distinct source-subclass identities. Wrong classes/targets fail.
+- Native `objc.register` lowered non-handler arguments without contextual
+  conversion, passing `Z_String` to an `NSString *` helper parameter. It now
+  uses ordinary expected-type lowering before storing add-time values. The
+  accompanying named-string regression also caught the native checker marking
+  that copy conversion as an ownership move; both string-bridge directions now
+  preserve the source owner. Literal and named-string registrations run after
+  the setup helper returns and unregister using their retained native values.
+
+The independent two-header oracle consumes raw Clang streams and `.zd` source,
+then checks/emits in Z. Both import orders execute through both compilers at
+`-O0`/`-O2` with strict Clang/UBSan (eight native runs). Inferred methods,
+properties, and selector registration work; missing definitions, wrong classes,
+nullable entries, and wrong targets remain rejected. A headless test additionally
+checks real AppKit compilation and exact interpolation endpoints/midpoints.
+
+The GUI matrix passed seven cases through both emitters at `-O0`/`-O2` (28 bounded
+executions): complete/idle, retarget, immediate interruption, normal zoom/restore,
+interrupted zoom/restore, close during transition, and forced Reduce Motion.
+Test-only inputs do not change system settings. A sandboxed attempt produced a
+1-point ordered window and no ticks; only the rerun with WindowServer access is
+valid GUI evidence. No ASan was used. These are geometry and stopped-callback
+checks, not WebKit presentation FPS or user visual confirmation.
+
+The user's manual run then exposed an important hole in that validation: the
+window appeared, became unresponsive, and went white. The initial demo pumped
+`NSRunLoop.runUntilDate`, which exercised display sources but did not run full
+AppKit event dispatch. The demo now uses `NSApplication.run`, a retained close
+notification observer, and stop/wake on close, followed by observer removal.
+The dedicated `--webview` regression runs the actual demo event-loop path, waits
+for page JavaScript, observes intermediate viewport widths and edge layout,
+closes from the callback, and checks that `main` regains control. Both compilers
+pass at `-O0`/`-O2` with strict Clang/UBSan and bounded children. One early
+optimized Stage 0 attempt hit its fifteen-second deadline before readiness
+logging was added; subsequent instrumented runs passed. Keep the bounded
+diagnostics, and do not infer compositor FPS or eliminate the user visual gate
+from a successful DOM/layout check. No ASan or unbounded GUI process is used.
+
+Validation: 24 unique targeted tests across eight suites pass, plus the repeated
+real-WebView debug/optimized runs through both compilers. The named-string
+regression also rejects a previously moved source. The fresh native bootstrap
+reaches 11,736,190 byte-identical C bytes, and builds the actual example. Tier
+coverage, diff checks, and the 33-page documentation website build pass. This
+is a focused checkpoint, not a full-suite or performance benchmark result.
+
+Other surfaced native parity limits remain explicit: AppKit `NSRect` is still
+distinguished from WebKit `CGRect` at a cross-header call (the example spells
+each API's own record); direct native `console.log(f64)` is not the accepted
+String logging path; nested `try` call arguments remain outside direct native
+lowering. None required changing the controller algorithm or a framework shim.
+Keep these with the general native parity backlog.
+
+Next: user visual comparison, then Zapp's real delegate/constraint/shutdown
+integration. Titlebar drag interruption, fullscreen/Spaces, tiling, mixed-refresh
+screens, and accessibility changes during an active transition need targeted
+evidence. Event coalescing or a public animation knob still require deliberation.
+Zapp production behavior is unchanged here.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

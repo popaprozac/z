@@ -4,6 +4,7 @@ import {
   valueBindingType,
 } from "./semantic-flow-state.zs";
 import {
+  ModuleSymbolLocation,
   inferredTypeSymbolLocation,
   rebaseTypeName,
   typeSymbolLocation,
@@ -28,6 +29,42 @@ import {
   ExpressionTree,
   TypeParameter,
 } from "./parser.zs";
+
+function memberTypeSymbolLocation(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in ownerType: String
+): Option<ModuleSymbolLocation> {
+  const location = match (inferredTypeSymbolLocation(modules, moduleIndex, ownerType)) {
+    some(value) => value;
+    none => return Option<ModuleSymbolLocation>.none;
+  };
+  match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+    some(signature) => {
+      if (signature.foreignKind != "objcInterface" || signature.foreignObjCSuperName.byteLength > 0
+        || signature.methods.length > 0 || signature.fields.length > 0) return Option.some(location);
+      // Complete an @class reference only; keep existing full definitions and
+      // their contracts attached to their original import.
+      let candidateModule: usize = 0;
+      while (candidateModule < modules.length) {
+        let candidateSymbol: usize = 0;
+        while (candidateSymbol < modules[candidateModule].symbols.length) {
+          match (in modules[candidateModule].symbols[candidateSymbol].typeSignature) {
+            some(candidate) => {
+              if (candidate.foreignKind == "objcInterface" && candidate.foreignNativeName == signature.foreignNativeName
+                && (candidate.foreignObjCSuperName.byteLength > 0 || candidate.methods.length > 0 || candidate.fields.length > 0)) {
+                return Option.some(ModuleSymbolLocation({ moduleIndex: candidateModule, symbolIndex: candidateSymbol }));
+              }
+            }
+            none => {}
+          }
+          candidateSymbol = candidateSymbol + 1;
+        }
+        candidateModule = candidateModule + 1;
+      }
+    }
+    none => {}
+  }
+  return Option.some(location);
+}
 
 export struct NativeMatchVariant {
   name: String;
@@ -424,7 +461,7 @@ export function aggregateFieldShape(
     }
     none => {}
   }
-  match (inferredTypeSymbolLocation(modules, moduleIndex, ownerType)) {
+  match (memberTypeSymbolLocation(modules, moduleIndex, ownerType)) {
     some(location) => {
       match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
         some(signature) => {
@@ -503,7 +540,7 @@ export function objectiveCClassPropertyShape(
   in ownerType: String,
   in propertyName: String
 ): Option<NativeFieldShape> {
-  match (inferredTypeSymbolLocation(modules, moduleIndex, ownerType)) {
+  match (memberTypeSymbolLocation(modules, moduleIndex, ownerType)) {
     some(location) => {
       match (in modules[location.moduleIndex].symbols[
         location.symbolIndex
@@ -757,7 +794,7 @@ export function methodCallShape(
     }
     none => {}
   }
-  match (inferredTypeSymbolLocation(modules, moduleIndex, ownerType)) {
+  match (memberTypeSymbolLocation(modules, moduleIndex, ownerType)) {
     some(location) => {
       match (
         in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature

@@ -3,7 +3,7 @@ import { ExpressionKind, ExpressionTree } from "./parser.zs";
 import { ModuleResolveError, ModuleResolveErrorKind, ModuleSemanticEvidence, ModuleObjCSelectorResolution, ResolvedModule, codedModuleResolutionError } from "./semantic-model.zs";
 import { NativeValueBinding, valueBindingType, valueBindingClassAlias } from "./semantic-flow-state.zs";
 import { NativeMethodCallShape, callableMethodCallShape, activeOwnerMatchesMethod, typeExpressionName } from "./semantic-member-lookups.zs";
-import { typeSymbolLocation, transparentTypeName } from "./semantic-type-identities.zs";
+import { typeSymbolLocation, equivalentTypes } from "./semantic-type-identities.zs";
 import { nativeObjCSubclassBase } from "./semantic-objc-subclasses.zs";
 import { expressionStorageRootName } from "./semantic-expression-ownership.zs";
 import { requireNativeAvailability } from "./semantic-native-availability.zs";
@@ -13,12 +13,10 @@ function selectorError(in module: ParsedModule, in tree: ExpressionTree, index: 
 }
 
 function sameType(in modules: Array<ResolvedModule>, moduleIndex: usize, in leftSource: String, in rightSource: String): boolean {
-  const left = transparentTypeName(modules, moduleIndex, leftSource);
-  const right = transparentTypeName(modules, moduleIndex, rightSource);
-  if (left == right) return true;
-  const leftLocation = match (typeSymbolLocation(modules, moduleIndex, left)) { some(value) => value; none => return false; };
-  const rightLocation = match (typeSymbolLocation(modules, moduleIndex, right)) { some(value) => value; none => return false; };
-  return leftLocation.moduleIndex == rightLocation.moduleIndex && leftLocation.symbolIndex == rightLocation.symbolIndex;
+  // One Objective-C class can be visible through several header imports.
+  // Compare native identity, preserving nullability and source-subclass identity,
+  // rather than requiring both names to occupy the same module symbol slot.
+  return equivalentTypes(modules, moduleIndex, leftSource, rightSource);
 }
 
 // Only an inline declaration reference gets evidence. Ordinary SEL values and
