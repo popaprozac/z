@@ -159,9 +159,9 @@ export function nativeObjCSubclassInheritedMethods(
 function validateOverrideShape(
   in module: ParsedModule, in method: FunctionDeclaration
 ): void throws ModuleResolveError {
-  if (!method.overrideMethod || method.objectiveCSelector.byteLength == 0) {
+  if (method.objectiveCSelector.byteLength == 0) {
     throw subclassError(module,
-      "a native subclass method requires `override function` and an explicit `as \"selector:\"`",
+      "a native subclass method requires an explicit `as \"selector:\"`",
       method.line, method.column);
   }
   let throwing = false;
@@ -176,6 +176,81 @@ function validateOverrideShape(
   if (runtimeSelector(method.objectiveCSelector)) throw subclassError(module,
     `native lifecycle or runtime selector "${method.objectiveCSelector}" cannot be overridden in the first tier`,
     method.line, method.column);
+}
+
+function newEntryABI(
+  in module: ParsedModule, in modules: Array<ResolvedModule>, moduleIndex: usize,
+  in sourceName: String, result: boolean, line: usize, column: usize
+): String throws ModuleResolveError {
+  const name = transparentTypeName(modules, moduleIndex, sourceName);
+  if (name == "void" && result) return "void";
+  if (name == "boolean") return "bool";
+  if (name == "i8") return "int8_t";
+  if (name == "u8") return "uint8_t";
+  if (name == "i16") return "int16_t";
+  if (name == "u16") return "uint16_t";
+  if (name == "i32") return "int32_t";
+  if (name == "u32") return "uint32_t";
+  if (name == "i64") return "int64_t";
+  if (name == "u64") return "uint64_t";
+  if (name == "isize") return "intptr_t";
+  if (name == "usize") return "uintptr_t";
+  if (name == "f32") return "float";
+  if (name == "f64") return "double";
+  const nullable = nullableTargetType(name);
+  const location = match (typeSymbolLocation(modules, moduleIndex, name)) {
+    some(value) => value;
+    none => ModuleSymbolLocation({ moduleIndex: modules.length, symbolIndex: 0 });
+  };
+  if (location.moduleIndex < modules.length) {
+    match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+      some(signature) => {
+        if (signature.foreignKind == "enum" || signature.foreignKind == "scalar") return copy signature.foreignNativeName;
+        if (!result && signature.foreignKind == "objcInterface"
+          && signature.foreignNativeName.byteLength > 0 && nullable.byteLength == 0) {
+          return `${signature.foreignNativeName} *`;
+        }
+      }
+      none => {}
+    }
+  }
+  throw subclassError(module,
+    "new native entries support scalar/native-enum values, borrowed concrete imported object parameters, and void returns", line, column);
+}
+
+function validateNewEntry(
+  in module: ParsedModule, in modules: Array<ResolvedModule>, moduleIndex: usize,
+  in method: FunctionDeclaration
+): void throws ModuleResolveError {
+  let labels: usize = 0;
+  let labelLength: usize = 0;
+  let index: usize = 0;
+  while (index < method.objectiveCSelector.byteLength) {
+    const byte = method.objectiveCSelector.byteAt(index);
+    if (byte == 58) {
+      if (labelLength == 0) throw subclassError(module, "new native selector labels must match the declared parameter count", method.line, method.column);
+      labels = labels + 1;
+      labelLength = 0;
+    } else {
+      const valid = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95
+        || (labelLength > 0 && byte >= 48 && byte <= 57);
+      if (!valid) throw subclassError(module, "new native selector labels must match the declared parameter count", method.line, method.column);
+      labelLength = labelLength + 1;
+    }
+    index = index + 1;
+  }
+  if (labels != method.parameters.length || (labels > 0 && labelLength > 0) || index == 0) {
+    throw subclassError(module, "new native selector labels must match the declared parameter count", method.line, method.column);
+  }
+  const result = try newEntryABI(module, modules, moduleIndex, method.returnType.name, true, method.returnType.line, method.returnType.column);
+  for (const parameter of method.parameters) {
+    const abi = try newEntryABI(module, modules, moduleIndex, parameter.type.name, false, parameter.line, parameter.column);
+    const typeName = transparentTypeName(modules, moduleIndex, parameter.type.name);
+    const object = nativeObjectType(modules, moduleIndex, typeName);
+    if ((object && parameter.mode != ParameterMode.input) || (!object && parameter.mode != ParameterMode.value)) {
+      throw subclassError(module, "new native entry parameter has incompatible passing capability; objects require in and scalar values require value passing", parameter.line, parameter.column);
+    }
+  }
 }
 
 function validateOverrideContract(
@@ -406,10 +481,15 @@ function validateNativeObjCSubclassDeclaration(
     for (const native of methods) {
       if (native.objectiveCSelector != method.objectiveCSelector) continue;
       found = true;
+      if (!method.overrideMethod) throw subclassError(module,
+        `inherited selector "${method.objectiveCSelector}" requires \`override function\``, method.line, method.column);
       try validateOverrideContract(module, modules, moduleIndex, method, native);
     }
-    if (!found) throw subclassError(module,
-      `no inherited Objective-C instance selector "${method.objectiveCSelector}"`, method.line, method.column);
+    if (!found) {
+      if (method.overrideMethod) throw subclassError(module,
+        `no inherited Objective-C instance selector "${method.objectiveCSelector}"`, method.line, method.column);
+      try validateNewEntry(module, modules, moduleIndex, method);
+    }
   }
   for (const call of superclassCalls) {
     try validateSuperclassCallContract(module, call, methods);
@@ -482,8 +562,10 @@ export function prepareNativeObjCSubclassTypes(
       let methodIndex: usize = 0;
       while (methodIndex < signature.methods.length) {
         const selector = copy signature.methods[methodIndex].objectiveCImplementationSelector;
+        let inherited = false;
         for (const native of methods) {
           if (native.objectiveCSelector != selector) continue;
+          inherited = true;
           let method = copy native;
           method.name = copy signature.methods[methodIndex].name;
           method.receiverMode = copy signature.methods[methodIndex].receiverMode;
@@ -491,6 +573,22 @@ export function prepareNativeObjCSubclassTypes(
           method.objectiveCImplementationSelector = copy selector;
           signature.methods[methodIndex] = move method;
           break;
+        }
+        if (!inherited) {
+          let method = copy signature.methods[methodIndex];
+          method.objectiveCSelector = copy selector;
+          method.objectiveCNativeReturnType = try newEntryABI(module, modules, moduleIndex,
+            method.signature.returnType, true, aggregate.line, aggregate.column);
+          method.objectiveCNativeResultType = copy method.signature.returnType;
+          method.objectiveCParameterNativeTypes = Array<String>();
+          for (const sourceMethod of aggregate.methods) {
+            if (sourceMethod.name != method.name) continue;
+            for (const parameter of sourceMethod.parameters) {
+              method.objectiveCParameterNativeTypes.push(try newEntryABI(module, modules, moduleIndex,
+                parameter.type.name, false, parameter.line, parameter.column));
+            }
+          }
+          signature.methods[methodIndex] = move method;
         }
         methodIndex = methodIndex + 1;
       }

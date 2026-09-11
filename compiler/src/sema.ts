@@ -15,7 +15,7 @@ import type {
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DiagnosticError, type DiagnosticLabel } from "./diagnostics.ts";
-import { isSuperCall, nativeSubclassClassName, objcSubclassError, validateObjCSubclassShape, type ObjCSubclassPlan } from "./objc-subclasses.ts";
+import { isSuperCall, nativeSubclassClassName, newObjCSubclassEntry, objcSubclassError, validateObjCSubclassShape, type ObjCSubclassPlan } from "./objc-subclasses.ts";
 import {
   compareTargetVersions,
   displayTargetPlatform,
@@ -3036,8 +3036,10 @@ function registerObjCSubclasses(program: Program, globals: Map<string, SymbolVal
       const selector = method.nativeSelector!;
       if (selectors.has(selector)) objcSubclassError(fileName, method.location, `duplicate native override selector ${JSON.stringify(selector)}`);
       selectors.add(selector);
-      const native = inherited.find((candidate) => candidate.instance && candidate.selector === selector);
-      if (!native) objcSubclassError(fileName, method.location, `no inherited Objective-C instance selector ${JSON.stringify(selector)}`);
+      const inheritedMethod = inherited.find((candidate) => candidate.instance && candidate.selector === selector);
+      if (method.override && !inheritedMethod) objcSubclassError(fileName, method.location, `no inherited Objective-C instance selector ${JSON.stringify(selector)}`);
+      if (!method.override && inheritedMethod) objcSubclassError(fileName, method.location, `inherited selector ${JSON.stringify(selector)} requires \`override function\``);
+      const native = inheritedMethod ?? newObjCSubclassEntry(method, state.foreignNamedTypes, state.foreignObjectTypes, state.objcSubclasses, fileName);
       if (native.direct) objcSubclassError(fileName, method.location, "a direct Objective-C method cannot be overridden");
       if (native.consumesSelf || native.consumedParameters?.length) objcSubclassError(fileName, method.location, "consuming native override ownership requires a later tier");
       if (native.variadic || native.parameters.some((parameter) => parameter.type.kind === "block")) {

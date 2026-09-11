@@ -136,12 +136,13 @@ a closure. The compiler must preserve receiver/signature evidence through the
 checked registration boundary before emitting the ordinary native `SEL`.
 No raw string-to-selector conversion is implied. Existing inherited overrides
 continue to use `override function ... as "selector:"`; the proposed new native
-callback uses `function ... as "selector:"` without `override`. A collision
-with an inherited selector must require `override`, not silently replace it.
+callback uses `function ... as "selector:"` without `override`. New entries now
+execute in both compilers. A collision with an inherited selector requires
+`override`, rather than silently replacing it.
 
 The registration contract is approved. Both compilers now parse and validate
 the declaration below and retain the target/signature evidence. Executable
-`objc.selector` references and new native method entries remain the next slice;
+`objc.selector` references and paired registration checking remain the next slice;
 registration calls stay unavailable rather than accepting an unchecked `SEL`.
 
 ```zs
@@ -189,9 +190,40 @@ The independent native contract decoder checks the same malformed contracts as
 Stage 0 using raw Clang declarations, including target kind, argument names,
 capabilities, missing facts, and executor requirements. `.zd` completion and
 hover explain the trust boundary rather than describing a closure environment.
-Next: checked selector references and native entries, paired registration and
+Next: checked selector references, paired registration and
 lifetime tests, then the real resize integration. Native reentry during AppKit superclass operations
 is a concrete integration test, not permission to weaken the approved guard.
+
+### Implemented new native entries
+
+```zs
+function onDisplay(
+  inout this,
+  in link: QuartzCore.CADisplayLink
+): void as "display:" {
+  const timestamp = link.timestamp;
+}
+```
+
+Inside a main-isolated native subclass, this declares a new Objective-C method
+with a source-declared ABI. It does not register a callback or create a `SEL`
+value. Ordinary Z calls and native dispatch enter the same checked method.
+The first tier accepts scalar/native-enum values and borrowed concrete imported
+object parameters, with scalar/enum or `void` results; transparent aliases work.
+Labels must match the parameter count. Nullable objects, aggregate parameters,
+object results, async/throwing bodies, and consuming receivers remain rejected.
+
+A new selector has no superclass fallback: entry before Ready or during teardown
+traps before the Z body. Main-thread and shared/exclusive receiver checks are
+identical to overrides, including retaining access through local cleanup.
+Native plans carry an explicit inherited-entry flag through lowering so emission
+cannot silently invent superclass dispatch. No adapter or closure is allocated.
+
+The independent native emitter and Stage 0 each pass 200 lifecycle iterations
+at `-O0` and `-O2` under strict Clang/UBSan. Expected construction, teardown,
+wrong-thread, and conflicting reentry traps are caught without crash reports.
+An actual AppKit subclass with a borrowed `CADisplayLink` callback passes
+compile-only validation; real display-link registration is still pending.
 
 ## Approved state and lifecycle direction (2026-09-10)
 

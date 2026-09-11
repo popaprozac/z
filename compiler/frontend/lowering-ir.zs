@@ -32538,6 +32538,7 @@ function appendLoweredProgram(
             some(entry) => {
               const expected = loweredMethod.receiverMode == LoweredParameterMode.inputOutput ? "inout" : "in";
               if (entry.receiverMode != expected) throw "native subclass lowering lost checked receiver access evidence";
+              if (entry.overridesInherited != method.overrideMethod) throw "native subclass lowering lost checked lifecycle dispatch evidence";
             }
             none => throw "native subclass lowering lost its checked override entry";
           }

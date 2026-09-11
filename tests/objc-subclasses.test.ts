@@ -553,6 +553,9 @@ hostToolchainTest("compiles an actual AppKit subclass without launching an appli
       override function animationResizeTime(frame: AppKit.NSRect): f64 as "animationResizeTime:" {
         return super.animationResizeTime(frame);
       }
+      function onDisplay(inout this, in link: QuartzCore.CADisplayLink): void as "display:" {
+        const timestamp = link.timestamp;
+      }
     }
     function main(): i32 { return 0; }
   `;

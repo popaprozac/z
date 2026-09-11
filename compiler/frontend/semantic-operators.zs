@@ -2,6 +2,7 @@ import {
   equivalentTypes,
   isUnresolvedExternalType,
   typeSymbolLocation,
+  transparentTypeName,
 } from "./semantic-type-identities.zs";
 import {
   isIntegerTypeName,
@@ -180,9 +181,13 @@ export function binaryOperatorType(
   in tree: ExpressionTree,
   index: usize,
   in operator: String,
-  in left: String,
-  in right: String
+  in leftSource: String,
+  in rightSource: String
 ): String throws ModuleResolveError {
+  // Aliases do not create new arithmetic or comparison types. Preserve
+  // nominal enums/native identities while expanding transparent Z aliases.
+  const left = transparentTypeName(modules, moduleIndex, leftSource);
+  const right = transparentTypeName(modules, moduleIndex, rightSource);
   if (left.byteLength == 0 || right.byteLength == 0) return "";
   if (
     operator == "&"

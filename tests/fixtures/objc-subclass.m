@@ -1,6 +1,27 @@
 #import "objc-subclass.h"
 #include <signal.h>
 #include <stdlib.h>
+#import <objc/message.h>
+#include <pthread.h>
+
+int z_subclass_entry_scenario(void) {
+  const char *value = getenv("Z_SUBCLASS_ENTRY_SCENARIO");
+  return value ? atoi(value) : 0;
+}
+// The selector is deliberately absent from the superclass header. This is a
+// native ABI oracle, not a Z-level selector conversion or registration bypass.
+int z_subclass_call_entry(ZSubclassFixture *object, int value) {
+  return ((int (*)(id, SEL, int))objc_msgSend)(object, sel_registerName("receive:"), value);
+}
+static void *callEntryOnWorker(void *context) {
+  @autoreleasepool { (void)z_subclass_call_entry((__bridge ZSubclassFixture *)context, 1); }
+  return NULL;
+}
+void z_subclass_entry_on_worker(ZSubclassFixture *object) {
+  pthread_t worker;
+  if (pthread_create(&worker, NULL, callEntryOnWorker, (__bridge void *)object)) abort();
+  if (pthread_join(worker, NULL)) abort();
+}
 
 static int liveCount = 0;
 int z_subclass_live_count(void) { return liveCount; }
@@ -44,6 +65,7 @@ int z_subclass_source_deinits(void) { return sourceDeinits; }
     liveCount += 1;
     [self checkBaseDispatch:1];
     constructionCallbacks += 1;
+    if (z_subclass_entry_scenario() == 1) (void)z_subclass_call_entry(self, 1);
   }
   return self;
 }
@@ -59,6 +81,7 @@ int z_subclass_source_deinits(void) { return sourceDeinits; }
 - (int)directValue { return 0; }
 - (void)takeObject:(NSObject * __attribute__((ns_consumed)))object { (void)object; }
 - (void)dealloc {
+  if (z_subclass_entry_scenario() == 2) (void)z_subclass_call_entry(self, 1);
   [self checkBaseDispatch:3];
   teardownCallbacks += 1;
   liveCount -= 1;

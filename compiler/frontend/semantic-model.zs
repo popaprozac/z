@@ -103,6 +103,7 @@ export struct ModuleSemanticEvidence {
 // Source-owned native classes are not Z ARC aggregates or protocol adapters.
 // These checked plans retain exact native entry ABIs and source-body locations.
 export struct ModuleObjCSubclassEntry {
+  overridesInherited: boolean = false;
   sourceIndex: usize;
   offset: usize;
   sourceName: String;

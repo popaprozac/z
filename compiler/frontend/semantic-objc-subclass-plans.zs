@@ -168,6 +168,7 @@ export function planNativeObjCSubclasses(
         let names = Array<String>();
         for (const parameter of method.parameters) { names.push(copy parameter.name); }
         methods.push(ModuleObjCSubclassEntry({
+          overridesInherited: method.overrideMethod,
           sourceIndex: current, offset: method.offset, sourceName: copy method.name,
           selector: copy checked.objectiveCSelector,
           nativeReturnType: copy checked.objectiveCNativeReturnType,

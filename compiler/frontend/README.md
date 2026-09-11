@@ -221,7 +221,12 @@ recursive path.
   types, passing modes, and target identity independently from Stage 0. The
   signature erased by `SEL` is a trusted declaration fact. It is retained in
   native method metadata, but registration is withheld until checked
-  `objc.selector(Type.method)` references and new native callback entries land.
+  `objc.selector(Type.method)` references and paired registration checks land.
+  New `function ... as "selector:"` native entries now execute without an
+  inherited override. Their source-declared scalar/enum/borrowed-object ABI is
+  checked, including transparent aliases. Native plans retain whether an entry
+  overrides an inherited method: only overrides may forward outside Ready;
+  new entries trap. Both retain main/exclusivity/lifetime guards.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies

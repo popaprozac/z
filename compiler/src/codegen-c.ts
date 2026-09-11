@@ -2525,7 +2525,7 @@ function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, Struc
   });
   const methods = plan.declaration.methods.map((method) => generateFunction(method, structs, enums, functions, plan.declaration, semanticInfo, omitRawNativeBodies, {
     signature: generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name))),
-    superclassFallback: generateObjCMessage("super", plan.methods.get(method.location.offset)!.selector, method.parameters.map((parameter) => cBindingName(parameter.name))),
+    ...(method.override ? { superclassFallback: generateObjCMessage("super", plan.methods.get(method.location.offset)!.selector, method.parameters.map((parameter) => cBindingName(parameter.name))) } : {}),
   }));
   const arguments_ = constructor.parameters.map((parameter) => cBindingName(parameter.name));
   const deinit = generateDeinit(plan.declaration, structs, enums, functions, semanticInfo, true);
@@ -6717,10 +6717,11 @@ function generateFunction(
     // Keep that boundary before activation, not after `return self`.
     ...(nativeMethod?.isInitializer ? ["  {"] : []),
     ...(nativeMethod ? ["if (![NSThread isMainThread]) abort();"] : []),
-    ...(nativeMethod?.superclassFallback ? [
-      `if (!self->_z_native_subclass_ready) { ${declaration.returnType.name === "void"
+    ...(nativeMethod && !nativeMethod.isInitializer ? [
+      nativeMethod.superclassFallback ? `if (!self->_z_native_subclass_ready) { ${declaration.returnType.name === "void"
         ? `${nativeMethod.superclassFallback}; return;`
-        : `return ${nativeMethod.superclassFallback};`} }`,
+        : `return ${nativeMethod.superclassFallback};`} }`
+        : 'if (!self->_z_native_subclass_ready) { fputs("Z runtime error: native callback entered before Ready or during teardown\\n", stderr); abort(); }',
       // Keep the receiver alive until AFTER the access cleanup. Declare the
       // guard before body locals so their (possibly reentrant) destructors run
       // while the original access is still held, including on early returns.

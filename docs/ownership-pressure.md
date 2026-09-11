@@ -7529,6 +7529,52 @@ The targeted regression run passes 151 tests across selector contracts, native
 subclasses, Objective-C/native interop, and editor integration. The website
 build passes all 33 pages. This is not a full-suite or performance claim.
 
+## New native callback entries without a superclass fallback (2026-09-10)
+
+The selector-registration work exposed a distinct lifecycle case: a newly
+declared `function ... as "display:"` cannot reuse an override's construction/
+destruction fallback, because the superclass has no such method. Both compilers
+now check source-declared scalar/enum/borrowed-object entry ABIs and carry the
+inherited-versus-new distinction into lowering. New entries trap outside Ready;
+overrides continue forwarding. Main-thread and receiver-exclusivity guards,
+precise native receiver lifetime, and cleanup ordering stay unchanged.
+
+This uses the approved declaration vocabulary, not a new callback keyword or
+wrapper class. It adds no per-entry allocation. Ordinary native calls and Z
+calls exercise the same body. An alias spelling must not erase the native ABI
+or borrowed-object capability, so both primitive and imported-object aliases
+are part of parity coverage.
+
+That check exposed a general native checker gap: binary operators compared
+unexpanded alias spellings, so an `i32` alias in a valid native entry signature
+failed when added to an ordinary `i32` field. Binary operator checking now
+expands transparent aliases before classification; it does not coerce numeric
+widths or erase nominal enum identity. The aliased callback is compiled and
+executed, and a mismatched-width alias remains rejected.
+The same probe caught aliased native base types bypassing normal subclass
+conversion lookup; native reference assignability now expands aliases before
+checking nullability and walking the superclass chain.
+
+The independent native emitter consumes raw Clang declarations, not Stage 0
+semantic plans. Its output and Stage 0 output each execute 200 construction/
+callback/destruction iterations at `-O0` and `-O2` under strict Clang/UBSan.
+Expected pre-Ready, teardown, wrong-thread, and conflicting-reentry traps use a
+test signal handler to avoid macOS crash reports. The actual AppKit callback
+shape compiles without launching a GUI. No ASan probe was run.
+
+This checkpoint does not yet complete `objc.selector(Type.method)`: the next
+slice must validate method-reference/target/signature pairing and reject
+constructing/dying receiver registration. Bare `SEL` calls stay blocked.
+Only after that boundary and native reentry tests pass should Zapp adopt it for
+display-link resize integration. Explicit shutdown must still invalidate the
+display link; final ARC teardown cannot break a cycle that keeps it alive.
+
+Validation: 227 tests pass across entry/contract/subclass, language, editor, and
+native-interop suites; fixed-point bootstrap emits 11,623,281 C bytes; the
+standalone native driver checks the new-entry fixture; website build passes
+33 pages. These are targeted correctness checks, not a full-suite run or a
+new performance benchmark.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

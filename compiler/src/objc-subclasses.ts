@@ -1,6 +1,6 @@
-import type { Expression, SourceLocation, StructDeclaration } from "./ast.ts";
+import type { Expression, FunctionDeclaration, SourceLocation, StructDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import type { ForeignObjCInterface, ForeignObjCMethod } from "./foreign-ir.ts";
+import type { ForeignNamedType, ForeignObjectType, ForeignObjCInterface, ForeignObjCMethod, ForeignType } from "./foreign-ir.ts";
 
 export type ObjCSubclassPlan = {
   readonly declaration: StructDeclaration;
@@ -78,7 +78,7 @@ export function validateObjCSubclassShape(declaration: StructDeclaration, fileNa
   inspect(constructor.body);
   if (declaration.deinitializer) inspect(declaration.deinitializer.body);
   for (const method of declaration.methods) {
-    if (!method.override || !method.nativeSelector) reject(method.location, "a native subclass method requires `override function` and an explicit `as \"selector:\"`");
+    if (!method.nativeSelector) reject(method.location, "a native subclass method requires an explicit `as \"selector:\"`");
     if (method.static || method.async || method.errorType || method.rawBody || method.receiverMode === "move" || method.typeParameters?.length) {
       reject(method.location, "a native override must be a synchronous, non-throwing, non-consuming instance method");
     }
@@ -136,4 +136,43 @@ export function validateObjCSubclassShape(declaration: StructDeclaration, fileNa
 
 export function nativeSubclassClassName(name: string): string {
   return `ZNative_${[...name].map((character) => /[A-Za-z0-9_]/.test(character) ? character : `_${character.codePointAt(0)!.toString(16)}_`).join("")}`;
+}
+
+/** A new entry has a source-declared ABI, not an invented inherited method. */
+export function newObjCSubclassEntry(
+  method: FunctionDeclaration,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  objects: ReadonlyMap<string, ForeignObjectType>,
+  subclasses: ReadonlyMap<string, ObjCSubclassPlan>,
+  fileName: string,
+): ForeignObjCMethod {
+  const selector = method.nativeSelector!;
+  const labels = selector.split(":");
+  if (method.parameters.length === 0 ? !/^[A-Za-z_][A-Za-z0-9_]*$/.test(selector)
+    : labels.length !== method.parameters.length + 1 || labels.at(-1) !== ""
+      || labels.slice(0, -1).some((label) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(label))) {
+    objcSubclassError(fileName, method.location, "new native selector labels must match the declared parameter count");
+  }
+  const scalars: Record<string, string> = {
+    boolean: "bool", i8: "int8_t", u8: "uint8_t", i16: "int16_t", u16: "uint16_t",
+    i32: "int32_t", u32: "uint32_t", i64: "int64_t", u64: "uint64_t",
+    isize: "intptr_t", usize: "uintptr_t", f32: "float", f64: "double", void: "void",
+  };
+  const typeFor = (name: string, location: SourceLocation, result: boolean): ForeignType => {
+    if (scalars[name] && (name !== "void" || result)) return { kind: "z", name: name as Extract<ForeignType, { kind: "z" }>["name"], cName: scalars[name] };
+    const named = namedTypes.get(name);
+    if (named?.kind === "enum" || named?.kind === "scalar") return { kind: "named", type: named, cName: named.cName };
+    const object = objects.get(name);
+    if (!result && object && !object.nullable && object.className && !subclasses.has(name)) return object;
+    return objcSubclassError(fileName, location, "new native entries support scalar/native-enum values, borrowed concrete imported object parameters, and void returns");
+  };
+  return {
+    selector, baseName: method.name, instance: true, returnsInstanceType: false,
+    returnType: typeFor(method.returnType.name, method.returnType.location, true),
+    parameters: method.parameters.map((parameter) => ({ name: parameter.name,
+      type: typeFor(parameter.type.name, parameter.location, false), protocols: [],
+    })),
+    metadata: { source: null, availability: [], executorAffinity: "main" },
+    asyncCallbackParameter: null, asyncResultParameter: null, asyncErrorParameter: null,
+  };
 }

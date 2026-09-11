@@ -58,6 +58,9 @@ void z_subclass_drop_published(void);
 int z_subclass_call_published(void);
 int z_subclass_access_scenario(void);
 void z_subclass_catch_abort(void);
+int z_subclass_call_entry(ZSubclassFixture *object, int value);
+int z_subclass_entry_scenario(void);
+void z_subclass_entry_on_worker(ZSubclassFixture *object);
 
 __attribute__((swift_attr("@MainActor")))
 @interface ZNullableSubclassFixture : NSObject

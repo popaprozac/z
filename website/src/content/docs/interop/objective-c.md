@@ -173,6 +173,33 @@ methods from an object's type.
 See the [stateful compiler fixture](https://github.com/popaprozac/z/blob/main/tests/fixtures/objc-subclass.zs)
 for construction, replacement, and cleanup examples.
 
+### New native callback methods
+
+A native subclass can also introduce a method that the superclass does not have:
+
+```z
+function onDisplay(
+  inout this,
+  in link: QuartzCore.CADisplayLink
+): void as "display:" {
+  const timestamp = link.timestamp;
+}
+```
+
+Use `override` only for an inherited selector; omitting it for an inherited
+selector is an error. New methods use a checked source-declared ABI. This tier
+supports scalar/enum values and `in` concrete imported object parameters, with
+scalar/enum or `void` returns. Parameter labels must match the selector.
+
+New entries enforce the same main-thread and receiver-exclusivity checks as
+overrides. Before Ready or during teardown they trap—there is no superclass
+method to forward to. No adapter or closure allocation is introduced.
+
+This declaration does **not** register a display link. The approved
+`objc.selector(Type.method)` reference and paired target/selector registration
+checks are still pending; `.zd` selector contracts remain unavailable to calls
+until that boundary is implemented.
+
 Broader owned resource fields, escaping field views/captures, `Weak`, fallible
 constructors, object-returning overrides, and async composition remain future
 work. Ordinary Z-to-Z inheritance is not supported. Both the TypeScript

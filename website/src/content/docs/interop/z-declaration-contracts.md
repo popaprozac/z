@@ -124,8 +124,9 @@ or `void` returns. `target target;` reads as the fact followed by the native
 parameter's name.
 
 This is a **contract-validation checkpoint**, not an executable selector API
-yet. The approved `objc.selector(Type.method)` utility and checked native
-callback entries are next; registration remains unavailable until those checks
+yet. New guarded native method entries execute, but the approved
+`objc.selector(Type.method)` utility and paired target checks are next;
+registration remains unavailable until those checks
 are in place. No closure environment, automatic hop, or implicit invalidation
 is introduced. Display links still need explicit main-run-loop registration
 and invalidation during shutdown.

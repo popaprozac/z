@@ -252,9 +252,11 @@ export function isNativeObjectiveCStringType(
 function nativeObjectiveCReferenceAssignable(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
-  in expectedType: String,
-  in actualType: String
+  in expectedSource: String,
+  in actualSource: String
 ): boolean {
+  const expectedType = transparentTypeName(modules, moduleIndex, expectedSource);
+  const actualType = transparentTypeName(modules, moduleIndex, actualSource);
   const expectedNullable = isNullableTypeName(expectedType);
   const actualNullable = isNullableTypeName(actualType);
   if (actualNullable && !expectedNullable) return false;

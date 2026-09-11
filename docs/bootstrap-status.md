@@ -150,6 +150,9 @@ both compilers at `-O0`/`-O2`. This costs an inline pointer-sized access counter
 a stack guard, checks, and a scoped native ARC retain/release, not another heap
 object. Private inline scalar/plain-native fields, owned `String`, strong
 imported native references, and source `deinit` now execute with the same gate.
+New synchronous `function ... as "selector:"` entries also execute with checked
+source-declared scalar/enum/borrowed-object ABIs. They trap outside Ready instead
+of sending to a nonexistent superclass entry, and keep the main/access guards.
 The next checkpoint is checked new native callback selectors: both compilers
 already validate `.zd` `callback selector { target target; type (...) => void
 on thread.main; invoked repeatedly; }` and preserve the target/signature
