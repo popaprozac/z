@@ -10,6 +10,7 @@ import type {
   ForeignFunctionDeclaration,
   ForeignNamedType,
   ForeignObjCInterface,
+  ForeignObjCSelectorContract,
 } from "./foreign-ir.ts";
 import type { ForeignFieldProjection, ForeignUnionDiscriminant } from "./foreign-ir.ts";
 
@@ -109,6 +110,7 @@ export type ApiNotes = {
     readonly projections?: readonly FunctionProjectionNote[];
   }>>;
   readonly objcMethods?: Readonly<Record<string, {
+    readonly selectorCallbacks?: readonly ForeignObjCSelectorContract[];
     readonly parameters?: Readonly<Record<string, PointerNote>>;
     readonly executorAffinity?: "main";
     readonly async?: {
@@ -144,6 +146,7 @@ export function mergeApiNotes(
     fieldProjections?: ForeignFieldProjection[];
   }> = {};
   const objcMethods: Record<string, {
+    selectorCallbacks?: readonly ForeignObjCSelectorContract[];
     parameters?: Record<string, PointerNote>;
     executorAffinity?: "main";
     async?: {
@@ -266,6 +269,14 @@ export function mergeApiNotes(
     }
     for (const [methodName, note] of Object.entries(source.notes.objcMethods ?? {})) {
       const target = objcMethods[methodName] ??= {};
+      if (note.selectorCallbacks) {
+        const path = `objcMethods.${methodName}.selectorCallbacks`;
+        if (target.selectorCallbacks && JSON.stringify(target.selectorCallbacks) !== JSON.stringify(note.selectorCallbacks)) {
+          throw new ApiNoteConflictError(path, owners.get(path) ?? "an earlier source", source.name);
+        }
+        target.selectorCallbacks = note.selectorCallbacks;
+        owners.set(path, source.name);
+      }
       if (note.executorAffinity) {
         const path = `objcMethods.${methodName}.executorAffinity`;
         if (target.executorAffinity && target.executorAffinity !== note.executorAffinity) {

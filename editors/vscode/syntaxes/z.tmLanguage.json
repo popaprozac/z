@@ -177,6 +177,19 @@
     },
     "foreignDeclarations": {
       "patterns": [{
+        "name": "meta.declaration.selector-signature.foreign.z",
+        "begin": "\\b(type)(?=\\s*\\()",
+        "beginCaptures": { "1": { "name": "keyword.control.declaration.callback.z" } },
+        "end": "(?=;|})",
+        "patterns": [
+          { "include": "#comments" },
+          { "include": "#executorPaths" },
+          { "include": "#typeAnnotations" },
+          { "include": "#types" },
+          { "include": "#keywords" },
+          { "include": "#operators" }
+        ]
+      }, {
         "name": "meta.declaration.module.foreign.z",
         "match": "\\b(declare)\\s+(module)\\s+((?:\"(?:\\\\.|[^\"])*\")|(?:'(?:\\\\.|[^'])*'))",
         "captures": {
@@ -361,7 +374,7 @@
         }
       }, {
         "name": "meta.declaration.callback-owner.foreign.z",
-        "match": "\\b(owner)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "match": "\\b(owner|target)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
         "captures": {
           "1": { "name": "keyword.control.declaration.callback.z" },
           "2": { "name": "variable.parameter.z" }

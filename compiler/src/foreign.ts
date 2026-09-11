@@ -893,6 +893,7 @@ function applyObjCMethodApiNotes(
           asyncCallbackParameter: note.async?.callbackParameter ?? method.asyncCallbackParameter,
           asyncResultParameter: note.async?.resultParameter ?? method.asyncResultParameter,
           asyncErrorParameter: note.async?.errorParameter ?? method.asyncErrorParameter,
+          selectorCallbacks: note.selectorCallbacks ?? method.selectorCallbacks,
           parameters: method.parameters.map((parameter, index) => {
             const parameterNote = note.parameters?.[String(index)];
             if (!parameterNote) return parameter;

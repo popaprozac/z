@@ -148,8 +148,14 @@ through local destruction and holding native receiver lifetime through guard
 cleanup. Five conflict paths and the final-outside-owner release path pass in
 both compilers at `-O0`/`-O2`. This costs an inline pointer-sized access counter,
 a stack guard, checks, and a scoped native ARC retain/release, not another heap
-object. Fields, source `deinit`, and escaping field-loan/capture enforcement remain
-the next owned-storage checkpoint.
+object. Private inline scalar/plain-native fields, owned `String`, strong
+imported native references, and source `deinit` now execute with the same gate.
+The next checkpoint is checked new native callback selectors: both compilers
+already validate `.zd` `callback selector { target target; type (...) => void
+on thread.main; invoked repeatedly; }` and preserve the target/signature
+contract. Executable `objc.selector(Type.method)` and registration checking are
+not implemented yet; contracted registrations remain unavailable instead of
+accepting a bare `SEL`. Escaping field loans/captures remain a separate tier.
 
 The fixed-point async boundary has narrowed since the compact self-hosting row
 was written: a direct call to an imported async free function with a

@@ -116,6 +116,83 @@ metadata, native availability, and executor requirements come from imported
 declarations. Behavioral assumptions about a native initializer or callback are
 still trusted native contracts, not proved by reading a header.
 
+## Approved selector reference and registration contract (2026-09-10)
+
+The user chose the explicit `std/objc` utility over contextual conversion of
+`window.onDisplay` into a selector:
+
+```zs
+import objc from "std/objc";
+
+const link = window.displayLinkWithTarget(
+  window,
+  selector: objc.selector(SmoothWindow.onDisplay)
+);
+```
+
+**Approved direction, not implemented yet.** The utility references the method
+declaration, not a receiver instance. It neither invokes the method nor creates
+a closure. The compiler must preserve receiver/signature evidence through the
+checked registration boundary before emitting the ordinary native `SEL`.
+No raw string-to-selector conversion is implied. Existing inherited overrides
+continue to use `override function ... as "selector:"`; the proposed new native
+callback uses `function ... as "selector:"` without `override`. A collision
+with an inherited selector must require `override`, not silently replace it.
+
+The registration contract is approved. Both compilers now parse and validate
+the declaration below and retain the target/signature evidence. Executable
+`objc.selector` references and new native method entries remain the next slice;
+registration calls stay unavailable rather than accepting an unchecked `SEL`.
+
+```zs
+declare module "AppKit/AppKit.h" {
+  export function NSWindow.displayLinkWithTarget(
+    target: _,
+    selector: _
+  ): _ {
+    callback selector {
+      target target;
+      type (in link: CADisplayLink) => void on thread.main;
+      invoked repeatedly;
+    }
+  }
+}
+```
+
+This extends `callback` to a native `SEL` parameter, adds `target` to pair
+it with the native object parameter, and allows an inline function type after
+`type`. No callback/context argument is removed or synthesized at the call.
+The header proves the outer object/SEL/result ABI; the callback shape is a
+trusted assertion from native documentation because `SEL` erases that shape.
+The executable slice will check the referenced method's signature and the target's receiver type
+against that assertion. This is not an independently Clang-verified callback
+typedef, unlike the existing C callback contract.
+
+The function type's `on thread.main` is an inbound requirement, not a claim
+that the factory schedules delivery there. Generated method entries must
+check main before touching Z state, with no implicit hop; the caller must add
+the link to the main run loop. Do not invent an unconditional `thread caller`
+promise for an API whose delivery depends on later run-loop registration.
+The first signature tier accepts scalars/native enums and borrowed concrete
+imported Objective-C object parameters, with scalar/native-enum or `void`
+returns. Aggregate callback ABI and object return ownership remain later tiers.
+
+No Z closure environment is created in this direct-native target tier.
+Object retention remains native ARC behavior, not ownership of a generated
+adapter. Explicit invalidation during live close/shutdown is still required;
+this contract does not synthesize cycle collection or automatic registration
+shutdown. Registration of the constructing/dying receiver must be rejected;
+an unexpected new-selector invocation outside Ready must fail closed rather
+than forward to a nonexistent superclass implementation.
+
+The independent native contract decoder checks the same malformed contracts as
+Stage 0 using raw Clang declarations, including target kind, argument names,
+capabilities, missing facts, and executor requirements. `.zd` completion and
+hover explain the trust boundary rather than describing a closure environment.
+Next: checked selector references and native entries, paired registration and
+lifetime tests, then the real resize integration. Native reentry during AppKit superclass operations
+is a concrete integration test, not permission to weaken the approved guard.
+
 ## Approved state and lifecycle direction (2026-09-10)
 
 The user approved ordinary stored fields and existing `deinit` syntax, with

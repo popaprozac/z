@@ -417,7 +417,7 @@ const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
   "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success", "failure",
   "owned", "borrowed", "invalidates", "lifetime",
-  "connection", "option", "owner", "project", "data", "length", "from", "return", "throw", "invoked", "once", "repeatedly",
+  "connection", "option", "owner", "target", "project", "data", "length", "from", "return", "throw", "invoked", "once", "repeatedly",
   "discriminant", "variant", "member", "when", "fallback",
 ] as const;
 
@@ -4014,7 +4014,7 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     const candidates = new Map<string, string>();
     for (const overload of ownerSignatures) {
       for (const parameter of overload.parameters) {
-        if (parameter.name && (parameter.type.kind === "callback" || parameter.type.kind === "block")) {
+        if (parameter.name && (parameter.type.kind === "callback" || parameter.type.kind === "block" || parameter.type.kind === "selector")) {
           candidates.set(parameter.name, foreignTypeName(parameter.type));
         }
       }
@@ -4031,6 +4031,29 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   }
 
   const callbackTypePrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{(?:[^{}]|\{[^{}]*\})*\btype\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  const selectorTargetPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{(?:[^{}]|\{[^{}]*\})*\btarget\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (selectorTargetPrefix !== undefined) {
+    const candidates = new Map<string, string>();
+    for (const signature of ownerSignatures) {
+      for (const parameter of signature.parameters) {
+        if (parameter.name && parameter.type.kind === "object") candidates.set(parameter.name, foreignTypeName(parameter.type));
+      }
+    }
+    for (const [name, type] of candidates) {
+      if (!name.toLowerCase().startsWith(selectorTargetPrefix.toLowerCase())) continue;
+      contextual.push({ label: name, kind: completionKinds.variable,
+        detail: `${name}: ${type}; native receiver paired with this SEL callback`, insertText: `${name};`, sortText: `0-${name}` });
+    }
+  }
+  const selectorTypePrefix = /\btype\s*\([^;{}]*:\s*([A-Za-z_]*)$/.exec(before)?.[1];
+  if (module && selectorTypePrefix !== undefined) {
+    for (const declaration of module.interfaces.values()) {
+      if (!declaration.exportName.toLowerCase().startsWith(selectorTypePrefix.toLowerCase())) continue;
+      contextual.push({ label: declaration.exportName, kind: completionKinds.class,
+        detail: `in ${declaration.exportName}: borrowed native callback object; callback shape is asserted by this contract`,
+        sortText: `0-${declaration.exportName}` });
+    }
+  }
   if (callbackTypePrefix !== undefined) {
     for (const callback of activeCallbacks) {
       if (!callback.cName.toLowerCase().startsWith(callbackTypePrefix.toLowerCase())) continue;
@@ -4689,6 +4712,17 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
         .map((overload) => overload.parameters[callbackIndex]?.type)
         .filter((type): type is Extract<ForeignType, { kind: "callback" }> => type?.kind === "callback");
       const nativeCallback = callbackTypes[0];
+      if (callback.signature) {
+        const signature = `(${callback.signature.parameters.map((parameter) => `${parameter.mode === "in" ? "in " : ""}${parameter.name}: ${parameter.typeName}`).join(", ")}) => ${callback.signature.returnType} on thread.main`;
+        if (callback.parameterLocation.offset === word.start || callback.signature.location.offset === word.start) {
+          return markdownHover(`${callback.parameter}: ${signature}\n// SEL callback paired with target ${callback.target}; signature asserted by .zd, not encoded by SEL\n// main-thread requirement, not an automatic hop or delivery guarantee`, source, word.start, word.end);
+        }
+        if (callback.targetLocation?.offset === word.start) {
+          return markdownHover(`${callback.target}: Objective-C object\n// native target receiving ${callback.parameter}; no closure capture or generated adapter\n// native retention and explicit invalidation still govern lifetime`, source, word.start, word.end);
+        }
+        const parameter = callback.signature.parameters.find((entry) => entry.typeLocation.offset === word.start || entry.location.offset === word.start);
+        if (parameter) return markdownHover(`${parameter.mode === "in" ? "in " : ""}${parameter.name}: ${parameter.typeName}\n// asserted native selector callback parameter`, source, word.start, word.end);
+      }
       const contextIndex = callback.context === null
         ? -1
         : contract.parameters.findIndex((parameter) => parameter.name === callback.context);
@@ -6758,6 +6792,32 @@ function syntacticSemanticTokens(source: string, fileName: string): { readonly d
       continue;
     }
     if (/^[A-Z]/.test(token.text)) classify(token.location.offset, "type");
+  }
+
+  if (fileName.endsWith(".zd")) {
+    try {
+      for (const contract of parseForeignDeclarationContracts(source, fileName).functions) {
+        for (const callback of contract.callbacks) {
+          if (!callback.signature) continue;
+          classify(callback.signature.location.offset, "keyword");
+          classify(callback.parameterLocation.offset, "function");
+          classify(callback.signature.returnLocation.offset, "type");
+          if (callback.targetLocation) {
+            classify(callback.targetLocation.offset, "parameter");
+            const index = tokens.findIndex((token) => token.location.offset === callback.targetLocation!.offset);
+            if (tokens[index - 1]?.text === "target") classify(tokens[index - 1].location.offset, "keyword");
+          }
+          for (const parameter of callback.signature.parameters) {
+            classify(parameter.typeLocation.offset, "type");
+            const binding = tokens.find((token) => token.text === parameter.name
+              && token.location.offset >= parameter.location.offset && token.location.offset < parameter.typeLocation.offset);
+            if (binding) classify(binding.location.offset, "parameter", 1);
+          }
+        }
+      }
+    } catch {
+      // Incomplete contracts retain lexical/TextMate highlighting while typing.
+    }
   }
 
   const encoded: number[] = [];

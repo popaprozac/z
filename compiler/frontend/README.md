@@ -215,6 +215,13 @@ recursive path.
   Direct guarded field access rejects receiver aliases,
   shared writes, and dying-receiver escape. Broader resource fields, escaping
   field loans/captures, weak identity, and async subclass composition remain.
+- Selector callback contracts now pair an imported Objective-C `SEL` parameter
+  with its native object target and an inline, explicitly main-required callable
+  signature. Native `.zd` parsing/normalization verifies the outer ABI, concrete
+  types, passing modes, and target identity independently from Stage 0. The
+  signature erased by `SEL` is a trusted declaration fact. It is retained in
+  native method metadata, but registration is withheld until checked
+  `objc.selector(Type.method)` references and new native callback entries land.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies

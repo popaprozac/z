@@ -202,7 +202,18 @@ export type ForeignBlockType = {
   readonly cardinality: "once" | "repeatedly" | null;
 };
 
+/** SEL erases this signature; it is asserted by .zd, not recovered from Clang. */
+export type ForeignObjCSelectorContract = {
+  readonly selectorParameter: number;
+  readonly targetParameter: number;
+  readonly parameters: readonly { readonly name: string; readonly mode: "value" | "in"; readonly type: ForeignType }[];
+  readonly returnType: ForeignType;
+  readonly executorAffinity: "main";
+  readonly cardinality: "once" | "repeatedly";
+};
+
 export type ForeignObjCMethod = {
+  readonly selectorCallbacks?: readonly ForeignObjCSelectorContract[];
   readonly selector: string;
   readonly baseName: string;
   readonly instance: boolean;

@@ -93,10 +93,42 @@ pointer type.
 | `fixed CONSTANT;` | Hide a policy argument and always pass the header constant |
 | `borrowed from owner;` | Tie a returned view to one borrowed input owner |
 | `invalidates owner;` | Reject the call while derived views remain live |
+| `target receiver;` | Pair a native `SEL` callback with an object parameter; declaration validation is implemented, executable selector references are pending |
+| `type (in value: NativeObject) => void on thread.main;` | Assert the signature erased by `SEL`; main is a callback requirement, not an automatic hop |
 
 `owned` and `borrowed` have no implicit default for resource-classified return
 values. A generated contract should fail closed and require a person to supply
 the behavioral fact rather than guess ownership.
+
+## Selector callback contracts
+
+The declaration checker accepts this shape in both compilers:
+
+```z
+declare module "AppKit/AppKit.h" {
+  export function NSWindow.displayLinkWithTarget(target: _, selector: _): _ {
+    callback selector {
+      target target;
+      type (in link: CADisplayLink) => void on thread.main;
+      invoked repeatedly;
+    }
+  }
+}
+```
+
+The outer function and target/selector parameter types must match the header.
+The callback signature is different: `SEL` erases it, so this fact must come
+from reviewed native documentation. The first tier accepts scalar/native-enum
+values and borrowed imported Objective-C object parameters, with scalar/enum
+or `void` returns. `target target;` reads as the fact followed by the native
+parameter's name.
+
+This is a **contract-validation checkpoint**, not an executable selector API
+yet. The approved `objc.selector(Type.method)` utility and checked native
+callback entries are next; registration remains unavailable until those checks
+are in place. No closure environment, automatic hop, or implicit invalidation
+is introduced. Display links still need explicit main-run-loop registration
+and invalidation during shutdown.
 
 ## Returned resources
 

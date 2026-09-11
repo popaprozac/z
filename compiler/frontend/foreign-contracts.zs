@@ -16,6 +16,7 @@ import {
 import {
   ModuleFunctionSignature,
   ModuleTypeParameterConstraint,
+  ModuleObjCSelectorCallbackSignature,
 } from "./semantic-model.zs";
 import {
   nativeFunctionSignature,
@@ -63,6 +64,8 @@ export struct RawForeignFunctionContract {
 }
 
 export struct RawForeignCallbackContract {
+  target: String = "";
+  selectorSignature: Option<ModuleFunctionSignature> = Option<ModuleFunctionSignature>.none;
   parameter: String;
   context: String;
   release: String;
@@ -192,6 +195,7 @@ export struct NativeForeignObjCParameterContract {
 }
 
 export struct NativeForeignObjCMethodContract {
+  selectorCallbacks: Array<ModuleObjCSelectorCallbackSignature> = Array<ModuleObjCSelectorCallbackSignature>();
   name: String;
   selector: String;
   instance: boolean;
@@ -569,6 +573,46 @@ function findRawConstant(
   throw `Z declaration names unknown foreign constant "${name}"`;
 }
 
+function parseSelectorCallbackSignature(
+  inout cursor: ForeignContractCursor
+): ModuleFunctionSignature throws String {
+  try expectText(inout cursor, "(");
+  let names = Array<String>();
+  let modes = Array<String>();
+  let types = Array<String>();
+  while (!atText(cursor, ")")) {
+    let mode = "value";
+    if (atText(cursor, "in")) { cursor.index = cursor.index + 1; mode = "in"; }
+    else if (atText(cursor, "inout") || atText(cursor, "out") || atText(cursor, "move")) {
+      throw contractError(cursor, "selector callback parameters support value or in capabilities only");
+    }
+    const name = try expectIdentifier(inout cursor, "a selector callback parameter name");
+    for (const existing of names) {
+      if (existing == name) throw contractError(cursor, `duplicate selector callback parameter "${name}"`);
+    }
+    names.push(name);
+    try expectText(inout cursor, ":");
+    const typeName = try expectIdentifier(inout cursor, "an explicit selector callback type");
+    if (typeName == "_") throw contractError(cursor, "a selector callback type must be explicit because SEL erases its signature");
+    modes.push(mode);
+    types.push(typeName);
+    if (!atText(cursor, ",")) break;
+    cursor.index = cursor.index + 1;
+  }
+  try expectText(inout cursor, ")");
+  try expectText(inout cursor, "=>");
+  const returnType = try expectIdentifier(inout cursor, "an explicit selector callback return type");
+  const affinity = try parseExecutorAffinity(inout cursor);
+  if (affinity != "thread.main") throw contractError(cursor, "a selector callback requires on thread.main");
+  return ModuleFunctionSignature({
+    asynchronous: false, executorAffinity: affinity, threadContract: "",
+    typeParameters: Array<String>(), typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+    parameterModes: modes, parameterTypes: types,
+    viewParameter: Option<usize>.none, invalidatesParameters: Array<usize>(), invalidatesLifetimes: Array<String>(),
+    returnType, errorType: "",
+  });
+}
+
 function parseFunction(
   inout cursor: ForeignContractCursor,
   in lifetimes: Array<String>
@@ -756,13 +800,24 @@ function parseFunction(
           let release = "";
           let thread = "";
           let cardinality = "";
+          let target = "";
+          let selectorSignature = Option<ModuleFunctionSignature>.none;
           while (!atText(cursor, "}")) {
             const callbackFact = cursor.tokens[cursor.index].text.copyBytes(
               0,
               cursor.tokens[cursor.index].text.byteLength
             );
             cursor.index = cursor.index + 1;
-            if (callbackFact == "context") {
+            if (callbackFact == "target") {
+              if (target.byteLength > 0) throw contractError(cursor, `callback "${callbackParameter}" cannot declare target more than once`);
+              target = try expectIdentifier(inout cursor, "a native object parameter name after target");
+            } else if (callbackFact == "type") {
+              match (in selectorSignature) {
+                some(_) => throw contractError(cursor, `callback "${callbackParameter}" cannot declare more than one native type`);
+                none => {}
+              }
+              selectorSignature = Option.some(try parseSelectorCallbackSignature(inout cursor));
+            } else if (callbackFact == "context") {
               if (context.byteLength > 0) {
                 throw contractError(cursor, `callback "${callbackParameter}" cannot declare context more than once`);
               }
@@ -791,7 +846,7 @@ function parseFunction(
             } else {
               throw contractError(
                 cursor,
-                `the first native callback tier supports context, deinit, thread, and invoked facts, found "${callbackFact}"`
+                `the first native callback tier supports target, type, context, deinit, thread, and invoked facts, found "${callbackFact}"`
               );
             }
             try expectText(inout cursor, ";");
@@ -801,6 +856,7 @@ function parseFunction(
             throw contractError(cursor, `callback "${callbackParameter}" requires explicit invocation cardinality`);
           }
           callbacks.push(RawForeignCallbackContract({
+            target, selectorSignature,
             parameter: callbackParameter,
             context,
             release,
@@ -857,6 +913,7 @@ function parseFunction(
         if (
           callback.context.byteLength == 0
           && callback.parameter != asyncCallback
+          && callback.target.byteLength == 0
         ) {
           throw contractErrorAt(
             cursor,
@@ -3140,14 +3197,155 @@ function objcMethodParameterCapability(
   return "value";
 }
 
+function selectorCallbackABI(
+  in declarations: RawForeignModuleDeclarations, in typeName: String, result: boolean
+): String throws String {
+  if (typeName == "void" && result) return "void";
+  if (typeName == "boolean") return "bool";
+  if (typeName == "i8") return "int8_t";
+  if (typeName == "u8") return "uint8_t";
+  if (typeName == "i16") return "int16_t";
+  if (typeName == "u16") return "uint16_t";
+  if (typeName == "i32") return "int32_t";
+  if (typeName == "u32") return "uint32_t";
+  if (typeName == "i64") return "int64_t";
+  if (typeName == "u64") return "uint64_t";
+  if (typeName == "isize") return "intptr_t";
+  if (typeName == "usize") return "uintptr_t";
+  if (typeName == "f32") return "float";
+  if (typeName == "f64") return "double";
+  for (const object of declarations.objectiveCInterfaces) {
+    if (object.exportName == typeName && !result) return `${object.className} *`;
+  }
+  for (const named of declarations.types) {
+    if (named.exportName != typeName) continue;
+    if (named.kind == "enum" || named.kind == "scalar") return copy named.nativeName;
+  }
+  throw `unsupported selector callback type "${typeName}"; use scalars, native enums, void returns, or in borrowed imported Objective-C object parameters`;
+}
+
+function selectorCallbackObject(
+  in declarations: RawForeignModuleDeclarations, in name: String
+): boolean {
+  if (name == "id" || stringStartsWith(name, "__z_objc:")) return true;
+  for (const object of declarations.objectiveCInterfaces) {
+    if (name == object.exportName || name == object.typeName) return true;
+  }
+  return false;
+}
+
+function selectorMethodParametersMatch(
+  in declarations: RawForeignModuleDeclarations, in method: RawForeignObjCMethod,
+  in contract: RawForeignFunctionContract
+): boolean {
+  if (contract.parameters.length != method.parameterCount) return false;
+  let index: usize = 0;
+  for (const parameter of contract.parameters) {
+    match (in declarations.objectiveCParameters[method.parameterStart + index].name) {
+      some(name) => if (parameter.name != name) return false;
+      none => {}
+    }
+    index = index + 1;
+  }
+  return true;
+}
+
+function validateSelectorMethodTarget(
+  in declarations: RawForeignModuleDeclarations, in contract: RawForeignFunctionContract
+): void throws String {
+  let selectorContract = false;
+  for (const callback of contract.callbacks) {
+    if (callback.target.byteLength > 0) selectorContract = true;
+    match (in callback.selectorSignature) { some(_) => selectorContract = true; none => {} }
+  }
+  if (!selectorContract) return;
+  let count: usize = 0;
+  for (const object of declarations.objectiveCInterfaces) {
+    let index: usize = 0;
+    while (index < object.methodCount) {
+      const method = view declarations.objectiveCMethods[object.methodStart + index];
+      if (contract.name == `${object.exportName}.${method.baseName}` && selectorMethodParametersMatch(declarations, method, contract)) count = count + 1;
+      index = index + 1;
+    }
+  }
+  if (count == 0) throw `declaration does not match an Objective-C method "${contract.name}" with these native parameter names`;
+  if (count != 1) throw `declaration is ambiguous across Objective-C selectors for "${contract.name}"`;
+}
+
+function normalizedSelectorCallbacks(
+  in declarations: RawForeignModuleDeclarations, in method: RawForeignObjCMethod,
+  in ownerType: String, in contracts: RawForeignContractSet
+): Array<ModuleObjCSelectorCallbackSignature> throws String {
+  let result = Array<ModuleObjCSelectorCallbackSignature>();
+  for (const contract of contracts.functions) {
+    if (contract.name != `${ownerType}.${method.baseName}` || contract.parameters.length != method.parameterCount) continue;
+    if (!selectorMethodParametersMatch(declarations, method, contract)) continue;
+    for (const callback of contract.callbacks) {
+      let hasSignature = false;
+      match (in callback.selectorSignature) { some(_) => hasSignature = true; none => {} }
+      if (callback.target.byteLength == 0 && !hasSignature) continue;
+      const selectorIndex = try contractParameterIndex(contract.parameters, callback.parameter);
+      const selector = view declarations.objectiveCParameters[method.parameterStart + selectorIndex];
+      if (selector.nativeType != "SEL") throw `selector callback "${callback.parameter}" requires a native SEL parameter`;
+      if (callback.target.byteLength == 0 || !hasSignature) throw "a selector callback requires both target <parameter>; and an inline type (...) => ... on thread.main;";
+      if (callback.context.byteLength > 0 || callback.release.byteLength > 0 || callback.thread.byteLength > 0 || contract.asyncCallback.byteLength > 0) {
+        throw "a selector callback cannot mix target/type with context, deinit, thread, or async projection facts; delivery is chosen by native registration";
+      }
+      if (contract.returnNullable || contract.resultOwnership.byteLength > 0 || contract.resultBorrowedFrom.byteLength > 0 || contract.invalidates.length > 0) {
+        throw "selector callback registration cannot also project result ownership, nullability, or invalidation in this tier";
+      }
+      const targetIndex = try contractParameterIndex(contract.parameters, callback.target);
+      const target = view declarations.objectiveCParameters[method.parameterStart + targetIndex];
+      if (targetIndex == selectorIndex || !selectorCallbackObject(declarations, target.typeName)) {
+        throw `selector target "${callback.target}" must be an Objective-C object parameter`;
+      }
+      let index: usize = 0;
+      while (index < contract.parameters.length) {
+        const parameter = view contract.parameters[index];
+        const native = view declarations.objectiveCParameters[method.parameterStart + index];
+        match (in native.name) {
+          some(name) => if (name != parameter.name) throw `declaration parameter "${parameter.name}" does not match native parameter "${name}"`;
+          none => {}
+        }
+        if (index == selectorIndex || index == targetIndex) {
+          if (parameter.capability != "value" || parameter.nullable || parameter.nullOnly || parameter.release.byteLength > 0 || parameter.fixedValue.byteLength > 0 || native.consumed) {
+            throw "selector registration requires ordinary target and SEL parameters, without consuming, nullable, fixed, or release projections";
+          }
+        }
+        index = index + 1;
+      }
+      const signature = match (in callback.selectorSignature) { some(value) => copy value; none => throw "missing selector callback signature"; };
+      let nativeTypes = Array<String>();
+      index = 0;
+      for (const typeName of signature.parameterTypes) {
+        nativeTypes.push(try selectorCallbackABI(declarations, typeName, false));
+        const borrowed = selectorCallbackObject(declarations, typeName);
+        if ((borrowed && signature.parameterModes[index] != "in") || (!borrowed && signature.parameterModes[index] != "value")) {
+          throw "selector callback parameter requires in for a borrowed Objective-C object, and value passing for a scalar or native value";
+        }
+        index = index + 1;
+      }
+      const nativeReturnType = try selectorCallbackABI(declarations, signature.returnType, true);
+      result.push(ModuleObjCSelectorCallbackSignature({
+        selectorParameter: selectorIndex, targetParameter: targetIndex, signature,
+        nativeReturnType, nativeParameterTypes: nativeTypes, cardinality: copy callback.cardinality,
+      }));
+    }
+  }
+  return result;
+}
+
 function normalizedObjCMethod(
   in declarations: RawForeignModuleDeclarations,
   in method: RawForeignObjCMethod,
   in ownerType: String,
   in contracts: RawForeignContractSet
 ): NativeForeignObjCMethodContract throws String {
+  const selectorCallbacks = try normalizedSelectorCallbacks(declarations, method, ownerType, contracts);
   let parameters = Array<NativeForeignObjCParameterContract>();
-  let representable = method.returnTypeName.byteLength > 0;
+  // Retain the checked evidence, but do not expose a callable bare-SEL boundary
+  // until executable selector references validate the paired target/method.
+  let representable = method.returnTypeName.byteLength > 0 && selectorCallbacks.length == 0;
   let parameterIndex: usize = 0;
   while (parameterIndex < method.parameterCount) {
     const capability = objcMethodParameterCapability(
@@ -3329,6 +3527,7 @@ function normalizedObjCMethod(
     none => {}
   }
   return NativeForeignObjCMethodContract({
+    selectorCallbacks,
     name: method.baseName.copyBytes(0, method.baseName.byteLength),
     selector: method.selector.copyBytes(0, method.selector.byteLength),
     instance: method.instance,
@@ -3728,7 +3927,10 @@ export function normalizeForeignContracts(
   );
   let functions = Array<NativeForeignFunctionContract>();
   for (const contract of contracts.functions) {
-    if (rawObjCMethodContractExists(declarations, contract)) continue;
+    if (rawObjCMethodContractExists(declarations, contract)) {
+      try validateSelectorMethodTarget(declarations, contract);
+      continue;
+    }
     const functionIndex = try findRawFunction(declarations, contract.name);
     if (declarations.functions[functionIndex].overloadCount != 1) {
       throw `native Z declaration scalar tier requires exactly one overload for "${contract.name}"`;
@@ -3742,6 +3944,7 @@ export function normalizeForeignContracts(
     }
     let callbacks = Array<NativeForeignCallbackContract>();
     for (const callback of contract.callbacks) {
+      if (callback.target.byteLength > 0) throw "target and inline callback type facts require an Objective-C SEL method parameter";
       const callbackIndex = try contractParameterIndex(
         contract.parameters,
         callback.parameter

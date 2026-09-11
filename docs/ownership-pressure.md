@@ -7489,6 +7489,46 @@ subclass with nullable CADisplayLink storage passes compile-only checking.
 Website build (33 pages), fixture/tier coverage, and diff checks pass. This is
 targeted correctness evidence, not a new runtime benchmark or full-suite claim.
 
+## Selector callback contracts without invented lifetime proof (2026-09-10)
+
+The next resize seam is `NSWindow.displayLinkWithTarget:selector:`. Unlike a C
+callback typedef or an Objective-C block, `SEL` erases the callback signature
+and does not capture a receiver. The approved reference is explicitly
+`objc.selector(SmoothWindow.onDisplay)`, paired with the separate native target
+argument; contextual conversion of a bound-looking `window.onDisplay` was
+rejected because it would misleadingly discard that receiver.
+
+The `.zd` foundation now parses and validates `callback selector { target
+target; type (in link: CADisplayLink) => void on thread.main; invoked repeatedly;
+}` in both compilers. Clang proves the outer method/parameters. The inline
+signature is a reviewed behavioral assertion, not header-recovered ABI evidence.
+The normalized native model retains the target index, selector index, native
+and Z parameter/return types, capabilities, cardinality, and callback affinity.
+It does not turn the factory into a main-thread scheduler or invent a
+`thread caller` delivery promise. Main-run-loop registration and invalidation
+remain explicit; ARC alone cannot break a target/link cycle.
+
+This is a declaration checkpoint, not an executable-selector claim. The
+contracted call is deliberately unavailable, including when an ordinary native
+method produces a bare SEL, until method-reference checking can prove the
+target/signature pairing. No generated closure environment or adapter object
+is introduced. The next slice must add new-selector Ready/main/exclusivity
+guards and test constructing/dying registration, mismatched target types,
+signature mismatches, shutdown, and native reentry before real resize adoption.
+
+Test-authoring friction remains worth retaining: the native lowering still
+rejects nested synchronous `try` arguments and does not implement general
+multi-argument `console.log`. This decoder uses sequential throwing reads and
+one template argument, matching existing native test drivers. These are
+composition follow-ups, not reasons to hide native interop behind a Zapp shim.
+
+The fresh compiler reaches a fixed point at 11,599,034 emitted C bytes. Direct
+`.zd` command-line checking remains Stage 0-only; native contract checking is
+exercised through the independent Z decoder and an ordinary `.zs` header import.
+The targeted regression run passes 151 tests across selector contracts, native
+subclasses, Objective-C/native interop, and editor integration. The website
+build passes all 33 pages. This is not a full-suite or performance claim.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

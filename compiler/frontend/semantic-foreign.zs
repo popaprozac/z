@@ -22,6 +22,7 @@ import {
   ModuleMethodSignature,
   ModuleObjCAvailabilitySignature,
   ModuleObjCParameterProtocolSignature,
+  ModuleObjCSelectorCallbackSignature,
   ModuleResolveError,
   ModuleResolveErrorKind,
   ModuleSymbol,
@@ -189,6 +190,17 @@ function objcMethodSignature(
   in indices: ForeignNameIndices,
   in namespace: String
 ): ModuleMethodSignature {
+  let selectorCallbacks = Array<ModuleObjCSelectorCallbackSignature>();
+  for (const callback of method.selectorCallbacks) {
+    let rebound = copy callback;
+    let types = Array<String>();
+    for (const typeName of callback.signature.parameterTypes) {
+      types.push(localObjCTypeName(contracts, indices, namespace, typeName));
+    }
+    rebound.signature.parameterTypes = move types;
+    rebound.signature.returnType = localObjCTypeName(contracts, indices, namespace, callback.signature.returnType);
+    selectorCallbacks.push(move rebound);
+  }
   let parameterModes = Array<String>();
   let parameterTypes = Array<String>();
   let parameterNativeTypes = Array<String>();
@@ -289,6 +301,7 @@ function objcMethodSignature(
     none => {}
   }
   return ModuleMethodSignature({
+    objectiveCSelectorCallbacks: selectorCallbacks,
     name: method.name.copyBytes(0, method.name.byteLength),
     staticMethod: !method.instance,
     visibility: "public",

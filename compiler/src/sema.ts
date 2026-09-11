@@ -18403,6 +18403,10 @@ function checkObjCArguments(
   fileName: string,
   state: AnalysisState,
 ): void {
+  if (target.selectorCallbacks?.length) {
+    throw new DiagnosticError(fileName, args[target.selectorCallbacks[0].selectorParameter].location,
+      "selector registration requires checked objc.selector method evidence; executable selector references are not implemented yet", { code: "Z0814" });
+  }
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     const parameter = target.parameters[index];

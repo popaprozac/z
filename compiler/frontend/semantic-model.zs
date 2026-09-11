@@ -344,7 +344,17 @@ export struct ModuleObjCAvailabilitySignature {
   message: String;
 }
 
+export struct ModuleObjCSelectorCallbackSignature {
+  selectorParameter: usize;
+  targetParameter: usize;
+  signature: ModuleFunctionSignature;
+  nativeReturnType: String;
+  nativeParameterTypes: Array<String>;
+  cardinality: String;
+}
+
 export struct ModuleMethodSignature {
+  objectiveCSelectorCallbacks: Array<ModuleObjCSelectorCallbackSignature> = Array<ModuleObjCSelectorCallbackSignature>();
   name: String;
   staticMethod: boolean;
   visibility: String;

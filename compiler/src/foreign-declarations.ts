@@ -23,6 +23,7 @@ import type {
 import type { ForeignThreadContract } from "./foreign-ir.ts";
 import { callbackParameterSpellings, callbackReturnSpelling, normalizeCallbackContextType } from "./foreign-type-spelling.ts";
 import { lex, type Token } from "./lexer.ts";
+import { validateSelectorContract } from "./objc-selector-contracts.ts";
 
 export type ContractParameter = {
   readonly name: string;
@@ -111,6 +112,9 @@ export type ForeignThreadContractLocations = {
 };
 
 export type ForeignCallbackContract = {
+  readonly target: string | null;
+  readonly targetLocation: SourceLocation | null;
+  readonly signature: ForeignSelectorSignature | null;
   readonly parameter: string;
   readonly cardinality: "once" | "repeatedly";
   readonly context: string | null;
@@ -133,6 +137,19 @@ export type ForeignCallbackContract = {
   readonly threadLocation: SourceLocation | null;
   readonly failureLocation: SourceLocation | null;
   readonly failureValueLocation: SourceLocation | null;
+};
+
+export type ForeignSelectorSignature = {
+  readonly parameters: readonly {
+    readonly name: string;
+    readonly mode: "value" | "in";
+    readonly typeName: string;
+    readonly location: SourceLocation;
+    readonly typeLocation: SourceLocation;
+  }[];
+  readonly returnType: string;
+  readonly returnLocation: SourceLocation;
+  readonly location: SourceLocation;
 };
 
 export type ForeignDeclarationContracts = {
@@ -844,6 +861,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           let contextOption: Token | null = null;
           let callbackRelease: Token | null = null;
           let nativeType: Token | null = null;
+          let target: Token | null = null;
+          let signature: ForeignSelectorSignature | null = null;
           let callbackOwner: Token | null = null;
           let bytes: ForeignCallbackContract["bytes"] = null;
           let callbackFailure: ContractStatusValue | null = null;
@@ -864,9 +883,44 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
               continue;
             }
             if (at("type")) {
-              if (nativeType) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one native type`);
+              if (nativeType || signature) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one native type`);
               take();
+              if (at("(")) {
+                take();
+                const parameters: ForeignSelectorSignature["parameters"][number][] = [];
+                while (!at(")")) {
+                  const location = peek().location;
+                  let mode: "value" | "in" = "value";
+                  if (at("in")) { take(); mode = "in"; }
+                  else if (at("inout") || at("out") || at("move")) fail(peek(), "selector callback parameters support value or in capabilities only");
+                  const parameter = expectIdentifier("a selector callback parameter name");
+                  if (parameters.some((entry) => entry.name === parameter.text)) fail(parameter, `duplicate selector callback parameter ${JSON.stringify(parameter.text)}`);
+                  expectText(":");
+                  const type = expectIdentifier("an explicit selector callback type");
+                  if (type.text === "_") fail(type, "a selector callback type must be explicit because SEL erases its signature");
+                  parameters.push({ name: parameter.text, mode, typeName: type.text, location, typeLocation: type.location });
+                  if (!at(",")) break;
+                  take();
+                }
+                expectText(")");
+                expectText("=>");
+                const result = expectIdentifier("an explicit selector callback return type");
+                expectText("on");
+                expectText("thread");
+                expectText(".");
+                expectText("main");
+                signature = { parameters, returnType: result.text, returnLocation: result.location, location: callbackFact.location };
+                expectText(";");
+                continue;
+              }
               nativeType = expectIdentifier("a native callback typedef name");
+              expectText(";");
+              continue;
+            }
+            if (at("target")) {
+              if (target) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare target more than once`);
+              take();
+              target = expectIdentifier("a native object parameter name after target");
               expectText(";");
               continue;
             }
@@ -929,7 +983,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             }
             fail(
               callbackFact,
-              `expected "type", "context", "owner", "project", "failure", "deinit", "thread", or "invoked" in foreign callback contract, found ${JSON.stringify(callbackFact.text)}`,
+              `expected "type", "target", "context", "owner", "project", "failure", "deinit", "thread", or "invoked" in foreign callback contract, found ${JSON.stringify(callbackFact.text)}`,
             );
           }
           expectText("}");
@@ -940,6 +994,9 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             );
           }
           callbacks.push({
+            target: target?.text ?? null,
+            targetLocation: target?.location ?? null,
+            signature,
             parameter: callback.text,
             cardinality: cardinality.text as "once" | "repeatedly",
             context: context?.text ?? null,
@@ -1331,6 +1388,7 @@ export function foreignDeclarationApiNotes(
     fieldProjections?: readonly ForeignFieldProjection[];
   }> = {};
   const objcMethods: Record<string, {
+    selectorCallbacks?: NonNullable<ForeignObjCMethod["selectorCallbacks"]>;
     parameters?: Record<string, PointerNote>;
     executorAffinity?: "main";
     async?: {
@@ -1415,9 +1473,12 @@ export function foreignDeclarationApiNotes(
           : "foreign function";
         throw new DiagnosticError(fileName, contract.location, `declaration names unknown ${kind} ${JSON.stringify(contract.name)}`, { code: "Z0801" });
       }
-      objcMethods[method.key] = objectiveCMethodApiNote(contract, method.method, fileName);
+      objcMethods[method.key] = objectiveCMethodApiNote(contract, method.method, namedTypes, interfaces, fileName);
       continue;
     }
+    const selectorContract = contract.callbacks.find((callback) => callback.target || callback.signature);
+    if (selectorContract) throw new DiagnosticError(fileName, selectorContract.location,
+      "target and inline callback type facts require an Objective-C SEL method parameter", { code: "Z0801" });
     if (contract.asyncCallback) {
       throw new DiagnosticError(
         fileName,
@@ -2353,8 +2414,11 @@ function resolveObjCMethodContract(
 function objectiveCMethodApiNote(
   contract: ForeignFunctionContract,
   method: ForeignObjCMethod,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  interfaces: ReadonlyMap<string, ForeignObjCInterface>,
   fileName: string,
 ): {
+  readonly selectorCallbacks?: NonNullable<ForeignObjCMethod["selectorCallbacks"]>;
   readonly parameters?: Readonly<Record<string, PointerNote>>;
   readonly executorAffinity?: "main";
   readonly async?: {
@@ -2380,6 +2444,13 @@ function objectiveCMethodApiNote(
     );
   }
   const callbacks = new Map(contract.callbacks.map((callback) => [callback.parameter, callback]));
+  const selectorCallbacks: NonNullable<ForeignObjCMethod["selectorCallbacks"]>[number][] = [];
+  for (const callback of contract.callbacks) {
+    const index = contract.parameters.findIndex((parameter) => parameter.name === callback.parameter);
+    if (callback.target || callback.signature || method.parameters[index]?.type.kind === "selector") {
+      selectorCallbacks.push(validateSelectorContract(contract, method, callback, namedTypes, interfaces, fileName));
+    }
+  }
   const parameters: Record<string, PointerNote> = {};
   for (let index = 0; index < contract.parameters.length; index += 1) {
     const parameter = contract.parameters[index];
@@ -2393,6 +2464,9 @@ function objectiveCMethodApiNote(
       );
     }
     const callback = callbacks.get(parameter.name);
+    if (callback && (callback.target || callback.signature || native.type.kind === "selector")) {
+      continue;
+    }
     if (native.type.kind !== "block") {
       if (callback) {
         throw new DiagnosticError(
@@ -2576,6 +2650,7 @@ function objectiveCMethodApiNote(
     ...(contract.executorAffinity ? { executorAffinity: contract.executorAffinity } : {}),
     ...(Object.keys(parameters).length ? { parameters } : {}),
     ...(asyncProjection ? { async: asyncProjection } : {}),
+    ...(selectorCallbacks.length ? { selectorCallbacks } : {}),
   };
 }
 

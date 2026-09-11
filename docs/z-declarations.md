@@ -14,9 +14,11 @@ function produces a focused "no checked function" diagnostic at the call site.
 This keeps header-only imports convenient without inventing safety facts.
 
 A `.zd` file is not a duplicate header and cannot invent a native declaration.
-Every named function, type, parameter, callback, context, release operation, and
-constant is checked against the imported header before it reaches semantic
-analysis.
+Every named native function, type, outer parameter, context, release operation,
+and constant is checked against the imported header before it reaches semantic
+analysis. C callback typedefs carry their signatures in the header; Objective-C
+`SEL` does not. An inline selector callback signature is a trusted behavioral
+assertion, not a signature Clang can recover from `SEL`.
 
 For:
 
@@ -42,6 +44,9 @@ The enclosing `declare module` is already the authoring scope. No import is
 required inside the `.zd` file; the editor loads that header for completion,
 hover, and validation. `z check path/to/header.h.zd` performs the same ABI
 validation against the real header rather than checking grammar alone.
+Direct `.zd` checking currently uses the Stage 0 CLI (`bun run z check ...`);
+the standalone native driver checks contracts when importing their headers from
+a `.zs` file, but does not yet accept `.zd` as its command-line entry.
 
 ## Complete current shape
 
@@ -285,6 +290,8 @@ still use the Stage-0 compiler.
 | `invoked repeatedly;` | Assert zero or more native callback invocations | Required for owner-tied callback connections; also valid for call-scoped APIs such as sorting and visitation |
 | `context context;` | Pair a C callback with its opaque native context parameter | Generated trampoline recovers the exact Z closure environment; ARC-owned Objective-C blocks omit this |
 | `type NativeCallback;` | Name the exact callback typedef used by an option-selected native callback | The typedef and its full function-pointer signature must exist in the header |
+| `target receiver;` inside `callback selector` | Pair an Objective-C `SEL` parameter with its object receiver parameter | Both outer parameters must match the header; no closure environment or receiver capture is synthesized. Contract validation is implemented; executable selector references are pending |
+| `type (in value: NativeObject) => void on thread.main;` | Assert the callback signature erased by `SEL` | Concrete types and passing capabilities are checked; the callback signature itself comes from native documentation. `on thread.main` is a requirement, not scheduling or a delivery guarantee |
 | `context option CONSTANT;` | Name the separate native option used to install the opaque callback context | Constant must exist, match the native option type, and differ from the callback option |
 | `owner handle;` | Tie a callback connection to one borrowed native owner parameter | Z prevents the owner from moving or deinitializing while the connection is live |
 | `project input: Slice<u8> { data data; length length; }` in a function body | Replace a native byte pointer plus `size_t` length with one named borrowed `Slice<u8>` argument | Read-only projections require const native storage; `project inout` requires mutable native storage and explicit `inout` at the Z call site |

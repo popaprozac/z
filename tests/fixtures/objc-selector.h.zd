@@ -1,0 +1,9 @@
+declare module "objc-selector.h" {
+  export function ZSelectorTarget.registerTarget(target: _, selector: _): _ {
+    callback selector {
+      target target;
+      type (in link: ZSelectorLink) => void on thread.main;
+      invoked repeatedly;
+    }
+  }
+}
