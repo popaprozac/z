@@ -342,6 +342,40 @@ return-value handshake for timely cleanup.
 This closes the **entry** boundary, not escaping field borrowing. The implemented
 storage tier keeps its fields behind those guarded entries.
 
+#### Real AppKit reentry checkpoint (2026-09-10)
+
+The manual `scripts/probe-appkit-subclass-reentry.ts --run` probe establishes
+that this conservative rule blocks the intended Zapp zoom controller. A new
+exclusive native entry invokes `super.zoom(null)`; AppKit dispatches virtually
+to the same receiver's `setFrame:display:animate:` override, which is another
+exclusive entry. The guard rejects it before that second Z body runs. This is
+ordinary superclass behavior, not a background-thread race or an escaping loan.
+
+The direct animated `setFrame` control completes on the tested macOS; it did
+not demonstrate the same reentry. A second control removes both source writes
+and makes both entries readers; zoom then completes. That control cannot be
+used as a mutable animation implementation. Both generated variants are run
+at `-O0` and `-O2` under strict Clang/UBSan, with ten-second process deadlines
+and caught expected aborts. The GUI probe is opt-in, not an ordinary CI test.
+It establishes dispatch behavior, not WebView smoothness or zoom/restore
+correctness. The test suite separately checks the fixture without opening a GUI.
+
+**Design decision required, not implemented:** consider a checked native-call
+delegation boundary that temporarily suspends the current receiver loan only
+when no receiver-field loan/reference can remain live across that call. The
+outer entry reacquires access before continuing. Other live loans must remain
+protected; borrowed native arguments, nested reader entries, ARC destructor
+reentry, and early exits all need independent evidence. A blanket exception for
+`super`, same-thread access, or native callbacks is not sufficient. This would
+change the current whole-entry rule and therefore requires user deliberation.
+
+Two independent composition gaps also remain before production integration:
+`zoom:` accepts nullable Objective-C `id`, not `NSObject *`; its erased native
+identity needs an approved source annotation rather than a narrowed signature.
+Also, the Stage 0 async emitter currently rejects any program containing a
+native subclass, even when that subclass's own methods are synchronous. Neither
+gap is closed by selector registration support.
+
 ### Implemented inline owned storage
 
 ```zs

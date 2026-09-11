@@ -7632,6 +7632,44 @@ idle ticker shutdown, and native reentry before claiming that migration done.
 This slice does not broaden field loans, add stored selector values, or infer
 cycle-breaking cleanup from ARC.
 
+## Real AppKit zoom versus whole-entry exclusivity (2026-09-10)
+
+The first live native-subclass integration probe found a limitation that the
+synthetic safety tests correctly enforced but could not judge ergonomically:
+AppKit's `super.zoom(null)` calls back virtually into the window's
+`setFrame:display:animate:` override. A mutable animation controller therefore
+reenters the same receiver while its outer `inout this` entry is active. The
+current runtime rejects that callback before the second Z body. This is a
+composition/design boundary, not a reason to remove the exclusivity guard.
+
+Evidence is preserved in
+[`objc-subclass-appkit-reentry.zs`](../tests/fixtures/objc-subclass-appkit-reentry.zs)
+and the explicit manual runner:
+
+```sh
+bun scripts/probe-appkit-subclass-reentry.ts --run
+```
+
+On this Mac, direct animated resizing succeeds, exclusive zoom is rejected,
+and the no-writes/shared-reader zoom control succeeds. Both `-O0` and `-O2`
+use strict Clang and UBSan; expected failures exit through the fixture's abort
+handler rather than producing macOS crash reports. Subprocesses are bounded,
+and no ASan is used. These six observations concern receiver dispatch, not
+WebView painting, interrupted-zoom correctness, or production Zapp behavior.
+
+The next deliberation is whether a compiler-checked native-call boundary may
+suspend the current receiver loan when no borrowed field storage can cross it,
+then reacquire it before Z continues. Live field views, borrowed arguments,
+other active entries, and ARC cleanup must still prevent unsafe reentry.
+No new permission, spelling, or weaker guard is implemented by this checkpoint.
+
+The same reduction identifies two separate upstream gaps: `zoom:`'s nullable
+`id` cannot be replaced by an `NSObject` annotation, and the Stage 0 async
+emitter rejects native subclasses in an otherwise async program. Keep all
+three on the integration checklist. Zapp still uses ordinary `NSWindow`; do
+not claim the smooth-resize controller has migrated, or reintroduce a native
+production shim to conceal these gaps.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
