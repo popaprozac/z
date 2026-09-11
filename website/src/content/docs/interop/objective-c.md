@@ -267,6 +267,12 @@ and Reduce Motion changes during a transition. The `link != active` guard
 distinguishes a stale display-link callback from the current source, even during
 a newer animation.
 
+Native behavior remains part of the contract: if `windowShouldZoom:toFrame:`
+vetoes a request, an unchanged target must stay unchanged—even when the Z
+controller has a saved restore frame. The probe tests that case before both
+zoom and restore. Compiler ownership checks do not replace these platform
+semantics tests.
+
 `==` and `!=` on compatible native class references compare **object identity**,
 without consuming either reference or calling `isEqual:`. Same-class,
 base/derived, erased `objc.Object`, and nullable reference comparisons are

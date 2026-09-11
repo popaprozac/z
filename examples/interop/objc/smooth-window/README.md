@@ -20,7 +20,8 @@ Or use the self-hosted compiler:
 Option-click the green window button to zoom/restore. Try a second click during
 the transition. Watch the viewport dimensions, responsive cards, and bottom-right
 label. Close the window to exit. The manual demo stays open until you close it.
-Direct mouse resizing stays immediate. This is not yet Zapp's production window.
+Direct mouse resizing stays immediate. Zapp now uses its own internal controller
+based on this probe, with its existing window delegates and lifecycle hooks.
 
 ## What the source demonstrates
 
@@ -74,7 +75,9 @@ normal zoom/restore, interrupted zoom/restore, close during animation, and force
 Reduce Motion. It also checks intended zoom state, saved restore geometry after
 moving a maximized window, subsequent manual size changes, no-op transitions,
 Reduce Motion enabled during a resize, a missing-screen path, and a stale
-display-link callback while a newer animation is active. Moving a
+display-link callback while a newer animation is active. A delegate veto is
+checked both before zoom and before restoring an already-zoomed window: an
+unchanged native target must never be replaced by a synthetic restore. Moving a
 maximized window may make AppKit consider it nonstandard: the next zoom can
 maximize again before a later zoom restores. The controller preserves that
 native target choice rather than imposing a different toggle rule.
@@ -94,7 +97,7 @@ does not consume either reference or invoke native `isEqual:` value equality.
 The stale-source regression delivers a distinct unscheduled link and verifies
 that it neither advances nor cancels the current animation.
 
-Then: Zapp integration and its menu/delegate/constraint/shutdown tests.
+Zapp's actual-source integration harness adds delegate, constraint, and shutdown tests.
 Fullscreen/Spaces, tiling, titlebar drag during an active animation, mixed-refresh
 displays, and actual system accessibility changes (rather than injected test
 inputs) still need their own native-behavior evidence.

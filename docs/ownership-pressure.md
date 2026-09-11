@@ -8180,6 +8180,43 @@ its real delegate, window constraints, interruption, and shutdown behavior in
 scope. Public animation options and broader fullscreen/display experiments
 remain separate decisions.
 
+## Zapp window-controller integration: preserve native decisions
+
+Consumer: Zapp's production `MacOSWindow`, 2026-09-11. The checked subclass now
+replaces ordinary `NSWindow` construction inside the framework without changing
+the public window API. Existing managers, protocol adapters, resize delivery,
+and asynchronous application shutdown remain in place. The 94-module source
+graph checks through the fixed-point native compiler, and the packaged WebView
+and worker smoke completes with clean service teardown.
+
+The key new pressure was native semantic correctness rather than a new ownership
+keyword: the standalone controller synthesized a saved restore frame when
+`super.zoom` left geometry unchanged. That can override a delegate veto. Remove
+that fallback and test vetoes both before zoom and while already maximized.
+These regressions now live beside the compiler's example, not just in Zapp.
+
+Zapp's actual-source harness adds resize notification delivery, zoom/close
+vetoes, cancellation, system-geometry handoff state, and a delegate-defined
+standard frame with content constraints compared against an ordinary AppKit
+window. All 20 geometry cases pass at `-O0` and `-O2` with strict Clang/UBSan;
+the separate WebView check observes intermediate layout and clean AppKit-loop
+return at both levels. No ASan. Test-only state does not change system settings.
+The framework's 502 CLI/runtime tests and both TypeScript checks also pass.
+The dev smoke verifies HMR and releases Vite port 5173 after teardown.
+
+Delegate callbacks that mutate the window explicitly use `inout this`. Internal
+frame application ignores its own synchronous move notification, while external
+move/live-resize notifications cancel the display link. Fullscreen lifecycle
+hooks hand sizing back to AppKit without replacing the saved user restore frame;
+injected handoff-state tests are not proof of
+real Spaces, tiling, titlebar tracking, or mixed-refresh display behavior.
+
+This slice needed no new Z syntax or native framework shim. Keep measuring
+framework resize-event/IPC work separately from frame geometry and WebKit
+presentation. The first application rebuild refreshed substantial foreign
+metadata; repeat-build latency remains a separate performance concern, not a
+runtime animation result.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -145,7 +145,6 @@ class SmoothWindow extends AppKit.NSWindow on thread.main {
 
   override function zoom(inout this, in sender: objc.Object | null): void as "zoom:" {
     const start = this.frame;
-    const startIsZoomed = super.isZoomed();
     const interrupted = this.animating;
     const previousTarget = this.targetFrame;
     this.animating = false;
@@ -164,12 +163,9 @@ class SmoothWindow extends AppKit.NSWindow on thread.main {
     this.preparingZoom = false;
     let target = this.frame;
     let targetZoomed = super.isZoomed();
-    if (equalFrames(start, target)) {
-      if (startIsZoomed && this.hasRestoreFrame) {
-        target = this.restoreFrame;
-        targetZoomed = false;
-      } else return;
-    }
+    // An unchanged target can be a delegate veto. Never manufacture a restore
+    // transition after AppKit declined the operation.
+    if (equalFrames(start, target)) return;
     if (targetZoomed) {
       if (!this.hasRestoreFrame) {
         this.restoreFrame = start;

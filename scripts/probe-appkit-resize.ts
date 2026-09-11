@@ -24,6 +24,12 @@ const controller = original.slice(0, original.indexOf("function main():"));
 const scenarios = `
 import probe from "./objc-subclass.h";
 import console from "std/console";
+class ZoomDelegate on thread.main implements AppKit.NSWindowDelegate {
+  veto: boolean;
+  function shouldZoom(in window: AppKit.NSWindow, frame: AppKit.NSRect): boolean as "windowShouldZoom:toFrame:" {
+    return !this.veto;
+  }
+}
 function pump(seconds: f64): void on thread.main {
   const deadline = clock.CACurrentMediaTime() + seconds;
   while (clock.CACurrentMediaTime() < deadline) {
@@ -51,10 +57,23 @@ function main(): i32 {
     return 3;
   }
   const original = window.frame;
+  const delegate = new ZoomDelegate({ veto: false });
+  const adapter = objc.adapt<AppKit.NSWindowDelegate>(delegate);
+  window.delegate = adapter;
   let expected = original;
   const enlarged = AppKit.NSMakeRect(original.origin.x, original.origin.y, original.size.width + 150, original.size.height + 100);
   const scenario = probe.z_subclass_access_scenario();
-  if (scenario == 0) {
+  if (scenario == 13 || scenario == 14) {
+    if (scenario == 14) { window.zoom(null); pump(0.5); }
+    const before = window.frame;
+    delegate.veto = true;
+    window.zoom(null);
+    pump(0.5);
+    if (window.isAnimating() || !sameFrame(window.frame, before)) return 131;
+    window.close();
+    console.log("delegate zoom veto preserved");
+    return 0;
+  } else if (scenario == 0) {
     window.resize(enlarged, true, true);
     pump(0.5);
     if (!sameFrame(window.frame, enlarged) || window.isAnimating()) {
@@ -259,7 +278,7 @@ try {
         "-fsanitize=undefined", "-fno-sanitize-recover=all", "-I", resolve(root, "tests/fixtures"),
         "-framework", "AppKit", "-framework", "QuartzCore", "-framework", "WebKit",
         generated, resolve(root, "tests/fixtures/objc-subclass.m"), "-o", executable]);
-      for (const scenario of webview ? [0] : reduced ? [6] : [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]) {
+      for (const scenario of webview ? [0] : reduced ? [6] : [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14]) {
         const result = spawnSync(executable, [], { encoding: "utf8", timeout: webview ? 15_000 : 8_000, killSignal: "SIGKILL",
           env: { ...process.env, Z_SUBCLASS_ACCESS_SCENARIO: String(scenario) } });
         assert.equal(result.status, 0, `${native ? "native" : "stage0"} ${optimization} scenario ${scenario}: ${result.stdout} ${result.stderr} ${result.error ?? ""}`);
