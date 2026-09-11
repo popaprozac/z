@@ -8285,6 +8285,41 @@ ordinary `f32`/`f64` arithmetic for elapsed-time calculations, and native
 shareability recognizes existing `TaskControl`/`TaskScope` identities inside
 synchronized state. This keeps the consumer from working around either gap.
 
+## Zapp resize events: transfer after borrowed publication (2026-09-11)
+
+A bounded actual-source WebView probe measures Z's event publisher, generated
+JSON/JavaScript delivery, and the public frontend window listener. Publishing
+to the specific stream and then the aggregate stream does not need a second
+owned payload copy:
+
+```z
+resized.publish(in event);
+const aggregate = WindowEvent.resized(move event);
+all.publish(in aggregate);
+```
+
+The first loan has ended before the move. Each subscriber may still retain an
+independent `copy` of the borrowed value. Zapp's retained-snapshot regression
+passes through Stage 0 and native compilation at `-O0`/`-O2` under UBSan after
+the publisher closes. No syntax, checker permission, or event semantics change.
+
+Separate instrumented runs observe two generated publication allocation requests
+before, one after; these are not libc allocation traces, and Clang can eliminate
+unused storage. Ordinary optimized measurements show approximately 1–1.4 µs for
+the two Z listeners, 2–3 µs for message construction, and 0.7–0.8 ms for median
+WebKit completion on the M4 Pro workstation. The short runs do not establish a
+significant latency improvement. No dropped/reordered payloads or consecutive
+duplicate sizes were observed. Details, source hashes, and reproducible commands
+live in Zapp's `spikes/window-resize/README.md`; compositor paint, real application
+handler costs, and complete manager-lookup overhead are outside this probe.
+
+The retained-value fixture also exposed a narrow contextual-inference parity
+follow-up: bare `Option.none` in its class-construction field is accepted natively
+but reported as an unknown name by Stage 0. Explicit
+`Option<WindowResizedEvent>.none`/`.some(...)` works in both. Keep a reduced
+contextual-constructor parity test in the future compiler queue rather than
+expanding this bounded event-performance checkpoint into a language redesign.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
