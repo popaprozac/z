@@ -188,6 +188,7 @@ function stage0ModuleSymbols(
       })),
       variants: [],
       customDeinit: Boolean(declaration.deinitializer),
+      ...(declaration.deinitializer?.threadContract ? { deinitThreadAny: true } : {}),
       customConstructor: Boolean(declaration.constructor),
       constructorVisibility: declaration.constructor?.visibility ?? "public",
       constructorSignature: stage0ConstructorSignature(declaration),
@@ -379,6 +380,7 @@ function sameModuleTypeSignature(
 ): boolean {
   if (left === null || right === null) return left === right;
   return left.customDeinit === right.customDeinit
+    && Boolean(left.deinitThreadAny) === Boolean(right.deinitThreadAny)
     && left.nativeCName === right.nativeCName
     && left.nativeCUnderlyingType === right.nativeCUnderlyingType
     && left.customConstructor === right.customConstructor

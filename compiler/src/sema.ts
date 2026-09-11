@@ -2085,6 +2085,13 @@ export function analyze(
       validateExecutorAffinity(method.executorAffinity, method.location, globals, fileName);
       validateCallableThreadContract(method, globals, fileName, true);
     }
+    if (declaration.deinitializer?.threadContract) {
+      validateCallableThreadContract(deinitializerFunction(declaration), globals, fileName, false);
+      if (declaration.nativeBase || state.aggregateExecutorAffinities.has(declaration.name)) {
+        throw new DiagnosticError(fileName, declaration.deinitializer.threadContract.onLocation,
+          "`deinit on thread.any` cannot override executor-bound or native superclass destruction", { code: "Z0712" });
+      }
+    }
     analyzeStructDeclaration(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName, state);
   }
   for (const declaration of program.traits) {
@@ -2236,6 +2243,20 @@ export function analyze(
   }
   collectMixedAffinityFieldAccesses(program, structs, enums, state);
 
+  for (const declaration of program.structs) {
+    if (!declaration.deinitializer?.threadContract || declaration.typeParameters?.length) continue;
+    for (const field of declaration.fields) {
+      if (field.executorAffinity || !initialThreadTransferKind(field.type.name, structs, enums, state)) {
+        throw new DiagnosticError(fileName, field.location,
+          `field ${JSON.stringify(field.name)} of ${JSON.stringify(declaration.name)} cannot be destroyed on an arbitrary thread`, {
+            code: "Z0712",
+            notes: ["`deinit on thread.any` covers the body and all automatic nested field cleanup"],
+            helps: ["use a thread-transferable field with checked cleanup, or keep this deinitializer thread-local"],
+          });
+      }
+    }
+  }
+
   const main = globals.get("main");
   if ((!main || main.kind !== "function") && requireMain) {
     throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, "program must declare `function main(): i32`");
@@ -2276,16 +2297,7 @@ export function analyze(
     if (declaration.deinitializer) {
       validateDeinitControlFlow(declaration.deinitializer.body, fileName);
       analyzeFunction(
-        {
-          kind: "function",
-          name: "deinit",
-          receiverMode: null,
-          parameters: [],
-          returnType: { name: "void", location: declaration.deinitializer.location },
-          errorType: null,
-          body: declaration.deinitializer.body,
-          location: declaration.deinitializer.location,
-        },
+        deinitializerFunction(declaration),
         globals,
         structs,
         enums,
@@ -2529,6 +2541,16 @@ function validateExecutorAffinity(
     labels: [{ location: declarationLocation, message: "declaration begins here" }],
     helps: ["import { thread } from \"std/thread\" and write `on thread.main` in the declaration header"],
   });
+}
+
+function deinitializerFunction(owner: StructDeclaration): FunctionDeclaration {
+  const declaration = owner.deinitializer!;
+  return {
+    kind: "function", name: "deinit", receiverMode: null, parameters: [],
+    returnType: { name: "void", location: declaration.location }, errorType: null,
+    threadContract: declaration.threadContract,
+    body: declaration.body, location: declaration.location,
+  };
 }
 
 function validateCallableThreadContract(
@@ -17596,7 +17618,7 @@ function mutexThreadShareIssue(
     };
   }
   const aggregate = structs.get(payload);
-  if (aggregate?.deinitializer) {
+  if (aggregate?.deinitializer && !aggregate.deinitializer.threadContract) {
     return {
       reason: `Mutex payload ${displayAssignableType(payload, state)} has a custom deinit whose thread affinity is unknown`,
       help: "use a payload with thread-independent cleanup, or keep this Mutex on one thread",
@@ -17733,7 +17755,7 @@ function shareableTypeIssue(
   }
   const aggregate = structs.get(actual);
   if (aggregate) {
-    if (aggregate.deinitializer) {
+    if (aggregate.deinitializer && !aggregate.deinitializer.threadContract) {
       return {
         reason: `${path} has a custom deinit whose thread affinity is unknown`,
         help: "remove custom deinit from the shared graph, or keep this class on one thread",
@@ -17856,14 +17878,14 @@ function initialThreadTransferKind(
   const aggregate = structs.get(actual);
   if (aggregate) {
     if (aggregate.kind === "class") return state.shareableClasses.has(actual) ? "share" : null;
-    if (aggregate.deinitializer) return null;
+    if (aggregate.deinitializer && !aggregate.deinitializer.threadContract) return null;
     visiting.add(actual);
     const fields = aggregate.fields.map((field) => (
       initialThreadTransferKind(field.type.name, structs, enums, state, visiting)
     ));
     visiting.delete(actual);
     if (fields.some((field) => field === null)) return null;
-    return fields.some((field) => field === "move" || field === "share") ? "move" : "copy";
+    return aggregate.deinitializer || fields.some((field) => field === "move" || field === "share") ? "move" : "copy";
   }
   const enumeration = enums.get(actual);
   if (enumeration) {

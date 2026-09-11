@@ -52,6 +52,32 @@ For a copyable scalar, `move` owns a snapshot rather than making the parent's
 binding disappear. A unique collection buffer genuinely transfers and becomes
 unavailable in the parent.
 
+## Resource cleanup on either thread
+
+A resource with custom cleanup needs an explicit checked contract before it
+can cross threads:
+
+```z
+import { thread } from "std/thread";
+
+struct Resource {
+  descriptor: i32;
+  deinit on thread.any {
+    closeDescriptor(this.descriptor);
+  }
+}
+```
+
+`closeDescriptor` represents your application/native helper. Its call must be
+legal off-main, and every nested field must also support cleanup there. This
+allows a unique resource to move to a worker or live inside shared
+`Mutex<Resource>` ownership. Final release runs cleanup exactly once on the
+releasing thread; the annotation does not hop executors or add a runtime lock.
+
+The compiler rejects main-affine cleanup and nested unproven resources. A
+mutable class does not become shareable, and an owned resource does not become
+copyable. Ordinary unannotated `deinit` keeps its thread-local restrictions.
+
 ## Main-executor placement
 
 Use a direct placed call when a typed API must run on main:

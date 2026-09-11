@@ -216,6 +216,7 @@ function appendTypeSignature(
   }
   output.append("],\"customDeinit\":");
   appendBoolean(inout output, signature.customDeinit);
+  if (signature.deinitThreadAny) output.append(",\"deinitThreadAny\":true");
   output.append(",\"customConstructor\":");
   appendBoolean(inout output, signature.customConstructor);
   output.append(",\"constructorVisibility\":");

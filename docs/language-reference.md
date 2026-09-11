@@ -1156,7 +1156,7 @@ such storage across threads when every reachable element is also shareable.
 
 When every reachable field is similarly immutable and safe to destroy on any
 thread, Z infers the class as shareable and uses atomic ARC for its references.
-Mutable collections, mutable receiver methods, custom `deinit`, and native
+Mutable collections, mutable receiver methods, unannotated custom `deinit`, and native
 identity without a threading contract prevent that inference.
 
 ## Ownership capabilities
@@ -1790,6 +1790,34 @@ remain explicit at both declaration and call sites.
 `deinit` is deterministic, synchronous, infallible, and runs exactly once for
 owned value storage or when the final strong class reference ends. Fallible
 resource shutdown belongs in an explicit operation such as `close()`.
+
+Custom cleanup is thread-local unless it opts into a checked contract:
+
+```z
+import { thread } from "std/thread";
+
+struct Resource {
+  descriptor: i32;
+  deinit on thread.any {
+    closeDescriptor(this.descriptor);
+  }
+}
+```
+
+Here `closeDescriptor` is an application/native helper whose call is legal off
+main. The compiler checks the cleanup body and all automatic nested field
+cleanup. Main-affine state, an unannotated nested deinitializer, or an
+untransferable field is rejected. Foreign cleanup still needs its native
+threading/ownership contract; this annotation cannot override it.
+
+The annotation adds no scheduling or lock: cleanup runs once, synchronously on
+the thread releasing the final owner. It permits uniquely owned resources to
+move across threads and participate in `Mutex<T>` ownership. A class still
+needs a deeply readonly/shareable graph for shared cross-thread identity;
+`deinit on thread.any` alone does not make a mutable class shareable. Move-only
+values remain move-only. As with ordinary cleanup, the body cannot suspend or
+propagate errors, and native superclass destruction cannot be opted into this
+contract.
 
 `weak value` creates a non-owning `Weak<T>` for a class. `upgrade()` either
 returns a strong reference or throws `WeakExpired`. Weak references are the
@@ -3410,7 +3438,7 @@ on main. A capturing closure must spell `move`. Copy and shareable ARC captures
 remain valid in the parent; moved unique owners do not. `Array`, owned `String`,
 mutable `TextBuffer`, and supported aggregates containing them use the
 consuming path and may return ownership through `await`. Other mutable classes,
-borrows, views, raw native references, `Arena`, custom `deinit`, and
+borrows, views, raw native references, `Arena`, unannotated custom `deinit`, and
 cross-thread `Weak<T>` remain rejected. Results follow the same rules.
 
 The thread namespace also supplies typed placement targets. The first target is

@@ -204,6 +204,7 @@ export function createNativeSemanticBridge(
       || native.typeSignature.constructorVisibility
         !== (source.declaration.constructor?.visibility ?? "public")
       || native.typeSignature.customDeinit !== Boolean(source.declaration.deinitializer)
+      || Boolean(native.typeSignature.deinitThreadAny) !== Boolean(source.declaration.deinitializer?.threadContract)
     ) {
       throw new Error(
         `native semantic bridge aggregate mismatch for ${JSON.stringify(source.declaration.name)} constructed at ${callSite(location, sourceBatch)}`,

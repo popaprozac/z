@@ -908,6 +908,7 @@ struct LoweredGenericStructUse {
   typeArgumentSymbols: Array<usize>;
   fields: Array<LoweredGenericStructField>;
   customDeinit: boolean;
+  deinitThreadAny: boolean = false;
   referenceType: boolean;
   executorBound: boolean;
 }
@@ -1755,6 +1756,7 @@ function collectGenericStructUseFromType(
                   typeArgumentSymbols: copyUsizes(argumentSymbols),
                   fields: move ownerFields,
                   customDeinit: signature.customDeinit,
+                  deinitThreadAny: signature.deinitThreadAny,
                   referenceType: symbol.kind == ModuleSymbolKind.classSymbol,
                   executorBound: symbol.kind == ModuleSymbolKind.classSymbol
                     && signature.executorAffinity.byteLength > 0,
@@ -1783,6 +1785,7 @@ function collectGenericStructUseFromType(
                   typeArgumentSymbols: move argumentSymbols,
                   fields,
                   customDeinit: signature.customDeinit,
+                  deinitThreadAny: signature.deinitThreadAny,
                   referenceType: symbol.kind == ModuleSymbolKind.classSymbol,
                   executorBound: symbol.kind == ModuleSymbolKind.classSymbol
                     && signature.executorAffinity.byteLength > 0,
@@ -4900,7 +4903,9 @@ function moduleTypeIsWorkerDestructible(
         }
         return true;
       }
-      return false;
+      // Concrete user generics carry their checked field cleanup below in
+      // importedTypes; do not discard that evidence just because the source
+      // name still contains type arguments.
     }
     none => {}
   }
@@ -4917,7 +4922,7 @@ function moduleTypeIsWorkerDestructible(
     }
     if (declaration.executorAffinity.byteLength > 0) return false;
     match (in declaration.deinitializer) {
-      some(_) => return false;
+      some(cleanup) => { if (cleanup.threadContract != "thread.any") return false; }
       none => {}
     }
     let nextVisiting = copyTypePath(visiting);
@@ -5042,7 +5047,7 @@ function moduleTypeIsThreadShareable(
           visiting
         );
       }
-      return false;
+      // Fall through to concrete imported generic evidence.
     }
     none => {}
   }
@@ -5051,7 +5056,7 @@ function moduleTypeIsThreadShareable(
     if (declaration.name != name) continue;
     if (declaration.executorAffinity.byteLength > 0) return false;
     match (in declaration.deinitializer) {
-      some(_) => return false;
+      some(cleanup) => { if (cleanup.threadContract != "thread.any") return false; }
       none => {}
     }
     for (const method of declaration.methods) {
@@ -29460,8 +29465,8 @@ function appendConcreteGenericStructs(
     if (present) continue;
     let fields = Array<LoweredField>();
     let needsDeinit = use.customDeinit || use.referenceType;
-    let threadShareable = !use.customDeinit && !use.referenceType;
-    let workerDestructible = !use.customDeinit && !use.referenceType;
+    let threadShareable = (!use.customDeinit || use.deinitThreadAny) && !use.referenceType;
+    let workerDestructible = (!use.customDeinit || use.deinitThreadAny) && !use.referenceType;
     let executorBound = use.executorBound;
     if (
       use.consumerModuleIndex != use.ownerModuleIndex
@@ -29914,7 +29919,7 @@ function appendDeferredGenericAliasType(
         : LoweredTypeKind.structType,
       executorBound: use.executorBound,
       threadShareable: false,
-      workerDestructible: !use.customDeinit && !use.referenceType,
+      workerDestructible: (!use.customDeinit || use.deinitThreadAny) && !use.referenceType,
       needsDeinit: use.customDeinit || use.referenceType,
       resourceRelease: "",
       fields,

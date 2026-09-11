@@ -333,6 +333,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-task-scope-field.zs": focusedPositive,
   "self-host-emit-task-scope-delay-method.zs": focusedPositive,
   "self-host-emit-thread-any-callable.zs": focusedPositive,
+  "self-host-emit-thread-any-deinit.zs": focusedPositive,
   "self-host-emit-thread-main-callable.zs": focusedPositive,
   "self-host-emit-thread-cancel-main-match.zs": focusedPositive,
   "self-host-emit-thread-cancel-main-while.zs": focusedPositive,

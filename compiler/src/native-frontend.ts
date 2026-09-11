@@ -858,7 +858,7 @@ export function resolveWithNativeFrontendLibrary(
         );
         const customDeinit = field(8, "custom-deinit state");
         const customConstructor = field(9, "custom-constructor state");
-        if (customDeinit > 1 || customConstructor > 1) {
+        if (customDeinit > 2 || customConstructor > 1) {
           throw new Error("the native frontend returned invalid type-signature flags");
         }
         const typeParameterCount = field(10, "type-parameter count");
@@ -895,7 +895,8 @@ export function resolveWithNativeFrontendLibrary(
             name: string;
             payloadType: string | null;
           }>(variantCount),
-          customDeinit: customDeinit === 1,
+          customDeinit: customDeinit !== 0,
+          ...(customDeinit === 2 ? { deinitThreadAny: true } : {}),
           customConstructor: customConstructor === 1,
           constructorVisibility: "public" as const,
           constructorSignature: null,

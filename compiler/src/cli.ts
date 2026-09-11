@@ -1465,7 +1465,7 @@ function stage0TypeShapes(program: Program, fileName: string): readonly Stage1Ty
           const selector = method.override && method.nativeSelector ? ` as ${JSON.stringify(method.nativeSelector)}` : "";
           return `${visibility}${override}${staticMethod}${canonicalFunctionText(method)}${selector};`;
         }),
-        ...(declaration.deinitializer ? [`deinit@${declaration.deinitializer.location.offset};`] : []),
+        ...(declaration.deinitializer ? [`deinit@${declaration.deinitializer.location.offset}${declaration.deinitializer.threadContract ? " on thread.any" : ""};`] : []),
       ];
       return {
         kind: declaration.kind,
@@ -2965,6 +2965,8 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_records(
           .modules.data[module_index].symbols.data[symbol_index]
           .typeSignature.data.some.nativeCUnderlyingType.length,
         .custom_deinit = response->result.graph.resolved.modules.data[module_index]
+          .symbols.data[symbol_index].typeSignature.data.some.deinitThreadAny ? 2 :
+          response->result.graph.resolved.modules.data[module_index]
           .symbols.data[symbol_index].typeSignature.data.some.customDeinit ? 1 : 0,
         .custom_constructor = response->result.graph.resolved.modules.data[module_index]
           .symbols.data[symbol_index].typeSignature.data.some.customConstructor ? 1 : 0,

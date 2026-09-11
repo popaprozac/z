@@ -185,6 +185,7 @@ export type Stage1ModuleTypeSignature = {
   readonly methods: readonly Stage1ModuleMethodSignature[];
   readonly variants: readonly Stage1ModuleVariantSignature[];
   readonly customDeinit: boolean;
+  readonly deinitThreadAny?: boolean;
   readonly customConstructor: boolean;
   readonly constructorVisibility: "public" | "internal" | "private";
   readonly constructorSignature: Stage1ModuleFunctionSignature | null;
@@ -290,6 +291,7 @@ function copyStage1ModuleTypeSignature(
     })),
     variants: signature.variants.map((variant) => ({ ...variant })),
     customDeinit: signature.customDeinit,
+    ...(signature.deinitThreadAny ? { deinitThreadAny: true } : {}),
     customConstructor: signature.customConstructor,
     constructorVisibility: signature.constructorVisibility,
     constructorSignature: signature.constructorSignature
@@ -630,7 +632,7 @@ export function decodeStage1ModuleGraphStream(
       const fieldCount = parseProtocolHexInteger(fields[4], "type signature field count");
       const variantCount = parseProtocolHexInteger(fields[5], "type signature variant count");
       const customDeinit = fields[6];
-      if (customDeinit !== "0" && customDeinit !== "1") {
+      if (customDeinit !== "0" && customDeinit !== "1" && customDeinit !== "2") {
         throw new Error(`malformed stage-1 type signature deinit state: ${line}`);
       }
       const customConstructor = fields[7];
@@ -707,7 +709,8 @@ export function decodeStage1ModuleGraphStream(
         fields: decodedFields,
         methods: [],
         variants: decodedVariants,
-        customDeinit: customDeinit === "1",
+        customDeinit: customDeinit !== "0",
+        ...(customDeinit === "2" ? { deinitThreadAny: true } : {}),
         customConstructor: customConstructor === "1",
         constructorVisibility: "public",
         constructorSignature: null,

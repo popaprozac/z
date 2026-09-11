@@ -94,6 +94,8 @@ export type TraitDeclaration = {
 
 export type DeinitDeclaration = {
   readonly kind: "deinit";
+  /** Checked permission for final cleanup on any thread, not concurrent access. */
+  readonly threadContract?: FunctionDeclaration["threadContract"];
   readonly body: Statement[];
   readonly location: SourceLocation;
 };

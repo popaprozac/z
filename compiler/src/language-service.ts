@@ -1153,6 +1153,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     ?? lastSuccessfulLanguageAnalysis(source, fileName);
   if (!context) return syntacticHover(source, fileName, word.text, word.start, word.end);
   const nativeOwner = sourceAggregateAtOffset(context, word.start);
+  if (word.text === "deinit" && nativeOwner?.deinitializer?.location.offset === word.start) {
+    const anyThread = Boolean(nativeOwner.deinitializer.threadContract);
+    return markdownHover(anyThread
+      ? "deinit on thread.any\n// Runs exactly once on the thread releasing the final owner.\n// The body and automatic nested field cleanup must be safe on that thread.\n// Does not permit concurrent access or weaken move/borrow rules."
+      : "deinit\n// Deterministic cleanup before automatic field destruction.\n// Custom cleanup is not transferable across threads without a checked on thread.any contract.",
+      source, word.start, word.end);
+  }
   if (nativeOwner?.nativeBase && ["extends", "override", "super"].includes(word.text)) {
     const details = {
       extends: `extends ${nativeOwner.nativeBase.name}  // real Objective-C subclass identity, managed by native ARC`,

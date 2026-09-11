@@ -1267,8 +1267,13 @@ export function parse(tokens: Token[], fileName: string): Program {
         if (deinitializer) {
           throw new DiagnosticError(fileName, deinitToken.location, `${kind} ${JSON.stringify(name)} cannot declare more than one deinit block`);
         }
+        const contract = parseFunctionExecutionContract();
+        if (contract.executorAffinity) {
+          throw new DiagnosticError(fileName, contract.executorAffinity.onLocation,
+            "a deinit execution contract must be `on thread.any`; use aggregate affinity for thread.main cleanup");
+        }
         const block = parseRequiredBlock("a `deinit` body");
-        deinitializer = { kind: "deinit" as const, body: block.statements, location: deinitToken.location };
+        deinitializer = { kind: "deinit" as const, ...contract, body: block.statements, location: deinitToken.location };
         continue;
       }
       const fieldReadonly = Boolean(match("readonly"));

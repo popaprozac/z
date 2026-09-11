@@ -283,7 +283,8 @@ function appendTypeSignature(
       output.appendAscii(9);
       appendHexUsize(inout output, signature.variants.length);
       output.appendAscii(9);
-      if (signature.customDeinit) output.appendAscii(49);
+      if (signature.deinitThreadAny) output.appendAscii(50);
+      else if (signature.customDeinit) output.appendAscii(49);
       else output.appendAscii(48);
       output.appendAscii(9);
       if (signature.customConstructor) output.appendAscii(49);

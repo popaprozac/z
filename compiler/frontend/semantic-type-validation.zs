@@ -51,6 +51,7 @@ import {
   typeContainsStoredView,
   typeIsArenaOwnerBundle,
   typeIsRetainedParameterViewAggregate,
+  typeIsThreadTransferable,
   typeNameIsArena,
 } from "./semantic-type-ownership.zs";
 
@@ -1189,13 +1190,40 @@ function validateAggregateTypes(
     );
   }
   match (in declaration.deinitializer) {
-    some(deinitializer) => try validateArenaTypes(
-      module,
-      modules,
-      moduleIndex,
-      bindings,
-      deinitializer.body
-    );
+    some(deinitializer) => {
+      if (deinitializer.threadContract.byteLength > 0) {
+        if (
+          deinitializer.threadContract != "thread.any"
+          || !moduleImportsThreadCapability(module)
+        ) throw validationError(
+          ModuleResolveErrorKind.typeMismatch, module.path,
+          "deinit on thread.any requires the imported thread capability from std/thread",
+          deinitializer.line, deinitializer.column
+        );
+        let nativeBase = false;
+        match (in declaration.nativeBase) { some(_) => nativeBase = true; none => {} }
+        if (nativeBase || typeHasMainExecutorLifecycle(modules, moduleIndex, declaration.name)) {
+          throw validationError(
+            ModuleResolveErrorKind.typeMismatch, module.path,
+            "deinit on thread.any cannot override executor-bound or native superclass destruction",
+            deinitializer.line, deinitializer.column
+          );
+        }
+        // Dependent fields are checked when the aggregate is specialized.
+        if (declaration.typeParameters.length == 0) {
+          for (const field of declaration.fields) {
+            if (!typeIsThreadTransferable(modules, moduleIndex, field.type.name)) {
+              throw validationError(
+                ModuleResolveErrorKind.typeMismatch, module.path,
+                `field "${field.name}" of "${declaration.name}" cannot be destroyed on an arbitrary thread`,
+                field.line, field.column
+              );
+            }
+          }
+        }
+      }
+      try validateArenaTypes(module, modules, moduleIndex, bindings, deinitializer.body);
+    }
     none => {}
   }
 }

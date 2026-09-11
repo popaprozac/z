@@ -59,6 +59,71 @@ import { selfHostExecutableDifferentialCorpus } from "./support/self-host-fixtur
 import { createHash } from "node:crypto";
 import { exerciseGeneratedAdapterLinking } from "./support/generated-adapter-linking.ts";
 
+hostToolchainTest("preserves checked thread-any cleanup through native modules and final-owner release", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/self-host-emit-thread-any-deinit.zs");
+  const source = readFileSync(fixture, "utf8");
+  const directory = mkdtempSync("/tmp/z-native-deinit-any-");
+  try {
+    const marker = source.indexOf("async function main");
+    writeFileSync(resolve(directory, "resources.zs"), source.slice(0, marker)
+      .replace("struct Resource", "export struct Resource")
+      .replace("readonly class SharedResource", "export readonly class SharedResource")
+      .replace('"./thread-any-deinit.h"', JSON.stringify(resolve(projectRoot, "tests/fixtures/thread-any-deinit.h"))));
+    const entry = resolve(directory, "main.zs");
+    const genericEntry = resolve(directory, "generic.zs");
+    writeFileSync(genericEntry, `import { Mutex } from "std/sync";
+      import { thread } from "std/thread";
+      struct Parcel<T> { value: T; deinit on thread.any {} }
+      readonly class Holder { value: Mutex<Parcel<i32>>; }
+      async function main(): i32 {
+        const owner = new Holder({value: Mutex(Parcel<i32>({value: 42}))});
+        const worker = thread.spawn(move (): i32 => owner.value.withLock((in value): i32 => value.value));
+        const answer = await worker;
+        return answer - 42;
+      }`);
+    writeFileSync(entry, `import { Mutex } from "std/sync";
+      import { thread } from "std/thread";
+      import { Resource, SharedResource } from "./resources.zs";
+      import { z_cleanup_begin } from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/thread-any-deinit.h"))};
+      ${source.slice(marker)}`);
+    for (const input of [fixture, entry, genericEntry]) {
+      const parity = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+      });
+      assert.equal(parity.status, 0, parity.stderr);
+      const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(emitted.status, 0, emitted.stderr);
+      for (const optimization of ["-O0", "-O2"]) {
+        const binary = resolve(directory, "probe");
+        const compiled = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread",
+          "-I", resolve(projectRoot, "tests/fixtures"), optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", binary],
+        { input: emitted.stdout, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+        assert.equal(compiled.status, 0, compiled.stderr);
+        for (let run = 0; run < 8; run++) {
+          const executed = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+          assert.equal(executed.status, 0, executed.stderr || String(executed.signal));
+        }
+      }
+    }
+    const invalid = [
+      `struct Inner { deinit {} } struct Owner { inner: Inner; deinit on thread.any {} }`,
+      `class UI on thread.main { deinit on thread.any {} }`,
+      `function update(): void on thread.main {} struct Owner { deinit on thread.any { update(); } }`,
+      `struct Owner { deinit on fake.any {} }`,
+    ];
+    for (const declarations of invalid) {
+      writeFileSync(entry, `import { thread } from "std/thread"; ${declarations} function main(): i32 { return 0; }`);
+      const result = spawnSync(process.execPath, [cli, "self-host-emit", entry], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+      });
+      assert.notEqual(result.status, 0, declarations);
+      assert.match(result.stderr, /arbitrary thread|executor-bound|thread.main|thread capability/);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 hostToolchainTest("preserves native subclass syntax while requiring ABI evidence for stored native fields", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/objc-subclass.zs");
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture], {

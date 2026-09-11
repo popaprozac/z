@@ -8257,18 +8257,33 @@ unknown. The fixed-point native driver rejects it with Z1000: ownership-bearing
 test already protects the Stage 0 rule; this is not a regression to remove by
 blindly accepting every deinitializer.
 
-Decision pending: a checked thread-independent cleanup contract, potentially
-reusing `on thread.any` on `deinit`, versus inference for a provable subset.
-No syntax is approved or implemented by this entry. Any extension must check
-the body and nested field cleanup, reject main-affine destruction, and preserve
-exactly-once cleanup on whichever thread releases the last owner. This does not
-make mutable fields shareable or permit concurrent destruction.
+Approved follow-up: an explicit checked `deinit on thread.any { ... }` contract,
+rather than silently inferring custom cleanup as thread-independent. The body
+and automatic nested field cleanup must both be legal off-main. This does not
+make mutable fields shareable, make a resource copyable, or permit concurrent
+destruction. The syntax reuses the existing execution-contract vocabulary.
 
-The incomplete Zapp implementation is preserved locally on
-`codex/launch-listener-wakeup-prototype` at `72e8139`; its main branch remains at
-the verified close-ordering implementation. The prototype includes proposed
-idle, partial-header, partial-body, repeated-cancellation, and endpoint-release
-tests; these have not passed, because compilation stops at this safety check.
+The compiler carries this fact through source parsing, linked modules, native
+semantic signatures, and concrete lowering. Regression coverage retains the
+old unannotated rejection and checks nested unsafe cleanup, main-affine state,
+body calls to main, double moves, mutable class captures, and exactly-once
+cleanup on both the parent and worker. No executor hop or runtime check is
+introduced by this annotation.
+
+The Zapp prototype saved at `72e8139` is now restored and uses this contract.
+Both compilers pass bounded UBSan tests for idle, partial-header, partial-body,
+repeated/full-pipe cancellation, simultaneous readiness, and endpoint release.
+Observed cancellation-to-join times were below 3 ms in this run, rather than
+waiting for the one-second socket deadline. The cancellation object owns both
+pipe descriptors until the final request/wait ends; its mutex is never held
+while polling, and cancellation never closes the live socket from another
+thread. The complete packaged Notes smoke also passes. These timings describe
+the tested listener path, not a hard bound on user cleanup or OS scheduling.
+
+Two adjacent findings were closed upstream: Stage 0 async frames now emit
+ordinary `f32`/`f64` arithmetic for elapsed-time calculations, and native
+shareability recognizes existing `TaskControl`/`TaskScope` identities inside
+synchronized state. This keeps the consumer from working around either gap.
 
 ## Not tested yet
 

@@ -970,8 +970,12 @@ export function programTypeSignature(
         }));
       }
       let customDeinit = false;
+      let deinitThreadAny = false;
       match (in aggregate.deinitializer) {
-        some(deinitializer) => customDeinit = true;
+        some(deinitializer) => {
+          customDeinit = true;
+          deinitThreadAny = deinitializer.threadContract == "thread.any";
+        }
         none => {}
       }
       let customConstructor = false;
@@ -1001,6 +1005,7 @@ export function programTypeSignature(
         methods,
         variants: Array<ModuleVariantSignature>(),
         customDeinit,
+        deinitThreadAny,
         customConstructor,
         constructorVisibility,
         constructorSignature,

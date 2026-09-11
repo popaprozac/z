@@ -413,6 +413,7 @@ export struct ModuleTypeSignature {
   methods: Array<ModuleMethodSignature>;
   variants: Array<ModuleVariantSignature>;
   customDeinit: boolean;
+  deinitThreadAny: boolean = false;
   customConstructor: boolean;
   constructorVisibility: String = "public";
   constructorSignature: Option<ModuleFunctionSignature>;

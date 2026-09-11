@@ -102,6 +102,8 @@ function typeIsThreadShareableInner(
     || typeName == "f32"
     || typeName == "f64"
     || typeName == "String"
+    || typeName == "TaskControl"
+    || typeName == "TaskScope"
   ) return true;
   match (nativeFunctionSignature(typeName)) {
     some(signature) => return signature.threadContract == "thread.any";
@@ -148,9 +150,9 @@ function typeIsThreadShareableInner(
   match (genericTypeShape(actual)) {
     some(generic) => {
       if (generic.base == "Mutex" && generic.arguments.length == 1) {
-        // Stage 0 separately proves worker-safe destruction for the protected
-        // payload. The native graph treats Mutex identity itself as shareable.
-        return true;
+        return typeIsThreadTransferableInner(
+          modules, moduleIndex, generic.arguments[0], inout visiting
+        );
       }
       if (
         (generic.base == "Sender" || generic.base == "SyncSender")
@@ -191,7 +193,7 @@ function typeIsThreadShareableInner(
           if (
             signature.foreignNativeName.byteLength > 0
             || signature.executorAffinity.byteLength > 0
-            || signature.customDeinit
+            || (signature.customDeinit && !signature.deinitThreadAny)
           ) return false;
           for (const method of signature.methods) {
             if (method.receiverMode == "inout") return false;
@@ -274,6 +276,8 @@ function typeIsThreadTransferableInner(
     || typeName == "f64"
     || typeName == "String"
     || typeName == "TextBuffer"
+    || typeName == "TaskControl"
+    || typeName == "TaskScope"
   ) return true;
   if (
     stringStartsWith(typeName, "view ")
@@ -371,7 +375,7 @@ function typeIsThreadTransferableInner(
           if (
             signature.foreignNativeName.byteLength > 0
             || signature.executorAffinity.byteLength > 0
-            || signature.customDeinit
+            || (signature.customDeinit && !signature.deinitThreadAny)
           ) return false;
           let nextVisiting = copyStrings(visiting);
           nextVisiting.push(actual.copyBytes(0, actual.byteLength));

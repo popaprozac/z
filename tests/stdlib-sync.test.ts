@@ -4,6 +4,7 @@ import {
   compileToC,
   completions,
   diagnostics,
+  decodeSemanticTokens,
   hover,
   mkdtempSync,
   projectRoot,
@@ -11,6 +12,9 @@ import {
   resolve,
   rmSync,
   spawnSync,
+  semanticTokens,
+  semanticTokenTypes,
+  positionForOffset,
   test,
   writeFileSync,
 } from "./support/bootstrap.ts";
@@ -704,6 +708,63 @@ test("rejects a Mutex payload that cannot be destroyed on a worker", () => {
     /Mutex payload Resource has a custom deinit/,
   );
 });
+
+test("checks thread-any deinitializers without weakening ownership or isolation", () => {
+  const prelude = `import { Mutex } from "std/sync";
+    import { thread } from "std/thread";`;
+  const cases = [
+    { source: `struct Inner { deinit {} }
+        struct Owner { field: Inner; deinit on thread.any {} }`, error: /cannot be destroyed on an arbitrary thread/ },
+    { source: `struct Inner { deinit {} }
+        struct Owner { field: Mutex<Inner>; deinit on thread.any {} }`, error: /cannot be destroyed on an arbitrary thread/ },
+    { source: `class UI on thread.main { value: i32; }
+        struct Owner { field: UI; deinit on thread.any {} }`, error: /cannot be destroyed on an arbitrary thread|executor-bound/ },
+    { source: `class UI on thread.main { deinit on thread.any {} }`, error: /executor-bound/ },
+    { source: `class UI { value: i32 on thread.main; deinit on thread.any {} }`, error: /cannot be destroyed on an arbitrary thread|executor-bound/ },
+    { source: `function update(): void on thread.main {}
+        struct Owner { deinit on thread.any { update(); } }`, error: /requires thread.main/ },
+    { source: `struct Owner { deinit on thread.main {} }`, error: /must be.*on thread.any/ },
+    { source: `struct Owner { deinit on fake.any {} }`, error: /thread.any capability/ },
+    { source: `struct Owner { value: i32; deinit on thread.any {} }
+        function consume(value: Owner): void {}
+        function check(): void { const value = Owner({value: 1}); consume(move value); consume(move value); }`, error: /moved value|after.*mov/ },
+    { source: `class State { value: i32; deinit on thread.any {} }
+        async function check(): i32 { const state = new State({value: 1});
+          const worker = thread.spawn(move (): i32 => state.value); return await worker; }`, error: /readonly|transfer/ },
+  ];
+  for (const [index, entry] of cases.entries()) {
+    assert.match(diagnostics(`${prelude}\n${entry.source}`, `/tmp/z-thread-any-deinit-${index}.zs`)[0]?.message ?? "", entry.error);
+  }
+  assert.match(diagnostics(`struct Owner { deinit on thread.any {} }`, "/tmp/z-deinit-no-import.zs")[0]?.message ?? "", /thread.any capability/);
+  assert.match(diagnostics(`${prelude}
+    struct Local { deinit {} }
+    struct Parcel<T> { value: T; deinit on thread.any {} }
+    function main(): i32 { const item = Parcel<Local>({value: Local()}); return 0; }
+  `, "/tmp/z-generic-deinit-invalid.zs")[0]?.message ?? "", /cannot be destroyed on an arbitrary thread/);
+});
+
+test("surfaces the checked deinitializer contract in editor hover", () => {
+  const source = `import { thread } from "std/thread";
+    struct Resource { value: i32; deinit on thread.any {} }`;
+  assert.match(hover(source, "/tmp/z-deinit-hover.zs", source.indexOf("deinit") + 2)?.contents.value ?? "",
+    /deinit on thread.any[\s\S]*final owner[\s\S]*nested field cleanup/);
+  const tokens = decodeSemanticTokens(semanticTokens(source, "/tmp/z-deinit-hover.zs").data);
+  for (const [word, kind] of [["deinit", "keyword"], ["on", "keyword"], ["thread", "namespace"], ["any", "property"]]) {
+    const position = positionForOffset(source, source.lastIndexOf(word));
+    assert.ok(tokens.some(token => token.line === position.line && token.character === position.character
+      && token.length === word!.length && semanticTokenTypes[token.type] === kind), `missing ${word} ${kind}`);
+  }
+});
+
+test("runs checked thread-any cleanup exactly once through shared Mutex ownership", () => {
+  const file = resolve(projectRoot, "tests/fixtures/self-host-emit-thread-any-deinit.zs");
+  const source = readFileSync(file, "utf8");
+  assert.deepEqual(diagnostics(source, file), []);
+  const result = spawnSync(process.execPath, [cli, "run", file], {
+    encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+  });
+  assert.equal(result.status, 0, result.stderr);
+}, 60_000);
 
 test("shares mixed-affinity class identity while isolating selected members", () => {
   const directory = mkdtempSync("/tmp/z-mixed-affinity-mutex-");

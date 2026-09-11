@@ -270,6 +270,7 @@ export struct ConstructorDeclaration {
 }
 
 export struct DeinitDeclaration {
+  threadContract: String = "";
   body: StatementArena;
   offset: usize;
   line: usize;
@@ -3496,6 +3497,15 @@ function parseAggregateDeclaration(
       }
       if (hasDeinitializer) throw fail(tokens[current], `${name.text} cannot declare more than one deinit block`);
       const cleanupToken = try expect(tokens, inout current, TokenKind.deinitKeyword, "a deinit declaration");
+      let cleanupThreadContract = "";
+      if (takeIf(tokens, inout current, TokenKind.onKeyword)) {
+        const executor = try expect(tokens, inout current, TokenKind.identifier, "thread in a deinit contract");
+        try expectKind(tokens, inout current, TokenKind.dot, "`.` in a deinit contract");
+        const member = try expect(tokens, inout current, TokenKind.identifier, "any in a deinit contract");
+        if (member.text != "any") throw fail(member,
+          "a deinit execution contract must be `on thread.any`; use aggregate affinity for thread.main cleanup");
+        cleanupThreadContract = `${executor.text}.${member.text}`;
+      }
       let bodyNodes = Array<Statement>();
       const bodyRoots = try parseProjectedBlock(
         tokens,
@@ -3505,6 +3515,7 @@ function parseAggregateDeclaration(
       );
       const body = StatementArena({ nodes: bodyNodes, roots: bodyRoots });
       deinitializer = Option.some(DeinitDeclaration({
+        threadContract: move cleanupThreadContract,
         body,
         offset: cleanupToken.offset,
         line: cleanupToken.line,
@@ -4510,6 +4521,10 @@ export function aggregateShapeText(in declaration: AggregateDeclaration): String
       output.append(" deinit@");
       const offset = `${deinitializer.offset}`;
       output.append(offset);
+      if (deinitializer.threadContract.byteLength > 0) {
+        output.append(" on ");
+        output.append(deinitializer.threadContract);
+      }
       output.append(";");
     }
     none => {}
