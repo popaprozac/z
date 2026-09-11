@@ -51,6 +51,7 @@ import {
   fixedArrayShape,
   genericTypeShape,
   nativeFunctionSignature,
+  nativeObjCObjectTypeName,
   nullableTargetType,
   qualifiedTypeMember,
 } from "./semantic-type-shapes.zs";
@@ -3381,6 +3382,9 @@ function lowerTypeName(
   in program: Program,
   in name: String
 ): LoweredType throws String {
+  if (name == nativeObjCObjectTypeName || isObjCObjectType(program, name)) return LoweredType({
+    kind: LoweredTypeKind.foreignObjCType, name: "id",
+  });
   match (localTypeAliasTarget(program, name)) {
     some(target) => return try lowerTypeName(program, target);
     none => {}
@@ -3733,6 +3737,12 @@ function lowerTypeName(
   throw `native local lowering could not resolve type ${name}`;
 }
 
+function isObjCObjectType(in program: Program, in name: String): boolean {
+  if (name.byteLength <= 7 || name.copyBytes(name.byteLength - 7, name.byteLength) != ".Object") return false;
+  const namespace = name.copyBytes(0, name.byteLength - 7);
+  return isImportedStandardNamespace(program, "std/objc", namespace);
+}
+
 function lowerType(in program: Program, in type: TypeReference): LoweredType throws String {
   return try lowerTypeName(program, type.name);
 }
@@ -3767,7 +3777,7 @@ function lowerModuleTypeName(
       name: "StaticBytes",
     });
   }
-  if (name == "id") return LoweredType({
+  if (name == nativeObjCObjectTypeName || isObjCObjectType(program, name)) return LoweredType({
     kind: LoweredTypeKind.foreignObjCType,
     name: "id",
   });

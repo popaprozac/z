@@ -3997,6 +3997,18 @@ use explicit standard-library adapters. `import objc from "std/objc";` is not
 needed for normal classes, methods, properties, constants, nullability, or
 blocks.
 
+`objc.Object` is the source type for Objective-C's erased `id` reference.
+It is non-null; `objc.Object | null` admits `nil`. This is not `NSObject *`, a Z
+`any`, or a raw pointer: alternate-root objects such as `NSProxy` qualify, but
+ordinary Z structs/classes/primitives do not. There is no `new objc.Object()`.
+Null guards remove nullability; `instanceof ImportedClass` proves the concrete
+class before member access. Owned references use native ARC without an erasure
+wrapper or deep copy, and `in` borrows. Erasure does not grant thread transfer
+or executor permissions. Import aliases and exported type aliases preserve
+this identity. An inherited `id` override parameter can be written
+`in sender: objc.Object | null`; this does not extend receiver handoff to
+borrowed native arguments or enable native-subclass async composition.
+
 `objc.pool(() => { ... })` runs one synchronous inline closure inside a lexical
 Objective-C autorelease pool. It returns independently owned or cleanup-free
 values and preserves typed failures, draining before either leaves. Borrowed

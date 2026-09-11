@@ -7,6 +7,7 @@ import {
   isTypeSymbolKind,
   nativeFunctionSignature,
   nativeFunctionTypeName,
+  nativeObjCObjectTypeName,
   nullableTargetType,
   qualifiedTypeBase,
   qualifiedTypeMember,
@@ -30,6 +31,7 @@ function unresolvedExternalTypeBase(
   moduleIndex: usize,
   in name: String
 ): boolean {
+  if (standardTypeName(modules, moduleIndex, name) != name) return false;
   const base = qualifiedTypeBase(name);
   const member = qualifiedTypeMember(name);
   const symbolIndex = moduleSymbolIndex(modules[moduleIndex], base);
@@ -275,6 +277,7 @@ export function sourceTypeDisplayName(
   moduleIndex: usize,
   in name: String
 ): String {
+  if (name == nativeObjCObjectTypeName) return "objc.Object";
   const nullable = nullableTargetType(name);
   if (nullable.byteLength > 0) {
     const displayed = sourceTypeDisplayName(modules, moduleIndex, nullable);
@@ -598,6 +601,14 @@ function standardTypeName(
   in modules: Array<ResolvedModule>, moduleIndex: usize, in name: String
 ): String {
   if (moduleIndex >= modules.length) return copy name;
+  if (name.byteLength > 7 && name.byteAt(name.byteLength - 7) == 46
+    && name.copyBytes(name.byteLength - 7, name.byteLength) == ".Object") {
+    const namespace = name.copyBytes(0, name.byteLength - 7);
+    const namespaceIndex = moduleSymbolIndex(modules[moduleIndex], namespace);
+    if (namespaceIndex < modules[moduleIndex].symbols.length
+      && modules[moduleIndex].symbols[namespaceIndex].kind == ModuleSymbolKind.namespaceSymbol
+      && modules[moduleIndex].symbols[namespaceIndex].importedName == "std/objc") return copy nativeObjCObjectTypeName;
+  }
   const index = moduleSymbolIndex(modules[moduleIndex], name);
   if (index < modules[moduleIndex].symbols.length
     && modules[moduleIndex].symbols[index].standardTypeName.byteLength > 0) {
@@ -728,6 +739,13 @@ function transparentTypeNameAtDepth(
   depth: usize
 ): String {
   if (depth >= 64) return name.copyBytes(0, name.byteLength);
+  const nullable = nullableTargetType(name);
+  if (nullable.byteLength > 0) {
+    const target = transparentTypeNameAtDepth(modules, moduleIndex, nullable, depth + 1);
+    return `${target} | null`;
+  }
+  const standard = standardTypeName(modules, moduleIndex, name);
+  if (standard != name) return standard;
   match (genericTypeShape(name)) {
     some(generic) => {
       const base = standardTypeName(modules, moduleIndex, generic.base);
@@ -844,6 +862,8 @@ export function semanticTypeIdentity(
   moduleIndex: usize,
   in name: String
 ): String {
+  const standard = standardTypeName(modules, moduleIndex, name);
+  if (standard != name) return standard;
   const nullableTarget = nullableTargetType(name);
   if (nullableTarget.byteLength > 0) {
     const identity = semanticTypeIdentity(modules, moduleIndex, nullableTarget);

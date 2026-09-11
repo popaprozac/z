@@ -5,6 +5,10 @@ import {
 } from "./semantic-model.zs";
 import { TextBuffer } from "std/text";
 
+// Semantic identity only, containing punctuation a source identifier cannot
+// spell. The ABI remains `id`; a Z class named `id` stays an ordinary Z class.
+export const nativeObjCObjectTypeName: String = "__z_objc:nonnull:id";
+
 export struct NativeGenericTypeShape {
   base: String;
   arguments: Array<String>;

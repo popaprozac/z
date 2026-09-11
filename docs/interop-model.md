@@ -875,6 +875,12 @@ if (title != null && title.isEqualToString("Ready")) {
 }
 ```
 
+Dynamic Objective-C `id` results are nameable as `objc.Object` (non-null) or
+`objc.Object | null`, imported from `std/objc`. This names existing native ARC
+identity, not a wrapper, raw pointer, or `NSObject` superclass assumption.
+Erasure does not confer transferability or executor access, and ordinary Z
+values are not implicitly boxed into it.
+
 Dynamic Objective-C `id` results stay typed as Objective-C identity rather than
 becoming a Z `any`. Use `instanceof` when a native API requires runtime class
 inspection:

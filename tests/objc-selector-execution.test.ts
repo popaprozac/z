@@ -17,7 +17,7 @@ const cases: [string, string, RegExp][] = [
   ["stored selector", source.replace(registration, "const selector = objc.selector(Receiver.receive); receiver.registerTarget(receiver, selector: selector);"), /inline argument/],
   ["string selector", source.replace("objc.selector(Receiver.receive)", 'objc.selector("receive:")'), /declaration/],
   ["missing method", source.replace("objc.selector(Receiver.receive)", "objc.selector()"), /declaration|requires checked/],
-  ["nullable target", source.replace(registration, "receiver.registerTarget(null, selector: objc.selector(Receiver.receive));"), /non-null|expected.*id|cannot.*null/],
+  ["nullable target", source.replace(registration, "receiver.registerTarget(null, selector: objc.selector(Receiver.receive));"), /non-null|expected.*(?:id|objc.Object)|cannot.*null/],
   ["inherited method", source.replace("objc.selector(Receiver.receive)", "objc.selector(Receiver.add)"), /explicitly declared/],
   ["object signature", source.replace("objc.selector(Receiver.read)", "objc.selector(Receiver.receive)"), /callback signature/],
   ["compiler-owned selector", source.replace('as "receive:"', 'as "_z_checkedSelectorTarget"'), /compiler-owned native selectors/],

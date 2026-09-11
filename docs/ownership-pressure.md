@@ -7720,6 +7720,63 @@ emits 11,693,203 byte-identical C bytes. Both Stage 0 and that native executable
 complete all six bounded AppKit cases (12 runs total). The website builds all
 33 pages, and tier coverage and diff checks pass. This is not a full-suite run.
 
+## Naming erased Objective-C identity (2026-09-11)
+
+The real window override needs to express `id sender` without pretending that
+every native object inherits from `NSObject`. `objc.Object` from `std/objc` now
+names that existing identity; `objc.Object | null` names its nullable form.
+Module aliases and public type aliases must canonicalize to the same imported
+identity. A non-null proof alone cannot justify a class-specific member lookup.
+
+This is a spelling and composition improvement, not a new ownership model.
+Owned native references remain ARC-managed, `in` borrows, null guards narrow,
+and `instanceof` proves a concrete imported class. Erasure itself neither
+allocates a wrapper nor copies an object graph. Native ARC operations remain
+real costs. Z structs/classes/primitives are not automatically boxed into this
+type, and erasure grants no thread-transfer capability.
+
+The implementation exposed separate native checks that had only recognized
+the internal `id` spelling: type equality, narrowing, member rejection, and
+thread-capture diagnostics. It also caught a native hole where an erased
+reference inside a value struct could evade the direct-capture check; the
+native checker now follows inline aggregate/container storage before transfer,
+without replacing the separate shareability proof for Z ARC classes.
+Native semantics now use a reserved identity distinct from the ABI spelling
+`id`, so an ordinary Z class named `id` remains an ordinary class, even in a
+module using `objc.Object`. Diagnostics display the public name. The hybrid
+source-only graph defers missing foreign class evidence to its downstream
+checked importer; the independent native graph rejects known native records
+and scalars instead of treating them as erased objects.
+The regression matrix uses raw Clang declaration
+evidence plus the native resolver/emitter, not Stage 0's semantic plans. It
+includes an `NSProxy` alternate-root object and inherited nullable sender
+overrides, with strict Clang/UBSan execution at `-O0` and `-O2`.
+
+An inherited override can now declare `in sender: objc.Object | null`, but
+`super.zoom(sender)` still retains the receiver guard. The new type does not
+make borrowed arguments independent snapshots or allow their loans to survive
+reentry. Borrowed sender handoff and native-subclass async composition remain
+the next integration gates before Zapp's real display-link state machine.
+
+**Separate evidence gap found:** raw C free-function records can strip native
+`id` nullability from return/parameter type strings, retaining it only in the
+full C signature. Objective-C method records already retain separate semantic
+type/nullability evidence and are used by this checkpoint. Do not expand native
+free-function `id` normalization by interpreting a bare spelling as proof of
+non-null. A follow-up must preserve or recover checked qualifier evidence and
+add nullable-result and parameter parity tests; no handwritten wrapper or
+guessed `.zd` safety fact was added to conceal this gap.
+
+Validation: 69 targeted tests across nine Objective-C, selector, subclass,
+native-async-storage, and editor suites pass after focused reruns. The new
+object matrix executes six positive shapes through both compilers at `-O0`
+and `-O2` (24 bounded strict-Clang/UBSan runs), alongside rejected value,
+nullability, member, and thread-transfer shapes. No ASan or interactive GUI
+probe is used. The fresh fixed-point bootstrap emits 11,716,758 byte-identical
+C bytes; its erased-object example prints `15` and `0`. The website builds
+33 pages; tier coverage and diff checks pass. This is not a full-suite run or
+a performance benchmark.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

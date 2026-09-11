@@ -17,6 +17,7 @@ import {
   fixedArrayShape,
   genericTypeShape,
   nativeFunctionSignature,
+  nativeObjCObjectTypeName,
   nullableTargetType,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
@@ -765,6 +766,75 @@ export function typeContainsOpaqueCleanupStorage(
   return false;
 }
 
+// Inline native identity cannot bypass thread checks by entering a value
+// aggregate or container. Z ARC class boundaries have a separate proof.
+export function typeContainsNativeObjCStorage(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  const actual = transparentTypeName(modules, moduleIndex, typeName);
+  if (typeIsNativeObjCReference(modules, moduleIndex, actual)) return true;
+  const nullable = nullableTargetType(actual);
+  if (nullable.byteLength > 0) return typeContainsNativeObjCStorage(modules, moduleIndex, nullable, visiting);
+  if (stringStartsWith(actual, "readonly ")) {
+    const target = actual.copyBytes(9, actual.byteLength);
+    return typeContainsNativeObjCStorage(modules, moduleIndex, target, visiting);
+  }
+  match (fixedArrayShape(actual)) {
+    some(array) => return typeContainsNativeObjCStorage(modules, moduleIndex, array.elementType, visiting);
+    none => {}
+  }
+  let arguments = Array<String>();
+  match (genericTypeShape(actual)) {
+    some(generic) => {
+      if (generic.base == "Array" || generic.base == "Map" || generic.base == "Set"
+        || generic.base == "Option" || generic.base == "Result") {
+        for (const argument of generic.arguments) {
+          if (typeContainsNativeObjCStorage(modules, moduleIndex, argument, visiting)) return true;
+        }
+        return false;
+      }
+      for (const argument of generic.arguments) {
+        arguments.push(copy argument);
+      }
+    }
+    none => {}
+  }
+  const location = match (inferredTypeSymbolLocation(modules, moduleIndex, actual)) {
+    some(value) => value;
+    none => return false;
+  };
+  const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+  // Z ARC classes have their own shareability/isolation proof. This walk is
+  // about native references copied as inline value/container storage.
+  if (symbol.kind == ModuleSymbolKind.classSymbol) return false;
+  const identity = semanticTypeIdentity(modules, moduleIndex, actual);
+  if (containsString(visiting, identity)) return false;
+  let nextVisiting = copyStrings(visiting);
+  nextVisiting.push(identity);
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      let substitutions = Array<NativeValueBinding>();
+      let parameter: usize = 0;
+      while (parameter < signature.typeParameters.length && parameter < arguments.length) {
+        const argument = rebaseTypeName(modules, moduleIndex, location.moduleIndex, arguments[parameter]);
+        addValueBinding(inout substitutions, signature.typeParameters[parameter], argument);
+        parameter = parameter + 1;
+      }
+      for (const field of signature.fields) {
+        const fieldType = substituteGenericType(field.typeName, substitutions);
+        if (typeContainsNativeObjCStorage(modules, location.moduleIndex, fieldType, nextVisiting)) return true;
+      }
+      for (const variant of signature.variants) {
+        const payload = substituteGenericType(variant.payloadType, substitutions);
+        if (payload.byteLength > 0 && typeContainsNativeObjCStorage(modules, location.moduleIndex, payload, nextVisiting)) return true;
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 // Native Objective-C references retain shared identity on ordinary value use.
 // That cleanup obligation is not unique ownership that `move value` can take.
 export function typeIsNativeObjCReference(
@@ -780,7 +850,7 @@ export function typeIsNativeObjCReference(
         || signature.foreignKind == "objcProtocol";
       none => false;
     }
-    none => actual == "id";
+    none => actual == nativeObjCObjectTypeName;
   };
 }
 

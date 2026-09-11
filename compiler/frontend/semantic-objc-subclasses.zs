@@ -10,14 +10,14 @@ import {
 } from "./semantic-model.zs";
 import {
   ModuleSymbolLocation, equivalentTypes, isUnresolvedExternalType, rebaseTypeName,
-  transparentTypeName, typeSymbolLocation,
+  sourceTypeDisplayName, transparentTypeName, typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import { objcMethodLabelsMatch, rebaseModuleFunctionSignature } from "./semantic-member-lookups.zs";
 import {
   NativeSuperclassCallSite, inspectNativeSubclassBodies, nativeInitializerSelector,
 } from "./semantic-objc-subclass-bodies.zs";
 import {
-  isNumericTypeName, nativeFunctionSignature, nullableTargetType,
+  isNumericTypeName, nativeFunctionSignature, nativeObjCObjectTypeName, nullableTargetType,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 
@@ -66,7 +66,8 @@ export function nativeObjCObjectType(
 ): boolean {
   const nullable = nullableTargetType(name);
   if (nullable.byteLength > 0) return nativeObjCObjectType(modules, moduleIndex, nullable);
-  if (name == "id" || stringStartsWith(name, "__z_objc:")) return true;
+  if (transparentTypeName(modules, moduleIndex, name) == nativeObjCObjectTypeName) return true;
+  if (stringStartsWith(name, "__z_objc:")) return true;
   const location = match (typeSymbolLocation(modules, moduleIndex, name)) {
     some(value) => value;
     none => return false;
@@ -306,8 +307,10 @@ function validateOverrideContract(
     const parameter = view method.parameters[index];
     const expected = view native.signature.parameterTypes[index];
     if (expected.byteLength == 0 || !equivalentTypes(modules, moduleIndex, parameter.type.name, expected)) {
+      const expectedDisplay = sourceTypeDisplayName(modules, moduleIndex, expected);
+      const actualDisplay = sourceTypeDisplayName(modules, moduleIndex, parameter.type.name);
       throw subclassError(module,
-        `Objective-C selector "${native.objectiveCSelector}" parameter ${index + 1} expects ${expected}, found ${parameter.type.name}`,
+        `Objective-C selector "${native.objectiveCSelector}" parameter ${index + 1} expects ${expectedDisplay}, found ${actualDisplay}`,
         parameter.line, parameter.column);
     }
     const borrowed = nativeObjCObjectType(modules, moduleIndex, expected);

@@ -2657,7 +2657,7 @@ test("registers persistent Objective-C event callbacks with explicit token clean
     /notification: Foundation\.NSNotification/,
   );
   const tokenUse = source.indexOf("token);") + 1;
-  assert.match(hover(source, fixture, tokenUse)?.contents.value ?? "", /token: id/);
+  assert.match(hover(source, fixture, tokenUse)?.contents.value ?? "", /token: objc\.Object/);
   const completionSource = source.replace("notification.name", "notification.na");
   const completionOffset = completionSource.indexOf("notification.na") + "notification.na".length;
   assert.equal(

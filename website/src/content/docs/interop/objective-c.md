@@ -68,6 +68,50 @@ if (body instanceof Foundation.NSString) {
 narrowed `NSString` to an explicit Z `String` makes an owned UTF-8 copy with its
 exact byte length.
 
+### Naming an unknown native class
+
+Use `objc.Object` when a signature needs Objective-C's erased `id` reference:
+
+```z
+import objc from "std/objc";
+import Foundation from "Foundation/Foundation.h";
+
+function textLength(in value: objc.Object | null): usize {
+  if (value instanceof Foundation.NSString) {
+    const text: String = value;
+    return text.byteLength;
+  }
+  return 0;
+}
+```
+
+`objc.Object` is non-null; `objc.Object | null` also admits `nil`. A null guard
+narrows the latter to the former, but does not prove a particular class.
+`instanceof` supplies that class proof before member access or `NSString`-to-Z
+`String` copying. Module aliases and exported type aliases preserve the same
+native identity.
+
+This is native `id`, not `NSObject *`: alternate-root objects such as `NSProxy`
+are included. It is not a Z `any`, a raw pointer, or a constructible class.
+Ordinary Z values cannot be assigned to it; convert a Z string to a concrete
+`NSString` first when that bridge is intended. Erasing the class adds no wrapper
+allocation or deep copy. Owned bindings still have normal native ARC costs;
+`in` borrows a reference. It grants no cross-thread transfer or executor-access
+permission.
+
+Inherited native overrides can now name a nullable sender accurately:
+
+```z
+override function zoom(inout this, in sender: objc.Object | null): void as "zoom:" {
+  // The sender's concrete native class is unknown.
+}
+```
+
+This does **not** broaden superclass handoff: forwarding a borrowed `sender`
+through `super.zoom(sender)` still keeps the receiver access guard. Literal
+`super.zoom(null)` is in the checked handoff tier. Async native-subclass
+composition remains separate work.
+
 String bridging also composes with conditional values:
 
 ```z

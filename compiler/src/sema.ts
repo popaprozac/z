@@ -86,6 +86,8 @@ import { callbackParameterDoesNotEscape } from "./callback-nonescape.ts";
 import {
   isNullableObjCTypeName,
   nullableObjCTypeName,
+  objcObjectTypeName,
+  nullableObjCObjectTypeName,
   objcProtocolTypeName,
   parseObjCProtocolType,
   publicObjCTypeName,
@@ -1187,6 +1189,16 @@ export function analyze(
     objectiveC = true;
     frameworks.add("Foundation");
     const metadata: ForeignDeclarationMetadata = { source: null, availability: [], executorAffinity: null };
+    for (const [typeName, nullable] of [[objcObjectTypeName, false], [nullableObjCObjectTypeName, true]] as const) {
+      const object: ForeignNamedType = {
+        kind: "object", exportName: "Object", namespacePath: ["objc"],
+        qualifiedName: "objc.Object", typeName, cName: "id", className: null, metadata,
+      };
+      foreignNamedTypes.set(typeName, object);
+      foreignObjectTypes.set(typeName, {
+        kind: "object", typeName, cName: "id", className: null, nullable,
+      });
+    }
     const connection: ForeignNamedType = {
       kind: "object",
       exportName: "Connection",
@@ -1251,6 +1263,8 @@ export function analyze(
     });
     typeDisplayNames = new Map([
       ...typeDisplayNames,
+      [objcObjectTypeName, "objc.Object"],
+      [nullableObjCObjectTypeName, "objc.Object | null"],
       [objcConnectionTypeName, "objc.Connection"],
       [objcBindingTypeName, "objc.Binding"],
       [objcRegistrationTypeName, "objc.Registration"],
@@ -16490,10 +16504,10 @@ function mergeOwnershipStates(
     }
     const objectTypes = values.map((value) => foreignObject(value, state));
     const firstObject = objectTypes[0];
-    if (firstObject?.className && objectTypes.every((object) => object?.className === firstObject.className)) {
+    if (firstObject && objectTypes.every((object) => object?.className === firstObject.className)) {
       const nullable = objectTypes.some((object) => object!.nullable);
       const publicType = firstObject.typeName.replace(/^__z_objc:(?:nullable|nonnull):/, "");
-      type = nullable ? `__z_objc:nullable:${publicType}` : publicType;
+      type = nullable ? `__z_objc:nullable:${publicType}` : firstObject.className ? publicType : objcObjectTypeName;
     }
     const states = new Set(values.map(ownershipState));
     const initializationStates = new Set(values.map(initializationState));
@@ -16565,9 +16579,9 @@ function narrowedConditionLocals(
     return narrowed;
   }
   const object = current ? foreignObject(current, state) : null;
-  if (object?.nullable && object.className) {
+  if (object?.nullable) {
     const publicType = object.typeName.replace(/^__z_objc:(?:nullable|nonnull):/, "");
-    narrowed.set(name, replaceUnderlyingType(current!, publicType));
+    narrowed.set(name, replaceUnderlyingType(current!, object.className ? publicType : objcObjectTypeName));
   }
   return narrowed;
 }
@@ -18691,8 +18705,9 @@ function requireObjCAssignable(
     return;
   }
   const subject = selector ? `Objective-C selector ${JSON.stringify(selector)}` : "Objective-C property";
+  const expectedName = expected.className ? expected.cName : `objc.Object${expected.nullable ? " | null" : ""}`;
   if (actual === "null") {
-    if (!expected.nullable) throw new DiagnosticError(fileName, expression.location, `${subject} requires a non-null ${expected.cName}`);
+    if (!expected.nullable) throw new DiagnosticError(fileName, expression.location, `${subject} requires a non-null ${expectedName}`);
     return;
   }
   if (actual === "String") {
@@ -18708,7 +18723,7 @@ function requireObjCAssignable(
   if (!expected.className && actualProtocol) return;
   const actualObject = foreignObject(actual, state);
   if (!actualObject || (expected.className && !isObjCSubclass(actualObject, expected, state))) {
-    throw new DiagnosticError(fileName, expression.location, `${subject} expects ${expected.cName}, found ${describeValueType(actual, state)}`);
+    throw new DiagnosticError(fileName, expression.location, `${subject} expects ${expectedName}, found ${describeValueType(actual, state)}`);
   }
 }
 
@@ -20132,7 +20147,7 @@ function describeValueType(type: ValueType, state: AnalysisState): string {
   const name = String(underlyingType(type));
   const unsafeNative = displayUnsafeNativeType(name);
   if (unsafeNative) return `${unsafeNative} (unsafe pass-through only)`;
-  if (isNullableObjCTypeName(name)) return `${publicObjCTypeName(name)} | null`;
+  if (isNullableObjCTypeName(name)) return state.typeDisplayNames.get(name) ?? `${publicObjCTypeName(name)} | null`;
   return displayFunctionType(name, (part) => displayAssignableType(part, state))
     ?? displayAssignableType(name, state);
 }
@@ -20418,6 +20433,10 @@ function resolveSemanticTypeName(
   state: AnalysisState,
 ): string {
   const resolveName = (name: string): string => {
+    if (isNullableObjCTypeName(name)) return nullableObjCTypeName(resolveName(publicObjCTypeName(name)));
+    const separator = name.indexOf(".");
+    if (separator >= 0 && name.slice(separator + 1) === "Object"
+      && state.standardModuleBindings.get(name.slice(0, separator)) === "objc") return objcObjectTypeName;
     const readonly = parseReadonlyType(name);
     if (readonly) return readonlyTypeName(resolveName(readonly.target));
     const generic = parseGenericType(name);
@@ -20892,7 +20911,7 @@ function requireAssignable(
   const actualObject = actual === "unknown" || actual === "never"
     ? null
     : state.foreignObjectTypes.get(String(underlyingType(actual)));
-  if (actual === "String" && expectedObject) {
+  if (actual === "String" && expectedObject?.className) {
     const stringObject = [...state.foreignObjectTypes.values()].find((candidate) => (
       candidate.className === "NSString" && !candidate.nullable
     ));

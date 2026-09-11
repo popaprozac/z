@@ -21,6 +21,7 @@ import {
 import {
   rebaseTypeName,
   sourceTypeDisplayName,
+  transparentTypeName,
   typeSatisfiesTrait,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
@@ -32,6 +33,7 @@ import {
   isIntrinsicTypeName,
   isTypeSymbolKind,
   nativeFunctionSignature,
+  nativeObjCObjectTypeName,
   nullableTargetType,
   qualifiedTypeBase,
   qualifiedTypeMember,
@@ -465,6 +467,9 @@ function validateTypeNameShape(
     some(generic) => {
       const genericBase = generic.base.copyBytes(0, generic.base.byteLength);
       const genericArgumentCount = generic.arguments.length;
+      if (transparentTypeName(modules, moduleIndex, genericBase) == nativeObjCObjectTypeName) {
+        try requireTypeArity(module, genericBase, NativeTypeArity({ minimum: 0, maximum: 0 }), genericArgumentCount, line, column);
+      }
       for (const argument of generic.arguments) {
         try validateTypeNameShape(
           module,

@@ -204,6 +204,7 @@ import {
   nativeFunctionDisplayType,
   nativeFunctionSignature,
   nativeFunctionTypeName,
+  nativeObjCObjectTypeName,
   nullableTargetType,
   qualifiedTypeBase,
   qualifiedTypeMember,
@@ -217,6 +218,7 @@ import {
   arenaOwnerBundleFieldName,
   substituteGenericType,
   typeContainsForeignValueStorage,
+  typeContainsNativeObjCStorage,
   typeContainsStoredView,
   typeHasCleanup,
   typeHasCustomConstructor,
@@ -3966,7 +3968,7 @@ function isNativeObjectiveCObjectType(
   const nullableTarget = nullableTargetType(typeName);
   let target = typeName.copyBytes(0, typeName.byteLength);
   if (nullableTarget.byteLength > 0) target = nullableTarget;
-  if (target == "id") return true;
+  if (transparentTypeName(modules, moduleIndex, target) == nativeObjCObjectTypeName) return true;
   return match (inferredTypeSymbolLocation(modules, moduleIndex, target)) {
     some(location) => {
       const symbol = view modules[location.moduleIndex]
@@ -4006,6 +4008,11 @@ function requireNonnullableMemberReceiver(
   if (nullable.byteLength > 0) throw resolutionError(
     ModuleResolveErrorKind.typeMismatch, module.path,
     `cannot access a member through nullable receiver "${receiverType}"; bind a snapshot and check it against null`,
+    tree.nodes[index].line, tree.nodes[index].column
+  );
+  if (canonical == nativeObjCObjectTypeName) throw resolutionError(
+    ModuleResolveErrorKind.unknownMember, module.path,
+    "objc.Object has no known class members; narrow with instanceof before member access",
     tree.nodes[index].line, tree.nodes[index].column
   );
 }
@@ -6265,6 +6272,9 @@ function inferExpressionNodeType(
     if (receiverWasView) {
       receiverValueType = receiverValueType.copyBytes(5, receiverValueType.byteLength);
     }
+    if (node.optionalAccess || receiverWasView) try requireNonnullableMemberReceiver(
+      module, modules, moduleIndex, tree, children[0], receiverValueType
+    );
     if (memberName == "length") {
       const lengthOwnerType = transparentTypeName(modules, moduleIndex, receiverValueType);
       if (collectionHasLength(lengthOwnerType)) {
@@ -8988,6 +8998,21 @@ function inferExpressionNodeType(
           )
         ) {
           let workerBindings = copyValueBindings(bindings);
+          for (const argument of children) {
+            if (tree.nodes[argument].kind != ExpressionKind.closureExpression) continue;
+            const captures = closureCaptureNames(arena, tree, argument, bindings);
+            for (const capture of captures) {
+              const captureType = valueBindingType(bindings, capture);
+              const visiting = Array<String>();
+              if (typeContainsNativeObjCStorage(modules, moduleIndex, captureType, visiting)) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch, module.path,
+                  `thread.spawn cannot transfer capture "${capture}" containing Objective-C object storage; erased identity does not grant thread permission`,
+                  tree.nodes[argument].line, tree.nodes[argument].column
+                );
+              }
+            }
+          }
           addValueBinding(
             inout workerBindings,
             "__z_native_executor_context",
@@ -9288,6 +9313,9 @@ function inferExpressionNodeType(
       if (stringStartsWith(ownerType, "view ")) {
         ownerType = ownerType.copyBytes(5, ownerType.byteLength);
       }
+      if (optionalMethodCall) try requireNonnullableMemberReceiver(
+        module, modules, moduleIndex, tree, receiverIndex, ownerType
+      );
       let staticMethod = false;
       if (ownerType.byteLength == 0) {
         const candidate = typeExpressionName(tree, receiverIndex);

@@ -171,9 +171,20 @@ object `null` arguments. Arguments are materialized before release, the receiver
 stays alive, other active readers remain protected, and access is restored
 before Z continuation or cleanup. Borrowed native arguments and nested call
 expressions retain the original guard. The real AppKit mutable zoom-reentry
-probe now completes; source-nameable erased `id` and native subclasses in async
+probe now completes; borrowed sender handoff and native subclasses in async
 programs remain separate integration gaps. This is no new syntax or blanket
 reentry permission; see [the exact boundary](objc-subclass-design.md#checked-synchronous-superclass-delegation-2026-09-11).
+
+Erased Objective-C identity is source-nameable as `objc.Object` from `std/objc`
+in both frontends. The non-null and `| null` forms share the importer's native
+`id` identity, with null guards, `instanceof` narrowing, aliases across module
+boundaries, native ARC storage, and editor completion/hover/tokens. No wrapper,
+new keyword, constructible class, or cross-thread permission is introduced.
+Inherited nullable sender overrides now have an accurate annotation; this is
+not permission to drop receiver guards around borrowed sender forwarding.
+The separate native C free-function `id` import path still needs preserved
+nullability evidence; this checkpoint validates Objective-C method metadata,
+not guessed pointer qualifiers from a bare C type spelling.
 
 The fixed-point async boundary has narrowed since the compact self-hosting row
 was written: a direct call to an imported async free function with a

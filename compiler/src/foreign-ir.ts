@@ -120,7 +120,7 @@ export type ForeignNamedType = (
     readonly exportName: string;
     readonly typeName: string;
     readonly cName: string;
-    readonly className: string;
+    readonly className: string | null;
   }
   | {
     readonly kind: "enum";

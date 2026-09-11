@@ -35,9 +35,9 @@ function emit(in wirePath: String, in sourcePath: String, in companionPath: Stri
   let foreign = Array<NativeForeignModuleContract>();
   for (const module of modules) {
     for (const declaration of module.program.imports) {
-      if (declaration.header != "./objc-subclass.h") continue;
+      if (declaration.header != "./objc-subclass.h" && declaration.header != "./objc-object.h") continue;
       const declarations = try parseForeignContracts(copy contractSource, "objc-subclass.h.zd");
-      const contracts = try normalizeForeignContracts(declarations, raw, "./objc-subclass.h");
+      const contracts = try normalizeForeignContracts(declarations, raw, declaration.header);
       foreign.push(NativeForeignModuleContract({
         modulePath: copy module.path, cacheKey: "subclass-execution", dependencyPath: "", contracts,
       }));

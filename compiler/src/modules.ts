@@ -22,7 +22,7 @@ import {
 import { DiagnosticError } from "./diagnostics.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
-import { isNullableObjCTypeName, nullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
+import { isNullableObjCTypeName, nullableObjCTypeName, objcObjectTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
 import {
@@ -1201,6 +1201,7 @@ function renameSimpleType(name: string, scope: ModuleScope): string {
     const namespace = name.slice(0, separator);
     const member = name.slice(separator + 1);
     const standardModule = scope.standardModules.get(namespace);
+    if (standardModule === "objc" && member === "Object") return objcObjectTypeName;
     if (standardModule) return `${standardModule}.${member}`;
     const dependency = scope.namespaces.get(namespace);
     if (dependency) {

@@ -1002,7 +1002,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       && context.semanticInfo.standardModuleBindings.has(tokens[index - 2]?.text ?? "")
     ) {
       const owner = context.semanticInfo.standardModuleBindings.get(tokens[index - 2]?.text ?? "");
-      const objcType = owner === "objc" && (token.text === "Connection" || token.text === "Binding");
+      const objcType = owner === "objc" && ["Object", "Connection", "Binding", "Registration", "Adapter"].includes(token.text);
       const standardType = owner === "fs" && token.text === "Lock";
       const embeddedType = owner === "embed" && token.text === "StaticBytes";
       classifications.set(token.location.offset, {
@@ -1890,6 +1890,12 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         source,
         word.start,
         word.end,
+      );
+    }
+    if (standardOwner === "objc" && word.text === "Object") {
+      return markdownHover(
+        "type objc.Object  // native Objective-C id, non-null\n// Erases the concrete class, not object identity. Use objc.Object | null for nil.\n// Narrow with instanceof before class-specific members. ARC-managed; no wrapper allocation.\n// Does not grant cross-thread access or transfer permission.",
+        source, word.start, word.end,
       );
     }
     if (standardOwner === "objc" && word.text === "Binding") {
@@ -5547,6 +5553,10 @@ function memberCompletions(
   if (standardModule) {
     return filterCompletions(standardModuleMemberNames(standardModule).map((member) => {
       const name = standardModuleFunction(standardModule, member);
+      if (standardModule === "objc" && member === "Object") {
+        return { label: member, kind: completionKinds.class,
+          detail: "non-null native Objective-C id; narrow with instanceof", insertText: member };
+      }
       if (standardModule === "objc" && (member === "Connection" || member === "Binding" || member === "Registration")) {
         return {
           label: member,
@@ -9209,7 +9219,7 @@ function foreignTypeName(type: ForeignType, module?: ForeignModule): string {
   if (type.kind === "swiftString") return "String";
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;
-  if (type.kind === "object") return `${type.className ?? "id"}${type.nullable ? " | null" : ""}`;
+  if (type.kind === "object") return `${type.className ?? "objc.Object"}${type.nullable ? " | null" : ""}`;
   if (type.kind === "pointer") {
     if (type.stringView) return `view cstring${type.nullable ? " | null" : ""}`;
     const sourceName = module ? foreignPointerSourceName(type, module) : null;
@@ -9328,6 +9338,9 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
   const readonly = parseReadonlyType(type);
   if (readonly) return `readonly ${displayType(readonly.target, typeDisplayNames)}`;
   const known = typeDisplayNames.get(type);
+  if (/^__z_objc:(?:nonnull|nullable):id$/.test(type)) {
+    return `objc.Object${type.includes(":nullable:") ? " | null" : ""}`;
+  }
   // A linked aggregate display name can itself contain encoded nested types.
   // Reconstruct containers below so those implementation identities never
   // leak into hover or completion text.

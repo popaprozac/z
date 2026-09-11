@@ -7,6 +7,7 @@ import {
   equivalentTypes,
   isUnresolvedExternalType,
   rebaseTypeName,
+  sourceTypeDisplayName,
   typeSymbolLocation,
   transparentTypeName,
 } from "./semantic-type-identities.zs";
@@ -21,6 +22,7 @@ import {
   isNumericTypeName,
   nativeFunctionSignature,
   nativeFunctionTypeName,
+  nativeObjCObjectTypeName,
   nullableTargetType,
   qualifiedTypeMember,
   stringStartsWith,
@@ -267,7 +269,7 @@ function nativeObjectiveCReferenceAssignable(
   const actualTarget = nullableTargetType(actualType);
   if (actualTarget.byteLength > 0) actual = move actualTarget;
 
-  if (expected == "id") {
+  if (expected == nativeObjCObjectTypeName) {
     return match (typeSymbolLocation(modules, moduleIndex, actual)) {
       some(location) => match (
         in modules[location.moduleIndex].symbols[
@@ -279,7 +281,11 @@ function nativeObjectiveCReferenceAssignable(
           || signature.foreignKind == "objcProtocol";
         none => false;
       }
-      none => false;
+      // The hybrid source-only graph does not carry Clang class metadata.
+      // Its downstream Stage 0 check still proves erasure; the independent
+      // native graph resolves imported types above and never uses this path
+      // to turn a known scalar/record into an Objective-C object.
+      none => isUnresolvedExternalType(modules, moduleIndex, actual);
     };
   }
 
@@ -341,7 +347,7 @@ function nativeObjectiveCAdapterAssignable(
   let expected = expectedType.copyBytes(0, expectedType.byteLength);
   const expectedTarget = nullableTargetType(expectedType);
   if (expectedTarget.byteLength > 0) expected = move expectedTarget;
-  if (expected != "id") return false;
+  if (expected != nativeObjCObjectTypeName) return false;
   return match (genericTypeShape(actualType)) {
     some(adapter) => qualifiedTypeMember(adapter.base) == "Adapter"
       && adapter.arguments.length == 1;
@@ -400,7 +406,9 @@ export function requireExpressionType(
     expected,
     actual
   )) return;
-  if (nativeObjectiveCAdapterAssignable(expected, actual)) return;
+  const adapterExpected = transparentTypeName(modules, moduleIndex, expected);
+  const adapterActual = transparentTypeName(modules, moduleIndex, actual);
+  if (nativeObjectiveCAdapterAssignable(adapterExpected, adapterActual)) return;
   if (
     expected == "String"
     && isNativeObjectiveCStringType(modules, moduleIndex, actual)
@@ -496,10 +504,12 @@ export function requireExpressionType(
       && !typeHasCleanup(modules, moduleIndex, target, visiting)
     ) return;
   }
+  const expectedDisplay = sourceTypeDisplayName(modules, moduleIndex, expected);
+  const actualDisplay = sourceTypeDisplayName(modules, moduleIndex, actual);
   throw moduleResolutionError(
     ModuleResolveErrorKind.typeMismatch,
     module.path,
-    `expected ${expected}, found ${actual}`,
+    `expected ${expectedDisplay}, found ${actualDisplay}`,
     tree.nodes[index].line,
     tree.nodes[index].column
   );

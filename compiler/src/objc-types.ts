@@ -2,6 +2,10 @@ const nullablePrefix = "__z_objc:nullable:";
 const nonnullPrefix = "__z_objc:nonnull:";
 const protocolPrefix = "__z_objc_protocol:";
 
+// Publicly spelled objc.Object; share the importer's erased native id identity.
+export const objcObjectTypeName = `${nonnullPrefix}id`;
+export const nullableObjCObjectTypeName = `${nullablePrefix}id`;
+
 export function nullableObjCTypeName(type: string): string {
   return `${nullablePrefix}${publicObjCTypeName(type)}`;
 }

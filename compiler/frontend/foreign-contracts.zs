@@ -21,6 +21,7 @@ import {
 import {
   nativeFunctionSignature,
   nativeFunctionTypeName,
+  nativeObjCObjectTypeName,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import { Map } from "std/collections";
@@ -3053,6 +3054,7 @@ function relativeObjCTypeName(
   in declarations: RawForeignModuleDeclarations,
   in typeName: String
 ): String {
+  if (typeName == "id") return copy nativeObjCObjectTypeName;
   match (nativeFunctionSignature(typeName)) {
     some(signature) => {
       let parameterTypes = Array<String>();
@@ -3227,7 +3229,7 @@ function selectorCallbackABI(
 function selectorCallbackObject(
   in declarations: RawForeignModuleDeclarations, in name: String
 ): boolean {
-  if (name == "id" || stringStartsWith(name, "__z_objc:")) return true;
+  if (name == "id" || name == nativeObjCObjectTypeName || stringStartsWith(name, "__z_objc:")) return true;
   for (const object of declarations.objectiveCInterfaces) {
     if (name == object.exportName || name == object.typeName) return true;
   }

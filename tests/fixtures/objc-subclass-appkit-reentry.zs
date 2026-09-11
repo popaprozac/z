@@ -23,8 +23,8 @@ class ProbeWindow extends AppKit.NSWindow on thread.main {
     super.setFrame(frame, display: display, animate: animate);
   }
 
-  // A new selector lets us probe super.zoom without pretending that its `id`
-  // argument is NSObject. Source-nameable erased native identity is separate work.
+  // Keep the literal-null handoff here. objc.Object now names the native `id`
+  // sender, but forwarding a borrowed sender still retains the receiver guard.
   function requestZoom(inout this): void as "requestZoom" {
     this.changes = this.changes + 1;
     super.zoom(null);
