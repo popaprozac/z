@@ -1,4 +1,5 @@
 import { ParsedModule } from "./module-symbols.zs";
+import { ReceiverMode } from "./parser.zs";
 import {
   ModuleObjCSubclassEntry, ModuleObjCSubclassPlan, ModuleObjCSubclassSuperCall,
   ModuleResolveError, ModuleResolveErrorKind, ModuleSemanticEvidence,
@@ -159,6 +160,10 @@ export function planNativeObjCSubclasses(
           || checked.objectiveCParameterNativeTypes.length != method.parameters.length) {
           throw planError(module, `native subclass override ${method.name} lost checked selector/ABI evidence`);
         }
+        const receiverMode = method.receiverMode == ReceiverMode.inputOutput ? "inout" : "in";
+        if (checked.receiverMode != receiverMode) {
+          throw planError(module, `native subclass override ${method.name} lost checked receiver access evidence`);
+        }
         found = true;
         let names = Array<String>();
         for (const parameter of method.parameters) { names.push(copy parameter.name); }
@@ -168,6 +173,7 @@ export function planNativeObjCSubclasses(
           nativeReturnType: copy checked.objectiveCNativeReturnType,
           nativeParameterTypes: copy checked.objectiveCParameterNativeTypes,
           parameterNames: move names,
+          receiverMode: copy checked.receiverMode,
         }));
       }
       if (!found) throw planError(module, `native subclass override ${method.name} has no checked entry`);

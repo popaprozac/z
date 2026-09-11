@@ -13,6 +13,8 @@ __attribute__((swift_attr("@MainActor")))
 - (int)add:(int)left to:(int)right;
 - (void)recordPhase:(int)phase;
 - (ZSubclassPoint)adjustPoint:(ZSubclassPoint)point;
+- (int)readAccess:(int)mode;
+- (int)writeAccess:(int)mode;
 @property(readonly) int recordedPhase;
 @property int configuredValue;
 @property ZSubclassDepth configuredDepth;
@@ -31,6 +33,18 @@ __attribute__((objc_subclassing_restricted))
 @end
 ZSubclassConstructorCleanup *z_subclass_constructor_cleanup(ZSubclassFixture *object) NS_RETURNS_RETAINED;
 int z_subclass_constructor_cleanups(void);
+
+@interface ZSubclassAccessCleanup : NSObject
+- (void)touch;
+@end
+ZSubclassAccessCleanup *z_subclass_access_cleanup(ZSubclassFixture *object, int write) NS_RETURNS_RETAINED;
+int z_subclass_call_read(ZSubclassFixture *object, int mode);
+int z_subclass_call_write(ZSubclassFixture *object, int mode);
+void z_subclass_publish(ZSubclassFixture *object);
+void z_subclass_drop_published(void);
+int z_subclass_call_published(void);
+int z_subclass_access_scenario(void);
+void z_subclass_catch_abort(void);
 
 __attribute__((swift_attr("@MainActor")))
 @interface ZNullableSubclassFixture : NSObject

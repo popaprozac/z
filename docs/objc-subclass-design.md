@@ -140,7 +140,7 @@ guard the boundary; do not silently weaken `inout` or add a reentrancy lock.
 Display callbacks must stop during explicit close/shutdown while the owner is
 live; final destruction cannot break a cycle that prevents it from starting.
 
-### Implemented gate; owned storage remains next
+### Implemented lifecycle gate
 
 Both emitters add a private byte-sized readiness flag, subject to native layout
 padding, in the native object. Allocation zero-initializes it. The initializer
@@ -172,6 +172,60 @@ and destruction counts. No GUI or ASan is needed.
 This is the first implementation checkpoint of the approved model, **not stored
 field support**. Fields and source `deinit` remain rejected until initialization,
 owned storage cleanup, and reentrant loan enforcement are implemented together.
+
+### Implemented native-entry exclusivity
+
+Ready override entries now enforce the existing receiver capabilities in both
+compilers. An implicit or explicit `in this` permits nested readers; `inout this`
+requires exclusive access. The checked native entry plan carries this capability
+through lowering rather than inferring it from the selector at emission time.
+
+| Active entry | Reentrant entry on the same receiver | Result |
+| --- | --- | --- |
+| `in this` | `in this` | Allowed |
+| `in this` | `inout this` | Runtime contract failure |
+| `inout this` | `in this` or `inout this` | Runtime contract failure |
+
+This checks native callback/alias paths that lexical analysis cannot see. It is
+not a mutex: there is no waiting, scheduling, or implicit hop. A conflict prints
+`reentrant native subclass access conflicts with inout this` and traps before
+entering the second Z body. An explicit `super` call still calls the superclass;
+if that implementation calls back virtually, the callback checks the same rule.
+Construction/destruction forwarding happens before this access check.
+
+The access lasts through return-value evaluation and all body-local cleanup,
+including native ARC local destructors. Generated lexical cleanup releases it
+on early returns and normal fallthrough. A precise-lifetime strong receiver
+reference outlives that cleanup: a callback may release the last outside native
+owner, but it must not destroy the counter storage while the entry is using it.
+
+Costs are explicit: one pointer-sized inline access counter in addition to the
+readiness byte, a small stack guard, entry/exit checks, and a scoped native ARC
+retain/release. There is no additional heap object or wrapper. This is a
+conservative correctness tier, not a zero-overhead claim; reducing provably
+unnecessary holds/checks is a later measured optimization.
+
+The shared fixture now destroys 403 objects per successful run. Five separate
+conflict scenarios cover read→write, write→read, write→write, a read-local
+destructor attempting a write, and a write-local destructor attempting a read.
+Positive cases cover read reentry, reader cleanup reentry, repeated exclusive
+entries after return, void fallthrough, independent receivers, and final-owner
+release from inside a method. Both emitters
+run the cases at `-O0`/`-O2` under UBSan. Expected traps are intercepted by a
+test-only native signal handler so they do not create host crash reports.
+
+The independent-receiver case exposed a separate ownership bug: the generated
+C constructor helper lacked `ns_returns_retained`. Its name does not carry the
+Objective-C `init` method family's +1 convention. At `-O0`, constructing inside
+an override left the result alive until the outer autorelease pool drained.
+Both emitters now annotate the helper's declaration and definition with the
+owned-return fact, so Z `new` does not depend on an optimized autorelease
+return-value handshake for timely cleanup.
+
+This closes the **entry** boundary, not all field borrowing. Stored fields and
+source `deinit` remain fail-closed. Their next checkpoint must combine definite
+initialization, inline owned storage, exactly-once cleanup, visibility, and
+restrictions on field views/captures that could outlive the guarded entry.
 
 ## Remaining state and safety work
 

@@ -1151,7 +1151,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (nativeOwner?.nativeBase && ["extends", "override", "super"].includes(word.text)) {
     const details = {
       extends: `extends ${nativeOwner.nativeBase.name}  // real Objective-C subclass identity, managed by native ARC`,
-      override: "override function  // compiler-checked inherited Objective-C selector and ABI; native entry requires thread.main\n// calls the superclass during construction and destruction, not the Z override body",
+      override: "override function  // compiler-checked inherited Objective-C selector and ABI; native entry requires thread.main\n// calls the superclass during construction and destruction, not the Z override body\n// ready entry permits nested in this reads; reentry conflicting with inout this traps",
       super: `super: ${nativeOwner.nativeBase.name}  // calls the superclass implementation on this same native object`,
     };
     return markdownHover(details[word.text as keyof typeof details], source, word.start, word.end);

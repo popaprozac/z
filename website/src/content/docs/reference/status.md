@@ -37,7 +37,9 @@ production or compatibility-sensitive use.
   implementation emission pass the same 200-iteration dispatch/capture/cleanup
   oracle as Stage 0 at `-O0` and `-O2` under strict Clang and UBSan. Native entries
   forward to the superclass during construction (including local ARC cleanup)
-  and destruction; only ready instances execute Z overrides. Stored fields,
+  and destruction; only ready instances execute Z overrides. Ready entries allow
+  nested shared reads and trap reentrant `inout this` conflicts, including during
+  local cleanup. A scoped native ARC hold preserves receiver lifetime. Stored fields,
   source `deinit`, reentrant field loans, and async composition remain
 - A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,

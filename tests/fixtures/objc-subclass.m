@@ -1,4 +1,6 @@
 #import "objc-subclass.h"
+#include <signal.h>
+#include <stdlib.h>
 
 static int liveCount = 0;
 int z_subclass_live_count(void) { return liveCount; }
@@ -45,6 +47,8 @@ int z_subclass_constructor_cleanups(void) { return constructorCleanups; }
 - (int)add:(int)left to:(int)right { return left + right; }
 - (void)recordPhase:(int)phase { _recordedPhase = phase; }
 - (ZSubclassPoint)adjustPoint:(ZSubclassPoint)point { return point; }
+- (int)readAccess:(int)mode { return mode; }
+- (int)writeAccess:(int)mode { return mode; }
 - (int)requiredValue { return 0; }
 - (int)directValue { return 0; }
 - (void)takeObject:(NSObject * __attribute__((ns_consumed)))object { (void)object; }
@@ -79,6 +83,47 @@ void z_subclass_check_constructing(ZSubclassFixture *object) {
 ZSubclassConstructorCleanup *z_subclass_constructor_cleanup(ZSubclassFixture *object) {
   return [[ZSubclassConstructorCleanup alloc] initWithReceiver:object];
 }
+
+int z_subclass_call_read(ZSubclassFixture *object, int mode) { return [object readAccess:mode]; }
+int z_subclass_call_write(ZSubclassFixture *object, int mode) { return [object writeAccess:mode]; }
+
+@implementation ZSubclassAccessCleanup {
+  __weak ZSubclassFixture *_receiver;
+  int _write;
+}
+- (instancetype)initWithReceiver:(ZSubclassFixture *)receiver write:(int)write {
+  self = [super init];
+  if (self) { _receiver = receiver; _write = write; }
+  return self;
+}
+- (void)touch {}
+- (void)dealloc {
+  ZSubclassFixture *receiver = _receiver;
+  if (receiver == nil) abort();
+  if (_write) (void)[receiver writeAccess:0];
+  else (void)[receiver readAccess:0];
+}
+@end
+ZSubclassAccessCleanup *z_subclass_access_cleanup(ZSubclassFixture *object, int write) {
+  return [[ZSubclassAccessCleanup alloc] initWithReceiver:object write:write];
+}
+
+static ZSubclassFixture *published;
+void z_subclass_publish(ZSubclassFixture *object) { published = object; }
+void z_subclass_drop_published(void) { published = nil; }
+int z_subclass_call_published(void) {
+  // Deliberately no native strong temporary. The generated method must keep
+  // its own receiver alive when a callback clears the last outside owner.
+  __unsafe_unretained ZSubclassFixture *receiver = published;
+  return [receiver writeAccess:3];
+}
+int z_subclass_access_scenario(void) {
+  const char *value = getenv("Z_SUBCLASS_ACCESS_SCENARIO");
+  return value ? atoi(value) : 0;
+}
+// Expected contract traps must not create macOS crash reports during tests.
+static void expectedAbort(int signalNumber) { (void)signalNumber; _Exit(86); }
+void z_subclass_catch_abort(void) { signal(SIGABRT, expectedAbort); }
 
 @implementation ZFinalSubclassFixture
 @end

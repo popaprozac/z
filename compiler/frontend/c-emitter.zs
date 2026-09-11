@@ -343,7 +343,7 @@ export function emitNativeObjCSubclassInterfaces(
     output.append(plan.nativeName);
     output.append(" : ");
     output.append(plan.superclassNativeName);
-    output.append(" {\n@private\n  unsigned char _z_native_subclass_ready;\n}\n");
+    output.append(" {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n}\n");
     try appendNativeObjCSubclassEntry(inout output, plan.initializer);
     output.append(" __attribute__((objc_designated_initializer));\n");
     for (const entry of plan.unavailableInitializers) {
@@ -357,6 +357,18 @@ export function emitNativeObjCSubclassInterfaces(
     output.append("@end\n\n");
   }
   return output.finish();
+}
+
+function appendNativeObjCSubclassAccessRuntime(inout output: TextBuffer): void {
+  output.append("typedef struct { intptr_t *state; bool exclusive; } _z_native_subclass_access_guard;\n");
+  output.append("static __attribute__((unused)) void _z_native_subclass_access_conflict(void) {\n");
+  output.append("  fputs(\"Z runtime error: reentrant native subclass access conflicts with inout this\\n\", stderr);\n  abort();\n}\n");
+  output.append("static __attribute__((unused)) _z_native_subclass_access_guard _z_native_subclass_access_begin(intptr_t *state, bool exclusive) {\n");
+  output.append("  if (exclusive ? *state != 0 : (*state < 0 || *state == INTPTR_MAX)) _z_native_subclass_access_conflict();\n");
+  output.append("  *state = exclusive ? -1 : *state + 1;\n  return (_z_native_subclass_access_guard){ state, exclusive };\n}\n");
+  output.append("static __attribute__((unused)) void _z_native_subclass_access_end(_z_native_subclass_access_guard *guard) {\n");
+  output.append("  if (guard->exclusive) {\n    if (*guard->state != -1) abort();\n    *guard->state = 0;\n");
+  output.append("  } else {\n    if (*guard->state <= 0) abort();\n    *guard->state -= 1;\n  }\n}\n\n");
 }
 
 // Native virtual dispatch can arrive from a superclass initializer/deallocator.
@@ -400,7 +412,9 @@ function appendNativeObjCSubclassFallback(
 function appendNativeObjCConstructor(
   inout output: TextBuffer, in plan: ModuleObjCSubclassPlan, definition: boolean
 ): void throws String {
-  output.append("static __attribute__((unused)) ");
+  // A C helper has no init method-family ownership. Preserve Z new's +1 result
+  // explicitly rather than relying on an autorelease return-value handshake.
+  output.append("static __attribute__((unused, ns_returns_retained)) ");
   output.append(plan.nativeName);
   output.append(" *");
   output.append(plan.nativeName);
@@ -10825,7 +10839,16 @@ function appendFunction(
     output.append("  if (![NSThread isMainThread]) abort();\n");
     if (declaration.compilerIntrinsic != "objcInitializer") {
       match (in declaration.nativeObjCEntry) {
-        some(entry) => try appendNativeObjCSubclassFallback(inout output, entry);
+        some(entry) => {
+          try appendNativeObjCSubclassFallback(inout output, entry);
+          if (entry.receiverMode != "in" && entry.receiverMode != "inout") {
+            throw "native subclass entry lost checked receiver access evidence";
+          }
+          output.append("  __attribute__((objc_precise_lifetime)) id const _z_native_subclass_owner = self;\n  (void)_z_native_subclass_owner;\n");
+          output.append("  _z_native_subclass_access_guard _z_native_subclass_loan __attribute__((cleanup(_z_native_subclass_access_end))) = _z_native_subclass_access_begin(&self->_z_native_subclass_access, ");
+          output.append(entry.receiverMode == "inout" ? "true" : "false");
+          output.append(");\n");
+        }
         none => throw "native lifecycle fallback lost its checked method entry";
       }
     }
@@ -24578,6 +24601,7 @@ function emitLoweredC(
     output.append("#import <Foundation/Foundation.h>\n#import <objc/runtime.h>\n");
     const interfaces = try emitNativeObjCSubclassInterfaces(program.objectiveCSubclasses);
     output.append(interfaces);
+    appendNativeObjCSubclassAccessRuntime(inout output);
     for (const plan of program.objectiveCSubclasses) {
       try appendNativeObjCConstructor(inout output, plan, false);
     }

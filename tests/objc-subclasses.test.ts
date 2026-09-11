@@ -44,7 +44,7 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
     const nativeBaseline = baseline.replace("./objc-subclass.h", "objc-subclass-wire.h")
       .replaceAll("ZSubclassFixture", "ZWireBase")
       .replace("counter.readVirtualValue()", "counter.value()");
-    const runDeclaration = (source: string, mode: false | true | "types" | "plans" | "interfaces" | "missing-super" | "wrong-dispatch" | "wrong-abi" = false) => {
+    const runDeclaration = (source: string, mode: false | true | "types" | "plans" | "interfaces" | "missing-super" | "wrong-dispatch" | "wrong-abi" | "missing-access" | "wrong-access" = false) => {
       writeFileSync(input, stream);
       writeFileSync(sourcePath, source);
       return spawnSync(executable, [input, sourcePath, ...(mode ? [mode === true ? "gate" : mode] : [])], {
@@ -76,6 +76,11 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
     assert.equal(planned.status, 0, planned.stdout + planned.stderr);
     assert.match(planned.stdout, /class Counter:ZNative_0_Counter:ZWireBase:objc-subclass-wire.h/);
     assert.match(planned.stdout, /initializer initZGeneratedWithArgument0::instancetype/);
+    for (const mode of ["missing-access", "wrong-access"] as const) {
+      const rejected = runDeclaration(nativeBaseline, mode);
+      assert.equal(rejected.status, 1, `${mode}: ${rejected.stdout}${rejected.stderr}`);
+      assert.match(rejected.stdout, /Z0814:.*lost checked receiver access evidence/);
+    }
     assert.match(planned.stdout, /argument int32_t/);
     assert.match(planned.stdout, /entry value:value:int/);
     assert.match(planned.stdout, /dispatch true:initWithValue:/);
@@ -460,6 +465,7 @@ hostToolchainTest("surfaces native subclass identity, overrides, and superclass 
   assert.match(hover(baseline, fixture, baseline.indexOf("Counter") + 1)?.contents.value ?? "", /class Counter extends native.ZSubclassFixture/);
   assert.match(hover(baseline, fixture, baseline.indexOf("Counter") + 1)?.contents.value ?? "", /after constructor cleanup/);
   assert.match(hover(baseline, fixture, baseline.indexOf("override") + 1)?.contents.value ?? "", /superclass during construction and destruction/);
+  assert.match(hover(baseline, fixture, baseline.indexOf("override") + 1)?.contents.value ?? "", /reentry conflicting with inout this traps/);
   assert.match(hover(baseline, fixture, baseline.indexOf("function value") + 10)?.contents.value ?? "", /override function value.*as "value"/);
   const superOffset = baseline.indexOf("super.value") + "super.v".length;
   assert.ok(completions(baseline, fixture, superOffset).some((item) => item.label === "value"));
@@ -553,7 +559,7 @@ hostToolchainTest("compiles an actual AppKit subclass without launching an appli
   assert.equal(built.status, 0, built.stderr);
 }, 60_000);
 
-hostToolchainTest("executes a field-free native subclass with lifecycle-guarded virtual and superclass dispatch", () => {
+hostToolchainTest("executes native subclass lifecycle and reentrant receiver access guards", () => {
   if (process.platform !== "darwin") return;
   const file = resolve(projectRoot, "tests/fixtures/objc-subclass.zs");
   const artifact = compileToNative(readFileSync(file, "utf8"), file);
@@ -564,6 +570,10 @@ hostToolchainTest("executes a field-free native subclass with lifecycle-guarded 
   assert.match(artifact.source, /if \(!self->_z_native_subclass_ready\) \{ return \[super value\]; \}/);
   assert.match(artifact.source, /- \(void\)dealloc \{\s+if \(!\[NSThread isMainThread\]\) abort\(\);\s+self->_z_native_subclass_ready = 0;/);
   assert.doesNotMatch(artifact.source, /Z_Counter.*_z_refcount/);
+  assert.match(artifact.source, /intptr_t _z_native_subclass_access;/);
+  assert.match(artifact.source, /objc_precise_lifetime.*_z_native_subclass_owner = self/);
+  assert.match(artifact.source, /access_begin\(&self->_z_native_subclass_access, true\)/);
+  assert.match(artifact.source, /ns_returns_retained.*Z_Counter_new/);
   const directory = mkdtempSync(resolve(tmpdir(), "z-native-subclass-"));
   try {
     const generated = resolve(directory, "main.m");
@@ -574,8 +584,17 @@ hostToolchainTest("executes a field-free native subclass with lifecycle-guarded 
         encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
       });
       assert.equal(built.status, 0, `${label} ${optimization}: ${built.stderr}`);
-      const run = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+      const run = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", env: { ...process.env, Z_SUBCLASS_ACCESS_SCENARIO: "0" } });
       assert.equal(run.status, 0, `${label} ${optimization}: ${run.stderr} ${run.error ?? ""} ${run.signal ?? ""}`);
+      for (const scenario of [1, 2, 3, 4, 5]) {
+        const rejected = spawnSync(executable, [], {
+          encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL",
+          env: { ...process.env, Z_SUBCLASS_ACCESS_SCENARIO: String(scenario) },
+        });
+        assert.equal(rejected.status, 86, `${label} ${optimization} conflict ${scenario}: ${rejected.stderr} ${rejected.error ?? ""} ${rejected.signal ?? ""}`);
+        assert.equal(rejected.signal, null);
+        assert.match(rejected.stderr, /reentrant native subclass access conflicts with inout this/);
+      }
     };
     compileAndRun(artifact.source, "Stage 0");
     compileAndRun(artifact.source, "Stage 0", "-O2");
@@ -603,6 +622,8 @@ hostToolchainTest("executes a field-free native subclass with lifecycle-guarded 
     assert.match(native.stdout, /if \(!self->_z_native_subclass_ready\) \{ return \[super value\]; \}/);
     assert.match(native.stdout, /- \(void\)dealloc \{\s+if \(!\[NSThread isMainThread\]\) abort\(\);\s+self->_z_native_subclass_ready = 0;/);
     assert.doesNotMatch(native.stdout, /Z_Counter.*_z_refcount|typedef struct Z_ZNative_0_Counter/);
+    assert.match(native.stdout, /access_begin\(&self->_z_native_subclass_access, true\)/);
+    assert.match(native.stdout, /ns_returns_retained.*ZNative_0_Counter_new/);
     compileAndRun(native.stdout, "native");
     compileAndRun(native.stdout, "native", "-O2");
     const rawProbe = resolve(directory, "raw-probe.zs");
@@ -610,12 +631,13 @@ hostToolchainTest("executes a field-free native subclass with lifecycle-guarded 
       writeFileSync(rawProbe, baseline + `\nfunction rawProbe(): i32 = raw c { ${body} }\n`);
       return spawnSync(oracle, [wire, rawProbe], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
     };
-    for (const name of ["ZNative_0_Counter", "ZNative_0_Counter_new", "_z_native_subclass_ready"]) {
+    for (const name of ["ZNative_0_Counter", "ZNative_0_Counter_new", "_z_native_subclass_ready", "_z_native_subclass_access", "_z_native_subclass_access_begin", "_z_native_subclass_access_end", "_z_native_subclass_access_guard", "_z_native_subclass_owner", "_z_native_subclass_loan"]) {
       const rejected = emitRaw(`return (int)sizeof(${name});`);
       assert.equal(rejected.status, 1, rejected.stdout + rejected.stderr);
       assert.match(rejected.stderr, /Z0820: raw native source cannot reference compiler-owned symbol/);
     }
     assert.throws(() => compileToNative(baseline + '\nfunction rawProbe(): i32 = raw c { return (int)sizeof(_z_native_subclass_ready); }', fixture), /compiler-owned symbol "_z_native_subclass_ready"/);
+    assert.throws(() => compileToNative(baseline + '\nfunction rawProbe(): i32 = raw c { return (int)sizeof(_z_native_subclass_access); }', fixture), /compiler-owned symbol "_z_native_subclass_access"/);
     // The existing compiler-storage prefix restriction applies to native bodies too.
     const shadowSource = baseline.replaceAll("value: i32", "_z_native_subclass_ready: i32")
       .replace("super.initWithValue(value)", "super.initWithValue(_z_native_subclass_ready)");

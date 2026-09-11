@@ -201,7 +201,13 @@ recursive path.
   `dealloc` before superclass teardown. The shared execution fixture covers all
   those callback points, including void/record results, at `-O0` and `-O2`.
   Raw access to the gate and reserved `_z_` source bindings are rejected in native
-  subclass bodies. Fields, source `deinit`, reentrant field loans, weak identity,
+  subclass bodies. Checked entry plans also preserve shared/exclusive receiver
+  access. Native entry guards allow nested readers and trap reentrant `inout`
+  conflicts without waiting; lexical cleanup retains the access through local
+  destruction and ends it before a precise-lifetime native receiver hold releases.
+  The fixture covers five conflict paths and releasing the last outside owner
+  during an entry, at both optimization levels. Fields, source `deinit`, escaping
+  field loans/captures, weak identity,
   and async subclass composition remain.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,

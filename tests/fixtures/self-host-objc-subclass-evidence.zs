@@ -162,7 +162,8 @@ function inspect(in path: String, in sourcePath: String, in mode: String, in pla
     failure(error) => throw `${error.code}: ${error.message}`;
   }
   if (mode == "types" || mode == "plans" || mode == "interfaces"
-    || mode == "missing-super" || mode == "wrong-dispatch" || mode == "wrong-abi") {
+    || mode == "missing-super" || mode == "wrong-dispatch" || mode == "wrong-abi"
+    || mode == "missing-access" || mode == "wrong-access") {
     match (attempt prepareNativeObjCSubclassTypes(parsedModules, inout resolved)) {
       success => {}
       failure(error) => throw `${error.code}: ${error.message}`;
@@ -184,6 +185,22 @@ function inspect(in path: String, in sourcePath: String, in mode: String, in pla
           if (mode == "wrong-abi") evidence.callResolutions[index].objectiveCNativeReturnType = "double";
         }
         index = index + 1;
+      }
+      if (mode == "missing-access" || mode == "wrong-access") {
+        let symbol: usize = 0;
+        while (symbol < resolved[0].symbols.length) {
+          match (copy resolved[0].symbols[symbol].typeSignature) {
+            some(signature) => {
+              if (signature.foreignKind == "objcSubclass") {
+                let changed = move signature;
+                changed.methods[0].receiverMode = mode == "missing-access" ? "" : "inout";
+                resolved[0].symbols[symbol].typeSignature = Option.some(move changed);
+              }
+            }
+            none => {}
+          }
+          symbol = symbol + 1;
+        }
       }
       const plans = match (attempt planNativeObjCSubclasses(parsedModules[0], resolved, 0, evidence)) {
         success(value) => value;

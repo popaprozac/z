@@ -32519,7 +32519,10 @@ function appendLoweredProgram(
             if (entry.offset == method.offset) loweredMethod.nativeObjCEntry = Option.some(copy entry);
           }
           match (in loweredMethod.nativeObjCEntry) {
-            some(_) => {}
+            some(entry) => {
+              const expected = loweredMethod.receiverMode == LoweredParameterMode.inputOutput ? "inout" : "in";
+              if (entry.receiverMode != expected) throw "native subclass lowering lost checked receiver access evidence";
+            }
             none => throw "native subclass lowering lost its checked override entry";
           }
         }

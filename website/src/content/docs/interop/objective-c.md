@@ -128,6 +128,8 @@ Z ARC allocation or protocol-adapter wrapper.
 
 The superclass designated initializer must be first and non-nullable. Generated
 code checks the returned identity and the main thread, without scheduling a hop.
+Its generated constructor helper explicitly transfers an owned native reference;
+`new` does not defer that ownership to an enclosing autorelease pool.
 Virtual calls during construction and destruction invoke the superclass, **not**
 the Z override. Z overrides become active only after the constructor body and
 its local cleanup finish, including cleanup of native ARC temporaries. This also
@@ -135,7 +137,20 @@ applies to `this.method()` calls from the constructor after `super.init`.
 It is Z's deliberate lifecycle rule, not ordinary Objective-C dispatch; libraries
 requiring subclass callbacks during initialization need a later explicit tier.
 The gate adds one byte-sized native field (plus possible layout padding) and an
-entry branch, not another heap object. It is not a reentrancy lock.
+entry branch, not another heap object.
+
+Ready entries also enforce receiver exclusivity across native callbacks. Nested
+`in this` reads are allowed; reentry involving an active or incoming `inout this`
+traps before the conflicting Z body runs. This is a nonblocking contract check,
+not a lock or executor hop. Explicit `super` calls are unchanged, but virtual
+callbacks made by the superclass check the same access rule.
+
+Access remains held during local cleanup, including ARC destructors and early
+returns. A scoped strong native reference keeps the receiver alive through the
+check's cleanup. The current cost is one additional pointer-sized native field,
+a stack guard, entry/exit checks, and a native retain/release—not another heap
+allocation. This conservative safety tier is not zero overhead.
+
 This tier is field-free and synchronous: Z-stored fields, `deinit`, `Weak`,
 fallible constructors, object-returning overrides, and async composition remain
 future work. Ordinary Z-to-Z inheritance is not supported. Both the TypeScript

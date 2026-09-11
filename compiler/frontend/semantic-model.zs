@@ -110,6 +110,7 @@ export struct ModuleObjCSubclassEntry {
   nativeReturnType: String;
   nativeParameterTypes: Array<String>;
   parameterNames: Array<String>;
+  receiverMode: String = "";
 }
 
 export struct ModuleObjCSubclassSuperCall {

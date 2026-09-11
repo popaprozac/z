@@ -906,6 +906,7 @@ export function generateC(
     const plan = semanticInfo.objcSubclasses.get(declaration.name)!;
     lines.push(generateObjCSubclassInterface(plan, structs, enums, semanticInfo), "");
   }
+  if (nativeSubclasses.length) lines.push(generateObjCSubclassAccessRuntime(), "");
   for (const type of arenaCreateTypes) {
     lines.push(`${generateArenaCreateSignature(type, structs, enums, semanticInfo.foreignNamedTypes)};`);
   }
@@ -2465,6 +2466,31 @@ function objcSubclassInitializerSelector(plan: ObjCSubclassPlan): string {
   return parameters.length === 0 ? "initZGenerated" : parameters.map((_, index) => index === 0 ? "initZGeneratedWithArgument0:" : `argument${index}:`).join("");
 }
 
+// The native ABI can reenter a receiver through aliases invisible to Z's
+// lexical loan checker. This is an exclusivity check, not a lock: it never
+// waits, and multiple nested readers are allowed on the main executor.
+function generateObjCSubclassAccessRuntime(): string {
+  return `typedef struct { intptr_t *state; bool exclusive; } _z_native_subclass_access_guard;
+static __attribute__((unused)) void _z_native_subclass_access_conflict(void) {
+  fputs("Z runtime error: reentrant native subclass access conflicts with inout this\\n", stderr);
+  abort();
+}
+static __attribute__((unused)) _z_native_subclass_access_guard _z_native_subclass_access_begin(intptr_t *state, bool exclusive) {
+  if (exclusive ? *state != 0 : (*state < 0 || *state == INTPTR_MAX)) _z_native_subclass_access_conflict();
+  *state = exclusive ? -1 : *state + 1;
+  return (_z_native_subclass_access_guard){ state, exclusive };
+}
+static __attribute__((unused)) void _z_native_subclass_access_end(_z_native_subclass_access_guard *guard) {
+  if (guard->exclusive) {
+    if (*guard->state != -1) abort();
+    *guard->state = 0;
+  } else {
+    if (*guard->state <= 0) abort();
+    *guard->state -= 1;
+  }
+}`;
+}
+
 function objcSubclassInitializerSignature(plan: ObjCSubclassPlan, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>, semanticInfo: SemanticInfo): string {
   const parameters = plan.declaration.constructor!.parameters;
   const labels = objcSubclassInitializerSelector(plan).split(":");
@@ -2473,14 +2499,17 @@ function objcSubclassInitializerSignature(plan: ObjCSubclassPlan, structs: Map<s
 
 function objcSubclassConstructorSignature(plan: ObjCSubclassPlan, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>, semanticInfo: SemanticInfo): string {
   const parameters = plan.declaration.constructor!.parameters.map((parameter) => `${mapType(parameter.type.name, structs, enums, semanticInfo.foreignNamedTypes)} ${cBindingName(parameter.name)}`);
-  return `Z_UNUSED_FUNCTION static ${plan.className} *${constructorName(plan.declaration.name)}(${parameters.join(", ") || "void"})`;
+  // This C helper implements Z `new`: unlike an Objective-C init method, its
+  // name does not imply +1 ownership. Without this fact ARC may autorelease the
+  // result, delaying destruction to an unrelated enclosing pool.
+  return `Z_UNUSED_FUNCTION static __attribute__((ns_returns_retained)) ${plan.className} *${constructorName(plan.declaration.name)}(${parameters.join(", ") || "void"})`;
 }
 
 function generateObjCSubclassInterface(plan: ObjCSubclassPlan, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>, semanticInfo: SemanticInfo): string {
   const methods = plan.declaration.methods.map((method) => `${generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name)))};`);
   const initializers = plan.base.methods.filter((method) => method.instance && method.designatedInitializer)
     .map((method) => `${generateObjCProtocolMethodDeclaration({ ...method, required: true }, method.parameters.map((_, index) => `argument${index}`))} NS_UNAVAILABLE;`);
-  return `@interface ${plan.className} : ${plan.base.className} {\n@private\n  unsigned char _z_native_subclass_ready;\n}\n${objcSubclassInitializerSignature(plan, structs, enums, semanticInfo)} NS_DESIGNATED_INITIALIZER;\n${initializers.join("\n")}\n${methods.join("\n")}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)};`;
+  return `@interface ${plan.className} : ${plan.base.className} {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n}\n${objcSubclassInitializerSignature(plan, structs, enums, semanticInfo)} NS_DESIGNATED_INITIALIZER;\n${initializers.join("\n")}\n${methods.join("\n")}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)};`;
 }
 
 function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>, functions: Map<string, FunctionDeclaration>, semanticInfo: SemanticInfo, omitRawNativeBodies: boolean): string {
@@ -6690,6 +6719,12 @@ function generateFunction(
       `if (!self->_z_native_subclass_ready) { ${declaration.returnType.name === "void"
         ? `${nativeMethod.superclassFallback}; return;`
         : `return ${nativeMethod.superclassFallback};`} }`,
+      // Keep the receiver alive until AFTER the access cleanup. Declare the
+      // guard before body locals so their (possibly reentrant) destructors run
+      // while the original access is still held, including on early returns.
+      "__attribute__((objc_precise_lifetime)) id const _z_native_subclass_owner = self;",
+      "(void)_z_native_subclass_owner;",
+      `_z_native_subclass_access_guard _z_native_subclass_loan __attribute__((cleanup(_z_native_subclass_access_end))) = _z_native_subclass_access_begin(&self->_z_native_subclass_access, ${declaration.receiverMode === "inout" ? "true" : "false"});`,
     ] : []),
     ...(!receiver && declaration.name === "main"
       ? [

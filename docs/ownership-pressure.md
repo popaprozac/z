@@ -7317,6 +7317,74 @@ diff checks pass. This is targeted validation, not a full-suite or performance
 benchmark claim. The byte flag adds no heap allocation; it still has layout and
 branch costs.
 
+## Native receiver exclusivity across callbacks (2026-09-10)
+
+Consumer: the upcoming native subclass fields needed by Zapp's smooth-resize
+implementation. This checkpoint deliberately keeps fields/source `deinit`
+disabled while making the approved reentrant-entry boundary executable.
+
+The important distinction is **main-thread placement versus exclusive access**.
+A main-thread native method can synchronously call another selector through an
+alias that Z's lexical checker does not see. Both emitters now preserve checked
+receiver access in native entries: shared `in this` readers may nest; reentry
+involving `inout this` traps before the second Z body. This is a native-boundary
+contract check, not a new general Z borrow model, a mutex, or an implicit hop.
+An explicit superclass call is still direct; a virtual callback from that
+superclass is a new entry and must respect the active access.
+
+Two lifetime details matter before owned fields can rely on the guard:
+
+- Access must last through local cleanup, not merely until a source `return`.
+  A native ARC temporary's destructor can reenter the object. Declaring the
+  generated lexical cleanup guard before body locals keeps that callback under
+  the original access, at both optimization levels.
+- A callback can clear the last outside native owner. The access counter lives
+  inside that receiver, so a guard holding only its address is insufficient.
+  A precise-lifetime native ARC hold keeps the receiver alive until after the
+  guard releases access. The fixture deliberately uses a native non-owning
+  caller and drops the sole outside strong reference during the method.
+
+Evidence: the shared fixture has 403 exact construction/temporary-cleanup/
+destruction counts, legal nested reads, shared cleanup reentry, sequential
+exclusive calls after early return, exclusive void fallthrough, independent
+receivers, and final-outside-owner release. Five
+separate negative runs cover read→write, write→read, write→write, and conflicting
+reentry from read/write local destructors. The test-only native abort handler
+returns status 86 so expected traps do not generate host crash reports. Native
+planning rejects missing/mismatched receiver evidence; lowering verifies the
+entry against the lowered receiver capability. Runtime helper/counter identities
+are protected by generated-symbol hygiene. This is not a raw sandbox.
+
+Performance accounting: a pointer-sized inline counter (plus native padding),
+a small stack guard, entry/exit checks, and one scoped native retain/release.
+No separate wrapper or per-call heap allocation is introduced. We have not
+measured the per-call cost; any future elision must prove the same reentry and
+receiver-lifetime properties, not simply remove the checks because the executor
+is main.
+
+The independent-receiver test also found a real ownership-emission bug. A native
+subclass constructed inside an override survived until the outer autorelease
+pool drained at `-O0`. The generated C constructor helper did not advertise a
+retained (+1) return, despite implementing `new`; unlike an Objective-C initializer,
+its C name has no method-family ownership. Both emitters now put
+`ns_returns_retained` on the helper declaration and definition. This makes
+cleanup independent of autorelease-handshake optimization and avoids needless
+pool-held lifetime. The test checks exact destruction counts before pool drain.
+
+Remaining boundary: initialization, inline owned storage, exact field cleanup,
+and views/captures that escape the guarded entry. Passing these entry tests does
+not authorize fields yet. Keep that gate closed until the ownership proof and
+runtime storage implementation agree in both compilers, then return to Zapp.
+
+Validation: all six subclass tests and 105 related interop/closure/nonescape
+tests pass. The initial broader invocation used Bun's five-second default and
+timed out one Arena test; rerunning with the repository's 60-second setting and
+orphan cleanup passes. The final native compiler reaches a fixed point
+(11,469,279 emitted C bytes); the fresh binary emits the fixture for strict
+Clang/UBSan execution and an actual NSWindow subclass for compile-only checking.
+Website build (33 pages), fixture/tier coverage, and diff checks pass. This is
+targeted validation, not a full-suite or runtime benchmark claim.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

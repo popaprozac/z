@@ -39,13 +39,64 @@ class Counter extends native.ZSubclassFixture on thread.main {
     return callback();
   }
 
-  override function record(phase: i32): void as "recordPhase:" {
+  override function record(inout this, phase: i32): void as "recordPhase:" {
     super.recordPhase(phase + 10);
   }
 
   override function adjust(point: native.ZSubclassPoint): native.ZSubclassPoint as "adjustPoint:" {
     return native.ZSubclassPoint({ x: point.x + 1, y: point.y + 2 });
   }
+
+  override function readAccess(mode: i32): i32 as "readAccess:" {
+    if (mode == 1) return native.z_subclass_call_write(this, 0);
+    if (mode == 2 || mode == 3) {
+      const cleanup: native.ZSubclassAccessCleanup = native.z_subclass_access_cleanup(this, mode == 2 ? 1 : 0);
+      cleanup.touch();
+      return 0;
+    }
+    // Reentrant shared access remains legal.
+    if (mode == 4) return native.z_subclass_call_read(this, 0);
+    return super.readAccess(mode);
+  }
+
+  override function writeAccess(inout this, mode: i32): i32 as "writeAccess:" {
+    if (mode == 1) return native.z_subclass_call_read(this, 0);
+    if (mode == 2) return native.z_subclass_call_write(this, 0);
+    if (mode == 3) {
+      native.z_subclass_drop_published();
+      return native.z_subclass_live_count();
+    }
+    if (mode == 4) {
+      const cleanup: native.ZSubclassAccessCleanup = native.z_subclass_access_cleanup(this, 0);
+      cleanup.touch();
+      return 0;
+    }
+    if (mode == 5) {
+      const other = new Counter(1);
+      return native.z_subclass_call_read(other, 0);
+    }
+    return super.writeAccess(mode);
+  }
+}
+
+function publishCounter(): void on thread.main {
+  const counter = new Counter(40);
+  native.z_subclass_publish(counter);
+}
+
+function exerciseAccess(scenario: i32): i32 on thread.main {
+  const counter = new Counter(40);
+  if (scenario == 1) return native.z_subclass_call_read(counter, 1);
+  if (scenario == 2) return native.z_subclass_call_write(counter, 1);
+  if (scenario == 3) return native.z_subclass_call_write(counter, 2);
+  if (scenario == 4) return native.z_subclass_call_read(counter, 2);
+  if (scenario == 5) return native.z_subclass_call_write(counter, 4);
+  if (native.z_subclass_call_read(counter, 4) != 0) return 10;
+  if (native.z_subclass_call_read(counter, 3) != 0) return 11;
+  if (native.z_subclass_call_write(counter, 0) != 0) return 12;
+  if (native.z_subclass_call_write(counter, 0) != 0) return 13;
+  if (native.z_subclass_call_write(counter, 5) != 0) return 14;
+  return native.z_subclass_call_read(counter, 0);
 }
 
 function retainedReader(): ReadValue on thread.main {
@@ -71,6 +122,11 @@ function exercise(): i32 on thread.main {
 }
 
 function main(): i32 {
+  native.z_subclass_catch_abort();
+  if (exerciseAccess(native.z_subclass_access_scenario()) != 0) return 10;
+  publishCounter();
+  if (native.z_subclass_call_published() != 1) return 11;
+  if (native.z_subclass_live_count() != 0) return 12;
   let index: i32 = 0;
   while (index < 200) {
     if (exercise() != 0) return 1;
@@ -78,9 +134,9 @@ function main(): i32 {
     if (native.z_subclass_body_balance() != 0) return 3;
     index = index + 1;
   }
-  if (native.z_subclass_construction_callbacks() != 400) return 6;
-  if (native.z_subclass_teardown_callbacks() != 400) return 7;
-  if (native.z_subclass_constructor_cleanups() != 400) return 8;
+  if (native.z_subclass_construction_callbacks() != 403) return 6;
+  if (native.z_subclass_teardown_callbacks() != 403) return 7;
+  if (native.z_subclass_constructor_cleanups() != 403) return 8;
   if (native.z_subclass_lifecycle_failures() != 0) return 9;
   return native.z_subclass_live_count();
 }
