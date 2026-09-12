@@ -35,6 +35,19 @@ namespace that surfaced it. If Foundation and a vendor header both mention
 introduced. A non-null Z `String` can satisfy either a non-null or nullable
 `NSString` argument while remaining non-null itself.
 
+This also works when the same call includes an inline native block: the
+compiler stages the Z String and bridges it once at the Objective-C call.
+Notification observer tokens still need explicit removal at the end of their
+owner's lifetime; owning a token does not itself unregister the observer.
+Native types nested in a block signature also belong to the imported namespace:
+an inferred timer parameter can call `timer.invalidate()`, and an explicit
+`Foundation.NSTimer` annotation names that same type.
+
+Native enum and option-set values retain their nominal types. When an integer
+is actually needed, use an explicit numeric conversion such as
+`usize(window.styleMask)`. The conversion uses the imported ABI representation,
+including when a property exposes the type through a qualified module name.
+
 An inferred object returned through a forward declaration gains its checked
 members when you import the complete class header. For example, AppKit returns
 `CADisplayLink`, while `QuartzCore/CADisplayLink.h` defines its run-loop methods.

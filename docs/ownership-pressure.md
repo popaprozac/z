@@ -8494,6 +8494,50 @@ not repeated index/receiver evaluation or omitted old-element cleanup. Scalar
 indexed destinations are covered, including not evaluating the index after an
 arm returns early. A negative regression protects that ownership boundary.
 
+## Window presentation and native notification pressure (2026-09-12)
+
+Zapp's maximize/restore and fullscreen integration uses owned notification
+tokens, native window identity, weak manager references, and ordinary
+main-isolated closures. Native notifications are queued until a guarded
+geometry entry has unwound; application callbacks can then inspect or close
+the window without borrowing an active native receiver. Token teardown removes
+both observers and pending notifications for that window.
+
+This composition exposed several implementation gaps, not new ownership rules:
+
+- Staging a Z String argument beside an inline Objective-C block converted it
+  to NSString too early, then tried to bridge it again at the call. Staging now
+  keeps the original Z value and bridges exactly once.
+- The native resolver lost the caller context of imported Objective-C blocks.
+  That context is now attached to the individual inline block, without granting
+  affinity to nested escaping or explicitly thread-any function values. A
+  read-only block capture can share the native object passed as a notification
+  filter; ordinary Z-call exclusivity and writable-capture checks remain.
+- A native conditional initializer could clean up both its selected owned
+  String and the former owner. Ownership lowering now applies to the selected
+  arm: owned storage transfers, while shared class identity retains. Both arms
+  are exercised at O0/O2 with UBSan, and ARC destruction counts are checked.
+- Qualified native enum/scalar names now use the same ABI-name lookup for
+  numeric conversion as other native type lowering. AppKit style and occlusion
+  flags exposed the mismatch.
+- Native names nested inside block signatures are rebound to the importing
+  namespace, just like top-level parameter types. An inferred `NSTimer`
+  callback parameter now resolves `invalidate()` as a native message; explicit
+  matching annotations work too, and a different native class is rejected.
+
+Evidence: `objc-notification-main-callback.zs` runs notification registration,
+delivery, removal, timer callback inference, native-object captures, and flag conversion through raw
+Clang evidence and native Z lowering, in addition to Stage 0. Its negatives
+cover nested escaping and thread-any closure isolation. The companion
+`native-conditional-owned.zs` checks selected/unselected String cleanup and
+retained class aliases.
+
+One separate fail-closed boundary remains: the standalone native `.zd` parser
+still treats a synchronous block callback without `context` as a C callback;
+the Stage 0 importer supports the Objective-C `thread any` form. This does not
+affect these main-thread notifications, but native synchronous-block contract
+normalization needs its own regression before claiming parity for that shape.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

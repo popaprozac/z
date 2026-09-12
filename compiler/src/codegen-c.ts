@@ -9035,7 +9035,17 @@ function generateLoweredCall(
     if (type === "null") continue;
     const temporary = `_z_argument_${context.valueCounter.value++}`;
     lines.push(`${generateLocalDeclaration(type, temporary, true, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)};`);
-    lines.push(generateDirectValue(argument, context, (value) => `${temporary} = ${value};`));
+    // Stage the Z value, not its NSString bridge. The call argument applies
+    // that conversion once after looking up the staged expression override.
+    // Otherwise a String + inline block call assigns NSString* to Z_String
+    // and then attempts to bridge that already-converted temporary again.
+    let stagingContext = context;
+    if (context.semanticInfo.objcStringsToNative.has(argument.location.offset)) {
+      const conversions = new Set(context.semanticInfo.objcStringsToNative);
+      conversions.delete(argument.location.offset);
+      stagingContext = { ...context, semanticInfo: { ...context.semanticInfo, objcStringsToNative: conversions } };
+    }
+    lines.push(generateDirectValue(argument, stagingContext, (value) => `${temporary} = ${value};`));
     const objcBlock = context.semanticInfo.objcBlockArguments.get(argument.location.offset);
     if (objcBlock) {
       const box = `_z_objc_block_box_${context.valueCounter.value++}`;

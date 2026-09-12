@@ -2697,6 +2697,83 @@ test("owns method-based Objective-C protocol registrations through explicit guar
   );
 }, 120_000);
 
+test("stages Z String notification names once and retains caller block executor context", () => {
+  if (process.platform !== "darwin") return;
+  const fixture = resolve(projectRoot, "tests/fixtures/objc-notification-main-callback.zs");
+  const source = readFileSync(fixture, "utf8");
+  const artifact = compileToNative(source, fixture);
+  assert.match(artifact.source, /_z_argument_[0-9]+ = notificationName;/);
+  assert.match(artifact.source, /addObserverForName:z_nsstring_from_string\(_z_argument_[0-9]+\)/);
+  const syntax = spawnSync("clang", ["-x", "objective-c", "-fobjc-arc", "-fblocks",
+    "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-"], { input: artifact.source, encoding: "utf8", timeout: 30_000 });
+  assert.equal(syntax.status, 0, syntax.stderr);
+  const run = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(run.status, 0, run.stderr);
+  const directory = mkdtempSync("/tmp/z-notification-native-");
+  try {
+    const oracleSource = resolve(projectRoot, "tests/fixtures/self-host-objc-subclass-execution.zs");
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", oracleSource], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 24 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 0, emitted.stderr);
+    const oracle = resolve(directory, "native-emitter");
+    const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", oracle], {
+      input: emitted.stdout, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+    });
+    assert.equal(built.status, 0, built.stderr);
+    const input = resolve(directory, "main.zs");
+    const wire = resolve(directory, "native.zfdcl");
+    const contract = resolve(directory, "native.zd");
+    const emit = (source: string, header = "AppKit/AppKit.h", facts = `declare module "${header}" {}`) => {
+      const stream = resolveForeignFunctionDeclarationStreams([{
+        kind: "import", moduleName: "native", bindings: null, header,
+        location: { fileName: fixture, offset: 0, line: 1, column: 1 },
+      }], fixture, [resolve(projectRoot, "tests/fixtures")]).get("native")!;
+      writeFileSync(wire, stream);
+      writeFileSync(input, source);
+      writeFileSync(contract, facts);
+      return spawnSync(oracle, [wire, input, "", contract], {
+        encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+      });
+    };
+    const native = emit(source);
+    assert.equal(native.status, 0, native.stderr);
+    assert.match(native.stdout, /\[timer invalidate\]/);
+    assert.doesNotMatch(native.stdout, /timer\.invalidate\(\)/);
+    const typedTimer = source.replace("block: move (timer):", "block: move (timer: native.NSTimer):");
+    const typed = emit(typedTimer);
+    assert.equal(typed.status, 0, typed.stderr);
+    const wrongTimer = source.replace("block: move (timer):", "block: move (timer: native.NSNotification):");
+    assert.match(diagnostics(wrongTimer, fixture).map((item) => item.message).join("\n"), /NSTimer.*NSNotification/);
+    const rejectedTimer = emit(wrongTimer);
+    assert.equal(rejectedTimer.status, 1, rejectedTimer.stderr);
+    assert.match(rejectedTimer.stderr, /NSTimer.*NSNotification/);
+    for (const optimization of ["-O0", "-O2"]) {
+      const executable = resolve(directory, `notification${optimization}`);
+      const compiled = spawnSync("clang", ["-x", "objective-c", "-fobjc-arc", "-fblocks",
+        "-Wall", "-Wextra", "-Werror", optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all",
+        "-framework", "AppKit", "-mmacosx-version-min=14.0", "-", "-o", executable], {
+        input: native.stdout, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+      });
+      assert.equal(compiled.status, 0, compiled.stderr);
+      const executed = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+      assert.equal(executed.status, 0, executed.stderr);
+    }
+    const nested = source.replace("if (observed.read() == 1) state.observe();",
+      "const nested = move (): void => { state.observe(); }; nested();");
+    assert.match(diagnostics(nested, fixture).map((item) => item.message).join("\n"), /thread.main/);
+    const rejectedNested = emit(nested);
+    assert.equal(rejectedNested.status, 1, rejectedNested.stderr);
+    assert.match(rejectedNested.stderr, /thread.main/);
+    const worker = source.replace("if (observed.read() == 1) state.observe();",
+      "const nested: () => void on thread.any = move (): void => { state.observe(); }; nested();");
+    assert.match(diagnostics(worker, fixture).map((item) => item.message).join("\n"), /thread.main|thread.any|thread-any/);
+    const rejectedWorker = emit(worker);
+    assert.equal(rejectedWorker.status, 1, rejectedWorker.stderr);
+    assert.match(rejectedWorker.stderr, /thread.main|thread.any|thread-any|not shareable across arbitrary threads/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
 test("registers persistent Objective-C event callbacks with explicit token cleanup", () => {
   if (process.platform !== "darwin") return;
   const fixture = resolve(projectRoot, "tests/fixtures/objc-notifications.zs");

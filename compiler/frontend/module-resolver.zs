@@ -4705,8 +4705,21 @@ function inferSignatureCallType(
             captureEvidenceName
           );
           if (captureMode.byteLength == 0) captureMode = "in";
+          const importedBlock = valueBindingType(bindings,
+            `__z_native_objc_callback_executor_${tree.nodes[nodeIndex].offset}`);
           let captureAccesses = Array<NativeCallAccess>();
           for (const existingAccess of accesses) {
+            // An imported Objective-C object argument passes shared native
+            // identity, not exclusive Z-owned storage. A read-only block
+            // capture may retain/read that same identity (e.g. a notification
+            // filter). Keep writable captures and explicit capabilities under
+            // the ordinary exclusivity checks, and do not relax Z calls.
+            let sharedNativeRead = false;
+            if (importedBlock.byteLength > 0
+              && captureMode == "in" && existingAccess.capability == "value") {
+              const accessType = valueBindingType(bindings, existingAccess.root);
+              sharedNativeRead = typeIsNativeObjCReference(modules, moduleIndex, accessType);
+            }
             captureAccesses.push(NativeCallAccess({
               root: existingAccess.root.copyBytes(
                 0,
@@ -4718,7 +4731,7 @@ function inferSignatureCallType(
               ),
               aliasIdentity: existingAccess.aliasIdentity,
               aliasUnknown: existingAccess.aliasUnknown,
-              capability: existingAccess.capability.copyBytes(
+              capability: sharedNativeRead ? "in" : existingAccess.capability.copyBytes(
                 0,
                 existingAccess.capability.byteLength
               ),
@@ -7391,12 +7404,17 @@ function inferExpressionNodeType(
       "__z_native_async_context",
       closureAsyncContext
     );
+    const objectiveCCallbackExecutor = valueBindingType(
+      bindings, `__z_native_objc_callback_executor_${node.offset}`
+    );
     const closureExecutorContext = closureSignature.threadContract
       == "thread.any"
       ? ""
       : closureSignature.threadContract == "thread.main"
         ? "thread.main"
-        : valueBindingType(
+        : objectiveCCallbackExecutor.byteLength > 0
+          ? objectiveCCallbackExecutor.copyBytes(0, objectiveCCallbackExecutor.byteLength)
+          : valueBindingType(
           bindings,
           "__z_native_closure_executor_context"
         );
@@ -10985,6 +11003,21 @@ function inferExpressionNodeType(
               }
             }
             try prepareObjCSelectorReferences(module, modules, moduleIndex, tree, argumentNodes, method, bindings, inout evidence);
+            if (method.objectiveCSelector.byteLength > 0) {
+              // Match the imported block contract: caller/default blocks
+              // inherit this call's executor; thread.any in the contextual
+              // function signature still clears it. Key evidence by the
+              // inline closure so it cannot grant affinity to nested values.
+              const callerExecutor = currentExecutorContext(bindings);
+              const callbackExecutor = callerExecutor.byteLength > 0 ? callerExecutor : "unknown";
+              for (const argumentNode of argumentNodes) {
+                if (tree.nodes[argumentNode].kind == ExpressionKind.closureExpression) {
+                  addValueBinding(inout bindings,
+                    `__z_native_objc_callback_executor_${tree.nodes[argumentNode].offset}`,
+                    callbackExecutor);
+                }
+              }
+            }
             const callType = try inferSignatureCallType(
               module,
               modules,

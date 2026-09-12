@@ -7465,6 +7465,24 @@ function wrapOwnedStorageType(
   if (!moduleTypeNeedsCleanup(program, importedTypes, payloadType)) {
     return value;
   }
+  if (tree.nodes[input].kind == ExpressionKind.conditionalExpression
+    && tree.nodes[input].children.length == 3
+    && output[value].kind == LoweredExpressionKind.conditionalValue
+    && output[value].children.length == 3) {
+    // Ownership belongs to the selected arm, not to the boolean condition.
+    // Mark only that arm's transfer/retain so both the destination and the
+    // source's lexical cleanup cannot destroy the same owned storage.
+    let branch: usize = 1;
+    while (branch < 3) {
+      const source = tree.nodes[input].children[branch];
+      const lowered = output[value].children[branch];
+      const owned = wrapOwnedStorageType(program, importedTypes, tree,
+        source, payloadType, lowered, inout output);
+      output[value].children[branch] = owned;
+      branch = branch + 1;
+    }
+    return value;
+  }
   if (
     moduleTypeRetainsCapturedIdentity(payloadType)
     && expressionBorrowsStoredReference(tree, input)
@@ -9431,12 +9449,15 @@ function loweredIntegerSourceType(
     || sourceType == "u64"
     || sourceType == "usize"
   ) return Option.some(sourceType.copyBytes(0, sourceType.byteLength));
+  const qualifiedMember = qualifiedTypeMember(sourceType);
   for (const type of importedTypes) {
     if (
       type.kind == LoweredTypeKind.foreignEnumType
       && (
         type.localName == sourceType
         || type.targetName == sourceType
+        || (qualifiedMember.byteLength > 0
+          && (type.localName == qualifiedMember || type.targetName == qualifiedMember))
       )
     ) return Option.some(type.underlyingType.copyBytes(
       0,

@@ -35,6 +35,7 @@ import {
 } from "./semantic-model.zs";
 import {
   nativeFunctionSignature,
+  nativeFunctionTypeName,
   nullableTargetType,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
@@ -146,6 +147,23 @@ function localObjCTypeName(
   in namespace: String,
   in typeName: String
 ): String {
+  // Native block signatures contain native names too. Rebind every nested
+  // type into the importing namespace before contextual closure inference;
+  // otherwise an inferred NSTimer parameter has no resolvable Z members.
+  match (nativeFunctionSignature(typeName)) {
+    some(signature) => {
+      let localized = signature;
+      let parameters = Array<String>();
+      for (const parameter of localized.parameterTypes) {
+        parameters.push(localObjCTypeName(contracts, indices, namespace, parameter));
+      }
+      localized.parameterTypes = move parameters;
+      localized.returnType = localObjCTypeName(contracts, indices, namespace, localized.returnType);
+      localized.errorType = localObjCTypeName(contracts, indices, namespace, localized.errorType);
+      return nativeFunctionTypeName(localized);
+    }
+    none => {}
+  }
   const nullableTarget = nullableTargetType(typeName);
   if (nullableTarget.byteLength > 0) {
     const localized = localObjCTypeName(

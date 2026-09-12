@@ -59,6 +59,29 @@ import { selfHostExecutableDifferentialCorpus } from "./support/self-host-fixtur
 import { createHash } from "node:crypto";
 import { exerciseGeneratedAdapterLinking } from "./support/generated-adapter-linking.ts";
 
+hostToolchainTest("transfers only the selected owned conditional arm", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/native-conditional-owned.zs");
+  const directory = mkdtempSync("/tmp/z-owned-conditional-");
+  try {
+    for (const mode of ["emit", "self-host-emit"]) {
+      const emitted = spawnSync(process.execPath, [cli, mode, fixture], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024,
+      });
+      assert.equal(emitted.status, 0, emitted.stderr);
+      for (const optimization of ["-O0", "-O2"]) {
+        const binary = resolve(directory, "probe");
+        const compiled = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
+          optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", binary], {
+          input: emitted.stdout, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+        });
+        assert.equal(compiled.status, 0, compiled.stderr);
+        const run = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+        assert.equal(run.status, 0, run.stderr || String(run.signal));
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 180_000);
+
 hostToolchainTest("preserves checked thread-any cleanup through native modules and final-owner release", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-emit-thread-any-deinit.zs");
   const source = readFileSync(fixture, "utf8");
