@@ -4449,10 +4449,10 @@ function appendClassAndOnceRuntime(
             output.append(";\n");
           }
           for (const flag of initializer.liveFlags) {
-            if (!flag.parameter) continue;
+            if (!flag.parameter && !flag.constructorField) continue;
             output.append("  bool ");
             appendCBindingName(inout output, flag.name);
-            output.append(" = true;\n");
+            output.append(flag.constructorField ? " = false;\n" : " = true;\n");
           }
           try appendFunctionTail(inout output, initializer);
         }

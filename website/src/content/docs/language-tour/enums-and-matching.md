@@ -134,6 +134,24 @@ const message = match (state) {
 enclosing function and `throw` still exits through its typed error channel.
 There is no implicit last-expression return from a block.
 
+A match can also assign to existing storage:
+
+```z
+let label = "Waiting";
+label = match (in state) {
+  loading => "Loading";
+  ready(user) => copy user.name;
+  failed(error) => copy error;
+};
+```
+
+This direct assignment form also works for fields, including captured class
+state, in the native synchronous compiler. An arm that returns or throws does
+not replace the destination. On success, an old owned value is cleaned up before
+the selected replacement takes its place.
+Owned indexed or computed destinations are still outside this native tier;
+the compiler rejects them rather than skip old-value cleanup.
+
 You can also construct an enum payload directly from a match:
 
 ```z

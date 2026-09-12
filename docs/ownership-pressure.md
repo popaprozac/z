@@ -8466,13 +8466,33 @@ after invoking that callback would lose events or resurrect a closed window.
 The framework now restores its logical record before entering AppKit and holds
 an owned native runtime reference rather than a Map view across callbacks.
 
-A test-only assertion exposed a separate native-emitter composition gap:
+A test-only assertion exposed a native-emitter composition gap:
 `probe.registered = match (in options) { some(value) => value.visible; none => false; };`
-passes Stage 0 but `self-host-emit` rejects the match expression on the field
-assignment's right-hand side. The equivalent match statement works. This is
-not required by the focus implementation and remains a native-parity follow-up;
-normalization must preserve assignment-target evaluation order and ownership,
-not simply hoist arbitrary match expressions before the target.
+passed Stage 0 but was rejected by `self-host-emit`. This is now covered by
+native RHS-match lowering, and the Zapp regression uses the direct assignment.
+Scalar stores stay at the selected arm, preserving target evaluation before
+arm-local teardown. Owned replacement uses a temporary: early return or failure
+leaves the old destination alive, and success destroys it exactly once before
+transferring the selected owner. Cleanup planning follows the RHS syntax tree
+and reaches stores beneath normalized control-flow blocks.
+
+The ownership probe also caught an older native constructor defect: a field's
+first write could call its destructor on zeroed, not initialized, storage.
+Constructor field initialization flags now distinguish the first write from
+subsequent replacement, including match-based initialization.
+
+`match-assignment.zs`, `match-assignment-ownership.zs`, and
+`match-assignment-constructor.zs` run through Stage 0 and native emission at
+`-O0`/`-O2` with UBSan and a strict allocation ledger. They cover captured ARC
+state, scalar indexed-target timing, borrowed String copies, retained class
+identity, owned local/field replacement, fallible subjects, arm failure and
+early return, and repeated constructor writes. This does not claim general
+nested-match support inside arbitrary calls or suspension expressions.
+Owned indexed or computed destinations remain explicitly rejected for this
+native RHS-match tier: replacing them needs one evaluated destination slot,
+not repeated index/receiver evaluation or omitted old-element cleanup. Scalar
+indexed destinations are covered, including not evaluating the index after an
+arm returns early. A negative regression protects that ownership boundary.
 
 ## Not tested yet
 

@@ -2974,7 +2974,7 @@ test("executes non-throwing class constructors in fixed-point output", () => {
   assert.match(emission.stdout, /self->manager = _z_stage1_assignment_/);
   assert.match(
     emission.stdout,
-    /Z_Window \* const __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.success;/,
+    /Z_Window \* __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.success;/,
   );
 
   const directory = mkdtempSync("/tmp/z-native-class-constructor-");
@@ -4744,7 +4744,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /selectResource\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;.*?case Z_ResourceStateTag_ready: \{\n      const Z_Resource __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.ready;\n      Z_Resource _z_stage1_return_\d+ = _z_stage1_match_payload_\d+_\d+;\n      if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);\n      return _z_stage1_return_\d+;/s,
+    /selectResource\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;.*?case Z_ResourceStateTag_ready: \{\n      Z_Resource __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.ready;\n      bool _z_stage1_live__z_stage1_match_payload_\d+_\d+ = true;\n      Z_Resource _z_stage1_return_\d+ = \(_z_stage1_live__z_stage1_match_payload_\d+_\d+ = false, _z_stage1_match_payload_\d+_\d+\);\n      if \(_z_stage1_live__z_stage1_match_payload_\d+_\d+\) Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);\n      if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);\n      return _z_stage1_return_\d+;/s,
   );
   const ownedLocalStart = ownedEnumEmission.stdout.indexOf(
     "int32_t inspectOwnedLocal(void) {",
@@ -4758,11 +4758,11 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedLocalDefinition,
-    /Z_Resource selected;[\s\S]*selected = _z_stage1_match_payload_\d+_\d+;[\s\S]*Z_Resource_deinit\(&selected\);/,
+    /Z_Resource selected;[\s\S]*selected = \(_z_stage1_live__z_stage1_match_payload_\d+_\d+ = false, _z_stage1_match_payload_\d+_\d+\);[\s\S]*Z_Resource_deinit\(&selected\);/,
   );
   assert.doesNotMatch(
     ownedLocalDefinition,
-    /Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\)/,
+    /^\s*Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\)/m,
   );
   assert.match(
     ownedEnumEmission.stdout,

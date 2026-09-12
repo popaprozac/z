@@ -75,6 +75,9 @@ for (const [fixture, expected] of [
   ["weak-inline-receiver.zs", "released owner\n"],
   ["embedded-constant-inference.zs", ""],
   ["callback-shadowing.zs", ""],
+  ["match-assignment.zs", "value\nindex\nindex arm\nold local\nfailed arm\nfailed arm\nrejected\nold field\nnew local\nnew field\n"],
+  ["match-assignment-ownership.zs", "subject failed\nold local\nold field\nshared\n"],
+  ["match-assignment-constructor.zs", "initial\nfallback\nreplacement\nreplacement\n"],
   ["named-callback-fields.zs", "callbacks reset\n"],
   ["lifecycle-callbacks.zs", "released owner\nreleased owner\nreleased owner\nreleased owner\n"],
   ["nested-match-construction.zs", "released selected arm\nanswer\nreleased fallback arm\nmissing\nreleased early arm\nreleased outer\nanswer\nanswer\nrejected\nanswer\n"],
@@ -96,10 +99,35 @@ for (const [fixture, expected] of [
     const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
       encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
     });
-    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error ?? emitted.signal));
     for (const optimization of ["-O0", "-O2"]) execute(emitted.stdout, expected, undefined, optimization);
   }, 240_000);
 }
+
+test("rejects unproven native owned indexed match destinations before emission", () => {
+  const directory = mkdtempSync("/tmp/z-match-indexed-owner-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const source = `struct Resource { value: i32; deinit {} }
+      function main(): i32 {
+        let values = Array<Resource>(Resource({ value: 1 }));
+        const option = Option<i32>.some(42);
+        values[0] = match (option) {
+          some(value) => Resource({ value });
+          none => Resource({ value: 0 });
+        };
+        return 0;
+      }`;
+    writeFileSync(input, source);
+    execute(compileToC(source, input), "");
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 1, emitted.stderr || String(emitted.error ?? emitted.signal));
+    assert.match(emitted.stderr, /native owned match assignment requires a named local or fixed field path/);
+    assert.equal(emitted.stdout, "");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
 
 test("keeps nested block-callable cleanup and same-named parameters in separate invocation scopes", () => {
   const input = resolve(projectRoot, "tests/fixtures/block-closure-nested.zs");

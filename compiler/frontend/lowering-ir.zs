@@ -486,6 +486,7 @@ export struct LoweredLiveFlag {
   owner: String;
   name: String;
   parameter: boolean;
+  constructorField: boolean = false;
 }
 
 struct LoweredClosureCapture {
@@ -6280,6 +6281,18 @@ function attachReplacementCleanup(
   inout statements: Array<LoweredStatement>,
   loweredIndex: usize
 ): void {
+  // RHS control flow is normalized ahead of the actual store. The store,
+  // not the wrapper block, must still destroy the former destination value.
+  if (statements[loweredIndex].kind == LoweredStatementKind.blockStatement
+    && loweredStatementHasLabel(statements[loweredIndex], "nested-try-normalized")
+    && statements[loweredIndex].children.length > 0) {
+    const finalStatement = statements[loweredIndex].children[
+      statements[loweredIndex].children.length - 1
+    ];
+    attachReplacementCleanup(program, importedTypes, ownerName, arena, index,
+      cleanups, inout statements, finalStatement);
+    return;
+  }
   if (
     statements[loweredIndex].kind
       != LoweredStatementKind.assignmentStatement
@@ -6493,6 +6506,175 @@ function planNestedPreludeSequence(
   return finalCleanups;
 }
 
+function planMatchCleanup(
+  in source: Option<ExpressionSyntax>,
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  sourceIndex: usize,
+  loweredIndex: usize,
+  in live: Array<LoweredCleanup>,
+  in expressions: Array<LoweredExpression>,
+  in moveIndex: CleanupMoveIndex,
+  inout statements: Array<LoweredStatement>,
+  inout liveFlags: Array<LoweredLiveFlag>,
+  forceMoveLiveGuards: boolean,
+  insideLoop: boolean,
+  in loopCleanups: Array<LoweredCleanup>
+): void throws String {
+  match (in source) {
+    some(syntax) => {
+      match (in syntax.tree) {
+        some(tree) => {
+          const root = statements[loweredIndex].matchSourceRoot;
+          if (root >= tree.nodes.length
+            || tree.nodes[root].kind != ExpressionKind.matchExpression) {
+            throw "native cleanup planning lost the source match expression";
+          }
+          const consuming = tree.nodes[root].value != "in";
+          const subject = tree.nodes[root].children[0];
+          if (
+            consuming
+            && tree.nodes[subject].kind == ExpressionKind.identifierExpression
+          ) {
+            for (const cleanup of live) {
+              if (cleanup.name == tree.nodes[subject].value) {
+                statements[loweredIndex].liveFlag = cleanup.guard.copyBytes(
+                  0,
+                  cleanup.guard.byteLength
+                );
+              }
+            }
+          }
+          let armPosition: usize = 1;
+          while (armPosition < tree.nodes[root].children.length) {
+            const arm = tree.nodes[root].children[armPosition];
+            const loweredArm = statements[loweredIndex].children[armPosition - 1];
+            let sourceRoots = Array<usize>();
+            for (const bodyIndex of tree.nodes[arm].statements) {
+              sourceRoots.push(bodyIndex);
+            }
+            let loweredRoots = Array<usize>();
+            for (const bodyIndex of statements[loweredArm].children) {
+              loweredRoots.push(bodyIndex);
+            }
+            let armLive = Array<LoweredCleanup>();
+            appendCleanupCopies(inout armLive, live);
+            let patternCleanups = Array<LoweredCleanup>();
+            if (statements[loweredArm].matchBindingNeedsCleanup) {
+              const payloadType = match (in statements[loweredArm].type) {
+                some(type) => LoweredType({
+                  kind: type.kind,
+                  name: type.name.copyBytes(0, type.name.byteLength),
+                });
+                none => throw "native cleanup planning lost a match payload type";
+              };
+              if (statements[loweredArm].labels.length != 1) {
+                throw "native cleanup planning lost a match payload binding";
+              }
+              const bindingName = statements[loweredArm].labels[0]
+                .copyBytes(
+                  0,
+                  statements[loweredArm].labels[0].byteLength
+                );
+              const moved = cleanupIndexMovesBinding(
+                moveIndex,
+                bindingName,
+                tree.nodes[arm].offset
+              );
+              let guard = "";
+              if (
+                moved
+                && (forceMoveLiveGuards || moveIndex.hasControlFlow)
+              ) {
+                guard = ownerLiveFlag(bindingName);
+                statements[loweredArm].liveFlag = guard.copyBytes(
+                  0,
+                  guard.byteLength
+                );
+                liveFlags.push(LoweredLiveFlag({
+                  owner: bindingName.copyBytes(0, bindingName.byteLength),
+                  name: guard.copyBytes(0, guard.byteLength),
+                  parameter: false,
+                }));
+              }
+              if (!moved || guard.byteLength > 0) {
+                const cleanup = LoweredCleanup({
+                  name: move bindingName,
+                  type: move payloadType,
+                  guard: move guard,
+                });
+                armLive.push(copyCleanup(cleanup));
+                patternCleanups.push(move cleanup);
+              }
+            }
+            if (
+              consuming
+              && tree.nodes[arm].value == "_"
+            ) {
+              const matchType = match (in statements[loweredIndex].type) {
+                some(type) => LoweredType({
+                  kind: type.kind,
+                  name: type.name.copyBytes(0, type.name.byteLength),
+                });
+                none => throw "native cleanup planning lost a wildcard match subject type";
+              };
+              if (moduleTypeNeedsCleanup(program, importedTypes, matchType)) {
+                const cleanup = LoweredCleanup({
+                  name: `_z_stage1_match_${loweredIndex}`,
+                  type: move matchType,
+                  guard: "",
+                });
+                armLive.push(copyCleanup(cleanup));
+                patternCleanups.push(move cleanup);
+              }
+            }
+            let armLoopCleanups = Array<LoweredCleanup>();
+            appendCleanupCopies(inout armLoopCleanups, loopCleanups);
+            if (insideLoop) appendCleanupCopies(inout armLoopCleanups, patternCleanups);
+            const introduced = try planCleanupSequence(
+              program,
+              importedTypes,
+              evidence,
+              arena,
+              ownerName,
+              sourceRoots,
+              loweredRoots,
+              armLive,
+              expressions,
+              moveIndex,
+              inout statements,
+              inout liveFlags,
+              forceMoveLiveGuards,
+              insideLoop,
+              armLoopCleanups
+            );
+            if (
+              sequenceFallsThrough(arena, sourceRoots)
+              && loweredSequenceFallsThrough(statements, loweredRoots)
+            ) {
+              for (const cleanup of patternCleanups) {
+                statements[loweredArm].cleanups.push(copyCleanup(cleanup));
+              }
+              appendStatementCleanupCopies(
+                inout statements,
+                loweredArm,
+                introduced
+              );
+            }
+            armPosition = armPosition + 1;
+          }
+          return;
+        }
+        none => throw "native cleanup planning received an opaque match";
+      }
+    }
+    none => throw "native cleanup planning received a match without an expression";
+  }
+}
+
 function planCleanupStatement(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -6639,151 +6821,18 @@ function planCleanupStatement(
     return;
   }
   if (statements[loweredIndex].kind == LoweredStatementKind.matchStatement) {
-    match (in arena.nodes[sourceIndex].expression) {
-      some(syntax) => {
-        match (in syntax.tree) {
-          some(tree) => {
-            const root = statements[loweredIndex].matchSourceRoot;
-            const consuming = tree.nodes[root].value != "in";
-            const subject = tree.nodes[root].children[0];
-            if (
-              consuming
-              && tree.nodes[subject].kind == ExpressionKind.identifierExpression
-            ) {
-              for (const cleanup of live) {
-                if (cleanup.name == tree.nodes[subject].value) {
-                  statements[loweredIndex].liveFlag = cleanup.guard.copyBytes(
-                    0,
-                    cleanup.guard.byteLength
-                  );
-                }
-              }
-            }
-            let armPosition: usize = 1;
-            while (armPosition < tree.nodes[root].children.length) {
-              const arm = tree.nodes[root].children[armPosition];
-              const loweredArm = statements[loweredIndex].children[armPosition - 1];
-              let sourceRoots = Array<usize>();
-              for (const bodyIndex of tree.nodes[arm].statements) {
-                sourceRoots.push(bodyIndex);
-              }
-              let loweredRoots = Array<usize>();
-              for (const bodyIndex of statements[loweredArm].children) {
-                loweredRoots.push(bodyIndex);
-              }
-              let armLive = Array<LoweredCleanup>();
-              appendCleanupCopies(inout armLive, live);
-              let patternCleanups = Array<LoweredCleanup>();
-              if (statements[loweredArm].matchBindingNeedsCleanup) {
-                const payloadType = match (in statements[loweredArm].type) {
-                  some(type) => LoweredType({
-                    kind: type.kind,
-                    name: type.name.copyBytes(0, type.name.byteLength),
-                  });
-                  none => throw "native cleanup planning lost a match payload type";
-                };
-                if (statements[loweredArm].labels.length != 1) {
-                  throw "native cleanup planning lost a match payload binding";
-                }
-                const bindingName = statements[loweredArm].labels[0]
-                  .copyBytes(
-                    0,
-                    statements[loweredArm].labels[0].byteLength
-                  );
-                const moved = cleanupIndexMovesBinding(
-                  moveIndex,
-                  bindingName,
-                  tree.nodes[arm].offset
-                );
-                let guard = "";
-                if (
-                  moved
-                  && (forceMoveLiveGuards || moveIndex.hasControlFlow)
-                ) {
-                  guard = ownerLiveFlag(bindingName);
-                  statements[loweredArm].liveFlag = guard.copyBytes(
-                    0,
-                    guard.byteLength
-                  );
-                  liveFlags.push(LoweredLiveFlag({
-                    owner: bindingName.copyBytes(0, bindingName.byteLength),
-                    name: guard.copyBytes(0, guard.byteLength),
-                    parameter: false,
-                  }));
-                }
-                if (!moved || guard.byteLength > 0) {
-                  const cleanup = LoweredCleanup({
-                    name: move bindingName,
-                    type: move payloadType,
-                    guard: move guard,
-                  });
-                  armLive.push(copyCleanup(cleanup));
-                  patternCleanups.push(move cleanup);
-                }
-              }
-              if (
-                consuming
-                && tree.nodes[arm].value == "_"
-              ) {
-                const matchType = match (in statements[loweredIndex].type) {
-                  some(type) => LoweredType({
-                    kind: type.kind,
-                    name: type.name.copyBytes(0, type.name.byteLength),
-                  });
-                  none => throw "native cleanup planning lost a wildcard match subject type";
-                };
-                if (moduleTypeNeedsCleanup(program, importedTypes, matchType)) {
-                  const cleanup = LoweredCleanup({
-                    name: `_z_stage1_match_${loweredIndex}`,
-                    type: move matchType,
-                    guard: "",
-                  });
-                  armLive.push(copyCleanup(cleanup));
-                  patternCleanups.push(move cleanup);
-                }
-              }
-              let armLoopCleanups = Array<LoweredCleanup>();
-              appendCleanupCopies(inout armLoopCleanups, loopCleanups);
-              if (insideLoop) appendCleanupCopies(inout armLoopCleanups, patternCleanups);
-              const introduced = try planCleanupSequence(
-                program,
-                importedTypes,
-                evidence,
-                arena,
-                ownerName,
-                sourceRoots,
-                loweredRoots,
-                armLive,
-                expressions,
-                moveIndex,
-                inout statements,
-                inout liveFlags,
-                forceMoveLiveGuards,
-                insideLoop,
-                armLoopCleanups
-              );
-              if (
-                sequenceFallsThrough(arena, sourceRoots)
-                && loweredSequenceFallsThrough(statements, loweredRoots)
-              ) {
-                for (const cleanup of patternCleanups) {
-                  statements[loweredArm].cleanups.push(copyCleanup(cleanup));
-                }
-                appendStatementCleanupCopies(
-                  inout statements,
-                  loweredArm,
-                  introduced
-                );
-              }
-              armPosition = armPosition + 1;
-            }
-            return;
-          }
-          none => throw "native cleanup planning received an opaque match";
-        }
-      }
-      none => throw "native cleanup planning received a match without an expression";
+    if (arena.nodes[sourceIndex].kind == StatementKind.assignmentStatement) {
+      try planMatchCleanup(arena.nodes[sourceIndex].secondExpression,
+        program, importedTypes, evidence, arena, ownerName, sourceIndex,
+        loweredIndex, live, expressions, moveIndex, inout statements,
+        inout liveFlags, forceMoveLiveGuards, insideLoop, loopCleanups);
+    } else {
+      try planMatchCleanup(arena.nodes[sourceIndex].expression,
+        program, importedTypes, evidence, arena, ownerName, sourceIndex,
+        loweredIndex, live, expressions, moveIndex, inout statements,
+        inout liveFlags, forceMoveLiveGuards, insideLoop, loopCleanups);
     }
+    return;
   }
   if (arena.nodes[sourceIndex].kind == StatementKind.blockStatement) {
     let sourceChildren = Array<usize>();
@@ -23905,6 +23954,40 @@ function lowerStatement(
   );
 }
 
+function appendMatchValuePrelude(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  sourceIndex: usize,
+  in tree: ExpressionTree,
+  root: usize,
+  in typeName: String,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  const bindingName = `_z_stage1_nested_match_${tree.nodes[root].offset}`;
+  pushExpression(inout expressions, LoweredExpressionKind.localValue,
+    bindingName, Array<usize>(), Array<String>("nested-match-binding", copy typeName));
+  const loweredMatch = try lowerMatchTree(program, importedTypes, evidence,
+    arena, ownerName, context, sourceIndex, tree, root, false, bindingName,
+    inout expressions, inout statements);
+  const type = try lowerModuleTypeName(program, importedTypes, typeName);
+  const local = statements.length;
+  statements.push(LoweredStatement({
+    kind: LoweredStatementKind.localStatement, mutableBinding: true,
+    name: bindingName, type: Option.some(move type),
+    expression: Option<usize>.none, secondExpression: Option<usize>.none,
+    children: Array<usize>(loweredMatch), cleanups: Array<LoweredCleanup>(),
+    liveFlag: "", labels: Array<String>("nested-match"),
+    matchConsumesSubject: false, matchBindingNeedsCleanup: false,
+  }));
+  roots.push(local);
+}
+
 // An enum constructor has one evaluated operand and no callee side effects.
 // Normalize only this pure constructor spine here: hoisting out of an arbitrary
 // call or short-circuit expression would change evaluation order.
@@ -23963,26 +24046,134 @@ function appendEnumMatchPrelude(
       }
       if (tree.nodes[current].kind != ExpressionKind.matchExpression
         || payloadTypeName.byteLength == 0) return;
-      const bindingName = `_z_stage1_nested_match_${tree.nodes[current].offset}`;
-      pushExpression(inout expressions, LoweredExpressionKind.localValue,
-        bindingName, Array<usize>(), Array<String>("nested-match-binding", copy payloadTypeName));
-      const loweredMatch = try lowerMatchTree(program, importedTypes, evidence,
-        arena, ownerName, context, sourceIndex, tree, current, false, bindingName,
-        inout expressions, inout statements);
-      const type = try lowerModuleTypeName(program, importedTypes, payloadTypeName);
-      const local = statements.length;
-      statements.push(LoweredStatement({
-        kind: LoweredStatementKind.localStatement, mutableBinding: true,
-        name: bindingName, type: Option.some(move type),
-        expression: Option<usize>.none, secondExpression: Option<usize>.none,
-        children: Array<usize>(loweredMatch), cleanups: Array<LoweredCleanup>(),
-        liveFlag: "", labels: Array<String>("nested-match"),
-        matchConsumesSubject: false, matchBindingNeedsCleanup: false,
-      }));
-      roots.push(local);
+      try appendMatchValuePrelude(program, importedTypes, evidence, arena,
+        ownerName, context, sourceIndex, tree, current, payloadTypeName,
+        inout expressions, inout statements, inout roots);
     }
     none => {}
   }
+}
+
+function appendAssignmentMatchPrelude(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  index: usize,
+  in syntax: ExpressionSyntax,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  if (arena.nodes[index].kind != StatementKind.assignmentStatement) return;
+  match (in syntax.tree) {
+    some(tree) => {
+      const root = tree.root;
+      if (tree.nodes[root].kind != ExpressionKind.matchExpression) return;
+      const typeName = match (in arena.nodes[index].expression) {
+        some(target) => match (in target.tree) {
+          some(targetTree) => {
+            const targetRoot = targetTree.root;
+            select match (matchSubjectTypeName(program, importedTypes,
+              evidence, arena, ownerName, targetTree, targetRoot)) {
+              some(name) => name;
+              none => throw "native match assignment could not resolve its destination type";
+            };
+          }
+          none => throw "native match assignment lost its destination expression";
+        }
+        none => throw "native match assignment lost its destination";
+      };
+      const type = try lowerModuleTypeName(program, importedTypes, typeName);
+      if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+        match (in arena.nodes[index].expression) {
+          some(target) => match (in target.tree) {
+            some(targetTree) => {
+              let path = targetTree.root;
+              while (targetTree.nodes[path].kind == ExpressionKind.memberExpression
+                && targetTree.nodes[path].children.length == 1) {
+                path = targetTree.nodes[path].children[0];
+              }
+              if (targetTree.nodes[path].kind != ExpressionKind.identifierExpression) {
+                throw "native owned match assignment requires a named local or fixed field path; indexed and computed destinations need single-evaluation replacement storage";
+              }
+            }
+            none => {}
+          }
+          none => {}
+        }
+      }
+      // Keep the target in the final store: a return/throw arm must not
+      // evaluate an index or destroy the destination's former owner.
+      try appendMatchValuePrelude(program, importedTypes, evidence, arena,
+        ownerName, context, index, tree, root, typeName,
+        inout expressions, inout statements, inout roots);
+    }
+    none => {}
+  }
+}
+
+// Stage 0 stores cleanup-free results at the selected arm, before that arm's
+// locals are destroyed. Keep that ordering (and avoid an unnecessary result
+// slot), while owned replacement remains transactional through a temporary.
+function retargetMatchSelections(
+  in expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  index: usize,
+  in name: String,
+  destination: usize
+): void {
+  if (statements[index].kind == LoweredStatementKind.assignmentStatement) {
+    const target = match (in statements[index].expression) {
+      some(value) => value;
+      none => expressions.length;
+    };
+    if (target < expressions.length
+      && expressions[target].kind == LoweredExpressionKind.localValue
+      && expressions[target].value == name) {
+      statements[index].expression = Option.some(destination);
+    }
+  }
+  let position: usize = 0;
+  while (position < statements[index].children.length) {
+    const child = statements[index].children[position];
+    retargetMatchSelections(expressions, inout statements, child, name, destination);
+    position = position + 1;
+  }
+}
+
+function inlineMatchAssignment(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  local: usize,
+  assignment: usize
+): Option<usize> {
+  if (!loweredStatementHasLabel(statements[local], "nested-match")
+    || statements[assignment].kind != LoweredStatementKind.assignmentStatement) return Option<usize>.none;
+  match (in statements[local].type) {
+    some(type) => {
+      if (moduleTypeNeedsCleanup(program, importedTypes, type)) return Option<usize>.none;
+    }
+    none => return Option<usize>.none;
+  }
+  const destination = match (in statements[assignment].expression) {
+    some(target) => target;
+    none => return Option<usize>.none;
+  };
+  const name = copy statements[local].name;
+  const result = match (in statements[assignment].secondExpression) {
+    some(value) => value;
+    none => return Option<usize>.none;
+  };
+  if (expressions[result].kind != LoweredExpressionKind.localValue
+    || expressions[result].value != name) return Option<usize>.none;
+  const loweredMatch = statements[local].children[0];
+  retargetMatchSelections(expressions, inout statements, loweredMatch, name, destination);
+  return Option.some(loweredMatch);
 }
 
 function lowerStatementWithResult(
@@ -24062,6 +24253,9 @@ function lowerStatementWithResult(
         inout statements,
         inout preludeRoots
       );
+      try appendAssignmentMatchPrelude(program, importedTypes, evidence,
+        arena, ownerName, context, index, syntax,
+        inout expressions, inout statements, inout preludeRoots);
     }
     none => {}
   }
@@ -24078,7 +24272,7 @@ function lowerStatementWithResult(
       inout statements
     );
   }
-  const lowered = try lowerStatementCore(
+  let lowered = try lowerStatementCore(
     program,
     importedTypes,
     evidence,
@@ -24089,6 +24283,24 @@ function lowerStatementWithResult(
     inout expressions,
     inout statements
   );
+  if (arena.nodes[index].kind == StatementKind.assignmentStatement) {
+    const lastPrelude = preludeRoots[preludeRoots.length - 1];
+    match (inlineMatchAssignment(program, importedTypes, expressions,
+      inout statements, lastPrelude, lowered)) {
+      some(directMatch) => {
+        lowered = directMatch;
+        let remaining = Array<usize>();
+        let position: usize = 0;
+        while (position + 1 < preludeRoots.length) {
+          remaining.push(preludeRoots[position]);
+          position = position + 1;
+        }
+        preludeRoots = move remaining;
+        if (preludeRoots.length == 0) return lowered;
+      }
+      none => {}
+    }
+  }
   for (const prelude of preludeRoots) {
     if (
       nestedTryBindingWasTransferred(
@@ -28175,6 +28387,39 @@ function lowerConstructor(
     false,
     loopCleanups
   );
+  // Constructor fields start uninitialized, even though ARC allocation zeros
+  // their bytes. Guard the first store, then let later writes destroy the
+  // initialized owner. This remains correct through branches and matches.
+  let initializedFields = Array<String>();
+  let statementIndex: usize = 0;
+  while (statementIndex < statements.length) {
+    if (statements[statementIndex].kind == LoweredStatementKind.assignmentStatement
+      && statements[statementIndex].cleanups.length == 1) {
+      const target = match (in statements[statementIndex].expression) {
+        some(value) => value;
+        none => expressions.length;
+      };
+      if (target < expressions.length) {
+        if (expressions[target].kind == LoweredExpressionKind.fieldValue
+          && expressions[target].children.length == 1) {
+          const receiver = expressions[target].children[0];
+          if (expressions[receiver].kind == LoweredExpressionKind.receiverValue) {
+            const field = copy expressions[target].value;
+            const guard = `_z_stage1_field_initialized_${field}`;
+            statements[statementIndex].cleanups[0].guard = copy guard;
+            if (!containsName(initializedFields, field)) {
+              initializedFields.push(copy field);
+              liveFlags.push(LoweredLiveFlag({
+                owner: `this.${field}`, name: guard,
+                parameter: false, constructorField: true,
+              }));
+            }
+          }
+        }
+      }
+    }
+    statementIndex = statementIndex + 1;
+  }
   let fallthroughCleanups = Array<LoweredCleanup>();
   appendCleanupCopies(inout fallthroughCleanups, ownedParameters);
   appendCleanupCopies(inout fallthroughCleanups, introduced);

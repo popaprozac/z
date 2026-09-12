@@ -1917,6 +1917,23 @@ const title = match (value) {
 unreachable. A consuming `match (value)` still destroys any owned payload
 discarded by the wildcard; `match (in value)` remains non-consuming.
 
+A match can supply an assignment value as well as an initializer or return:
+
+```z
+let visible = false;
+visible = match (in option) {
+  some(user) => user.id > 0;
+  none => false;
+};
+```
+
+Native synchronous lowering also supports this direct RHS form for fields,
+including captured class state. `return` and `throw` inside an arm leave the
+destination unchanged. Replacing an owned value destroys the old value only
+after the selected replacement has been produced successfully.
+Owned indexed or computed destinations remain rejected by the native tier
+until single-evaluation replacement storage is implemented.
+
 An enum payload may be supplied directly by a value-producing match:
 
 ```z

@@ -96,6 +96,11 @@ production or compatibility-sensitive use.
   invocation cleans up locals and owned parameters on return, failure, loop exit, or normal completion;
   returns, value-producing matches, and nested `try` use the callback's own
   result/error context rather than the containing function's signature.
+  Direct RHS `match` assignments work for locals and fields, including captured
+  class state, with scalar selected-arm ordering and exact-once owned
+  replacement. Fallible subjects and early-exit arms preserve the old owner.
+  Custom constructor fields distinguish first initialization from replacement
+  rather than invoking cleanup on zeroed storage.
   Owned captures retain their separate environment lifetime. Borrowed expression
   and block captures use stack environments and address original scalar, String,
   Array, cleanup-bearing value-struct, and ARC-handle storage. Mutable replacement
