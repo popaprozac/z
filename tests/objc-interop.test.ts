@@ -288,6 +288,69 @@ hostToolchainTest("merges Objective-C category methods into their interface surf
   );
 });
 
+hostToolchainTest("grows and clears ARC-owned Objective-C connection arrays", () => {
+  if (process.platform !== "darwin") return;
+  const fileName = resolve(projectRoot, "tests/fixtures/objc-connection-array.zs");
+  const artifact = compileToNative(readFileSync(fileName, "utf8"), fileName);
+  assert.match(artifact.source, /ZObjCConnection \* __strong \*data/);
+  assert.match(artifact.source, /self->data\[index\] = nil/);
+  const directory = mkdtempSync("/tmp/z-objc-array-");
+  try {
+    const binary = resolve(directory, "probe");
+    for (const optimization of ["-O0", "-O2"]) {
+      const build = spawnSync("clang", ["-x", "objective-c", "-fobjc-arc", "-fblocks",
+        "-Wall", "-Wextra", "-Werror", optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all",
+        "-framework", "AppKit", "-", "-o", binary], { input: artifact.source, encoding: "utf8", timeout: 30000, killSignal: "SIGKILL" });
+      assert.equal(build.status, 0, build.stderr);
+      const run = spawnSync(binary, [], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.stdout, "clearing\n" + "released callback\n".repeat(9) + "cleared\nleaving\nreleased callback\n");
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+hostToolchainTest("preserves property nullability obscured by availability macros", () => {
+  if (process.platform !== "darwin") return;
+  const fileName = resolve(projectRoot, "tests/fixtures/objc-property-nullability.zs");
+  const source = `import native from "./objc-property-nullability.h";
+    function inspect(value: native.ZPropertyRoot): i32 {
+      const optional = value.optional;
+      if (optional == null) return 0;
+      const required = value.required;
+      const unspecified = required.unspecified;
+      if (unspecified == null) return 1;
+      return 2;
+    }
+    function main(): i32 { return 0; }`;
+  const analysis = analyzeSource(source, fileName);
+  const native = analysis.foreignModules.get("native")!;
+  const root = native.interfaces.get("ZPropertyRoot")!;
+  for (const [name, nullable] of [["optional", true], ["required", false], ["unspecified", true]] as const) {
+    const property = root.properties.find((item) => item.name === name)!;
+    assert.equal(property.type.kind, "object");
+    assert.equal((property.type as { nullable: boolean }).nullable, nullable);
+    const getter = root.methods.find((item) => item.selector === name)!;
+    assert.equal((getter.returnType as { nullable: boolean }).nullable, nullable);
+    if (name !== "unspecified") {
+      const protocol = native.protocols.get("ZPropertyProtocol")!;
+      assert.equal((protocol.methods.find((item) => item.selector === name)!.returnType as { nullable: boolean }).nullable, nullable);
+    }
+  }
+  assert.match(hover(source, fileName, source.indexOf("optional =") + 2)?.contents.value ?? "", /ZPropertyRoot \| null/);
+  assert.throws(() => compileToNative(source.replace("if (optional == null) return 0;", "optional.required;"), fileName), /nullable Objective-C/);
+  const appKit = `import AppKit from "AppKit/AppKit.h";
+    import { thread } from "std/thread";
+    function inspect(item: AppKit.NSStatusItem): i32 on thread.main {
+      const button = item.button;
+      if (button == null) return 0;
+      button.toolTip = "Tray";
+      return 1;
+    }
+    function main(): i32 { return 0; }`;
+  assert.deepEqual(diagnostics(appKit, fileName), []);
+  assert.match(hover(appKit, fileName, appKit.indexOf("button =") + 2)?.contents.value ?? "", /NSStatusBarButton \| null/);
+});
+
 hostToolchainTest("narrows nullable Objective-C references before member access", () => {
   if (process.platform !== "darwin") return;
   const fileName = resolve(projectRoot, "objc-nullability.zs");

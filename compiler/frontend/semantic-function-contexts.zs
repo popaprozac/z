@@ -188,12 +188,23 @@ export function prepareFunctionBindings(
     none => {}
   }
   if (!declaration.staticMethod && ownerType.byteLength > 0) {
+    let receiverType = ownerType.copyBytes(0, ownerType.byteLength);
+    if (inheritedTypeParameters.length > 0) {
+      receiverType = `${receiverType}<`;
+      let parameterIndex: usize = 0;
+      for (const parameter of inheritedTypeParameters) {
+        if (parameterIndex > 0) receiverType = `${receiverType}, `;
+        receiverType = `${receiverType}${parameter.name}`;
+        parameterIndex = parameterIndex + 1;
+      }
+      receiverType = `${receiverType}>`;
+    }
     if (declaration.receiverMode == ReceiverMode.inputOutput) {
-      addBorrowedValueBinding(inout bindings, "this", ownerType, true);
+      addBorrowedValueBinding(inout bindings, "this", receiverType, true);
     } else if (declaration.receiverMode == ReceiverMode.move) {
-      addMutableValueBinding(inout bindings, "this", ownerType);
+      addMutableValueBinding(inout bindings, "this", receiverType);
     } else {
-      addBorrowedValueBinding(inout bindings, "this", ownerType, false);
+      addBorrowedValueBinding(inout bindings, "this", receiverType, false);
     }
   }
   if (ownerType.byteLength > 0) {

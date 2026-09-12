@@ -49,6 +49,16 @@ or storing one applies the imported ownership convention and generated ARC
 retains/releases. Nullable native references remain `T | null` and must be
 narrowed before use.
 
+Header availability annotations do not erase nullability. For example,
+`NSStatusItem.button` remains `NSStatusBarButton | null`, including in hover,
+even when Clang spells its type through an availability macro. Check it before
+setting the image or tooltip. Implicit property accessors preserve the same
+contract.
+
+Arrays of Objective-C references and `objc.Connection` guards own their elements.
+Growing their storage preserves ARC ownership; clearing or destroying the array
+releases those elements and their callback environments.
+
 Short-circuit guards preserve that proof for the expression to their right:
 
 ```z

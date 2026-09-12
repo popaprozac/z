@@ -16808,6 +16808,15 @@ function lowerExpressionContextual(
           temporaryType, temporaryChildren, Array<String>()
         );
       }
+      if (output[value].kind == LoweredExpressionKind.weakValue) {
+        // Weak parameters borrow their reference-counted handle. A freshly
+        // formed weak value therefore needs a call-local owner, just like an
+        // owned closure passed to an `in` parameter.
+        value = pushExpression(
+          inout output, LoweredExpressionKind.borrowedTemporary, "Weak",
+          Array<usize>(value), Array<String>()
+        );
+      }
       if (
         callLabels.length >= argument
         && callLabels[argument - 1] == "in"

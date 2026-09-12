@@ -779,7 +779,7 @@ export function generateC(
     const dynamic = parseDynamicArrayType(type)!;
     lines.push(
       `struct ${dynamicArrayName(type)} {\n`
-        + `  ${mapType(dynamic.elementType, structs, enums, semanticInfo.foreignNamedTypes)} *data;\n`
+        + `  ${mapType(dynamic.elementType, structs, enums, semanticInfo.foreignNamedTypes)}${isObjCReferenceType(dynamic.elementType, semanticInfo.foreignNamedTypes) ? " __strong" : ""} *data;\n`
         + "  uintptr_t length;\n"
         + "  uintptr_t capacity;\n"
         + "};",
@@ -4166,7 +4166,7 @@ function generateOwnedEnvironmentCleanup(
   if (foreignNamed?.kind === "record" && foreignNamed.resource) {
     return `${foreignNamed.resource.release}(${value});`;
   }
-  if (foreignNamed?.kind === "object") return `${value} = nil;`;
+  if (isObjCReferenceType(type, semanticInfo.foreignNamedTypes)) return `${value} = nil;`;
   const declaration = structs.get(type);
   if (declaration?.kind === "class") return `${releaseName(type)}(${value});`;
   if (declaration && hasSemanticCleanupType(type, structs, enums, semanticInfo)) return `${deinitName(type)}(&(${value}));`;
@@ -4954,6 +4954,28 @@ function generateDynamicArrayPush(
   const dynamic = parseDynamicArrayType(name)!;
   const arrayType = dynamicArrayName(name);
   const elementType = mapType(dynamic.elementType, structs, enums, foreignNamedTypes);
+  if (isObjCReferenceType(dynamic.elementType, foreignNamedTypes)) {
+    // ARC slots must start zeroed and cannot be grown with bytewise realloc.
+    // Transfer through strong assignments, then clear the old slots before
+    // freeing their backing storage.
+    return `static void ${dynamicArrayPushName(name)}(${arrayType} *self, ${elementType} value) {
+  if (self->length == self->capacity) {
+    if (self->capacity > SIZE_MAX / 2) abort();
+    uintptr_t next = self->capacity == 0 ? 4 : self->capacity * 2;
+    if (next > SIZE_MAX / sizeof(${elementType})) abort();
+    ${elementType} __strong *storage = (${elementType} __strong *)calloc(next, sizeof(${elementType}));
+    if (storage == NULL) abort();
+    for (uintptr_t index = 0; index < self->length; index += 1) {
+      storage[index] = self->data[index];
+      self->data[index] = nil;
+    }
+    free(self->data);
+    self->data = storage;
+    self->capacity = next;
+  }
+  self->data[self->length++] = value;
+}`;
+  }
   const mapEntry = parseMapEntryType(dynamic.elementType);
   if (mapEntry && requiresNativeMove(mapEntry.valueType, structs, enums, foreignNamedTypes)) {
     const keyType = mapType(mapEntry.keyType, structs, enums, foreignNamedTypes);
@@ -5808,6 +5830,12 @@ function generateEnum(
   return `typedef enum {\n${tag}\n} ${enumName(declaration.name)}_Tag;\n\nstruct ${enumName(declaration.name)} {\n  ${enumName(declaration.name)}_Tag tag;${storage}\n};`;
 }
 
+function isObjCReferenceType(type: string, foreignNamedTypes: SemanticInfo["foreignNamedTypes"]): boolean {
+  return foreignNamedTypes.get(type)?.kind === "object"
+    || type === objcConnectionTypeName || type === objcBindingTypeName
+    || type === objcRegistrationTypeName || Boolean(parseObjCProtocolType(type));
+}
+
 function containsObjCStrongStorage(
   type: string,
   structs: ReadonlyMap<string, StructDeclaration>,
@@ -5815,7 +5843,7 @@ function containsObjCStrongStorage(
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
   visiting = new Set<string>(),
 ): boolean {
-  if (foreignNamedTypes.get(type)?.kind === "object") return true;
+  if (isObjCReferenceType(type, foreignNamedTypes)) return true;
   if (visiting.has(type)) return false;
   const declaration = structs.get(type);
   const enumeration = enums.get(type);
@@ -9630,7 +9658,7 @@ function generateValueCleanup(
     const release = `z_native_connection_deinit(&(${value}));`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
   }
-  if (context.semanticInfo.foreignNamedTypes.get(type)?.kind === "object") {
+  if (isObjCReferenceType(type, context.semanticInfo.foreignNamedTypes)) {
     const release = `${value} = nil;`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
   }
@@ -10968,7 +10996,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (context.semanticInfo.foreignConstantNames.has(expression.location.offset)) {
         return context.semanticInfo.foreignConstantNames.get(expression.location.offset)!;
       }
-      if (context.functions.has(expression.name)) {
+      if (context.functions.has(expression.name) && !context.localTypes.has(expression.name)) {
         const functionType = parseFunctionType(inferExpressionType(expression, context));
         if (functionType) return functionValueLiteral(functionType, functionAdapterName(expression.name));
       }
@@ -11810,7 +11838,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           const args = [...hidden, ...expression.arguments.map((argument) => generateCallArgument(argument, context))];
           return `${cFunctionName(closure.declaration.name)}(${args.join(", ") || ""})`;
         }
-        if (context.functions.has(expression.callee.name)) {
+        if (context.functions.has(expression.callee.name) && !context.localTypes.has(expression.callee.name)) {
           return `${cFunctionName(expression.callee.name)}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
         }
         const functionType = parseFunctionType(context.localTypes.get(expression.callee.name) ?? "");
@@ -13931,7 +13959,7 @@ function hasSemanticCleanupType(
     return true;
   }
   const foreignNamed = semanticInfo.foreignNamedTypes.get(type);
-  if (foreignNamed?.kind === "object" || (foreignNamed?.kind === "record" && foreignNamed.resource)) return true;
+  if (isObjCReferenceType(type, semanticInfo.foreignNamedTypes) || (foreignNamed?.kind === "record" && foreignNamed.resource)) return true;
   if (hasCleanupType(type, structs, enums, semanticInfo.foreignTypes)) return true;
   const dynamic = parseDynamicArrayType(type);
   if (dynamic) return hasSemanticCleanupType(dynamic.elementType, structs, enums, semanticInfo, visiting);

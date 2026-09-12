@@ -8415,6 +8415,47 @@ claim a performance improvement. Next is Zapp tray/status-menu API deliberation,
 while general nested-expression normalization and the reduced console/callable
 typing probe remain explicit compiler follow-ups.
 
+## Tray registry and native callback storage (2026-09-11)
+
+Zapp's tray manager combines an application-owned Map, small ARC handles with
+weak manager backreferences, shared Commands, embedded icon bytes, and arrays
+of Objective-C target/action connections. No new Z syntax was needed.
+
+The pressure test exposed and closed these implementation gaps:
+
+- Inline `weak this` needed its checked operand identity exported to native
+  lowering, including generic receiver arguments. Weak creation may update its
+  runtime control block through an immutable receiver without granting mutable
+  access to user fields.
+- A fresh weak handle passed directly to a call needs a call-local owner. The
+  native emitter now releases that temporary on normal and throwing paths.
+- Inferred `embed.bytes` constants needed a value type in the native module
+  symbol table; otherwise a constructor field emitted an unresolved C name.
+- Clang JSON can obscure property nullability behind availability macros. The
+  importer preserves the written property fact and implicit getter/setter
+  types, conservatively nullable if the explicit fact cannot be recovered.
+- Stage 0 needed zero-initialized ARC array slots and strong transfer on growth,
+  plus cleanup for built-in Objective-C connection guards. Bytewise realloc is
+  not the ownership operation for these slots.
+- Stage 0 function lookup must prefer a local callback over a same-named global
+  function, including when storing that callback in another closure.
+
+Evidence: `weak-inline-receiver.zs`, `embedded-constant-inference.zs`, and
+`callback-shadowing.zs` run with an allocation ledger and UBSan through both
+emitters at O0/O2. `objc-connection-array.zs` proves growth, clear, reuse, and
+scope-exit callback destruction at O0/O2. Zapp's bounded real AppKit tray smoke
+passes Stage 0 and the standalone native driver; the parser-library emission
+probe alone does not load foreign header evidence.
+The complete Z Notes native build/launch smoke also passes, including WebView
+round trips, worker cancellation/join, service shutdown, and normal process exit.
+
+Additional probes found two separate native parity follow-ups: an aliased
+`std/embed` namespace in explicit `StaticBytes` annotations, and a generic
+forwarding call specialized on `Weak<Owner<T>>` inside a generic receiver.
+Those broader cases are not needed by the tray API and are not claimed fixed.
+A direct full-graph Stage 0 check of Z Notes exceeded three minutes and was
+stopped; record that as compiler/DX pressure, not tray runtime cost.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

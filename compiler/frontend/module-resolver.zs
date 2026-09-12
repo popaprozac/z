@@ -5327,6 +5327,14 @@ function inferExpressionNodeType(
       weakAffinity,
       `weak reference construction for "${target}"`
     );
+    // Preserve the checked operand identity for lowering. In particular, an
+    // inline `weak this` has no local binding annotation to recover it from.
+    recordExpressionResolution(
+      modules, moduleIndex, tree, children[0], target, inout evidence
+    );
+    recordExpressionResolution(
+      modules, moduleIndex, tree, index, `Weak<${target}>`, inout evidence
+    );
     return `Weak<${target}>`;
   }
   if (

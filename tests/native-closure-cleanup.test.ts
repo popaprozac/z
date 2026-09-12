@@ -72,6 +72,9 @@ int main(void) {
 }
 
 for (const [fixture, expected] of [
+  ["weak-inline-receiver.zs", "released owner\n"],
+  ["embedded-constant-inference.zs", ""],
+  ["callback-shadowing.zs", ""],
   ["named-callback-fields.zs", "callbacks reset\n"],
   ["lifecycle-callbacks.zs", "released owner\nreleased owner\nreleased owner\nreleased owner\n"],
   ["nested-match-construction.zs", "released selected arm\nanswer\nreleased fallback arm\nmissing\nreleased early arm\nreleased outer\nanswer\nanswer\nrejected\nanswer\n"],

@@ -16,6 +16,7 @@ import {
 } from "./parser.zs";
 import {
   ParsedModule,
+  embedBytesInitializer,
   moduleSymbolIndex,
 } from "./module-symbols.zs";
 import {
@@ -1341,37 +1342,6 @@ function onceInitializerType(
     none => {}
   }
   return "";
-}
-
-function embedBytesInitializer(
-  in module: ParsedModule,
-  in tree: ExpressionTree
-): boolean {
-  const root = view tree.nodes[tree.root];
-  if (
-    root.kind != ExpressionKind.callExpression
-    || root.children.length != 2
-  ) return false;
-  const callee = root.children[0];
-  if (
-    tree.nodes[callee].kind != ExpressionKind.memberExpression
-    || tree.nodes[callee].value != "bytes"
-    || tree.nodes[callee].children.length != 1
-  ) return false;
-  const owner = tree.nodes[callee].children[0];
-  if (tree.nodes[owner].kind != ExpressionKind.identifierExpression) {
-    return false;
-  }
-  let imported = false;
-  for (const declaration of module.program.imports) {
-    if (
-      declaration.header == "std/embed"
-      && !declaration.selective
-      && declaration.moduleName == tree.nodes[owner].value
-    ) imported = true;
-  }
-  return imported
-    && tree.nodes[root.children[1]].kind == ExpressionKind.stringExpression;
 }
 
 function nativeTypeHasMainLifecycle(

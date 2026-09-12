@@ -4,6 +4,7 @@ import {
   Declaration,
   DeclarationKind,
   ExpressionKind,
+  ExpressionTree,
   ImportDeclaration,
   Program,
 } from "./parser.zs";
@@ -130,7 +131,8 @@ function ownSymbol(in module: ParsedModule, in declaration: Declaration): Module
           match (in constant.initializer.tree) {
             some(tree) => {
               const root = view tree.nodes[tree.root];
-              if (root.kind == ExpressionKind.stringExpression) valueType = "String";
+              if (embedBytesInitializer(module, tree)) valueType = "embed.StaticBytes";
+              else if (root.kind == ExpressionKind.stringExpression) valueType = "String";
               else if (root.kind == ExpressionKind.booleanExpression) valueType = "boolean";
               else if (root.kind == ExpressionKind.numberExpression) {
                 valueType = moduleNumericLiteralType(root.value);
@@ -187,6 +189,30 @@ function ownSymbol(in module: ParsedModule, in declaration: Declaration): Module
     line: declaration.line,
     column: declaration.column,
   });
+}
+
+export function embedBytesInitializer(
+  in module: ParsedModule,
+  in tree: ExpressionTree
+): boolean {
+  const root = view tree.nodes[tree.root];
+  if (root.kind != ExpressionKind.callExpression || root.children.length != 2) return false;
+  const callee = root.children[0];
+  if (
+    tree.nodes[callee].kind != ExpressionKind.memberExpression
+    || tree.nodes[callee].value != "bytes"
+    || tree.nodes[callee].children.length != 1
+  ) return false;
+  const owner = tree.nodes[callee].children[0];
+  if (tree.nodes[owner].kind != ExpressionKind.identifierExpression) return false;
+  for (const declaration of module.program.imports) {
+    if (
+      declaration.header == "std/embed"
+      && !declaration.selective
+      && declaration.moduleName == tree.nodes[owner].value
+    ) return tree.nodes[root.children[1]].kind == ExpressionKind.stringExpression;
+  }
+  return false;
 }
 
 function importedSymbol(

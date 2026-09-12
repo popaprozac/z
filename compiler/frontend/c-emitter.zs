@@ -4488,9 +4488,13 @@ function appendClassAndOnceRuntime(
     output.append("_weak_deinit(const Z_Weak *value) {\n  if (value == NULL) return;\n  z_weak_release(*value);\n}\n\n");
     output.append("static __attribute__((unused)) Z_Weak Z_");
     output.append(aggregate.name);
-    output.append("_weak(Z_");
+    output.append("_weak(const Z_");
     output.append(aggregate.name);
-    output.append(" *value) {\n  if (value == NULL) abort();\n  if (value->_z_weak == NULL) {\n    value->_z_weak = (Z_WeakControl *)malloc(sizeof(Z_WeakControl));\n    if (value->_z_weak == NULL) abort();\n    value->_z_weak->value = value;\n    value->_z_weak->weak_count = 1;\n  }\n  Z_Weak weak = { .control = value->_z_weak };\n  weak.control->weak_count += 1;\n  return weak;\n}\n\n");
+    output.append(" *borrowed) {\n  Z_");
+    output.append(aggregate.name);
+    output.append(" *value = (Z_");
+    output.append(aggregate.name);
+    output.append(" *)borrowed;\n  if (value == NULL) abort();\n  if (value->_z_weak == NULL) {\n    value->_z_weak = (Z_WeakControl *)malloc(sizeof(Z_WeakControl));\n    if (value->_z_weak == NULL) abort();\n    value->_z_weak->value = value;\n    value->_z_weak->weak_count = 1;\n  }\n  Z_Weak weak = { .control = value->_z_weak };\n  weak.control->weak_count += 1;\n  return weak;\n}\n\n");
     const weakResultName = `__z_Result_${aggregate.name}_WeakExpired`;
     let emitsWeakUpgrade = false;
     for (const enumeration of program.enums) {
@@ -7364,6 +7368,7 @@ function appendBorrowedTemporaryInitializers(
   ) return;
   if (
     declaration.expressions[index].value != "String"
+    && declaration.expressions[index].value != "Weak"
     && !stringStartsWith(
       declaration.expressions[index].value,
       "__z_Array_"
@@ -7406,9 +7411,13 @@ function appendBorrowedTemporaryCleanups(
       == LoweredExpressionKind.borrowedTemporary
   ) {
     appendIndent(inout output, depth);
-    output.append("Z_");
-    output.append(declaration.expressions[index].value);
-    output.append("_deinit(&");
+    if (declaration.expressions[index].value == "Weak") {
+      output.append("z_weak_release(");
+    } else {
+      output.append("Z_");
+      output.append(declaration.expressions[index].value);
+      output.append("_deinit(&");
+    }
     output.append(`_z_stage1_borrow_${index}`);
     output.append(");\n");
   }

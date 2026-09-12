@@ -83,6 +83,7 @@ type ClangNode = {
   readonly assign?: boolean;
   readonly unsafe_unretained?: boolean;
   readonly class?: boolean;
+  readonly nullability?: boolean;
   readonly getter?: { readonly name?: string };
   readonly setter?: { readonly name?: string };
   readonly storageClass?: string;
@@ -1754,6 +1755,7 @@ function collectObjCInterfaces(
   for (const [className, declaration] of declarations) {
     const members = [declaration, ...(categories.get(className) ?? [])]
       .flatMap((owner) => owner.inner ?? []);
+    restoreObjCPropertyNullability(members);
     const methods = members
       .filter((child) => child.kind === "ObjCMethodDecl" && child.name && child.returnType?.qualType)
       .map((method): ForeignObjCMethod => ({
@@ -1876,6 +1878,7 @@ function collectObjCProtocols(
   };
   const protocols = new Map<string, ForeignObjCProtocol>();
   for (const [protocolName, declaration] of declarations) {
+    restoreObjCPropertyNullability(declaration.inner ?? []);
     const methods = (declaration.inner ?? [])
       .filter((child) => child.kind === "ObjCMethodDecl" && child.name && child.returnType?.qualType)
       .map((method): ForeignObjCProtocolMethod => ({
@@ -1907,6 +1910,43 @@ function collectObjCProtocols(
     });
   }
   return protocols;
+}
+
+// Clang's JSON type spelling can hide pointer nullability behind an
+// availability macro (e.g. `API_AVAILABLE NSStatusBarButton *`). Recover the
+// explicit property fact from its source range, including its implicit getter
+// and setter, before mapping the shared Objective-C type model.
+function restoreObjCPropertyNullability(members: readonly ClangNode[]): void {
+  for (const property of members) {
+    if (property.kind !== "ObjCPropertyDecl" || !property.nullability || !property.type) continue;
+    if (/\b_(?:Nullable|Nonnull|Null_unspecified)\b/.test(property.type.qualType ?? "")) continue;
+    const file = explicitClangFile(property.loc) ?? clangNodeSourceFiles.get(property);
+    const begin = property.range?.begin?.expansionLoc ?? property.range?.begin;
+    const end = property.loc?.expansionLoc ?? property.loc;
+    const source = file && begin?.offset !== undefined && end?.offset !== undefined && existsSync(file)
+      ? foreignSourceText(file).slice(begin.offset, end.offset)
+        .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ")
+      : "";
+    const attributes = /@property\s*\(([^)]*)\)/.exec(source)?.[1] ?? "";
+    const nonnull = /(?:^|,)\s*nonnull\s*(?:,|$)/.test(attributes);
+    // If macro expansion hides the written attribute too, be conservative:
+    // Clang confirms a nullability fact exists but does not expose its value.
+    const suffix = nonnull ? " _Nonnull" : " _Nullable";
+    const annotate = (type: NonNullable<ClangNode["type"]>): void => {
+      (type as { qualType?: string }).qualType = (type.qualType ?? "") + suffix;
+    };
+    annotate(property.type);
+    const getter = property.getter?.name ?? property.name;
+    const setter = property.setter?.name ?? `set${property.name![0].toUpperCase()}${property.name!.slice(1)}:`;
+    for (const method of members) {
+      if (method.kind !== "ObjCMethodDecl" || !method.isImplicit || (method.instance === true) === (property.class === true)) continue;
+      if (method.name === getter && method.returnType) annotate(method.returnType);
+      if (method.name === setter) {
+        const parameter = method.inner?.find((child) => child.kind === "ParmVarDecl");
+        if (parameter?.type) annotate(parameter.type);
+      }
+    }
+  }
 }
 
 function objcProtocolMethodRequired(protocol: ClangNode, method: ClangNode): boolean {
