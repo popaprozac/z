@@ -9123,6 +9123,7 @@ function programUsesDerivedJson(in program: LoweredProgram): boolean {
 }
 
 function appendDerivedJsonRuntime(inout output: TextBuffer): void {
+  output.append("#include <locale.h>\n#include <math.h>\n");
   output.append("typedef struct Z_JsonDerivedReader {\n");
   output.append("  const char *data; size_t length; size_t offset; size_t line; size_t column; const char *message;\n");
   output.append("} Z_JsonDerivedReader;\n\n");
@@ -9202,6 +9203,12 @@ function appendDerivedJsonRuntime(inout output: TextBuffer): void {
   output.append("  } else { if (reader->data[reader->offset] < '1' || reader->data[reader->offset] > '9') return z_json_derived_fail(reader, \"invalid JSON number\"); while (reader->offset < reader->length && reader->data[reader->offset] >= '0' && reader->data[reader->offset] <= '9') (void)z_json_derived_advance(reader); }\n");
   output.append("  if (reader->offset < reader->length && reader->data[reader->offset] == '.') { (void)z_json_derived_advance(reader); if (reader->offset >= reader->length || reader->data[reader->offset] < '0' || reader->data[reader->offset] > '9') return z_json_derived_fail(reader, \"fraction requires a digit\"); while (reader->offset < reader->length && reader->data[reader->offset] >= '0' && reader->data[reader->offset] <= '9') (void)z_json_derived_advance(reader); }\n");
   output.append("  if (reader->offset < reader->length && (reader->data[reader->offset] == 'e' || reader->data[reader->offset] == 'E')) { (void)z_json_derived_advance(reader); if (reader->offset < reader->length && (reader->data[reader->offset] == '+' || reader->data[reader->offset] == '-')) (void)z_json_derived_advance(reader); if (reader->offset >= reader->length || reader->data[reader->offset] < '0' || reader->data[reader->offset] > '9') return z_json_derived_fail(reader, \"exponent requires a digit\"); while (reader->offset < reader->length && reader->data[reader->offset] >= '0' && reader->data[reader->offset] <= '9') (void)z_json_derived_advance(reader); } return true;\n}\n\n");
+  output.append("static __attribute__((unused)) bool z_json_derived_f64(Z_JsonDerivedReader *reader, double *output) {\n");
+  output.append("  z_json_derived_whitespace(reader); const size_t start = reader->offset; if (!z_json_derived_number(reader)) return false; const size_t length = reader->offset - start;\n");
+  output.append("  char local[128]; char *text = length < sizeof(local) ? local : (char *)malloc(length + 1); if (text == NULL) abort(); memcpy(text, reader->data + start, length); text[length] = 0; char *end = NULL; double value;\n");
+  output.append("#if defined(_WIN32)\n  _locale_t locale = _create_locale(LC_NUMERIC, \"C\"); if (locale == NULL) abort(); value = _strtod_l(text, &end, locale); _free_locale(locale);\n#else\n");
+  output.append("  locale_t locale = newlocale(LC_NUMERIC_MASK, \"C\", (locale_t)0); if (locale == (locale_t)0) abort(); locale_t previous = uselocale(locale); if (previous == (locale_t)0) abort(); value = strtod(text, &end); (void)uselocale(previous); freelocale(locale);\n#endif\n");
+  output.append("  const bool valid = end == text + length && isfinite(value); if (text != local) free(text); if (!valid) return z_json_derived_fail(reader, \"JSON number is outside finite f64 range\"); *output = value; return true;\n}\n\n");
   output.append("static __attribute__((unused)) bool z_json_derived_skip(Z_JsonDerivedReader *reader, size_t depth) {\n");
   output.append("  if (depth > 512u) return z_json_derived_fail(reader, \"JSON nesting exceeds 512 levels\"); z_json_derived_whitespace(reader); if (reader->offset >= reader->length) return z_json_derived_fail(reader, \"expected JSON value\"); const char value = reader->data[reader->offset];\n");
   output.append("  if (value == '\"') { Z_String ignored = { NULL, 0, 0 }; if (!z_json_derived_string(reader, &ignored)) return false; if (ignored.capacity > 0) free((void *)ignored.data); return true; }\n");
@@ -9246,6 +9253,7 @@ function derivedJsonOptionPayload(
 function collectDerivedJsonDecodeStructs(
   in program: LoweredProgram,
   index: usize,
+  allowFloat: boolean,
   inout structs: Array<usize>
 ): void throws String {
   if (containsUsize(structs, index)) return;
@@ -9281,6 +9289,7 @@ function collectDerivedJsonDecodeStructs(
         try collectDerivedJsonDecodeStructs(
           program,
           nestedIndex,
+          allowFloat,
           inout structs
         );
         continue;
@@ -9296,6 +9305,7 @@ function collectDerivedJsonDecodeStructs(
       try collectDerivedJsonDecodeStructs(
         program,
         nestedIndex,
+        allowFloat,
         inout structs
       );
       continue;
@@ -9313,6 +9323,7 @@ function collectDerivedJsonDecodeStructs(
       && type.kind != LoweredTypeKind.u32Type
       && type.kind != LoweredTypeKind.u64Type
       && type.kind != LoweredTypeKind.usizeType
+      && !(allowFloat && type.kind == LoweredTypeKind.f64Type)
     ) {
       const typeName = loweredTypeIdentity(type);
       throw `native derived JSON does not support field type ${typeName}`;
@@ -9344,7 +9355,7 @@ function derivedJsonTargetStructIndex(
     throw `native ${declaration.compilerIntrinsic} cannot derive a class codec for ${targetName}`;
   }
   let reachable = Array<usize>();
-  try collectDerivedJsonDecodeStructs(program, index, inout reachable);
+  try collectDerivedJsonDecodeStructs(program, index, declaration.compilerIntrinsic == "jsonDecode", inout reachable);
   return index;
 }
 
@@ -9425,6 +9436,7 @@ function appendDerivedJsonDecode(
   try collectDerivedJsonDecodeStructs(
     program,
     structIndex,
+    true,
     inout reachable
   );
   for (const reachableIndex of reachable) {
@@ -9562,6 +9574,10 @@ function appendDerivedJsonDecode(
         output.append("        if (!z_json_derived_boolean(reader, &value.");
         output.append(storageField);
         output.append(")) goto _z_json_key_failure;\n");
+      } else if (type.kind == LoweredTypeKind.f64Type) {
+        output.append("        if (!z_json_derived_f64(reader, &value.");
+        output.append(storageField);
+        output.append(")) goto _z_json_key_failure;\n");
       } else if (
         type.kind == LoweredTypeKind.u8Type
         || type.kind == LoweredTypeKind.u16Type
@@ -9676,7 +9692,7 @@ function appendDerivedJsonEncode(
 ): void throws String {
   const structIndex = try derivedJsonTargetStructIndex(program, declaration);
   let reachable = Array<usize>();
-  try collectDerivedJsonDecodeStructs(program, structIndex, inout reachable);
+  try collectDerivedJsonDecodeStructs(program, structIndex, false, inout reachable);
   for (const reachableIndex of reachable) {
     output.append("static void ");
     output.append(derivedJsonEncodeHelperName(declaration, program.structs[reachableIndex].name));
@@ -24827,6 +24843,7 @@ function emitLoweredC(
     || usesProcessExecutablePath
     || usesSleep
     || usesMainDelay
+    || programUsesDerivedJson(program)
   ) {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }

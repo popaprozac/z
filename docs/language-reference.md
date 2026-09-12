@@ -3193,8 +3193,13 @@ fields are rejected, names match exactly, and encoding follows declaration
 order. Source field names remain the JSON keys even when generated C must use
 an internal name for fields such as `signed` or `unsigned`; that spelling change
 adds no runtime work. Classes, custom constructors or `deinit`, optional property syntax (`?`),
-floating-point fields, other collections, and field-name policies remain later
+`f32`, floating-point encoding, other collections, and field-name policies remain later
 derived-codec tiers.
+The decoder accepts `f64` fields, including nested structs and `Option<f64>`:
+fractions and exponents round to binary floating point, overflow to infinity
+throws `JsonError`, and tiny values may underflow to zero. Conversion uses the
+C numeric locale without changing the process-wide locale. Floating-point
+encoding remains unsupported pending its non-finite-value policy.
 `json.parse` / `json.stringify` remain the implemented dynamic route for those
 shapes. Stage 0 and the fixed-point native compiler materialize the same direct
 streaming codecs without an intermediate dynamic JSON tree.

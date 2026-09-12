@@ -165,10 +165,17 @@ strings or those structs. Readonly arrays and recursive trees through arrays
 are supported too, as are `Option<T>` fields wrapping those supported types.
 Stage 0 and the fixed-point compiler emit direct streaming codecs without an
 intermediate dynamic tree. Optional property syntax (`?`), arrays of Options,
-floating point, other collections, classes, custom constructors, and custom
+`f32`, floating-point encoding, other collections, classes, custom constructors, and custom
 field-name policies remain later tiers. Nested `Option<Option<T>>` is rejected:
 JSON `null` cannot distinguish `none` from `some(none)`.
 Dynamic `json.parse` and `json.stringify` cover broader JSON shapes today.
+
+The decoder also accepts `f64` fields (including nested structs and
+`Option<f64>`). JSON fractions and exponents round to binary floating point;
+overflow to infinity is a decoding error. Very small values may round to zero.
+Conversion uses the C numeric locale without changing the process-wide locale.
+Floating-point encoding remains unsupported pending its non-finite-value
+policy; use the existing exact `JsonNumber` representation for lossless forwarding.
 :::
 
 :::note[Cost model]

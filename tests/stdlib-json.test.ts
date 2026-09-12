@@ -71,7 +71,7 @@ test("rejects unsupported derived JSON field types at the codec request", () => 
       import json from "std/json";
 
       struct Measurement {
-        value: f64;
+        value: f32;
       }
 
       function main(): i32 {
@@ -79,7 +79,7 @@ test("rejects unsupported derived JSON field types at the codec request", () => 
         return 0;
       }
     `, fileName),
-    /field "value" has unsupported type "f64"/,
+    /field "value" has unsupported type "f32"/,
   );
   assert.throws(
     () => compileToC(`
@@ -96,6 +96,12 @@ test("rejects unsupported derived JSON field types at the codec request", () => 
     `, fileName),
     /optional field "name" is not supported yet/,
   );
+});
+
+test("decodes finite f64 JSON fields without truncating fractions", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/std-json-f64-decode.zs");
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8", timeout: 60000 });
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("derives Option fields with explicit nulls, required presence, and defaults", () => {

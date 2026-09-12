@@ -131,6 +131,7 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-readonly-field-iteration.zs" },
   { entry: "tests/fixtures/std-json-nested-encode.zs" },
   { entry: "tests/fixtures/std-json-option.zs", expectedStatus: 0 },
+  { entry: "tests/fixtures/std-json-f64-decode.zs", expectedStatus: 0 },
   {
     entry: "tests/fixtures/self-host-emit-field-hygiene.zs",
     expectedStatus: 0,

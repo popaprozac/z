@@ -8373,6 +8373,22 @@ None of these exploratory shapes is used as a framework workaround. The
 working session uses existing borrowed parameters, retained ARC lookup, and
 named callback assignment; no new Z syntax or ownership exception is required.
 
+## Zapp context-menu integration: fractional wire coordinates
+
+The native popup consumes borrowed `Menu` data while owning its Objective-C
+connections, state subscriptions, and presentation session across AppKit's
+tracking loop. The bridge exposed a separate codec composition gap:
+`json.decode` accepted a struct containing `f64` through native checking but
+failed during C emission. Both emitters now decode finite `f64` fields,
+preserving fractions and rejecting overflow, with tests for defaults, nested
+values, optional values, and malformed input. Encoding floats remains a
+separate policy decision; this slice does not change `json.encode` semantics.
+
+An inline `Enum.variant(match (...) { ... })` with block-valued arms also
+reached the native lowerer's unsupported expression path. A named response
+binding is currently supported; general nested match lowering still needs an
+upstream composition pass. This finding must not be mistaken for a completed fix.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

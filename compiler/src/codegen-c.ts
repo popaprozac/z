@@ -318,7 +318,7 @@ export function generateC(
     `/* Source: ${sourceName.replaceAll("*/", "* /")} */`,
   ];
   if (nativeSubclasses.length > 0) lines.push("#import <Foundation/Foundation.h>", "#import <objc/runtime.h>");
-  if (usesTiming || usesFileSystem || usesProcessExecutablePath) {
+  if (usesTiming || usesFileSystem || usesProcessExecutablePath || usesDerivedJson) {
     lines.push(
       "#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)",
       "#define _POSIX_C_SOURCE 200809L",
@@ -4432,7 +4432,9 @@ static Z_UNUSED_FUNCTION inline void z_string_append_pointer(Z_String *self, con
 }
 
 function generateDerivedJsonRuntime(): string {
-  return `typedef struct {
+  return `#include <locale.h>
+#include <math.h>
+typedef struct {
   const char *data;
   uintptr_t length;
   uintptr_t offset;
@@ -4688,6 +4690,36 @@ static Z_UNUSED_FUNCTION bool z_json_derived_number(Z_JsonDerivedReader *reader)
     }
   }
   return true;
+}
+
+static Z_UNUSED_FUNCTION bool z_json_derived_f64(Z_JsonDerivedReader *reader, double *output) {
+  z_json_derived_whitespace(reader);
+  const size_t start = reader->offset;
+  if (!z_json_derived_number(reader)) return false;
+  const size_t length = reader->offset - start;
+  char local[128];
+  char *text = length < sizeof(local) ? local : (char *)malloc(length + 1);
+  if (text == NULL) abort();
+  memcpy(text, reader->data + start, length); text[length] = 0;
+  char *end = NULL;
+  double value;
+#if defined(_WIN32)
+  _locale_t locale = _create_locale(LC_NUMERIC, "C");
+  if (locale == NULL) abort();
+  value = _strtod_l(text, &end, locale);
+  _free_locale(locale);
+#else
+  locale_t locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+  if (locale == (locale_t)0) abort();
+  locale_t previous = uselocale(locale);
+  if (previous == (locale_t)0) abort();
+  value = strtod(text, &end);
+  (void)uselocale(previous); freelocale(locale);
+#endif
+  const bool valid = end == text + length && isfinite(value);
+  if (text != local) free(text);
+  if (!valid) return z_json_derived_fail(reader, "JSON number is outside finite f64 range");
+  *output = value; return true;
 }
 
 static Z_UNUSED_FUNCTION bool z_json_derived_skip(Z_JsonDerivedReader *reader, uintptr_t depth) {
@@ -6196,6 +6228,7 @@ function derivedJsonStruct(
     throw new DiagnosticError(location.fileName ?? "<source>", location, message, {
       notes: [
         "derived JSON codecs support ordinary value structs containing String, boolean, integer, nested value structs, arrays of strings or those structs, and Option fields wrapping those types",
+        "json.decode also supports finite f64 fields; floating-point encoding remains unsupported",
         "use json.parse/json.stringify for a dynamic JSON tree while the derived type surface expands",
       ],
     });
@@ -6223,6 +6256,7 @@ function derivedJsonStruct(
       if (
         typeName === "String"
         || typeName === "boolean"
+        || (typeName === "f64" && intrinsic.kind === "jsonDecode")
         || parseDynamicArrayType(typeName)?.elementType === "String"
         || typeName in derivedJsonUnsignedLimits
         || typeName in derivedJsonSignedLimits
@@ -6380,6 +6414,13 @@ function derivedJsonDecodeField(
   if (field.type.name === "boolean") {
     return [
       `    if (!z_json_derived_boolean(reader, &${destination})) {`,
+      ...failure,
+      "    }",
+    ];
+  }
+  if (field.type.name === "f64") {
+    return [
+      `    if (!z_json_derived_f64(reader, &${destination})) {`,
       ...failure,
       "    }",
     ];
