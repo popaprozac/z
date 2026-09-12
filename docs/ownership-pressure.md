@@ -8456,6 +8456,24 @@ Those broader cases are not needed by the tray API and are not claimed fixed.
 A direct full-graph Stage 0 check of Z Notes exceeded three minutes and was
 stopped; record that as compiler/DX pressure, not tray runtime cost.
 
+## Window focus callback pressure (2026-09-12)
+
+Zapp's explicit `Window.focus()` path uses ordinary main-isolated methods,
+weak manager references, and existing native focus notifications. The registry
+must remain populated during a native call: a synchronous focus subscriber can
+look up, hide, or close its own window. Restoring a temporarily removed record
+after invoking that callback would lose events or resurrect a closed window.
+The framework now restores its logical record before entering AppKit and holds
+an owned native runtime reference rather than a Map view across callbacks.
+
+A test-only assertion exposed a separate native-emitter composition gap:
+`probe.registered = match (in options) { some(value) => value.visible; none => false; };`
+passes Stage 0 but `self-host-emit` rejects the match expression on the field
+assignment's right-hand side. The equivalent match statement works. This is
+not required by the focus implementation and remains a native-parity follow-up;
+normalization must preserve assignment-target evaluation order and ownership,
+not simply hoist arbitrary match expressions before the target.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
