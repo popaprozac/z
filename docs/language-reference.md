@@ -1917,6 +1917,22 @@ const title = match (value) {
 unreachable. A consuming `match (value)` still destroys any owned payload
 discarded by the wildcard; `match (in value)` remains non-consuming.
 
+An enum payload may be supplied directly by a value-producing match:
+
+```z
+return Response.text(match (selection) {
+  some(text) => { select text; }
+  none => "missing";
+});
+```
+
+`select` supplies the payload; `return` inside an arm still exits the enclosing
+function, and `throw` propagates its error. Arm-local owners and untransferred
+payloads are destroyed on those exits. The native lowering tier supports this
+pure enum-constructor shape in bindings and returns, including nested enum
+constructors; this is not yet general nested-match support in arbitrary call
+arguments or short-circuit expressions.
+
 Payload-free Z enums support `==` and `!=` by nominal tag. Payload-bearing
 enums require `match`; Z does not implicitly synthesize equality for their
 contents.

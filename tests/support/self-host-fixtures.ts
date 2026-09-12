@@ -9,6 +9,15 @@ export type SelfHostDifferentialCase = {
 };
 
 export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferentialCase[] = [
+  {
+    entry: "tests/fixtures/lifecycle-callbacks.zs",
+    expectedStdout: "released owner\n".repeat(4),
+  },
+  {
+    entry: "tests/fixtures/nested-match-construction.zs",
+    expectedStdout: "released selected arm\nanswer\nreleased fallback arm\nmissing\n"
+      + "released early arm\nreleased outer\nanswer\nanswer\nrejected\nanswer\n",
+  },
   { entry: "tests/fixtures/match-wildcard.zs" },
   { entry: "tests/fixtures/async-launch-listener.zs" },
   { entry: "tests/fixtures/async-launch-owned-destructure.zs" },

@@ -468,6 +468,8 @@ export struct LoweredStatement {
   labels: Array<String>;
   matchConsumesSubject: boolean;
   matchBindingNeedsCleanup: boolean;
+  // Preserve the AST match root even when it is nested in a value expression.
+  matchSourceRoot: usize = 0;
   foreignMatchDiscriminant: String = "";
   foreignMatchMember: String = "";
   foreignMatchValues: Array<String> = Array<String>();
@@ -5656,7 +5658,7 @@ function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
   });
 }
 
-function treeIsSharedClassReference(
+function treeIsRetainedReference(
   in program: Program, in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree, index: usize
 ): boolean {
@@ -5680,6 +5682,14 @@ function treeIsSharedClassReference(
       none => break;
     }
     aliasDepth = aliasDepth + 1;
+  }
+  // Callable values also retain shared environment identity on assignment and
+  // return. Treating that retain as a move drops the local's release on a
+  // straight-line path (a live guard merely hid the leak in branching bodies).
+  if (stringStartsWith(typeName, "Function_")) return true;
+  match (nativeFunctionSignature(typeName)) {
+    some(_) => return true;
+    none => {}
   }
   for (const aggregate of program.aggregates) {
     if (aggregate.name == typeName
@@ -5740,7 +5750,7 @@ function collectTreeMovedNames(
       if (
         parameterModes[argumentPosition - 1] == "value"
         && tree.nodes[argument].kind == ExpressionKind.identifierExpression
-        && !treeIsSharedClassReference(program, evidence, tree, argument)
+        && !treeIsRetainedReference(program, evidence, tree, argument)
       ) movedNames.add(tree.nodes[argument].value.copyBytes(
         0,
         tree.nodes[argument].value.byteLength
@@ -5878,7 +5888,7 @@ function collectTreeMovedNames(
           if (
             declaration.parameters[parameter].mode == ParameterMode.value
             && tree.nodes[argument].kind == ExpressionKind.identifierExpression
-            && !treeIsSharedClassReference(program, evidence, tree, argument)
+            && !treeIsRetainedReference(program, evidence, tree, argument)
           ) movedNames.add(tree.nodes[argument].value.copyBytes(
             0,
             tree.nodes[argument].value.byteLength
@@ -5953,14 +5963,14 @@ function syntaxIsIdentifier(
   };
 }
 
-function syntaxIsSharedClassReference(
+function syntaxIsRetainedReference(
   in program: Program, in evidence: ModuleSemanticEvidence,
   in expression: ExpressionSyntax
 ): boolean {
   return match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
-      select treeIsSharedClassReference(program, evidence, tree, root);
+      select treeIsRetainedReference(program, evidence, tree, root);
     }
     none => false;
   };
@@ -5984,7 +5994,7 @@ function statementMovesName(
         )
         && syntaxIsIdentifier(expression, name)
         && (statement.kind != StatementKind.returnStatement
-          || !syntaxIsSharedClassReference(program, evidence, expression))
+          || !syntaxIsRetainedReference(program, evidence, expression))
       ) return true;
       if (syntaxMovesName(program, evidence, expression, name)) return true;
     }
@@ -5995,7 +6005,7 @@ function statementMovesName(
       if (
         statement.kind == StatementKind.assignmentStatement
         && syntaxIsIdentifier(expression, name)
-        && !syntaxIsSharedClassReference(program, evidence, expression)
+        && !syntaxIsRetainedReference(program, evidence, expression)
       ) return true;
       if (syntaxMovesName(program, evidence, expression, name)) return true;
     }
@@ -6042,7 +6052,7 @@ function collectDirectStatementMovedNames(
               tree.nodes[tree.root].kind
                 == ExpressionKind.identifierExpression
               && (statement.kind != StatementKind.returnStatement
-                || !treeIsSharedClassReference(program, evidence, tree, root))
+                || !treeIsRetainedReference(program, evidence, tree, root))
             ) movedNames.add(tree.nodes[tree.root].value.copyBytes(
               0,
               tree.nodes[tree.root].value.byteLength
@@ -6069,7 +6079,7 @@ function collectDirectStatementMovedNames(
             if (
               tree.nodes[tree.root].kind
                 == ExpressionKind.identifierExpression
-              && !treeIsSharedClassReference(program, evidence, tree, root)
+              && !treeIsRetainedReference(program, evidence, tree, root)
             ) movedNames.add(tree.nodes[tree.root].value.copyBytes(
               0,
               tree.nodes[tree.root].value.byteLength
@@ -6372,9 +6382,19 @@ function loweredStatementHasLabel(
 function planNestedPreludeSequence(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  sourceIndex: usize,
   in roots: Array<usize>,
   in inherited: Array<LoweredCleanup>,
-  inout statements: Array<LoweredStatement>
+  in expressions: Array<LoweredExpression>,
+  in moveIndex: CleanupMoveIndex,
+  inout statements: Array<LoweredStatement>,
+  inout liveFlags: Array<LoweredLiveFlag>,
+  forceMoveLiveGuards: boolean,
+  insideLoop: boolean,
+  in loopCleanups: Array<LoweredCleanup>
 ): Array<LoweredCleanup> throws String {
   let active = Array<LoweredCleanup>();
   appendCleanupCopies(inout active, inherited);
@@ -6424,9 +6444,11 @@ function planNestedPreludeSequence(
         const branchCleanups = try planNestedPreludeSequence(
           program,
           importedTypes,
+          evidence, arena, ownerName, sourceIndex,
           branchRoots,
           active,
-          inout statements
+          expressions, moveIndex, inout statements, inout liveFlags,
+          forceMoveLiveGuards, insideLoop, loopCleanups
         );
         appendStatementCleanupCopies(
           inout statements,
@@ -6434,6 +6456,12 @@ function planNestedPreludeSequence(
           branchCleanups
         );
       }
+    } else if (loweredStatementHasLabel(statements[local], "nested-match")) {
+      const loweredMatch = statements[local].children[0];
+      try planCleanupStatement(program, importedTypes, evidence, arena,
+        ownerName, sourceIndex, loweredMatch, active, expressions, moveIndex,
+        inout statements, inout liveFlags, forceMoveLiveGuards, insideLoop,
+        loopCleanups);
     } else {
       throw "native cleanup planning received an unknown nested prelude";
     }
@@ -6510,9 +6538,11 @@ function planCleanupStatement(
     const finalTemporaryCleanups = try planNestedPreludeSequence(
       program,
       importedTypes,
+      evidence, arena, ownerName, sourceIndex,
       normalizedRoots,
       preludeLive,
-      inout statements
+      expressions, moveIndex, inout statements, inout liveFlags,
+      forceMoveLiveGuards, insideLoop, loopCleanups
     );
     let finalLive = Array<LoweredCleanup>();
     appendCleanupCopies(inout finalLive, live);
@@ -6613,7 +6643,7 @@ function planCleanupStatement(
       some(syntax) => {
         match (in syntax.tree) {
           some(tree) => {
-            const root = tree.root;
+            const root = statements[loweredIndex].matchSourceRoot;
             const consuming = tree.nodes[root].value != "in";
             const subject = tree.nodes[root].children[0];
             if (
@@ -7271,7 +7301,8 @@ function wrapImplicitOwnedTransfer(
   inout output: Array<LoweredExpression>
 ): usize {
   if (
-    tree.nodes[input].kind != ExpressionKind.identifierExpression
+    (tree.nodes[input].kind != ExpressionKind.identifierExpression
+      && !expressionHasLabel(output[value], "nested-match-binding"))
     || output[value].kind == LoweredExpressionKind.moveValue
   ) return value;
   let children = Array<usize>();
@@ -9269,6 +9300,18 @@ function annotatedLocalBindingTypeName(
     ) ownerOffset = declaration.offset;
   }
   for (const aggregate of program.aggregates) {
+    match (in aggregate.constructorDeclaration) {
+      some(initializer) => if (initializer.offset <= useOffset && initializer.offset >= ownerOffset) {
+        ownerOffset = initializer.offset;
+      }
+      none => {}
+    }
+    match (in aggregate.deinitializer) {
+      some(deinitializer) => if (deinitializer.offset <= useOffset && deinitializer.offset >= ownerOffset) {
+        ownerOffset = deinitializer.offset;
+      }
+      none => {}
+    }
     for (const method of aggregate.methods) {
       if (method.offset <= useOffset && method.offset >= ownerOffset) {
         ownerOffset = method.offset;
@@ -9284,6 +9327,18 @@ function annotatedLocalBindingTypeName(
     );
   }
   for (const aggregate of program.aggregates) {
+    match (in aggregate.constructorDeclaration) {
+      some(initializer) => if (initializer.offset == ownerOffset) {
+        return annotatedBindingTypeInArena(initializer.body, name, useOffset);
+      }
+      none => {}
+    }
+    match (in aggregate.deinitializer) {
+      some(deinitializer) => if (deinitializer.offset == ownerOffset) {
+        return annotatedBindingTypeInArena(deinitializer.body, name, useOffset);
+      }
+      none => {}
+    }
     for (const method of aggregate.methods) {
       if (method.offset != ownerOffset) continue;
       return annotatedBindingTypeInArena(method.body, name, useOffset);
@@ -11064,6 +11119,16 @@ function lowerExpressionContextual(
   in contextualTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  if (tree.nodes[index].kind == ExpressionKind.matchExpression) {
+    const bindingName = `_z_stage1_nested_match_${tree.nodes[index].offset}`;
+    let candidate = output.length;
+    while (candidate > 0) {
+      candidate = candidate - 1;
+      if (output[candidate].kind == LoweredExpressionKind.localValue
+        && output[candidate].value == bindingName
+        && expressionHasLabel(output[candidate], "nested-match-binding")) return candidate;
+    }
+  }
   match (resolvedExpressionTargetName(evidence, tree, index)) {
     some(targetName) => return pushExpression(
       inout output,
@@ -19641,36 +19706,6 @@ function matchEnumDeclaration(
   };
 }
 
-function valueArmIsIdentifier(
-  in arena: StatementArena,
-  index: usize,
-  in name: String
-): boolean {
-  if (
-    arena.nodes[index].kind == StatementKind.expressionStatement
-    || arena.nodes[index].kind == StatementKind.selectStatement
-  ) {
-    return match (in arena.nodes[index].expression) {
-      some(expression) => syntaxIsIdentifier(expression, name);
-      none => false;
-    };
-  }
-  if (
-    arena.nodes[index].kind == StatementKind.blockStatement
-    && arena.nodes[index].children.length > 0
-  ) {
-    const finalChild = arena.nodes[index].children[
-      arena.nodes[index].children.length - 1
-    ];
-    return valueArmIsIdentifier(
-      arena,
-      finalChild,
-      name
-    );
-  }
-  return false;
-}
-
 function lowerValueDestination(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -19819,6 +19854,16 @@ function lowerValueDestination(
     )) {
       some(name) => expectedTypeName = move name;
       none => {}
+    }
+    if (expectedTypeName.byteLength == 0) {
+      for (const lowered of expressions) {
+        if (lowered.kind == LoweredExpressionKind.localValue
+          && lowered.value == valueBinding
+          && expressionHasLabel(lowered, "nested-match-binding")) {
+          expectedTypeName = copy lowered.labels[1];
+          break;
+        }
+      }
     }
   }
   let value: usize = 0;
@@ -20307,30 +20352,12 @@ function lowerMatchTree(
         emittedPayloadBinding.byteLength
       ));
     }
-    let payloadTransfersOut = false;
-    if (sourcePayloadBinding.byteLength > 0) {
-      for (const bodyIndex of tree.nodes[arm].statements) {
-        if (
-          statementMovesName(
-            program,
-            evidence,
-            arena,
-            arena.nodes[bodyIndex],
-            sourcePayloadBinding
-          )
-        ) payloadTransfersOut = true;
-      }
-    }
     let children = Array<usize>();
     if (returnValueArms || valueBinding.byteLength > 0) {
       if (tree.nodes[arm].statements.length != 1) {
         throw "native value-match lowering requires one value-producing arm body";
       }
       const bodyIndex = tree.nodes[arm].statements[0];
-      if (
-        labels.length == 1
-        && valueArmIsIdentifier(arena, bodyIndex, sourcePayloadBinding)
-      ) payloadTransfersOut = true;
       const loweredBody = try lowerValueArmStatement(
         program,
         importedTypes,
@@ -20379,11 +20406,9 @@ function lowerMatchTree(
     );
     const matchBindingNeedsCleanup = match (in payloadType) {
       some(type) => !nicheViewOption && consuming
-        && moduleTypeNeedsCleanup(program, importedTypes, type)
-        // A statement arm can transfer only on one branch. Let the existing
-        // move/live-guard planner account for each exit instead of dropping
-        // ownership for the entire arm when any nested statement moves it.
-        && (!payloadTransfersOut || (!returnValueArms && valueBinding.byteLength == 0));
+        // A value arm can return/throw before reaching select. Track the
+        // payload through every exit; a move clears its existing live guard.
+        && moduleTypeNeedsCleanup(program, importedTypes, type);
       none => false;
     };
     const loweredArm = statements.length;
@@ -20478,6 +20503,7 @@ function lowerMatchTree(
     labels,
     matchConsumesSubject: consuming,
     matchBindingNeedsCleanup: false,
+    matchSourceRoot: root,
     foreignMatchDiscriminant: foreignDiscriminant,
   }));
   return outputIndex;
@@ -23870,6 +23896,86 @@ function lowerStatement(
   );
 }
 
+// An enum constructor has one evaluated operand and no callee side effects.
+// Normalize only this pure constructor spine here: hoisting out of an arbitrary
+// call or short-circuit expression would change evaluation order.
+function appendEnumMatchPrelude(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  sourceIndex: usize,
+  in syntax: ExpressionSyntax,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  match (in syntax.tree) {
+    some(tree) => {
+      let candidate = tree.root;
+      while (tree.nodes[candidate].kind == ExpressionKind.callExpression
+        && tree.nodes[candidate].children.length == 2) {
+        candidate = tree.nodes[candidate].children[1];
+      }
+      if (candidate == tree.root || tree.nodes[candidate].kind != ExpressionKind.matchExpression) return;
+      let current = tree.root;
+      let payloadTypeName = "";
+      while (tree.nodes[current].kind == ExpressionKind.callExpression
+        && tree.nodes[current].children.length == 2) {
+        const callee = tree.nodes[current].children[0];
+        if (tree.nodes[callee].kind != ExpressionKind.memberExpression
+          || tree.nodes[callee].children.length != 1) return;
+        const receiver = tree.nodes[callee].children[0];
+        const sourceName = typeExpressionName(tree, receiver);
+        const typeName = contextualIntrinsicTypeName(evidence, tree, current, sourceName);
+        let declaration = try intrinsicEnumDeclaration(program, importedTypes, typeName);
+        const hasIntrinsic = match (in declaration) { some(_) => true; none => false; };
+        if (!hasIntrinsic) {
+          match (enumIndex(program, typeName)) {
+            some(index) => declaration = Option.some(try loweredSourceEnum(program, importedTypes, index));
+            none => declaration = importedEnumDeclaration(importedTypes, typeName);
+          }
+        }
+        payloadTypeName = "";
+        match (in declaration) {
+          some(enumType) => for (const variant of enumType.variants) {
+            if (variant.name != tree.nodes[callee].value) continue;
+            match (in variant.payload) {
+              some(type) => payloadTypeName = loweredTypeIdentity(type);
+              none => {}
+            }
+          }
+          none => return;
+        }
+        if (payloadTypeName.byteLength == 0) return;
+        current = tree.nodes[current].children[1];
+      }
+      if (tree.nodes[current].kind != ExpressionKind.matchExpression
+        || payloadTypeName.byteLength == 0) return;
+      const bindingName = `_z_stage1_nested_match_${tree.nodes[current].offset}`;
+      pushExpression(inout expressions, LoweredExpressionKind.localValue,
+        bindingName, Array<usize>(), Array<String>("nested-match-binding", copy payloadTypeName));
+      const loweredMatch = try lowerMatchTree(program, importedTypes, evidence,
+        arena, ownerName, context, sourceIndex, tree, current, false, bindingName,
+        inout expressions, inout statements);
+      const type = try lowerModuleTypeName(program, importedTypes, payloadTypeName);
+      const local = statements.length;
+      statements.push(LoweredStatement({
+        kind: LoweredStatementKind.localStatement, mutableBinding: true,
+        name: bindingName, type: Option.some(move type),
+        expression: Option<usize>.none, secondExpression: Option<usize>.none,
+        children: Array<usize>(loweredMatch), cleanups: Array<LoweredCleanup>(),
+        liveFlag: "", labels: Array<String>("nested-match"),
+        matchConsumesSubject: false, matchBindingNeedsCleanup: false,
+      }));
+      roots.push(local);
+    }
+    none => {}
+  }
+}
+
 function lowerStatementWithResult(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -23916,6 +24022,9 @@ function lowerStatementWithResult(
         inout statements,
         inout preludeRoots
       );
+      try appendEnumMatchPrelude(program, importedTypes, evidence, arena,
+        ownerName, context, index, syntax, inout expressions, inout statements,
+        inout preludeRoots);
     }
     none => {}
   }
@@ -26973,6 +27082,7 @@ function lowerMainDelayMatchTree(
     labels: move matchLabels,
     matchConsumesSubject: consuming,
     matchBindingNeedsCleanup: false,
+    matchSourceRoot: root,
   }));
   return LoweredMainDelayMatch({
     statement,
@@ -32221,7 +32331,7 @@ function appendLoweredProgram(
           aggregate.name,
           source.body
         );
-        body.name = `${emittedName}.deinit`;
+        body.name = `Z_${emittedName}___deinitializer`;
         annotateObjectiveCEnumPayloadsInFunction(enums, inout body);
         deinitializer = Option.some(move body);
       }
@@ -32503,7 +32613,7 @@ function appendLoweredProgram(
           aggregate.name,
           source.body
         );
-        loweredDeinitializer.name = `${use.emittedName}.deinit`;
+        loweredDeinitializer.name = `Z_${use.emittedName}___deinitializer`;
         annotateObjectiveCEnumPayloadsInFunction(
           enums,
           inout loweredDeinitializer

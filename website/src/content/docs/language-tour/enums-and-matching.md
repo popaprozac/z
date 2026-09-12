@@ -134,6 +134,26 @@ const message = match (state) {
 enclosing function and `throw` still exits through its typed error channel.
 There is no implicit last-expression return from a block.
 
+You can also construct an enum payload directly from a match:
+
+```z
+enum Response { text String, empty, }
+
+function respond(selection: Option<String>): Response {
+  return Response.text(match (selection) {
+    some(text) => { select text; }
+    none => "missing";
+  });
+}
+```
+
+Only the selected arm runs. Its `select` supplies the payload; an explicit
+`return` still exits `respond` instead. Cleanup applies on both paths.
+
+The native compiler currently supports this enum-constructor shape in bindings
+and returns, including nested enum constructors. General nested matches in
+arbitrary call arguments and short-circuit expressions remain a later tier.
+
 Payload-free enums support nominal `==` and `!=`. Payload-bearing enums use
 `match`; Z does not invent equality semantics for arbitrary payload graphs.
 

@@ -8353,21 +8353,26 @@ both emitters at `-O0` and `-O2` under UBSan, with process deadlines. This is
 ownership-policy evidence, not yet native tracking-loop or navigation-hook
 integration evidence.
 
-Adjacent exploratory probes remain **open**, rather than being silently
-claimed by the callback-field fix:
+The subsequent lifecycle checkpoint closes the first two exploratory probes:
 
-- A local named callable invoked in a custom `deinit` still needs native
-  lifecycle-body lowering and helper-name hygiene: a `Controller.deinit` owner
-  can reach a generated C identifier with a dot, and `callback()` can remain
-  an ordinary call instead of function-value dispatch.
-- A captured callable created inside a custom constructor still needs native
-  constructor-local callable resolution; merely discovering its helper does
-  not prove the complete expression lowering path.
+- Named callable locals in custom `deinit` now use function-value dispatch.
+  Deinitializers participate in helper/environment/prototype discovery, with
+  valid emitted lifecycle identities rather than dotted source owner names.
+- Constructor-local captured callables now resolve correctly, including generic
+  classes. An allocation-ledger probe caught a second bug: a retained callback
+  assignment was treated as a move and skipped the local release on straight-line
+  paths. Retained callable identity now follows the shared-reference rule.
 - `console.log(value.callback() + controller.callback())` in the reduced
   native-emitter fixture reports `expected String, found i32`. The regression
   uses explicit numeric assertions and a literal success message to isolate
   callback storage. Keep console contextual-callable typing as a separate
   reduced parity follow-up.
+
+The console contextual-callable probe remains open. Creating a new closure in
+`deinit` is still forbidden by the existing language rule; invoking an existing
+named callable is distinct. `lifecycle-callbacks.zs` covers ordinary and generic
+class/struct lifecycle bodies through both compilers under strict Clang, UBSan,
+and the allocation ledger at `-O0` and `-O2`.
 
 None of these exploratory shapes is used as a framework workaround. The
 working session uses existing borrowed parameters, retained ARC lookup, and
@@ -8385,9 +8390,30 @@ values, optional values, and malformed input. Encoding floats remains a
 separate policy decision; this slice does not change `json.encode` semantics.
 
 An inline `Enum.variant(match (...) { ... })` with block-valued arms also
-reached the native lowerer's unsupported expression path. A named response
-binding is currently supported; general nested match lowering still needs an
-upstream composition pass. This finding must not be mistaken for a completed fix.
+reached the native lowerer's unsupported expression path. That concrete shape
+now works in bindings and returns, including a chain of enum constructors.
+Stage 0 provides the payload's contextual type; native lowering normalizes only
+the pure, single-operand constructor spine and preserves the match's source
+identity for cleanup. It does not hoist work out of arbitrary calls or lazy
+branches. General nested-expression normalization remains open.
+
+`nested-match-construction.zs` checks owned and borrowed subjects, nested enum
+construction, normal selection, early function return, and propagated error
+with both compilers at `-O0` and `-O2`, UBSan, and allocation accounting. The early
+return probe caught a native payload leak: an arm that eventually selected its
+payload had lost cleanup on paths exiting before `select`. All consuming value
+arms now retain the existing move/live-guard cleanup plan. Zapp's actual popup
+bridge no longer needs the intermediate response binding, and its route/session
+fixtures pass both emitters under UBSan.
+
+Checkpoint validation also includes the 90-program cross-compiler executable
+corpus, the full native closure-cleanup suite, async match/tail regressions, and
+a successful fixed-point native bootstrap. The accompanying
+[build-latency measurements](../benchmarks/results/build-latency-lifecycle-2026-09-11.md)
+keep the observed fresh-cache timing increase visible; this checkpoint does not
+claim a performance improvement. Next is Zapp tray/status-menu API deliberation,
+while general nested-expression normalization and the reduced console/callable
+typing probe remain explicit compiler follow-ups.
 
 ## Not tested yet
 

@@ -92,6 +92,11 @@ separate. Foreign-adapter/SDK scale, .zd changes, generated overlays, compiler
 replacement, memory, and module-level incremental compilation need additional
 measurements.
 
+The [lifecycle/nested-match checkpoint](results/build-latency-lifecycle-2026-09-11.md)
+records before/after raw samples, compiler identities, and an unresolved
+fresh-cache timing increase without treating desktop timing variance as proof
+of no regression.
+
 ## Z Notes build latency
 
 With the sibling Zapp checkout installed and Z's native compiler bootstrapped:

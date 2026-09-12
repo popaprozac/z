@@ -11399,6 +11399,10 @@ function appendCallableEnvironmentTypes(
       some(owner) => try appendCallableOwnerEnvironmentTypes(inout output, program, owner);
       none => {}
     }
+    match (in aggregate.deinitializer) {
+      some(owner) => try appendCallableOwnerEnvironmentTypes(inout output, program, owner);
+      none => {}
+    }
   }
 }
 
@@ -11453,6 +11457,10 @@ function appendCallableHelpers(
   }
   for (const aggregate of program.structs) {
     match (in aggregate.initializer) {
+      some(owner) => try appendCallableOwnerHelpers(inout output, program, owner);
+      none => {}
+    }
+    match (in aggregate.deinitializer) {
       some(owner) => try appendCallableOwnerHelpers(inout output, program, owner);
       none => {}
     }
@@ -13557,6 +13565,10 @@ function appendCallableValuePrototypes(
   }
   for (const aggregate of program.structs) {
     match (in aggregate.initializer) {
+      some(owner) => try appendCallableOwnerValuePrototypes(inout output, owner);
+      none => {}
+    }
+    match (in aggregate.deinitializer) {
       some(owner) => try appendCallableOwnerValuePrototypes(inout output, owner);
       none => {}
     }

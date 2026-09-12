@@ -165,10 +165,12 @@ test("returns a closed Arena-owned graph bundle without letting views escape the
   const generated = compileToC(source, fixture);
   assert.match(generated, /\(Z_ParsedFile\)\{ \.arena = .*\.roots = /);
   assert.doesNotMatch(generated, /malloc\(sizeof\(Z_ParsedFile\)\)/);
-  const deinit = generated.slice(
-    generated.indexOf("Z_UNUSED_FUNCTION static void Z_ParsedFile_deinit"),
-    generated.indexOf("static __attribute__((unused)) Z_ParsedFile", generated.indexOf("Z_UNUSED_FUNCTION static void Z_ParsedFile_deinit")),
-  );
+  const deinit = generated.match(
+    /Z_UNUSED_FUNCTION static void Z_ParsedFile_deinit\(Z_ParsedFile \*self\) \{[\s\S]*?^\}/m,
+  )?.[0];
+  assert.ok(deinit, "expected the destructor definition, not its forward declaration");
+  assert.ok(deinit.includes("free((self->roots).data)"));
+  assert.ok(deinit.includes("z_arena_reset(&(self->arena))"));
   assert.ok(deinit.indexOf("free((self->roots).data)") < deinit.indexOf("z_arena_reset(&(self->arena))"));
 
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });

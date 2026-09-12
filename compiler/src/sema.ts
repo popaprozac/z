@@ -12115,6 +12115,8 @@ function inferExpressionInner(
               }
               const actual = argument.kind === "objectExpression"
                 ? inferContextualObjectExpression(argument, variant.payload.name, locals, globals, structs, enums, fileName, state)
+                : argument.kind === "matchExpression" && state.activeFunction
+                  ? inferDirectValue(argument, state.activeFunction, locals, globals, structs, enums, fileName, state, variant.payload.name)
                 : inferExpression(argument, locals, globals, structs, enums, fileName, state);
               rejectBorrowedNativeResourceEscape(
                 actual,

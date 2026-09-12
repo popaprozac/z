@@ -3,7 +3,7 @@ import {
   resolve, rmSync, spawnSync, test, writeFileSync,
 } from "./support/bootstrap.ts";
 
-function execute(source: string, expected: string, expectedAllocations?: number): void {
+function execute(source: string, expected: string, expectedAllocations?: number, optimization = "-O1"): void {
   const directory = mkdtempSync("/tmp/z-closure-cleanup-");
   try {
     const executable = resolve(directory, "program");
@@ -60,7 +60,7 @@ int main(void) {
 `;
     const compilation = spawnSync("clang", [
       "-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
-      "-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable,
+      optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable,
     ], { input: trackedSource, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
     assert.equal(compilation.status, 0, compilation.stderr || String(compilation.error));
     const result = spawnSync(executable, [], {
@@ -73,6 +73,8 @@ int main(void) {
 
 for (const [fixture, expected] of [
   ["named-callback-fields.zs", "callbacks reset\n"],
+  ["lifecycle-callbacks.zs", "released owner\nreleased owner\nreleased owner\nreleased owner\n"],
+  ["nested-match-construction.zs", "released selected arm\nanswer\nreleased fallback arm\nmissing\nreleased early arm\nreleased outer\nanswer\nanswer\nrejected\nanswer\n"],
   ["self-host-emit-block-closure-owners.zs",
     'notes: {"text":"early"}\nreleased early\n'
     + 'notes: {"text":"move"}\nconsumed move\nreleased move\n'
@@ -86,12 +88,13 @@ for (const [fixture, expected] of [
 ] as const) {
   test(`owns invocation-local storage in ${fixture}`, () => {
     const input = resolve(projectRoot, "tests/fixtures", fixture);
-    execute(compileToC(readFileSync(input, "utf8"), input), expected);
+    const stage0 = compileToC(readFileSync(input, "utf8"), input);
+    for (const optimization of ["-O0", "-O2"]) execute(stage0, expected, undefined, optimization);
     const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
       encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
     });
     assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
-    execute(emitted.stdout, expected);
+    for (const optimization of ["-O0", "-O2"]) execute(emitted.stdout, expected, undefined, optimization);
   }, 240_000);
 }
 
