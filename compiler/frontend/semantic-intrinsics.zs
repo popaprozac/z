@@ -1,5 +1,7 @@
 import { parameterizedTypeName } from "./semantic-generic-inference.zs";
 import { aggregateFieldShape } from "./semantic-member-lookups.zs";
+import { transparentTypeName } from "./semantic-type-identities.zs";
+import { typeHasCleanup } from "./semantic-type-ownership.zs";
 import {
   arrayElementType,
   genericTypeShape,
@@ -109,6 +111,46 @@ export function iterationElementType(in name: String): String {
     none => {}
   }
   return arrayElementType(name);
+}
+
+// Stored collection elements keep their owner's storage. Iterators and
+// generators instead yield owned values; an immutable binding alone does not
+// make that yielded ARC identity read-only.
+export function iterationBindingIsBorrowed(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in iterableType: String,
+  in bindingType: String,
+  destructured: boolean
+): boolean {
+  if (stringStartsWith(iterableType, "readonly ")) {
+    const target = iterableType.copyBytes(9, iterableType.byteLength);
+    return iterationBindingIsBorrowed(modules, moduleIndex, target, bindingType, destructured);
+  }
+  if (stringStartsWith(iterableType, "view ")) {
+    const target = iterableType.copyBytes(5, iterableType.byteLength);
+    return iterationBindingIsBorrowed(modules, moduleIndex, target, bindingType, destructured);
+  }
+  const transparent = transparentTypeName(modules, moduleIndex, iterableType);
+  const collection = sourceCollectionTypeName(transparent);
+  if (collection != iterableType) {
+    return iterationBindingIsBorrowed(modules, moduleIndex, collection, bindingType, destructured);
+  }
+  match (genericTypeShape(collection)) {
+    some(generic) => {
+      if (generic.base == "Map" || generic.base == "Set") {
+        if (!destructured) return true;
+      } else if (generic.base != "Array" && generic.base != "Slice") {
+        return false;
+      }
+    }
+    none => {
+      const element = arrayElementType(collection);
+      if (element.byteLength == 0) return false;
+    }
+  }
+  const visiting = Array<String>();
+  return typeHasCleanup(modules, moduleIndex, bindingType, visiting);
 }
 
 export function iterationObjectFieldType(

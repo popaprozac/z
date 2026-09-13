@@ -12,9 +12,9 @@ function main(): i32 {
     console.log(`outer=${outer}`);
     const label = "nested";
     native.ZObjCBlockFixture.invoke(move (inner): void => {
-      state.value = inner;
+      state.value = outer + inner;
       console.log(`${label}=${state.value}`);
     });
   });
-  return state.value - 42;
+  return state.value - 84;
 }

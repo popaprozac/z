@@ -2227,6 +2227,69 @@ test("materializes user-defined generic traits and generic trait constraints", (
   assert.match(hover(source, "generic-trait.zs", traitOffset + 1)?.contents.value ?? "", /trait Source<T>/);
 });
 
+test("keeps ARC iteration bindings read-only through direct and nested receivers natively", () => {
+  const directory = mkdtempSync("/tmp/z-iteration-arc-borrows-");
+  const prefix = `
+    import { Map } from "std/collections";
+    class Document { value: i32; function close(inout this): void { this.value = 0; } }
+    class Child { readonly document: Document; }
+    struct Entry { child: Child; }
+  `;
+  const cases = [
+    `const items = Array<Document>(new Document({ value: 1 })); for (const item of items) { item.close(); }`,
+    `const items = [new Document({ value: 1 })]; for (const item of items) { item.close(); }`,
+    `const items = Array<Child>(new Child({ document: new Document({ value: 1 }) })); for (const item of items) { item.document.close(); }`,
+    `const items = Array<Entry>(Entry({ child: new Child({ document: new Document({ value: 1 }) }) })); for (const { child } of items) { child.document.close(); }`,
+    `let items = Map<String, Child>(); items.set("one", new Child({ document: new Document({ value: 1 }) })); for (const { value } of items) { value.document.close(); }`,
+    `const items = Array<Document>(new Document({ value: 1 })); const answer = for (const item of items) { item.close(); select 1; } else { select 0; };`,
+    `const items = Array<Entry>(Entry({ child: new Child({ document: new Document({ value: 1 }) }) })); const answer = for (const { child } of items) { child.document.close(); select 1; } else { select 0; };`,
+  ];
+  try {
+    for (const [index, body] of cases.entries()) {
+      const file = resolve(directory, `case-${index}.zs`);
+      const source = `${prefix} function main(): i32 { ${body} return 0; }`;
+      writeFileSync(file, source);
+      assert.match(diagnostics(source, file)[0]?.message ?? "", /immutable binding|read-only/);
+      // Execute native semantic authority directly, not the hybrid parity
+      // checker (which can reject from Stage 0 before native ownership runs).
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", file], {
+        encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024,
+      });
+      assert.equal(native.status, 1, `${index}: ${native.stderr}`);
+      assert.match(native.stderr, /immutable binding|read-only/, `${index}: ${native.stderr}`);
+    }
+    const sliceFile = resolve(directory, "slice.zs");
+    const sliceSource = `${prefix}
+      function inspect(items: Slice<Document>): void {
+        for (const item of items) { item.close(); }
+      }
+      function main(): i32 { const items = [new Document({ value: 1 })]; inspect(items); return 0; }`;
+    writeFileSync(sliceFile, sliceSource);
+    assert.match(diagnostics(sliceSource, sliceFile)[0]?.message ?? "", /immutable binding|read-only/);
+    const slice = spawnSync(process.execPath, [cli, "self-host-emit", sliceFile], {
+      encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024,
+    });
+    assert.equal(slice.status, 1, slice.stderr);
+    assert.match(slice.stderr, /immutable binding|read-only/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 180_000);
+
+test("preserves collection reads and owned generator ARC values in native semantics", () => {
+  const input = resolve(projectRoot, "tests/fixtures/iteration-arc-borrows.zs");
+  const source = readFileSync(input, "utf8");
+  assert.deepEqual(diagnostics(source, input), []);
+  // Native Slice/Generator emission is a separate tier. Exercise its semantic
+  // authority here without implying those runtime lowering gates were removed.
+  const resolved = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024,
+  });
+  assert.equal(resolved.status, 0, resolved.stderr || String(resolved.error));
+  const executed = spawnSync(process.execPath, [cli, "run", input], {
+    encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+  });
+  assert.equal(executed.status, 0, executed.stderr || String(executed.error));
+}, 240_000);
+
 test("keeps for-of iteration storage stable and owned elements borrowed", () => {
   const structuralMutation = `
     function main(): i32 {

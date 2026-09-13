@@ -72,6 +72,7 @@ int main(void) {
 }
 
 for (const [fixture, expected] of [
+  ["closure-parameter-captures.zs", "owned parameter\nupdated parameter\n42\nouter parameter\n"],
   ["weak-inline-receiver.zs", "released owner\n"],
   ["embedded-constant-inference.zs", ""],
   ["callback-shadowing.zs", ""],

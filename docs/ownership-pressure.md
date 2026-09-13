@@ -8778,9 +8778,60 @@ The probe also preserves three follow-ups rather than erasing the evidence:
    acceptance/rejection discrepancy in the parity work, rather than treating
    the native acceptance as proof of a more permissive ownership rule.
 
-The next narrow upstream checkpoint is nested callback-parameter capture and
-immutable iteration-path parity. The existing stored-async-block and aggregate
-alias-transfer boundaries remain separate work; none needs new surface syntax.
+The next narrow upstream checkpoint was nested callback-parameter capture and
+immutable iteration-path parity; the following checkpoint closes those two
+items. Stored-async-block and aggregate alias-transfer boundaries remain
+separate work; none needs new surface syntax.
+
+## 2026-09-13 — Callback parameter capture and iteration ownership parity
+
+The related-child probe's two immediate compiler follow-ups are closed without
+changing Z's capture or iteration rules. Native block-callable lowering now
+carries enclosing parameter types and capabilities across separate expression
+trees. The parameter's scope boundary prevents an earlier same-named local from
+overriding it; a nested callable's own parameters still shadow the outer ones.
+Expression-bodied callbacks preserve checked body/argument types as well, so
+mixing block and expression forms does not lose the enclosing parameter.
+
+`objc-nested-blocks.zs` now uses `outer + inner` inside its inner native callback,
+rather than avoiding the enclosing parameter. `closure-parameter-captures.zs`
+adds general Z pressure: a returned struct keeps a callback's owned String alive
+after its creator exits, an inner callback replaces borrowed `inout String`
+storage, different same-named parameter types remain distinct, and nested
+expression callbacks read or mutate the intended parameter. Both compilers run
+the closure fixture at `-O0`/`-O2` under UBSan and an allocation ledger that
+rejects leaks and double/foreign frees.
+
+That stronger ownership test found two adjacent cleanup errors:
+
+- A callback retained into a returned struct was also classified as moved by
+  the syntax cleanup index, skipping the local reference's release. Constructor
+  fields now use the same retained-identity distinction as ordinary returns.
+- Indirect callable calls lacked signature evidence for ownership lowering.
+  Passing an owned String could leave a second cleanup with the caller. Native
+  semantic evidence now retains the actual callable signature, including
+  callable fields, so argument transfer uses its checked parameter capabilities.
+
+Native collection iteration now marks ownership-bearing element bindings as
+immutable borrows, including nested ARC fields and destructured fields. Negative
+tests cover dynamic/fixed arrays, Slice, Map, and value-producing loop forms.
+Positive semantic parity covers read-only methods and independently retained
+ARC aliases, while generator yields remain owned values rather than collection
+loans. This does **not** expand native Slice/generator execution: their positive
+control is checked by the native resolver and executed by Stage 0, separately
+from the native lowering gates.
+
+The native compiler still bootstraps to byte-identical consecutive C generations.
+Validation includes 246 language/collection/closure tests, four focused native
+semantic-parity tests, the nested Objective-C block regression, and eight
+bounded Zapp WebKit-readiness/headless-registry runs across both compilers and
+`-O0`/`-O2`. Native executions use UBSan; closure ownership additionally uses
+the allocation ledger rather than relying on output alone.
+
+Zapp can return to production RelatedWindow creation and family teardown using
+these existing language semantics. Public creation remains gated until that
+integration is proven; the earlier stored-async-block and nested aggregate ARC
+exchange restrictions remain explicitly queued.
 
 ## Not tested yet
 

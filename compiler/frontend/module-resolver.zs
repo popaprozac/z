@@ -67,6 +67,7 @@ import {
   collectionMethodMutates,
   collectionMethodSignature,
   iterationElementType,
+  iterationBindingIsBorrowed,
   iterationObjectFieldType,
   numberLiteralType,
   sourceCollectionTypeName,
@@ -7158,7 +7159,11 @@ function inferExpressionNodeType(
     const patternChildren = copyIndices(tree.nodes[children[0]].children);
     for (const pattern of patternChildren) {
       if (tree.nodes[pattern].kind == ExpressionKind.matchBindingExpression) {
-        addValueBinding(inout bodyBindings, tree.nodes[pattern].value, elementType);
+        if (iterationBindingIsBorrowed(modules, moduleIndex, iterableType, elementType, false)) {
+          addBorrowedValueBinding(inout bodyBindings, tree.nodes[pattern].value, elementType, false);
+        } else {
+          addValueBinding(inout bodyBindings, tree.nodes[pattern].value, elementType);
+        }
       } else if (tree.nodes[pattern].kind == ExpressionKind.matchObjectFieldExpression) {
         const fieldType = iterationObjectFieldType(
           modules,
@@ -7168,11 +7173,11 @@ function inferExpressionNodeType(
         );
         const fieldChildren = copyIndices(tree.nodes[pattern].children);
         if (fieldChildren.length > 0) {
-          addValueBinding(
-            inout bodyBindings,
-            tree.nodes[fieldChildren[0]].value,
-            fieldType
-          );
+          if (iterationBindingIsBorrowed(modules, moduleIndex, iterableType, fieldType, true)) {
+            addBorrowedValueBinding(inout bodyBindings, tree.nodes[fieldChildren[0]].value, fieldType, false);
+          } else {
+            addValueBinding(inout bodyBindings, tree.nodes[fieldChildren[0]].value, fieldType);
+          }
         }
       }
     }
@@ -7696,6 +7701,10 @@ function inferExpressionNodeType(
           inout closureBindings,
           inout evidence
         );
+        // A bare captured parameter can be the whole expression body. Preserve
+        // its checked lexical type instead of asking lowering to guess by name
+        // across the enclosing block's separate expression tree.
+        recordExpressionResolution(modules, moduleIndex, tree, child, actual, inout evidence);
         if (returnType.byteLength == 0) {
           returnType = actual.copyBytes(0, actual.byteLength);
         } else {
@@ -8241,6 +8250,9 @@ function inferExpressionNodeType(
       );
       match (nativeFunctionSignature(callableLocalType)) {
         some(signature) => {
+          // Indirect calls have no module function target. Preserve their
+          // checked signature for owned argument transfer during lowering.
+          recordExpressionResolution(modules, moduleIndex, tree, calleeIndex, callableLocalType, inout evidence);
           const substitutions = Array<NativeValueBinding>();
           const arguments = callArgumentNodes(children);
           return try inferSignatureCallType(
@@ -10843,6 +10855,7 @@ function inferExpressionNodeType(
               );
               match (nativeFunctionSignature(callableFieldType)) {
                 some(signature) => {
+                  recordExpressionResolution(modules, moduleIndex, tree, calleeIndex, callableFieldType, inout evidence);
                   const substitutions = Array<NativeValueBinding>();
                   const argumentNodes = callArgumentNodes(children);
                   const callType = try inferSignatureCallType(
@@ -12632,7 +12645,11 @@ function inferStatement(
       none => {}
     }
     if (arena.nodes[index].name.byteLength > 0) {
-      addValueBinding(inout loopBindings, arena.nodes[index].name, elementType);
+      if (iterationBindingIsBorrowed(modules, moduleIndex, iterableType, elementType, false)) {
+        addBorrowedValueBinding(inout loopBindings, arena.nodes[index].name, elementType, false);
+      } else {
+        addValueBinding(inout loopBindings, arena.nodes[index].name, elementType);
+      }
       if (elementType.byteLength > 0) {
         const bindingName = arena.nodes[index].name.copyBytes(
           0,
@@ -12661,7 +12678,11 @@ function inferStatement(
         iterableType,
         binding.fieldName
       );
-      addValueBinding(inout loopBindings, binding.bindingName, fieldType);
+      if (iterationBindingIsBorrowed(modules, moduleIndex, iterableType, fieldType, true)) {
+        addBorrowedValueBinding(inout loopBindings, binding.bindingName, fieldType, false);
+      } else {
+        addValueBinding(inout loopBindings, binding.bindingName, fieldType);
+      }
       if (fieldType.byteLength > 0) {
         const bindingName = binding.bindingName.copyBytes(
           0,
