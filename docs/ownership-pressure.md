@@ -8613,6 +8613,43 @@ Broader family cancellation, origin policy, stale document rejection, and retain
 child Promises remain covered by Zapp's separate platform oracle, not yet by this
 narrower Z port.
 
+## 2026-09-13 — Related child lifetime with the production bridge
+
+Zapp's checked-Z WebKit probe now injects the real WebView bootstrap into its
+child and uses the real owner-side document-lifetime helper. It separates
+bridge startup from DOM readiness, validates native WebView/main-frame/source
+identity, completes a direct native request, and holds another request across
+native child closure. Z retires native routing and closes the window before
+notifying the owner. The owner observes the retained child Promise reject and
+queues early/late cleanup without acknowledging physical closure. Both emitters
+pass at `-O0`/`-O2` with UBSan. This remains a single-child HTTP fixture, not
+production family authority, renderer-loss handling, or real service cancellation.
+
+The exercise exposed three frontend consistency problems, now covered by focused
+regressions rather than hidden by different framework source:
+
+- Native analysis knew a direct `instanceof` true arm but not the proof after
+  `if (!(body instanceof native.NSString)) return;`. It now applies the same
+  boolean-path narrowing as null guards, including guaranteed short-circuit paths.
+- Negative controls caught Stage 0 retaining the first branch's class proof
+  after an `if` whose other branch also continued. Such a merge now preserves
+  the enclosing object type unless every continuing branch proves the same class.
+  Native analysis already conservatively retained the enclosing type there.
+- Native analysis could pass a class field initializer that Stage 0 rejects as
+  deferred. It now diagnoses class defaults explicitly, with and without a custom
+  constructor. Struct defaults remain supported; no new initialization feature
+  was introduced by this parity fix.
+
+The native regression harness receives raw Clang declarations, not Stage 0's
+semantic proof. Valid negated guards, compound guards, true conjunctions, and
+else-arm narrowing execute through both emitters under UBSan. False branches,
+non-guaranteeing disjunctions, and nonterminal checks reject unsafe String
+conversion. The language reference and website show the early-return idiom.
+
+`readonly` class fields in the fixture use mutable methods on their referenced
+state, not direct assignment through the readonly field path. That is the
+existing rule recorded above, not an attempt to broaden readonly semantics.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

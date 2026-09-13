@@ -98,6 +98,17 @@ if (body instanceof Foundation.NSString) {
 narrowed `NSString` to an explicit Z `String` makes an owned UTF-8 copy with its
 exact byte length.
 
+Early-return guards work too, in both compiler paths:
+
+```z
+if (!(body instanceof Foundation.NSString)) return;
+const text: String = body;
+route(move text);
+```
+
+The class proof must hold on every continuing path. Merely testing the class
+without exiting the unmatched path does not make later conversion safe.
+
 ### Naming an unknown native class
 
 Use `objc.Object` when a signature needs Objective-C's erased `id` reference:

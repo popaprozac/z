@@ -150,6 +150,15 @@ if (body instanceof Foundation.NSString) {
 The true branch narrows the binding. This is currently an Objective-C interop
 operation, not general runtime reflection over arbitrary Z types.
 
+A negated early-return guard carries that proof forward as well:
+
+```z
+if (!(body instanceof Foundation.NSString)) return;
+const text: String = body;
+```
+
+When both branches continue, only proofs shared by both remain valid afterward.
+
 :::note[Cost model]
 Ordinary branches and loops lower to native control flow. `match` lowers to tag
 selection. Value-producing forms do not allocate merely because they use

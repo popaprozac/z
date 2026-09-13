@@ -4143,7 +4143,7 @@ function inferExpressionNodeTypeExpected(
   return inferred;
 }
 
-function applyNullConditionNarrowing(
+function applyConditionNarrowing(
   in tree: ExpressionTree,
   index: usize,
   conditionIsTrue: boolean,
@@ -4156,7 +4156,7 @@ function applyNullConditionNarrowing(
     && node.value == "!"
     && children.length == 1
   ) {
-    applyNullConditionNarrowing(
+    applyConditionNarrowing(
       tree,
       children[0],
       !conditionIsTrue,
@@ -4169,18 +4169,31 @@ function applyNullConditionNarrowing(
     || children.length != 2
   ) return;
   if (node.value == "&&" && conditionIsTrue) {
-    applyNullConditionNarrowing(tree, children[0], true, inout bindings);
-    applyNullConditionNarrowing(tree, children[1], true, inout bindings);
+    applyConditionNarrowing(tree, children[0], true, inout bindings);
+    applyConditionNarrowing(tree, children[1], true, inout bindings);
     return;
   }
   if (node.value == "||" && !conditionIsTrue) {
-    applyNullConditionNarrowing(tree, children[0], false, inout bindings);
-    applyNullConditionNarrowing(tree, children[1], false, inout bindings);
+    applyConditionNarrowing(tree, children[0], false, inout bindings);
+    applyConditionNarrowing(tree, children[1], false, inout bindings);
+    return;
+  }
+  const left = children[0];
+  const right = children[1];
+  // Share the same boolean-path proof as null checks, including negated
+  // early-return guards and the guaranteed side of short-circuit expressions.
+  // The condition has already been type-checked; only named locals are refined.
+  if (node.value == "instanceof") {
+    if (conditionIsTrue && tree.nodes[left].kind == ExpressionKind.identifierExpression) {
+      const target = typeExpressionName(tree, right);
+      if (target.byteLength > 0) {
+        const name = identifierLookupName(tree.nodes[left].value);
+        setValueBindingType(inout bindings, name, target);
+      }
+    }
     return;
   }
   if (node.value != "==" && node.value != "!=") return;
-  const left = children[0];
-  const right = children[1];
   let bindingNode = tree.nodes.length;
   if (
     tree.nodes[left].kind == ExpressionKind.identifierExpression
@@ -6701,7 +6714,7 @@ function inferExpressionNodeType(
     if (value == "&&" || value == "||") {
       const beforeRight = copyValueBindings(bindings);
       let rightBindings = copyValueBindings(bindings);
-      applyNullConditionNarrowing(
+      applyConditionNarrowing(
         tree,
         children[0],
         value == "&&",
@@ -12512,39 +12525,18 @@ function inferStatement(
       some(condition) => match (in condition.tree) {
         some(tree) => {
           const root = tree.root;
-          applyNullConditionNarrowing(
+          applyConditionNarrowing(
             tree,
             root,
             true,
             inout thenBindings
           );
-          applyNullConditionNarrowing(
+          applyConditionNarrowing(
             tree,
             root,
             false,
             inout elseBindings
           );
-          if (
-            tree.nodes[root].kind == ExpressionKind.binaryExpression
-            && tree.nodes[root].children.length == 2
-            && tree.nodes[root].value == "instanceof"
-          ) {
-            const left = tree.nodes[root].children[0];
-            const right = tree.nodes[root].children[1];
-            if (tree.nodes[left].kind == ExpressionKind.identifierExpression) {
-              const targetName = typeExpressionName(tree, right);
-              if (targetName.byteLength > 0) {
-                const bindingName = identifierLookupName(
-                  tree.nodes[left].value
-                );
-                setValueBindingType(
-                  inout thenBindings,
-                  bindingName,
-                  targetName
-                );
-              }
-            }
-          }
         }
         none => {}
       }
@@ -12930,6 +12922,18 @@ function validateExpressionTypesAndLocals(
   moduleIndex: usize
 ): ModuleSemanticEvidence throws ModuleResolveError {
   let evidence = emptySemanticEvidence();
+  for (const aggregate of module.program.aggregates) {
+    if (aggregate.kind == DeclarationKind.classDeclaration) {
+      for (const field of aggregate.fields) {
+        match (in field.defaultValue) {
+          some(_) => throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+            "class field defaults are deferred until synthesized and custom constructor initialization share one cleanup-safe rule",
+            field.line, field.column);
+          none => {}
+        }
+      }
+    }
+  }
   for (const aggregate of module.program.aggregates) {
     match (in aggregate.nativeBase) {
       some(_) => {

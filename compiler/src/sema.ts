@@ -16563,6 +16563,11 @@ function mergeOwnershipStates(
       const nullable = objectTypes.some((object) => object!.nullable);
       const publicType = firstObject.typeName.replace(/^__z_objc:(?:nullable|nonnull):/, "");
       type = nullable ? `__z_objc:nullable:${publicType}` : firstObject.className ? publicType : objcObjectTypeName;
+    } else if (firstObject && objectTypes.every((object) => Boolean(object))) {
+      // A class proof from only one continuing branch is not a proof after
+      // the merge. Preserve the enclosing type rather than the first arm's
+      // narrower class (which could make an unchecked NSString conversion).
+      type = underlyingType(target.get(name)!);
     }
     const states = new Set(values.map(ownershipState));
     const initializationStates = new Set(values.map(initializationState));

@@ -2048,6 +2048,16 @@ if (body instanceof Foundation.NSString) {
 }
 ```
 
+Negated early-return guards preserve the same proof on the continuing path:
+
+```zs
+if (!(body instanceof Foundation.NSString)) return;
+const text: String = body;
+```
+
+The proof must hold on every continuing path. A check whose branches both
+continue does not by itself narrow the binding after the `if`.
+
 This first tier is intentionally not a general reflection operator: Z classes,
 Objective-C protocols, structural traits, and primitive type categories are not
 accepted by `instanceof` yet.
