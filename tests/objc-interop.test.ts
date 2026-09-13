@@ -2328,6 +2328,23 @@ test("generates safe Objective-C protocol adapters with protocol-aware editor sc
   assert.match(unsafeDiagnostic.message, /assign/);
 }, 15_000);
 
+test("constructs Objective-C adapters and registrations inside methods and native callbacks", () => {
+  if (process.platform !== "darwin") return;
+  const input = resolve(projectRoot, "tests/fixtures/objc-nested-registration.zs");
+  const artifact = compileToNative(readFileSync(input, "utf8"), input);
+  const compilation = spawnSync("clang", [
+    "-x", "objective-c", "-fobjc-arc", "-fblocks",
+    "-Wall", "-Wextra", "-Werror", "-I", resolve(projectRoot, "tests/fixtures"), "-fsyntax-only", "-",
+  ], { input: artifact.source, encoding: "utf8", timeout: 20_000 });
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const result = spawnSync(process.execPath, [cli, "run", input], {
+    encoding: "utf8", timeout: 30_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout,
+    "registered parent\nregistered child\nreceived 42\nunregistered child\nunregistered parent\n");
+}, 60_000);
+
 test("owns standalone Objective-C protocol adapters as storable ARC values", () => {
   if (process.platform !== "darwin") return;
   const fileName = resolve(projectRoot, "examples/interop/objc/protocol-adapter.zs");

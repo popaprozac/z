@@ -934,6 +934,25 @@ export function generateC(
     lines.push(generateFunctionAdapter(declaration, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
 
+  // Protocol callbacks and ordinary methods may construct another adapter or
+  // registration. Their native interfaces/helpers must precede every user
+  // body, while their forwarding implementations can use the Z prototypes
+  // above. Emitting them after class methods only worked for top-level callers.
+  for (const conformance of semanticInfo.objcProtocolConformances.values()) {
+    lines.push(generateObjCProtocolAdapter(
+      conformance,
+      structs,
+      enums,
+      semanticInfo.foreignNamedTypes,
+    ), "");
+  }
+  for (const [offset, plan] of semanticInfo.objcBindingCalls) {
+    lines.push(generateObjCBindingHelper(offset, plan, semanticInfo), "");
+  }
+  for (const [offset, plan] of semanticInfo.objcRegistrationCalls) {
+    lines.push(generateObjCRegistrationHelper(offset, plan, semanticInfo), "");
+  }
+
   for (const type of dynamicArrayTypes) {
     lines.push(generateDynamicArrayClear(type, structs, enums, semanticInfo), "");
   }
@@ -1012,20 +1031,6 @@ export function generateC(
   }
   for (const declaration of nativeSubclasses) {
     lines.push(generateObjCSubclass(semanticInfo.objcSubclasses.get(declaration.name)!, structs, enums, functions, semanticInfo, options.omitRawNativeBodies ?? false), "");
-  }
-  for (const conformance of semanticInfo.objcProtocolConformances.values()) {
-    lines.push(generateObjCProtocolAdapter(
-      conformance,
-      structs,
-      enums,
-      semanticInfo.foreignNamedTypes,
-    ), "");
-  }
-  for (const [offset, plan] of semanticInfo.objcBindingCalls) {
-    lines.push(generateObjCBindingHelper(offset, plan, semanticInfo), "");
-  }
-  for (const [offset, plan] of semanticInfo.objcRegistrationCalls) {
-    lines.push(generateObjCRegistrationHelper(offset, plan, semanticInfo), "");
   }
   for (const closure of closures.filter((candidate) => candidate.owned)) {
     lines.push(generateClosureEnvironmentLifecycle(closure, structs, enums, semanticInfo), "");

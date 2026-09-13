@@ -8538,6 +8538,61 @@ the Stage 0 importer supports the Objective-C `thread any` form. This does not
 affect these main-thread notifications, but native synchronous-block contract
 normalization needs its own regression before claiming parity for that shape.
 
+## Related-window delegate composition (2026-09-12)
+
+Consumer: Zapp's isolated `spikes/related-windows/checked-z` probe. A Z-owned
+`WKUIDelegate` returns a native child WebView using WebKit's supplied configuration,
+installs a separate content controller and `objc.Registration`, and retains a
+second delegate for the child's terminal DOM-close notification. The child's
+request and reply go directly through its own native endpoint, not owner JS.
+This is a loopback, one-child interop proof, not Zapp's public related-window API.
+
+The native emitter executes that composition. Stage 0 exposed a declaration-order
+gap: class methods and native callbacks could call `objc.register` or `objc.adapt`
+before the generated helper/interface existed. Adapter implementations and
+binding/registration helpers now follow the Z function/lifecycle prototypes but
+precede user bodies. `objc-nested-registration.zs` exercises an ordinary factory
+method and a native callback constructing another retained adapter/registration,
+including nested delivery and deterministic unregistration. No handwritten
+native shim or new syntax is needed.
+
+Two **unresolved native diagnostic-parity gaps** were separately reproduced while
+authoring the probe. These are not feature requests or permissions to relax the
+Stage 0 rules. Keep them ahead of public related-window integration:
+
+1. Unknown dynamic Array methods fall through native resolution. For example,
+   `this.values.append(1)` where `values: Array<i32>` is rejected by Stage 0
+   (the valid method is `push`), but standalone native `check` accepts it and
+   native emission leaves an invalid C member call. Require an unknown-member
+   diagnostic for both local and field receivers, with valid-method controls.
+2. Native assignment checks the leaf field but misses readonly intermediate
+   storage. This complete minimal shape is rejected by Stage 0 but accepted by
+   standalone native `check`:
+
+   ```zs
+   class State { count: i32; }
+   class Owner {
+     readonly state: State;
+     function update(inout this): void { this.state.count = 1; }
+   }
+   function main(): i32 {
+     let owner = new Owner({ state: new State({ count: 0 }) });
+     owner.update();
+     return 0;
+   }
+   ```
+
+   Mirror the existing readonly-path rule without rejecting permitted mutable
+   methods on the referenced state, or constructor initialization of the direct
+   readonly field. The valid probe uses the state's mutating methods.
+
+Both checks were re-run through `bun compiler/src/cli.ts check <input>` and
+`.z-cache/bootstrap/z check <input>`: Stage 0 exited 1, native exited 0. The actual
+interop probe is validated through both frontends; do not infer diagnostic parity
+from positive execution alone. Broader family cancellation, origin policy, stale
+document rejection, and retained child Promises remain covered by Zapp's separate
+platform oracle, not yet by this narrower Z port.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
