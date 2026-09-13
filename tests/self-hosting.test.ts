@@ -3552,6 +3552,122 @@ test("materializes populated Array temporaries for native call-scoped borrows", 
   }
 }, 240_000);
 
+test("rejects unknown dynamic Array methods in both semantic frontends", () => {
+  const directory = mkdtempSync("/tmp/z-native-array-methods-");
+  const input = resolve(directory, "main.zs");
+  const sources = [
+    `function main(): i32 {
+      let values = Array<i32>(); values.append(1); return 0;
+    }`,
+    `class Collection {
+      values: Array<i32>;
+      function add(inout this): void { this.values.append(1); }
+    }`,
+    `type Values = Array<i32>;
+    function add(inout values: Values): void { values.append(1); }`,
+    `import { Values } from "./model.zs";
+    function add(inout values: Values): void { values.append(1); }`,
+    `function inspect(in values: readonly Array<i32>): void { values.append(1); }`,
+    `struct Holder { values: Array<i32>; }
+    function inspect(in holder: Holder): void {
+      const observed = view holder.values; observed.append(1);
+    }`,
+  ];
+  try {
+    writeFileSync(resolve(directory, "model.zs"), "export type Values = Array<i32>;\n");
+    for (const source of sources) {
+      writeFileSync(input, source);
+      // Check native resolution directly: a Stage 0-first parity check could
+      // reject the input before exercising the missing native diagnostic.
+      for (const command of ["check", "self-host-resolve"]) {
+        const result = spawnSync(process.execPath, [cli, command, input], {
+          encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+        });
+        assert.equal(result.status, 1, `${command}\n${source}\n${result.stderr}`);
+        assert.match(result.stderr, /Array has no method "append"/);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 180_000);
+
+test("rejects readonly intermediate assignment paths in both semantic frontends", () => {
+  const directory = mkdtempSync("/tmp/z-native-readonly-paths-");
+  const input = resolve(directory, "main.zs");
+  const sources = [
+    `class State { count: i32; }
+    class Owner {
+      readonly state: State;
+      function update(inout this): void { this.state.count = 1; }
+    }`,
+    `struct State { count: i32; }
+    struct Owner { readonly state: State; }
+    function update(inout owner: Owner): void { owner.state.count = 1; }`,
+    `import { Owner } from "./model.zs";
+    function update(inout owner: Owner): void { owner.state.count = 1; }`,
+    `class State { count: i32; }
+    struct Middle { inner: State; }
+    struct Owner { readonly state: Middle; }
+    function update(inout owner: Owner): void { owner.state.inner.count = 1; }`,
+    `class State { count: i32; }
+    struct Owner<T> { readonly state: T; }
+    type Application = Owner<State>;
+    function update(inout owner: Application): void { owner.state.count = 1; }`,
+    `class State { count: i32; }
+    struct Owner { readonly state: Array<State>; }
+    function update(inout owner: Owner): void { owner.state[0].count = 1; }`,
+    `class State { count: i32; }
+    class Owner {
+      readonly state: State;
+      constructor(state: State) { this.state = state; this.state.count = 1; }
+    }`,
+  ];
+  try {
+    writeFileSync(resolve(directory, "model.zs"),
+      "export class State { count: i32; }\nexport struct Owner { readonly state: State; }\n");
+    for (const source of sources) {
+      writeFileSync(input, source);
+      for (const command of ["check", "self-host-resolve"]) {
+        const result = spawnSync(process.execPath, [cli, command, input], {
+          encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+        });
+        assert.equal(result.status, 1, `${command}\n${source}\n${result.stderr}`);
+        assert.match(result.stderr, /cannot assign to readonly field "state"/);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 180_000);
+
+hostToolchainTest("preserves valid Array methods and readonly reference operations natively", () => {
+  const input = resolve(projectRoot, "tests/fixtures/self-host-array-readonly-controls.zs");
+  const directory = mkdtempSync("/tmp/z-native-readonly-controls-");
+  try {
+    for (const command of ["check", "self-host-resolve"]) {
+      const result = spawnSync(process.execPath, [cli, command, input], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+      });
+      assert.equal(result.status, 0, result.stderr);
+    }
+    for (const command of ["emit", "self-host-emit"]) {
+      const emitted = spawnSync(process.execPath, [cli, command, input], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+      });
+      assert.equal(emitted.status, 0, emitted.stderr);
+      for (const optimization of ["-O0", "-O2"]) {
+        const executable = resolve(directory, "probe");
+        const compilation = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
+          optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+          encoding: "utf8", input: emitted.stdout, timeout: 30_000, killSignal: "SIGKILL",
+        });
+        assert.equal(compilation.status, 0, compilation.stderr);
+        const execution = spawnSync(executable, [], {
+          encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL",
+        });
+        assert.equal(execution.status, 0, execution.stderr || String(execution.signal));
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 180_000);
+
 test("clears dynamic Arrays through native semantic and emission parity", () => {
   const input = resolve(
     projectRoot,

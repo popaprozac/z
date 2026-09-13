@@ -504,7 +504,7 @@ export function recordObjCCallFacts(
   }
 }
 
-function expressionResolutionIndex(
+export function expressionResolutionIndex(
   in evidence: ModuleSemanticEvidence,
   offset: usize
 ): usize {

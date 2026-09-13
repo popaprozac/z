@@ -53,6 +53,7 @@ import {
 import {
   callableSymbolLocation,
   emptySemanticEvidence,
+  expressionResolutionIndex,
   foreignValueSymbolLocation,
   recordBindingResolution,
   recordExpressionResolution,
@@ -1056,6 +1057,48 @@ function copyIndices(in indices: Array<usize>): Array<usize> {
     copied.push(index);
   }
   return copied;
+}
+
+// The target has already been inferred, so each member/index receiver has
+// recorded type evidence. Walk the storage path without re-evaluating indices
+// or calls (which could duplicate ownership effects). The leaf's constructor
+// initialization exception is handled by the assignment checker separately.
+function requireWritableAssignmentAncestors(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize,
+  in evidence: ModuleSemanticEvidence
+): void throws ModuleResolveError {
+  let current = index;
+  while (
+    (tree.nodes[current].kind == ExpressionKind.memberExpression
+      && tree.nodes[current].children.length == 1)
+    || (tree.nodes[current].kind == ExpressionKind.indexExpression
+      && tree.nodes[current].children.length == 2)
+  ) {
+    const receiver = tree.nodes[current].children[0];
+    if (current != index && tree.nodes[current].kind == ExpressionKind.memberExpression) {
+      const storedIndex = expressionResolutionIndex(evidence, tree.nodes[receiver].offset);
+      if (storedIndex < evidence.expressionResolutions.length) {
+        const ownerType = view evidence.expressionResolutions[storedIndex].typeName;
+        match (aggregateFieldShape(modules, moduleIndex, ownerType, tree.nodes[current].value)) {
+          some(field) => {
+            if (field.readonlyField) throw resolutionError(
+              ModuleResolveErrorKind.unknownMember,
+              module.path,
+              `cannot assign to readonly field "${field.name}"`,
+              tree.nodes[index].line,
+              tree.nodes[index].column
+            );
+          }
+          none => {}
+        }
+      }
+    }
+    current = receiver;
+  }
 }
 
 function closureCaptureNames(
@@ -10227,6 +10270,9 @@ function inferExpressionNodeType(
           none => {}
         }
         const readonlyOwnerType = transparentTypeName(modules, moduleIndex, ownerType);
+        if (ownerType != readonlyOwnerType && collectionHasLength(readonlyOwnerType)) {
+          ownerType = readonlyOwnerType.copyBytes(0, readonlyOwnerType.byteLength);
+        }
         if (stringStartsWith(readonlyOwnerType, "readonly ")) {
           const mutableShape = readonlyOwnerType.copyBytes(9, readonlyOwnerType.byteLength);
           if (collectionHasLength(mutableShape)
@@ -10738,6 +10784,25 @@ function inferExpressionNodeType(
               );
             }
             return callType;
+          }
+          none => {}
+        }
+        // Intrinsic Arrays have a closed method surface. Do not let an unknown
+        // member fall through to ordinary callable-field or native C emission.
+        let arrayOwnerType = readonlyOwnerType.copyBytes(0, readonlyOwnerType.byteLength);
+        if (stringStartsWith(arrayOwnerType, "readonly ")) {
+          arrayOwnerType = arrayOwnerType.copyBytes(9, arrayOwnerType.byteLength);
+        }
+        const sourceArrayType = sourceCollectionTypeName(arrayOwnerType);
+        match (genericTypeShape(sourceArrayType)) {
+          some(array) => {
+            if (array.base == "Array" && array.arguments.length == 1) throw resolutionError(
+              ModuleResolveErrorKind.unknownMember,
+              module.path,
+              `Array has no method "${methodName}"`,
+              tree.nodes[calleeIndex].line,
+              tree.nodes[calleeIndex].column
+            );
           }
           none => {}
         }
@@ -11979,6 +12044,9 @@ function inferStatement(
                 none => {}
               }
             }
+            if (!assignmentObjectiveCProperty && tree.nodes[root].kind == ExpressionKind.memberExpression) try requireWritableAssignmentAncestors(
+              module, modules, moduleIndex, tree, root, evidence
+            );
           }
           none => {}
         }

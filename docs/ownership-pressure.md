@@ -8556,18 +8556,18 @@ method and a native callback constructing another retained adapter/registration,
 including nested delivery and deterministic unregistration. No handwritten
 native shim or new syntax is needed.
 
-Two **unresolved native diagnostic-parity gaps** were separately reproduced while
-authoring the probe. These are not feature requests or permissions to relax the
-Stage 0 rules. Keep them ahead of public related-window integration:
+Two native diagnostic-parity gaps were separately reproduced while authoring
+the probe and **closed before public related-window integration**. These fixes
+enforce existing Stage 0 rules; they do not add syntax or runtime machinery:
 
-1. Unknown dynamic Array methods fall through native resolution. For example,
-   `this.values.append(1)` where `values: Array<i32>` is rejected by Stage 0
-   (the valid method is `push`), but standalone native `check` accepts it and
-   native emission leaves an invalid C member call. Require an unknown-member
-   diagnostic for both local and field receivers, with valid-method controls.
-2. Native assignment checks the leaf field but misses readonly intermediate
-   storage. This complete minimal shape is rejected by Stage 0 but accepted by
-   standalone native `check`:
+1. Unknown dynamic Array methods previously fell through native resolution.
+   `this.values.append(1)` where `values: Array<i32>` now produces an
+   unknown-member diagnostic, as do local, aliased, readonly, and viewed Array
+   receivers. The valid method remains `push`. Transparent collection aliases
+   are normalized before signature and mutation checks, so valid aliased
+   `push`, `clear`, and `freeze` calls still use the real intrinsic operations.
+2. Native field assignment previously checked only the leaf field, missing
+   readonly intermediate storage. Both frontends now reject this shape:
 
    ```zs
    class State { count: i32; }
@@ -8582,16 +8582,36 @@ Stage 0 rules. Keep them ahead of public related-window integration:
    }
    ```
 
-   Mirror the existing readonly-path rule without rejecting permitted mutable
-   methods on the referenced state, or constructor initialization of the direct
-   readonly field. The valid probe uses the state's mutating methods.
+   The native checker walks member/index ancestors using recorded receiver type
+   evidence, without re-evaluating expressions or duplicating ownership effects.
+   Tests cover value structs, generic aliases, an indexed intermediate receiver,
+   and a constructor attempting a nested write after direct initialization.
+   Permitted mutable methods on the referenced state and initialization of the
+   direct readonly field remain valid. The interop probe uses those methods.
 
-Both checks were re-run through `bun compiler/src/cli.ts check <input>` and
-`.z-cache/bootstrap/z check <input>`: Stage 0 exited 1, native exited 0. The actual
-interop probe is validated through both frontends; do not infer diagnostic parity
-from positive execution alone. Broader family cancellation, origin policy, stale
-document rejection, and retained child Promises remain covered by Zapp's separate
-platform oracle, not yet by this narrower Z port.
+The regression tests invoke Stage 0 `check` and native `self-host-resolve`
+independently: a Stage 0-first parity command could mask the missing native
+diagnostic. `self-host-array-readonly-controls.zs` runs through both emitters at
+`-O0`/`-O2` with UBSan, covering valid methods, direct initialization, writable
+nested paths, and TextBuffer's unrelated valid `append` method. Do not infer
+diagnostic parity from positive execution alone.
+
+Validation: all 13 negative cases agree across the two frontends, the six focused
+tests and both broader executable/semantic parity corpus tests pass, and the
+standalone compiler reaches its bootstrap fixed point. The related-window Z
+probe still passes through both frontends at `-O0` and `-O2` with UBSan.
+
+An adjacent question is deliberately separate: Stage 0 currently accepts a
+direct indexed write such as `owner.values[0] = 1` through a readonly field of
+mutable Array type, while rejecting a member write through that same path.
+This checkpoint preserves the existing field-assignment rule, not a new deep
+readonly policy. Reconcile indexed-write/readonly-field semantics explicitly
+before broadening that rule; readonly collection types remain the explicit
+immutable collection surface.
+
+Broader family cancellation, origin policy, stale document rejection, and retained
+child Promises remain covered by Zapp's separate platform oracle, not yet by this
+narrower Z port.
 
 ## Not tested yet
 
