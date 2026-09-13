@@ -1,4 +1,5 @@
 import { emitReferenceIdentity, identityBorrowsStorage } from "./reference-identity-codegen.ts";
+import { programUsesTaskScopeRuntime } from "./async-runtime-usage.ts";
 import type {
   Expression,
   EnumDeclaration,
@@ -270,9 +271,7 @@ export function generateC(
   const usesForeignRuntimeEntry = semanticInfoUsesForeignRuntimeEntry(semanticInfo);
   const usesExecutorRuntimeSupport = usesExecutorBoundClasses || usesForeignRuntimeEntry || usesEmbeddedRuntime;
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
-  const usesTaskScope = semanticInfo.taskScopeConstructors.size > 0
-    || semanticInfo.taskScopeSpawnCalls.size > 0
-    || semanticInfo.taskScopeAsyncCalls.size > 0;
+  const usesTaskScope = programUsesTaskScopeRuntime(program, semanticInfo);
   const usesHasher = semanticInfo.hasherAddTypes.size > 0
     || [...semanticInfo.standardTypeBindings.values()].includes("Hasher")
     || [...mapTypes, ...setTypes].some((type) => {

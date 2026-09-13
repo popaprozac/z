@@ -1,4 +1,5 @@
 import { emitReferenceIdentity, identityBorrowsStorage } from "./reference-identity-codegen.ts";
+import { programUsesTaskScopeRuntime } from "./async-runtime-usage.ts";
 import type {
   CallExpression,
   Expression,
@@ -549,7 +550,9 @@ export function generateAsyncC(
     || plans.some((plan) => [...plan.spawns.values()].some((site) => site.nativeThread));
   return {
     synchronousProgram,
-    source: generateRuntime(plans, planByKey, main, taskScopeTargets, fileName),
+    source: generateRuntime(plans, planByKey, main, taskScopeTargets, fileName, semanticInfo,
+      programUsesTaskScopeRuntime(program, semanticInfo)
+        || plans.some((plan) => [...plan.locals.values()].includes("TaskScope"))),
     frameworks: usesMainPlacement && usesNativeThreads && process.platform === "darwin"
       ? ["CoreFoundation"]
       : [],
@@ -2875,22 +2878,16 @@ function generateRuntime(
   main: AsyncFunctionPlan | undefined,
   taskScopeTargets: ReadonlyMap<number, AsyncTarget>,
   fileName: string,
+  semanticInfo: SemanticInfo,
+  usesTaskScopes: boolean,
 ): string {
   const callableClosures = new Map(
-    [...(plans[0]?.types.semanticInfo.closures.values() ?? [])]
+    [...semanticInfo.closures.values()]
       .filter((closure) => closure.storable && Boolean(closure.declaration.async))
       .map((closure) => [closure.declaration.name, closure]),
   );
   const usesDelay = plans.some((plan) => [...plan.awaits.values()].some((site) => site.intrinsic === "delay"));
-  const usesTaskScopes = plans.some((plan) => (
-    [...plan.locals.values()].includes("TaskScope")
-    || plan.types.semanticInfo.taskScopeConstructors.size > 0
-    || plan.types.semanticInfo.taskScopeSpawnCalls.size > 0
-    || plan.types.semanticInfo.taskScopeAsyncCalls.size > 0
-  ));
-  const usesForeignRuntimeEntry = plans.some((plan) => (
-    semanticInfoUsesForeignRuntimeEntry(plan.types.semanticInfo)
-  ));
+  const usesForeignRuntimeEntry = semanticInfoUsesForeignRuntimeEntry(semanticInfo);
   const usesThreads = usesTaskScopes
     || usesForeignRuntimeEntry
     || plans.some((plan) => plan.foreign !== null)
@@ -3685,7 +3682,7 @@ function generateRuntime(
       "  return true;",
       "}",
       "",
-      "static Z_TaskScope *z_task_scope_new(Z_AsyncExecutor *executor) {",
+      "static __attribute__((unused)) Z_TaskScope *z_task_scope_new(Z_AsyncExecutor *executor) {",
       "  Z_TaskScope *scope = (Z_TaskScope *)calloc(1, sizeof(Z_TaskScope));",
       "  if (scope == NULL) abort();",
       "  scope->refcount = 1;",
@@ -3799,7 +3796,7 @@ function generateRuntime(
       "  return control;",
       "}",
       "",
-      "static bool z_task_scope_join(Z_TaskScope *scope, Z_AsyncTask *parent, bool cancel) {",
+      "static __attribute__((unused)) bool z_task_scope_join(Z_TaskScope *scope, Z_AsyncTask *parent, bool cancel) {",
       "  if (scope == NULL) return true;",
       "  z_async_thread_lock(scope->executor);",
       "  scope->closing = true;",

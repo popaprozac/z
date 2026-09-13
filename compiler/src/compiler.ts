@@ -28,6 +28,7 @@ import { linkSourceModules, type SourceModuleBatch, type SourceModuleInfo } from
 import { materializeWeakTypes } from "./weak-types.ts";
 import { materializeStructDefaults } from "./struct-defaults.ts";
 import { generateAsyncC } from "./async-codegen-c.ts";
+import { programUsesAsyncRuntime } from "./async-runtime-usage.ts";
 import { parseForeignDeclarationContracts } from "./foreign-declarations.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { Stage1ModuleGraph } from "./self-hosting.ts";
@@ -435,13 +436,9 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     validateLibraryStandardCalls(program, semanticInfo, projectBuild, fileName);
   }
   if (hasRawNativeBodies(program)) {
-    const asyncDeclaration = [
-      ...program.functions,
-      ...program.structs.flatMap((declaration) => declaration.methods),
-    ].find((declaration) => declaration.async);
     let asyncGenerated: ReturnType<typeof generateAsyncC> | null = null;
     let deferredRawSymbolValidation = false;
-    if (asyncDeclaration) {
+    if (programUsesAsyncRuntime(program, semanticInfo)) {
       try {
         asyncGenerated = generateAsyncC(program, fileName, semanticInfo);
       } catch (error) {
@@ -667,11 +664,8 @@ export function compileToNative(
     includeTests: false,
     projectBuild: options.projectBuild,
   });
-  const asyncDeclaration = [
-    ...program.functions,
-    ...program.structs.flatMap((declaration) => declaration.methods),
-  ].find((declaration) => declaration.async);
-  const generated = asyncDeclaration ? generateAsyncC(program, fileName, semanticInfo) : null;
+  const generated = programUsesAsyncRuntime(program, semanticInfo)
+    ? generateAsyncC(program, fileName, semanticInfo) : null;
   const synchronousProgram = generated?.synchronousProgram ?? program;
   const embeddedRuntimeName = projectBuild.targetKind === "executable"
     ? null
@@ -762,11 +756,7 @@ export function compileTestsToNative(
     ...program,
     functions: program.functions.filter((declaration) => declaration.name !== "main"),
   };
-  const asyncDeclaration = [
-    ...testProgram.functions,
-    ...testProgram.structs.flatMap((declaration) => declaration.methods),
-  ].find((declaration) => declaration.async);
-  const generated = asyncDeclaration
+  const generated = programUsesAsyncRuntime(testProgram, semanticInfo)
     ? generateAsyncC(testProgram, fileName, semanticInfo)
     : null;
   const synchronousProgram = generated?.synchronousProgram ?? testProgram;

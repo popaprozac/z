@@ -8694,6 +8694,45 @@ paths without declaring the Zapp dependency. Adding that dependency restored
 package provenance and let a public method call its own internal helper without
 relaxing `internal`. Keep package identity explicit in standalone consumer probes.
 
+## 2026-09-13 — Document-bound routing and synchronous task-handle ownership
+
+Zapp's macOS bridge now captures a native document identity before scheduling
+work and carries the exact document/request/generation ticket through completion.
+Committed navigation, renderer-termination notification, and native close retire
+that endpoint's requests. Reply evaluation also checks the token in the actual
+JS realm, since a script queued before navigation can execute after replacement.
+The Z registry and endpoint use existing ARC identity, private fields, `Option`,
+hashed collections, and main-executor isolation; no new language syntax was
+needed. Root bridge readiness is not a related child's stronger DOM-ready promise.
+
+A bounded WebKit probe uses production Z routing/endpoint code and the bundled
+bridge: two committed documents reuse request ID `1`; a deliberately stale
+reply of `99` is ignored and the new reply is `42`. Native and Stage 0 emission
+pass at `-O0`/`-O2` with UBSan. Real task cancellation is covered separately by
+the headless registry probe, not by the held WebKit fixture request. Full-family
+preflight, renderer-crash/BFCache integration, and related native creation remain
+Zapp work rather than implied guarantees of this test.
+
+The synchronous WebKit host exposed an upstream Stage 0 emission gap: a class
+containing `Option<TaskControl>` needs task-handle declarations and retain/release
+definitions even when the program has no async function or scope construction.
+Runtime inclusion had depended on construction/scheduling calls and an async
+declaration. A shared usage predicate now covers actual handle types in emitted
+storage, signatures, and semantic binding/expression types. Ordinary compilation,
+`z test`, and raw-symbol validation use the same runtime-presence decision.
+Focused tests compile and run empty `Option<TaskControl>`/`Option<TaskScope>`
+owners without introducing a dummy async function. Unused imports still emit no
+scheduler. Ownership support is a type requirement, not a reason for applications
+to manufacture unused asynchronous work.
+
+An independent parity boundary remains: the native stored-callable lowering path
+rejects an async block closure even where Stage 0 accepts it, while the existing
+expression-bodied async callback awaiting a named function works. The framework
+keeps that existing scheduling entrypoint for now; this does not fix or endorse
+the restriction as a language rule. Queue native block-callable suspension
+composition alongside the earlier mixed-delay/scope-join gaps, with positive and
+negative ownership tests before broadening the path.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

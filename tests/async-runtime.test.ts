@@ -69,6 +69,66 @@ test("allows synchronous programs to import unused async declarations", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("emits task handle ownership support without async declarations or scope construction", () => {
+  const directory = mkdtempSync("/tmp/z-sync-task-handles-");
+  const input = resolve(directory, "main.zs");
+  const source = `
+    import { TaskControl, TaskScope } from "std/async";
+    class Pending {
+      control: Option<TaskControl>;
+      updates: Option<TaskScope>;
+    }
+    function accepted(in control: TaskControl): boolean {
+      return control.accepted;
+    }
+    function main(): i32 {
+      const pending = new Pending({
+        control: Option<TaskControl>.none,
+        updates: Option<TaskScope>.none,
+      });
+      return 0;
+    }
+    test "empty task handle owners clean up" {
+      const pending = new Pending({
+        control: Option<TaskControl>.none,
+        updates: Option<TaskScope>.none,
+      });
+    }
+  `;
+  writeFileSync(input, source);
+  const generated = compileToC(source, input);
+  assert.match(generated, /typedef struct Z_TaskControl Z_TaskControl;/);
+  assert.match(generated, /struct Z_TaskControl \{/);
+  assert.match(generated, /static void z_task_control_release\(Z_TaskControl \*control\) \{/);
+  assert.match(generated, /static void z_task_scope_release\(Z_TaskScope \*scope\) \{/);
+  assert.doesNotMatch(generated, /struct Z_AsyncFrame_/);
+  const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const tested = spawnSync(process.execPath, [cli, "test", input], { encoding: "utf8" });
+  assert.equal(tested.status, 0, tested.stderr);
+});
+
+test("does not emit a scheduler for unused task handle imports", () => {
+  const generated = compileToC(`
+    import { TaskControl, TaskScope } from "std/async";
+    function main(): i32 { return 0; }
+  `, "unused-task-handles.zs");
+  assert.doesNotMatch(generated, /Z_TaskControl|Z_TaskScope|Z_AsyncExecutor/);
+});
+
+test("emits task handle support for callable aliases alongside raw native validation", () => {
+  const directory = mkdtempSync("/tmp/z-task-handle-alias-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, `
+    import { TaskControl as Control } from "std/async";
+    type Handler = (in control: Control) => boolean;
+    function zero(): i32 = raw c { return 0; }
+    function main(): i32 { return zero(); }
+  `);
+  const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("runs scalar async functions as stackless Phase 1 task frames", () => {
   const example = resolve(projectRoot, "examples/async/async-sequential.zs");
   const source = readFileSync(example, "utf8");
