@@ -2561,12 +2561,23 @@ test("dispatches through borrowed Objective-C protocol existential callback valu
     import WebKit from "WebKit/WebKit.h";
     import { thread } from "std/thread";
 
+    function finishTask(in task: WebKit.WKURLSchemeTask): void on thread.main {
+      task.didFinish();
+    }
+
+    function forwardTask(in task: WebKit.WKURLSchemeTask): void on thread.main {
+      finishTask(task);
+      finishTask(in task);
+    }
+
     class SchemeHandler on thread.main implements WebKit.WKURLSchemeHandler {
       function start(
         in webView: WebKit.WKWebView,
         in urlSchemeTask: WebKit.WKURLSchemeTask
       ): void as "webView:startURLSchemeTask:" {
         urlSchemeTask.didFinish();
+        forwardTask(urlSchemeTask);
+        forwardTask(in urlSchemeTask);
       }
 
       function stop(
@@ -2580,6 +2591,8 @@ test("dispatches through borrowed Objective-C protocol existential callback valu
   const artifact = compileToNative(source, fileName);
   assert.match(artifact.source, /- \(void\)webView:\(WKWebView \*\)webView startURLSchemeTask:\(id\)urlSchemeTask/);
   assert.match(artifact.source, /\[urlSchemeTask didFinish\]/);
+  assert.match(artifact.source, /forwardTask\(urlSchemeTask\)/);
+  assert.doesNotMatch(artifact.source, /(?:forwardTask|finishTask)\(&/);
 
   const compilation = spawnSync("clang", [
     "-x", "objective-c",

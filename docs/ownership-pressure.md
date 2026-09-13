@@ -8833,6 +8833,24 @@ these existing language semantics. Public creation remains gated until that
 integration is proven; the earlier stored-async-block and nested aggregate ARC
 exchange restrictions remain explicitly queued.
 
+## 2026-09-13 — Borrowed Objective-C protocol forwarding in the asset host
+
+Zapp's related-window shell now exercises the production asset-scheme handler
+through both Vite and packaged `zapp://app` delivery. This exposed a Stage 0
+ABI mismatch: `helper(task)` inferred an immutable borrow of `WKURLSchemeTask`,
+but emitted `helper(&(task))` even though the helper parameter is Objective-C
+`id`. The explicit `helper(in task)` form and native compiler already agreed
+on passing the object pointer directly.
+
+Call-argument emission now recognizes borrowed protocol existential identity
+in that inferred-borrow path as well. No ownership or syntax rule changed;
+the callback capability remains non-escaping. The regression covers both
+spellings through a callback and a second Z helper, checks strict ARC Clang
+compilation, and preserves the existing rejection of stored protocol values.
+Zapp's eight real-WebKit shell runs (native/Stage 0, `-O0`/`-O2`, Vite/packaged)
+pass with UBSan and bounded process-group cleanup. Public related-window
+creation and full-family teardown remain framework integration work.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
