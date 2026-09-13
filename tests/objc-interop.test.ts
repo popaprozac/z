@@ -2074,6 +2074,54 @@ hostToolchainTest("retains owned Z closure environments across Objective-C block
   );
 }, 30_000);
 
+hostToolchainTest("declares native block adapters before nested callable bodies in both compilers", () => {
+  if (process.platform !== "darwin") return;
+  const fixtures = resolve(projectRoot, "tests/fixtures");
+  const fixture = resolve(fixtures, "objc-nested-blocks.zs");
+  const source = readFileSync(fixture, "utf8");
+  const directory = mkdtempSync("/tmp/z-nested-objc-blocks-");
+  try {
+    const stage0 = compileToNative(source, fixture).source;
+    const emitter = resolve(directory, "emitter");
+    const emission = spawnSync(process.execPath, [cli, "self-host-emit",
+      resolve(fixtures, "self-host-objc-subclass-execution.zs")], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024,
+    });
+    assert.equal(emission.status, 0, emission.stderr);
+    const build = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", emitter], {
+      encoding: "utf8", input: emission.stdout, timeout: 60_000, killSignal: "SIGKILL",
+    });
+    assert.equal(build.status, 0, build.stderr);
+    const wire = resolve(directory, "native.zfdcl");
+    writeFileSync(wire, resolveForeignFunctionDeclarationStreams([{
+      kind: "import", moduleName: "native", bindings: null, header: "./objc-blocks.h",
+      location: { fileName: fixture, offset: 0, line: 1, column: 1 },
+    }], fixture, [fixtures]).get("native")!);
+    const contract = resolve(directory, "native.zd");
+    writeFileSync(contract, 'declare module "./objc-blocks.h" {}');
+    const native = spawnSync(emitter, [wire, fixture, "", contract], {
+      encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr);
+    for (const [label, text] of [["stage0", stage0], ["native", native.stdout]]) {
+      const file = resolve(directory, `${label}.m`);
+      writeFileSync(file, text);
+      for (const optimization of ["-O0", "-O2"]) {
+        const executable = resolve(directory, "probe");
+        const compiled = spawnSync("clang", ["-fobjc-arc", "-fblocks", optimization, "-Wall", "-Wextra", "-Werror",
+          "-fsanitize=undefined", "-fno-sanitize-recover=all", "-I", fixtures, "-framework", "Foundation", file, "-o", executable], {
+          encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+        });
+        assert.equal(compiled.status, 0, `${label} ${optimization}: ${compiled.stderr}`);
+        const run = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+        assert.equal(run.status, 0, `${label} ${optimization}: ${run.stderr}`);
+        assert.equal(run.stderr, "");
+        assert.equal(run.stdout, "outer=42\nnested=42\nreleased=42\n");
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 hostToolchainTest("round-trips nullable Objective-C block values and protocol callbacks", () => {
   if (process.platform !== "darwin") return;
   const fixture = resolve(projectRoot, "tests/fixtures/objc-block-native.zs");

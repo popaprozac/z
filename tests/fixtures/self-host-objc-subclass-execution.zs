@@ -39,6 +39,7 @@ function emit(in wirePath: String, in sourcePath: String, in companionPath: Stri
     for (const declaration of module.program.imports) {
       if (declaration.header != "./objc-subclass.h" && declaration.header != "./objc-object.h"
         && declaration.header != "./objc-instanceof.h"
+        && declaration.header != "./objc-blocks.h"
         && declaration.header != "AppKit/AppKit.h") continue;
       const declarations = try parseForeignContracts(copy contractSource, "objc-subclass.h.zd");
       const contracts = try normalizeForeignContracts(declarations, raw, declaration.header);

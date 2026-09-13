@@ -25931,12 +25931,14 @@ function emitLoweredC(
   try appendSetRuntime(inout output, program);
   appendAsyncCallableRuntime(inout output, program);
   appendTaskScopeRuntime(inout output, program);
+  // Callable bodies can pass another closure to a native Objective-C block
+  // parameter. Emit these adapters before every body that can reference them.
+  try appendObjCBlockArgumentHelpers(inout output, program);
   try appendThreadSpawnPrototypes(inout output, program);
   try appendTaskScopeScheduleHelpers(inout output, program);
   try appendAsyncMethodAwaitStartPrototypes(inout output, program);
   try appendYieldFrameHelpers(inout output, program);
   try appendCallableHelpers(inout output, program);
-  try appendObjCBlockArgumentHelpers(inout output, program);
   try appendAsyncCallableAwaitHelpers(inout output, program);
   try appendAsyncMethodAwaitHelpers(inout output, program);
   try appendPersistentAsyncParentHelpers(inout output, program);

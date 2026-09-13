@@ -8733,6 +8733,55 @@ the restriction as a language rule. Queue native block-callable suspension
 composition alongside the earlier mixed-delay/scope-join gaps, with positive and
 negative ownership tests before broadening the path.
 
+## 2026-09-13 — Related-child readiness and nested native callbacks
+
+Zapp's internal related endpoint now reserves a child under one exact ready
+owner, inherits its validated authority without an override parameter, and
+requires separate bridge and usable-document observations before routing.
+The real WebKit-created-child probe passes native and Stage 0 at `-O0`/`-O2`
+with UBSan. An unprepared child is refused; the accepted child's call from its
+HTML head waits for body presence and native activation, replies directly, and
+closes without retiring its owner. This does not yet prove the public factory,
+family teardown, initial `about:blank`, or renderer failure.
+
+Two composition bugs were fixed upstream without new syntax:
+
+- Stage 0 generic inference passed no function return context into `match`,
+  `if`, `unsafe`, and loop expressions. An early `return Option.none` could
+  therefore report `unknown name Option` inside an unrelated-value initializer.
+  Enclosing return and selected-value contexts now remain separate, including
+  resetting/restoring the return context across nested closures. Executable
+  tests cover each expression form and distinct inner/outer result types.
+- Native C emission placed Objective-C block adapters after callable bodies.
+  A native call inside a callback could reference its adapter before declaration.
+  Adapters now precede those bodies. A nested-block fixture passes both compilers
+  with strict Clang warnings, `-O0`/`-O2`, UBSan, retained String/class captures,
+  and one observed class deinitialization. The native compiler bootstraps to
+  byte-identical consecutive C generations after this change.
+
+The probe also preserves three follow-ups rather than erasing the evidence:
+
+1. `copy Option<ArcClass>` and whole-aggregate `replace` remain restricted by
+   nested ARC alias-transfer analysis. A one-shot endpoint reservation currently
+   retains the direct class payload with a borrowed match, then clears the Option;
+   this is safe ARC retention, not implemented aggregate exchange. Extend alias
+   evidence and negative exclusivity tests before lifting the `replace` guard.
+2. Native block-callable lowering still loses an enclosing callback parameter
+   captured by an inner block. Repro: in `tests/fixtures/objc-nested-blocks.zs`,
+   change `state.value = inner` to `state.value = outer + inner` (and expect 84).
+   Stage 0 handles the capture; native emits an undeclared `outer` instead of a
+   captured field. Close this or diagnose it before broader callback composition;
+   the adapter-order regression deliberately tests the separate fixed case.
+3. Stage 0 rejects mutation through `child.document` when `child` is an immutable
+   `for of` binding; native accepted the same fixture. The fixture now obtains
+   owned ARC endpoint aliases by indexing its mutable owner array. Keep this
+   acceptance/rejection discrepancy in the parity work, rather than treating
+   the native acceptance as proof of a more permissive ownership rule.
+
+The next narrow upstream checkpoint is nested callback-parameter capture and
+immutable iteration-path parity. The existing stored-async-block and aggregate
+alias-transfer boundaries remain separate work; none needs new surface syntax.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

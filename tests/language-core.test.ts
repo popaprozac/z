@@ -52,6 +52,59 @@ import {
   writeFileSync,
 } from "./support/bootstrap.ts";
 
+test("keeps enclosing return inference distinct from selected expression values", () => {
+  const directory = mkdtempSync("/tmp/z-nested-return-context-");
+  const expressions = [
+    `match (Option<i32>.some(42)) { some(value) => { if (!present) return Option.none; select value; } none => return Option.none; }`,
+    `if (present) { select 42; } else { return Option.none; }`,
+    `unsafe { if (!present) return Option.none; select 42; }`,
+    `while (present) { select 42; } else { return Option.none; }`,
+    `for (const value of values) { if (!present) return Option.none; select value; } else { return Option.none; }`,
+  ];
+  for (let index = 0; index < expressions.length; index++) {
+    const input = resolve(directory, `case-${index}.zs`);
+    const source = `
+      function choose(present: boolean): Option<String> {
+        const values = [42];
+        const selected: i32 = ${expressions[index]};
+        if (selected != 42) return Option.none;
+        return Option.some("selected");
+      }
+      function main(): i32 {
+        const absent = choose(false);
+        match (in absent) { none => {} some(_) => return 1; }
+        const present = choose(true);
+        return match (in present) { some(value) => value == "selected" ? 0 : 2; none => 3; };
+      }
+    `;
+    writeFileSync(input, source);
+    const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+    assert.equal(result.status, 0, `${index}: ${result.stderr}`);
+  }
+});
+
+test("nested closure return inference does not inherit the outer function's result", () => {
+  const directory = mkdtempSync("/tmp/z-closure-return-context-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, `
+    function outer(present: boolean): Option<String> {
+      const inner = (present: boolean): Option<i32> => {
+        const selected = if (present) { select 42; } else { return Option.none; };
+        return Option.some(selected);
+      };
+      const selected = match (inner(present)) { some(value) => value; none => return Option.none; };
+      return Option.some("answer");
+    }
+    function main(): i32 {
+      const absent = outer(false);
+      match (in absent) { none => {} some(_) => return 1; }
+      return match (outer(true)) { some(value) => value == "answer" ? 0 : 2; none => 3; };
+    }
+  `);
+  const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("restricts private struct initialization to its declaring aggregate", () => {
   const declaration = `struct Endpoint {
     private descriptor: i32;

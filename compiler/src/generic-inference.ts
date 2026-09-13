@@ -85,6 +85,12 @@ export function inferGenericCalls(
   >();
   let activeConstraints = new Map<string, string[]>();
   let activeTypeParameters = new Set<string>();
+  let enclosingReturnType: string | null = null;
+  const withReturnType = <T>(type: string | null, rewrite: () => T): T => {
+    const previous = enclosingReturnType;
+    enclosingReturnType = type;
+    try { return rewrite(); } finally { enclosingReturnType = previous; }
+  };
   let activeDeferredGenericMethodDemands: DeferredGenericMethodDemand[] | null = null;
   const closureReturns = new Map<string, string | null>();
   const objectFieldTypes = new Map<number, ReadonlyMap<string, string | null>>();
@@ -758,15 +764,17 @@ export function inferGenericCalls(
         for (const parameter of expression.parameters) {
           if (parameter.type) closureEnvironment.set(parameter.name, parameter.type.name);
         }
-        const rewrittenBody = expression.body.kind === "block"
+        const declaredReturn = expression.returnType?.name
+          ?? (expectedType ? parseFunctionType(expectedType)?.returnType : null) ?? null;
+        const rewrittenBody = withReturnType(declaredReturn, () => expression.body.kind === "block"
           ? {
-            expression: rewriteStatement(expression.body, closureEnvironment, expression.returnType?.name ?? null) as typeof expression.body,
+            expression: rewriteStatement(expression.body, closureEnvironment, declaredReturn) as typeof expression.body,
             type: null,
           }
-          : rewriteExpression(expression.body, closureEnvironment, expression.returnType?.name ?? null);
+          : rewriteExpression(expression.body, closureEnvironment, declaredReturn));
         const body = rewrittenBody.expression;
         const type = `__z_closure_${expression.location.offset}`;
-        const returnType = expression.returnType?.name ?? rewrittenBody.type;
+        const returnType = declaredReturn ?? rewrittenBody.type;
         closureReturns.set(type, returnType);
         return { expression: { ...expression, body }, type };
       }
@@ -1024,7 +1032,7 @@ export function inferGenericCalls(
           arm,
           environment,
           matched.type,
-          null,
+          enclosingReturnType,
           expectedType,
           attemptedSuccessType,
         ));
@@ -1043,12 +1051,12 @@ export function inferGenericCalls(
         const thenBranch = rewriteStatement(
           expression.thenBranch,
           new Map(environment),
-          null,
+          enclosingReturnType,
           expectedType,
         ) as typeof expression.thenBranch;
         const elseBranch = expression.elseBranch.kind === "ifExpression"
           ? rewriteExpression(expression.elseBranch, new Map(environment), expectedType).expression as typeof expression.elseBranch
-          : rewriteStatement(expression.elseBranch, new Map(environment), null, expectedType) as typeof expression.elseBranch;
+          : rewriteStatement(expression.elseBranch, new Map(environment), enclosingReturnType, expectedType) as typeof expression.elseBranch;
         return {
           expression: { ...expression, condition: condition.expression, thenBranch, elseBranch },
           type: armValueType([{
@@ -1063,7 +1071,7 @@ export function inferGenericCalls(
         const body = rewriteStatement(
           expression.body,
           new Map(environment),
-          null,
+          enclosingReturnType,
           expectedType,
         ) as typeof expression.body;
         return {
@@ -1081,13 +1089,13 @@ export function inferGenericCalls(
         const body = rewriteStatement(
           expression.body,
           new Map(environment),
-          null,
+          enclosingReturnType,
           expectedType,
         ) as typeof expression.body;
         const elseBranch = rewriteStatement(
           expression.elseBranch,
           new Map(environment),
-          null,
+          enclosingReturnType,
           expectedType,
         ) as typeof expression.elseBranch;
         return {
@@ -1122,11 +1130,11 @@ export function inferGenericCalls(
             if (field) bodyEnvironment.set(binding.bindingName, field.type.name);
           }
         }
-        const body = rewriteStatement(expression.body, bodyEnvironment, null, expectedType) as typeof expression.body;
+        const body = rewriteStatement(expression.body, bodyEnvironment, enclosingReturnType, expectedType) as typeof expression.body;
         const elseBranch = rewriteStatement(
           expression.elseBranch,
           new Map(environment),
-          null,
+          enclosingReturnType,
           expectedType,
         ) as typeof expression.elseBranch;
         return {
@@ -1857,7 +1865,7 @@ export function inferGenericCalls(
     for (const constraint of constraints) {
       activeConstraints.set(constraint.parameter, constraint.traits.map((trait) => trait.name));
     }
-    const body = rewriteStatements(statements, environment, returnType);
+    const body = withReturnType(returnType, () => rewriteStatements(statements, environment, returnType));
     activeConstraints = previousConstraints;
     activeTypeParameters = previousTypeParameters;
     return body;
