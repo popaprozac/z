@@ -8650,6 +8650,50 @@ conversion. The language reference and website show the early-return idiom.
 state, not direct assignment through the readonly field path. That is the
 existing rule recorded above, not an attempt to broaden readonly semantics.
 
+## 2026-09-13 — Document registries and real cancellation
+
+Zapp now has a framework-internal, main-executor document registry written in Z.
+It composes hashed maps, ARC record identity, immutable capability selections,
+`Option` owner links, and the existing per-document request tables. Retirement
+snapshots the affected subtree, removes every record, then requests cancellation
+through `TaskControl`; it does not run frontend cleanup or retain a cyclic
+owner/child ARC graph. Request tickets carry both document and request generations.
+
+The headless `native/z/tests/related-documents-smoke.zs` in Zapp passes native and
+Stage 0 emission at `-O0`/`-O2` with UBSan. It proves unchanged capability grants,
+preparing-child retirement, stale/reused window IDs, request-ID reuse, delayed
+control attachment, and cancellation of suspended tasks while owner and sibling
+tasks complete. This is bookkeeping evidence, not yet production WebKit origin,
+navigation, renderer-loss, close-veto, or routing integration.
+
+The exercise also exposed existing composition boundaries that remain open:
+
+- Native main-affine delay lowering requires literal durations in this path;
+  a parameterized `await delay(milliseconds)` passes Stage 0 checking but fails
+  independent native emission. Do not mistake the fixed-duration test for
+  general timer-argument parity.
+- A main-affine async function mixing a direct delay with `await scope.close()`
+  enters the delay-only lowering tier and rejects the close suspension. The
+  passing probe schedules a separate fixed-delay retirement operation and joins
+  the scope in the driver. General mixed-suspension composition remains upstream
+  work, not a new framework rule or recommended public API limitation.
+- Native delay frames reject direct mutation of a mutable class parameter
+  across suspension (`probe.start(); await delay(1000); probe.complete();`).
+  The probe uses the existing readonly ARC handle plus scoped `Mutex` observation
+  pattern. That instrumentation is not evidence that arbitrary mutable ARC
+  parameters now compose with this native frame tier.
+
+Taskification adds scheduling steps: FIFO submission alone did not prove that
+the user operation had reached its suspension before a later cancellation job.
+The final test waits a timer turn and checks actual start observations before
+retiring the subtree. It then verifies cancelled continuations do not execute.
+
+One apparent internal-visibility regression was configuration, not checker
+failure: a nested smoke manifest imported framework implementation by relative
+paths without declaring the Zapp dependency. Adding that dependency restored
+package provenance and let a public method call its own internal helper without
+relaxing `internal`. Keep package identity explicit in standalone consumer probes.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
