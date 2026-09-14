@@ -2610,6 +2610,7 @@ function generateObjCProtocolAdapter(
     const body = method.returnType.name === "void" ? `${call};\n  return;` : `return ${call};`;
     const setup = receivedBlocks.map((block) => block.declaration).join("\n  ");
     return `${declaration} {
+  __attribute__((objc_precise_lifetime, unused)) id const _z_protocol_entry_owner = self;
   ${setup}${setup ? "\n  " : ""}${body}
 }`;
   }).join("\n\n");

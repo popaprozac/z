@@ -559,6 +559,12 @@ an ARC class field. Its native representation is exactly
 controller, and normal ARC retains that adapter. Passing an adapter for a
 different protocol is a compile error.
 
+Generated protocol callbacks keep their adapter and Z receiver alive through
+return and local cleanup, even if the callback unregisters its last native
+owner. This adds a scoped native retain/release, not another heap allocation or
+executor hop. It does not permit calls through a stale native pointer after
+teardown.
+
 Optional adapter fields use ordinary Z `Option`:
 
 ```z

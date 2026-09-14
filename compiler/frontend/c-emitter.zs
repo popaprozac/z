@@ -24524,6 +24524,7 @@ function appendObjCProtocolAdapter(
       method.nativeParameterTypes
     );
     output.append(" {\n  ");
+    output.append("__attribute__((objc_precise_lifetime, unused)) id const _z_protocol_entry_owner = self;\n  ");
     appendAsyncNativeEntry(inout output, program);
     let argumentIndex: usize = 0;
     while (argumentIndex < methodParameters.length) {

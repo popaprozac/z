@@ -72,6 +72,7 @@ int main(void) {
 }
 
 for (const [fixture, expected] of [
+  ["weak-array-storage.zs", "released observed item\n"],
   ["parenthesized-conditional-arms.zs", ""],
   ["nested-owned-callback-assignment.zs", "token\nrealm\nclosed pending\n"],
   ["closure-parameter-captures.zs", "owned parameter\nupdated parameter\n42\nouter parameter\n"],

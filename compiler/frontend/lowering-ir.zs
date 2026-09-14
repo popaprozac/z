@@ -4316,6 +4316,17 @@ function lowerModuleTypeName(
       failure(_) => {}
     }
   }
+  // Collection element identities have already been lowered. Recover Weak<T>
+  // from that identity just as for the other intrinsic storage shapes. Exact
+  // source/imported declarations above still win over the generated spelling.
+  if (name.byteLength > 5 && name.copyBytes(name.byteLength - 5, name.byteLength) == "_weak") {
+    const targetName = name.copyBytes(0, name.byteLength - 5);
+    const target = try lowerModuleTypeName(program, importedTypes, targetName);
+    if (target.kind == LoweredTypeKind.classType) return LoweredType({
+      kind: LoweredTypeKind.weakType,
+      name: intrinsicWeakName(target),
+    });
+  }
   throw `native module lowering could not resolve type ${name} against ${program.aggregates.length} local aggregate(s), ${program.enums.length} local enum(s), and ${importedTypes.length} imported type(s)`;
 }
 

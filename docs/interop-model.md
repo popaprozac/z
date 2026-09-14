@@ -1103,6 +1103,13 @@ gap without guessing whether an arbitrary native API keeps its argument. The
 first tier is conservatively main-executor-bound and allocates one generated
 `NSObject` adapter, with no additional Z wrapper allocation.
 
+Each generated protocol entry keeps a scoped strong native reference to that
+adapter until the call returns, including local cleanup. A callback may therefore
+unregister its own last native owner without destroying the executing Z receiver.
+This is a native retain/release per entry, not another allocation or executor hop;
+it does not extend the registration beyond the call or make an unowned native
+pointer safe to invoke after teardown.
+
 Use `Option<objc.Adapter<P>>` when a stored adapter is optional. `Option.none`
 is inferred from its class field, and `Option.some(adapter)` preserves the
 protocol type. Borrow it with `match (in owner.adapter)` before passing the

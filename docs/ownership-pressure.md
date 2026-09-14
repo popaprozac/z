@@ -9110,6 +9110,45 @@ the rebuilt native compiler reaches a byte-identical 11,953,494-byte C fixed
 point. The public-factory integration remains Zapp work; this repair preserves
 ordinary expression composition instead of forcing that test into a workaround.
 
+## 2026-09-14 — Closed-window retention and reentrant protocol receivers
+
+Repeated public related-window creation and closure in Zapp found an explicit
+application-lifetime retention policy: after 4, 8, 12, and 16 children closed,
+all 4, 8, 12, and 16 Z runtime graphs remained alive. Routing had been revoked;
+the native retirement array deliberately kept the graph. Weak observations,
+rather than RSS alone, distinguish that ownership fact from allocator/WebKit
+cache behavior. Removing that policy requires a separate native-lifetime review.
+
+Building the probe exposed two upstream composition bugs. Native collection
+lowering could not recover the already-lowered `T_weak` identity when storing
+`Weak<T>` in an array. It now resolves the underlying nominal class and preserves
+weak ownership, with exact source/imported type names taking precedence. A
+cross-module fixture checks fresh weak insertion, indexed upgrade, iteration,
+owner destruction, and final cleanup through both compilers with the allocation
+ledger and UBSan.
+
+More importantly, generated Objective-C protocol entries borrowed their adapter's
+Z receiver without pinning the adapter. A callback that removed its last native
+owner could destroy that receiver before returning. A headless native fixture
+uses an explicitly non-owning call target, unregisters during both void and
+value-returning callbacks, and checks destructor counts before any subsequent
+receiver access. It failed deterministically before the fix. Both emitters now
+give protocol entries a precise-lifetime strong native receiver, as native
+subclass entries already do. The cost is a scoped retain/release per callback,
+not another allocation, new syntax, or application-lifetime retention.
+
+These compiler repairs are prerequisites, not evidence that every AppKit/WebKit
+graph can already be released immediately. The framework's existing retirement
+hold remains unchanged pending explicit review and native teardown stress.
+
+Validation: 72 closure/adapter lifetime tests and 10 additional Objective-C
+protocol/registration tests pass. The rebuilt compiler reaches a byte-identical
+11,955,404-byte C fixed point. Zapp's eight native/Stage 0 × `-O0`/`-O2` ×
+Vite/packaged churn runs reproduce the same linear retention with strict warnings
+and UBSan, including separate weak observations of 16 native windows and 16
+WebViews after each run's 16 accepted closes. This is a retention baseline, not
+a successful zero-retention test or a process-memory benchmark.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
