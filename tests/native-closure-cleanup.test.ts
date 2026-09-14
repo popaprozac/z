@@ -75,6 +75,7 @@ for (const [fixture, expected] of [
   ["nested-owned-callback-assignment.zs", "token\nrealm\nclosed pending\n"],
   ["closure-parameter-captures.zs", "owned parameter\nupdated parameter\n42\nouter parameter\n"],
   ["weak-inline-receiver.zs", "released owner\n"],
+  ["weak-temporary-transfer.zs", "released item\n"],
   ["embedded-constant-inference.zs", ""],
   ["callback-shadowing.zs", ""],
   ["match-assignment.zs", "value\nindex\nindex arm\nold local\nfailed arm\nfailed arm\nrejected\nold field\nnew local\nnew field\n"],

@@ -9071,6 +9071,28 @@ temporary constructor expression in generated C. Binding that test's filenames
 to a local array works, but direct temporary-array iteration remains queued for
 an upstream lowering fix. This does not affect the production callback repair.
 
+## 2026-09-14 — Fresh weak handles passed to owning parameters
+
+The full related-window registry exposed a native lowering bug during family
+teardown: `backend(weak registry)` transferred a new weak handle to an owning
+parameter, but also scheduled caller cleanup as if that parameter borrowed it.
+The duplicate release could free the weak control while its strong owner still
+existed. WebKit sometimes reported the damage later during process shutdown;
+a bounded Guard Malloc run located the first invalid weak-control access.
+
+Native lowering now gives fresh weak arguments caller-owned temporary storage
+only for `in` parameters. Ordinary value parameters own their cleanup, as they
+already do in Stage 0. The broader allocation checks caught the complementary
+bug: source-level cleanup treated named weak arguments/returns as implicit moves
+even though lowering retained them. Cleanup now recognizes their shared control
+identity, preserving the source release on straight-line paths as well as
+branches. No new ownership rule or framework workaround is needed.
+The headless regression checks direct/nested calls, condition expressions,
+returned handles, retained closure captures, named owned arguments, and named
+borrows under both frontends at `-O0`/`-O2` with UBSan. A weak-count invariant
+catches premature release deterministically before freed storage is accessed;
+the closure-cleanup allocation ledger also checks for leaks and double frees.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -5736,6 +5736,12 @@ function treeIsRetainedReference(
   // return. Treating that retain as a move drops the local's release on a
   // straight-line path (a live guard merely hid the leak in branching bodies).
   if (stringStartsWith(typeName, "Function_")) return true;
+  // Weak handles also retain shared control identity. Returning/passing a
+  // named handle keeps the source owner alive; it is not an implicit move.
+  match (genericTypeShape(typeName)) {
+    some(generic) => if (generic.base == "Weak" && generic.arguments.length == 1) return true;
+    none => {}
+  }
   match (nativeFunctionSignature(typeName)) {
     some(_) => return true;
     none => {}
@@ -16950,10 +16956,12 @@ function lowerExpressionContextual(
           temporaryType, temporaryChildren, Array<String>()
         );
       }
-      if (output[value].kind == LoweredExpressionKind.weakValue) {
-        // Weak parameters borrow their reference-counted handle. A freshly
-        // formed weak value therefore needs a call-local owner, just like an
-        // owned closure passed to an `in` parameter.
+      if (output[value].kind == LoweredExpressionKind.weakValue
+        && parameterModes.length >= argument
+        && parameterModes[argument - 1] == "in") {
+        // Only a borrowed parameter leaves a fresh handle owned by the caller.
+        // A value parameter takes ownership and performs its own cleanup;
+        // releasing it here as well can free the strong owner's weak control.
         value = pushExpression(
           inout output, LoweredExpressionKind.borrowedTemporary, "Weak",
           Array<usize>(value), Array<String>()
