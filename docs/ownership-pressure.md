@@ -8851,6 +8851,39 @@ Zapp's eight real-WebKit shell runs (native/Stage 0, `-O0`/`-O2`, Vite/packaged)
 pass with UBSan and bounded process-group cleanup. Public related-window
 creation and full-family teardown remain framework integration work.
 
+## 2026-09-13 — Failed native creation: deinit and capture retention
+
+Zapp's RelatedWindow creation guard owns an internal reservation and a rollback
+closure until the child is ready. A real WebKit fixture allocates a view,
+window, and registered Z message handler, deliberately fails creation, and
+requires that handler to be released before accepting a retry. Routing becomes
+terminal before potentially reentrant native cleanup runs. The retry gets a
+fresh document identity and completes normal bridge/shell readiness.
+
+This found two Stage 0 gaps, fixed upstream without new source syntax:
+
+- Synthetic `deinit` analysis used an immutable receiver and rejected a nested
+  class's synchronous cleanup method. Destruction now has a borrowed exclusive
+  receiver; ordinary immutable methods remain restricted.
+- An owned closure's capture location points to its first body use. When that
+  use passes an owned class argument, codegen applied the body's managed-copy
+  retain while storing the capture, then retained again explicitly. One release
+  could not balance two retains, keeping the failed native callback graph live.
+  Capture emission now excludes the body-use managed copy from that synthetic
+  read while preserving the retain at the real call inside the callback.
+
+The regression calls the closure twice and verifies one final class destructor,
+not just correct call output. The Zapp headless guard checks one-shot claims,
+wrong/stale owners, readiness, duplicate/late attachment, expiry, owner loss,
+reentrant cleanup, and terminal shutdown. Four real HTTP WebKit runs and eight
+Vite/packaged runs pass across native/Stage 0 and `-O0`/`-O2` with UBSan and
+process-group deadlines. Failed callback release is observed before retry;
+this is not a general Objective-C autorelease or allocator-leak measurement.
+
+Production owns the guard, but automatic platform deadline scheduling, complete
+native creation wiring, family close preflight, and unsolicited document-bound
+delivery remain framework integration work. The public factory stays gated.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

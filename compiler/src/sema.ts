@@ -2546,7 +2546,9 @@ function validateExecutorAffinity(
 function deinitializerFunction(owner: StructDeclaration): FunctionDeclaration {
   const declaration = owner.deinitializer!;
   return {
-    kind: "function", name: "deinit", receiverMode: null, parameters: [],
+    // Destruction has exclusive access to initialized receiver storage. Keep
+    // this borrowed (not consuming), but permit synchronous cleanup methods.
+    kind: "function", name: "deinit", receiverMode: "inout", parameters: [],
     returnType: { name: "void", location: declaration.location }, errorType: null,
     threadContract: declaration.threadContract,
     body: declaration.body, location: declaration.location,

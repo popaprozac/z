@@ -1884,6 +1884,72 @@ test("rejects discarding cleanup-bearing return values", () => {
   );
 });
 
+test("retains an owned closure capture once when its first body use passes ownership", () => {
+  const directory = mkdtempSync("/tmp/z-capture-owned-use-");
+  const input = resolve(directory, "main.zs");
+  const source = `
+    import console from "std/console";
+    class Resource {
+      value: i32;
+      deinit { console.log(this.value); }
+    }
+    function observe(resource: Resource): void { console.log(resource.value + 1); }
+    function make(): () => void {
+      const resource = new Resource({ value: 41 });
+      const callback: () => void = move (): void => observe(resource);
+      return callback;
+    }
+    function run(): void {
+      const callback = make();
+      callback();
+      callback();
+    }
+    function main(): i32 { run(); console.log("done"); return 0; }
+  `;
+  const generated = compileToC(source, input);
+  assert.doesNotMatch(generated, /Z_Resource_retain\(Z_Resource_retain\(/);
+  assert.match(generated, /observe\(Z_Resource_retain\(resource\)\)/);
+  writeFileSync(input, source);
+  const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "42\n42\n41\ndone\n");
+});
+
+test("permits synchronous mutable cleanup through deinit's exclusive receiver", () => {
+  const directory = mkdtempSync("/tmp/z-deinit-mutable-cleanup-");
+  const input = resolve(directory, "main.zs");
+  const source = `
+    import console from "std/console";
+    class Document {
+      closed: boolean;
+      constructor() { this.closed = false; }
+      function close(inout this): void { this.closed = true; }
+    }
+    class Reservation {
+      readonly document: Document;
+      deinit { this.document.close(); }
+    }
+    function release(document: Document): void {
+      const reservation = new Reservation({ document });
+    }
+    function main(): i32 {
+      const document = new Document();
+      release(document);
+      console.log(document.closed);
+      return document.closed ? 0 : 1;
+    }
+  `;
+  writeFileSync(input, source);
+  const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "true\n");
+  // Ordinary immutable receiver methods must not acquire destruction rights.
+  assert.throws(() => compileToC(source.replace(
+    "deinit { this.document.close(); }",
+    "function invalid(): void { this.document.close(); }",
+  ), input), /mutable method "close" cannot be called through immutable binding "this"/);
+});
+
 test("keeps deinit synchronous and free of explicit control-flow exits", () => {
   const source = `
     struct Resource {

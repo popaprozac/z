@@ -59,6 +59,50 @@ import { selfHostExecutableDifferentialCorpus } from "./support/self-host-fixtur
 import { createHash } from "node:crypto";
 import { exerciseGeneratedAdapterLinking } from "./support/generated-adapter-linking.ts";
 
+hostToolchainTest("releases captured class arguments and mutable deinit cleanup natively", () => {
+  const directory = mkdtempSync("/tmp/z-native-capture-cleanup-");
+  try {
+    const input = resolve(directory, "main.zs");
+    writeFileSync(input, `
+      import console from "std/console";
+      class Document {
+        closed: boolean;
+        constructor() { this.closed = false; }
+        function close(inout this): void { this.closed = true; }
+        deinit { if (this.closed) { console.log("closed"); } else { console.log("open"); } }
+      }
+      class Reservation {
+        readonly document: Document;
+        deinit { this.document.close(); }
+      }
+      function observe(reservation: Reservation): void { console.log("observed"); }
+      function make(): () => void {
+        const reservation = new Reservation({ document: new Document() });
+        const callback: () => void = move (): void => observe(reservation);
+        return callback;
+      }
+      function run(): void { const callback = make(); callback(); callback(); }
+      function main(): i32 { run(); console.log("done"); return 0; }
+    `);
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(emitted.status, 0, emitted.stderr);
+    const source = resolve(directory, "main.c");
+    writeFileSync(source, emitted.stdout);
+    for (const optimization of ["-O0", "-O2"]) {
+      const binary = resolve(directory, `probe${optimization}`);
+      const compiled = spawnSync("clang", [source, optimization, "-std=c11", "-Wall", "-Wextra", "-Werror",
+        "-fsanitize=undefined", "-fno-sanitize-recover=all", "-o", binary], { encoding: "utf8", timeout: 30_000 });
+      assert.equal(compiled.status, 0, compiled.stderr);
+      const result = spawnSync(binary, [], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stderr, "");
+      assert.equal(result.stdout, "observed\nobserved\nclosed\ndone\n");
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 180_000);
+
 hostToolchainTest("transfers only the selected owned conditional arm", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/native-conditional-owned.zs");
   const directory = mkdtempSync("/tmp/z-owned-conditional-");

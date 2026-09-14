@@ -8894,12 +8894,23 @@ function generateOwnedClosureCaptureValue(
   scopedOneShot = false,
 ): string {
   const captured: Expression = { kind: "identifier", name: capture.name, location: capture.location };
-  const captureContext = scopedOneShot ? {
+  const bodyUseCopies = context.semanticInfo.managedCopies.has(capture.location.offset);
+  const captureContext = scopedOneShot || bodyUseCopies ? {
     ...context,
     semanticInfo: {
       ...context.semanticInfo,
-      movedExpressions: new Set([...context.semanticInfo.movedExpressions]
-        .filter((offset) => offset !== capture.location.offset)),
+      // A capture's location is its first body use, not a distinct expression.
+      // That use may pass an owned argument and legitimately retain inside the
+      // callback. Capture storage retains explicitly below; do not apply the
+      // body-use copy here as well (leaking one reference per environment).
+      managedCopies: bodyUseCopies
+        ? new Set([...context.semanticInfo.managedCopies]
+          .filter((offset) => offset !== capture.location.offset))
+        : context.semanticInfo.managedCopies,
+      movedExpressions: scopedOneShot
+        ? new Set([...context.semanticInfo.movedExpressions]
+          .filter((offset) => offset !== capture.location.offset))
+        : context.semanticInfo.movedExpressions,
     },
   } : context;
   let value = generateExpression(captured, captureContext);
