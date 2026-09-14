@@ -9137,9 +9137,10 @@ give protocol entries a precise-lifetime strong native receiver, as native
 subclass entries already do. The cost is a scoped retain/release per callback,
 not another allocation, new syntax, or application-lifetime retention.
 
-These compiler repairs are prerequisites, not evidence that every AppKit/WebKit
-graph can already be released immediately. The framework's existing retirement
-hold remains unchanged pending explicit review and native teardown stress.
+These compiler repairs were prerequisites, not evidence that every AppKit/WebKit
+graph could immediately be released. At this baseline the framework's retirement
+hold was unchanged pending explicit review and native teardown stress; the
+subsequent approved related-window work is recorded below.
 
 Validation: 72 closure/adapter lifetime tests and 10 additional Objective-C
 protocol/registration tests pass. The rebuilt compiler reaches a byte-identical
@@ -9181,6 +9182,36 @@ Stage 0 accepts it, while native semantic analysis reports `expected String,
 found i32`. The lifetime fixture verifies that result through its exit code;
 the console-expression gap is recorded for a focused follow-up, not silently
 claimed fixed here.
+
+The approved framework follow-up now passes 56 native/Stage 0 × `-O0`/`-O2` ×
+Vite/packaged factory/lifetime executions. After each batch of 4, 8, 12, and 16
+accepted child closes, weak Z runtime counts are zero. Eight controlled churn
+runs also observe zero native windows/WebViews, with AppKit ordering animations
+disabled only in the test workspace. Eight animated churn runs retain normal
+presentation and likewise require zero Z runtimes; native animation-owned objects
+remain observational. A native reference trace found an AppKit
+`_NSWindowTransformAnimation._animatingWindow` strong root after framework
+ownership ended. Turning off animation only in the diagnostic binary removed
+that retention; snapshot pool scoping, event draining, and a longer wait alone
+did not. Thus framework ownership and native presentation lifetime need separate
+claims, not an RSS-based assertion or a hidden production animation change.
+
+The related runtime explicitly clears non-owning delegate slots before releasing
+its adapters, registration, and presentation observers. Ordinary independent
+windows still have their original retirement hold and require a separate review.
+The detailed passing and failing traces live in Zapp's
+`spikes/related-windows/results/2026-09-14/reclamation-*.json` records.
+
+Immediate generated-code follow-up: the related-window title assignment
+`window.title = move title` emits `z_stage1_nsstring_from_string(title)`, but the
+native helper copies the bytes into an NSString without destroying the incoming
+Z String, and the successful caller path emits no `Z_String_deinit(&title)`.
+The same helper also accepts borrowed/literal expressions, so unconditionally
+freeing its argument would be wrong. Isolate owned moves, temporary copies, and
+borrows in a Foundation-only allocation-ledger regression before changing the
+conversion/cleanup lowering. This observation is not yet a standalone runtime
+reproduction or a fix; zero weak window/runtime counts do not measure these
+String buffers. Close this upstream before claiming allocation-stable churn.
 
 ## Not tested yet
 
