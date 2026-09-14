@@ -1658,12 +1658,89 @@ function validateNativeThreadCaptureExpression(
   }
 }
 
+function timerSegmentExpressionCanComplete(
+  in arena: StatementArena, in tree: ExpressionTree, index: usize
+): boolean {
+  const node = view tree.nodes[index];
+  // A nested closure returns to its own function, not the timer frame.
+  if (node.kind == ExpressionKind.closureExpression) return false;
+  if (node.kind == ExpressionKind.tryExpression) return true;
+  for (const child of node.children) {
+    if (timerSegmentExpressionCanComplete(arena, tree, child)) return true;
+  }
+  for (const statement of node.statements) {
+    if (timerSegmentStatementCanComplete(arena, statement)) return true;
+  }
+  return false;
+}
+
+function timerSegmentStatementCanComplete(in arena: StatementArena, index: usize): boolean {
+  const statement = view arena.nodes[index];
+  if (statement.kind == StatementKind.returnStatement
+    || statement.kind == StatementKind.throwStatement) return true;
+  match (in statement.expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (timerSegmentExpressionCanComplete(arena, tree, root)) return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  for (const child of statement.children) {
+    if (timerSegmentStatementCanComplete(arena, child)) return true;
+  }
+  return false;
+}
+
+function statementIsDirectTimer(
+  in program: Program, in arena: StatementArena, index: usize
+): boolean {
+  if (arena.nodes[index].kind != StatementKind.expressionStatement) return false;
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (tree.nodes[root].kind != ExpressionKind.awaitExpression
+          || tree.nodes[root].children.length != 1) return false;
+        const call = tree.nodes[root].children[0];
+        if (tree.nodes[call].kind != ExpressionKind.callExpression
+          || tree.nodes[call].children.length != 2) return false;
+        const callee = tree.nodes[call].children[0];
+        return tree.nodes[callee].kind == ExpressionKind.identifierExpression
+          && importedStandardBinding(program, "std/time", "delay", tree.nodes[callee].value);
+      }
+      none => {}
+    }
+    none => {}
+  }
+  return false;
+}
+
+function linearTimerNeedsCompletionForwarding(
+  in program: Program, in declaration: FunctionDeclaration
+): boolean {
+  // Structured suspending branches/loops have their own completion protocol.
+  for (const root of declaration.body.roots) {
+    if (declaration.body.nodes[root].kind != StatementKind.expressionStatement
+      && statementContainsSuspension(declaration.body, root)) return false;
+  }
+  let canComplete = false;
+  for (const root of declaration.body.roots) {
+    if (statementIsDirectTimer(program, declaration.body, root) && canComplete) return true;
+    if (timerSegmentStatementCanComplete(declaration.body, root)) canComplete = true;
+  }
+  return false;
+}
+
 function placedCallTargetSuspends(
   in modules: Array<ParsedModule>,
   in graph: ModuleGraph,
   moduleIndex: usize,
   in tree: ExpressionTree,
-  callIndex: usize
+  callIndex: usize,
+  requireUnforwardedCompletion: boolean
 ): boolean {
   if (moduleIndex >= graph.modules.length) return false;
   for (const resolution of graph.modules[moduleIndex].semanticEvidence.callResolutions) {
@@ -1697,6 +1774,9 @@ function placedCallTargetSuspends(
     }
     for (const declaration of modules[targetModule].program.functions) {
       if (declaration.name == targetName) {
+        if (requireUnforwardedCompletion) {
+          return linearTimerNeedsCompletionForwarding(modules[targetModule].program, declaration);
+        }
         return functionContainsSuspension(declaration);
       }
     }
@@ -1853,13 +1933,21 @@ function validateNativeExpressionTree(
       && node.children.length > 0
     ) {
       const callIndex = node.children[node.children.length - 1];
+      if (!allowNonTailPlacedAsyncCall && placedCallTargetSuspends(
+        modules, graph, moduleIndex, tree, callIndex, true
+      )) {
+        throw loweringBoundary(path, "Z0700",
+          "native worker-to-main timer segments with early return or error propagation require completion forwarding; use a main-executor task until this worker bridge tier is expanded",
+          node.line, node.column, 5);
+      }
       if (
         placedCallTargetSuspends(
           modules,
           graph,
           moduleIndex,
           tree,
-          callIndex
+          callIndex,
+          false
         )
         && (
           !tailPosition

@@ -8958,6 +8958,53 @@ Related-window logical adoption is an internal Zapp checkpoint, not public
 factory availability. Family close preflight and document-bound unsolicited
 event/terminal delivery remain the next integration gates.
 
+## 2026-09-13 — Related-family close preflight and running task ownership
+
+Zapp's platform-neutral window manager now snapshots owned ARC window identities
+before synchronous close-request callbacks. A descendant veto preserves the
+family and its pending work. Accepted teardown retires descendant document
+identities before cancellation and closed notifications; unrelated work remains
+live. Parent links validate ARC identity, not just reusable window-id strings.
+Callbacks that add/remove/replace a member refuse the current preflight; an
+overlapping reentrant close is refused without replaying callbacks. This is not
+rollback of a committed native operation performed explicitly by user code.
+
+The real-task proof combines `match`, owned locals, synchronous callbacks, timer
+waits, and `TaskScope.close()`. It exposed implementation gaps, not a need for new
+ownership rules:
+
+- Native linear main-task timer admission lost normalized match initializers
+  and inconsistently classified direct scope joins as timer calls.
+- A synchronous segment could propagate an error by returning a Result from a
+  `void` poll. Segments that can finish early now use a typed helper, reusing
+  ordinary return cleanup. Only fallthrough saves locals back into the frame;
+  completion disarms already-cleaned parameter storage and preserves its result.
+- Stage 0 consuming match subjects bypassed inline closure preparation, and
+  explicit `in object.field` lost the class identity of its argument-reference
+  root. Both now reuse the existing expression/type machinery.
+- An inline `report(attempt await operation())` retained cleanup ownership in
+  its hidden suspension slot after transferring the Result to a known owned
+  synchronous parameter. That transfer now disarms the slot like a named move.
+- Native `if (owner == alias)` added redundant parentheses to an already grouped
+  identity comparison, failing strict Clang warnings. Identity remains a pointer
+  comparison; cleanup-bearing operands retain their existing evaluation rules.
+
+`tests/fixtures/async-main-timer-completion.zs` checks failed and successful
+initialization, failures before/between/after waits, scope joining, method early
+return, closure capture release, explicit borrowed field access, and cancellation
+after task entry. Both compilers run at `-O0`/`-O2` with strict warnings and UBSan;
+destructor output proves exactly-once cleanup for the exercised owners. The
+family registry separately verifies actual task entry before veto/retirement,
+plus completion of unrelated work. No ASan startup probe is used.
+
+The native dedicated-worker-to-main timer bridge still needs early-completion
+forwarding; it now fails closed before C emission rather than emitting an invalid
+return or silently continuing. This is not a claim of general async parity or
+zero allocation overhead: early-completion helpers reuse the task frame and
+existing owned-local storage, but no new whole-application benchmark was run.
+Public related-window creation and document-bound unsolicited terminal delivery
+remain framework integration work. Styling/injection proposals remain separate.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

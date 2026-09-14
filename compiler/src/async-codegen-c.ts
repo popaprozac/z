@@ -5283,7 +5283,8 @@ function emitAsyncMatchInitialize(
   nextState: number,
 ): string[] {
   if (!site.subjectBinding) return [`frame->state = ${nextState};`, "continue;"];
-  let value = emitFrameExpression(site.match.expression, plan, fileName);
+  const prepared = emitPreparedFrameExpression(site.match.expression, plan, fileName);
+  let value = prepared.value;
   const suspension = plan.suspensions.get(site.match.expression.location.offset);
   if (suspension && hasFrameCleanup(site.subjectType, plan.types)) {
     value = frameTransferredValue(
@@ -5298,6 +5299,7 @@ function emitAsyncMatchInitialize(
     ? `new (frame->${frameField(site.subjectBinding)}) ${cFrameType(site.subjectType, plan.types)}(${value});`
     : `${destination} = ${value};`;
   return [
+    ...prepared.prefix,
     initialize,
     ...(hasFrameCleanup(site.subjectType, plan.types)
       ? [`frame->${frameLiveField(site.subjectBinding)} = true;`]
@@ -8325,7 +8327,7 @@ function emitSynchronousTryOperation(
 
 function emitSyncCallArguments(
   expression: CallExpression,
-  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  plan: FrameExpressionContext,
   fileName: string,
   standardSignature?: ReturnType<typeof standardFunctionSignature>,
 ): string[] {
@@ -8340,7 +8342,7 @@ function emitSyncCallArguments(
 
 function emitFrameCallArgument(
   argument: Expression,
-  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  plan: FrameExpressionContext,
   fileName: string,
   parameter?: FunctionDeclaration["parameters"][number],
   standardValueAbi = false,
@@ -8353,7 +8355,15 @@ function emitFrameCallArgument(
   if (plan.types.semanticInfo.foreignCxxArgumentAccesses.has(argument.location.offset)) return value;
   if (plan.types.semanticInfo.foreignArgumentAccesses.get(argument.location.offset) === "in") return `&(${value})`;
   const access = plan.types.semanticInfo.nativeArgumentAccesses.get(argument.location.offset);
-  if (!access) return value;
+  if (!access) {
+    const suspension = plan.suspensions?.get(argument.location.offset);
+    // A synthesized await slot is an owner too. Passing its Result into an
+    // ordinary owned parameter transfers it just like a named `move` binding.
+    if (parameter?.mode === "value" && suspension) {
+      return frameTransferredValue(value, `frame->${suspension.field}_live`, suspension.type, plan.types);
+    }
+    return value;
+  }
   const type = frameExpressionType(argument, plan);
   if (access === "in" && plan.types.structs.get(type)?.kind === "class") return value;
   return `&(${value})`;
@@ -9003,7 +9013,9 @@ function frameExpressionType(
 ): string {
   const analyzed = plan.types.semanticInfo.expressionTypes.get(expression.location.offset);
   if (analyzed) return analyzed;
-  if (expression.kind === "identifier") return plan.locals.get(expression.name) ?? "i32";
+  if (expression.kind === "identifier" || expression.kind === "argumentReference") {
+    return plan.locals.get(expression.name) ?? "i32";
+  }
   if (expression.kind === "new" || expression.kind === "structExpression") return expression.typeName;
   if (expression.kind === "boolean" || expression.kind === "binary" || expression.kind === "unary") return "boolean";
   if (expression.kind === "number") {

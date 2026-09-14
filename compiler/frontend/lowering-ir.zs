@@ -26624,8 +26624,10 @@ function validateMainFrameLoweredStatement(
       none => {
         if (
           statements[loweredRoot].children.length != 1
-          || statements[statements[loweredRoot].children[0]].kind
+          || (statements[statements[loweredRoot].children[0]].kind
             != LoweredStatementKind.tryStatement
+            && statements[statements[loweredRoot].children[0]].kind
+              != LoweredStatementKind.matchStatement)
         ) {
           throw `native lowering lost the initializer for cross-suspension local ${statements[loweredRoot].name}`;
         }
@@ -27948,7 +27950,9 @@ function lowerFunction(
       continue;
     }
     let delay = "";
-    if (delayCount > 0) {
+    if (delayCount > 0 && !statementIsStructuredJoinAwait(
+      program, importedTypes, evidence, declaration.body, root
+    )) {
       delay = try mainDelayMillisecondsAtStatement(
         program,
         declaration.body,

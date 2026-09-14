@@ -241,6 +241,13 @@ production or compatibility-sensitive use.
   existing frame rather than allocating a separate task per match or binding. Direct
   timer awaits in native `main` still require a future resumable entry frame;
   that boundary now reports `Z0700` at the await.
+  Linear main-executor callee timer frames also preserve `match`-initialized
+  owners, direct scope joins between timers, failed initialization, and early
+  completion with deterministic cleanup. Stage 0 prepares inline callbacks in
+  consuming match subjects and transfers inline awaited Results into owned
+  synchronous call parameters. This is not general suspension parity:
+  dedicated-worker-to-main timer segments with early completion still require
+  a separate forwarding implementation and are rejected before C emission.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - Exact `z.json` source-module mappings for bare imports in Stage 0, the editor,

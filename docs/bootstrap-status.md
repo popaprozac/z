@@ -182,9 +182,20 @@ selecting Z class retain/release helpers. Native heap-frame cleanup clears
 Objective-C locals and owned parameters on completion/cancellation, including
 strong fields inside value structs. Cross-thread native subclass captures and
 async overrides remain rejected. Main-isolated helpers mixing timers with
-child awaits, main-isolated `scheduler.yield`, direct timer awaits in native
+arbitrary child awaits, main-isolated `scheduler.yield`, direct timer awaits in native
 `main`, and direct named-task creation outside the native callable-task tier
 remain separate native async composition work; this is not general async parity.
+
+The related-family close checkpoint (2026-09-13) extends native linear main-task
+timer frames to `match`-initialized owned locals and direct `TaskScope.close()` /
+`cancel()` joins between timers. A failed initializer, `try`, or early return
+finishes the task with the ordinary ownership-planned cleanup; it cannot return
+a value from a `void` poll or accidentally continue to the next timer. Cancellation
+cleans only initialized frame owners. Dedicated-worker-to-main timer segments
+with early completion still need completion forwarding and are rejected before
+C emission. Stage 0 additionally prepares closures in consuming match subjects,
+recovers explicitly borrowed class-field types, and transfers an inline
+`attempt await` Result into a known owned synchronous parameter exactly once.
 
 The real [display-link resize probe](../examples/interop/objc/smooth-window/README.md)
 now builds in both compilers. It also closed two cross-header composition gaps:

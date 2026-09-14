@@ -46,6 +46,11 @@ hostToolchainTest("compares class identity without consuming owners and cleans c
         const alias = first;
         const other = new Item({ id: 2 });
         if (!same(first, alias) || first != alias || first == other) return 1;
+        if (first == alias) {} else return 15;
+        if (first == other) return 16;
+        let checkedIdentity = false;
+        while (first == alias) { checkedIdentity = true; break; }
+        if (!checkedIdentity) return 17;
         if (first.id != 1 || alias.id != 1 || other.id != 2) return 2;
         if (make(3) == make(4)) return 3;
         if (false && make(5) == make(6)) return 4;

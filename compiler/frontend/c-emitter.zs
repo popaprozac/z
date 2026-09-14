@@ -7463,6 +7463,10 @@ function appendCondition(
   const alreadyGrouped =
     declaration.expressions[index].kind == LoweredExpressionKind.unaryOperation
     || declaration.expressions[index].kind == LoweredExpressionKind.binaryOperation
+    || (declaration.expressions[index].kind == LoweredExpressionKind.referenceIdentity
+      && declaration.expressions[index].labels.length == 6
+      && declaration.expressions[index].labels[2] == "plain"
+      && declaration.expressions[index].labels[5] == "plain")
     || declaration.expressions[index].kind == LoweredExpressionKind.stringIsEmpty;
   if (!alreadyGrouped) output.append("(");
   try appendExpression(inout output, declaration, index);
@@ -11869,6 +11873,12 @@ function appendCallableOwnerHelpers(
             delayDeclaration,
             functionType
           );
+          let delayHelperBuffer = TextBuffer();
+          appendCallableHelperName(inout delayHelperBuffer, owner, expressionIndex);
+          const delayHelper = delayHelperBuffer.finish();
+          try appendMainTaskSegmentHelpers(
+            inout output, program, delayDeclaration, functionType, delayHelper
+          );
           output.append("static void ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_cleanup_owned(");
@@ -11957,24 +11967,33 @@ function appendCallableOwnerHelpers(
           let segmentIndex: usize = 0;
           while (segmentIndex < delayDeclaration.mainDelaySegments.length) {
             output.append(`  if (frame->_z_resume_state == ${segmentIndex}) {\n`);
-            try appendMainFrameRestores(
-              inout output,
-              program,
-              delayDeclaration,
-              segmentIndex,
-              2
-            );
-            for (const root of delayDeclaration
-              .mainDelaySegments[segmentIndex].roots) {
-              try appendStatement(inout output, delayDeclaration, root, 2);
+            if (threadMainLoopRootsContainCompletion(
+              delayDeclaration, delayDeclaration.mainDelaySegments[segmentIndex].roots
+            )) {
+              try appendMainTaskSegmentCall(
+                inout output, program, functionType,
+                delayHelper, segmentIndex, false
+              );
+            } else {
+              try appendMainFrameRestores(
+                inout output,
+                program,
+                delayDeclaration,
+                segmentIndex,
+                2
+              );
+              for (const root of delayDeclaration
+                .mainDelaySegments[segmentIndex].roots) {
+                try appendStatement(inout output, delayDeclaration, root, 2);
+              }
+              try appendMainFrameSaves(
+                inout output,
+                program,
+                delayDeclaration,
+                segmentIndex + 1,
+                2
+              );
             }
-            try appendMainFrameSaves(
-              inout output,
-              program,
-              delayDeclaration,
-              segmentIndex + 1,
-              2
-            );
             output.append(`    frame->_z_resume_state = ${segmentIndex + 1};\n    z_stage1_async_schedule_delay(task, `);
             output.append(
               delayDeclaration.mainDelaySegments[segmentIndex].milliseconds
@@ -14538,6 +14557,12 @@ function appendAsyncMethodAwaitHelpers(
           delayDeclaration,
           functionType
         );
+        let delayHelperBuffer = TextBuffer();
+        appendAsyncCallableAwaitHelperName(inout delayHelperBuffer, owner, expressionIndex);
+        const delayHelper = delayHelperBuffer.finish();
+        try appendMainTaskSegmentHelpers(
+          inout output, program, delayDeclaration, functionType, delayHelper
+        );
         output.append("static void ");
         appendAsyncCallableAwaitHelperName(
           inout output,
@@ -14693,29 +14718,38 @@ function appendAsyncMethodAwaitHelpers(
         let segmentIndex: usize = 0;
         while (segmentIndex < delayDeclaration.mainDelaySegments.length) {
           output.append(`  if (frame->_z_resume_state == ${segmentIndex}) {\n`);
-          try appendMainFrameRestores(
-            inout output,
-            program,
-            delayDeclaration,
-            segmentIndex,
-            2
-          );
-          for (const root of delayDeclaration
-            .mainDelaySegments[segmentIndex].roots) {
-            try appendStatement(
+          if (threadMainLoopRootsContainCompletion(
+            delayDeclaration, delayDeclaration.mainDelaySegments[segmentIndex].roots
+          )) {
+            try appendMainTaskSegmentCall(
+              inout output, program, functionType,
+              delayHelper, segmentIndex, consumingStructReceiver
+            );
+          } else {
+            try appendMainFrameRestores(
               inout output,
+              program,
               delayDeclaration,
-              root,
+              segmentIndex,
+              2
+            );
+            for (const root of delayDeclaration
+              .mainDelaySegments[segmentIndex].roots) {
+              try appendStatement(
+                inout output,
+                delayDeclaration,
+                root,
+                2
+              );
+            }
+            try appendMainFrameSaves(
+              inout output,
+              program,
+              delayDeclaration,
+              segmentIndex + 1,
               2
             );
           }
-          try appendMainFrameSaves(
-            inout output,
-            program,
-            delayDeclaration,
-            segmentIndex + 1,
-            2
-          );
           output.append(`    frame->_z_resume_state = ${segmentIndex + 1};\n    z_stage1_async_schedule_delay(task, `);
           output.append(
             delayDeclaration.mainDelaySegments[segmentIndex].milliseconds
@@ -16999,6 +17033,82 @@ function appendMainFrameRootCleanups(
   }
 }
 
+// A timer segment can finish the enclosing function through try/throw/return.
+// Keep those paths in a typed helper, where ordinary ownership-planned return
+// cleanup remains valid, instead of emitting value returns into a void poll.
+// Only fallthrough transfers local ownership back to the suspended frame.
+function appendMainTaskSegmentHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in target: LoweredFunction,
+  in functionType: LoweredFunctionType,
+  in helper: String
+): void throws String {
+  const nativeResult = try cType(functionType.returnType);
+  let segment: usize = 0;
+  while (segment < target.mainDelaySegments.length) {
+    if (!threadMainLoopRootsContainCompletion(
+      target, target.mainDelaySegments[segment].roots
+    )) { segment = segment + 1; continue; }
+    output.append(`static ${nativeResult} ${helper}_segment_${segment}(${helper}_task *frame, bool *completed) {\n`);
+    output.append(`  ${helper}_task *context __attribute__((unused)) = frame;\n`);
+    match (in target.receiverType) {
+      some(receiver) => {
+        if (receiver.kind == LoweredTypeKind.classType) {
+          output.append(`  Z_${receiver.name} *self __attribute__((unused)) = frame->receiver;\n`);
+        }
+      }
+      none => {}
+    }
+    let parameter: usize = 0;
+    while (parameter < functionType.parameters.length) {
+      output.append("  ");
+      try appendCallableParameterDeclaration(
+        inout output, functionType.parameters[parameter], target.parameters[parameter].name
+      );
+      output.append(` __attribute__((unused)) = frame->argument${parameter};\n`);
+      parameter = parameter + 1;
+    }
+    try appendMainFrameRestores(inout output, program, target, segment, 1);
+    for (const root of target.mainDelaySegments[segment].roots) {
+      try appendStatement(inout output, target, root, 1);
+    }
+    try appendMainFrameSaves(inout output, program, target, segment + 1, 1);
+    output.append("  *completed = false;\n  return");
+    if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+      output.append(` (${nativeResult}){0}`);
+    }
+    output.append(";\n}\n\n");
+    segment = segment + 1;
+  }
+}
+
+function appendMainTaskSegmentCall(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in functionType: LoweredFunctionType,
+  in helper: String,
+  segment: usize,
+  consumingReceiver: boolean
+): void throws String {
+  output.append("    bool completed = true;\n    ");
+  const hasResult = functionType.returnType.kind != LoweredTypeKind.voidType;
+  if (hasResult) {
+    const nativeResult = try cType(functionType.returnType);
+    output.append(`${nativeResult} result = `);
+  }
+  output.append(`${helper}_segment_${segment}(frame, &completed);\n    if (completed) {\n`);
+  if (hasResult) output.append("      frame->result = result;\n");
+  if (loweredTypeNeedsDeinit(program, functionType.returnType)) {
+    output.append("      frame->live_result = true;\n");
+  }
+  // The helper's return plan already consumed/destroyed its parameters and
+  // restored locals. Disarm parameter storage before frame destruction.
+  appendAsyncStoredParameterDisarms(inout output, program, functionType, 3);
+  if (consumingReceiver) output.append("      frame->live_receiver = false;\n");
+  output.append(`      ${helper}_cleanup_owned(frame);\n      task->completed = true;\n      return;\n    }\n`);
+}
+
 function appendMainFrameRestores(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -18997,6 +19107,16 @@ function appendThreadMainCallHelpers(
       }
       const suspending = program.functions[targetFunctionIndex]
         .mainDelaySegments.length > 0;
+      // Dedicated-worker bridges still use separate main callbacks for each
+      // timer segment. Unlike a native task poll, those callbacks do not yet
+      // forward early completion to the waiting worker. Fail before C emission
+      // rather than continuing after an early return or emitting an invalid
+      // value return from a void callback.
+      for (const segment of program.functions[targetFunctionIndex].mainDelaySegments) {
+        if (threadMainLoopRootsContainCompletion(program.functions[targetFunctionIndex], segment.roots)) {
+          throw "native worker-to-main timer segments with early return or error propagation require completion forwarding; use a main-executor task until this worker bridge tier is expanded";
+        }
+      }
       if (
         suspending
         && !threadMainCallIsTail(declaration, expressionIndex)
