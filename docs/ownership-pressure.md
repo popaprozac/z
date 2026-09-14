@@ -9093,6 +9093,23 @@ borrows under both frontends at `-O0`/`-O2` with UBSan. A weak-count invariant
 catches premature release deterministically before freed storage is accessed;
 the closure-cleanup allocation ledger also checks for leaks and double frees.
 
+## 2026-09-14 — Public related-window factory: parenthesized conditional arms
+
+The Zapp public-factory WebKit harness added a nested conditional with a
+parenthesized true arm. Native parsing mistook the `:` after that arm for a
+closure return annotation, discarded the expression tree, and reported a
+lowerability boundary for otherwise valid Z. No ownership or language-rule
+change was needed: closure lookahead now requires a complete return/error type
+signature followed by `=>`, rather than treating a colon alone as proof.
+
+The regression keeps the original nested shape and also covers grouped scalar
+arms, typed closures, throwing closures, and a closure returning a function.
+Both compiler paths execute it at `-O0` and `-O2` with UBSan and the allocation
+ledger. All 70 closure/cleanup tests plus the native parser corpus check pass;
+the rebuilt native compiler reaches a byte-identical 11,953,494-byte C fixed
+point. The public-factory integration remains Zapp work; this repair preserves
+ordinary expression composition instead of forcing that test into a workaround.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

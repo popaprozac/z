@@ -927,9 +927,29 @@ function startsClosureExpression(
     cursor = cursor + 1;
   }
   if (depth != 0 || cursor >= end) return false;
-  return tokens[cursor].kind == TokenKind.fatArrow
-    || tokens[cursor].kind == TokenKind.colon
-    || tokens[cursor].kind == TokenKind.throwsKeyword;
+  if (tokens[cursor].kind == TokenKind.fatArrow) return true;
+  // A parenthesized ternary arm is also followed by `:`. Only treat that
+  // colon as a closure return annotation when a complete signature reaches
+  // `=>`; otherwise parse the parentheses as an ordinary expression.
+  if (tokens[cursor].kind == TokenKind.colon) {
+    cursor = cursor + 1;
+    let pendingGreater: usize = 0;
+    match (attempt parseType(tokens, inout cursor, inout pendingGreater)) {
+      success(_) => {}
+      failure(_) => return false;
+    }
+    if (pendingGreater != 0) return false;
+  }
+  if (cursor < end && tokens[cursor].kind == TokenKind.throwsKeyword) {
+    cursor = cursor + 1;
+    let pendingGreater: usize = 0;
+    match (attempt parseType(tokens, inout cursor, inout pendingGreater)) {
+      success(_) => {}
+      failure(_) => return false;
+    }
+    if (pendingGreater != 0) return false;
+  }
+  return cursor < end && tokens[cursor].kind == TokenKind.fatArrow;
 }
 
 function parseMatchTree(
