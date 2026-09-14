@@ -728,8 +728,41 @@ export function rebaseTypeName(
   }
   return match (typeSymbolLocation(modules, fromModuleIndex, name)) {
     some(location) => localTypeSpelling(modules, toModuleIndex, location);
-    none => standardTypeName(modules, fromModuleIndex, name);
+    none => rebaseExternalTypeName(modules, fromModuleIndex, toModuleIndex, name);
   };
+}
+
+function rebaseExternalTypeName(
+  in modules: Array<ResolvedModule>,
+  fromModuleIndex: usize,
+  toModuleIndex: usize,
+  in name: String
+): String {
+  // Closure signatures are also checked before foreign metadata is attached.
+  // Preserve the imported header's identity when an alias crosses a module;
+  // the source namespace spelling need not exist in the receiving module.
+  const member = qualifiedTypeMember(name);
+  if (member.byteLength > 0) {
+    const base = qualifiedTypeBase(name);
+    const source = moduleSymbolIndex(modules[fromModuleIndex], base);
+    if (source < modules[fromModuleIndex].symbols.length
+      && modules[fromModuleIndex].symbols[source].kind == ModuleSymbolKind.namespaceSymbol) {
+      match (in modules[fromModuleIndex].symbols[source].targetModule) {
+        some(_) => return standardTypeName(modules, fromModuleIndex, name);
+        none => {}
+      }
+      for (const candidate of modules[toModuleIndex].symbols) {
+        if (candidate.kind == ModuleSymbolKind.namespaceSymbol
+          && candidate.importedName == modules[fromModuleIndex].symbols[source].importedName) {
+          match (in candidate.targetModule) {
+            some(_) => {}
+            none => return `${candidate.name}.${member}`;
+          }
+        }
+      }
+    }
+  }
+  return standardTypeName(modules, fromModuleIndex, name);
 }
 
 function transparentTypeNameAtDepth(

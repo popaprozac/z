@@ -9040,6 +9040,29 @@ the C pointer. An explicitly typed module `cstring` constant follows the working
 native path. This is an upstream contextual-call lowering gap, not a framework
 change required by the packaged bootstrap.
 
+## 2026-09-14 — Cross-module Objective-C callable identities
+
+Zapp's related-window coordinator passes typed creation-policy callbacks into
+separately authored native delegates. Both modules import WebKit, but Stage 0
+rejected the explicit nullable `WKWebView` return annotation because the two
+imports had different internal names. A smaller Foundation regression also
+exposed native alias rebasing when the imports use different source names.
+
+Stage 0 now normalizes direct Objective-C parameter/return identities for
+contextually typed closures, including the synthesized callable ABI signature.
+Native alias expansion preserves the source header when rebasing a qualified
+external type before foreign metadata is attached. Neither fix weakens
+nullability, parameter capabilities, executor placement, or error contracts.
+Captured and noncapturing closures compile and execute under both frontends at
+`-O0`/`-O2` with UBSan; incompatible parameter classes, nullable inputs, writable
+inputs, result types, and error effects remain rejected by both checkers.
+
+One separate native-emitter gap surfaced while authoring the independent test
+oracle: directly iterating `Array<String>("a", "b")` takes the address of the
+temporary constructor expression in generated C. Binding that test's filenames
+to a local array works, but direct temporary-array iteration remains queued for
+an upstream lowering fix. This does not affect the production callback repair.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -6276,7 +6276,8 @@ function inferClosureExpression(
         },
       );
     }
-    if (contextual && parameter.type && parameter.type.name !== contextual.type) {
+    if (contextual && parameter.type
+      && contextualObjCObjectType(parameter.type.name, contextual.type, state.foreignNamedTypes) !== contextual.type) {
       throw new DiagnosticError(
         fileName,
         parameter.type.location,
@@ -6594,7 +6595,19 @@ function finalizeClosureFunctionValue(
     );
   }
   const actualFunction = closureFunctionType(closure);
-  if (!functionTypesCompatible(expectedFunction, actualFunction)) {
+  // Different source imports can name the same Objective-C class. Keep body
+  // analysis against the author's annotation, then use the destination's exact
+  // spelling for the callable ABI. This is identity normalization, not parameter
+  // variance, nullable widening, subclass conversion, or executor erasure.
+  const contextualFunction: FunctionType = {
+    ...actualFunction,
+    parameters: actualFunction.parameters.map((parameter, index) => ({
+      ...parameter,
+      type: contextualObjCObjectType(parameter.type, expectedFunction.parameters[index]?.type, state.foreignNamedTypes),
+    })),
+    returnType: contextualObjCObjectType(actualFunction.returnType, expectedFunction.returnType, state.foreignNamedTypes),
+  };
+  if (!functionTypesCompatible(expectedFunction, contextualFunction)) {
     throw new DiagnosticError(
       fileName,
       expression.location,
@@ -6609,6 +6622,14 @@ function finalizeClosureFunctionValue(
   }
   closure = {
     ...closure,
+    declaration: {
+      ...closure.declaration,
+      parameters: closure.declaration.parameters.map((parameter, index) => {
+        const contextual = contextualFunction.parameters[index - closure.captures.length];
+        return contextual ? { ...parameter, type: { ...parameter.type, name: contextual.type } } : parameter;
+      }),
+      returnType: { ...closure.declaration.returnType, name: contextualFunction.returnType },
+    },
     owned: closure.captures.length > 0 && expression.captureMode === "move",
     storable: true,
   };
@@ -21206,6 +21227,20 @@ function requireContextualSignedLiteral(
   numericLiteralTypes.set(expression.location.offset, type);
   numericLiteralTypes.set(expression.operand.location.offset, type);
   return true;
+}
+
+function contextualObjCObjectType(
+  actual: string,
+  expected: string | undefined,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+): string {
+  if (!expected || actual === expected) return actual;
+  const actualNamed = foreignNamedTypes.get(actual);
+  const expectedNamed = foreignNamedTypes.get(expected);
+  return actualNamed?.kind === "object" && expectedNamed?.kind === "object"
+    && actualNamed.cName === expectedNamed.cName
+    && isNullableObjCTypeName(actual) === isNullableObjCTypeName(expected)
+    ? expected : actual;
 }
 
 function sameForeignNamedType(

@@ -966,6 +966,14 @@ lowered into a generated `NSObject<Protocol>` adapter. The Z class itself
 remains a Z ARC allocation; it is not silently changed into an Objective-C
 class.
 
+Contextually typed Z closures also preserve native class identity across
+source-module imports. A callable alias declared with one Foundation/WebKit
+namespace accepts explicit direct Objective-C parameter and return annotations
+using another namespace for the same native class, including nullable returns.
+The generated callable ABI uses the contextual spelling; no wrapper or cast is
+introduced. Ownership modes, nullability, error effects, and executor contracts
+remain checked, and distinct Z/native subclass identities are not erased.
+
 When a protocol requirement receives `id<AnotherProtocol>`, Z preserves that
 nominal capability instead of erasing it to `id`:
 

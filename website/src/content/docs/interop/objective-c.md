@@ -55,6 +55,14 @@ You do not need a cast or a redundant local type annotation. Selector callback
 signatures also recognize the same native class across these imports, without
 weakening nullability or capability checks.
 
+A Z callable alias can likewise use a different import namespace from the
+closure assigned to it. Explicit direct Objective-C parameter and return
+annotations name the same native class across modules, including nullable
+returns. The compiler normalizes that identity without a wrapper or cast;
+parameter modes, nullability, error effects, and executor contracts still have
+to match. This does not make unrelated Z classes or native subclasses
+interchangeable.
+
 ## ARC identity remains explicit
 
 Imported Objective-C objects behave as shared reference identities. Assigning
