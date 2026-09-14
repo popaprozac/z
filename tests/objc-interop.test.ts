@@ -55,6 +55,33 @@ import type {
   ImportDeclaration,
 } from "./support/bootstrap.ts";
 
+hostToolchainTest("infers native enum equality across imports and ObjC property flag expressions", () => {
+  if (process.platform !== "darwin") return;
+  const file = resolve(projectRoot, "tests/fixtures/objc-enum-comparison/main.zs");
+  for (const args of [["emit", file], ["check", file, "--native-frontend"]]) {
+    const result = spawnSync(process.execPath, [cli, ...args], {
+      encoding: "utf8", timeout: 120000, killSignal: "SIGKILL",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    if (args[0] === "check") continue;
+    assert.match(result.stdout, /const bool fullSize =/);
+    assert.match(result.stdout, /const bool visible =/);
+    assert.match(result.stdout, /const bool hidden =/);
+    const compilation = spawnSync("clang", ["-x", "objective-c", "-fobjc-arc", "-fblocks",
+      "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-"], {
+      input: result.stdout, encoding: "utf8", timeout: 30000, killSignal: "SIGKILL",
+    });
+    assert.equal(compilation.status, 0, compilation.stderr);
+  }
+  const source = `import left from "AppKit/AppKit.h";
+    import right from "AppKit/AppKit.h";
+    function same(value: left.NSWindowTitleVisibility): boolean { return value == right.NSWindowTitleVisible; }
+    function main(): i32 { return 0; }`;
+  compileToNative(source, file);
+  assert.throws(() => compileToNative(source.replace("right.NSWindowTitleVisible", "right.NSBackingStoreBuffered"), file), /matching numeric, boolean/);
+  assert.throws(() => compileToNative(source.replace("right.NSWindowTitleVisible", "0"), file), /matching numeric, boolean/);
+});
+
 hostToolchainTest("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/objc/nswindow.zs");

@@ -47,6 +47,19 @@ Native enum and option-set values retain their nominal types. When an integer
 is actually needed, use an explicit numeric conversion such as
 `usize(window.styleMask)`. The conversion uses the imported ABI representation,
 including when a property exposes the type through a qualified module name.
+Equality with a constant of the same native enum also works across Z import
+aliases, without an annotation or numeric cast. For example, inside main-thread
+code both locals below are inferred as `boolean`:
+
+```zs
+const titleVisible = window.titleVisibility == AppKit.NSWindowTitleVisible;
+const fullSize = (window.styleMask & AppKit.NSWindowStyleMaskFullSizeContentView)
+  == AppKit.NSWindowStyleMaskFullSizeContentView;
+```
+
+Different nominal enum types still cannot be compared as if they were the same
+type; use explicit numeric conversion when comparing their representations is
+intentional.
 
 An inferred object returned through a forward declaration gains its checked
 members when you import the complete class header. For example, AppKit returns

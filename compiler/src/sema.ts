@@ -9782,13 +9782,14 @@ function inferExpressionInner(
         ) {
           return "boolean";
         }
-        const comparableNamed = left === right && state.foreignNamedTypes.get(String(left))?.kind === "enum";
+        const comparableNamed = state.foreignNamedTypes.get(String(left))?.kind === "enum"
+          && sameForeignNamedType(left, right, state.foreignNamedTypes);
         const zEnum = left === right ? enums.get(String(left)) : null;
         const comparableZEnum = zEnum !== null && zEnum !== undefined
           && zEnum.variants.every((variant) => variant.payload === null);
         const comparableString = (parseViewType(canonicalLeft)?.target ?? canonicalLeft) === "String"
           && (parseViewType(canonicalRight)?.target ?? canonicalRight) === "String";
-        if ((!comparableString && canonicalLeft !== canonicalRight) || (!isNumericType(canonicalLeft) && canonicalLeft !== "boolean" && !comparableNamed && !comparableZEnum && !comparableString)) {
+        if ((!comparableString && !comparableNamed && canonicalLeft !== canonicalRight) || (!isNumericType(canonicalLeft) && canonicalLeft !== "boolean" && !comparableNamed && !comparableZEnum && !comparableString)) {
           throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching numeric, boolean, String, payload-free enum, native enum, or compatible class-reference operands`);
         }
         return "boolean";

@@ -260,6 +260,12 @@ export function binaryOperatorType(
   const left = transparentTypeName(modules, moduleIndex, leftSource);
   const right = transparentTypeName(modules, moduleIndex, rightSource);
   if (left.byteLength == 0 || right.byteLength == 0) return "";
+  // Known native enum identities still have a header namespace. Do not defer
+  // their equality result as unresolved external semantics: inferred boolean
+  // locals need this evidence, including flags read from ObjC properties.
+  if ((operator == "==" || operator == "!=")
+    && isKnownEnumType(modules, moduleIndex, left)
+    && equivalentTypes(modules, moduleIndex, left, right)) return "boolean";
   if (
     operator == "&"
     || operator == "|"

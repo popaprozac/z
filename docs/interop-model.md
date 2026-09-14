@@ -882,6 +882,13 @@ const window = AppKit.NSWindow.alloc().initWithContentRect(
 window.title = "Z Notes";
 ```
 
+Native enum equality uses native type identity, not an import alias spelling.
+An enum-valued Objective-C property or a value returned from another Z module
+can be compared with that enum's constants without a type annotation or cast.
+Inferred flag-mask comparisons also produce `boolean` in the native frontend.
+Distinct nominal enums do not become interchangeable with one another or with
+plain integers.
+
 Objective-C nominal identity follows the Clang runtime name, not the particular
 header or Z namespace that surfaced it. If a vendor header and Foundation both
 mention `NSString`, those declarations describe the same imported class and
