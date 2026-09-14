@@ -9057,6 +9057,14 @@ Captured and noncapturing closures compile and execute under both frontends at
 `-O0`/`-O2` with UBSan; incompatible parameter classes, nullable inputs, writable
 inputs, result types, and error effects remain rejected by both checkers.
 
+The complete registry then exposed a separate native-emitter shadowing bug:
+an `in view` closure parameter reused the enclosing method's parameter name,
+and emission incorrectly applied the enclosing direct Objective-C ABI to the
+closure's indirect borrowed slot. Callable parameter markers now prevent that
+outer-binding lookup. The same regression covers inferred shadowed parameters,
+captured block bodies, expression bodies, ordinary function forwarding, and
+method forwarding; the existing 68 native closure-cleanup tests also pass.
+
 One separate native-emitter gap surfaced while authoring the independent test
 oracle: directly iterating `Array<String>("a", "b")` takes the address of the
 temporary constructor expression in generated C. Binding that test's filenames

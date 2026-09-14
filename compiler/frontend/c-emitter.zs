@@ -4983,9 +4983,17 @@ function appendExpression(
     let foreignObjCParameter =
       declaration.expressions[index].labels.length > 0
       && declaration.expressions[index].labels[0] == "foreignObjC";
+    // Callable bodies share their owner's expression arena, not its bindings.
+    // A borrowed closure parameter uses the callable's indirect ABI even when
+    // it shadows an outer Objective-C parameter passed as a direct reference.
+    let closureParameter = false;
+    for (const label of declaration.expressions[index].labels) {
+      if (label == "closure-parameter") closureParameter = true;
+    }
     for (const parameter of declaration.parameters) {
       if (
-        parameter.name == declaration.expressions[index].value
+        !closureParameter
+        && parameter.name == declaration.expressions[index].value
         && parameter.mode == LoweredParameterMode.input
         && parameter.type.kind == LoweredTypeKind.foreignObjCType
       ) foreignObjCParameter = true;
