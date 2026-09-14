@@ -11104,11 +11104,11 @@ function appendFunction(
     return;
   }
   for (const flag of declaration.liveFlags) {
-    if (flag.parameter) {
+    if (flag.parameter || (declaration.compilerIntrinsic == "objcInitializer" && flag.constructorField)) {
       appendIndent(inout output, 1);
       output.append("bool ");
       appendCBindingName(inout output, flag.name);
-      output.append(" = true;\n");
+      output.append(flag.constructorField ? " = false;\n" : " = true;\n");
     }
   }
   try appendFunctionTail(inout output, declaration);

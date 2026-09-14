@@ -48,11 +48,19 @@ function emit(in wirePath: String, in sourcePath: String, in companionPath: Stri
       }));
     }
   }
-  const graph = match (attempt resolveParsedModulesWithForeignContracts(modules, sourcePath, foreign)) {
+  let graph = match (attempt resolveParsedModulesWithForeignContracts(modules, sourcePath, foreign)) {
     success(value) => value;
     failure(error) => throw `${error.code}: ${error.message}`;
   };
-  if (corruption.byteLength > 0) {
+  if (corruption == "empty-call-header") {
+    // Header provenance on a call is optional; the checked import still owns
+    // the ABI dependency. Real SDK C calls can have this evidence shape.
+    let call: usize = 0;
+    while (call < graph.modules[0].semanticEvidence.callResolutions.length) {
+      graph.modules[0].semanticEvidence.callResolutions[call].foreignHeader = "";
+      call = call + 1;
+    }
+  } else if (corruption.byteLength > 0) {
     // The planner consumes call evidence only. Keep this a minimal corrupted
     // proof, not a deep copy of the resolver's ownership-bearing lookup Maps.
     let evidence = emptySemanticEvidence();

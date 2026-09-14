@@ -2116,7 +2116,7 @@ hostToolchainTest("declares native block adapters before nested callable bodies 
         const run = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
         assert.equal(run.status, 0, `${label} ${optimization}: ${run.stderr}`);
         assert.equal(run.stderr, "");
-        assert.equal(run.stdout, "outer=42\nnested=84\nreleased=84\n");
+        assert.equal(run.stdout, "outer=42\nnested=84\ntoken\nrealm\nreleased=84\n");
       }
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }

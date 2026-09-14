@@ -373,6 +373,7 @@ export struct LoweredExpression {
   moveSpreadOverrides: Array<LoweredField> = Array<LoweredField>();
   threadSafe: boolean = false;
   closureBlockBody: boolean = false;
+  closureBodyLowered: boolean = false;
   closureReturnType: String = "";
   closureAsynchronous: boolean = false;
   closureParameterCount: usize = 0;
@@ -8182,12 +8183,17 @@ function collectForeignLowering(
       resolution.kind != "foreign"
       && resolution.objectiveCSelector.byteLength == 0
     ) continue;
-    try requireSafeForeignHeader(resolution.foreignHeader);
-    if (!containsString(headers, resolution.foreignHeader)) {
-      headers.push(resolution.foreignHeader.copyBytes(
-        0,
-        resolution.foreignHeader.byteLength
-      ));
+    // Call evidence may carry no extra header provenance (including imported
+    // C functions). Declared module imports above still supply their ABI.
+    // Empty provenance is not an include filename or an unresolved call.
+    if (resolution.foreignHeader.byteLength > 0) {
+      try requireSafeForeignHeader(resolution.foreignHeader);
+      if (!containsString(headers, resolution.foreignHeader)) {
+        headers.push(resolution.foreignHeader.copyBytes(
+          0,
+          resolution.foreignHeader.byteLength
+        ));
+      }
     }
     if (resolution.objectiveCSelector.byteLength > 0) continue;
     if (resolution.foreignSuccessValues.length == 0) continue;
@@ -8482,7 +8488,8 @@ function attachThreadCaptureMoveFlags(
   inout expressions: Array<LoweredExpression>,
   start: usize,
   end: usize,
-  in captures: Array<LoweredClosureCapture>
+  in captures: Array<LoweredClosureCapture>,
+  callableEnvironment: boolean
 ): void {
   let index = start;
   while (index < end) {
@@ -8508,7 +8515,9 @@ function attachThreadCaptureMoveFlags(
         captures[captureIndex].owned
         && captures[captureIndex].name == expressions[operand].value
       ) {
-        expressions[index].value = `(*_z_stage1_capture_live_${captureIndex})`;
+        expressions[index].value = callableEnvironment
+          ? ownerLiveFlag(captures[captureIndex].name)
+          : `(*_z_stage1_capture_live_${captureIndex})`;
       }
       captureIndex = captureIndex + 1;
     }
@@ -13414,7 +13423,8 @@ function lowerExpressionContextual(
             inout output,
             bodyStart,
             bodyEnd,
-            captures
+            captures,
+            false
           );
           markWorkerOwnedMoveRange(
             inout output,
@@ -14118,7 +14128,7 @@ function lowerExpressionContextual(
               }
               if (ownsCaptures) {
                 const bodyEnd = output.length;
-                attachThreadCaptureMoveFlags(inout output, bodyStart, bodyEnd, captures);
+                attachThreadCaptureMoveFlags(inout output, bodyStart, bodyEnd, captures, false);
                 markWorkerOwnedMoveRange(inout output, bodyStart, bodyEnd);
               }
               children.push(body);
@@ -21042,7 +21052,11 @@ function completeNativeClosureBlocks(
       expressions[expressionIndex].kind
         == LoweredExpressionKind.closureValue
       && expressions[expressionIndex].closureBlockBody
+      && !expressions[expressionIndex].closureBodyLowered
     ) {
+      // Recursive statement lowering can revisit the enclosing expression
+      // array. Source statement indices must be translated exactly once.
+      expressions[expressionIndex].closureBodyLowered = true;
       let sourceStatements = Array<usize>();
       for (const source of expressions[expressionIndex].statements) {
         sourceStatements.push(source);
@@ -21250,7 +21264,7 @@ function completeNativeClosureBlocks(
       );
       if (expressions[expressionIndex].labels[1] == "move") {
         attachThreadCaptureMoveFlags(
-          inout expressions, bodyExpressionStart, bodyExpressionEnd, captures
+          inout expressions, bodyExpressionStart, bodyExpressionEnd, captures, true
         );
       }
       // Preserve this invocation's move guards when the enclosing function
@@ -21659,7 +21673,8 @@ function completeNativeClosureBlocks(
         inout expressions,
         bodyExpressionStart,
         bodyExpressionEnd,
-        captures
+        captures,
+        false
       );
       markWorkerOwnedMoveRange(
         inout expressions,
@@ -21931,7 +21946,7 @@ function completeNativeClosureBlocks(
       mutexBodyExpressionEnd
     );
     if (expressions[expressionIndex].labels[6] == "move") {
-      attachThreadCaptureMoveFlags(inout expressions, bodyExpressionStart, mutexBodyExpressionEnd, captures);
+      attachThreadCaptureMoveFlags(inout expressions, bodyExpressionStart, mutexBodyExpressionEnd, captures, false);
     }
     // Callback-local owners have their own cleanup scope even when captures
     // are borrowed. The enclosing function must not overwrite their flags.
@@ -26080,6 +26095,7 @@ function lowerStatementCore(
   let secondExpression = Option<usize>.none;
   match (in arena.nodes[index].secondExpression) {
     some(source) => {
+      const expressionStart = expressions.length;
       match (in source.tree) {
         some(tree) => {
           const sourceRoot = tree.root;
@@ -26170,6 +26186,10 @@ function lowerStatementCore(
             }
           }
           secondExpression = Option.some(loweredExpression);
+          try completeNativeClosureBlocks(
+            program, importedTypes, evidence, arena, ownerName, context,
+            index, expressionStart, inout expressions, inout statements
+          );
         }
         none => throw "native lowering cannot lower an opaque expression";
       }
@@ -28353,8 +28373,8 @@ function lowerDeinitializer(
     mainDelayIfs: Array<LoweredMainDelayIf>(),
     mainDelayMatches: Array<LoweredMainDelayMatch>(),
     mainDelayLoops: Array<LoweredMainDelayLoop>(),
-    receiverType: Option<LoweredType>.none,
-    receiverMode: LoweredParameterMode.value,
+    receiverType: Option.some(try lowerModuleTypeName(program, importedTypes, ownerName)),
+    receiverMode: LoweredParameterMode.inputOutput,
     parameters: Array<LoweredParameter>(),
     returnType: LoweredType({ kind: LoweredTypeKind.voidType, name: "" }),
     fallthroughExpression: Option<usize>.none,
@@ -33992,6 +34012,9 @@ function lowerModulesIncludingTests(
   let functionTypes = Array<LoweredFunctionType>();
   let foreignHeaders = Array<String>();
   for (const plan of objectiveCSubclasses) {
+    // Empty provenance is not an include filename; declared imports are
+    // collected separately from the checked subclass plan.
+    if (plan.foreignHeader.byteLength == 0) continue;
     let present = false;
     for (const header of foreignHeaders) { if (header == plan.foreignHeader) present = true; }
     if (!present) foreignHeaders.push(copy plan.foreignHeader);

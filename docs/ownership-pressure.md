@@ -8884,6 +8884,51 @@ Production owns the guard, but automatic platform deadline scheduling, complete
 native creation wiring, family close preflight, and unsolicited document-bound
 delivery remain framework integration work. The public factory stays gated.
 
+## 2026-09-13 — Production related-window activation and callback assignment
+
+Zapp now runs its production checked-Z child allocator, retained WebKit
+delegates, per-document message registration, and creation coordinator against
+both Vite and packaged assets. Allocation is not completion: the native host
+waits for JavaScript to acknowledge bridge activation after shell readiness.
+An internal one-shot reply is bound to the original owner document. Failure
+revokes routing and releases unpublished native state before reporting failure;
+a replaced owner does not receive an old reply. A bounded native timer expires
+unclaimed or incomplete creations without adding work to ordinary service calls.
+
+Composing this code exposed native lowering/emission gaps, not new syntax:
+
+- Block closures assigned to an existing field had not passed through closure
+  body lowering. Their source statement indices reached the emitter as if they
+  were lowered indices. Assignment RHS closures now receive the same lowering
+  as initializers, and recursive visits translate a block body only once.
+- Owned callable environments and thread callback captures have different live
+  flag storage. Move guards now name the environment they actually belong to.
+- Ordinary ARC class `deinit` calling `this.close()` needs the exclusive receiver
+  type preserved into native emission, not a value receiver.
+- A checked imported C call such as `CACurrentMediaTime` can carry no redundant
+  call-level header provenance. The module import still supplies the ABI;
+  native lowering must not turn empty provenance into `#include ""`.
+- Native subclass constructors reused owned-field initialization guards but
+  omitted their declarations. They now declare the same initially-false guards
+  as ordinary class constructors before initializing cleanup-bearing fields.
+
+The nested activation callback also illustrates an intentional ownership rule:
+copy an owned `String` snapshot before moving it into a second stored callback.
+A reusable outer callback cannot consume its borrowed capture on its first call.
+No new ownership keyword or framework-only compiler escape was introduced.
+
+The assignment regression checks both output and balanced allocations at
+`-O0`/`-O2` in both compilers; the Objective-C regressions cover nested snapshots,
+owned subclass fields, destruction, and reentrant receiver guards. Zapp's
+headless creation matrix checks completion/failure ordering and stale replies.
+Its real WebKit matrices separately cover early child calls and the production
+allocator across both compilers, both optimization levels, and both asset modes,
+with UBSan and process-group deadlines. This is not a first-paint benchmark or
+a claim that every Objective-C autorelease allocation has been measured.
+
+Public RelatedWindow creation remains gated on logical-window adoption, family
+close preflight, and complete document-bound event/retirement integration.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

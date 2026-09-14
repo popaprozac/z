@@ -666,6 +666,14 @@ hostToolchainTest("executes native subclass lifecycle and reentrant receiver acc
     assert.match(native.stdout, /ns_returns_retained.*ZNative_0_Counter_new/);
     compileAndRun(native.stdout, "native");
     compileAndRun(native.stdout, "native", "-O2");
+    const withoutCallHeaders = spawnSync(oracle, [wire, file, "", "", "empty-call-header"], {
+      encoding: "utf8", timeout: 15_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024,
+    });
+    assert.equal(withoutCallHeaders.status, 0, withoutCallHeaders.stderr);
+    assert.match(withoutCallHeaders.stdout, /#include "\.\/objc-subclass\.h"/);
+    assert.doesNotMatch(withoutCallHeaders.stdout, /#include ""/);
+    compileAndRun(withoutCallHeaders.stdout, "native without redundant call headers");
+    compileAndRun(withoutCallHeaders.stdout, "native without redundant call headers", "-O2");
     for (const source of [artifact.source, native.stdout]) {
       assert.match(source, /Z_String _z_native_field_title;/);
       assert.match(source, /ZSubclassPoint _z_native_field_point;/);
