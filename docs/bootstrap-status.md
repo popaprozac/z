@@ -155,7 +155,10 @@ cleanup. Five conflict paths and the final-outside-owner release path pass in
 both compilers at `-O0`/`-O2`. This costs an inline pointer-sized access counter,
 a stack guard, checks, and a scoped native ARC retain/release, not another heap
 object. Private inline scalar/plain-native fields, owned `String`, strong
-imported native references, and source `deinit` now execute with the same gate.
+imported native references, weak Z-class handles (`Weak<T>` or `Option<Weak<T>>`),
+and source `deinit` now execute with the same gate. Native weak targets and
+arbitrary managed aggregates remain rejected; private Z-only helpers are the
+next separate checkpoint.
 New synchronous `function ... as "selector:"` entries also execute with checked
 source-declared scalar/enum/borrowed-object ABIs. They trap outside Ready instead
 of sending to a nonexistent superclass entry, and keep the main/access guards.

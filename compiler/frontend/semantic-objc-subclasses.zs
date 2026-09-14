@@ -5,7 +5,7 @@ import {
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import {
-  ModuleMethodSignature, ModuleResolveError, ModuleResolveErrorKind,
+  ModuleMethodSignature, ModuleResolveError, ModuleResolveErrorKind, ModuleSymbolKind,
   ResolvedModule, codedModuleResolutionError,
 } from "./semantic-model.zs";
 import {
@@ -18,7 +18,7 @@ import {
 } from "./semantic-objc-subclass-bodies.zs";
 import {
   isNumericTypeName, nativeFunctionSignature, nativeObjCObjectTypeName, nullableTargetType,
-  stringStartsWith,
+  stringStartsWith, genericTypeShape,
 } from "./semantic-type-shapes.zs";
 
 // Declaration validation is separate from body ownership and native emission.
@@ -95,6 +95,36 @@ export function nativeObjCStoredObjectABI(
     some(signature) => signature.foreignKind == "objcInterface"
       && signature.foreignNativeName.byteLength > 0 ? `${signature.foreignNativeName} *` : "";
     none => "";
+  };
+}
+
+// Admit only a weak handle (optionally empty) to an ordinary Z ARC class.
+// Native weak references and arbitrary managed aggregates remain separate tiers.
+export function nativeObjCStoredWeak(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in sourceName: String
+): boolean {
+  const name = transparentTypeName(modules, moduleIndex, sourceName);
+  let shape = match (genericTypeShape(name)) {
+    some(value) => value;
+    none => return false;
+  };
+  if (shape.base == "Option" && shape.arguments.length == 1) {
+    const payload = transparentTypeName(modules, moduleIndex, shape.arguments[0]);
+    shape = match (genericTypeShape(payload)) {
+      some(value) => value;
+      none => return false;
+    };
+  }
+  if (shape.base != "Weak" || shape.arguments.length != 1) return false;
+  const location = match (typeSymbolLocation(modules, moduleIndex, shape.arguments[0])) {
+    some(value) => value;
+    none => return false;
+  };
+  const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+  if (symbol.kind != ModuleSymbolKind.classSymbol) return false;
+  return match (in symbol.typeSignature) {
+    some(signature) => signature.foreignKind.byteLength == 0;
+    none => false;
   };
 }
 
@@ -428,10 +458,11 @@ function validateNativeObjCSubclassDeclaration(
     match (in field.defaultValue) { some(_) => hasDefault = true; none => {} }
     if (field.optionalField || hasDefault) throw subclassError(module,
       "native stored fields require explicit constructor initialization, without defaults or optional fields", field.line, field.column);
-    if (field.type.name != "String" && !plainNativeValue(modules, moduleIndex, field.type.name)) {
+    if (field.type.name != "String" && !plainNativeValue(modules, moduleIndex, field.type.name)
+      && !nativeObjCStoredWeak(modules, moduleIndex, field.type.name)) {
       const objectABI = nativeObjCStoredObjectABI(modules, moduleIndex, field.type.name);
       if (objectABI.byteLength == 0) throw subclassError(module,
-          "native stored fields currently support owned String, scalars, plain native value records, and strong imported Objective-C references", field.line, field.column);
+          "native stored fields currently support owned String, scalars, plain native value records, strong imported Objective-C references, and Weak<T> or Option<Weak<T>> for ordinary Z classes", field.line, field.column);
     }
   }
   if (aggregate.implementedTraits.length > 0) throw subclassError(module,
@@ -516,6 +547,29 @@ export function validateNativeObjCSubclassDeclarations(
     const module = view parsed[moduleIndex];
     for (const aggregate of module.program.aggregates) {
       try validateNativeObjCSubclassDeclaration(module, modules, moduleIndex, aggregate);
+    }
+    moduleIndex = moduleIndex + 1;
+  }
+}
+
+// Recheck weak targets after all native identities are prepared, including a
+// later declaration or imported subclass that initially looked like a Z class.
+export function validateNativeObjCSubclassStorage(
+  in parsed: Array<ParsedModule>, in modules: Array<ResolvedModule>
+): void throws ModuleResolveError {
+  let moduleIndex: usize = 0;
+  for (const module of parsed) {
+    for (const aggregate of module.program.aggregates) {
+      match (in aggregate.nativeBase) { some(_) => {} none => continue; }
+      for (const field of aggregate.fields) {
+        const name = transparentTypeName(modules, moduleIndex, field.type.name);
+        if (field.type.name == "String" || plainNativeValue(modules, moduleIndex, name)) continue;
+        const objectABI = nativeObjCStoredObjectABI(modules, moduleIndex, name);
+        if (objectABI.byteLength > 0 || nativeObjCStoredWeak(modules, moduleIndex, name)) continue;
+        throw subclassError(module,
+          "native stored Weak<T> and Option<Weak<T>> require ordinary Z classes, not native subclass identities",
+          field.line, field.column);
+      }
     }
     moduleIndex = moduleIndex + 1;
   }

@@ -1,6 +1,7 @@
 # Z-owned state and helpers in native subclasses
 
-Status: proposal for deliberation, 2026-09-14. Not implemented or approved.
+Status: approved direction, 2026-09-14. Weak-field storage is implemented;
+private Z-only helper methods remain the next checkpoint.
 
 ## Pressure case
 
@@ -11,16 +12,18 @@ also capture weak observer handles. The runtime owns the observer. This avoids
 both a window/observer ownership cycle and delayed completions retaining a
 closed window's runtime graph.
 
-Two existing compiler boundaries prevent this composition:
+Two compiler boundaries motivated this composition work:
 
-1. `compiler/src/sema.ts` restricts native stored fields to owned String,
+1. `compiler/src/sema.ts` previously restricted native stored fields to owned String,
    scalars, plain native records, and strong imported Objective-C references.
-   `Option<Weak<GestureObserver>>` is rejected with Z0814.
+   `Option<Weak<GestureObserver>>` was rejected with Z0814. The first checkpoint
+   now admits `Weak<T>` and `Option<Weak<T>>` for ordinary Z classes.
 2. `compiler/src/objc-subclasses.ts` requires every declared method to have
    `as "selector:"`, including private implementation helpers. There is no
    ordinary Z-only method layer inside a native subclass today.
 
-The language surface being proposed uses existing syntax, schematically:
+The approved complete surface uses existing syntax, schematically (the helper
+below is not executable until the next checkpoint):
 
 ```zs
 class NativeWindow extends AppKit.NSWindow on thread.main {
@@ -62,3 +65,36 @@ native selector rejection for helpers; and Stage 0/native O0/O2 UBSan probes.
 This is a general interop capability, not a Zapp API. The native gesture
 prototype is parked in Zapp's `docs/plans/prototypes/native-window-drag.patch`.
 It is uncompiled draft work, not a verified native gesture implementation.
+
+## Weak-field storage checkpoint
+
+`tests/fixtures/objc-subclass-weak-state.zs` exercises empty and expired optional
+handles, live upgrade, replacement, retained direct weak snapshots, and a Z
+observer that strongly owns its native window without a retain cycle. A late
+weak callback, an imported observer class, and both source-deinit and
+automatic-only cleanup variants run at `-O0`/`-O2` with UBSan and test-only
+allocation accounting. Both
+compilers use their ordinary weak/enum cleanup and retain the existing native
+entry guards. Native lowering resolves the field's checked Z type rather than
+inventing an Objective-C ABI for it. Resolved native subclasses remain invalid
+weak targets, including forward declarations.
+
+`Option<Weak<T>>` is borrowed with `match (in this.observer)`. This does not add
+general `copy Option<T>` support or permit moving an owned field out of its
+receiver. Arbitrary managed aggregates, native weak references, escaping field
+loans, and cross-thread weak upgrade remain outside this checkpoint.
+
+The executable callback probe uses a block body. During testing, the equivalent
+expression-bodied `move (): i32 => match (...) { ... }` exposed a separate native
+lowering gap; preserve that as a follow-up rather than claiming every closure
+expression shape is covered here. It needs no new syntax or public API.
+
+## Private-helper implementation seam
+
+A bounded Clang syntax probe confirms that a private C function defined inside
+`@implementation` may access that class's private ivars. This provides a route
+to genuinely Z-only helpers without synthesizing Objective-C selectors. The
+next slice still needs checked receiver-access propagation: a direct nested
+helper must not reacquire an already-held exclusive entry loan, while a call
+through a different receiver cannot bypass that receiver's guard. Constructor
+readiness and superclass handoff rules must remain explicit in that lowering.

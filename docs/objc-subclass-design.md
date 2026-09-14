@@ -100,8 +100,9 @@ The first tier deliberately rejects:
 
 - ordinary Z inheritance, generic subclasses, missing main affinity, and
   imported classes that forbid subclassing;
-- public stored fields, storage beyond scalars/plain native values/owned `String`
-  and strong imported Objective-C references, escaping field loans, `Weak`, and
+- public stored fields, storage beyond scalars/plain native values/owned `String`,
+  strong imported Objective-C references, and weak Z-class handles; escaping
+  field loans, weak references to native subclasses themselves, and
   protocol/trait composition;
 - asynchronous, throwing, consuming, static, generic, block-receiving, or
   object-returning overrides, plus variadic native signatures;
@@ -465,8 +466,19 @@ class Counter extends native.CounterBase on thread.main {
 illustrative; the executable fixture is `tests/fixtures/objc-subclass.zs`.
 There is one native allocation, with private inline ivars. Supported fields are
 scalars, imported enums/plain native records, owned `String`, and concrete
-imported Objective-C references (including `NativeClass | null`). Other storage
+imported Objective-C references (including `NativeClass | null`), and `Weak<T>`
+or `Option<Weak<T>>` where `T` is an ordinary Z class. Other storage
 shapes fail closed; this does not yet promise arbitrary ARC/resource graphs.
+
+A native window can therefore hold a weak Z observer while the observer holds
+the window strongly. Borrow an optional handle with
+`match (in this.observer) { some(handle) => ...; none => ...; }`; `handle.upgrade()`
+uses the existing checked weak-reference result. Direct weak-handle snapshots
+retain the weak control block, not the observer. Replacement and automatic
+field destruction release those handles, including when no source `deinit`
+exists. This is not native Objective-C weak-reference support.
+See `tests/fixtures/objc-subclass-weak-state.zs` and the
+[managed-state/helper checkpoint](native-subclass-z-state-design.md).
 
 Every field must be assigned once in a straight-line prefix immediately after
 `super.init`, before other receiver use or control flow. Initializer expressions

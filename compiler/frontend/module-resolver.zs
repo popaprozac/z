@@ -7,6 +7,7 @@ import {
   nativeObjCSubclassBase,
   prepareNativeObjCSubclassTypes,
   validateNativeObjCSubclassDeclarations,
+  validateNativeObjCSubclassStorage,
 } from "./semantic-objc-subclasses.zs";
 import {
   buildResolvedModules,
@@ -13551,6 +13552,7 @@ export function resolveParsedModulesWithForeignContracts(
   try attachForeignContracts(parsed, foreignContracts, inout modules);
   try validateNativeObjCSubclassDeclarations(parsed, modules);
   try prepareNativeObjCSubclassTypes(parsed, inout modules);
+  try validateNativeObjCSubclassStorage(parsed, modules);
   // Checked native entries retain their body evidence through ordinary module
   // validation; dedicated lowering must not reinterpret them as Z ARC records.
   try validateNativeCLayouts(parsed, modules);

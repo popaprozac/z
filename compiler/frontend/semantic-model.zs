@@ -129,6 +129,9 @@ export struct ModuleObjCSubclassField {
   nativeType: String;
   ownedString: boolean;
   strongObject: boolean = false;
+  // Managed Z storage is resolved through ordinary lowering, never a native ABI guess.
+  managedSourceType: String = "";
+  managedCleanup: String = "";
 }
 
 export struct ModuleObjCSubclassPlan {

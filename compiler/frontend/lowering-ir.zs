@@ -34312,6 +34312,26 @@ function lowerModulesIncludingTests(
         throw `${path}: ${message}`;
       }
     }
+    let planIndex: usize = 0;
+    while (planIndex < objectiveCSubclasses.length) {
+      if (objectiveCSubclasses[planIndex].moduleIndex == moduleIndex) {
+        let fieldIndex: usize = 0;
+        while (fieldIndex < objectiveCSubclasses[planIndex].fields.length) {
+          const sourceType = copy objectiveCSubclasses[planIndex].fields[fieldIndex].managedSourceType;
+          if (sourceType.byteLength > 0) {
+            const type = try lowerModuleTypeName(parsed[moduleIndex].program, importedTypes, sourceType);
+            if (type.kind != LoweredTypeKind.weakType && type.kind != LoweredTypeKind.enumType) {
+              throw "native subclass weak storage lost its checked managed type";
+            }
+            objectiveCSubclasses[planIndex].fields[fieldIndex].nativeType =
+              type.kind == LoweredTypeKind.weakType ? "Z_Weak" : `Z_${type.name}`;
+            objectiveCSubclasses[planIndex].fields[fieldIndex].managedCleanup = `Z_${type.name}_deinit`;
+          }
+          fieldIndex = fieldIndex + 1;
+        }
+      }
+      planIndex = planIndex + 1;
+    }
   }
   // Generic demands are collected at individual call sites, but their base
   // imported-type evidence is identical for every specialization owned by the

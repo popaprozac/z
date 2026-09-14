@@ -7,7 +7,7 @@ import {
 } from "./semantic-model.zs";
 import { typeSymbolLocation, transparentTypeName } from "./semantic-type-identities.zs";
 import { inspectNativeSubclassBodies } from "./semantic-objc-subclass-bodies.zs";
-import { nativeObjCSubclassInheritedMethods, nativeObjCStoredObjectABI, nativeObjCObjectType } from "./semantic-objc-subclasses.zs";
+import { nativeObjCSubclassInheritedMethods, nativeObjCStoredObjectABI, nativeObjCObjectType, nativeObjCStoredWeak } from "./semantic-objc-subclasses.zs";
 import { objcMethodLabelsMatch } from "./semantic-member-lookups.zs";
 
 function sameNativeTypes(in left: Array<String>, in right: Array<String>): boolean {
@@ -263,11 +263,13 @@ export function planNativeObjCSubclasses(
       }
       if (matchingFields != 1) throw planError(module, "native subclass stored field requires one checked identity");
       const objectABI = nativeObjCStoredObjectABI(modules, moduleIndex, field.type.name);
+      const managedWeak = nativeObjCStoredWeak(modules, moduleIndex, field.type.name);
       fields.push(ModuleObjCSubclassField({ name: copy field.name,
-        nativeType: field.type.name == "String" ? "Z_String"
+        nativeType: managedWeak ? "" : field.type.name == "String" ? "Z_String"
           : objectABI.byteLength > 0 ? copy objectABI
           : try constructorNativeType(module, modules, moduleIndex, field.type.name),
-        ownedString: field.type.name == "String", strongObject: objectABI.byteLength > 0 }));
+        ownedString: field.type.name == "String", strongObject: objectABI.byteLength > 0,
+        managedSourceType: managedWeak ? copy field.type.name : "" }));
     }
     plans.push(ModuleObjCSubclassPlan({
       moduleIndex, aggregateIndex: sourceIndex, sourceName: copy aggregate.name,

@@ -3067,9 +3067,12 @@ function registerObjCSubclasses(program: Program, globals: Map<string, SymbolVal
       const nativeObject = native?.kind === "object"
         && state.foreignInterfaces.has(publicObjCTypeName(field.type.name))
         && !state.objcSubclasses.has(publicObjCTypeName(field.type.name));
+      const weak = parseWeakType(parseOptionType(field.type.name)?.target ?? field.type.name);
+      const managedWeak = weak && program.structs.some((candidate) =>
+        candidate.name === weak.target && candidate.kind === "class" && !candidate.nativeBase);
       if (field.type.name !== "String" && field.type.name !== "boolean"
-        && !isNumericType(canonicalType(field.type.name, state.foreignNamedTypes)) && !plainRecord && native?.kind !== "enum" && !nativeObject) {
-        objcSubclassError(fileName, field.location, "native stored fields currently support owned String, scalars, plain native value records, and strong imported Objective-C references");
+        && !isNumericType(canonicalType(field.type.name, state.foreignNamedTypes)) && !plainRecord && native?.kind !== "enum" && !nativeObject && !managedWeak) {
+        objcSubclassError(fileName, field.location, "native stored fields currently support owned String, scalars, plain native value records, strong imported Objective-C references, and Weak<T> or Option<Weak<T>> for ordinary Z classes");
       }
     }
     for (const parameter of declaration.constructor!.parameters) {

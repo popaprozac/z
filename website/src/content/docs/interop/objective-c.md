@@ -294,7 +294,8 @@ enable native-object transfer through `thread.spawn` or remove the native
 compiler's broader async composition limits.
 
 Private stored scalars, imported enums/plain native records, owned `String`, and
-strong imported Objective-C references are supported. They live inline in the
+strong imported Objective-C references, and `Weak<T>` / `Option<Weak<T>>` for
+ordinary Z classes are supported. They live inline in the
 native object, not a second wrapper. Native reference fields may be nullable:
 `private link: QuartzCore.CADisplayLink | null;`.
 Initialize every field directly after `super.init`, before other receiver use or
@@ -303,6 +304,14 @@ control flow. Access is direct `this.field` inside a guarded entry; writes requi
 Native reference snapshots retain identity; clearing the original nullable
 field with `null` does not destroy another retained snapshot. Native field
 replacement remains protected against reentrant receiver access.
+
+Weak Z state can break a window/observer cycle: the observer owns the native
+window, while the window stores `Option<Weak<Observer>>`. Inspect it with
+`match (in this.observer)` and upgrade the borrowed handle normally. A direct
+weak snapshot retains only the weak control block; field replacement and
+teardown release it. This does not allow `Weak<NativeSubclass>`, arbitrary
+managed aggregate fields, or escaping field loans. Ordinary private Z-only
+helpers without a native `as` selector remain a follow-up checkpoint.
 
 Existing `deinit { ... }` runs after the readiness gate closes. Its local cleanup
 finishes before automatic reverse-order field cleanup. You may inspect/copy

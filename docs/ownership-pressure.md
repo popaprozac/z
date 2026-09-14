@@ -9274,6 +9274,43 @@ program code. The passing run recorded 52.9 seconds native and 104.3 seconds
 Stage 0 emission with restored metadata; those are probe observations under
 this host's current load, not a controlled compiler benchmark.
 
+## Native subclass weak observer state (2026-09-14)
+
+Zapp's native drag prototype exposed a useful composition boundary: an ordinary
+Z observer needs to own a native window, while the window stores only
+`Option<Weak<Observer>>`. The former native-field allowlist forced this graph
+back toward native glue even though Z already had the required weak ownership.
+
+Both compilers now admit direct `Weak<T>` and `Option<Weak<T>>` fields for
+ordinary Z classes. Initialization remains a straight-line prefix after
+successful `super.init`; native entries keep their main/readiness/exclusivity
+guards. Native field plans obtain managed layout and cleanup from normal Z
+lowering. A second resolved-identity check rejects forward-declared native
+subclasses as weak targets rather than accidentally treating them as Z ARC
+objects before native type preparation.
+
+The bounded `objc-subclass-weak-state.zs` probe checks empty/live/expired state,
+replacement and retained weak snapshots, a strong observer-to-window link
+without a retain cycle, and a weak callback after both objects are destroyed.
+It also moves the observer into an imported module, and checks source `deinit`
+and automatic-only cleanup through both compilers at
+`-O0`/`-O2` with UBSan. Test-only allocation accounting covers the generated
+translation unit, including weak control blocks; it is not a whole-Foundation
+or whole-process leak claim. No ASan process or GUI is required.
+
+The existing ownership vocabulary remains unchanged: inspect the optional field
+with `match (in this.observer)`, then upgrade the borrowed handle. A direct weak
+handle snapshot retains its control block. The containing Option is not newly
+Copy-capable, nor may the caller move it out of borrowed receiver storage.
+
+Private Z-only native-subclass helpers are still the next approved checkpoint.
+Their call boundary must reuse the current receiver access proof rather than
+reacquiring an exclusive loan or becoming an Objective-C selector. Broader
+managed fields and native weak identity are not implied by this storage slice.
+The callback probe uses a block body; the equivalent expression-bodied
+match closure exposed a native-lowering follow-up, recorded in the
+[checkpoint design](native-subclass-z-state-design.md).
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

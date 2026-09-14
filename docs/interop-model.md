@@ -836,7 +836,8 @@ checked designated `super.init...(...)`; explicit `override function ... as
 "selector:"` bodies use native dispatch and ARC identity, not a protocol adapter.
 See [native subclass construction and restrictions](objc-subclass-design.md).
 Private scalar/plain-native-value, owned `String`, and strong imported Objective-C
-reference fields (nullable or nonnullable) plus source `deinit`
+reference fields (nullable or nonnullable), and `Weak<T>` / `Option<Weak<T>>`
+fields targeting ordinary Z classes, plus source `deinit`
 are supported with guarded access and automatic cleanup. Synchronous subclasses
 can coexist with async code, retaining native identity across supported
 main-isolated suspension points without a Z wrapper. Broader resource storage,
