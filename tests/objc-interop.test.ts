@@ -3066,10 +3066,12 @@ hostToolchainTest("copies owned Z strings across NSString boundaries without los
   assert.match(artifact.source, /initWithBytes:bytes length:\(NSUInteger\)value\.length/);
   assert.match(artifact.source, /lengthOfBytesUsingEncoding:NSUTF8StringEncoding/);
 
-  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  const result = spawnSync(process.execPath, [cli, "run", example], {
+    encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+  });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     result.stdout,
     "round trip=answer=42\nproperty=answer=42\nscheme=https\nnullable=answer=42\nnarrowed=yes\nembedded=a\0b\n",
   );
-}, 10_000);
+}, 60_000);

@@ -1,0 +1,3 @@
+declare module "objc-string-lifetime.h" {
+  export function ZStringLifetimeOwner.echoIn(in value: _): _;
+}

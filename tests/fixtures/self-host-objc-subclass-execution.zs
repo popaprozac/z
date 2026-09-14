@@ -42,6 +42,7 @@ function emit(in wirePath: String, in sourcePath: String, in companionPath: Stri
         && declaration.header != "./objc-blocks.h"
         && declaration.header != "objc-adapter-reentrant.h"
         && declaration.header != "objc-registration.h"
+        && declaration.header != "objc-string-lifetime.h"
         && declaration.header != "AppKit/AppKit.h") continue;
       const declarations = try parseForeignContracts(copy contractSource, "objc-subclass.h.zd");
       const contracts = try normalizeForeignContracts(declarations, raw, declaration.header);

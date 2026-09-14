@@ -6458,7 +6458,8 @@ function appendExpression(
     if (declaration.expressions[index].children.length != 1) {
       throw "native Objective-C emission received a malformed String conversion";
     }
-    output.append("z_stage1_nsstring_from_string(");
+    output.append(declaration.expressions[index].value == "owned"
+      ? "z_stage1_nsstring_from_owned_string(" : "z_stage1_nsstring_from_string(");
     const value = declaration.expressions[index].children[0];
     try appendExpression(
       inout output,
@@ -25406,6 +25407,11 @@ function emitLoweredC(
     output.append("  const void *bytes = value.data != NULL ? (const void *)value.data : (const void *)\"\";\n");
     output.append("  NSString *result = [[NSString alloc] initWithBytes:bytes length:(unsigned long)value.length encoding:NSUTF8StringEncoding];\n");
     output.append("  if (result == (NSString *)0) abort();\n");
+    output.append("  return result;\n");
+    output.append("}\n\n");
+    output.append("static inline __attribute__((unused)) NSString *z_stage1_nsstring_from_owned_string(Z_String value) {\n");
+    output.append("  NSString *result = z_stage1_nsstring_from_string(value);\n");
+    output.append("  Z_String_deinit(&value);\n");
     output.append("  return result;\n");
     output.append("}\n\n");
   }

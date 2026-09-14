@@ -9202,16 +9202,77 @@ windows still have their original retirement hold and require a separate review.
 The detailed passing and failing traces live in Zapp's
 `spikes/related-windows/results/2026-09-14/reclamation-*.json` records.
 
-Immediate generated-code follow-up: the related-window title assignment
-`window.title = move title` emits `z_stage1_nsstring_from_string(title)`, but the
-native helper copies the bytes into an NSString without destroying the incoming
-Z String, and the successful caller path emits no `Z_String_deinit(&title)`.
-The same helper also accepts borrowed/literal expressions, so unconditionally
-freeing its argument would be wrong. Isolate owned moves, temporary copies, and
-borrows in a Foundation-only allocation-ledger regression before changing the
-conversion/cleanup lowering. This observation is not yet a standalone runtime
-reproduction or a fix; zero weak window/runtime counts do not measure these
-String buffers. Close this upstream before claiming allocation-stable churn.
+At that checkpoint, the related-window title assignment
+`window.title = move title` emitted `z_stage1_nsstring_from_string(title)`, but the
+native helper copied bytes into NSString without destroying the incoming
+Z String, and the successful caller path emitted no `Z_String_deinit(&title)`.
+The same helper accepted borrowed/literal expressions, so unconditionally
+freeing its argument would have been wrong. That generated-code observation
+needed an isolated allocation-ledger regression before changing conversion
+lowering: zero weak window/runtime counts do not measure these String buffers.
+The reproduction and fix are recorded below.
+
+## 2026-09-14 — String ownership at the NSString copy boundary
+
+The Foundation-only `objc-string-lifetime.zs` allocation ledger confirmed the
+title-buffer leak in both compilers. Before the fix, explicit moves, explicit
+copies, call results, templates, and returned temporaries each left one Z
+allocation outstanding; the two-call conditional scenario left two. The same
+six failing scenarios reproduced under `-O0` and `-O2` for Stage 0 and native
+emission. Literals, named borrows, explicit `in`, and borrowed fields balanced.
+
+The bridge now distinguishes borrowed storage from transferred String values.
+NSString still receives its own UTF-8 byte copy. The owned-input helper then
+releases the transferred Z buffer; the borrowed-input helper leaves source
+storage alone. Explicitly borrowed staged call temporaries retain their ordinary
+post-call cleanup. No new language rule, syntax, reference count, or additional
+allocation is introduced by this distinction.
+
+The native cleanup planner also preserves lexical cleanup for named sources
+whose return/call/assignment syntax looked consuming before NSString conversion.
+It uses lowered borrowed-bridge evidence and existing availability guards; a
+later actual move still disarms cleanup. String-valued conditional expressions
+keep ordinary consuming semantics, with only the selected arm transferred and
+the unselected owner's cleanup preserved. This does not make a conditional
+return of an `in String` parameter legal or introduce borrowed conditional values.
+
+The expanded regression passes 68 executions: 17 scenarios across Stage 0/native
+and `-O0`/`-O2`, with strict Clang warnings, UBSan, five-second runtime deadlines,
+and zero outstanding tracked Z allocations. It includes straight-line local and
+parameter returns, borrowed native calls, call/template temporaries passed to
+`in` parameters, fields, and conditional selection between stored and fresh
+owned Strings. The native oracle is built from the current Z frontend and real
+Clang declaration metadata, not a preinstalled compiler or Stage 0 lowering.
+
+A cold frontend rebuild exceeded the original 180-second compilation deadline;
+the full regression passed in 224.2 seconds with a 360-second build bound. This
+is compiler-bootstrap latency, not a native runtime timeout or a performance
+comparison. Native Foundation/ARC allocations are outside the Z allocator ledger;
+the real WebKit graph-lifetime gate remains a separate framework acceptance test.
+
+The 73 surrounding closure/adapter regressions and three existing Objective-C
+String/borrow checks pass. The standalone native async resource-cleanup and
+cancellation test passes after a byte-identical 11,961,526-byte C compiler fixed
+point. Its initial four-minute bootstrap timeout left compiler descendants;
+the harness now isolates and kills the process group on timeout, with a bounded
+seven-minute bootstrap allowance. The successful rerun took 286.9 seconds in
+total. This changes test orchestration, not runtime timeout or shutdown behavior.
+
+The same tested compiler was promoted for Zapp's 56-case real WebKit lifetime
+matrix, which passes for both compilers, both optimization levels, and both
+asset-delivery modes. Generated related-window code now calls the owned-input
+String bridge for `window.title = move title`. Controlled churn reaches zero
+weak Z/native objects; animated churn reaches zero Z runtime graphs while
+retaining the previously documented AppKit animation observations. These are
+not whole-process allocation or constant-RSS claims.
+
+Two cold framework preparations exceeded 120/180-second emission bounds before
+native execution. Their failure records remain in Zapp. The runtime harness
+now preserves only producer/dependency-validated foreign metadata between runs
+(`--cold` discards it), recopies current sources, and always re-emits/recompiles
+program code. The passing run recorded 52.9 seconds native and 104.3 seconds
+Stage 0 emission with restored metadata; those are probe observations under
+this host's current load, not a controlled compiler benchmark.
 
 ## Not tested yet
 

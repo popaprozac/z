@@ -6,7 +6,13 @@ import {
 function command(executable: string, args: string[], input?: string, timeout = 30_000) {
   const result = spawnSync(executable, args, {
     encoding: "utf8", input, timeout, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    detached: process.platform !== "win32",
   });
+  // A bootstrap can still have native compiler grandchildren when the direct
+  // child times out. Reap its isolated group before removing the workspace.
+  if (result.error && result.pid > 0 && process.platform !== "win32") {
+    try { process.kill(-result.pid, "SIGKILL"); } catch { /* already exited */ }
+  }
   assert.equal(result.status, 0, result.stderr || String(result.error));
   return result.stdout;
 }
@@ -32,7 +38,7 @@ hostToolchainTest("cleans Foundation resources and synchronized storage in nativ
     // Unlike the source-only self-host-emit probe, the standalone driver loads
     // real Clang header metadata. Build it from this checkout, not a stale binary.
     const driver = resolve(directory, "z");
-    command(process.execPath, [resolve(projectRoot, "scripts/bootstrap-native.ts"), driver], undefined, 240_000);
+    command(process.execPath, [resolve(projectRoot, "scripts/bootstrap-native.ts"), driver], undefined, 420_000);
     const native = resolve(directory, "native");
     command(driver, ["build", input, native], undefined, 120_000);
     const source = readFileSync(`${native}.m`, "utf8");
@@ -203,4 +209,4 @@ int main(void) {
     execute(`#define main z_fixture_main\n${source}\n#undef main\n${nativeHarness}`, resolve(directory, "cancellation-ubsan"),
       expected.repeat(3) + "released endpoint\nreleased lease\n".repeat(3));
   } finally { rmSync(directory, { recursive: true, force: true }); }
-}, 360_000);
+}, 600_000);

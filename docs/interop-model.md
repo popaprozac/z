@@ -855,8 +855,15 @@ contracts are not merged or replaced by this forward-declaration completion.
 The executable demo uses `NSApplication.run`, not a Foundation-only run-loop
 pump. Its retained close observer stops/wakes that loop so Z cleanup runs after
 the window closes. `objc.register` applies normal string bridging to native
-registration arguments and retains their native values for teardown; converting
-an owned Z `String` to `NSString` does not consume its source binding.
+registration arguments and retains their native values for teardown. Converting
+an ordinary named Z `String` to `NSString` borrows the source while copying its
+UTF-8 bytes; the source remains usable. An explicit `move` still consumes the
+source, and its transferred Z buffer is released after the native copy is made.
+Fresh call results, templates, and explicit `copy` temporaries likewise finish
+their Z ownership at conversion. A String-valued conditional transfers its
+selected result under ordinary Z ownership rules; the condition is evaluated
+once, and conversion releases that result. This is a byte-copy boundary,
+not zero-copy shared string storage.
 
 The default Objective-C experience remains header-first. Importing AppKit is
 enough for ordinary nominal types, class and instance methods, properties,

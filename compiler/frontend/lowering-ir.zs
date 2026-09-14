@@ -6115,6 +6115,7 @@ function statementMovesName(
 
 struct CleanupMoveIndex {
   movedNames: Set<String>;
+  borrowedBridgeNames: Set<String>;
   movedThreadBindingOffsets: Array<usize>;
   hasControlFlow: boolean;
 }
@@ -6199,6 +6200,7 @@ function cleanupMoveIndex(
   in statements: Array<LoweredStatement>
 ): CleanupMoveIndex {
   let movedNames = Set<String>();
+  let borrowedBridgeNames = Set<String>();
   let hasControlFlow = false;
   for (const statement of arena.nodes) {
     collectDirectStatementMovedNames(
@@ -6214,6 +6216,15 @@ function cleanupMoveIndex(
     ) hasControlFlow = true;
   }
   for (const expression of expressions) {
+    if (expression.kind == LoweredExpressionKind.conditionalValue) hasControlFlow = true;
+    if (expression.kind == LoweredExpressionKind.objectiveCStringFromZ
+      && expression.value == "borrowed" && expression.children.length == 1) {
+      // Source-level return/call/assignment syntax may look consuming before
+      // contextual NSString conversion. Keep the source's lexical cleanup;
+      // only a real lowered move may clear its live flag later.
+      const root = loweredExpressionStorageRoot(expressions, expression.children[0]);
+      if (root.byteLength > 0) borrowedBridgeNames.add(move root);
+    }
     if (
       (expression.kind != LoweredExpressionKind.moveValue
         && expression.kind != LoweredExpressionKind.classOutputSlot)
@@ -6272,9 +6283,14 @@ function cleanupMoveIndex(
   }
   return CleanupMoveIndex({
     movedNames: move movedNames,
+    borrowedBridgeNames: move borrowedBridgeNames,
     movedThreadBindingOffsets: move movedThreadBindingOffsets,
     hasControlFlow,
   });
+}
+
+function cleanupIndexNeedsGuard(in index: CleanupMoveIndex, in name: String): boolean {
+  return index.hasControlFlow || index.borrowedBridgeNames.has(name);
 }
 
 function cleanupIndexMovesBinding(
@@ -6679,7 +6695,7 @@ function planMatchCleanup(
               let guard = "";
               if (
                 moved
-                && (forceMoveLiveGuards || moveIndex.hasControlFlow)
+                && (forceMoveLiveGuards || cleanupIndexNeedsGuard(moveIndex, bindingName))
               ) {
                 guard = ownerLiveFlag(bindingName);
                 statements[loweredArm].liveFlag = guard.copyBytes(
@@ -7083,7 +7099,7 @@ function planCleanupSequence(
             let guard = "";
             if (
               moved
-              && (forceMoveLiveGuards || moveIndex.hasControlFlow)
+              && (forceMoveLiveGuards || cleanupIndexNeedsGuard(moveIndex, bindingName))
             ) {
               guard = ownerLiveFlag(arena.nodes[sourceIndex].name);
               statements[localIndex].liveFlag = guard.copyBytes(
@@ -7170,7 +7186,7 @@ function planCleanupSequence(
           bindingOffset
         );
         let guard = "";
-        if (moved && (forceMoveLiveGuards || moveIndex.hasControlFlow)) {
+        if (moved && (forceMoveLiveGuards || cleanupIndexNeedsGuard(moveIndex, bindingName))) {
           guard = ownerLiveFlag(bindingName);
           statements[child].liveFlag = guard.copyBytes(
             0,
@@ -18171,6 +18187,8 @@ function lowerExpressionExpected(
       index
     );
     if (sourceIsString) {
+      const ownership = expressionBorrowsStoredReference(tree, index)
+        || tree.nodes[index].kind == ExpressionKind.stringExpression ? "borrowed" : "owned";
       const value = try lowerExpression(
         program,
         importedTypes,
@@ -18179,11 +18197,17 @@ function lowerExpressionExpected(
         index,
         inout output
       );
+      // A String-valued conditional transfers only its selected arm. Preserve
+      // that transfer (including normalized temporaries) before freeing the
+      // bridge input, so lexical cleanup cannot also destroy the same buffer.
+      const input = ownership == "owned" ? try wrapOwnedStorage(
+        program, importedTypes, tree, index, "String", value, inout output
+      ) : value;
       return pushExpression(
         inout output,
         LoweredExpressionKind.objectiveCStringFromZ,
-        "",
-        Array<usize>(value),
+        ownership,
+        Array<usize>(input),
         Array<String>()
       );
     }
@@ -28120,7 +28144,7 @@ function lowerFunction(
           declaration.asynchronous
           || hasMainDelayMatch
           || hasMainDelayLoop
-          || functionMoveIndex.hasControlFlow
+          || cleanupIndexNeedsGuard(functionMoveIndex, parameterName)
         ))
       ) {
         guard = ownerLiveFlag(parameter.name);
@@ -28555,7 +28579,7 @@ function lowerConstructor(
         parameter.offset
       );
       let guard = "";
-      if (moved && moveIndex.hasControlFlow) {
+      if (moved && cleanupIndexNeedsGuard(moveIndex, parameter.name)) {
         guard = ownerLiveFlag(parameter.name);
         liveFlags.push(LoweredLiveFlag({
           owner: parameter.name.copyBytes(0, parameter.name.byteLength),

@@ -174,6 +174,13 @@ const snapshot: String = reply;
 The selected String result crosses the native boundary; the boolean condition
 does not. Converting back to `String` creates an independent owned UTF-8 copy.
 
+Passing a named Z `String` to an NSString property or parameter borrows its bytes
+for the native copy; you may keep using the source. `move text` still consumes
+`text`: its Z buffer is released after that copy, as are fresh call results,
+templates, and explicit `copy` temporaries. A String-valued conditional transfers
+its selected result under ordinary Z ownership rules. The bridge does not share
+backing storage or require you to write `copy` merely to preserve a named source.
+
 ## Main-thread requirements enter the type system
 
 Imported Apple metadata and reviewed API notes can mark declarations

@@ -4825,6 +4825,12 @@ function generateObjCStringRuntime(): string {
   return result;
 }
 
+static Z_UNUSED_FUNCTION NSString *z_nsstring_from_owned_string(Z_String value) {
+  NSString *result = z_nsstring_from_string(value);
+  if (value.capacity > 0) free((void *)value.data);
+  return result;
+}
+
 static Z_UNUSED_FUNCTION Z_String z_string_from_nsstring(NSString *value) {
   if (value == nil) abort();
   const NSUInteger length = [value lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
@@ -8446,10 +8452,21 @@ function generateDirectValue(
 }
 
 function generateBridgedStringValue(expression: Expression, value: string, context: GenerationContext): string {
-  if (context.semanticInfo.objcStringsToNative.has(expression.location.offset)) return `z_nsstring_from_string(${value})`;
+  if (context.semanticInfo.objcStringsToNative.has(expression.location.offset)) return generateObjCStringFromZValue(expression, value, context);
   if (context.semanticInfo.objcStringsToZ.has(expression.location.offset)) return `z_string_from_nsstring(${value})`;
   if (context.semanticInfo.swiftStringsToZ.has(expression.location.offset)) return `z_string_from_swift(${value})`;
   return value;
+}
+
+function generateObjCStringFromZValue(expression: Expression, value: string, context: GenerationContext): string {
+  // Borrow stable storage. Fresh values and explicit copy/move operands own
+  // their buffers; copying into NSString finishes that Z ownership immediately.
+  // An explicitly borrowed staged call temporary has its own post-call cleanup.
+  const stagedBorrow = context.expressionOverrides.has(expression.location.offset)
+    && (context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in"
+      || context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in");
+  const borrowed = expression.kind === "string" || isStableStorageExpression(expression) || stagedBorrow;
+  return `${borrowed ? "z_nsstring_from_string" : "z_nsstring_from_owned_string"}(${value})`;
 }
 
 function conditionalConditionContext(expression: Extract<Expression, { kind: "conditional" }>, context: GenerationContext): GenerationContext {
@@ -10890,7 +10907,7 @@ function generateExpression(expression: Expression, context: GenerationContext):
     value = `(*(${value}))`;
   }
   if (context.semanticInfo.objcStringsToNative.has(expression.location.offset)) {
-    return `z_nsstring_from_string(${value})`;
+    return generateObjCStringFromZValue(expression, value, context);
   }
   if (context.semanticInfo.objcStringsToZ.has(expression.location.offset)) {
     return `z_string_from_nsstring(${value})`;
