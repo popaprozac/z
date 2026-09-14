@@ -480,9 +480,20 @@ exists. This is not native Objective-C weak-reference support.
 See `tests/fixtures/objc-subclass-weak-state.zs` and the
 [managed-state/helper checkpoint](native-subclass-z-state-design.md).
 
+Private synchronous instance methods without `as` are ordinary Z-only helpers,
+not native selectors. They can accept/return ordinary managed Z values, including
+`Option<Observer>`. Direct nested `this` calls reuse the active shared/exclusive
+receiver loan; another receiver binding acquires its own guard, including if it
+aliases the current native object. Helper locals finish cleanup while access
+and receiver lifetime remain protected. `objc.selector` rejects these helpers.
+Throwing, async, consuming, static, generic, constructor/deinit helper calls,
+and `super` inside helpers remain outside this tier. The executable pressure
+fixture is `tests/fixtures/objc-subclass-private-helpers.zs`.
+
 Every field must be assigned once in a straight-line prefix immediately after
 `super.init`, before other receiver use or control flow. Initializer expressions
-may call helpers but cannot inspect the partially initialized receiver. The
+may call ordinary free functions but cannot inspect the partially initialized
+receiver or call its private helpers. The
 first tier does not accept field defaults or optional-field shorthand. The
 ordinary checker still checks types, transfers, readonly fields, and subsequent
 uses. Access is direct `this.field` inside the native receiver body; source

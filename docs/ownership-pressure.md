@@ -9303,13 +9303,34 @@ with `match (in this.observer)`, then upgrade the borrowed handle. A direct weak
 handle snapshot retains its control block. The containing Option is not newly
 Copy-capable, nor may the caller move it out of borrowed receiver storage.
 
-Private Z-only native-subclass helpers are still the next approved checkpoint.
-Their call boundary must reuse the current receiver access proof rather than
-reacquiring an exclusive loan or becoming an Objective-C selector. Broader
-managed fields and native weak identity are not implied by this storage slice.
+Private Z-only native-subclass helpers were the next approved checkpoint; the
+follow-up below records their implementation. Broader managed fields and native
+weak identity are not implied by this storage slice.
 The callback probe uses a block body; the equivalent expression-bodied
 match closure exposed a native-lowering follow-up, recorded in the
 [checkpoint design](native-subclass-z-state-design.md).
+
+### Native subclass private helpers: reuse proofs without exporting selectors
+
+The gesture observer pressure case also needs a helper returning
+`Option<Observer>`. Requiring `as "selector:"` for it would expose an implementation
+detail and force a Z managed result through a native ABI. Both compilers now keep
+private synchronous helpers as static C functions inside `@implementation`,
+where Clang permits private ivar access.
+
+A hidden checked loan parameter handles direct `this` nesting. Other bindings
+acquire their own guard, so an alias of the same object cannot use the helper
+path to bypass an active exclusive receiver loan. The fixture exercises nested
+managed returns and writable/read helpers, a second native receiver, reentry
+through native calls and local destruction, and alias conflicts. O0/O2 UBSan
+runs count generated Z allocations and use bounded expected-abort handling.
+
+This is compiler bookkeeping, not additional user syntax. The bounded tier
+requires Ready receivers, no helper `super` dispatch, and no async/throwing,
+consuming, generic, or static helpers. A source-shape check before Stage 0 generic
+specialization prevents unsupported helper declarations from disappearing into
+synthetic methods. Hover/completion shows the Z-only boundary rather than trying
+to find a native selector.
 
 ## Not tested yet
 

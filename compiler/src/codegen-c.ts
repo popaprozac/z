@@ -903,11 +903,11 @@ export function generateC(
   for (const declaration of program.functions) {
     lines.push(`${generateFunctionSignature(declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
   }
+  if (nativeSubclasses.length) lines.push(generateObjCSubclassAccessRuntime(), "");
   for (const declaration of nativeSubclasses) {
     const plan = semanticInfo.objcSubclasses.get(declaration.name)!;
     lines.push(generateObjCSubclassInterface(plan, structs, enums, semanticInfo), "");
   }
-  if (nativeSubclasses.length) lines.push(generateObjCSubclassAccessRuntime(), "");
   for (const type of arenaCreateTypes) {
     lines.push(`${generateArenaCreateSignature(type, structs, enums, semanticInfo.foreignNamedTypes)};`);
   }
@@ -2493,6 +2493,7 @@ static __attribute__((unused)) _z_native_subclass_access_guard _z_native_subclas
   return (_z_native_subclass_access_guard){ state, exclusive };
 }
 static __attribute__((unused)) void _z_native_subclass_access_end(_z_native_subclass_access_guard *guard) {
+  if (!guard->state) return;
   if (guard->exclusive) {
     if (*guard->state != -1) abort();
     *guard->state = 0;
@@ -2528,11 +2529,12 @@ function objcSubclassConstructorSignature(plan: ObjCSubclassPlan, structs: Map<s
 }
 
 function generateObjCSubclassInterface(plan: ObjCSubclassPlan, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>, semanticInfo: SemanticInfo): string {
-  const methods = plan.declaration.methods.map((method) => `${generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name)))};`);
+  const methods = plan.declaration.methods.filter((method) => method.nativeSelector).map((method) => `${generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name)))};`);
+  const helpers = plan.declaration.methods.filter((method) => !method.nativeSelector).map((method) => `${generateFunctionSignature(method, structs, enums, plan.declaration, semanticInfo.foreignNamedTypes)};`).join("\n");
   const initializers = plan.base.methods.filter((method) => method.instance && method.designatedInitializer)
     .map((method) => `${generateObjCProtocolMethodDeclaration({ ...method, required: true }, method.parameters.map((_, index) => `argument${index}`))} NS_UNAVAILABLE;`);
   const fields = plan.declaration.fields.map((field) => `  ${semanticInfo.foreignNamedTypes.get(field.type.name)?.kind === "object" ? "__strong " : ""}${mapType(field.type.name, structs, enums, semanticInfo.foreignNamedTypes)} _z_native_field_${field.name};`).join("\n");
-  return `@interface ${plan.className} : ${plan.base.className} {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n${fields}\n}\n- (instancetype)_z_checkedSelectorTarget __attribute__((objc_direct));\n${objcSubclassInitializerSignature(plan, structs, enums, semanticInfo)} NS_DESIGNATED_INITIALIZER;\n${initializers.join("\n")}\n${methods.join("\n")}\n@end\n\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)};`;
+  return `@interface ${plan.className} : ${plan.base.className} {\n@private\n  unsigned char _z_native_subclass_ready;\n  intptr_t _z_native_subclass_access;\n${fields}\n}\n- (instancetype)_z_checkedSelectorTarget __attribute__((objc_direct));\n${objcSubclassInitializerSignature(plan, structs, enums, semanticInfo)} NS_DESIGNATED_INITIALIZER;\n${initializers.join("\n")}\n${methods.join("\n")}\n@end\n\n${helpers}\n${objcSubclassConstructorSignature(plan, structs, enums, semanticInfo)};`;
 }
 
 function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>, functions: Map<string, FunctionDeclaration>, semanticInfo: SemanticInfo, omitRawNativeBodies: boolean): string {
@@ -2545,7 +2547,9 @@ function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, Struc
   const initializer = generateFunction(constructorFunction, structs, enums, functions, plan.declaration, semanticInfo, omitRawNativeBodies, {
     signature: objcSubclassInitializerSignature(plan, structs, enums, semanticInfo), isInitializer: true,
   });
-  const methods = plan.declaration.methods.map((method) => generateFunction(method, structs, enums, functions, plan.declaration, semanticInfo, omitRawNativeBodies, {
+  const methods = plan.declaration.methods.map((method) => generateFunction(method, structs, enums, functions, plan.declaration, semanticInfo, omitRawNativeBodies, !method.nativeSelector ? {
+    signature: generateFunctionSignature(method, structs, enums, plan.declaration, semanticInfo.foreignNamedTypes), isHelper: true,
+  } : {
     signature: generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name))),
     ...(method.override ? { superclassFallback: generateObjCMessage("super", plan.methods.get(method.location.offset)!.selector, method.parameters.map((parameter) => cBindingName(parameter.name))) } : {}),
   }));
@@ -6742,7 +6746,7 @@ function generateFunction(
   receiver: StructDeclaration | null,
   semanticInfo: SemanticInfo,
   omitRawNativeBody = false,
-  nativeMethod?: { readonly signature: string; readonly isInitializer?: boolean; readonly superclassFallback?: string },
+  nativeMethod?: { readonly signature: string; readonly isInitializer?: boolean; readonly isHelper?: boolean; readonly superclassFallback?: string },
 ): string {
   if (!receiver && isGeneratorFunction(declaration)) {
     return generateGeneratorFunction(declaration, structs, enums, functions, semanticInfo);
@@ -6827,7 +6831,18 @@ function generateFunction(
       // while the original access is still held, including on early returns.
       "__attribute__((objc_precise_lifetime)) id const _z_native_subclass_owner = self;",
       "(void)_z_native_subclass_owner;",
-      `_z_native_subclass_access_guard _z_native_subclass_loan __attribute__((cleanup(_z_native_subclass_access_end))) = _z_native_subclass_access_begin(&self->_z_native_subclass_access, ${declaration.receiverMode === "inout" ? "true" : "false"});`,
+      ...(nativeMethod.isHelper ? [
+        "_z_native_subclass_access_guard _z_native_subclass_loan __attribute__((cleanup(_z_native_subclass_access_end))) = {0};",
+        `if (_z_native_subclass_parent_loan) {
+  if (_z_native_subclass_parent_loan->state != &self->_z_native_subclass_access
+    || (_z_native_subclass_parent_loan->exclusive ? self->_z_native_subclass_access != -1 : self->_z_native_subclass_access <= 0)
+    || ${declaration.receiverMode === "inout" ? "!_z_native_subclass_parent_loan->exclusive" : "false"}) abort();
+} else _z_native_subclass_loan = _z_native_subclass_access_begin(&self->_z_native_subclass_access, ${declaration.receiverMode === "inout" ? "true" : "false"});`,
+        "__attribute__((unused)) _z_native_subclass_access_guard *const _z_native_subclass_current_loan = _z_native_subclass_parent_loan ? _z_native_subclass_parent_loan : &_z_native_subclass_loan;",
+      ] : [
+        `_z_native_subclass_access_guard _z_native_subclass_loan __attribute__((cleanup(_z_native_subclass_access_end))) = _z_native_subclass_access_begin(&self->_z_native_subclass_access, ${declaration.receiverMode === "inout" ? "true" : "false"});`,
+        "__attribute__((unused)) _z_native_subclass_access_guard *const _z_native_subclass_current_loan = &_z_native_subclass_loan;",
+      ]),
     ] : []),
     ...(!receiver && declaration.name === "main"
       ? [
@@ -7136,7 +7151,9 @@ function generateFunctionSignature(
     parameters.push("int argc", "char **argv");
   }
   if (receiver && !declaration.static) {
-    if (receiver.kind === "class") {
+    if (receiver.nativeBase) {
+      parameters.unshift(`${mapType(receiver.name, structs, enums, foreignNamedTypes)} self`, "_z_native_subclass_access_guard *_z_native_subclass_parent_loan");
+    } else if (receiver.kind === "class") {
       const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
       parameters.unshift(`${receiverConst}${structName(receiver.name)} *self`);
     } else if (declaration.receiverMode === "move") parameters.unshift(`${structName(receiver.name)} self`);
@@ -11850,7 +11867,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           const value = receiverView ? `(*(${receiver}))` : receiver;
           return `${weakUpgradeName(weak.target)}(${value})`;
         }
-        const declaration = context.structs.get(receiverValueType);
+        const declaration = context.structs.get(receiverValueType)
+          ?? context.semanticInfo.objcSubclasses.get(receiverValueType)?.declaration;
         if (!declaration) {
           throw new Error(`missing receiver lowering for ${receiverValueType}.${expression.callee.property} at ${expression.location.offset}`);
         }
@@ -11873,6 +11891,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
             ? context.owner.receiverMode === "move" ? "&(self)" : "self"
             : `&(${receiver})`;
         const args = [receiverArgument, ...expression.arguments.map((argument) => generateCallArgument(argument, context))];
+        if (declaration.nativeBase && !method.nativeSelector) {
+          const nested = expression.callee.object.kind === "identifier" && expression.callee.object.name === "this";
+          args.splice(1, 0, nested ? "_z_native_subclass_current_loan" : "NULL");
+        }
         return `${methodName(receiverValueType, expression.callee.property)}(${args.join(", ")})`;
       }
       if (expression.callee.kind === "identifier") {

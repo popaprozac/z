@@ -16344,6 +16344,7 @@ function lowerExpressionContextual(
       if (
         receiverType.kind != LoweredTypeKind.structType
         && receiverType.kind != LoweredTypeKind.classType
+        && receiverType.kind != LoweredTypeKind.foreignObjCType
       ) {
         throw `native method-call lowering requires a concrete struct or class receiver, found ${receiverTypeName}`;
       }
@@ -16352,6 +16353,18 @@ function lowerExpressionContextual(
         tree,
         index
       );
+      if (receiverType.kind == LoweredTypeKind.foreignObjCType) {
+        let checkedHelper = false;
+        for (const plan of evidence.objectiveCSubclasses) {
+          if (plan.nativeName != receiverType.name) continue;
+          for (const helper of plan.helpers) {
+            if (helper.sourceName == sourceMethodName
+              && (helper.receiverMode == receiverMode
+                || (receiverMode.byteLength == 0 && helper.receiverMode == "in"))) checkedHelper = true;
+          }
+        }
+        if (!checkedHelper) throw `native method-call lowering lost checked private helper evidence for ${receiverType.name}.${sourceMethodName} (${receiverMode})`;
+      }
       let receiver = try lowerExpression(
         program,
         importedTypes,
@@ -16387,7 +16400,10 @@ function lowerExpressionContextual(
         index
       );
       let labels = Array<String>();
-      labels.push(receiverType.kind == LoweredTypeKind.classType
+      labels.push(receiverType.kind == LoweredTypeKind.foreignObjCType
+        ? (tree.nodes[receiverInput].kind == ExpressionKind.identifierExpression
+          && tree.nodes[receiverInput].value == "this" ? "nativeHelperSelf" : "nativeHelper")
+        : receiverType.kind == LoweredTypeKind.classType
         ? "class"
         : "struct");
       if (receiverMode.byteLength > 0) {
@@ -33337,6 +33353,15 @@ function appendLoweredProgram(
       match (in nativePlan) {
         some(plan) => {
           loweredMethod.nativeObjCClass = copy plan.nativeName;
+          for (const helper of plan.helpers) {
+            if (helper.offset != method.offset) continue;
+            const expected = loweredMethod.receiverMode == LoweredParameterMode.inputOutput ? "inout" : "in";
+            if (helper.sourceName != method.name || helper.receiverMode != expected
+              || method.objectiveCSelector.byteLength > 0 || method.overrideMethod) {
+              throw "native subclass lowering lost checked private helper evidence";
+            }
+            loweredMethod.compilerIntrinsic = "objcPrivateHelper";
+          }
           for (const entry of plan.methods) {
             if (entry.offset == method.offset) loweredMethod.nativeObjCEntry = Option.some(copy entry);
           }
@@ -33346,7 +33371,9 @@ function appendLoweredProgram(
               if (entry.receiverMode != expected) throw "native subclass lowering lost checked receiver access evidence";
               if (entry.overridesInherited != method.overrideMethod) throw "native subclass lowering lost checked lifecycle dispatch evidence";
             }
-            none => throw "native subclass lowering lost its checked override entry";
+            none => {
+              if (loweredMethod.compilerIntrinsic != "objcPrivateHelper") throw "native subclass lowering lost its checked override entry";
+            }
           }
         }
         none => {}

@@ -1,7 +1,7 @@
 # Z-owned state and helpers in native subclasses
 
-Status: approved direction, 2026-09-14. Weak-field storage is implemented;
-private Z-only helper methods remain the next checkpoint.
+Status: implemented bounded checkpoints, 2026-09-14. Weak-field storage and
+private synchronous Z-only helper methods execute in both compilers.
 
 ## Pressure case
 
@@ -18,12 +18,11 @@ Two compiler boundaries motivated this composition work:
    scalars, plain native records, and strong imported Objective-C references.
    `Option<Weak<GestureObserver>>` was rejected with Z0814. The first checkpoint
    now admits `Weak<T>` and `Option<Weak<T>>` for ordinary Z classes.
-2. `compiler/src/objc-subclasses.ts` requires every declared method to have
-   `as "selector:"`, including private implementation helpers. There is no
-   ordinary Z-only method layer inside a native subclass today.
+2. `compiler/src/objc-subclasses.ts` previously required every declared method
+   to have `as "selector:"`, including private implementation helpers. Private
+   synchronous helpers now use ordinary Z calling conventions and managed types.
 
-The approved complete surface uses existing syntax, schematically (the helper
-below is not executable until the next checkpoint):
+The surface uses existing syntax, schematically:
 
 ```zs
 class NativeWindow extends AppKit.NSWindow on thread.main {
@@ -89,12 +88,33 @@ expression-bodied `move (): i32 => match (...) { ... }` exposed a separate nativ
 lowering gap; preserve that as a follow-up rather than claiming every closure
 expression shape is covered here. It needs no new syntax or public API.
 
-## Private-helper implementation seam
+## Private-helper checkpoint
 
 A bounded Clang syntax probe confirms that a private C function defined inside
 `@implementation` may access that class's private ivars. This provides a route
 to genuinely Z-only helpers without synthesizing Objective-C selectors. The
-next slice still needs checked receiver-access propagation: a direct nested
-helper must not reacquire an already-held exclusive entry loan, while a call
-through a different receiver cannot bypass that receiver's guard. Constructor
-readiness and superclass handoff rules must remain explicit in that lowering.
+implementation uses that seam: helpers are static C functions inside the native
+implementation, with no generated selectors. Their signatures support ordinary
+Z types such as `Option<Observer>`, not just native-entry ABIs.
+
+Direct `this.helper()` calls pass the checked active receiver loan. A read helper
+cannot acquire writable access through a read receiver; nested writable helpers
+reuse the enclosing exclusive loan. Calls through another binding acquire their
+own receiver guard, even if the binding aliases the same native object. Native
+callback reentry therefore cannot bypass exclusivity. Each call pins the receiver
+through local cleanup and guard release; no helper wrapper object is allocated.
+
+The first tier is private, synchronous, non-throwing, non-consuming, nongeneric
+instance helpers. Constructors and deinitializers keep field work inline;
+helpers require a Ready receiver. `super` remains in explicit native entries so
+its checked full-expression handoff is not hidden in an ordinary C helper.
+Receiver captures and escaping field loans remain rejected. `objc.selector`
+accepts only explicit native entries; editor hover and completion distinguish
+private helpers from those entries.
+
+`tests/fixtures/objc-subclass-private-helpers.zs` checks managed results, nested
+reads/writes, second-receiver access, alias conflicts, native reentry, and local
+destructor reentry at `-O0`/`-O2` with UBSan and generated-allocation accounting.
+Negative tests cover visibility, unsupported effects, constructors, selectors,
+readonly access, and captures. All native processes are bounded; expected access
+traps are caught without creating macOS crash reports.

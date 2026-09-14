@@ -124,6 +124,13 @@ export struct ModuleObjCSubclassSuperCall {
   receiverHandoff: boolean = false;
 }
 
+// An ordinary Z method: checked receiver capability, deliberately no selector/ABI.
+export struct ModuleObjCSubclassHelper {
+  offset: usize;
+  sourceName: String;
+  receiverMode: String;
+}
+
 export struct ModuleObjCSubclassField {
   name: String;
   nativeType: String;
@@ -145,6 +152,7 @@ export struct ModuleObjCSubclassPlan {
   initializer: ModuleObjCSubclassEntry;
   unavailableInitializers: Array<ModuleObjCSubclassEntry>;
   methods: Array<ModuleObjCSubclassEntry>;
+  helpers: Array<ModuleObjCSubclassHelper> = Array<ModuleObjCSubclassHelper>();
   superCalls: Array<ModuleObjCSubclassSuperCall>;
   fields: Array<ModuleObjCSubclassField> = Array<ModuleObjCSubclassField>();
 }

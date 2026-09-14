@@ -31,6 +31,7 @@ import { generateAsyncC } from "./async-codegen-c.ts";
 import { programUsesAsyncRuntime } from "./async-runtime-usage.ts";
 import { parseForeignDeclarationContracts } from "./foreign-declarations.ts";
 import { DiagnosticError } from "./diagnostics.ts";
+import { validateObjCSubclassShape } from "./objc-subclasses.ts";
 import type { Stage1ModuleGraph } from "./self-hosting.ts";
 import type { NativeSemanticIndex } from "./native-semantic-index.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
@@ -344,6 +345,11 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     foreignHandleTypes.canonicalBySourceName,
   );
   validateRawNativeDeclarationShapes(resolvedProgram, fileName);
+  // Check authored native boundaries before generic specialization can erase
+  // unsupported method shapes (or turn a private helper into a synthetic one).
+  for (const declaration of resolvedProgram.structs) {
+    if (declaration.nativeBase) validateObjCSubclassShape(declaration, fileName);
+  }
   const genericInference = inferGenericCalls(
     resolvedProgram,
     fileName,

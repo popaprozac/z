@@ -310,8 +310,29 @@ window, while the window stores `Option<Weak<Observer>>`. Inspect it with
 `match (in this.observer)` and upgrade the borrowed handle normally. A direct
 weak snapshot retains only the weak control block; field replacement and
 teardown release it. This does not allow `Weak<NativeSubclass>`, arbitrary
-managed aggregate fields, or escaping field loans. Ordinary private Z-only
-helpers without a native `as` selector remain a follow-up checkpoint.
+managed aggregate fields, or escaping field loans.
+
+Private synchronous helpers without `as` use ordinary Z types and do not become
+Objective-C selectors:
+
+```zs
+private function currentObserver(): Option<Observer> {
+  return match (in this.observer) {
+    some(handle) => match (attempt handle.upgrade()) {
+      success(value) => Option.some(value);
+      failure(_) => Option.none;
+    }
+    none => Option.none;
+  };
+}
+```
+
+Direct `this.currentObserver()` calls reuse the enclosing receiver loan; calls
+through another binding acquire their own access guard. Writes still require
+`inout this`, and native reentry remains checked through local cleanup.
+`objc.selector` only accepts explicit native entries, never these helpers.
+Keep constructor/deinit field work inline and `super` calls in native entries.
+Async, throwing, consuming, static, and generic helpers are not supported yet.
 
 Existing `deinit { ... }` runs after the readiness gate closes. Its local cleanup
 finishes before automatic reverse-order field cleanup. You may inspect/copy

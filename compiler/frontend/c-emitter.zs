@@ -381,6 +381,7 @@ function appendNativeObjCSubclassAccessRuntime(inout output: TextBuffer): void {
   output.append("  if (exclusive ? *state != 0 : (*state < 0 || *state == INTPTR_MAX)) _z_native_subclass_access_conflict();\n");
   output.append("  *state = exclusive ? -1 : *state + 1;\n  return (_z_native_subclass_access_guard){ state, exclusive };\n}\n");
   output.append("static __attribute__((unused)) void _z_native_subclass_access_end(_z_native_subclass_access_guard *guard) {\n");
+  output.append("  if (!guard->state) return;\n");
   output.append("  if (guard->exclusive) {\n    if (*guard->state != -1) abort();\n    *guard->state = 0;\n");
   output.append("  } else {\n    if (*guard->state <= 0) abort();\n    *guard->state -= 1;\n  }\n}\n\n");
   output.append("typedef struct { _z_native_subclass_access_guard *entry; bool active; } _z_native_subclass_handoff;\n");
@@ -6238,12 +6239,20 @@ function appendExpression(
     output.append("(");
     const receiver = declaration.expressions[index].children[0];
     const classReceiver = declaration.expressions[index].labels.length > 0
-      && declaration.expressions[index].labels[0] == "class";
+      && (declaration.expressions[index].labels[0] == "class"
+        || declaration.expressions[index].labels[0] == "nativeHelper"
+        || declaration.expressions[index].labels[0] == "nativeHelperSelf");
     const moveReceiver = declaration.expressions[index].labels.length > 1
       && declaration.expressions[index].labels[1] == "move";
     if (!classReceiver && !moveReceiver) output.append("&(");
     try appendExpression(inout output, declaration, receiver);
     if (!classReceiver && !moveReceiver) output.append(")");
+    if (declaration.expressions[index].labels[0] == "nativeHelperSelf") {
+      if (declaration.nativeObjCClass.byteLength == 0
+        || declaration.compilerIntrinsic == "objcInitializer"
+        || declaration.compilerIntrinsic == "objcDeinitializer") throw "private native helper lost its enclosing receiver loan";
+      output.append(", _z_native_subclass_current_loan");
+    } else if (declaration.expressions[index].labels[0] == "nativeHelper") output.append(", NULL");
     let argument: usize = 1;
     while (argument < declaration.expressions[index].children.length) {
       output.append(", ");
@@ -9089,14 +9098,19 @@ function appendFunctionSignature(
   let first = true;
   match (in declaration.receiverType) {
     some(receiver) => {
-      if (declaration.receiverMode == LoweredParameterMode.input) {
-        output.append("const ");
+      if (declaration.compilerIntrinsic == "objcPrivateHelper") {
+        output.append(declaration.nativeObjCClass);
+        output.append(" *self, _z_native_subclass_access_guard *_z_native_subclass_parent_loan");
+      } else {
+        if (declaration.receiverMode == LoweredParameterMode.input) {
+          output.append("const ");
+        }
+        output.append("Z_");
+        output.append(receiver.name);
+        if (declaration.receiverMode == LoweredParameterMode.value) {
+          output.append(" self");
+        } else output.append(" *self");
       }
-      output.append("Z_");
-      output.append(receiver.name);
-      if (declaration.receiverMode == LoweredParameterMode.value) {
-        output.append(" self");
-      } else output.append(" *self");
       first = false;
     }
     none => {}
@@ -11064,6 +11078,15 @@ function appendFunction(
     output.append("  if (![NSThread isMainThread]) abort();\n");
     if (declaration.compilerIntrinsic == "objcDeinitializer") {
       output.append("  self->_z_native_subclass_ready = 0;\n  {\n");
+    } else if (declaration.compilerIntrinsic == "objcPrivateHelper") {
+      output.append("  if (!self->_z_native_subclass_ready) { fputs(\"Z runtime error: private native helper requires a Ready receiver\\n\", stderr); abort(); }\n");
+      output.append("  __attribute__((objc_precise_lifetime)) id const _z_native_subclass_owner = self;\n  (void)_z_native_subclass_owner;\n");
+      output.append("  _z_native_subclass_access_guard _z_native_subclass_loan __attribute__((cleanup(_z_native_subclass_access_end))) = {0};\n");
+      output.append("  if (_z_native_subclass_parent_loan) {\n    if (_z_native_subclass_parent_loan->state != &self->_z_native_subclass_access\n      || (_z_native_subclass_parent_loan->exclusive ? self->_z_native_subclass_access != -1 : self->_z_native_subclass_access <= 0) || ");
+      output.append(declaration.receiverMode == LoweredParameterMode.inputOutput ? "!_z_native_subclass_parent_loan->exclusive" : "false");
+      output.append(") abort();\n  } else _z_native_subclass_loan = _z_native_subclass_access_begin(&self->_z_native_subclass_access, ");
+      output.append(declaration.receiverMode == LoweredParameterMode.inputOutput ? "true" : "false");
+      output.append(");\n  __attribute__((unused)) _z_native_subclass_access_guard *const _z_native_subclass_current_loan = _z_native_subclass_parent_loan ? _z_native_subclass_parent_loan : &_z_native_subclass_loan;\n");
     } else if (declaration.compilerIntrinsic != "objcInitializer") {
       match (in declaration.nativeObjCEntry) {
         some(entry) => {
@@ -11075,6 +11098,7 @@ function appendFunction(
           output.append("  _z_native_subclass_access_guard _z_native_subclass_loan __attribute__((cleanup(_z_native_subclass_access_end))) = _z_native_subclass_access_begin(&self->_z_native_subclass_access, ");
           output.append(entry.receiverMode == "inout" ? "true" : "false");
           output.append(");\n");
+          output.append("  __attribute__((unused)) _z_native_subclass_access_guard *const _z_native_subclass_current_loan = &_z_native_subclass_loan;\n");
         }
         none => throw "native lifecycle fallback lost its checked method entry";
       }
@@ -25788,7 +25812,7 @@ function emitLoweredC(
   // in the generated translation unit. Make every Z callable visible first
   // so constructor bodies can use the same direct calls as ordinary code.
   for (const declaration of program.functions) {
-    if (declaration.nativeObjCClass.byteLength > 0) continue;
+    if (declaration.nativeObjCClass.byteLength > 0 && declaration.compilerIntrinsic != "objcPrivateHelper") continue;
     try appendFunctionSignature(
       inout output,
       declaration,

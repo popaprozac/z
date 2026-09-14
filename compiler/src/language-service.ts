@@ -1996,6 +1996,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       if (item) return markdownHover(item, source, word.start, word.end);
     }
     if (resolved?.kind === "objc") {
+      const owner = sourceAggregateForType(context, resolved.declaration.typeName)?.declaration;
+      const helper = resolved.instance && owner?.nativeBase
+        && insideAggregateBody(source, fileName, word.start, owner.name)
+        ? owner.methods.find((method) => method.name === word.text && !method.nativeSelector) : null;
+      if (helper) return markdownHover(`${methodDetail(helper, context.typeDisplayNames)}\n// private Z-only helper; not an Objective-C selector\n// on thread.main, borrowing the active receiver access for direct this calls`, source, word.start, word.end);
       if (!resolved.instance && resolved.declaration.className === "NSData" && (word.text === "copy" || word.text === "borrow")) {
         return word.text === "copy"
           ? objCDataCopyHover(resolved.declaration.typeName, source, word.start, word.end)
@@ -5722,7 +5727,7 @@ function memberCompletions(
   const fullContext = safeAnalysis(source, fileName);
   const directReceiver = fullContext ? resolveReceiver(fullContext, receiverText, receiverOffset) : null;
   if (directReceiver?.kind === "objc" && fullContext) {
-    return filterCompletions(objcCompletions(directReceiver.declaration, directReceiver.instance, fullContext), prefix, 1000);
+    return filterCompletions(objcCompletions(directReceiver.declaration, directReceiver.instance, fullContext, offset), prefix, 1000);
   }
   if (directReceiver?.kind === "arena") {
     return filterCompletions([
@@ -6002,7 +6007,7 @@ function memberCompletions(
     return [];
   }
   const resolved = resolveReceiver(context, receiverText, resolvedOffset);
-  if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context), prefix, 1000);
+  if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context, offset), prefix, 1000);
   if (resolved?.kind === "struct") {
     const includePrivate = insideAggregateBody(source, fileName, offset, resolved.declaration.name);
     return filterCompletions(
@@ -7695,7 +7700,7 @@ function resolveModuleHandleType(
   return canonical ? module.types.get(canonical) ?? null : null;
 }
 
-function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, context: AnalyzedSource): CompletionItem[] {
+function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, context: AnalyzedSource, offset?: number): CompletionItem[] {
   const mainIsolated = foreignObjCRequiresMain(declaration, context);
   const properties = collectObjCProperties(declaration, instance, context);
   const accessors = new Set(properties.flatMap((property) => [property.getter, property.setter].filter(Boolean)));
@@ -7704,6 +7709,15 @@ function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, c
     kind: completionKinds.property,
     detail: objcPropertyDetail(property, mainIsolated),
   }));
+  const owner = sourceAggregateForType(context, declaration.typeName)?.declaration;
+  if (instance && owner?.nativeBase && offset !== undefined
+    && sourceAggregateAtOffset(context, offset)?.name === owner.name) {
+    for (const method of owner.methods.filter((method) => !method.nativeSelector)) {
+      items.push({ label: method.name, kind: completionKinds.method,
+        detail: `${methodDetail(method, context.typeDisplayNames)}  // private Z-only helper`,
+        insertText: method.name });
+    }
+  }
   if (!instance && declaration.className === "NSData") {
     items.push({
       label: "copy",

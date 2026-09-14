@@ -11072,6 +11072,17 @@ function inferExpressionNodeType(
             const argumentNodes = callArgumentNodes(children);
             let callKind = staticMethod ? "staticMethod" : "method";
             const nativeBase = valueBindingType(bindings, "__z_native_objc_subclass_base");
+            if (nativeBase.byteLength > 0 && method.objectiveCSelector.byteLength == 0) {
+              const constructingNative = valueBindingType(bindings, "__z_native_objc_initializer_offset");
+              if (constructingNative.byteLength > 0) {
+                const helperBase = nativeObjCSubclassBase(modules, moduleIndex, ownerType);
+                if (helperBase.byteLength > 0) {
+                  throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+                    "private native-subclass helpers require a Ready receiver; keep constructor and deinit field work inline",
+                    tree.nodes[index].line, tree.nodes[index].column, 1);
+                }
+              }
+            }
             if (!staticMethod && nativeBase.byteLength > 0
               && tree.nodes[receiverIndex].kind == ExpressionKind.identifierExpression
               && tree.nodes[receiverIndex].value == "super") {

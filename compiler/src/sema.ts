@@ -3105,6 +3105,7 @@ function registerObjCSubclasses(program: Program, globals: Map<string, SymbolVal
     }
     for (const method of declaration.methods) {
       const selector = method.nativeSelector!;
+      if (!selector) continue; // Private Z-only helpers have no native ABI.
       if (selectors.has(selector)) objcSubclassError(fileName, method.location, `duplicate native override selector ${JSON.stringify(selector)}`);
       selectors.add(selector);
       const inheritedMethod = inherited.find((candidate) => candidate.instance && candidate.selector === selector);
@@ -3137,7 +3138,7 @@ function registerObjCSubclasses(program: Program, globals: Map<string, SymbolVal
       ...base, typeName: declaration.name, className, exportName: declaration.name,
       superName: base.className,
       methods: [
-        ...declaration.methods.map((method) => {
+        ...declaration.methods.filter((method) => method.nativeSelector).map((method) => {
           const native = methods.get(method.location.offset)!;
           // Calls through the source-declared override have its checked Z
           // capabilities, including borrowed native object parameters. Keep
@@ -13434,7 +13435,9 @@ function inferExpressionInner(
           }
           return weakResultTypeName(weak.target);
         }
-        const objcReceiverType = objcReceiver(receiverValueType, state)
+        const nativeHelper = state.objcSubclasses.get(receiverValueType)?.declaration.methods.find(
+          (method) => method.name === expression.callee.property && !method.nativeSelector);
+        const objcReceiverType = nativeHelper ? null : objcReceiver(receiverValueType, state)
           ?? objcProtocolReceiver(receiverValueType, state);
         rejectNullableObjCReceiver(receiverType, expression.callee.object.location, fileName, state);
         if (objcReceiverType) {
@@ -13767,6 +13770,11 @@ function inferExpressionInner(
           });
         }
         requireMemberVisibility(callable.visibility, "method", callable.name, declaration, callable.location, expression.callee.location, fileName, state);
+        if (declaration.nativeBase && !callable.nativeSelector
+          && (state.activeFunction?.name === "constructor" || state.activeFunction?.name === "deinit")) {
+          objcSubclassError(fileName, expression.location,
+            "private native-subclass helpers require a Ready receiver; keep constructor and deinit field work inline");
+        }
         const methodAffinity = declaration.executorAffinity
           ? state.aggregateExecutorAffinities.get(declaration.name) ?? null
           : null;

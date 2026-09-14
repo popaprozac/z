@@ -103,7 +103,23 @@ export function validateObjCSubclassShape(declaration: StructDeclaration, fileNa
   inspect(constructor.body);
   if (declaration.deinitializer) inspect(declaration.deinitializer.body);
   for (const method of declaration.methods) {
-    if (!method.nativeSelector) reject(method.location, "a native subclass method requires an explicit `as \"selector:\"`");
+    if (!method.nativeSelector) {
+      if (method.visibility !== "private" || method.override) reject(method.location,
+        "a native subclass method requires an explicit `as \"selector:\"`, or a private Z-only helper without override");
+      if (method.static || method.async || method.errorType || method.rawBody || method.receiverMode === "move" || method.typeParameters?.length) {
+        reject(method.location, "a private native-subclass helper must be a synchronous, non-throwing, non-consuming instance method");
+      }
+      const rejectSuper = (value: unknown): void => {
+        if (!value || typeof value !== "object") return;
+        const node = value as Expression;
+        if (node.kind === "identifier" && node.name === "super") reject(node.location,
+          "superclass dispatch belongs in an explicit native entry, not a private Z-only helper");
+        for (const child of Object.values(value)) rejectSuper(child);
+      };
+      rejectSuper(method.body);
+      inspect(method.body);
+      continue;
+    }
     if (method.nativeSelector.startsWith("_z_")) reject(method.location, "compiler-owned native selectors beginning with `_z_` cannot be declared");
     if (method.static || method.async || method.errorType || method.rawBody || method.receiverMode === "move" || method.typeParameters?.length) {
       reject(method.location, "a native override must be a synchronous, non-throwing, non-consuming instance method");

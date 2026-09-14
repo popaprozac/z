@@ -1,7 +1,7 @@
 import { ParsedModule } from "./module-symbols.zs";
 import { ReceiverMode } from "./parser.zs";
 import {
-  ModuleObjCSubclassEntry, ModuleObjCSubclassPlan, ModuleObjCSubclassSuperCall, ModuleObjCSubclassField,
+  ModuleObjCSubclassEntry, ModuleObjCSubclassPlan, ModuleObjCSubclassSuperCall, ModuleObjCSubclassField, ModuleObjCSubclassHelper,
   ModuleResolveError, ModuleResolveErrorKind, ModuleSemanticEvidence,
   ResolvedModule, codedModuleResolutionError,
 } from "./semantic-model.zs";
@@ -147,6 +147,7 @@ export function planNativeObjCSubclasses(
       }));
     }
     let methods = Array<ModuleObjCSubclassEntry>();
+    let helpers = Array<ModuleObjCSubclassHelper>();
     let methodIndex: usize = 0;
     for (const method of aggregate.methods) {
       const current = methodIndex;
@@ -154,6 +155,18 @@ export function planNativeObjCSubclasses(
       let found = false;
       for (const checked of signature.methods) {
         if (checked.name != method.name) continue;
+        if (method.objectiveCSelector.byteLength == 0) {
+          const receiverMode = method.receiverMode == ReceiverMode.inputOutput ? "inout" : "in";
+          if (found || checked.objectiveCSelector.byteLength > 0
+            || checked.objectiveCImplementationSelector.byteLength > 0
+            || checked.objectiveCNativeReturnType.byteLength > 0
+            || checked.receiverMode != receiverMode) throw planError(module,
+              `private native helper ${method.name} lost checked Z-only receiver evidence`);
+          found = true;
+          helpers.push(ModuleObjCSubclassHelper({ offset: method.offset,
+            sourceName: copy method.name, receiverMode }));
+          continue;
+        }
         if (found || checked.objectiveCSelector.byteLength == 0
           || checked.objectiveCSelector != checked.objectiveCImplementationSelector
           || checked.objectiveCNativeReturnType.byteLength == 0
@@ -277,7 +290,7 @@ export function planNativeObjCSubclasses(
       superclassNativeName: move superclassNativeName,
       executorAffinity: copy signature.executorAffinity, foreignHeader: move header,
       initializer: move initializer, unavailableInitializers: move unavailableInitializers,
-      methods: move methods, superCalls: move superCalls, fields: move fields,
+      methods: move methods, helpers: move helpers, superCalls: move superCalls, fields: move fields,
     }));
   }
   return plans;

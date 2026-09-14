@@ -26,6 +26,7 @@ struct BodyContext {
   beforeInitialization: boolean;
   initializerOffset: usize;
   dying: boolean = false;
+  helper: boolean = false;
   fields: Array<String> = Array<String>();
 }
 
@@ -110,6 +111,8 @@ function visitExpression(
     if (callee.kind == ExpressionKind.memberExpression && callee.children.length == 1) {
       const receiver = view tree.nodes[callee.children[0]];
       if (receiver.kind == ExpressionKind.identifierExpression && receiver.value == "super") {
+        if (context.helper) throw bodyError(module,
+          "superclass dispatch belongs in an explicit native entry, not a private Z-only helper", node.line, node.column);
         if (context.dying) throw bodyError(module,
           "native subclass deinit cannot publish or call through the dying receiver; use its stored fields", node.line, node.column);
         if (context.beforeInitialization) throw bodyError(module,
@@ -263,7 +266,7 @@ export function inspectNativeSubclassBodies(
     try checkParameters(module, method.parameters);
     const context = BodyContext({
       constructorBody: false, insideClosure: false, beforeInitialization: false,
-      initializerOffset,
+      initializerOffset, helper: method.objectiveCSelector.byteLength == 0,
     });
     for (const root of method.body.roots) {
       try visitStatement(module, method.body, root, context, inout calls);

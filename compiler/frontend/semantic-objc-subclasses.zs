@@ -198,9 +198,17 @@ function validateOverrideShape(
   in module: ParsedModule, in method: FunctionDeclaration
 ): void throws ModuleResolveError {
   if (method.objectiveCSelector.byteLength == 0) {
-    throw subclassError(module,
-      "a native subclass method requires an explicit `as \"selector:\"`",
+    if (method.visibility != Visibility.privateVisibility || method.overrideMethod) throw subclassError(module,
+      "a native subclass method requires an explicit `as \"selector:\"`, or a private Z-only helper without override",
       method.line, method.column);
+    let throwing = false;
+    match (in method.errorType) { some(_) => throwing = true; none => {} }
+    if (method.staticMethod || method.asynchronous || throwing
+      || method.rawLanguage.byteLength > 0 || method.receiverMode == ReceiverMode.move
+      || method.typeParameters.length > 0) throw subclassError(module,
+      "a private native-subclass helper must be a synchronous, non-throwing, non-consuming instance method",
+      method.line, method.column);
+    return;
   }
   if (stringStartsWith(method.objectiveCSelector, "_z_")) throw subclassError(module,
     "compiler-owned native selectors beginning with `_z_` cannot be declared", method.line, method.column);
@@ -488,6 +496,7 @@ function validateNativeObjCSubclassDeclaration(
   let selectors = Array<String>();
   for (const method of aggregate.methods) {
     try validateOverrideShape(module, method);
+    if (method.objectiveCSelector.byteLength == 0) continue;
     for (const selector of selectors) {
       if (selector == method.objectiveCSelector) throw subclassError(module,
         `duplicate native override selector "${selector}"`, method.line, method.column);
@@ -520,6 +529,7 @@ function validateNativeObjCSubclassDeclaration(
   }
   const methods = try nativeObjCSubclassInheritedMethods(module, modules, moduleIndex, aggregate, base.name);
   for (const method of aggregate.methods) {
+    if (method.objectiveCSelector.byteLength == 0) continue;
     let found = false;
     for (const native of methods) {
       if (native.objectiveCSelector != method.objectiveCSelector) continue;
@@ -628,6 +638,10 @@ export function prepareNativeObjCSubclassTypes(
       let methodIndex: usize = 0;
       while (methodIndex < signature.methods.length) {
         const selector = copy signature.methods[methodIndex].objectiveCImplementationSelector;
+        if (selector.byteLength == 0) {
+          methodIndex = methodIndex + 1;
+          continue;
+        }
         let inherited = false;
         for (const native of methods) {
           if (native.objectiveCSelector != selector) continue;

@@ -839,6 +839,10 @@ Private scalar/plain-native-value, owned `String`, and strong imported Objective
 reference fields (nullable or nonnullable), and `Weak<T>` / `Option<Weak<T>>`
 fields targeting ordinary Z classes, plus source `deinit`
 are supported with guarded access and automatic cleanup. Synchronous subclasses
+also support private synchronous Z-only helpers without `as`, including ordinary
+managed results such as `Option<Observer>`. Direct `this` helper calls reuse the
+active receiver loan; other receivers get their own access check. Helpers are
+not selector-addressable, and constructor/deinit work remains inline. Subclasses
 can coexist with async code, retaining native identity across supported
 main-isolated suspension points without a Z wrapper. Broader resource storage,
 escaping field loans, async overrides, and native-object thread transfer remain
