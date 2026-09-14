@@ -42,6 +42,12 @@ replacement of the remaining implementation dependencies, and reproducible
 toolchain distribution. A historical seed can remain archived after that;
 maintaining two feature implementations indefinitely is not the goal.
 
+Both emitters protect generated C-family string literals from C11 trigraph
+translation, including embedded JavaScript such as `??=`. Differential tests
+preserve all nine sequences through ordinary/async strings, templates, and
+module constants; Stage 0 also verifies direct NSString literals and test names.
+Strict Clang warnings stay enabled; this adds no runtime conversion.
+
 ## Core language
 
 | Area | Status | Current boundary |

@@ -13,7 +13,9 @@ production or compatibility-sensitive use.
   trait constraints that specialize across module-private boundaries
 - Value structs, ARC-managed classes, weak references, explicit ownership
   capabilities, deterministic cleanup, and conservative non-escaping views
-- Native C-family code generation through Clang
+- Native C-family code generation through Clang. Both emitters protect embedded
+  source strings from C trigraph translation, preserving literal bytes in
+  ordinary and async code without disabling strict compiler warnings.
 - Source-body nonescape checking for inline borrowed callbacks in both frontends.
   Direct synchronous invocation and proven named helper forwarding are accepted;
   returning, storing, or capturing the callback requires an owned environment.

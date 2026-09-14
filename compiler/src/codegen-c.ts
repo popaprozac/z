@@ -1,4 +1,5 @@
 import { emitReferenceIdentity, identityBorrowsStorage } from "./reference-identity-codegen.ts";
+import { cStringLiteral } from "./c-string-literal.ts";
 import { programUsesTaskScopeRuntime } from "./async-runtime-usage.ts";
 import type {
   Expression,
@@ -1116,8 +1117,8 @@ function generateModuleConstant(
     value = embeddedBytesValue(declaration.initializer.location.offset, embedded.bytes.length);
   } else if (declaration.initializer.kind === "string") {
     value = type === "cstring"
-      ? JSON.stringify(declaration.initializer.value)
-      : `(Z_String){ .data = ${JSON.stringify(declaration.initializer.value)}, .length = sizeof(${JSON.stringify(declaration.initializer.value)}) - 1, .capacity = 0 }`;
+      ? cStringLiteral(declaration.initializer.value)
+      : `(Z_String){ .data = ${cStringLiteral(declaration.initializer.value)}, .length = sizeof(${cStringLiteral(declaration.initializer.value)}) - 1, .capacity = 0 }`;
   } else if (declaration.initializer.kind === "boolean") {
     value = declaration.initializer.value ? "true" : "false";
   } else if (declaration.initializer.kind === "number") {
@@ -1904,7 +1905,9 @@ function cTestNameLiteral(value: string): string {
   const bytes = Buffer.from(value, "utf8");
   let escaped = "";
   for (const byte of bytes) {
-    if (byte >= 0x20 && byte <= 0x7e && byte !== 0x22 && byte !== 0x5c) {
+    if (byte === 0x3f) {
+      escaped += "\\?";
+    } else if (byte >= 0x20 && byte <= 0x7e && byte !== 0x22 && byte !== 0x5c) {
       escaped += String.fromCharCode(byte);
     } else if (byte === 0x22) {
       escaped += '\\"';
@@ -6908,7 +6911,7 @@ function generateRawBodySource(
 ): string {
   const fileName = body.location.fileName ?? fallbackSourceName;
   const firstLinePadding = " ".repeat(Math.max(0, body.location.column - 1));
-  return `#line ${body.location.line} ${JSON.stringify(fileName)}\n`
+  return `#line ${body.location.line} ${cStringLiteral(fileName)}\n`
     + `${firstLinePadding}${omit ? "" : body.source}\n`
     + '#line 1 "<z-generated>"';
 }
@@ -7465,7 +7468,7 @@ function appendTestFailureLiteral(
   target: string,
   value: string,
 ): string {
-  return `z_string_append_bytes(&${target}, ${JSON.stringify(value)}, sizeof(${JSON.stringify(value)}) - 1);`;
+  return `z_string_append_bytes(&${target}, ${cStringLiteral(value)}, sizeof(${cStringLiteral(value)}) - 1);`;
 }
 
 function testEqualityExpression(
@@ -7573,13 +7576,13 @@ function generateConsoleCall(
     if (argument.kind === "template") {
       for (const part of argument.parts) {
         if (part.kind === "text") {
-          if (part.value) lines.push(`fputs(${JSON.stringify(part.value)}, ${stream});`);
+          if (part.value) lines.push(`fputs(${cStringLiteral(part.value)}, ${stream});`);
         } else {
           lines.push(...generateConsoleExpression(part.expression, stream, context));
         }
       }
     } else if (argument.kind === "string") {
-      lines.push(`fputs(${JSON.stringify(argument.value)}, ${stream});`);
+      lines.push(`fputs(${cStringLiteral(argument.value)}, ${stream});`);
     } else {
       lines.push(...generateConsoleExpression(argument, stream, context));
     }
@@ -7659,7 +7662,7 @@ function renderConsoleValue(
     const displayName = foreign?.kind === "object"
       ? foreign.exportName
       : type.replace(/^__z_objc:(?:nullable|nonnull):/, "").split(".").at(-1) ?? "Objective-C object";
-    return [`fprintf(${stream}, ${JSON.stringify(`${displayName}@%p`)}, (__bridge void *)(${value}));`];
+    return [`fprintf(${stream}, ${cStringLiteral(`${displayName}@%p`)}, (__bridge void *)(${value}));`];
   }
   if (type.startsWith("__z_objc_class:")) return [`fputs("<Objective-C class>", ${stream});`];
 
@@ -7684,7 +7687,7 @@ function renderConsoleValue(
   const declaration = context.structs.get(type);
   if (declaration?.kind === "class") {
     const displayName = context.semanticInfo.typeDisplayNames.get(declaration.name) ?? declaration.name;
-    return [`fprintf(${stream}, ${JSON.stringify(`${displayName}@%p`)}, (void *)(${value}));`];
+    return [`fprintf(${stream}, ${cStringLiteral(`${displayName}@%p`)}, (void *)(${value}));`];
   }
   const recordFields = declaration?.fields
     ?? (foreign?.kind === "record" ? foreign.fields.map((field) => ({ name: field.name, type: { name: field.typeName } })) : null);
@@ -7692,10 +7695,10 @@ function renderConsoleValue(
     const displayName = declaration
       ? context.semanticInfo.typeDisplayNames.get(declaration.name) ?? declaration.name
       : foreign?.kind === "record" ? foreign.exportName : type;
-    const lines = [`fputs(${JSON.stringify(`${displayName} { `)}, ${stream});`];
+    const lines = [`fputs(${cStringLiteral(`${displayName} { `)}, ${stream});`];
     recordFields.forEach((field, index) => {
       if (index > 0) lines.push(`fputs(", ", ${stream});`);
-      lines.push(`fputs(${JSON.stringify(`${field.name}: `)}, ${stream});`);
+      lines.push(`fputs(${cStringLiteral(`${field.name}: `)}, ${stream});`);
       lines.push(...renderConsoleValue(`(${value}).${declaration ? cFieldName(field.name) : field.name}`, field.type.name, stream, context));
     });
     lines.push(`fputs(" }", ${stream});`);
@@ -7710,9 +7713,9 @@ function renderConsoleValue(
       const absent = nicheOptionNull(niche);
       return [
         `if (${value} == ${absent}) {`,
-        `  fputs(${JSON.stringify(`${displayName}.none`)}, ${stream});`,
+        `  fputs(${cStringLiteral(`${displayName}.none`)}, ${stream});`,
         `} else {`,
-        `  fputs(${JSON.stringify(`${displayName}.some(`)}, ${stream});`,
+        `  fputs(${cStringLiteral(`${displayName}.some(`)}, ${stream});`,
         ...renderConsoleValue(value, niche, stream, context).map((line) => indent(line, 2)),
         `  fputc(')', ${stream});`,
         `}`,
@@ -7722,7 +7725,7 @@ function renderConsoleValue(
     const lines = [`switch (${enumValue}) {`];
     for (const variant of enumDeclaration.variants) {
       lines.push(`  case ${variantTag(type, variant.name)}:`);
-      lines.push(`    fputs(${JSON.stringify(`${displayName}.${variant.name}`)}, ${stream});`);
+      lines.push(`    fputs(${cStringLiteral(`${displayName}.${variant.name}`)}, ${stream});`);
       if (variant.payload) {
         lines.push(`    fputc('(', ${stream});`);
         lines.push(...renderConsoleValue(`(${value}).data.${variant.name}`, variant.payload.name, stream, context).map((line) => indent(line, 4)));
@@ -7825,7 +7828,7 @@ function renderStringValue(
   if (declaration?.kind === "class") {
     const displayName = context.semanticInfo.typeDisplayNames.get(declaration.name) ?? declaration.name;
     return [
-      `z_string_append_bytes(&${target}, ${JSON.stringify(`${displayName}@`)}, ${displayName.length + 1});`,
+      `z_string_append_bytes(&${target}, ${cStringLiteral(`${displayName}@`)}, ${displayName.length + 1});`,
       `z_string_append_pointer(&${target}, (void *)(${value}));`,
     ];
   }
@@ -7836,11 +7839,11 @@ function renderStringValue(
       ? context.semanticInfo.typeDisplayNames.get(declaration.name) ?? declaration.name
       : foreign?.kind === "record" ? foreign.exportName : type;
     const prefix = `${displayName} { `;
-    const lines = [`z_string_append_bytes(&${target}, ${JSON.stringify(prefix)}, sizeof(${JSON.stringify(prefix)}) - 1);`];
+    const lines = [`z_string_append_bytes(&${target}, ${cStringLiteral(prefix)}, sizeof(${cStringLiteral(prefix)}) - 1);`];
     recordFields.forEach((field, index) => {
       if (index > 0) lines.push(`z_string_append_bytes(&${target}, ", ", 2);`);
       const label = `${field.name}: `;
-      lines.push(`z_string_append_bytes(&${target}, ${JSON.stringify(label)}, sizeof(${JSON.stringify(label)}) - 1);`);
+      lines.push(`z_string_append_bytes(&${target}, ${cStringLiteral(label)}, sizeof(${cStringLiteral(label)}) - 1);`);
       lines.push(...renderStringValue(`(${value}).${declaration ? cFieldName(field.name) : field.name}`, field.type.name, target, context));
     });
     lines.push(`z_string_append_bytes(&${target}, " }", 2);`);
@@ -7857,9 +7860,9 @@ function renderStringValue(
       const some = `${displayName}.some(`;
       return [
         `if (${value} == ${absent}) {`,
-        `  z_string_append_bytes(&${target}, ${JSON.stringify(none)}, sizeof(${JSON.stringify(none)}) - 1);`,
+        `  z_string_append_bytes(&${target}, ${cStringLiteral(none)}, sizeof(${cStringLiteral(none)}) - 1);`,
         `} else {`,
-        `  z_string_append_bytes(&${target}, ${JSON.stringify(some)}, sizeof(${JSON.stringify(some)}) - 1);`,
+        `  z_string_append_bytes(&${target}, ${cStringLiteral(some)}, sizeof(${cStringLiteral(some)}) - 1);`,
         ...renderStringValue(value, niche, target, context).map((line) => indent(line, 2)),
         `  z_string_append_bytes(&${target}, ")", 1);`,
         `}`,
@@ -7870,7 +7873,7 @@ function renderStringValue(
     for (const variant of enumDeclaration.variants) {
       const label = `${displayName}.${variant.name}`;
       lines.push(`  case ${variantTag(type, variant.name)}:`);
-      lines.push(`    z_string_append_bytes(&${target}, ${JSON.stringify(label)}, sizeof(${JSON.stringify(label)}) - 1);`);
+      lines.push(`    z_string_append_bytes(&${target}, ${cStringLiteral(label)}, sizeof(${cStringLiteral(label)}) - 1);`);
       if (variant.payload) {
         lines.push(`    z_string_append_bytes(&${target}, "(", 1);`);
         lines.push(...renderStringValue(`(${value}).data.${variant.name}`, variant.payload.name, target, context).map((line) => indent(line, 4)));
@@ -9284,7 +9287,7 @@ function generateTemplateValue(
   for (const part of expression.parts) {
     if (part.kind === "text") {
       if (part.value) {
-        const literal = JSON.stringify(part.value);
+        const literal = cStringLiteral(part.value);
         lines.push(`z_string_append_bytes(&${temporary}, ${literal}, sizeof(${literal}) - 1);`);
       }
       continue;
@@ -9319,7 +9322,7 @@ function generateBorrowedCStringValue(
   context: GenerationContext,
   consumeValue: (value: string) => string,
 ): string {
-  if (expression.kind === "string") return consumeValue(JSON.stringify(expression.value));
+  if (expression.kind === "string") return consumeValue(cStringLiteral(expression.value));
   if (isStableStorageExpression(expression)) {
     const value = generateExpression(expression, context);
     return consumeValue(`((${value}).data != NULL ? (${value}).data : "")`);
@@ -10931,12 +10934,12 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       );
     case "string":
       if (context.semanticInfo.objcStringLiterals.has(expression.location.offset)) {
-        return `@${JSON.stringify(expression.value)}`;
+        return `@${cStringLiteral(expression.value)}`;
       }
       if (context.semanticInfo.cstringConversions.has(expression.location.offset)) {
-        return JSON.stringify(expression.value);
+        return cStringLiteral(expression.value);
       }
-      return `(Z_String){ .data = ${JSON.stringify(expression.value)}, .length = sizeof(${JSON.stringify(expression.value)}) - 1, .capacity = 0 }`;
+      return `(Z_String){ .data = ${cStringLiteral(expression.value)}, .length = sizeof(${cStringLiteral(expression.value)}) - 1, .capacity = 0 }`;
     case "template":
       throw new Error(
         `${expression.location.fileName ?? "<source>"}:${expression.location.line}:${expression.location.column}: `
@@ -12013,7 +12016,7 @@ function generateCallArgument(expression: Expression, context: GenerationContext
   const callbackTarget = context.semanticInfo.foreignCallbackTargets.get(expression.location.offset);
   if (callbackTarget) return callbackTarget;
   if (context.semanticInfo.cstringConversions.has(expression.location.offset)) {
-    if (expression.kind === "string") return JSON.stringify(expression.value);
+    if (expression.kind === "string") return cStringLiteral(expression.value);
     const value = generateExpression(expression, context);
     return `((${value}).data != NULL ? (${value}).data : "")`;
   }

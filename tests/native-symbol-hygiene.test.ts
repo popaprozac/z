@@ -1,6 +1,100 @@
 import {
-  assert, cli, compileToC, mkdtempSync, resolve, rmSync, spawnSync, test, writeFileSync,
+  assert, cli, compileTestsToNative, compileToC, mkdtempSync, resolve, rmSync, spawnSync, test, writeFileSync,
 } from "./support/bootstrap.ts";
+
+test("preserves C trigraph sequences in literals, templates, async frames, and test names", () => {
+  const directory = mkdtempSync("/tmp/z-string-hygiene-");
+  const payload = "??= ??/ ??' ??( ??) ??! ??< ??> ??- JavaScript: cache ??= new Map();";
+  const literal = JSON.stringify(payload);
+  try {
+    for (const async of [false, true]) {
+      const input = resolve(directory, async ? "async.zs" : "sync.zs");
+      const source = `import console from "std/console";
+${async ? 'import { scheduler } from "std/async";' : ""}
+const embedded: String = ${literal};
+const nativeValue: cstring = ${literal};
+function nativeText(value: cstring): void = raw c { puts(value); }
+function sourceText(): String { return ${literal}; }
+${async ? "async " : ""}function main(): i32 {
+  const stored = ${literal};
+  ${async ? "await scheduler.yield();" : ""}
+  console.log(stored);
+  console.log(embedded);
+  console.log(${literal});
+  const prefix = "start:";
+  console.log(\`\${prefix}${payload}\`);
+  const interpolated = \`\${prefix}${payload}\`;
+  console.log(interpolated);
+  nativeText(nativeValue);
+  const returned = sourceText();
+  console.log(returned);
+  return 0;
+}`;
+      writeFileSync(input, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(native.status, 0, native.stderr || String(native.error));
+      for (const emission of [compileToC(source, input), native.stdout]) {
+        const expected = [payload, payload, payload, `start:${payload}`, `start:${payload}`, payload, payload].join("\n") + "\n";
+        const languages = process.platform === "darwin" ? ["c", "objective-c"] : ["c"];
+        for (const language of languages) for (const optimization of ["-O0", "-O2"]) {
+          const binary = resolve(directory, "program");
+          const built = spawnSync("clang", ["-x", language, "-std=c11", "-Wall", "-Wextra", "-Werror",
+            "-Wtrigraphs", optimization, "-pthread", "-fsanitize=undefined", "-fno-sanitize-recover=all",
+            "-", "-o", binary], {
+            input: emission, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+          });
+          assert.equal(built.status, 0, `${async}/${language}/${optimization}: ${built.stderr || built.error}`);
+          const ran = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+          assert.equal(ran.status, 0, ran.stderr || String(ran.error));
+          assert.equal(ran.stdout, expected);
+        }
+      }
+    }
+    const testSource = compileTestsToNative(`test ${literal} {}`, resolve(directory, "test.zs")).source;
+    const binary = resolve(directory, "tests");
+    const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wtrigraphs", "-", "-o", binary], {
+      input: testSource, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+    });
+    assert.equal(built.status, 0, built.stderr);
+    const ran = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+    assert.equal(ran.status, 0, ran.stderr || String(ran.error));
+    assert.ok(ran.stdout.includes(`test ${payload} ... ok\n`));
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("preserves trigraph text through Stage 0 NSString literals and Z String conversion", () => {
+  if (process.platform !== "darwin") return;
+  const directory = mkdtempSync("/tmp/z-objc-string-hygiene-");
+  const payload = "??= ??/ ??' ??( ??) ??! ??< ??> ??-";
+  try {
+    const input = resolve(directory, "main.zs");
+    const source = `import Foundation from "Foundation/Foundation.h";
+import console from "std/console";
+function main(): i32 {
+  const message: Foundation.NSString = ${JSON.stringify(payload)};
+  const snapshot: String = message;
+  console.log(snapshot);
+  return 0;
+}`;
+    writeFileSync(input, source);
+    // The native emitter uses its shared byte-literal path, covered above.
+    // Stage 0 additionally emits Objective-C @"..." literals directly.
+    for (const emission of [compileToC(source, input)]) {
+      for (const optimization of ["-O0", "-O2"]) {
+        const binary = resolve(directory, "program");
+        const built = spawnSync("clang", ["-x", "objective-c", "-std=c11", "-fobjc-arc", "-framework", "Foundation",
+          "-Wall", "-Wextra", "-Werror", "-Wtrigraphs", optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all",
+          "-", "-o", binary], { input: emission, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+        assert.equal(built.status, 0, built.stderr || String(built.error));
+        const ran = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+        assert.equal(ran.status, 0, ran.stderr || String(ran.error));
+        assert.equal(ran.stdout, `${payload}\n`);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
 
 test("keeps user methods distinct from ARC helpers and escaped user methods", () => {
   const directory = mkdtempSync("/tmp/z-method-hygiene-");

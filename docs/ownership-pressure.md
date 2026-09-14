@@ -9005,6 +9005,41 @@ existing owned-local storage, but no new whole-application benchmark was run.
 Public related-window creation and document-bound unsolicited terminal delivery
 remain framework integration work. Styling/injection proposals remain separate.
 
+## 2026-09-13 — Document retirement and embedded-source string fidelity
+
+Zapp now delivers related-document retirement only after native routing and
+window teardown commit. Native submission checks the original owner identity;
+the receiving JavaScript realm checks its document token again. The owner's
+existing lifetime helper rejects retained child requests before queuing user
+cleanup callbacks. The internal observer is installed after native preparation
+and before opening the child, so immediate closure is remembered without an
+unbounded inbox of unknown terminal messages. No new Z ownership rule or public
+framework API was needed. Native teardown never waits for JavaScript delivery.
+
+The packaged Z Notes smoke exposed a compiler issue that file-fed WebKit probes
+did not: embedded JavaScript containing `??=` reached generated C unchanged, and
+C11's trigraph translation interpreted it before string-literal parsing. Both
+emitters now escape question marks as `\?` in C-family literals. Stage 0 uses
+the same protection for module constants, ordinary/Objective-C literals,
+templates, console output, async frames, and test diagnostics/names. The native
+emitter's shared literal writer supplies the corresponding protection. The
+source text and runtime bytes are unchanged; warnings remain errors.
+
+`tests/native-symbol-hygiene.test.ts` checks all nine trigraph sequences through
+both emitters in synchronous and suspended async code, compiled as C and
+Objective-C at `-O0`/`-O2` with UBSan. It also checks Stage 0's direct NSString
+literal/conversion path and test-name output. The native compiler still reaches
+a byte-identical fixed point, and packaged Z Notes passes with the real bundled
+bootstrap. This is byte fidelity, not a new runtime allocation or performance
+claim. Related-window styling and public creation remain separate work.
+
+A separate regression-authoring observation remains queued: a literal passed
+directly to a Z-authored `raw c` function's `cstring` parameter is accepted by
+Stage 0 but native `self-host-emit` can pass a `Z_String` instead of projecting
+the C pointer. An explicitly typed module `cstring` constant follows the working
+native path. This is an upstream contextual-call lowering gap, not a framework
+change required by the packaged bootstrap.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

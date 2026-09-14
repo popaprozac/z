@@ -1,4 +1,5 @@
 import { emitReferenceIdentity, identityBorrowsStorage } from "./reference-identity-codegen.ts";
+import { cStringLiteral } from "./c-string-literal.ts";
 import { programUsesTaskScopeRuntime } from "./async-runtime-usage.ts";
 import type {
   CallExpression,
@@ -7116,7 +7117,7 @@ function emitPreparedFrameExpression(
           for (const part of candidate.parts) {
             if (part.kind === "text") {
               if (part.value) {
-                const literal = JSON.stringify(part.value);
+                const literal = cStringLiteral(part.value);
                 prefix.push(`z_string_append_bytes(&${temporary}, ${literal}, sizeof(${literal}) - 1);`);
               }
               continue;
@@ -7305,13 +7306,13 @@ function emitAsyncConsoleCall(
     if (argument.kind === "template") {
       for (const part of argument.parts) {
         if (part.kind === "text") {
-          if (part.value) lines.push(`fputs(${JSON.stringify(part.value)}, ${stream});`);
+          if (part.value) lines.push(`fputs(${cStringLiteral(part.value)}, ${stream});`);
         } else {
           lines.push(...emitAsyncConsoleValue(part.expression, stream, plan, fileName));
         }
       }
     } else if (argument.kind === "string") {
-      lines.push(`fputs(${JSON.stringify(argument.value)}, ${stream});`);
+      lines.push(`fputs(${cStringLiteral(argument.value)}, ${stream});`);
     } else {
       lines.push(...emitAsyncConsoleValue(argument, stream, plan, fileName));
     }
@@ -7329,7 +7330,7 @@ function emitAsyncConsoleValue(
 ): string[] {
   const type = frameExpressionType(expression, plan);
   if (type === "null") return [`fputs("null", ${stream});`];
-  if (expression.kind === "string") return [`fputs(${JSON.stringify(expression.value)}, ${stream});`];
+  if (expression.kind === "string") return [`fputs(${cStringLiteral(expression.value)}, ${stream});`];
   const temporary = `_z_async_console_${expression.location.offset}`;
   const value = emitFrameExpression(expression, plan, fileName);
   return [
@@ -7364,14 +7365,14 @@ function renderAsyncConsoleValue(
   const declaration = plan.types.structs.get(type);
   if (declaration?.kind === "class") {
     const displayName = plan.types.semanticInfo.typeDisplayNames.get(type) ?? type;
-    return [`fprintf(${stream}, ${JSON.stringify(`${displayName}@%p`)}, (void *)(${value}));`];
+    return [`fprintf(${stream}, ${cStringLiteral(`${displayName}@%p`)}, (void *)(${value}));`];
   }
   if (declaration?.kind === "struct") {
     const displayName = plan.types.semanticInfo.typeDisplayNames.get(type) ?? type;
-    const lines = [`fputs(${JSON.stringify(`${displayName} { `)}, ${stream});`];
+    const lines = [`fputs(${cStringLiteral(`${displayName} { `)}, ${stream});`];
     declaration.fields.forEach((field, index) => {
       if (index > 0) lines.push(`fputs(", ", ${stream});`);
-      lines.push(`fputs(${JSON.stringify(`${field.name}: `)}, ${stream});`);
+      lines.push(`fputs(${cStringLiteral(`${field.name}: `)}, ${stream});`);
       lines.push(...renderAsyncConsoleValue(`(${value}).${cFieldName(field.name)}`, field.type.name, stream, location, plan, fileName));
     });
     lines.push(`fputs(" }", ${stream});`);
@@ -7384,7 +7385,7 @@ function renderAsyncConsoleValue(
     const lines = [`switch ((${value}).tag) {`];
     for (const variant of enumeration.variants) {
       lines.push(`  case ${resultTag(type, variant.name)}:`);
-      lines.push(`    fputs(${JSON.stringify(`${displayName}.${variant.name}`)}, ${stream});`);
+      lines.push(`    fputs(${cStringLiteral(`${displayName}.${variant.name}`)}, ${stream});`);
       if (variant.payload) {
         lines.push(`    fputc('(', ${stream});`);
         lines.push(...renderAsyncConsoleValue(
@@ -7478,7 +7479,7 @@ function renderAsyncStringValue(
   if (declaration?.kind === "class") {
     const displayName = plan.types.semanticInfo.typeDisplayNames.get(type) ?? type;
     return [
-      `z_string_append_bytes(&${target}, ${JSON.stringify(`${displayName}@`)}, ${displayName.length + 1});`,
+      `z_string_append_bytes(&${target}, ${cStringLiteral(`${displayName}@`)}, ${displayName.length + 1});`,
       `z_string_append_pointer(&${target}, (void *)(${value}));`,
     ];
   }
@@ -7492,12 +7493,12 @@ function renderAsyncStringValue(
       : foreign?.kind === "record" ? foreign.exportName : type;
     const prefixValue = `${displayName} { `;
     const lines = [
-      `z_string_append_bytes(&${target}, ${JSON.stringify(prefixValue)}, sizeof(${JSON.stringify(prefixValue)}) - 1);`,
+      `z_string_append_bytes(&${target}, ${cStringLiteral(prefixValue)}, sizeof(${cStringLiteral(prefixValue)}) - 1);`,
     ];
     recordFields.forEach((field, index) => {
       if (index > 0) lines.push(`z_string_append_bytes(&${target}, ", ", 2);`);
       const label = `${field.name}: `;
-      lines.push(`z_string_append_bytes(&${target}, ${JSON.stringify(label)}, sizeof(${JSON.stringify(label)}) - 1);`);
+      lines.push(`z_string_append_bytes(&${target}, ${cStringLiteral(label)}, sizeof(${cStringLiteral(label)}) - 1);`);
       lines.push(...renderAsyncStringValue(
         `((${value}).${declaration ? cFieldName(field.name) : field.name})`,
         field.type.name,
@@ -7521,9 +7522,9 @@ function renderAsyncStringValue(
       const some = `${displayName}.some(`;
       return [
         `if (${value} == ${absent}) {`,
-        `  z_string_append_bytes(&${target}, ${JSON.stringify(none)}, sizeof(${JSON.stringify(none)}) - 1);`,
+        `  z_string_append_bytes(&${target}, ${cStringLiteral(none)}, sizeof(${cStringLiteral(none)}) - 1);`,
         "} else {",
-        `  z_string_append_bytes(&${target}, ${JSON.stringify(some)}, sizeof(${JSON.stringify(some)}) - 1);`,
+        `  z_string_append_bytes(&${target}, ${cStringLiteral(some)}, sizeof(${cStringLiteral(some)}) - 1);`,
         ...renderAsyncStringValue(value, niche, target, location, plan, fileName).map((line) => indent(line, 2)),
         `  z_string_append_bytes(&${target}, ")", 1);`,
         "}",
@@ -7533,7 +7534,7 @@ function renderAsyncStringValue(
     for (const variant of enumeration.variants) {
       const label = `${displayName}.${variant.name}`;
       lines.push(`  case ${resultTag(type, variant.name)}:`);
-      lines.push(`    z_string_append_bytes(&${target}, ${JSON.stringify(label)}, sizeof(${JSON.stringify(label)}) - 1);`);
+      lines.push(`    z_string_append_bytes(&${target}, ${cStringLiteral(label)}, sizeof(${cStringLiteral(label)}) - 1);`);
       if (variant.payload) {
         lines.push(`    z_string_append_bytes(&${target}, "(", 1);`);
         lines.push(...renderAsyncStringValue(
@@ -7606,8 +7607,8 @@ function emitFrameExpressionInner(
       const type = plan.types.semanticInfo.expressionTypes.get(expression.location.offset);
       const convertedToCString = plan.types.semanticInfo.cstringConversions.has(expression.location.offset);
       return type === "String" && !convertedToCString
-        ? `(Z_String){ .data = ${JSON.stringify(expression.value)}, .length = sizeof(${JSON.stringify(expression.value)}) - 1, .capacity = 0 }`
-        : JSON.stringify(expression.value);
+        ? `(Z_String){ .data = ${cStringLiteral(expression.value)}, .length = sizeof(${cStringLiteral(expression.value)}) - 1, .capacity = 0 }`
+        : cStringLiteral(expression.value);
     }
     case "identifier":
       if (plan.types.semanticInfo.moduleConstantReferences.has(expression.location.offset)) {

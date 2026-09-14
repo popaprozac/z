@@ -4139,6 +4139,7 @@ function appendCStringLiteral(
     const byte = value.byteAt(index);
     if (byte == 34) output.append("\\\"");
     else if (byte == 92) output.append("\\\\");
+    else if (byte == 63) output.append("\\?");
     else if (byte == 10) output.append("\\n");
     else if (byte == 13) output.append("\\r");
     else if (byte == 9) output.append("\\t");
