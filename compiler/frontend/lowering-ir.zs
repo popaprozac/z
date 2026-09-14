@@ -5719,7 +5719,9 @@ function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
 }
 
 function treeIsRetainedReference(
-  in program: Program, in evidence: ModuleSemanticEvidence,
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree, index: usize
 ): boolean {
   if (tree.nodes[index].kind != ExpressionKind.identifierExpression) return false;
@@ -5761,11 +5763,22 @@ function treeIsRetainedReference(
     if (aggregate.name == typeName
       && aggregate.kind == DeclarationKind.classDeclaration) return true;
   }
+  // Imported class handles and callable aliases keep the same retain/release
+  // semantics as local declarations. Native calls (including objc.register)
+  // retain these values; treating their argument uses as moves suppresses the
+  // original binding's cleanup in straight-line code.
+  for (const imported of importedTypes) {
+    if (imported.localName != typeName && imported.targetName != typeName) continue;
+    return imported.kind == LoweredTypeKind.classType
+      || imported.kind == LoweredTypeKind.functionType
+      || imported.kind == LoweredTypeKind.weakType;
+  }
   return false;
 }
 
 function collectTreeMovedNames(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize,
@@ -5816,7 +5829,7 @@ function collectTreeMovedNames(
       if (
         parameterModes[argumentPosition - 1] == "value"
         && tree.nodes[argument].kind == ExpressionKind.identifierExpression
-        && !treeIsRetainedReference(program, evidence, tree, argument)
+        && !treeIsRetainedReference(program, importedTypes, evidence, tree, argument)
       ) movedNames.add(tree.nodes[argument].value.copyBytes(
         0,
         tree.nodes[argument].value.byteLength
@@ -5936,7 +5949,7 @@ function collectTreeMovedNames(
           for (const field of tree.nodes[initializer].children) {
             if (
               tree.nodes[field].kind == ExpressionKind.identifierExpression
-              && !treeIsRetainedReference(program, evidence, tree, field)
+              && !treeIsRetainedReference(program, importedTypes, evidence, tree, field)
             ) movedNames.add(tree.nodes[field].value.copyBytes(
               0,
               tree.nodes[field].value.byteLength
@@ -5955,7 +5968,7 @@ function collectTreeMovedNames(
           if (
             declaration.parameters[parameter].mode == ParameterMode.value
             && tree.nodes[argument].kind == ExpressionKind.identifierExpression
-            && !treeIsRetainedReference(program, evidence, tree, argument)
+            && !treeIsRetainedReference(program, importedTypes, evidence, tree, argument)
           ) movedNames.add(tree.nodes[argument].value.copyBytes(
             0,
             tree.nodes[argument].value.byteLength
@@ -5966,24 +5979,26 @@ function collectTreeMovedNames(
     }
   }
   for (const child of tree.nodes[index].children) {
-    collectTreeMovedNames(program, evidence, tree, child, inout movedNames);
+    collectTreeMovedNames(program, importedTypes, evidence, tree, child, inout movedNames);
   }
 }
 
 function treeMovesName(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize,
   in name: String
 ): boolean {
   let movedNames = Set<String>();
-  collectTreeMovedNames(program, evidence, tree, index, inout movedNames);
+  collectTreeMovedNames(program, importedTypes, evidence, tree, index, inout movedNames);
   return movedNames.has(name);
 }
 
 function syntaxMovesName(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in expression: ExpressionSyntax,
   in name: String
@@ -5991,7 +6006,7 @@ function syntaxMovesName(
   return match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
-      select treeMovesName(program, evidence, tree, root, name);
+      select treeMovesName(program, importedTypes, evidence, tree, root, name);
     }
     none => false;
   };
@@ -5999,6 +6014,7 @@ function syntaxMovesName(
 
 function collectSyntaxMovedNames(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in expression: ExpressionSyntax,
   inout movedNames: Set<String>
@@ -6008,6 +6024,7 @@ function collectSyntaxMovedNames(
       const root = tree.root;
       collectTreeMovedNames(
         program,
+        importedTypes,
         evidence,
         tree,
         root,
@@ -6031,13 +6048,15 @@ function syntaxIsIdentifier(
 }
 
 function syntaxIsRetainedReference(
-  in program: Program, in evidence: ModuleSemanticEvidence,
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
   in expression: ExpressionSyntax
 ): boolean {
   return match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
-      select treeIsRetainedReference(program, evidence, tree, root);
+      select treeIsRetainedReference(program, importedTypes, evidence, tree, root);
     }
     none => false;
   };
@@ -6045,6 +6064,7 @@ function syntaxIsRetainedReference(
 
 function statementMovesName(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in statement: Statement,
@@ -6061,9 +6081,9 @@ function statementMovesName(
         )
         && syntaxIsIdentifier(expression, name)
         && (statement.kind != StatementKind.returnStatement
-          || !syntaxIsRetainedReference(program, evidence, expression))
+          || !syntaxIsRetainedReference(program, importedTypes, evidence, expression))
       ) return true;
-      if (syntaxMovesName(program, evidence, expression, name)) return true;
+      if (syntaxMovesName(program, importedTypes, evidence, expression, name)) return true;
     }
     none => {}
   }
@@ -6072,15 +6092,16 @@ function statementMovesName(
       if (
         statement.kind == StatementKind.assignmentStatement
         && syntaxIsIdentifier(expression, name)
-        && !syntaxIsRetainedReference(program, evidence, expression)
+        && !syntaxIsRetainedReference(program, importedTypes, evidence, expression)
       ) return true;
-      if (syntaxMovesName(program, evidence, expression, name)) return true;
+      if (syntaxMovesName(program, importedTypes, evidence, expression, name)) return true;
     }
     none => {}
   }
   for (const child of statement.children) {
     if (statementMovesName(
       program,
+      importedTypes,
       evidence,
       arena,
       arena.nodes[child],
@@ -6100,6 +6121,7 @@ struct CleanupMoveIndex {
 
 function collectDirectStatementMovedNames(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in statement: Statement,
   inout movedNames: Set<String>
@@ -6119,7 +6141,7 @@ function collectDirectStatementMovedNames(
               tree.nodes[tree.root].kind
                 == ExpressionKind.identifierExpression
               && (statement.kind != StatementKind.returnStatement
-                || !treeIsRetainedReference(program, evidence, tree, root))
+                || !treeIsRetainedReference(program, importedTypes, evidence, tree, root))
             ) movedNames.add(tree.nodes[tree.root].value.copyBytes(
               0,
               tree.nodes[tree.root].value.byteLength
@@ -6130,6 +6152,7 @@ function collectDirectStatementMovedNames(
       }
       collectSyntaxMovedNames(
         program,
+        importedTypes,
         evidence,
         expression,
         inout movedNames
@@ -6146,7 +6169,7 @@ function collectDirectStatementMovedNames(
             if (
               tree.nodes[tree.root].kind
                 == ExpressionKind.identifierExpression
-              && !treeIsRetainedReference(program, evidence, tree, root)
+              && !treeIsRetainedReference(program, importedTypes, evidence, tree, root)
             ) movedNames.add(tree.nodes[tree.root].value.copyBytes(
               0,
               tree.nodes[tree.root].value.byteLength
@@ -6157,6 +6180,7 @@ function collectDirectStatementMovedNames(
       }
       collectSyntaxMovedNames(
         program,
+        importedTypes,
         evidence,
         expression,
         inout movedNames
@@ -6168,6 +6192,7 @@ function collectDirectStatementMovedNames(
 
 function cleanupMoveIndex(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in expressions: Array<LoweredExpression>,
@@ -6178,6 +6203,7 @@ function cleanupMoveIndex(
   for (const statement of arena.nodes) {
     collectDirectStatementMovedNames(
       program,
+      importedTypes,
       evidence,
       statement,
       inout movedNames
@@ -21292,7 +21318,7 @@ function completeNativeClosureBlocks(
       let inherited = Array<LoweredCleanup>();
       const loopCleanups = Array<LoweredCleanup>();
       const closureMoveIndex = cleanupMoveIndex(
-        program, evidence, arena, expressions, statements
+        program, importedTypes, evidence, arena, expressions, statements
       );
       parameter = 0;
       while (parameter < expressions[expressionIndex].closureParameterTypes.length) {
@@ -21696,6 +21722,7 @@ function completeNativeClosureBlocks(
       const loopCleanups = Array<LoweredCleanup>();
       const workerMoveIndex = cleanupMoveIndex(
         program,
+        importedTypes,
         evidence,
         arena,
         expressions,
@@ -21843,6 +21870,7 @@ function completeNativeClosureBlocks(
       const loopCleanups = Array<LoweredCleanup>();
       const poolMoveIndex = cleanupMoveIndex(
         program,
+        importedTypes,
         evidence,
         arena,
         expressions,
@@ -21979,6 +22007,7 @@ function completeNativeClosureBlocks(
     const loopCleanups = Array<LoweredCleanup>();
     const mutexMoveIndex = cleanupMoveIndex(
       program,
+      importedTypes,
       evidence,
       arena,
       expressions,
@@ -26592,6 +26621,7 @@ function validateMainFrameSourceStatement(
       )
       && statementMovesName(
         program,
+        importedTypes,
         evidence,
         declaration.body,
         declaration.body.nodes[sourceIndex],
@@ -26858,6 +26888,7 @@ function lowerMainDelayIf(
         some(conditionSyntax) => {
           if (syntaxMovesName(
             program,
+            importedTypes,
             evidence,
             conditionSyntax,
             declaration.parameters[parameterIndex].name
@@ -27159,6 +27190,7 @@ function lowerMainDelayLoop(
       )
       && statementMovesName(
         program,
+        importedTypes,
         evidence,
         declaration.body,
         declaration.body.nodes[sourceLoop],
@@ -27286,6 +27318,7 @@ function lowerMainDelayMatchTree(
       ) subjectTransfersParameter = true;
       else subjectTransfersParameter = treeMovesName(
         program,
+        importedTypes,
         evidence,
         tree,
         subjectInput,
@@ -27300,6 +27333,7 @@ function lowerMainDelayMatchTree(
       )
       && treeMovesName(
         program,
+        importedTypes,
         evidence,
         tree,
         root,
@@ -28055,6 +28089,7 @@ function lowerFunction(
   );
   const functionMoveIndex = cleanupMoveIndex(
     program,
+    importedTypes,
     evidence,
     declaration.body,
     expressions,
@@ -28401,6 +28436,7 @@ function lowerDeinitializer(
   const loopCleanups = Array<LoweredCleanup>();
   const deinitializerMoveIndex = cleanupMoveIndex(
     program,
+    importedTypes,
     evidence,
     body,
     expressions,
@@ -28499,6 +28535,7 @@ function lowerConstructor(
 
   const moveIndex = cleanupMoveIndex(
     program,
+    importedTypes,
     evidence,
     declaration.body,
     expressions,

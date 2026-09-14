@@ -9149,6 +9149,39 @@ and UBSan, including separate weak observations of 16 native windows and 16
 WebViews after each run's 16 accepted closes. This is a retention baseline, not
 a successful zero-retention test or a process-memory benchmark.
 
+## 2026-09-14 — Imported ARC cleanup during related-window reclamation
+
+Removing Zapp's approved related-window retirement hold revealed a third
+upstream issue. Stage 0 reclaimed both weakly observed native objects per child;
+the native compiler destroyed the Z runtime but left one native object per
+closed child. Generated-code inspection traced this to an imported Z protocol
+handler whose registration correctly retained it, but whose original local
+reference was never released.
+
+The native cleanup planner recognized local class declarations, callable types,
+and weak handles as retained references, but did not consult imported type
+evidence. Consequently a straight-line call could incorrectly suppress lexical
+cleanup as though the imported alias had moved. The planner now uses the same
+imported class/callable/weak identities as ordinary lowering. No ownership rule,
+public API, or extra runtime retain was introduced: the missing release is now
+emitted.
+
+`objc-registration-lifetime.zs` reproduces this across a module boundary and
+checks that handler destruction follows unregistration before the function
+returns. It failed before the fix. `retained-imports.zs` also exercises ordinary
+class passing, returning, assignment, aggregate storage, and imported callable
+aliases with an allocation ledger. Stage 0/native and `-O0`/`-O2` pass, as do the
+73 cleanup/adapter tests. The rebuilt compiler reaches a byte-identical
+11,957,872-byte C fixed point. The real WebKit churn gate remains the framework
+acceptance check; isolated compiler tests alone do not prove native teardown.
+
+A separate diagnostic probe also exposed a native contextual-typing gap for
+`console.log(invoke(callback))` with an imported callable alias returning `i32`:
+Stage 0 accepts it, while native semantic analysis reports `expected String,
+found i32`. The lifetime fixture verifies that result through its exit code;
+the console-expression gap is recorded for a focused follow-up, not silently
+claimed fixed here.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
