@@ -4144,6 +4144,7 @@ function generateOwnedEnvironmentCleanup(
     if (foreign?.ownership === "owned") {
       return `if (${value} != NULL) ${foreign.release}(${value});`;
     }
+    if (niche && isObjCReferenceType(niche, semanticInfo.foreignNamedTypes)) return `${value} = nil;`;
     if (niche) return "";
     if (enumNeedsGeneratedDeinit(enumDeclaration, structs, enums, semanticInfo)) {
       return `${deinitName(type)}(&(${value}));`;
@@ -9727,6 +9728,10 @@ function generateValueCleanup(
     if (foreign?.ownership === "owned") {
       const conditions = [liveFlag, `${value} != NULL`].filter(Boolean);
       return `if (${conditions.join(" && ")}) ${foreign.release}(${value});`;
+    }
+    if (niche && isObjCReferenceType(niche, context.semanticInfo.foreignNamedTypes)) {
+      const release = `${value} = nil;`;
+      return liveFlag ? `if (${liveFlag}) ${release}` : release;
     }
     if (niche) return "";
     if (enumNeedsGeneratedDeinit(enumDeclaration, context.structs, context.enums, context.semanticInfo)) {

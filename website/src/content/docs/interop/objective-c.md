@@ -551,6 +551,21 @@ an ARC class field. Its native representation is exactly
 controller, and normal ARC retains that adapter. Passing an adapter for a
 different protocol is a compile error.
 
+Optional adapter fields use ordinary Z `Option`:
+
+```z
+class WindowResources on thread.main {
+  readonly handler: Option<objc.Adapter<WebKit.WKURLSchemeHandler>>;
+}
+
+const resources = new WindowResources({ handler: Option.some(adapter) });
+const empty = new WindowResources({ handler: Option.none });
+```
+
+Use a borrowed `match (in resources.handler)` to access a present adapter.
+Destroying the Z owner releases its optional reference, without creating an
+additional native adapter. Other native owners can keep the adapter alive.
+
 Imported protocol values also widen safely from `id<P>` to an Objective-C
 method parameter typed as ordinary `id`. This is a zero-cost native widening,
 not a wrapper or unchecked cast. Free C functions whose signatures directly

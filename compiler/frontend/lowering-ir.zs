@@ -3142,6 +3142,20 @@ function localTypeAliasTarget(
 }
 
 export function loweredTypeIdentity(in type: LoweredType): String {
+  // ABI spelling is not a C identifier. Keep the full protocol-qualified
+  // spelling reversible when it becomes part of an intrinsic storage name.
+  if (type.kind == LoweredTypeKind.foreignObjCType && stringStartsWith(type.name, "id<")) {
+    let output = TextBuffer();
+    output.append("__z_ObjCProtocol_");
+    let index: usize = 0;
+    while (index < type.name.byteLength) {
+      const byte = type.name.byteAt(index);
+      output.appendAscii(functionIdentityHexDigit(byte >> 4));
+      output.appendAscii(functionIdentityHexDigit(byte & 15));
+      index = index + 1;
+    }
+    return output.finish();
+  }
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.booleanType) return "boolean";
   if (type.kind == LoweredTypeKind.i8Type) return "i8";
@@ -3165,6 +3179,31 @@ export function loweredTypeIdentity(in type: LoweredType): String {
     return type.name.copyBytes(0, type.name.byteLength);
   }
   return type.name.copyBytes(0, type.name.byteLength);
+}
+
+export function decodedObjCProtocolIdentity(in identity: String): Option<String> {
+  const prefix = "__z_ObjCProtocol_";
+  if (!stringStartsWith(identity, prefix) || identity.byteLength <= prefix.byteLength
+    || (identity.byteLength - prefix.byteLength) % 2 != 0) return Option.none;
+  let output = TextBuffer();
+  let index = prefix.byteLength;
+  while (index < identity.byteLength) {
+    let byte: u8 = 0;
+    let digit: usize = 0;
+    while (digit < 2) {
+      const value = identity.byteAt(index + digit);
+      if (value >= 48 && value <= 57) byte = byte * 16 + (value - 48);
+      else if (value >= 97 && value <= 102) byte = byte * 16 + (value - 87);
+      else return Option.none;
+      digit = digit + 1;
+    }
+    if (byte < 32 || byte > 126) return Option.none;
+    output.appendAscii(byte);
+    index = index + 2;
+  }
+  const name = output.finish();
+  if (!stringStartsWith(name, "id<") || name.byteAt(name.byteLength - 1) != 62) return Option.none;
+  return Option.some(name);
 }
 
 function intrinsicOptionName(in payload: LoweredType): String {
@@ -3394,6 +3433,10 @@ function lowerTypeName(
   in program: Program,
   in name: String
 ): LoweredType throws String {
+  match (decodedObjCProtocolIdentity(name)) {
+    some(spelling) => return LoweredType({ kind: LoweredTypeKind.foreignObjCType, name: spelling });
+    none => {}
+  }
   if (name == nativeObjCObjectTypeName || isObjCObjectType(program, name)) return LoweredType({
     kind: LoweredTypeKind.foreignObjCType, name: "id",
   });

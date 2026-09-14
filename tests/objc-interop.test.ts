@@ -2852,6 +2852,58 @@ test("stages Z String notification names once and retains caller block executor 
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 300_000);
 
+test("preserves protocol-qualified ARC adapters inside optional storage", () => {
+  if (process.platform !== "darwin") return;
+  const fixture = resolve(projectRoot, "tests/fixtures/objc-optional-adapter.zs");
+  const source = readFileSync(fixture, "utf8");
+  const stage0 = compileToNative(source, fixture).source;
+  assert.match(stage0, /Z_Owner_deinit\(Z_Owner \*self\) \{[^}]*self->adapter = nil;/);
+  const directory = mkdtempSync("/tmp/z-optional-adapter-");
+  try {
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit",
+      resolve(projectRoot, "tests/fixtures/self-host-objc-subclass-execution.zs")], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 24 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 0, emitted.stderr);
+    const oracle = resolve(directory, "native-emitter");
+    const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", oracle], {
+      input: emitted.stdout, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+    });
+    assert.equal(built.status, 0, built.stderr);
+    const wire = resolve(directory, "native.zfdcl");
+    const contract = resolve(directory, "native.zd");
+    const stream = resolveForeignFunctionDeclarationStreams([{
+      kind: "import", moduleName: "native", bindings: null, header: "AppKit/AppKit.h",
+      location: { fileName: fixture, offset: 0, line: 1, column: 1 },
+    }], fixture, []).get("native")!;
+    writeFileSync(wire, stream);
+    writeFileSync(contract, 'declare module "AppKit/AppKit.h" {}');
+    const native = spawnSync(oracle, [wire, fixture, "", contract], {
+      encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr);
+    assert.match(native.stdout, /Z___z_Option___z_ObjCProtocol_[0-9a-f]+/);
+    assert.doesNotMatch(native.stdout, /Z___z_Option_id</);
+    assert.match(native.stdout, /Z_ObjCOwned some;/);
+    assert.match(native.stdout, /id<NSWindowDelegate>/);
+    for (const [frontend, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+      for (const optimization of ["-O0", "-O2"]) {
+        const executable = resolve(directory, `${frontend}${optimization}`);
+        const compiled = spawnSync("clang", ["-x", "objective-c", "-fobjc-arc", "-fblocks",
+          "-Wall", "-Wextra", "-Werror", optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all",
+          "-framework", "AppKit", "-mmacosx-version-min=14.0", "-", "-o", executable], {
+          input: generated, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+        });
+        assert.equal(compiled.status, 0, compiled.stderr);
+        const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+        assert.equal(run.status, 0, run.stderr);
+        assert.equal(run.stderr, "");
+        assert.equal(run.stdout, "released optional adapter\n", `${frontend} ${optimization}: adapter controller must be released exactly once`);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
 test("registers persistent Objective-C event callbacks with explicit token cleanup", () => {
   if (process.platform !== "darwin") return;
   const fixture = resolve(projectRoot, "tests/fixtures/objc-notifications.zs");

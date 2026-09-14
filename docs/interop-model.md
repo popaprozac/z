@@ -1095,6 +1095,13 @@ gap without guessing whether an arbitrary native API keeps its argument. The
 first tier is conservatively main-executor-bound and allocates one generated
 `NSObject` adapter, with no additional Z wrapper allocation.
 
+Use `Option<objc.Adapter<P>>` when a stored adapter is optional. `Option.none`
+is inferred from its class field, and `Option.some(adapter)` preserves the
+protocol type. Borrow it with `match (in owner.adapter)` before passing the
+payload to a native call. Destroying the owning Z class releases its optional
+adapter reference; the adapter releases its controller when its final native
+reference is gone. Optional storage does not create another adapter.
+
 An imported protocol existential such as `WebKit.WKURLSchemeTask` also widens
 safely to an Objective-C method parameter typed as ordinary `id`; this is the
 native `id<P>` to `id` conversion and emits no cast or wrapper. Free C functions

@@ -8929,6 +8929,35 @@ a claim that every Objective-C autorelease allocation has been measured.
 Public RelatedWindow creation remains gated on logical-window adoption, family
 close preflight, and complete document-bound event/retirement integration.
 
+## 2026-09-13 — Related-window adoption and optional protocol ownership
+
+Zapp now reuses its ordinary native window runtime for related children. An
+ordinary window owns its scheme-handler adapter directly; WebKit's supplied
+related configuration already retains the inherited handler. Representing the
+optional extra owner as `Option<objc.Adapter<WKURLSchemeHandler>>` exposed three
+compiler composition gaps rather than a need for new framework syntax:
+
+- Native intrinsic type identities reused ABI text (`id<Protocol>`) in C
+  identifiers. Protocol-qualified identities now use reversible hex encoding;
+  actual native values retain their protocol-qualified ABI type.
+- Stage 0 generic inference lost the result of `objc.adapt<P>` and did not
+  contextualize nongeneric synthesized class initializers. Adapter values and
+  `Option.none` now retain their existing declared type through construction.
+- Stage 0 niche-optimized optional Objective-C references in heap-owned state
+  were not cleared during generated cleanup. The native object retained its Z
+  controller indefinitely. Field/environment cleanup now clears that strong
+  reference, just as it does for a direct Objective-C reference.
+
+`tests/fixtures/objc-optional-adapter.zs` exercises absent/present class fields,
+borrowed matching, native protocol-to-id forwarding, and exactly one controller
+destruction. Both compilers run it at `-O0`/`-O2` with UBSan. The fix adds no
+ownership keyword, public API, or additional adapter allocation. This does not
+claim identical `Option` layouts between the two compilers.
+
+Related-window logical adoption is an internal Zapp checkpoint, not public
+factory availability. Family close preflight and document-bound unsolicited
+event/terminal delivery remain the next integration gates.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

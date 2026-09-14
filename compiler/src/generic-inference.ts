@@ -745,7 +745,9 @@ export function inferGenericCalls(
         }
         const arguments_ = inferred?.arguments
           ?? explicitArguments
-          ?? expression.arguments.map((argument) => rewriteExpression(argument, environment, explicit ? expression.typeName : null));
+          ?? expression.arguments.map((argument, index) => rewriteExpression(argument, environment,
+            declaration?.constructor?.parameters[index]?.type.name
+              ?? ((declaration && !declaration.constructor) || explicit ? expression.typeName : null)));
         const typeName = inferred?.typeName ?? expression.typeName;
         return {
           expression: { ...expression, typeName, arguments: arguments_.map((argument) => argument.expression) },
@@ -1500,6 +1502,18 @@ export function inferGenericCalls(
         if (rewrittenCallee.kind === "member") {
           const imported = foreignMember(rewrittenCallee);
           returnType = imported ? foreignCallReturnType(imported, args) : returnType;
+          const adapterCall = parseGenericType(rewrittenCallee.property);
+          const namespace = rewrittenCallee.object.kind === "identifier" ? rewrittenCallee.object.name : null;
+          if (namespace
+            && adapterCall?.base === "adapt" && adapterCall.arguments.length === 1
+            && !environment.has(namespace)
+            && program.imports.some((item) => item.header === "std/objc"
+              && item.moduleName === namespace)) {
+            // Preserve the declared adapter result while inferring a following
+            // Option.some/collection use. Sema still validates conformance,
+            // ownership, and executor placement at the adapt call itself.
+            returnType = genericTypeName(`${namespace}.Adapter`, adapterCall.arguments);
+          }
         }
         if (rewrittenCallee.kind === "identifier") {
           const explicitStandard = parseGenericType(rewrittenCallee.name);

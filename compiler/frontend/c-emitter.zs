@@ -26,6 +26,7 @@ import {
   lowerProgram,
   lowerTestModules,
   loweredTypeIdentity,
+  decodedObjCProtocolIdentity,
   asyncFrameLocalRoots,
 } from "./lowering-ir.zs";
 import { ParsedModule } from "./module-symbols.zs";
@@ -3791,6 +3792,10 @@ function loweredTypeForIdentity(
   in program: LoweredProgram,
   in identity: String
 ): LoweredType throws String {
+  match (decodedObjCProtocolIdentity(identity)) {
+    some(spelling) => return LoweredType({ kind: LoweredTypeKind.foreignObjCType, name: spelling });
+    none => {}
+  }
   if (identity == "void") return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
   if (identity == "boolean") return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
   if (identity == "i8") return LoweredType({ kind: LoweredTypeKind.i8Type, name: "" });
