@@ -9541,6 +9541,45 @@ those shapes; no new ownership syntax or application workaround is involved.
 General slice element types at C boundaries, mutable or returned slices, and
 asynchronous exports remain separate future design work.
 
+## Interpreter loop loans and bounds-check pressure
+
+A JavaScript interpreter's instruction fetch exposed a native liveness bug:
+an element view declared before a loop was treated as dead after its last read
+within the body, even though the next iteration read it again. This admitted
+an array push that could reallocate storage behind the retained pointer.
+Stage 0 already rejected the program. Native flow state now preserves incoming
+live view loans across loop bodies, nested branches, and loop continuations.
+The requirement is lexical checker state, not generated runtime bookkeeping.
+Views freshly created and finished within one iteration may still precede a
+push, and completed loops release loans before later owner mutation.
+
+Regression coverage includes loop conditions, while and for-of bodies, nested
+loops, continue, uses after loops, and iteration-local last use. Valid programs
+execute with both emitters at `-O0` and `-O2` under UBSan. Negative programs are
+checked without executing invalidated pointers.
+
+The same consumer reports a bounds-only experiment at engine revision
+`252e79f`: identical `-O2` settings and already-wrapping register/IP arithmetic,
+five runs per variant, changing only generated-C bounds helpers. Reported
+medians were:
+
+| Workload | Checked | Bounds checks removed | Reduction |
+| --- | ---: | ---: | ---: |
+| Integer loop | 0.618 s | 0.579 s | 6.3% |
+| Calls | 0.121 s | 0.119 s | 1.7% |
+| Construction | 0.203 s | 0.184 s | 9.4% |
+| Array methods | 0.258 s | 0.238 s | 7.8% |
+
+These are consumer-reported results, not a compiler-repository benchmark or
+a general language-speed claim. The integer-loop runs had slow outliers; five
+runs are preliminary evidence. The prior experiment also removed overflow
+checks and must not be used to attribute the whole difference to indexing.
+Maximum JIT-less throughput is the motivating goal. Follow-up work should
+preserve sibling collection-field provenance, inspect optimized checked code,
+and repeat bounds-only measurements before designing explicit unchecked
+access. Ordinary indexing remains checked in release builds; no unchecked API
+or profile-dependent safety exemption is introduced here.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

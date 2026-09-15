@@ -853,7 +853,7 @@ test("preserves local views through native lowering and C emission", () => {
   assert.match(emission.stdout, /const Z___z_Array_i32 \* const numbers = &\(tree\.values\);/);
   assert.match(emission.stdout, /const Z_String \* const label = &\(tree\.label\);/);
   assert.match(emission.stdout, /Z___z_Array_i32_at\(&\(\(\*\(numbers\)\)\)/);
-  assert.match(emission.stdout, /z_string_copy_bytes\(\(\*\(label\)\), 0, \(label\)->length\)/);
+  assert.match(emission.stdout, /z_string_copy_bytes\(\(\*\(label\)\), (?:0|UINT64_C\(0\)), \(label\)->length\)/);
   assert.match(emission.stdout, /z_string_equal\(\(\*\(label\)\), Z_STRING_LITERAL\("ready"\)\)/);
   assert.match(emission.stdout, /observe\(node\)\), 5\)/);
   assert.doesNotMatch(emission.stdout, /Z_Node_deinit\(&\(node\)\)/);
@@ -4509,7 +4509,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(nativeIntegerEmission.status, 0, nativeIntegerEmission.stderr);
   assert.match(
     nativeIntegerEmission.stdout,
-    /size_t addSize\(size_t value\).*?z_stage1_checked_add_usize\(value, 2\)/s,
+    /size_t addSize\(size_t value\).*?z_stage1_checked_add_usize\(value, (?:2|UINT64_C\(2\))\)/s,
   );
   assert.match(
     nativeIntegerEmission.stdout,
@@ -4517,7 +4517,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     nativeIntegerEmission.stdout,
-    /size_t halveSize\(size_t value\).*?z_stage1_checked_divide_usize\(value, 2\)/s,
+    /size_t halveSize\(size_t value\).*?z_stage1_checked_divide_usize\(value, (?:2|UINT64_C\(2\))\)/s,
   );
   assert.match(
     nativeIntegerEmission.stdout,
@@ -4586,9 +4586,9 @@ test("emits and runs the first program directly from the native Z AST", () => {
     nativeStringEmission.stdout,
     /Z_String inspect\(Z_String value\)|size_t inspect\(Z_String value\)/,
   );
-  assert.match(nativeStringEmission.stdout, /z_string_copy_bytes\(value, 1, 4\)/);
+  assert.match(nativeStringEmission.stdout, /z_string_copy_bytes\(value, (?:1|UINT64_C\(1\)), (?:4|UINT64_C\(4\))\)/);
   assert.match(nativeStringEmission.stdout, /z_string_equal\(middle, Z_STRING_LITERAL\("ell"\)\)/);
-  assert.match(nativeStringEmission.stdout, /z_string_byte_at\(value, 0\)/);
+  assert.match(nativeStringEmission.stdout, /z_string_byte_at\(value, (?:0|UINT64_C\(0\))\)/);
   assert.match(nativeStringEmission.stdout, /Z_String_deinit\(&middle\)/);
   assert.match(nativeStringEmission.stdout, /Z_String_deinit\(&value\)/);
   assert.match(
@@ -4597,18 +4597,18 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     nativeStringEmission.stdout,
-    /void initialize\(size_t \*value\).*?\(\*value\) = 20;/s,
+    /void initialize\(size_t \*value\).*?\(\*value\) = (?:20|UINT64_C\(20\));/s,
   );
   assert.match(
     nativeStringEmission.stdout,
-    /void increment\(size_t \*value\).*?\(\*value\) = z_stage1_checked_add_usize\(\(\*value\), 2\);/s,
+    /void increment\(size_t \*value\).*?\(\*value\) = z_stage1_checked_add_usize\(\(\*value\), (?:2|UINT64_C\(2\))\);/s,
   );
   assert.match(
     nativeStringEmission.stdout,
     /borrowedLength\(&\(Z_STRING_LITERAL\("ok"\)\)\)/,
   );
   assert.match(nativeStringEmission.stdout, /z_text_buffer_append\(&\(output\), Z_STRING_LITERAL\("he"\)\)/);
-  assert.match(nativeStringEmission.stdout, /z_text_buffer_append_bytes\(&\(output\), Z_STRING_LITERAL\("llo!"\), 0, 1\)/);
+  assert.match(nativeStringEmission.stdout, /z_text_buffer_append_bytes\(&\(output\), Z_STRING_LITERAL\("llo!"\), (?:0|UINT64_C\(0\)), (?:1|UINT64_C\(1\))\)/);
   assert.match(nativeStringEmission.stdout, /z_text_buffer_append_ascii\(&\(output\), 108\)/);
   assert.match(nativeStringEmission.stdout, /z_text_buffer_append_code_point\(&\(output\), 111\)/);
   assert.doesNotMatch(

@@ -86,6 +86,9 @@ export struct NativeValueBinding {
   viewOwner: String = "";
   viewPath: String = "";
   viewLive: boolean = false;
+  // A view entering a loop can be used again on a backedge or after the loop.
+  // This is lexical context, not ownership; loop-local views are not pinned.
+  viewLoopLive: boolean = false;
   suspensionBorrowRoot: String;
   initialization: NativeInitializationState;
   ownership: NativeOwnershipState;
@@ -108,6 +111,7 @@ export function copyValueBindings(
       viewOwner: binding.viewOwner.copyBytes(0, binding.viewOwner.byteLength),
       viewPath: binding.viewPath.copyBytes(0, binding.viewPath.byteLength),
       viewLive: binding.viewLive,
+      viewLoopLive: binding.viewLoopLive,
       suspensionBorrowRoot: binding.suspensionBorrowRoot.copyBytes(
         0,
         binding.suspensionBorrowRoot.byteLength
@@ -507,6 +511,7 @@ export function setValueBindingClassAlias(
         bindings[index].viewPath.byteLength
       ),
       viewLive: bindings[index].viewLive,
+      viewLoopLive: bindings[index].viewLoopLive,
       suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
         0,
         bindings[index].suspensionBorrowRoot.byteLength
@@ -535,6 +540,7 @@ function replaceBindingClassAliasContained(
     viewOwner: bindings[index].viewOwner.copyBytes(0, bindings[index].viewOwner.byteLength),
     viewPath: bindings[index].viewPath.copyBytes(0, bindings[index].viewPath.byteLength),
     viewLive: bindings[index].viewLive,
+    viewLoopLive: bindings[index].viewLoopLive,
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -713,6 +719,7 @@ function replaceBindingInitialization(
       bindings[index].viewPath.byteLength
     ),
     viewLive: bindings[index].viewLive,
+    viewLoopLive: bindings[index].viewLoopLive,
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -745,6 +752,7 @@ function replaceBindingType(
       bindings[index].viewPath.byteLength
     ),
     viewLive: bindings[index].viewLive,
+    viewLoopLive: bindings[index].viewLoopLive,
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -774,6 +782,7 @@ function replaceBindingViewOwner(
       bindings[index].viewPath.byteLength
     ),
     viewLive: bindings[index].viewLive,
+    viewLoopLive: bindings[index].viewLoopLive,
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -803,6 +812,7 @@ function replaceBindingViewPath(
     ),
     viewPath: viewPath.copyBytes(0, viewPath.byteLength),
     viewLive: bindings[index].viewLive,
+    viewLoopLive: bindings[index].viewLoopLive,
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -835,6 +845,7 @@ function replaceBindingViewLive(
       bindings[index].viewPath.byteLength
     ),
     viewLive,
+    viewLoopLive: bindings[index].viewLoopLive,
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -922,6 +933,7 @@ function replaceBindingOwnership(
       bindings[index].viewPath.byteLength
     ),
     viewLive: bindings[index].viewLive,
+    viewLoopLive: bindings[index].viewLoopLive,
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -972,6 +984,7 @@ export function borrowValueBindingInPlace(
           bindings[index].viewPath.byteLength
         ),
         viewLive: bindings[index].viewLive,
+        viewLoopLive: bindings[index].viewLoopLive,
         suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
           0,
           bindings[index].suspensionBorrowRoot.byteLength
@@ -1010,6 +1023,7 @@ export function borrowMatchValueBindingInPlace(
           bindings[index].viewPath.byteLength
         ),
         viewLive: bindings[index].viewLive,
+        viewLoopLive: bindings[index].viewLoopLive,
         suspensionBorrowRoot: name.copyBytes(0, name.byteLength),
         initialization: bindings[index].initialization,
         ownership: bindings[index].ownership,
@@ -1045,6 +1059,7 @@ export function borrowClosureBindingInPlace(
           bindings[index].viewPath.byteLength
         ),
         viewLive: bindings[index].viewLive,
+        viewLoopLive: bindings[index].viewLoopLive,
         suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
           0,
           bindings[index].suspensionBorrowRoot.byteLength
@@ -1109,6 +1124,7 @@ export function copyBindingFlowStates(
         source[index].viewPath.byteLength
       ),
       viewLive: source[index].viewLive,
+      viewLoopLive: target[index].viewLoopLive,
       suspensionBorrowRoot: target[index].suspensionBorrowRoot.copyBytes(
         0,
         target[index].suspensionBorrowRoot.byteLength

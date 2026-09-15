@@ -12823,6 +12823,7 @@ function inferStatement(
   if (kind == StatementKind.whileStatement) {
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
+    preserveLoopViewBindings(inout loopBindings);
     markRegionControlFlow(inout loopBindings, "loop");
     const loopContinues = try inferStatementSequence(
       module,
@@ -12852,6 +12853,7 @@ function inferStatement(
   ) {
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
+    preserveLoopViewBindings(inout loopBindings);
     markRegionControlFlow(inout loopBindings, "loop");
     let elementType = "";
     let iterableType = "";
@@ -13075,6 +13077,18 @@ function inferStatementSequence(
   return true;
 }
 
+function preserveLoopViewBindings(
+  inout bindings: Array<NativeValueBinding>
+): void {
+  let index: usize = 0;
+  while (index < bindings.length) {
+    if (bindings[index].viewOwner.byteLength > 0 && bindings[index].viewLive) {
+      bindings[index].viewLoopLive = true;
+    }
+    index = index + 1;
+  }
+}
+
 function releaseUnusedViewBindings(
   in arena: StatementArena,
   in indices: Array<usize>,
@@ -13087,7 +13101,7 @@ function releaseUnusedViewBindings(
     if (
       bindings[bindingIndex].viewOwner.byteLength > 0
     ) {
-      let usedLater = false;
+      let usedLater = bindings[bindingIndex].viewLoopLive;
       let remaining = position;
       while (remaining < indices.length && !usedLater) {
         usedLater = statementUsesBinding(

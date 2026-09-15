@@ -70,6 +70,13 @@ when it expands. Moving the whole array transfers its buffer; an indexed owned
 element is borrowed rather than moved out, because extraction would leave a
 hole in the containing owner.
 
+An element view created before a loop remains borrowed when a later iteration
+will read it again. Do not grow, replace, or clear its array inside that loop.
+A view created within an iteration may finish at its last use before a `push`:
+the next iteration acquires a fresh view. Once the loop has finished and the
+view has no later uses, the owner becomes mutable again. These lifetime checks
+happen at compile time; they do not add runtime borrow tracking.
+
 ## Slices borrow contiguous storage
 
 `Slice<T>` is a non-owning descriptor accepted by functions without copying the

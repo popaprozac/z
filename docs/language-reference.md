@@ -1712,6 +1712,12 @@ identity while one of its field views is live is rejected before the alias can
 be hidden. A view remains a usable borrowed value after control-flow joins; its
 owner loan ends independently at the view's proven last use.
 
+A view declared before a loop stays borrowed if another iteration or code
+after the loop can read it. An apparent last use within one iteration does not
+end that loan. A view created within an iteration can end at its last use
+before an invalidating mutation; the next iteration creates a fresh view.
+Both frontends enforce this distinction without runtime loan tracking.
+
 `view expression` must directly initialize an inferred `const` local or a
 direct retained-result field, and must project a field or indexed element from
 named value storage or a direct field from a named Z ARC owner. Hover reports both
