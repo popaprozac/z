@@ -6098,7 +6098,7 @@ function inferDirectValue(
     state.unsafeExpectedTypes.set(expression.location.offset, String(underlyingType(expected)));
   }
   try {
-    return inferExpression(expression, locals, globals, structs, enums, fileName, state);
+    return inferExpression(expression, locals, globals, structs, enums, fileName, state, false, expected);
   } finally {
     if (contextualUnsafeCall) state.unsafeExpectedTypes.delete(expression.location.offset);
   }
@@ -8630,6 +8630,7 @@ function inferExpression(
   fileName: string,
   state: AnalysisState,
   allowThrowingCall = false,
+  expected: ValueType | null = null,
 ): ValueType {
   state.aggregateClassAliasExpressionFields.delete(expression.location.offset);
   const inferred = inferExpressionInner(
@@ -8641,6 +8642,7 @@ function inferExpression(
     fileName,
     state,
     allowThrowingCall,
+    expected,
   );
   const inferredType = String(underlyingType(inferred));
   const resolution: SemanticExpressionResolution = {
@@ -9215,7 +9217,18 @@ function inferExpressionInner(
   fileName: string,
   state: AnalysisState,
   allowThrowingCall = false,
+  expected: ValueType | null = null,
 ): ValueType {
+  const numericContext = expected === null ? null : canonicalType(expected, state.foreignNamedTypes);
+  if (numericContext !== null && isNumericType(numericContext)) {
+    if (expression.kind === "number") {
+      requireNumericLiteralFits(expression, numericContext, fileName, state.numericLiteralTypes);
+      return numericContext;
+    }
+    if (requireContextualSignedLiteral(expression, numericContext, fileName, state.numericLiteralTypes)) {
+      return numericContext;
+    }
+  }
   switch (expression.kind) {
     case "number":
       return isIntegerLiteral(expression.value) ? "i32" : "f64";
@@ -9669,8 +9682,12 @@ function inferExpressionInner(
       throw new DiagnosticError(fileName, expression.location, `unknown name ${JSON.stringify(expression.name)}`);
     }
     case "binary": {
+      // The destination determines literal shift width before constant checking.
+      // Typed operands keep their own types; this is not an implicit conversion.
+      const operandContext = expression.operator === "<<" || expression.operator === ">>"
+        ? expected : null;
       const left = implicitlyLoadCopyableView(
-        inferExpression(expression.left, locals, globals, structs, enums, fileName, state),
+        inferExpression(expression.left, locals, globals, structs, enums, fileName, state, false, operandContext),
         expression.left,
         structs,
         enums,
@@ -9719,7 +9736,7 @@ function inferExpressionInner(
         )
         : locals;
       const right = implicitlyLoadCopyableView(
-        inferExpression(expression.right, rightLocals, globals, structs, enums, fileName, state),
+        inferExpression(expression.right, rightLocals, globals, structs, enums, fileName, state, false, operandContext),
         expression.right,
         structs,
         enums,
@@ -9840,8 +9857,8 @@ function inferExpressionInner(
       const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
       const activeFunction = state.activeFunction;
       const thenType = activeFunction?.async
-        ? inferDirectValue(expression.thenExpression, activeFunction, thenLocals, globals, structs, enums, fileName, state)
-        : inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state);
+        ? inferDirectValue(expression.thenExpression, activeFunction, thenLocals, globals, structs, enums, fileName, state, expected)
+        : inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state, false, expected);
       consumeOwnedValue(expression.thenExpression, thenType, thenLocals, structs, enums, fileName, state);
       const continuingRegionOrigins: RegionContainerOriginState[] = [];
       const continuingLoans: AccessLoanState[] = [];
@@ -9853,8 +9870,8 @@ function inferExpressionInner(
       restoreAccessLoanState(state, incomingLoans);
       const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
       const elseType = activeFunction?.async
-        ? inferDirectValue(expression.elseExpression, activeFunction, elseLocals, globals, structs, enums, fileName, state)
-        : inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state);
+        ? inferDirectValue(expression.elseExpression, activeFunction, elseLocals, globals, structs, enums, fileName, state, expected)
+        : inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state, false, expected);
       consumeOwnedValue(expression.elseExpression, elseType, elseLocals, structs, enums, fileName, state);
       if (elseType !== "never") {
         continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
@@ -10215,7 +10232,7 @@ function inferExpressionInner(
           }
         }
         const fieldType = "type" in field ? field.type.name : field.typeName;
-        let actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state);
+        let actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state, false, fieldType);
         actual = contextualCStringLiteral(fieldType, initializer.expression, state) ?? actual;
         rejectBorrowedNativeResourceEscape(actual, initializer.expression, locals, fileName, state, "stored in a struct field");
         requireAssignable(fieldType, actual, initializer.expression, fileName, structs, enums, state);
@@ -14817,7 +14834,7 @@ function checkArguments(
       }
       continue;
     }
-    let actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    let actual = inferExpression(argument, locals, globals, structs, enums, fileName, state, false, parameter.type.name);
     actual = contextualCStringLiteral(parameter.type.name, argument, state) ?? actual;
     const expectedSlice = parseSliceType(parameter.type.name);
     const actualArray = parseFixedArrayType(String(actual));

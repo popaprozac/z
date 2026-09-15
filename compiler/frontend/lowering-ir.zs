@@ -9654,6 +9654,8 @@ function checkedIntegerTypeName(
 ): String {
   match (resolvedExpressionTypeName(evidence, tree, index)) {
     some(name) => {
+      if ((tree.nodes[index].value == "<<" || tree.nodes[index].value == ">>")
+        && isIntegerTypeName(name)) return name;
       if (
         name == "u8"
         || name == "u32"
@@ -20941,6 +20943,19 @@ function testBorrowInput(in tree: ExpressionTree, index: usize): usize {
   return index;
 }
 
+function testCanonicalTypeName(in program: Program, in source: String): String {
+  let name = copy source;
+  let depth: usize = 0;
+  while (depth < program.typeAliases.length) {
+    match (localTypeAliasTarget(program, name)) {
+      some(target) => name = move target;
+      none => break;
+    }
+    depth = depth + 1;
+  }
+  return move name;
+}
+
 function testExpressionTypeName(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -20974,7 +20989,7 @@ function testExpressionTypeName(
     tree,
     index
   )) {
-    some(name) => return Option.some(move name);
+    some(name) => return Option.some(testCanonicalTypeName(program, name));
     none => {}
   }
   if (tree.nodes[index].kind == ExpressionKind.stringExpression) {
@@ -20992,10 +21007,8 @@ function testExpressionTypeName(
     if (resolutionIndex < evidence.callResolutions.length) {
       const resolution = view evidence.callResolutions[resolutionIndex];
       if (resolution.returnType.byteLength > 0) return Option.some(
-        resolution.returnType.copyBytes(
-        0,
-        resolution.returnType.byteLength
-      ));
+        testCanonicalTypeName(program, resolution.returnType)
+      );
     }
   }
   return Option<String>.none;

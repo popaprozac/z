@@ -787,6 +787,25 @@ select octal: `010` is decimal ten. Hexadecimal `e`/`E` are digits, not exponent
 markers. Hexadecimal and binary forms are integers only. The same integer
 spellings work for fixed-array lengths, which must be positive.
 
+Numeric context from a binding, assignment, return, argument, or struct field
+also reaches literal ternary arms and shift operands before checking ranges and
+shift width. Transparent numeric aliases provide the same context:
+
+```z
+type TagBits = u64;
+function tag(enabled: boolean): TagBits {
+  return enabled ? 0xFFFE << 48 : 0;
+}
+const mask: TagBits = 0xFFFE << 48;
+```
+
+This types literals; it does not convert already-typed values. A ternary without
+numeric context still infers from its arms (`true ? 7 : 6` is `i32`). A typed
+`i32` operand does not become `u64` just because the result is assigned to `u64`;
+use an explicit numeric constructor when conversion is intended. Out-of-width
+shift counts and overflowing results remain errors; contextual typing does not
+disable checked arithmetic. Dynamic shifts retain their runtime checks.
+
 There is currently no `char`, arbitrary-width integer, tuple, general structural
 object type, `any`, or user-written nullable value union. Use `u8` for a byte,
 `String` for owned UTF-8 text, `Option<T>` for optional Z values, and `T | null`

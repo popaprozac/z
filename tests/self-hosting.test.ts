@@ -9140,6 +9140,30 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       + "test result: ok. 2 passed; 0 failed\n",
   );
 
+  for (const name of ["numeric-expression-context", "integer-shift-widths"]) {
+    const result = spawnSync(executable, ["run", resolve(projectRoot, `tests/fixtures/${name}.zs`)], {
+      encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  const invalidNumericFile = resolve(directory, "invalid-numeric-context.zs");
+  for (const body of [
+    "const value: u8 = true ? 256 : 0;",
+    "const value: u64 = 1 << 64;",
+    "const value: u64 = 0xFFFF_FFFF_FFFF_FFFF << 1;",
+    "const typed: i32 = 7; const value: u64 = true ? typed : 0;",
+    "const typed: i32 = 7; const value: u64 = typed << 1;",
+    "const value: Small = 256;",
+  ]) {
+    writeFileSync(invalidNumericFile, `type Small = u8; function main(): i32 { ${body} return 0; }`);
+    const result = spawnSync(executable, ["check", invalidNumericFile], {
+      encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+    });
+    assert.notEqual(result.status, 0, body);
+    assert.match(result.stderr, /invalid-numeric-context\.zs:\d+:\d+: error/);
+    assert.doesNotMatch(result.stderr, /internal compiler error|\.c:\d+|\[-W/);
+  }
+
   for (const [name, status] of [["test-numeric-context", 0], ["test-numeric-context-failure", 1]] as const) {
     const result = spawnSync(executable, ["test", resolve(projectRoot, `tests/fixtures/${name}.zs`)], {
       encoding: "utf8", timeout: 30_000,

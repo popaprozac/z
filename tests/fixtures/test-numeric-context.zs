@@ -1,5 +1,7 @@
 import { expect, expect as verify } from "std/test";
 
+type Handle = u32;
+
 test "numeric expectations use the comparison literal type" {
   const byte: u8 = 255;
   const word: u16 = 65535;
@@ -41,4 +43,8 @@ test "numeric expectations use the comparison literal type" {
 
   verify(handle).toEqual(0xFFFF_FFFF);
   verify(0xFFFF_FFFF).toEqual(handle);
+
+  const aliased: Handle = 0xFFFF_FFFF;
+  expect(aliased).toEqual(0xFFFF_FFFF);
+  expect(0xFFFF_FFFF).toEqual(aliased);
 }

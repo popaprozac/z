@@ -4115,6 +4115,14 @@ function inferExpressionNodeTypeExpected(
   inout bindings: Array<NativeValueBinding>,
   inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
+  if (expectedType.byteLength > 0 && isContextualNumericLiteral(tree, index)) {
+    const target = transparentTypeName(modules, moduleIndex, expectedType);
+    if (isNumericTypeName(target)) {
+      try requireNumericLiteralRange(module, tree, index, target);
+      recordExpressionResolution(modules, moduleIndex, tree, index, target, inout evidence);
+      return target;
+    }
+  }
   let expressionBindings = copyValueBindings(bindings);
   if (expectedType.byteLength > 0) {
     const bindingName = contextualExpectedBindingName(tree.nodes[index].offset);
@@ -5312,6 +5320,8 @@ function effectiveCollectionMethodSignature(
 
 function contextualizeNumericOperands(
   in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
   in tree: ExpressionTree,
   leftIndex: usize,
   rightIndex: usize,
@@ -5319,14 +5329,22 @@ function contextualizeNumericOperands(
   inout left: String,
   inout right: String
 ): void throws ModuleResolveError {
-  if (isContextualNumericLiteral(tree, rightIndex)
-    && (isNumericTypeName(left) || isActiveTypeParameter(bindings, left))) {
-    try requireNumericLiteralRange(module, tree, rightIndex, left);
-    right = copy left;
-  } else if (isContextualNumericLiteral(tree, leftIndex)
-    && (isNumericTypeName(right) || isActiveTypeParameter(bindings, right))) {
-    try requireNumericLiteralRange(module, tree, leftIndex, right);
-    left = copy right;
+  // Resolve aliases only when a literal needs a peer context. Ordinary
+  // value/value operations already resolve their types in binaryOperatorType.
+  if (isContextualNumericLiteral(tree, rightIndex)) {
+    const target = transparentTypeName(modules, moduleIndex, left);
+    if (isNumericTypeName(target) || isActiveTypeParameter(bindings, left)) {
+      try requireNumericLiteralRange(module, tree, rightIndex, target);
+      right = copy target;
+      return;
+    }
+  }
+  if (isContextualNumericLiteral(tree, leftIndex)) {
+    const target = transparentTypeName(modules, moduleIndex, right);
+    if (isNumericTypeName(target) || isActiveTypeParameter(bindings, right)) {
+      try requireNumericLiteralRange(module, tree, leftIndex, target);
+      left = copy target;
+    }
   }
 }
 
@@ -6669,7 +6687,15 @@ function inferExpressionNodeType(
     return result;
   }
   if (kind == ExpressionKind.binaryExpression && children.length == 2) {
-    let left = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
+    // Apply destination width to literal shifts before validating the operation.
+    // Named values are inferred normally and are never implicitly converted.
+    let operandContext = "";
+    if (value == "<<" || value == ">>") {
+      operandContext = contextualExpectedType(bindings, tree, index);
+    }
+    let left = operandContext.byteLength > 0
+      ? try inferExpressionNodeTypeExpected(module, modules, moduleIndex, arena, tree, children[0], operandContext, inout bindings, inout evidence)
+      : try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], left);
     if (value == "instanceof") {
       if (
@@ -6793,10 +6819,12 @@ function inferExpressionNodeType(
       );
       return result;
     }
-    let right = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], inout bindings, inout evidence);
+    let right = operandContext.byteLength > 0
+      ? try inferExpressionNodeTypeExpected(module, modules, moduleIndex, arena, tree, children[1], operandContext, inout bindings, inout evidence)
+      : try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[1], right);
     if (left.byteLength == 0 || right.byteLength == 0) return "";
-    try contextualizeNumericOperands(module, tree, children[0], children[1],
+    try contextualizeNumericOperands(module, modules, moduleIndex, tree, children[0], children[1],
       bindings, inout left, inout right);
     if (
       left == right
@@ -7802,7 +7830,7 @@ function inferExpressionNodeType(
             tree, expectedInput, inout bindings, inout evidence);
           try requireSettledExpressionType(module, tree, actualInput, actualType);
           try requireSettledExpressionType(module, tree, expectedInput, expectedType);
-          try contextualizeNumericOperands(module, tree, actualInput, expectedInput,
+          try contextualizeNumericOperands(module, modules, moduleIndex, tree, actualInput, expectedInput,
             bindings, inout actualType, inout expectedType);
           const comparisonType = try binaryOperatorType(module, modules, moduleIndex,
             tree, index, "==", actualType, expectedType);

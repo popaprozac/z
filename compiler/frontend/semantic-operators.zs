@@ -6,6 +6,7 @@ import {
   transparentTypeName,
 } from "./semantic-type-identities.zs";
 import { nativeObjectiveCReferenceAssignable } from "./semantic-expression-types.zs";
+import { validateConstantShift } from "./semantic-numeric-constants.zs";
 import {
   isIntegerTypeName,
   isNullableTypeName,
@@ -319,6 +320,9 @@ export function binaryOperatorType(
     || operator == ">>"
   ) {
     if (left == right && isIntegerTypeName(left)) {
+      if (operator == "<<" || operator == ">>") {
+        try validateConstantShift(module, tree, index, left);
+      }
       return left.copyBytes(0, left.byteLength);
     }
     throw invalidOperator(

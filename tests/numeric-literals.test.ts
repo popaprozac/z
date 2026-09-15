@@ -2,7 +2,7 @@ import { lex } from "../compiler/src/lexer.ts";
 import { parse } from "../compiler/src/parser.ts";
 import { normalizeNumericLiteral } from "../compiler/src/numeric-literal.ts";
 import {
-  assert, check, cli, compileToC, diagnostics, hostToolchainTest, mkdtempSync,
+  assert, check, cli, compileToC, diagnostics, hover, hostToolchainTest, mkdtempSync,
   projectRoot, readFileSync, resolve, rmSync, spawnSync, test, writeFileSync,
 } from "./support/bootstrap.ts";
 
@@ -18,6 +18,81 @@ const malformed = [
   "0x1g", "0b102", "0x1_", "0b1__0", "1_", "1__0", "1_e2",
   "1.2_", "1.2__3", "1.2_e3", "1e_2", "1e+_2", "1e2_", "1e2__3",
 ];
+
+const invalidNumericContexts = [
+  'function main(): i32 { const n: u8 = true ? 256 : 0; return 0; }',
+  'function main(): i32 { const n: u8 = false ? 0 : -1; return 0; }',
+  'function main(): i32 { const n: u64 = 1 << 64; return 0; }',
+  'function main(): i32 { const n: u64 = 0xFFFF_FFFF_FFFF_FFFF << 1; return 0; }',
+  'function main(): i32 { const n: u64 = 1 << -1; return 0; }',
+  'function main(): i32 { const n: i64 = 1 << 63; return 0; }',
+  'function main(): i32 { const n: u64 = (1 << 63) << 1; return 0; }',
+  'function main(): i32 { const n: u64 = 1 << (1 << 6); return 0; }',
+  'function main(): i32 { const value: i32 = 7; const n: u64 = true ? value : 0; return 0; }',
+  'function main(): i32 { const value: i32 = 7; const n: u64 = value << 1; return 0; }',
+  'type Byte = u8; function main(): i32 { const n: Byte = 256; return 0; }',
+  'type Wide = u64; function main(): i32 { const n: i32 = 7; const value: Wide = n; return 0; }',
+  'function main(): i32 { const n: u64 = true ? 1.5 : 0; return 0; }',
+];
+
+test("numeric expression contexts reach literals without converting typed values", () => {
+  const input = resolve(projectRoot, "tests/fixtures/numeric-expression-context.zs");
+  const source = readFileSync(input, "utf8");
+  assert.doesNotThrow(() => compileToC(source, input));
+  assert.match(hover(source, input, source.indexOf("mask: u64"))?.contents.value ?? "", /mask: u64/);
+  for (const source of invalidNumericContexts) {
+    assert.throws(() => check(source, "context.zs"), /fit|range|overflow|shift|branch|expected|cannot initialize/);
+    assert.ok(diagnostics(source, "context.zs").length > 0);
+  }
+});
+
+hostToolchainTest("numeric expression contexts execute in both compiler paths", () => {
+  const directory = mkdtempSync("/tmp/z-numeric-context-");
+  const run = (command: string, args: string[]) => spawnSync(command, args, {
+    encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+  });
+  try {
+    for (const name of ["numeric-expression-context", "integer-shift-widths"]) {
+      const input = resolve(projectRoot, `tests/fixtures/${name}.zs`);
+      for (const native of [false, true]) {
+        const emitted = native ? run(process.execPath, [cli, "self-host-emit", input]) : null;
+        if (emitted) assert.equal(emitted.status, 0, emitted.stderr);
+        const c = resolve(directory, native ? "native.c" : "stage0.c");
+        writeFileSync(c, emitted?.stdout ?? compileToC(readFileSync(input, "utf8"), input));
+        for (const optimization of ["-O0", "-O2"]) {
+          const executable = resolve(directory, `probe-${native}${optimization}`);
+          const compiled = run("clang", [c, "-std=c11", optimization, "-Wall", "-Wextra", "-Werror",
+            "-fsanitize=undefined", "-fno-sanitize-recover=all", "-o", executable]);
+          assert.equal(compiled.status, 0, compiled.stderr);
+          const result = run(executable, []);
+          assert.equal(result.status, 0, `${name}, ${native ? "native" : "Stage 0"}, ${optimization}: ${result.stderr} ${result.signal ?? ""}`);
+        }
+      }
+      const parity = run(process.execPath, [cli, "check", input, "--native-frontend"]);
+      assert.equal(parity.status, 0, parity.stderr);
+    }
+    for (const source of invalidNumericContexts) {
+      const file = resolve(directory, "invalid.zs");
+      writeFileSync(file, source);
+      const result = run(process.execPath, [cli, "self-host-emit", file]);
+      assert.notEqual(result.status, 0, source);
+      assert.match(result.stderr, /fit|range|overflow|shift|branch|expected/, source);
+    }
+    const asynchronous = resolve(directory, "async-context.zs");
+    writeFileSync(asynchronous, `import { scheduler } from "std/async";
+      async function main(): i32 {
+        const mask: u64 = true ? 0xFFFE << 48 : 0;
+        await scheduler.yield();
+        const restored: u64 = false ? 0 : mask;
+        if (restored != 0xFFFE_0000_0000_0000) return 1;
+        return 0;
+      }`);
+    for (const args of [["run", asynchronous], ["check", asynchronous, "--native-frontend"]]) {
+      const result = run(process.execPath, [cli, ...args]);
+      assert.equal(result.status, 0, result.stderr);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
 
 test("numeric literals preserve source tokens and normalize AST values", () => {
   for (const [spelling, expected] of valid) {

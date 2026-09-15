@@ -40,6 +40,22 @@ and `e` is an ordinary digit inside hexadecimal integers.
 These are alternate spellings, not conversions or unchecked bit casts. The
 normal contextual range checks apply: `const byte: u8 = 0x100;` is an error.
 
+That context also reaches ternary arms and shift literals. The compiler knows
+the integer width before it checks the shift:
+
+```z
+type TagBits = u64;
+function tag(enabled: boolean): TagBits {
+  return enabled ? 0xFFFE << 48 : 0;
+}
+const mask: TagBits = 0xFFFE << 48;
+```
+
+Bindings, assignments, returns, arguments, and struct fields can supply this
+context. Already-typed values keep their types: an `i32` variable is not silently
+widened to `u64`. Use `u64(value)` when you intend a conversion. Without numeric
+context, `true ? 7 : 6` remains `i32`.
+
 ## `const` and `let`
 
 - `const` creates an immutable lexical binding.

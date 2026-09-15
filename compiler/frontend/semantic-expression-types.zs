@@ -461,7 +461,7 @@ export function requireExpressionType(
     )) return;
   }
   if (
-    isNumericTypeName(expected)
+    isNumericTypeName(adapterExpected)
     && isNumericTypeName(actual)
     && isContextualNumericLiteral(tree, index)
   ) return;

@@ -24152,6 +24152,29 @@ function appendCheckedUnsignedIntegerRuntime(
   output.append(") abort();\n  return left >> right;\n}\n\n");
 }
 
+function appendCheckedSignedShiftRuntime(
+  inout output: TextBuffer, in name: String, in nativeType: String
+): void {
+  output.append(`static inline __attribute__((unused)) ${nativeType} z_stage1_checked_shift_left_${name}(${nativeType} left, ${nativeType} right) {
+  if (right < 0 || (uint64_t)right >= sizeof(left) * 8) abort();
+  ${nativeType} result;
+  const uint64_t factor = UINT64_C(1) << (uint64_t)right;
+  if (__builtin_mul_overflow(left, factor, &result)) abort();
+  return result;
+}
+
+static inline __attribute__((unused)) ${nativeType} z_stage1_checked_shift_right_${name}(${nativeType} left, ${nativeType} right) {
+  if (right < 0 || (uint64_t)right >= sizeof(left) * 8) abort();
+  if (left >= 0) return left >> right;
+  const uint64_t magnitude = (uint64_t)(-(left + 1)) + 1;
+  const uint64_t discarded = magnitude & ((UINT64_C(1) << (uint64_t)right) - 1);
+  const uint64_t quotient = (magnitude >> right) + (discarded != 0);
+  return (${nativeType})(-1 - (int64_t)(quotient - 1));
+}
+
+`);
+}
+
 function appendWrappingIntegerRuntime(
   inout output: TextBuffer,
   in name: String,
@@ -25271,6 +25294,13 @@ function emitLoweredC(
   output.append("}\n\n");
   appendCheckedUnsignedIntegerRuntime(
     inout output,
+    "u16",
+    "uint16_t",
+    "UINT16_MAX",
+    "16"
+  );
+  appendCheckedUnsignedIntegerRuntime(
+    inout output,
     "u32",
     "uint32_t",
     "UINT32_MAX",
@@ -25299,20 +25329,11 @@ function emitLoweredC(
   output.append("  if (right >= sizeof(size_t) * 8) abort();\n");
   output.append("  return left >> right;\n");
   output.append("}\n\n");
-  output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_shift_left_i32(int32_t left, int32_t right) {\n");
-  output.append("  if (right < 0 || right >= 32) abort();\n");
-  output.append("  const int64_t factor = ((int64_t)1) << right;\n");
-  output.append("  const int64_t result = (int64_t)left * factor;\n");
-  output.append("  if (result < INT32_MIN || result > INT32_MAX) abort();\n");
-  output.append("  return (int32_t)result;\n");
-  output.append("}\n\n");
-  output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_shift_right_i32(int32_t left, int32_t right) {\n");
-  output.append("  if (right < 0 || right >= 32) abort();\n");
-  output.append("  const int64_t divisor = ((int64_t)1) << right;\n");
-  output.append("  if (left >= 0) return (int32_t)((int64_t)left / divisor);\n");
-  output.append("  const int64_t magnitude = -(int64_t)left;\n");
-  output.append("  return (int32_t)(-((magnitude + divisor - 1) / divisor));\n");
-  output.append("}\n\n");
+  appendCheckedSignedShiftRuntime(inout output, "i8", "int8_t");
+  appendCheckedSignedShiftRuntime(inout output, "i16", "int16_t");
+  appendCheckedSignedShiftRuntime(inout output, "i32", "int32_t");
+  appendCheckedSignedShiftRuntime(inout output, "i64", "int64_t");
+  appendCheckedSignedShiftRuntime(inout output, "isize", "intptr_t");
   output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_convert_i32_to_u8(int32_t value) {\n");
   output.append("  if (value < 0 || value > UINT8_MAX) abort();\n");
   output.append("  return (uint8_t)value;\n");
