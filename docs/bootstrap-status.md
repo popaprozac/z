@@ -157,8 +157,10 @@ a stack guard, checks, and a scoped native ARC retain/release, not another heap
 object. Private inline scalar/plain-native fields, owned `String`, strong
 imported native references, weak Z-class handles (`Weak<T>` or `Option<Weak<T>>`),
 and source `deinit` now execute with the same gate. Native weak targets and
-arbitrary managed aggregates remain rejected. Private synchronous Z-only helpers
-now use ordinary managed parameter/result types without Objective-C selectors.
+arbitrary managed aggregates remain rejected. Synchronous Z-only instance methods
+use ordinary managed parameter/result types without Objective-C selectors and
+obey normal public, package-internal, and private visibility. External callers
+can install weak observer handles without inventing a native ABI.
 Direct nested calls reuse the active receiver loan; calls through another
 binding acquire their own guard. Constructor/deinit work stays inline and
 `super` dispatch stays in explicit native entries in this tier.

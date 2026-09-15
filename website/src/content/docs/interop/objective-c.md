@@ -312,10 +312,15 @@ weak snapshot retains only the weak control block; field replacement and
 teardown release it. This does not allow `Weak<NativeSubclass>`, arbitrary
 managed aggregate fields, or escaping field loans.
 
-Private synchronous helpers without `as` use ordinary Z types and do not become
-Objective-C selectors:
+Synchronous instance methods without `as` use ordinary Z types and do not become
+Objective-C selectors. Normal public, `internal`, and private visibility applies:
 
 ```zs
+// An external Z owner can install its observer without a native Weak<T> ABI.
+function observe(inout this, observer: Weak<Observer>): void {
+  this.observer = Option.some(observer);
+}
+
 private function currentObserver(): Option<Observer> {
   return match (in this.observer) {
     some(handle) => match (attempt handle.upgrade()) {
@@ -331,6 +336,7 @@ Direct `this.currentObserver()` calls reuse the enclosing receiver loan; calls
 through another binding acquire their own access guard. Writes still require
 `inout this`, and native reentry remains checked through local cleanup.
 `objc.selector` only accepts explicit native entries, never these helpers.
+Public/package visibility does not make a Z method selector-addressable.
 Keep constructor/deinit field work inline and `super` calls in native entries.
 Async, throwing, consuming, static, and generic helpers are not supported yet.
 

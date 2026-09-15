@@ -41,6 +41,7 @@ import {
   ModuleFunctionSignature,
   ModuleObjCProtocolMethodResolution,
   ModuleObjCSubclassEntry,
+  ModuleObjCSubclassHelper,
   ModuleObjCSubclassPlan,
   ModuleSemanticEvidence,
   ModuleSymbolKind,
@@ -883,6 +884,7 @@ struct LoweredImportedType {
   nativeTypeName: String;
   kind: LoweredTypeKind;
   nativeObjCSubclass: boolean = false;
+  nativeObjCZMethods: Array<ModuleObjCSubclassHelper> = Array<ModuleObjCSubclassHelper>();
   executorBound: boolean;
   threadShareable: boolean;
   workerDestructible: boolean;
@@ -5862,7 +5864,10 @@ function collectTreeMovedNames(
             }
           }
         }
-        if (consumesPayload) movedNames.add(tree.nodes[payload].value.copyBytes(
+        // Copyable identity payloads retain their source, just like value-call
+        // arguments. Suppressing that source's cleanup leaks the retained weak
+        // control block (or class/closure) in a straight-line method body.
+        if (consumesPayload && !treeIsRetainedReference(program, importedTypes, evidence, tree, payload)) movedNames.add(tree.nodes[payload].value.copyBytes(
           0,
           tree.nodes[payload].value.byteLength
         ));
@@ -16355,15 +16360,15 @@ function lowerExpressionContextual(
       );
       if (receiverType.kind == LoweredTypeKind.foreignObjCType) {
         let checkedHelper = false;
-        for (const plan of evidence.objectiveCSubclasses) {
-          if (plan.nativeName != receiverType.name) continue;
-          for (const helper of plan.helpers) {
+        for (const imported of importedTypes) {
+          if (!imported.nativeObjCSubclass || imported.nativeTypeName != receiverType.name) continue;
+          for (const helper of imported.nativeObjCZMethods) {
             if (helper.sourceName == sourceMethodName
               && (helper.receiverMode == receiverMode
                 || (receiverMode.byteLength == 0 && helper.receiverMode == "in"))) checkedHelper = true;
           }
         }
-        if (!checkedHelper) throw `native method-call lowering lost checked private helper evidence for ${receiverType.name}.${sourceMethodName} (${receiverMode})`;
+        if (!checkedHelper) throw `native method-call lowering lost checked Z-only method evidence for ${receiverType.name}.${sourceMethodName} (${receiverMode})`;
       }
       let receiver = try lowerExpression(
         program,
@@ -30437,6 +30442,7 @@ function copyImportedTypeAlias(
     ),
     kind: declaration.kind,
     nativeObjCSubclass: declaration.nativeObjCSubclass,
+    nativeObjCZMethods: copy declaration.nativeObjCZMethods,
     executorBound: declaration.executorBound,
     threadShareable: declaration.threadShareable,
     workerDestructible: declaration.workerDestructible,
@@ -30695,6 +30701,19 @@ function indexedImportedType(
   }
 }
 
+// Carry the declaring module's checked Z-method proof with the canonical
+// native type. A consuming module has no local subclass plan of its own.
+function nativeZMethodsForType(
+  in graph: ModuleGraph, in nativeName: String
+): Array<ModuleObjCSubclassHelper> throws String {
+  for (const module of graph.modules) {
+    for (const plan of module.semanticEvidence.objectiveCSubclasses) {
+      if (plan.nativeName == nativeName) return copy plan.helpers;
+    }
+  }
+  throw `native subclass type ${nativeName} lost its checked Z-method plan`;
+}
+
 function importedTypesForModule(
   in program: Program,
   in graph: ModuleGraph,
@@ -30817,6 +30836,9 @@ function importedTypesForModule(
           nativeTypeName: loweredNativeName,
           kind: LoweredTypeKind.foreignObjCType,
           nativeObjCSubclass: signature.foreignKind == "objcSubclass",
+          nativeObjCZMethods: signature.foreignKind == "objcSubclass"
+            ? try nativeZMethodsForType(graph, signature.foreignNativeName)
+            : Array<ModuleObjCSubclassHelper>(),
           executorBound: signature.executorAffinity.byteLength > 0,
           threadShareable: false,
           workerDestructible: false,
@@ -30874,6 +30896,9 @@ function importedTypesForModule(
             nativeTypeName: loweredNativeName,
             kind: LoweredTypeKind.foreignObjCType,
             nativeObjCSubclass: signature.foreignKind == "objcSubclass",
+            nativeObjCZMethods: signature.foreignKind == "objcSubclass"
+              ? try nativeZMethodsForType(graph, signature.foreignNativeName)
+              : Array<ModuleObjCSubclassHelper>(),
             executorBound: signature.executorAffinity.byteLength > 0,
             threadShareable: false,
             workerDestructible: false,
@@ -33358,9 +33383,9 @@ function appendLoweredProgram(
             const expected = loweredMethod.receiverMode == LoweredParameterMode.inputOutput ? "inout" : "in";
             if (helper.sourceName != method.name || helper.receiverMode != expected
               || method.objectiveCSelector.byteLength > 0 || method.overrideMethod) {
-              throw "native subclass lowering lost checked private helper evidence";
+              throw "native subclass lowering lost checked Z-only method evidence";
             }
-            loweredMethod.compilerIntrinsic = "objcPrivateHelper";
+            loweredMethod.compilerIntrinsic = "objcZMethod";
           }
           for (const entry of plan.methods) {
             if (entry.offset == method.offset) loweredMethod.nativeObjCEntry = Option.some(copy entry);
@@ -33372,7 +33397,7 @@ function appendLoweredProgram(
               if (entry.overridesInherited != method.overrideMethod) throw "native subclass lowering lost checked lifecycle dispatch evidence";
             }
             none => {
-              if (loweredMethod.compilerIntrinsic != "objcPrivateHelper") throw "native subclass lowering lost its checked override entry";
+              if (loweredMethod.compilerIntrinsic != "objcZMethod") throw "native subclass lowering lost its checked override entry";
             }
           }
         }

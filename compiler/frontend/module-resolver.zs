@@ -11078,7 +11078,7 @@ function inferExpressionNodeType(
                 const helperBase = nativeObjCSubclassBase(modules, moduleIndex, ownerType);
                 if (helperBase.byteLength > 0) {
                   throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
-                    "private native-subclass helpers require a Ready receiver; keep constructor and deinit field work inline",
+                    "Z-only native-subclass methods require a Ready receiver; keep constructor and deinit field work inline",
                     tree.nodes[index].line, tree.nodes[index].column, 1);
                 }
               }

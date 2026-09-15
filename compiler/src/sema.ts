@@ -3105,7 +3105,7 @@ function registerObjCSubclasses(program: Program, globals: Map<string, SymbolVal
     }
     for (const method of declaration.methods) {
       const selector = method.nativeSelector!;
-      if (!selector) continue; // Private Z-only helpers have no native ABI.
+      if (!selector) continue; // Z-only methods have no native ABI.
       if (selectors.has(selector)) objcSubclassError(fileName, method.location, `duplicate native override selector ${JSON.stringify(selector)}`);
       selectors.add(selector);
       const inheritedMethod = inherited.find((candidate) => candidate.instance && candidate.selector === selector);
@@ -13773,7 +13773,7 @@ function inferExpressionInner(
         if (declaration.nativeBase && !callable.nativeSelector
           && (state.activeFunction?.name === "constructor" || state.activeFunction?.name === "deinit")) {
           objcSubclassError(fileName, expression.location,
-            "private native-subclass helpers require a Ready receiver; keep constructor and deinit field work inline");
+            "Z-only native-subclass methods require a Ready receiver; keep constructor and deinit field work inline");
         }
         const methodAffinity = declaration.executorAffinity
           ? state.aggregateExecutorAffinities.get(declaration.name) ?? null

@@ -1998,9 +1998,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (resolved?.kind === "objc") {
       const owner = sourceAggregateForType(context, resolved.declaration.typeName)?.declaration;
       const helper = resolved.instance && owner?.nativeBase
-        && insideAggregateBody(source, fileName, word.start, owner.name)
-        ? owner.methods.find((method) => method.name === word.text && !method.nativeSelector) : null;
-      if (helper) return markdownHover(`${methodDetail(helper, context.typeDisplayNames)}\n// private Z-only helper; not an Objective-C selector\n// on thread.main, borrowing the active receiver access for direct this calls`, source, word.start, word.end);
+        ? owner.methods.find((method) => method.name === word.text && !method.nativeSelector
+          && ((method.visibility ?? "public") === "public"
+            || insideAggregateBody(source, fileName, word.start, owner.name)
+            || (method.visibility === "internal" && canAccessInternalMembers(context, owner)))) : null;
+      if (helper) return markdownHover(`${methodDetail(helper, context.typeDisplayNames)}\n// Z-only method; not an Objective-C selector\n// on thread.main; direct this calls borrow the active receiver access`, source, word.start, word.end);
       if (!resolved.instance && resolved.declaration.className === "NSData" && (word.text === "copy" || word.text === "borrow")) {
         return word.text === "copy"
           ? objCDataCopyHover(resolved.declaration.typeName, source, word.start, word.end)
@@ -7710,11 +7712,14 @@ function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, c
     detail: objcPropertyDetail(property, mainIsolated),
   }));
   const owner = sourceAggregateForType(context, declaration.typeName)?.declaration;
-  if (instance && owner?.nativeBase && offset !== undefined
-    && sourceAggregateAtOffset(context, offset)?.name === owner.name) {
-    for (const method of owner.methods.filter((method) => !method.nativeSelector)) {
+  if (instance && owner?.nativeBase) {
+    const includePrivate = offset !== undefined && sourceAggregateAtOffset(context, offset)?.name === owner.name;
+    const includeInternal = canAccessInternalMembers(context, owner);
+    for (const method of owner.methods.filter((method) => !method.nativeSelector
+      && ((method.visibility ?? "public") === "public" || includePrivate
+        || (method.visibility === "internal" && includeInternal)))) {
       items.push({ label: method.name, kind: completionKinds.method,
-        detail: `${methodDetail(method, context.typeDisplayNames)}  // private Z-only helper`,
+        detail: `${methodDetail(method, context.typeDisplayNames)}  // Z-only method; not an Objective-C selector`,
         insertText: method.name });
     }
   }

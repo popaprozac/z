@@ -1,7 +1,8 @@
 # Z-owned state and helpers in native subclasses
 
 Status: implemented bounded checkpoints, 2026-09-14. Weak-field storage and
-private synchronous Z-only helper methods execute in both compilers.
+synchronous Z-only instance methods execute in both compilers, with ordinary
+public, package-internal, and private visibility.
 
 ## Pressure case
 
@@ -38,7 +39,7 @@ class NativeWindow extends AppKit.NSWindow on thread.main {
 }
 ```
 
-## Recommended bounded direction
+## Initial bounded direction
 
 - Distinguish Z-only helpers from native entries using the existing explicit
   `as` spelling. An override remains a checked native selector; no implicit
@@ -104,8 +105,8 @@ own receiver guard, even if the binding aliases the same native object. Native
 callback reentry therefore cannot bypass exclusivity. Each call pins the receiver
 through local cleanup and guard release; no helper wrapper object is allocated.
 
-The first tier is private, synchronous, non-throwing, non-consuming, nongeneric
-instance helpers. Constructors and deinitializers keep field work inline;
+The first checkpoint admitted private, synchronous, non-throwing, non-consuming,
+nongeneric instance helpers. Constructors and deinitializers keep field work inline;
 helpers require a Ready receiver. `super` remains in explicit native entries so
 its checked full-expression handoff is not hidden in an ordinary C helper.
 Receiver captures and escaping field loans remain rejected. `objc.selector`
@@ -118,3 +119,34 @@ destructor reentry at `-O0`/`-O2` with UBSan and generated-allocation accounting
 Negative tests cover visibility, unsupported effects, constructors, selectors,
 readonly access, and captures. All native processes are bounded; expected access
 traps are caught without creating macOS crash reports.
+
+## External observer installation
+
+The runtime that owns an observer must be able to install its weak handle on
+the native window. Private-only helpers did not cover that composition: the
+original fixtures created observers inside native entries. Making installation
+an Objective-C entry is not a solution; `Weak<T>` has an ordinary Z representation,
+not an Objective-C parameter ABI.
+
+Z-only instance methods now use ordinary public, `internal`, and `private`
+visibility. The absence of `as` identifies a Z call, not a native selector:
+
+```zs
+function observe(inout this, observer: Weak<Observer>): void {
+  this.observer = Option.some(observer);
+}
+
+private function currentObserver(): Option<Observer> { /* ... */ }
+```
+
+External Z calls acquire their own receiver guard and hold receiver lifetime
+through cleanup. Direct nested `this` calls continue to reuse the checked loan.
+Normal package/privacy checks and main-executor requirements still apply.
+`objc.selector` rejects Z-only methods regardless of visibility. `override`
+still requires `as`, and all earlier effect and lifecycle restrictions remain.
+No selector adapter or additional wrapper allocation is introduced.
+
+`tests/fixtures/objc-subclass-z-methods.zs` exercises installation by an external
+observer owner, managed results, expiration without a retain cycle, imported
+methods and public-method reentry. The state test also covers visibility and
+editor behavior rather than relying only on within-class helper calls.

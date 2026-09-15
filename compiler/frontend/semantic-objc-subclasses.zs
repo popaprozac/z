@@ -198,15 +198,15 @@ function validateOverrideShape(
   in module: ParsedModule, in method: FunctionDeclaration
 ): void throws ModuleResolveError {
   if (method.objectiveCSelector.byteLength == 0) {
-    if (method.visibility != Visibility.privateVisibility || method.overrideMethod) throw subclassError(module,
-      "a native subclass method requires an explicit `as \"selector:\"`, or a private Z-only helper without override",
+    if (method.overrideMethod) throw subclassError(module,
+      "a native subclass override requires an explicit `as \"selector:\"`; Z-only methods cannot override native entries",
       method.line, method.column);
     let throwing = false;
     match (in method.errorType) { some(_) => throwing = true; none => {} }
     if (method.staticMethod || method.asynchronous || throwing
       || method.rawLanguage.byteLength > 0 || method.receiverMode == ReceiverMode.move
       || method.typeParameters.length > 0) throw subclassError(module,
-      "a private native-subclass helper must be a synchronous, non-throwing, non-consuming instance method",
+      "a Z-only native-subclass method must be a synchronous, non-throwing, non-consuming instance method",
       method.line, method.column);
     return;
   }

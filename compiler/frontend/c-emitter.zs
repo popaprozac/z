@@ -6250,7 +6250,7 @@ function appendExpression(
     if (declaration.expressions[index].labels[0] == "nativeHelperSelf") {
       if (declaration.nativeObjCClass.byteLength == 0
         || declaration.compilerIntrinsic == "objcInitializer"
-        || declaration.compilerIntrinsic == "objcDeinitializer") throw "private native helper lost its enclosing receiver loan";
+        || declaration.compilerIntrinsic == "objcDeinitializer") throw "native Z-only method lost its enclosing receiver loan";
       output.append(", _z_native_subclass_current_loan");
     } else if (declaration.expressions[index].labels[0] == "nativeHelper") output.append(", NULL");
     let argument: usize = 1;
@@ -9098,7 +9098,7 @@ function appendFunctionSignature(
   let first = true;
   match (in declaration.receiverType) {
     some(receiver) => {
-      if (declaration.compilerIntrinsic == "objcPrivateHelper") {
+      if (declaration.compilerIntrinsic == "objcZMethod") {
         output.append(declaration.nativeObjCClass);
         output.append(" *self, _z_native_subclass_access_guard *_z_native_subclass_parent_loan");
       } else {
@@ -11078,8 +11078,8 @@ function appendFunction(
     output.append("  if (![NSThread isMainThread]) abort();\n");
     if (declaration.compilerIntrinsic == "objcDeinitializer") {
       output.append("  self->_z_native_subclass_ready = 0;\n  {\n");
-    } else if (declaration.compilerIntrinsic == "objcPrivateHelper") {
-      output.append("  if (!self->_z_native_subclass_ready) { fputs(\"Z runtime error: private native helper requires a Ready receiver\\n\", stderr); abort(); }\n");
+    } else if (declaration.compilerIntrinsic == "objcZMethod") {
+      output.append("  if (!self->_z_native_subclass_ready) { fputs(\"Z runtime error: native Z-only method requires a Ready receiver\\n\", stderr); abort(); }\n");
       output.append("  __attribute__((objc_precise_lifetime)) id const _z_native_subclass_owner = self;\n  (void)_z_native_subclass_owner;\n");
       output.append("  _z_native_subclass_access_guard _z_native_subclass_loan __attribute__((cleanup(_z_native_subclass_access_end))) = {0};\n");
       output.append("  if (_z_native_subclass_parent_loan) {\n    if (_z_native_subclass_parent_loan->state != &self->_z_native_subclass_access\n      || (_z_native_subclass_parent_loan->exclusive ? self->_z_native_subclass_access != -1 : self->_z_native_subclass_access <= 0) || ");
@@ -25812,7 +25812,7 @@ function emitLoweredC(
   // in the generated translation unit. Make every Z callable visible first
   // so constructor bodies can use the same direct calls as ordinary code.
   for (const declaration of program.functions) {
-    if (declaration.nativeObjCClass.byteLength > 0 && declaration.compilerIntrinsic != "objcPrivateHelper") continue;
+    if (declaration.nativeObjCClass.byteLength > 0 && declaration.compilerIntrinsic != "objcZMethod") continue;
     try appendFunctionSignature(
       inout output,
       declaration,

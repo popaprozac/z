@@ -112,7 +112,7 @@ function visitExpression(
       const receiver = view tree.nodes[callee.children[0]];
       if (receiver.kind == ExpressionKind.identifierExpression && receiver.value == "super") {
         if (context.helper) throw bodyError(module,
-          "superclass dispatch belongs in an explicit native entry, not a private Z-only helper", node.line, node.column);
+          "superclass dispatch belongs in an explicit native entry, not a Z-only method", node.line, node.column);
         if (context.dying) throw bodyError(module,
           "native subclass deinit cannot publish or call through the dying receiver; use its stored fields", node.line, node.column);
         if (context.beforeInitialization) throw bodyError(module,

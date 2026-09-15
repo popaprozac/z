@@ -9332,6 +9332,30 @@ specialization prevents unsupported helper declarations from disappearing into
 synthetic methods. Hover/completion shows the Z-only boundary rather than trying
 to find a native selector.
 
+### External installation: visibility is not an ABI decision
+
+Returning to Zapp exposed a hole in the private-helper checkpoint's pressure
+case. Its fixture created an observer inside a native entry. The application
+runtime actually owns the observer and must pass a weak handle into the window
+from outside the class. Private-only methods prevented that; adding a selector
+correctly rejected the Z `Weak<T>` parameter as a native ABI.
+
+The approved extension applies normal public/package-internal/private visibility
+to Z-only instance methods. There is no new keyword, observer registry, raw
+pointer, or selector wrapper. External calls acquire the existing checked loan;
+nested `this` calls reuse it. Weak installation, managed snapshots, observer
+expiration and reentrant public calls are now a separate executable fixture.
+This is a useful testing lesson: field storage plus an internal helper does not
+prove construction/installation by the external owner of the resource graph.
+
+The executable probe also found two native composition gaps. Imported calls
+needed the declaring module's checked Z-method proof carried with the canonical
+native type. Separately, storing a named weak parameter in `Option.some` retained
+the handle but syntax-based cleanup classified the payload as moved, suppressing
+the parameter's release. Type-aware retained-identity handling now preserves
+that release. Generated-translation-unit allocation accounting catches this
+even though observer destruction and returned values looked correct.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

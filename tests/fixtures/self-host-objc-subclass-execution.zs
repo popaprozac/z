@@ -19,7 +19,10 @@ function emit(in wirePath: String, in sourcePath: String, in companionPath: Stri
   const raw = try decodeRawForeignDeclarations(wire);
   const contractSource = contractPath.byteLength > 0 ? try fs.readText(contractPath) : `declare module "./objc-subclass.h" {}`;
   const source = try fs.readText(sourcePath);
-  const input = ModuleSource({ path: copy sourcePath, source, packageSpecifiers: Array<String>(), targetPlatform: "macos", targetMinimumVersion: "14.0" });
+  const packageProbe = corruption == "same-package" || corruption == "split-package";
+  const input = ModuleSource({ path: copy sourcePath, source,
+    packageIdentity: packageProbe ? "subclass-probe" : "",
+    packageSpecifiers: Array<String>(), targetPlatform: "macos", targetMinimumVersion: "14.0" });
   const parsed = match (attempt parseModule(input)) {
     success(value) => value;
     failure(error) => throw copy error.message;
@@ -27,7 +30,9 @@ function emit(in wirePath: String, in sourcePath: String, in companionPath: Stri
   let modules = Array<ParsedModule>(parsed);
   if (companionPath.byteLength > 0) {
     const companionSource = try fs.readText(companionPath);
-    const companionInput = ModuleSource({ path: copy companionPath, source: companionSource, packageSpecifiers: Array<String>(), targetPlatform: "macos", targetMinimumVersion: "14.0" });
+    const companionInput = ModuleSource({ path: copy companionPath, source: companionSource,
+      packageIdentity: corruption == "split-package" ? "other-package" : packageProbe ? "subclass-probe" : "",
+      packageSpecifiers: Array<String>(), targetPlatform: "macos", targetMinimumVersion: "14.0" });
     const companion = match (attempt parseModule(companionInput)) {
       success(value) => value;
       failure(error) => throw copy error.message;
@@ -63,7 +68,7 @@ function emit(in wirePath: String, in sourcePath: String, in companionPath: Stri
       graph.modules[0].semanticEvidence.callResolutions[call].foreignHeader = "";
       call = call + 1;
     }
-  } else if (corruption.byteLength > 0) {
+  } else if (corruption.byteLength > 0 && !packageProbe) {
     // The planner consumes call evidence only. Keep this a minimal corrupted
     // proof, not a deep copy of the resolver's ownership-bearing lookup Maps.
     let evidence = emptySemanticEvidence();

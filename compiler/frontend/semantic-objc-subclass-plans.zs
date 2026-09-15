@@ -161,7 +161,7 @@ export function planNativeObjCSubclasses(
             || checked.objectiveCImplementationSelector.byteLength > 0
             || checked.objectiveCNativeReturnType.byteLength > 0
             || checked.receiverMode != receiverMode) throw planError(module,
-              `private native helper ${method.name} lost checked Z-only receiver evidence`);
+              `native Z-only method ${method.name} lost checked receiver evidence`);
           found = true;
           helpers.push(ModuleObjCSubclassHelper({ offset: method.offset,
             sourceName: copy method.name, receiverMode }));
