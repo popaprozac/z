@@ -68,6 +68,11 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-generic-struct.zs" },
   { entry: "tests/fixtures/self-host-emit-generic-struct-modules/main.zs" },
   { entry: "tests/fixtures/self-host-emit-class-constructor.zs" },
+  { entry: "tests/fixtures/self-host-emit-async-receiver-hygiene.zs" },
+  {
+    entry: "tests/fixtures/self-host-emit-receiver-hygiene.zs",
+    expectedStdout: "released owner\nreceiver bindings passed\nreleased store firstsecond\n",
+  },
   {
     entry: "tests/fixtures/self-host-emit-generic-class.zs",
     expectedStdout: "drop 2\ndrop 1\n",
@@ -245,6 +250,8 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-block-closure-cleanup-edges.zs": differential,
   "self-host-emit-class-field-order.zs": differential,
   "self-host-emit-class-constructor.zs": differential,
+  "self-host-emit-receiver-hygiene.zs": differential,
+  "self-host-emit-async-receiver-hygiene.zs": differential,
   "self-host-emit-fixed-array.zs": differential,
   "self-host-emit-fixed-array-owned.zs": differential,
   "self-host-emit-generic-struct.zs": differential,

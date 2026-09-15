@@ -268,8 +268,27 @@ function appendCBindingName(
   inout output: TextBuffer,
   in name: String
 ): void {
+  // Authored self bindings must not alias the generated/Objective-C receiver.
+  if (name == "self") {
+    output.append("_z_binding_self");
+    return;
+  }
+  // Receiver cleanup retains its source identity, distinct from local bindings.
+  if (name == "this") {
+    output.append("self");
+    return;
+  }
   if (isCReservedWord(name)) output.append("z_");
   output.append(name);
+}
+
+function appendFunctionParameterName(
+  inout output: TextBuffer, in declaration: LoweredFunction, in name: String
+): void {
+  // Raw bodies are opaque native source and their helpers have no receiver.
+  if (declaration.rawLanguage.byteLength > 0 && name == "self") {
+    output.append(name);
+  } else appendCBindingName(inout output, name);
 }
 
 function appendNativeObjCSubclassEntry(
@@ -9153,14 +9172,14 @@ function appendFunctionSignature(
     ) {
       output.append(parameterType);
       output.append(" ");
-      appendCBindingName(inout output, parameter.name);
+      appendFunctionParameterName(inout output, declaration, parameter.name);
       continue;
     }
     output.append(parameterType);
     if (parameter.mode == LoweredParameterMode.input) output.append(" const *");
     else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
     else output.append(" ");
-    appendCBindingName(inout output, parameter.name);
+    appendFunctionParameterName(inout output, declaration, parameter.name);
   }
   if (first) output.append("void");
   output.append(")");
@@ -11135,7 +11154,7 @@ function appendFunction(
   }
   for (const parameter of declaration.parameters) {
     output.append("  (void)");
-    appendCBindingName(inout output, parameter.name);
+    appendFunctionParameterName(inout output, declaration, parameter.name);
     output.append(";\n");
   }
   if (

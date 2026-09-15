@@ -28374,7 +28374,7 @@ function lowerFunction(
         parameter: true,
       }));
       ownedParameters.push(LoweredCleanup({
-        name: "self",
+        name: "this",
         type: move receiverType,
         guard,
       }));

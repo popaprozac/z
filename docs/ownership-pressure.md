@@ -9450,6 +9450,30 @@ type directly. Both compiler paths execute the inferred field-exchange
 fixture, with exact cleanup counts. No annotation or helper-method workaround
 is required for this case.
 
+## Authored names must not become native receivers
+
+The JS-engine consumer used an ordinary `self: i32` parameter next to
+`inout this`. Z accepted it, but both emitters produced two C parameters named
+`self`, turning a valid program into a backend diagnostic. Authored bindings
+now use collision-free generated storage while `this` remains the receiver.
+Receiver cleanup also keeps its source identity instead of masquerading as a
+user local. No source keyword or runtime check is added.
+
+The [receiver fixture](../tests/fixtures/self-host-emit-receiver-hygiene.zs)
+combines mutable and borrowed receivers, a consuming resource method, class
+construction/destruction, closure captures, and payload bindings. The
+[async fixture](../tests/fixtures/self-host-emit-async-receiver-hygiene.zs)
+keeps owned `self` parameters and locals across suspension. Named raw functions
+and Stage 0 raw expression helpers preserve their authored boundary names;
+their opaque native source is not rewritten. Native Objective-C subclasses
+retain their separately diagnosed implicit-name restrictions.
+
+The pressure test also exposed a separate native-emitter gap: multi-argument
+`console.log` inside a deinitializer can reach C as an unresolved `console.log`
+call. A single formatted String works and is used by this fixture. That
+deinitializer-call lowering gap remains open; the binding-name fix does not
+claim to resolve it.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

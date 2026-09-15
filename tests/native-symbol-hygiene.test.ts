@@ -1,6 +1,61 @@
 import {
   assert, cli, compileTestsToNative, compileToC, mkdtempSync, resolve, rmSync, spawnSync, test, writeFileSync,
 } from "./support/bootstrap.ts";
+import { readFileSync } from "node:fs";
+
+test("keeps authored self bindings distinct from receivers and raw native boundaries", () => {
+  const input = resolve("tests/fixtures/self-host-emit-receiver-hygiene.zs");
+  const source = readFileSync(input, "utf8");
+  const directory = mkdtempSync("/tmp/z-receiver-hygiene-");
+  try {
+    const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr || String(native.error));
+    const rawBlockSource = source.replace("const observed = rawIdentity(self);",
+      "const observed = raw c using (in self): i32 { return *self; };");
+    // Named raw functions work in both emitters; raw expression helpers still
+    // use Stage 0. Preserve authored boundary names in both supported paths.
+    for (const [emitter, emission] of [["Stage 0", compileToC(source, input)],
+      ["Stage 0 raw block", compileToC(rawBlockSource, input)], ["native", native.stdout]]) {
+      for (const language of emitter === "native" ? ["c"] : ["c", "c++"]) {
+        const binary = resolve(directory, "program");
+        const built = spawnSync("clang", ["-x", language, language === "c" ? "-std=c11" : "-std=c++20",
+          "-Wall", "-Wextra", "-Werror", "-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all",
+          "-", "-o", binary], {
+          input: emission, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+        });
+        assert.equal(built.status, 0, `${emitter}/${language}: ${built.stderr || built.error}`);
+        const ran = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+        assert.equal(ran.status, 0, `${emitter}/${language}: ${ran.stderr || ran.error}`);
+        assert.equal(ran.stdout, "released owner\nreceiver bindings passed\nreleased store firstsecond\n");
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("preserves self parameters and locals across owned async frames", () => {
+  const input = resolve("tests/fixtures/self-host-emit-async-receiver-hygiene.zs");
+  const source = readFileSync(input, "utf8");
+  const directory = mkdtempSync("/tmp/z-async-receiver-hygiene-");
+  try {
+    const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr || String(native.error));
+    for (const [emitter, emission] of [["Stage 0", compileToC(source, input)], ["native", native.stdout]]) {
+      const binary = resolve(directory, "program");
+      const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread",
+        "-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", binary], {
+        input: emission, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+      });
+      assert.equal(built.status, 0, `${emitter}: ${built.stderr || built.error}`);
+      const ran = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+      assert.equal(ran.status, 0, `${emitter}: ${ran.stderr || ran.error}`);
+      assert.equal(ran.stdout, "");
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
 
 test("preserves C trigraph sequences in literals, templates, async frames, and test names", () => {
   const directory = mkdtempSync("/tmp/z-string-hygiene-");

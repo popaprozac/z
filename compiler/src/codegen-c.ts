@@ -6791,7 +6791,7 @@ function generateFunction(
   }
   if (declaration.rawBody) {
     const signature = generateFunctionSignature(declaration, structs, enums, receiver, semanticInfo.foreignNamedTypes);
-    const parameters = declaration.parameters.map((parameter) => `(void)${cBindingName(parameter.name)};`);
+    const parameters = declaration.parameters.map((parameter) => `(void)${rawBoundaryBindingName(parameter.name)};`);
     if (!receiver && declaration.name === "main") parameters.push("(void)argc;", "(void)argv;");
     const prefix = parameters.length > 0 ? `${parameters.map((line) => `  ${line}`).join("\n")}\n` : "";
     return `${signature} {\n${prefix}${generateRawBodySource(
@@ -6808,7 +6808,7 @@ function generateFunction(
   const ownedReceiverCleanup = instanceReceiver
     && declaration.receiverMode === "move"
     && hasCleanupType(instanceReceiver.name, structs, enums)
-    ? [{ name: "self", type: instanceReceiver.name, liveFlag: nextLiveFlag("this", liveFlagCounter) }]
+    ? [{ name: "this", type: instanceReceiver.name, liveFlag: nextLiveFlag("this", liveFlagCounter) }]
     : [];
   if (ownedReceiverCleanup.length > 0) liveFlags.set("this", ownedReceiverCleanup[0].liveFlag);
   const parameterCleanup = ownedReceiverCleanup.concat(declaration.parameters
@@ -6939,7 +6939,7 @@ function generateRawExpressionHelper(
     generateRawBoundaryParameter(capture, structs, enums, semanticInfo)
   ));
   const signature = `static ${result} ${rawExpressionHelperName(plan.expression.location.offset)}(${parameters.join(", ") || "void"})`;
-  const unused = plan.captures.map((capture) => `  (void)${cBindingName(capture.name)};`).join("\n");
+  const unused = plan.captures.map((capture) => `  (void)${rawBoundaryBindingName(capture.name)};`).join("\n");
   return `${signature} {\n${unused}${unused ? "\n" : ""}${generateRawBodySource(
     plan.expression.body,
     sourceName,
@@ -6953,7 +6953,7 @@ function generateRawBoundaryParameter(
   enums: Map<string, EnumDeclaration>,
   semanticInfo: SemanticInfo,
 ): string {
-  const name = cBindingName(capture.name);
+  const name = rawBoundaryBindingName(capture.name);
   const type = mapType(capture.type, structs, enums, semanticInfo.foreignNamedTypes);
   if (capture.mode === "in") {
     const nativeReference = capture.type === "cstring"
@@ -7156,7 +7156,7 @@ function generateFunctionSignature(
     : "";
   const name = receiver ? methodName(receiver.name, declaration.name) : cFunctionName(declaration.name);
   const parameters = declaration.parameters.map((parameter) => {
-    const name = cBindingName(parameter.name);
+    const name = declaration.rawBody ? rawBoundaryBindingName(parameter.name) : cBindingName(parameter.name);
     const type = mapType(parameter.type.name, structs, enums, foreignNamedTypes);
     if (parseSliceType(parameter.type.name)) return `${type} ${name}`;
     if (parameter.type.name === "TaskScope" || parameter.type.name === "TaskControl") {
@@ -14020,7 +14020,16 @@ const cReservedWords = new Set(`
 `.trim().split(/\s+/));
 
 export function cBindingName(name: string): string {
+  // Objective-C and generated Z methods use self for their implicit receiver.
+  // User bindings stay distinct, in the already-reserved generated namespace.
+  if (name === "self") return "_z_binding_self";
   return cReservedWords.has(name) ? `z_${name}` : name;
+}
+
+function rawBoundaryBindingName(name: string): string {
+  // Raw helpers have no implicit receiver; preserve their authored native ABI
+  // parameter names without rewriting identifiers inside opaque native source.
+  return name === "self" ? name : cBindingName(name);
 }
 
 /** Z-owned aggregate storage only: never apply this to imported ABI fields or JSON keys. */
