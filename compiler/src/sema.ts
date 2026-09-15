@@ -652,6 +652,7 @@ type AnalysisState = {
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly foreignExpressionTypes: Map<number, string>;
   readonly numericLiteralTypes: Map<number, string>;
+  readonly pendingSignedLiterals: Map<number, { readonly expression: Expression; readonly type: string }>;
   readonly integerOperations: Map<number, IntegerOperation>;
   readonly numericConversions: Map<number, NumericConversion>;
   readonly dynamicArrayPushTypes: Set<string>;
@@ -1333,6 +1334,7 @@ export function analyze(
     foreignNamedTypes,
     foreignExpressionTypes: new Map(),
     numericLiteralTypes: new Map(),
+    pendingSignedLiterals: new Map(),
     integerOperations: new Map(),
     numericConversions: new Map(),
     dynamicArrayPushTypes: new Set(),
@@ -2309,6 +2311,9 @@ export function analyze(
   }
   for (const declaration of program.functions) {
     analyzeFunction(declaration, globals, structs, enums, fileName, null, state);
+  }
+  for (const [offset, literal] of state.pendingSignedLiterals) {
+    validateConstantIntegerOperation(literal.expression, state.numericLiteralTypes.get(offset) ?? literal.type, fileName);
   }
   for (const [type, location] of state.threadSharedClassUses) {
     const weakUse = state.weakClassUses.get(type);
@@ -9508,7 +9513,13 @@ function inferExpressionInner(
         state.foreignExpressionTypes.set(expression.location.offset, canonicalOperand);
         if (expression.operator === "-" && isIntegerType(canonicalOperand)) {
           state.integerOperations.set(expression.location.offset, { kind: "checkedNegate", type: canonicalOperand });
-          validateConstantIntegerOperation(expression, canonicalOperand, fileName);
+          if (expression.operand.kind === "number") {
+            // Assignment/call/binary context may widen a signed literal after
+            // inference. Validate only once that contextual type has settled.
+            state.pendingSignedLiterals.set(expression.location.offset, { expression, type: canonicalOperand });
+          } else {
+            validateConstantIntegerOperation(expression, canonicalOperand, fileName);
+          }
         }
         return canonicalOperand;
       }
@@ -9715,6 +9726,10 @@ function inferExpressionInner(
         canonicalRight = canonicalLeft;
       } else if (expression.left.kind === "number" && isNumericType(canonicalRight)) {
         requireNumericLiteralFits(expression.left, canonicalRight, fileName, state.numericLiteralTypes);
+        canonicalLeft = canonicalRight;
+      } else if (isNumericType(canonicalLeft) && requireContextualSignedLiteral(expression.right, canonicalLeft, fileName, state.numericLiteralTypes)) {
+        canonicalRight = canonicalLeft;
+      } else if (isNumericType(canonicalRight) && requireContextualSignedLiteral(expression.left, canonicalRight, fileName, state.numericLiteralTypes)) {
         canonicalLeft = canonicalRight;
       }
       if (["+", "-", "*", "/", "%"].includes(expression.operator)) {

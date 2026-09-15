@@ -765,6 +765,28 @@ text value.
 | Native types | Imported nominal names and `T | null` | ABI-exact C, Objective-C, C++, or Swift-generated types; nullability is limited to nullable native references/handles |
 | User types | `struct`, `class`, `enum`, `trait` names | Nominal PascalCase declarations; structs/enums are values and classes have ARC identity |
 
+### Numeric literal spelling
+
+Integer literals may use decimal, hexadecimal (`0x` or `0X`), or binary (`0b`
+or `0B`). Digit separators (`_`) are optional between digits, including decimal
+fraction and exponent digits. Separators cannot immediately follow a radix
+prefix, touch a decimal point or exponent marker/sign, repeat, or end a literal.
+
+```z
+const mask: u64 = 0xFFF8_0000_0000_0000;
+const flags: u8 = 0b1010_0101;
+const capacity: usize = 1_024;
+const minimum: i64 = -0x8000_0000_0000_0000;
+const measured: f64 = 1_024.5_0e+0_1;
+const offsets: i32[0x3] = [10, 20, 12];
+```
+
+The spelling changes neither the value nor contextual typing: `0xFF` prefers
+`i32`, and `const small: u8 = 0x100;` is a range error. A leading zero does not
+select octal: `010` is decimal ten. Hexadecimal `e`/`E` are digits, not exponent
+markers. Hexadecimal and binary forms are integers only. The same integer
+spellings work for fixed-array lengths, which must be positive.
+
 There is currently no `char`, arbitrary-width integer, tuple, general structural
 object type, `any`, or user-written nullable value union. Use `u8` for a byte,
 `String` for owned UTF-8 text, `Option<T>` for optional Z values, and `T | null`

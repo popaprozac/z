@@ -20,6 +20,26 @@ The familiar syntax does not imply JavaScript representations. `answer` is a
 fixed-width integer, `enabled` is not truthy or falsy, and `title` owns immutable
 UTF-8 bytes.
 
+## Numeric literals
+
+Use hexadecimal or binary when a bit pattern is easier to review than decimal:
+
+```z
+const mask: u64 = 0xFFF8_0000_0000_0000;
+const flags: u8 = 0b1010_0101;
+const capacity: usize = 1_024;
+const minimum: i64 = -0x8000_0000_0000_0000;
+const offsets: i32[0x3] = [10, 20, 12];
+```
+
+`0X` and `0B` also work. Underscores separate digits; they cannot follow the
+prefix, repeat, or appear at the end. Decimal fractions and exponents may also
+separate digits: `1_024.5_0e+0_1`. A leading zero remains decimal (`010` is ten),
+and `e` is an ordinary digit inside hexadecimal integers.
+
+These are alternate spellings, not conversions or unchecked bit casts. The
+normal contextual range checks apply: `const byte: u8 = 0x100;` is an error.
+
 ## `const` and `let`
 
 - `const` creates an immutable lexical binding.

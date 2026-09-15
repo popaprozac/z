@@ -1,5 +1,6 @@
 import { Token, TokenKind, tokenKindName } from "./lexer.zs";
 import { TextBuffer } from "std/text";
+import { normalizeNumericLiteral } from "./numeric-literal.zs";
 
 export enum DeclarationKind {
   importDeclaration,
@@ -486,14 +487,6 @@ function isPositiveInteger(in text: String): boolean {
   return positive;
 }
 
-function normalizePositiveInteger(in text: String): String {
-  let start: usize = 0;
-  while (start + 1 < text.byteLength && text.byteAt(start) == 48) {
-    start = start + 1;
-  }
-  return text.copyBytes(start, text.byteLength);
-}
-
 function appendTypeNameReferences(
   inout target: Array<TypeNameReference>,
   in source: Array<TypeNameReference>
@@ -665,9 +658,24 @@ function parseType(
 
   while (takeIf(tokens, inout current, TokenKind.leftBracket)) {
     const length = try expect(tokens, inout current, TokenKind.number, "a fixed array length");
-    if (!isPositiveInteger(length.text)) throw fail(length, "a fixed array length must be a positive integer");
+    const normalizedLength = normalizeNumericLiteral(length.text);
+    if (!isPositiveInteger(normalizedLength)) throw fail(length, "a fixed array length must be a positive integer");
+    let tooLarge = normalizedLength.byteLength > 16;
+    if (normalizedLength.byteLength == 16) {
+      const maximum = "9007199254740991";
+      let digit: usize = 0;
+      while (digit < 16) {
+        if (normalizedLength.byteAt(digit) != maximum.byteAt(digit)) {
+          tooLarge = normalizedLength.byteAt(digit) > maximum.byteAt(digit);
+          break;
+        }
+        digit = digit + 1;
+      }
+    }
+    if (tooLarge) {
+      throw fail(length, "a fixed array length must not exceed 9007199254740991");
+    }
     try expectKind(tokens, inout current, TokenKind.rightBracket, "`]` after a fixed array length");
-    const normalizedLength = normalizePositiveInteger(length.text);
     name = `${name}[${normalizedLength}]`;
   }
 
@@ -1778,7 +1786,7 @@ function parsePrimaryTree(
     return pushExpressionNode(
       inout nodes,
       ExpressionKind.numberExpression,
-      start.text.copyBytes(0, start.text.byteLength),
+      normalizeNumericLiteral(start.text),
       Array<usize>(),
       Array<String>(),
       start

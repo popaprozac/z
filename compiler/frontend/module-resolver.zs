@@ -1,4 +1,5 @@
 import { TextBuffer } from "std/text";
+import { requireNumericLiteralRange } from "./semantic-expression-types.zs";
 import { requireNativeAvailability, requireNativeReferenceAvailability } from "./semantic-native-availability.zs";
 import { planNativeObjCSubclasses } from "./semantic-objc-subclass-plans.zs";
 import { prepareObjCSelectorReferences, validateObjCSelectorTargets } from "./semantic-objc-selectors.zs";
@@ -6779,14 +6780,20 @@ function inferExpressionNodeType(
         isNumericTypeName(left)
         || isActiveTypeParameter(bindings, left)
       )
-    ) right = left.copyBytes(0, left.byteLength);
+    ) {
+      try requireNumericLiteralRange(module, tree, children[1], left);
+      right = left.copyBytes(0, left.byteLength);
+    }
     else if (
       isContextualNumericLiteral(tree, children[0])
       && (
         isNumericTypeName(right)
         || isActiveTypeParameter(bindings, right)
       )
-    ) left = right.copyBytes(0, right.byteLength);
+    ) {
+      try requireNumericLiteralRange(module, tree, children[0], right);
+      left = right.copyBytes(0, right.byteLength);
+    }
     if (
       left == right
       && isActiveTypeParameter(bindings, left)

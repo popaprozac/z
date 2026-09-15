@@ -1,3 +1,5 @@
+import { requireNumericLiteralRange } from "./semantic-expression-types.zs";
+import { numberLiteralType } from "./semantic-intrinsics.zs";
 import {
   AggregateDeclaration,
   ConstructorDeclaration,
@@ -1566,6 +1568,15 @@ function validateModuleConstantTypes(
             declaration.column
           );
           continue;
+        }
+        if (numberLiteral) {
+          let target = expected.copyBytes(0, expected.byteLength);
+          if (target.byteLength == 0) {
+            const operand = root.kind == ExpressionKind.numberExpression ? tree.root : root.children[0];
+            target = numberLiteralType(tree.nodes[operand].value);
+          }
+          const rootIndex = tree.root;
+          try requireNumericLiteralRange(module, tree, rootIndex, target);
         }
         if (expected.byteLength == 0) continue;
         const compatible = (

@@ -4168,6 +4168,26 @@ function appendCStringLiteral(
   output.append("\"");
 }
 
+function appendNumericLiteral(inout output: TextBuffer, in value: String, in typeName: String): void {
+  if (typeName == "u64" || typeName == "usize") {
+    output.append(`UINT64_C(${value})`);
+  } else if (typeName == "i64" || typeName == "isize") {
+    if (value == "-9223372036854775808") output.append("INT64_MIN");
+    else output.append(`INT64_C(${value})`);
+  } else if (typeName == "f32" || typeName == "f64") {
+    output.append(value);
+    let floating = false;
+    let offset: usize = 0;
+    while (offset < value.byteLength) {
+      const byte = value.byteAt(offset);
+      if (byte == 46 || byte == 69 || byte == 101) floating = true;
+      offset = offset + 1;
+    }
+    if (!floating) output.append(".0");
+    if (typeName == "f32") output.append("f");
+  } else output.append(value);
+}
+
 function appendModuleConstants(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -4219,7 +4239,8 @@ function appendModuleConstants(
     output.append(" ");
     appendCBindingName(inout output, declaration.name);
     output.append(" = ");
-    output.append(declaration.value);
+    const literalType = try loweredIntrinsicIdentity(declaration.type);
+    appendNumericLiteral(inout output, declaration.value, literalType);
     output.append(";\n");
   }
   if (program.constants.length > 0) output.append("\n");
@@ -4970,16 +4991,11 @@ function appendExpression(
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.integerValue) {
-    if (
-      declaration.expressions[index].labels.length > 0
-      && declaration.expressions[index].labels[0] == "u64"
-    ) {
-      output.append("UINT64_C(");
-      output.append(declaration.expressions[index].value);
-      output.append(")");
-      return;
+    let typeName = "";
+    if (declaration.expressions[index].labels.length > 0) {
+      typeName = declaration.expressions[index].labels[0].copyBytes(0, declaration.expressions[index].labels[0].byteLength);
     }
-    output.append(declaration.expressions[index].value);
+    appendNumericLiteral(inout output, declaration.expressions[index].value, typeName);
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.booleanValue) {

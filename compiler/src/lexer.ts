@@ -325,10 +325,38 @@ export function lex(
 
     if (/[0-9]/.test(character)) {
       let text = "";
-      while (/[0-9]/.test(peek())) text += advance();
+      const digits = (pattern: RegExp): void => {
+        while (pattern.test(peek())) {
+          text += advance();
+          if (peek() === "_") {
+            text += advance();
+            if (!pattern.test(peek())) {
+              throw new DiagnosticError(fileName, start, "a numeric separator must occur between digits");
+            }
+          }
+        }
+      };
+      if (character === "0" && /[xXbB]/.test(peek(1))) {
+        text += advance();
+        const prefix = advance();
+        text += prefix;
+        const hexadecimal = prefix === "x" || prefix === "X";
+        const radix = hexadecimal ? "hexadecimal" : "binary";
+        const pattern = hexadecimal ? /[0-9a-fA-F]/ : /[01]/;
+        if (!pattern.test(peek())) {
+          throw new DiagnosticError(fileName, start, `a ${radix} literal requires at least one digit`);
+        }
+        digits(pattern);
+        if (/[A-Za-z0-9_]/.test(peek())) {
+          throw new DiagnosticError(fileName, start, `invalid digit in a ${radix} literal`);
+        }
+        tokens.push({ kind: "number", text, location: start });
+        continue;
+      }
+      digits(/[0-9]/);
       if (peek() === "." && /[0-9]/.test(peek(1))) {
         text += advance();
-        while (/[0-9]/.test(peek())) text += advance();
+        digits(/[0-9]/);
       }
       if (peek() === "e" || peek() === "E") {
         text += advance();
@@ -336,7 +364,7 @@ export function lex(
         if (!/[0-9]/.test(peek())) {
           throw new DiagnosticError(fileName, start, "a numeric exponent requires at least one digit");
         }
-        while (/[0-9]/.test(peek())) text += advance();
+        digits(/[0-9]/);
       }
       tokens.push({ kind: "number", text, location: start });
       continue;

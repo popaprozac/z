@@ -131,6 +131,34 @@ function isDigit(byte: u8): boolean {
   return byte >= 48 && byte <= 57;
 }
 
+function isRadixDigit(byte: u8, radix: u8): boolean {
+  if (radix == 2) return byte == 48 || byte == 49;
+  return isDigit(byte) || (radix == 16 && ((byte >= 65 && byte <= 70) || (byte >= 97 && byte <= 102)));
+}
+
+function scanNumberDigits(
+  in source: String,
+  inout offset: usize,
+  inout column: usize,
+  radix: u8,
+  tokenOffset: usize,
+  tokenLine: usize,
+  tokenColumn: usize
+): void throws LexerError {
+  // Numeric spellings contain only ASCII; byte and source columns advance alike.
+  while (offset < source.byteLength && isRadixDigit(source.byteAt(offset), radix)) {
+    offset = offset + 1;
+    column = column + 1;
+    if (offset < source.byteLength && source.byteAt(offset) == 95) {
+      offset = offset + 1;
+      column = column + 1;
+      if (offset >= source.byteLength || !isRadixDigit(source.byteAt(offset), radix)) {
+        throw LexerError({ message: "a numeric separator must occur between digits", offset: tokenOffset, line: tokenLine, column: tokenColumn });
+      }
+    }
+  }
+}
+
 function isWhitespace(byte: u8): boolean {
   return byte == 9 || byte == 10 || byte == 11 || byte == 12 || byte == 13 || byte == 32;
 }
@@ -499,15 +527,32 @@ function tokenizeInto(
     }
 
     if (isDigit(byte)) {
-      advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
-      while (offset < source.byteLength && isDigit(source.byteAt(offset))) {
-        advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+      if (byte == 48 && offset + 1 < source.byteLength) {
+        const prefix = source.byteAt(offset + 1);
+        if (prefix == 120 || prefix == 88 || prefix == 98 || prefix == 66) {
+          let radix: u8 = 2;
+          let label = "binary";
+          if (prefix == 120 || prefix == 88) {
+            radix = 16;
+            label = "hexadecimal";
+          }
+          offset = offset + 2;
+          column = column + 2;
+          if (offset >= source.byteLength || !isRadixDigit(source.byteAt(offset), radix)) {
+            throw LexerError({ message: `a ${label} literal requires at least one digit`, offset: baseOffset + tokenCoordinateOffset, line: tokenLine, column: tokenColumn });
+          }
+          try scanNumberDigits(source, inout offset, inout column, radix, baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
+          if (offset < source.byteLength && isIdentifierContinue(source.byteAt(offset))) {
+            throw LexerError({ message: `invalid digit in a ${label} literal`, offset: baseOffset + tokenCoordinateOffset, line: tokenLine, column: tokenColumn });
+          }
+          pushToken(inout tokens, TokenKind.number, source.copyBytes(tokenOffset, offset), baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
+          continue;
+        }
       }
+      try scanNumberDigits(source, inout offset, inout column, 10, baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
       if (offset + 1 < source.byteLength && source.byteAt(offset) == 46 && isDigit(source.byteAt(offset + 1))) {
         advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
-        while (offset < source.byteLength && isDigit(source.byteAt(offset))) {
-          advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
-        }
+        try scanNumberDigits(source, inout offset, inout column, 10, baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
       }
       if (offset < source.byteLength && (source.byteAt(offset) == 101 || source.byteAt(offset) == 69)) {
         advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
@@ -517,9 +562,7 @@ function tokenizeInto(
         if (offset >= source.byteLength || !isDigit(source.byteAt(offset))) {
           throw LexerError({ message: "a numeric exponent requires at least one digit", offset: baseOffset + tokenCoordinateOffset, line: tokenLine, column: tokenColumn });
         }
-        while (offset < source.byteLength && isDigit(source.byteAt(offset))) {
-          advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
-        }
+        try scanNumberDigits(source, inout offset, inout column, 10, baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
       }
       pushToken(inout tokens, TokenKind.number, source.copyBytes(tokenOffset, offset), baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
       continue;

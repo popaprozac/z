@@ -21,6 +21,7 @@ import { nullableObjCTypeName } from "./objc-types.ts";
 import { readonlyTypeName } from "./readonly-types.ts";
 import { viewTypeName } from "./view-types.ts";
 import type { Token, TokenKind } from "./lexer.ts";
+import { normalizeNumericLiteral } from "./numeric-literal.ts";
 
 export function parse(tokens: Token[], fileName: string): Program {
   let current = 0;
@@ -131,11 +132,15 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     while (match("leftBracket")) {
       const length = expect("number", "a fixed array length");
-      if (!/^[0-9]+$/.test(length.text) || Number(length.text) < 1) {
+      const value = normalizeNumericLiteral(length.text);
+      if (!/^[0-9]+$/.test(value) || Number(value) < 1) {
         throw new DiagnosticError(fileName, length.location, "a fixed array length must be a positive integer");
       }
+      if (!Number.isSafeInteger(Number(value))) {
+        throw new DiagnosticError(fileName, length.location, "a fixed array length must not exceed 9007199254740991");
+      }
       expect("rightBracket", "`]`");
-      name = fixedArrayTypeName(name, Number(length.text));
+      name = fixedArrayTypeName(name, Number(value));
     }
     if (match("bitOr")) {
       expect("null", "`null` after `|` in an optional type");
@@ -673,7 +678,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     if (match("number")) {
       const token = previous();
-      return { kind: "number", value: token.text, location: token.location };
+      return { kind: "number", value: normalizeNumericLiteral(token.text), location: token.location };
     }
     if (match("string")) {
       const token = previous();

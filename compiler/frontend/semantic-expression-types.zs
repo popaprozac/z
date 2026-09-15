@@ -1,4 +1,5 @@
 import { requireSettledExpressionType } from "./semantic-call-contracts.zs";
+import { integerLiteralFits } from "./numeric-literal.zs";
 import {
   expressionStorageRootName,
   requireOwnedClosureEnvironment,
@@ -54,6 +55,19 @@ export function isContextualNumericLiteral(
     return tree.nodes[child].kind == ExpressionKind.numberExpression;
   }
   return false;
+}
+
+export function requireNumericLiteralRange(in module: ParsedModule, in tree: ExpressionTree, index: usize, in typeName: String): void throws ModuleResolveError {
+  if (!isContextualNumericLiteral(tree, index)) return;
+  let value = tree.nodes[index].value.copyBytes(0, tree.nodes[index].value.byteLength);
+  if (tree.nodes[index].kind == ExpressionKind.unaryExpression) {
+    const operand = tree.nodes[index].children[0];
+    value = `${value}${tree.nodes[operand].value}`;
+  }
+  if (!integerLiteralFits(value, typeName)) {
+    throw moduleResolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+      `integer literal ${value} does not fit ${typeName}`, tree.nodes[index].line, tree.nodes[index].column);
+  }
 }
 
 function isVerifiedForeignNominalType(
@@ -382,6 +396,10 @@ export function requireExpressionType(
   in actual: String
 ): void throws ModuleResolveError {
   try requireSettledExpressionType(module, tree, index, actual);
+  if (isContextualNumericLiteral(tree, index)) {
+    const target = transparentTypeName(modules, moduleIndex, expected);
+    try requireNumericLiteralRange(module, tree, index, target);
+  }
   if (stringStartsWith(actual, "__z_native_function:borrowed ")) {
     const expandedExpected = transparentTypeName(modules, moduleIndex, expected);
     match (nativeFunctionSignature(expandedExpected)) {

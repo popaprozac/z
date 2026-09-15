@@ -11056,7 +11056,11 @@ function lowerExpressionUsingNumericPeerType(
   in peerType: Option<String>,
   inout output: Array<LoweredExpression>
 ): usize throws String {
-  if (tree.nodes[index].kind == ExpressionKind.numberExpression) {
+  if (tree.nodes[index].kind == ExpressionKind.numberExpression
+      || (tree.nodes[index].kind == ExpressionKind.unaryExpression
+        && tree.nodes[index].children.length == 1
+        && (tree.nodes[index].value == "+" || tree.nodes[index].value == "-")
+        && tree.nodes[tree.nodes[index].children[0]].kind == ExpressionKind.numberExpression)) {
     match (in peerType) {
       some(expected) => return try lowerExpressionExpected(
         program,
@@ -12037,6 +12041,13 @@ function lowerExpressionContextual(
       throw "native lowering received a malformed unary expression";
     }
     const operandInput = tree.nodes[index].children[0];
+    if ((tree.nodes[index].value == "+" || tree.nodes[index].value == "-") && tree.nodes[operandInput].kind == ExpressionKind.numberExpression) {
+      const typeName = match (resolvedExpressionTypeName(evidence, tree, index)) {
+        some(name) => name;
+        none => moduleConstantNumericType(tree.nodes[operandInput].value);
+      };
+      return try lowerExpressionExpected(program, importedTypes, evidence, tree, index, typeName, inout output);
+    }
     const operand = try lowerExpression(
       program,
       importedTypes,
@@ -16715,8 +16726,12 @@ function lowerExpressionContextual(
       let value: usize = 0;
       if (
         parameterTypes.length >= argument
-        && tree.nodes[argumentInput].kind
-          == ExpressionKind.closureExpression
+        && (tree.nodes[argumentInput].kind == ExpressionKind.closureExpression
+          || tree.nodes[argumentInput].kind == ExpressionKind.numberExpression
+          || (tree.nodes[argumentInput].kind == ExpressionKind.unaryExpression
+            && tree.nodes[argumentInput].children.length == 1
+            && (tree.nodes[argumentInput].value == "+" || tree.nodes[argumentInput].value == "-")
+            && tree.nodes[tree.nodes[argumentInput].children[0]].kind == ExpressionKind.numberExpression))
       ) value = try lowerExpressionExpected(
         program,
         importedTypes,
@@ -18325,6 +18340,16 @@ function lowerExpressionExpected(
       Array<usize>(),
       move labels
     );
+  }
+  if (tree.nodes[index].kind == ExpressionKind.unaryExpression
+      && tree.nodes[index].children.length == 1
+      && (tree.nodes[index].value == "+" || tree.nodes[index].value == "-")
+      && tree.nodes[tree.nodes[index].children[0]].kind == ExpressionKind.numberExpression) {
+    const operand = tree.nodes[index].children[0];
+    const sign = view tree.nodes[index].value;
+    const value = view tree.nodes[operand].value;
+    return pushExpression(inout output, LoweredExpressionKind.integerValue,
+      `${sign}${value}`, Array<usize>(), Array<String>(copy expectedTypeName));
   }
   if (tree.nodes[index].kind == ExpressionKind.arrayExpression) {
     match (fixedArrayShape(expectedTypeName)) {
