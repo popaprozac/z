@@ -13238,6 +13238,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
   }
   const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
   if (integerOperation) return integerOperation.type;
+  const memoryReplace = context.semanticInfo.memoryReplaceCalls.get(expression.location.offset);
+  if (memoryReplace) return memoryReplace;
   const mutexWithLock = context.semanticInfo.mutexWithLockCalls.get(expression.location.offset);
   if (mutexWithLock) {
     return mutexWithLock.errorType

@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   positionForOffset,
   projectRoot,
+  readFileSync,
   resolve,
   rmSync,
   semanticTokens,
@@ -17,6 +18,36 @@ import {
   test,
   writeFileSync,
 } from "./support/bootstrap.ts";
+
+test("infers ownership-bearing Array results when replacing a receiver field", () => {
+  const file = resolve(projectRoot, "tests/fixtures/memory-replace-array-field.zs");
+  const directory = mkdtempSync("/tmp/z-memory-replace-array-");
+  try {
+    const source = readFileSync(file, "utf8");
+    const stage0 = compileToC(source, file);
+    assert.match(stage0, /Z_DynamicArray_\S+ previous =/);
+    const nativeCheck = spawnSync(process.execPath, [cli, "check", file, "--native-frontend"], {
+      encoding: "utf8", timeout: 120_000,
+    });
+    assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+    const native = spawnSync(process.execPath, [cli, "self-host-emit", file], {
+      encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr);
+    for (const [name, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+      const executable = resolve(directory, name);
+      const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable], {
+        encoding: "utf8", input: generated, timeout: 30_000,
+      });
+      assert.equal(built.status, 0, built.stderr);
+      const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.stdout, "released 2\nreleased 1\nreleased 3\n");
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 300_000);
 
 test("exchanges owned storage without copying or leaving it uninitialized", () => {
   const directory = mkdtempSync("/tmp/z-memory-replace-");
