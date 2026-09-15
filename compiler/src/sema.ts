@@ -1,3 +1,4 @@
+import { numericBitsType } from "./numeric-bits.ts";
 import type {
   BlockStatement,
   Expression,
@@ -11008,16 +11009,21 @@ function inferExpressionInner(
       if (expression.callee.kind === "member"
         && expression.callee.property === "fromBits"
         && expression.callee.object.kind === "identifier"
-        && floatTypes.has(expression.callee.object.name)) {
+        && numericBitsType(expression.callee.object.name)) {
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         const targetType = expression.callee.object.name;
-        const sourceType = targetType === "f32" ? "u32" : "u64";
+        const sourceType = numericBitsType(targetType)!;
         if (expression.arguments.length !== 1) {
           throw new DiagnosticError(fileName, expression.location,
             `${targetType}.fromBits expects exactly 1 ${sourceType} argument, received ${expression.arguments.length}`);
         }
         const argument = expression.arguments[0];
         const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+        const representationType = parseViewType(String(underlyingType(actual)))?.target ?? String(underlyingType(actual));
+        if (state.foreignNamedTypes.get(representationType)?.kind === "enum") {
+          throw new DiagnosticError(fileName, argument.location,
+            `${targetType}.fromBits requires ${sourceType}, not a native enum; convert its numeric representation explicitly`);
+        }
         requireAssignable(sourceType, actual, argument, fileName, structs, enums, state);
         state.numericConversions.set(expression.location.offset, {
           sourceType, targetType, checked: false, bitReinterpretation: "fromBits",
@@ -13296,13 +13302,15 @@ function inferExpressionInner(
           return signature.result;
         }
         const integerReceiverType = canonicalType(receiverValueType, state.foreignNamedTypes);
-        if (isFloatType(integerReceiverType) && expression.callee.property === "toBits") {
+        if (numericBitsType(integerReceiverType)
+          && state.foreignNamedTypes.get(receiverValueType)?.kind !== "enum"
+          && expression.callee.property === "toBits") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           if (expression.arguments.length !== 0) {
             throw new DiagnosticError(fileName, expression.location,
               `${integerReceiverType}.toBits expects 0 arguments, received ${expression.arguments.length}`);
           }
-          const targetType = integerReceiverType === "f32" ? "u32" : "u64";
+          const targetType = numericBitsType(integerReceiverType)!;
           requireAssignable(integerReceiverType, receiverType, expression.callee.object, fileName, structs, enums, state);
           state.numericConversions.set(expression.location.offset, {
             sourceType: integerReceiverType, targetType, checked: false, bitReinterpretation: "toBits",

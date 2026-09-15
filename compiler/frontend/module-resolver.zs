@@ -68,7 +68,8 @@ import {
 import {
   collectionMethodMutates,
   collectionMethodSignature,
-  floatBitsSignature,
+  numericBitsSignature,
+  numericBitsType,
   iterationElementType,
   iterationBindingIsBorrowed,
   iterationObjectFieldType,
@@ -9101,13 +9102,14 @@ function inferExpressionNodeType(
         );
         if (memberName == "fromBits") {
           const namespaceType = transparentTypeName(modules, moduleIndex, namespaceName);
-          if (isIntegerTypeName(namespaceType) || namespaceType == "boolean") {
+          const bitsType = numericBitsType(namespaceType);
+          if (bitsType.byteLength == 0 && (isIntegerTypeName(namespaceType) || namespaceType == "boolean")) {
             throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
-              "fromBits is available only on f32 and f64; use f32.fromBits(u32) or f64.fromBits(u64)",
+              "fromBits is available on signed integer and floating-point types; its argument must be the corresponding unsigned bit representation",
               tree.nodes[calleeIndex].line, tree.nodes[calleeIndex].column);
           }
-          if (namespaceType == "f32" || namespaceType == "f64") {
-            const signature = floatBitsSignature(namespaceType, true);
+          if (bitsType.byteLength > 0) {
+            const signature = numericBitsSignature(namespaceType, true);
             const argumentNodes = callArgumentNodes(children);
             const substitutions = Array<NativeValueBinding>();
             return try inferSignatureCallType(
@@ -10322,13 +10324,14 @@ function inferExpressionNodeType(
           none => {}
         }
         const readonlyOwnerType = transparentTypeName(modules, moduleIndex, ownerType);
-        if (methodName == "toBits" && (readonlyOwnerType == "f32" || readonlyOwnerType == "f64")) {
+        const ownerBitsType = numericBitsType(readonlyOwnerType);
+        if (methodName == "toBits" && ownerBitsType.byteLength > 0) {
           ownerType = copy readonlyOwnerType;
         }
-        if ((methodName == "toBits" && (isIntegerTypeName(readonlyOwnerType) || readonlyOwnerType == "boolean"))
+        if ((methodName == "toBits" && ownerBitsType.byteLength == 0 && (isIntegerTypeName(readonlyOwnerType) || readonlyOwnerType == "boolean"))
           || (methodName == "fromBits" && (isIntegerTypeName(readonlyOwnerType) || readonlyOwnerType == "f32" || readonlyOwnerType == "f64"))) {
-          const message = methodName == "toBits" ? "toBits requires an f32 or f64 receiver"
-            : "fromBits is a static float method; use f32.fromBits(u32) or f64.fromBits(u64)";
+          const message = methodName == "toBits" ? "toBits requires a signed integer or floating-point receiver; unsigned integers are already bit representations"
+            : "fromBits is a static method on signed integer and floating-point types, not an instance method";
           throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
             message,
             tree.nodes[calleeIndex].line, tree.nodes[calleeIndex].column);

@@ -836,6 +836,48 @@ C enum may convert outward through its ABI integer representation; ordinary
 assignment remains nominal, and an arbitrary integer cannot be constructed
 back into the enum.
 
+### Signed-integer bit representations
+
+`toBits()` exposes a signed integer's two's-complement representation as its
+corresponding unsigned type. The signed type's static `fromBits()` method
+interprets that representation without changing any bits. No import is needed:
+
+```zs
+const negative: i32 = -42;
+const bits: u32 = negative.toBits(); // 0xFFFF_FFD6
+const restored = i32.fromBits(bits); // -42
+const minimum = i32.fromBits(0x8000_0000); // -2147483648
+```
+
+| Signed value | Unsigned representation |
+|---|---|
+| `i8` | `u8` |
+| `i16` | `u16` |
+| `i32` | `u32` |
+| `i64` | `u64` |
+| `isize` | `usize` |
+
+Every bit pattern is valid. These methods do not throw or perform a runtime
+range check. Numeric construction still preserves the mathematical value:
+`u32(negative)` traps for a negative runtime value; `negative.toBits()` instead
+produces the unsigned interpretation of the same bits. Statically invalid
+numeric conversions remain source diagnostics.
+
+`fromBits` gives integer literals the required unsigned context and checks that
+they fit. Already-typed arguments must use the corresponding unsigned type;
+there is no widening, truncation, or implicit interchange of `usize` and `u64`
+even on a 64-bit target. Unsigned integers are already representations and do
+not expose identity `toBits`/`fromBits` methods. `u32.fromBits(negative)` is not
+supported; use `negative.toBits()`.
+
+Both operations evaluate the operand once without consuming it, allocating,
+or retaining ARC identity. Primitive views use their ordinary value load.
+The methods work in synchronous code and async frames, through transparent
+type aliases, and in matching. They do not reinterpret enums, objects, or
+pointers, perform endian conversion, or define a serialized byte format.
+The [tagged-status example](../examples/language/basics/integer-bits.zs) packs
+and restores a signed code in an unsigned value.
+
 ### Floating-point bit representations
 
 `toBits()` and `fromBits()` preserve the **representation**, not the mathematical

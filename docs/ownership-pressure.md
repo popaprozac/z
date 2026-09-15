@@ -9378,6 +9378,16 @@ gaps, not new borrowing rules. General raw-pointer storage, dispatch strategy,
 math API breadth, and other bit operations remain independent follow-ups; this
 probe does not establish the performance of a complete Z-authored JS engine.
 
+Signed integer payloads need the same distinction: converting negative `i32`
+to `u32` numerically must fail, while storing its two's-complement representation
+in an unsigned tagged value must preserve every bit. Signed `toBits()` and
+`fromBits(unsigned)` remove manual sign-folding arithmetic without weakening
+numeric constructors or exposing arbitrary casts. The
+[tagged-status example](../examples/language/basics/integer-bits.zs) demonstrates
+packing and restoration; tests cover every signed width, all byte patterns,
+signed bounds, single evaluation, primitive views, aliases, and suspension.
+These remain copied primitive values, not a new ownership or borrowing rule.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

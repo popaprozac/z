@@ -12974,7 +12974,7 @@ function generateNumericConversion(conversion: NumericConversion): string {
     return [
       `static Z_UNUSED_FUNCTION inline ${targetCType} ${numericConversionName(conversion)}(${sourceCType} value) {`,
       `  ${targetCType} result;`,
-      `  _Static_assert(sizeof(result) == sizeof(value), "float bit width must match");`,
+      `  _Static_assert(sizeof(result) == sizeof(value), "numeric bit width must match");`,
       `  memcpy(&result, &value, sizeof(result));`,
       `  return result;`,
       "}",

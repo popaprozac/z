@@ -77,6 +77,7 @@ import {
 import { typeExpressionName } from "./semantic-member-lookups.zs";
 import {
   collectionMethodSignature,
+  numericBitsType,
   sourceCollectionTypeName,
 } from "./semantic-intrinsics.zs";
 import { Map, Set } from "std/collections";
@@ -250,7 +251,7 @@ export enum LoweredExpressionKind {
   checkedShiftRightInteger,
   checkedNegateInteger,
   integerConversion,
-  floatBitReinterpretation,
+  numericBitReinterpretation,
   wrappingAddInteger,
   wrappingSubtractInteger,
   wrappingMultiplyInteger,
@@ -14595,9 +14596,11 @@ function lowerExpressionContextual(
         const namedType = attempt lowerModuleTypeName(program, importedTypes, tree.nodes[receiverInput].value);
         match (namedType) {
           success(type) => {
-            if (type.kind == LoweredTypeKind.f32Type || type.kind == LoweredTypeKind.f64Type) {
-              bitTarget = type.kind == LoweredTypeKind.f32Type ? "f32" : "f64";
-              bitSource = bitTarget == "f32" ? "u32" : "u64";
+            const valueType = loweredTypeIdentity(type);
+            const bitsType = numericBitsType(valueType);
+            if (bitsType.byteLength > 0) {
+              bitTarget = valueType;
+              bitSource = bitsType;
               bitOperand = tree.nodes[index].children[1];
             }
           }
@@ -14608,9 +14611,10 @@ function lowerExpressionContextual(
           some(name) => {
             const receiverType = try lowerModuleTypeName(program, importedTypes, name);
             const valueType = loweredTypeIdentity(receiverType);
-            if (valueType == "f32" || valueType == "f64") {
+            const bitsType = numericBitsType(valueType);
+            if (bitsType.byteLength > 0) {
               bitSource = valueType;
-              bitTarget = bitSource == "f32" ? "u32" : "u64";
+              bitTarget = bitsType;
             }
           }
           none => {}
@@ -14624,7 +14628,7 @@ function lowerExpressionContextual(
         children.push(operand);
         let labels = Array<String>();
         labels.push(bitSource);
-        return pushExpression(inout output, LoweredExpressionKind.floatBitReinterpretation,
+        return pushExpression(inout output, LoweredExpressionKind.numericBitReinterpretation,
           bitTarget, children, labels);
       }
       if (

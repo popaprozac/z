@@ -193,6 +193,29 @@ const pixels = u32(math.trunc(measuredWidth));
 This is intentionally different from TypeScript's `as`: a Z type construction
 performs a real conversion rather than merely asserting a static interpretation.
 
+## Signed-integer bits
+
+Use the same `toBits()` / `fromBits()` pair to store a signed integer's
+representation in an unsigned value:
+
+```zs
+const negative: i32 = -42;
+const bits: u32 = negative.toBits(); // 0xFFFF_FFD6
+const restored = i32.fromBits(bits); // -42
+```
+
+The pairs are `i8` ↔ `u8`, `i16` ↔ `u16`, `i32` ↔ `u32`, `i64` ↔ `u64`, and
+`isize` ↔ `usize`. The signed value provides `toBits`; its signed type provides
+`fromBits`. Unsigned integers are already bit representations and have no
+identity bit methods.
+
+Every two's-complement pattern is valid. Numeric construction remains checked:
+`u32(negative)` cannot represent a negative mathematical value, whereas
+`negative.toBits()` preserves its bits. These methods evaluate the operand once,
+leave it usable, allocate nothing, and work in async frames. `fromBits` supplies
+unsigned context to literals; typed inputs must match exactly. They do not
+convert byte order or reinterpret objects, enums, or pointers.
+
 ## Floating-point bits
 
 Use `toBits()` / `fromBits()` when you want the exact representation rather than

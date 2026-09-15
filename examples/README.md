@@ -48,6 +48,7 @@ application-shaped pressure test such as Z Notes.
 - [`numeric-conversions.zs`](language/basics/numeric-conversions.zs): explicit checked and check-free numeric construction
 - [`numeric-literals.zs`](language/basics/numeric-literals.zs): hexadecimal/binary integers, digit separators, signed bounds, and fixed-array lengths
 - [`float-bits.zs`](language/basics/float-bits.zs): exact `toBits()` / `fromBits()` round trips for floating-point representations, including signed zero and NaN payloads
+- [`integer-bits.zs`](language/basics/integer-bits.zs): pack signed status codes into unsigned tagged values with exact two's-complement `toBits()` / `fromBits()` transfers
 - [`construction.zs`](language/basics/construction.zs): struct construction and class-only `new`
 - [`struct-defaults.zs`](language/basics/struct-defaults.zs) and [`optional-fields.zs`](language/basics/optional-fields.zs): independently evaluated defaults and optional-presence fields backed by `Option<T>`
 - [`struct-spread.zs`](language/basics/struct-spread.zs): same-type derivation with explicit `copy` or `move` ownership

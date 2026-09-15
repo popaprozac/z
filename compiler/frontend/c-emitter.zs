@@ -5633,9 +5633,9 @@ function appendExpression(
     output.append(")");
     return;
   }
-  if (declaration.expressions[index].kind == LoweredExpressionKind.floatBitReinterpretation) {
+  if (declaration.expressions[index].kind == LoweredExpressionKind.numericBitReinterpretation) {
     if (declaration.expressions[index].children.length != 1 || declaration.expressions[index].labels.length != 1) {
-      throw "native C emission received malformed float bit reinterpretation";
+      throw "native C emission received malformed numeric bit reinterpretation";
     }
     output.append("z_bits_");
     output.append(declaration.expressions[index].labels[0]);
@@ -23548,7 +23548,7 @@ function appendCheckedNumericConversionRuntime(
   emitted.push("u64:usize");
   for (const declaration of program.functions) {
     for (const expression of declaration.expressions) {
-      if (expression.kind == LoweredExpressionKind.floatBitReinterpretation && expression.labels.length == 1) {
+      if (expression.kind == LoweredExpressionKind.numericBitReinterpretation && expression.labels.length == 1) {
         const source = expression.labels[0].copyBytes(0, expression.labels[0].byteLength);
         const target = expression.value.copyBytes(0, expression.value.byteLength);
         const key = `bits:${source}:${target}`;
@@ -23558,7 +23558,7 @@ function appendCheckedNumericConversionRuntime(
         const targetType = try integerCType(target);
         output.append(`static inline __attribute__((unused)) ${targetType} z_bits_${source}_to_${target}(${sourceType} value) {\n`);
         output.append(`  ${targetType} result;\n`);
-        output.append("  _Static_assert(sizeof(result) == sizeof(value), \"float bit width must match\");\n");
+        output.append("  _Static_assert(sizeof(result) == sizeof(value), \"numeric bit width must match\");\n");
         output.append("  memcpy(&result, &value, sizeof(result));\n  return result;\n}\n\n");
         continue;
       }

@@ -69,6 +69,7 @@ import {
   type StandardFunctionName,
 } from "./standard-library.ts";
 import { isStaticBytesType } from "./static-bytes.ts";
+import { numericBitsType } from "./numeric-bits.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -5499,8 +5500,8 @@ function memberCompletions(
   receiverStart: number,
   receiverDot: number,
 ): CompletionItem[] {
-  if (receiverText === "f32" || receiverText === "f64") {
-    return filterCompletions(floatBitsCompletions(receiverText, true), prefix, 1000);
+  if (numericBitsType(receiverText)) {
+    return filterCompletions(numericBitsCompletions(receiverText, true), prefix, 1000);
   }
   if (receiverText === "Option" || /^Option<[^<>]+>$/.test(receiverText)) {
     const explicit = receiverText.startsWith("Option<") ? receiverText.slice(7, -1) : "T";
@@ -5695,8 +5696,11 @@ function memberCompletions(
 
   const receiverOffset = receiverStart;
   const recoveredNumericType = declaredBindingType(source, receiverText, receiverOffset);
+  if (recoveredNumericType && isIntegerSourceType(recoveredNumericType)) {
+    return filterCompletions(integerCompletions(recoveredNumericType), prefix, 1000);
+  }
   if (recoveredNumericType === "f32" || recoveredNumericType === "f64") {
-    return filterCompletions(floatBitsCompletions(recoveredNumericType, false), prefix, 1000);
+    return filterCompletions(numericBitsCompletions(recoveredNumericType, false), prefix, 1000);
   }
   const sourceBinding = localSourceBinding(importContext, receiverText);
   const sourceConstant = sourceBinding
@@ -5736,7 +5740,7 @@ function memberCompletions(
   const fullContext = safeAnalysis(source, fileName);
   const directReceiver = fullContext ? resolveReceiver(fullContext, receiverText, receiverOffset) : null;
   if (directReceiver?.kind === "float") {
-    return filterCompletions(floatBitsCompletions(directReceiver.type, false), prefix, 1000);
+    return filterCompletions(numericBitsCompletions(directReceiver.type, false), prefix, 1000);
   }
   if (directReceiver?.kind === "objc" && fullContext) {
     return filterCompletions(objcCompletions(directReceiver.declaration, directReceiver.instance, fullContext, offset), prefix, 1000);
@@ -5883,7 +5887,7 @@ function memberCompletions(
       return filterCompletions(integerCompletions(iterationBinding.type), prefix, 1000);
     }
     if (iterationBinding.type === "f32" || iterationBinding.type === "f64") {
-      return filterCompletions(floatBitsCompletions(iterationBinding.type, false), prefix, 1000);
+      return filterCompletions(numericBitsCompletions(iterationBinding.type, false), prefix, 1000);
     }
     const aggregate = iterationContext.program.structs.find((item) => item.name === iterationBinding.type);
     if (aggregate) {
@@ -6165,7 +6169,7 @@ function memberCompletions(
     return filterCompletions(integerCompletions(resolved.type), prefix, 1000);
   }
   if (resolved?.kind === "float") {
-    return filterCompletions(floatBitsCompletions(resolved.type, false), prefix, 1000);
+    return filterCompletions(numericBitsCompletions(resolved.type, false), prefix, 1000);
   }
   if (resolved?.kind === "weak") {
     return filterCompletions([{
@@ -7620,16 +7624,18 @@ function integerCompletions(type: string): CompletionItem[] {
     kind: completionKinds.method,
     detail: integerMethodDetail(name, type)!,
     insertText: `${name}()`,
-  }));
+  })).concat(numericBitsCompletions(type, false));
 }
 
-function floatBitsCompletions(type: string, fromBits: boolean): CompletionItem[] {
+function numericBitsCompletions(type: string, fromBits: boolean): CompletionItem[] {
+  const bits = numericBitsType(type);
+  if (!bits) return [];
   const name = fromBits ? "fromBits" : "toBits";
-  const bits = type === "f32" ? "u32" : "u64";
+  const representation = type.startsWith("f") ? "IEEE 754" : "two's-complement";
   return [{
     label: name, kind: completionKinds.method, insertText: `${name}()`,
-    detail: fromBits ? `fromBits(bits: ${bits}): ${type}  // exact IEEE 754 bit pattern`
-      : `toBits(): ${bits}  // exact IEEE 754 bit pattern`,
+    detail: fromBits ? `fromBits(bits: ${bits}): ${type}  // exact ${representation} bit pattern`
+      : `toBits(): ${bits}  // exact ${representation} bit pattern`,
   }];
 }
 
@@ -9597,7 +9603,11 @@ function numericConversionHover(conversion: NumericConversion): string {
     const signature = conversion.bitReinterpretation === "toBits"
       ? `${conversion.sourceType}.toBits(): ${conversion.targetType}`
       : `${conversion.targetType}.fromBits(bits: ${conversion.sourceType}): ${conversion.targetType}`;
-    return `${signature}\n// preserves the exact IEEE 754 bit pattern, including signed zero and NaN payloads\n// no numeric conversion, allocation, or byte-order conversion; evaluates the operand once`;
+    const floating = conversion.sourceType.startsWith("f") || conversion.targetType.startsWith("f");
+    const representation = floating
+      ? "preserves the exact IEEE 754 bit pattern, including signed zero and NaN payloads"
+      : "preserves the exact two's-complement bit pattern; every bit pattern is valid";
+    return `${signature}\n// ${representation}\n// no numeric conversion, allocation, or byte-order conversion; evaluates the operand once`;
   }
   const behavior = conversion.checked
     ? "runtime representability check; traps rather than changing the value"

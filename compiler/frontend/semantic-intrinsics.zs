@@ -248,8 +248,17 @@ export function collectionHasLength(in ownerType: String): boolean {
   };
 }
 
-export function floatBitsSignature(in floatType: String, fromBits: boolean): ModuleFunctionSignature {
-  const bitsType = floatType == "f32" ? "u32" : "u64";
+export function numericBitsType(in valueType: String): String {
+  if (valueType == "i8") return "u8";
+  if (valueType == "i16") return "u16";
+  if (valueType == "i32" || valueType == "f32") return "u32";
+  if (valueType == "i64" || valueType == "f64") return "u64";
+  if (valueType == "isize") return "usize";
+  return "";
+}
+
+export function numericBitsSignature(in valueType: String, fromBits: boolean): ModuleFunctionSignature {
+  const bitsType = numericBitsType(valueType);
   let parameterModes = Array<String>();
   let parameterTypes = Array<String>();
   if (fromBits) {
@@ -267,7 +276,7 @@ export function floatBitsSignature(in floatType: String, fromBits: boolean): Mod
     viewParameter: Option<usize>.none,
     invalidatesParameters: Array<usize>(),
     invalidatesLifetimes: Array<String>(),
-    returnType: fromBits ? floatType.copyBytes(0, floatType.byteLength) : bitsType,
+    returnType: fromBits ? valueType.copyBytes(0, valueType.byteLength) : bitsType,
     errorType: "",
   });
 }
@@ -287,8 +296,9 @@ export function collectionMethodSignature(
   if (sourceOwnerType != ownerType) {
     return collectionMethodSignature(sourceOwnerType, methodName);
   }
-  if ((ownerType == "f32" || ownerType == "f64") && methodName == "toBits") {
-    return Option.some(floatBitsSignature(ownerType, false));
+  if (methodName == "toBits") {
+    const bitsType = numericBitsType(ownerType);
+    if (bitsType.byteLength > 0) return Option.some(numericBitsSignature(ownerType, false));
   }
   let collectionOwnerType = ownerType.copyBytes(0, ownerType.byteLength);
   let readonlyCollection = false;
