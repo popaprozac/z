@@ -3508,6 +3508,9 @@ function lowerTypeName(
       name: name.copyBytes(0, name.byteLength),
     });
   }
+  if (name == "__z_std_text_Utf8Error") {
+    return LoweredType({ kind: LoweredTypeKind.structType, name: copy name });
+  }
   if (name == "OnceState") {
     return LoweredType({
       kind: LoweredTypeKind.enumType,
@@ -3833,6 +3836,10 @@ function lowerModuleTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): LoweredType throws String {
+  if (name == "__z_std_text_Utf8Error"
+    || isImportedStandardBinding(program, "std/text", "Utf8Error", name)) {
+    return LoweredType({ kind: LoweredTypeKind.structType, name: "__z_std_text_Utf8Error" });
+  }
   if (name == "embed.StaticBytes" || name == "StaticBytes") {
     return LoweredType({
       kind: LoweredTypeKind.staticBytesType,
@@ -10065,6 +10072,7 @@ function fieldTypeNameForOwner(
   in ownerTypeName: String,
   in fieldName: String
 ): Option<String> {
+  if (ownerTypeName == "__z_std_text_Utf8Error" && fieldName == "byteOffset") return Option.some("usize");
   for (const aggregate of program.aggregates) {
     if (aggregate.name != ownerTypeName) continue;
     for (const field of aggregate.fields) {
@@ -16609,6 +16617,7 @@ function lowerExpressionContextual(
         ) standardTarget = "time.sleep";
         else if (
           target == "fs.lock"
+          || target == "String.fromBytes"
           || target == "fs.readBytes"
           || target == "fs.readText"
           || target == "fs.writeText"
@@ -29424,6 +29433,18 @@ function collectIntrinsicTypeName(
   inout enums: Array<LoweredEnum>,
   inout structs: Array<LoweredStruct>
 ): void throws String {
+  if ((name == "__z_std_text_Utf8Error"
+    || isImportedStandardBinding(program, "std/text", "Utf8Error", name))
+    && !containsLoweredStruct(structs, "__z_std_text_Utf8Error")) {
+    let fields = Array<LoweredField>();
+    fields.push(LoweredField({ name: "byteOffset",
+      type: LoweredType({ kind: LoweredTypeKind.usizeType, name: "" }),
+      optionalField: false, borrowedView: false, defaultTarget: "" }));
+    structs.push(LoweredStruct({ name: "__z_std_text_Utf8Error", nativeCName: "", fields: move fields,
+      referenceType: false, executorBound: false, threadShareable: false, workerDestructible: true,
+      needsDeinit: false, initializer: Option<LoweredFunction>.none, deinitializer: Option<LoweredFunction>.none }));
+    return;
+  }
   match (nativeFunctionSignature(name)) {
     some(signature) => {
       for (const parameter of signature.parameterTypes) {

@@ -77,6 +77,7 @@ export function isIntrinsicTypeName(in name: String): boolean {
     || name == "cstring"
     || name == "String"
     || name == "TextBuffer"
+    || name == "__z_std_text_Utf8Error"
     || name == "Arena"
     || name == "Array"
     || name == "Slice"

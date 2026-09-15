@@ -20,8 +20,10 @@ export const objcRegistrationTypeName = "__z_std_objc_Registration";
 export const objcSelectorTypeName = "__z_std_objc_Selector";
 export const nativeConnectionTypeName = "__z_native_Connection";
 export const fsLockTypeName = "__z_std_fs_Lock";
+export const utf8ErrorTypeName = "__z_std_text_Utf8Error";
 
 export type StandardFunctionName =
+  | "String.fromBytes"
   | "sleep"
   | "delay"
   | "scheduler.yield"
@@ -54,6 +56,12 @@ export type StandardFunctionSignature = {
 };
 
 const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature> = {
+  "String.fromBytes": {
+    cName: "z_string_from_bytes",
+    parameters: [{ name: "bytes", mode: "value", type: sliceTypeName("u8") }],
+    returnType: "String",
+    errorType: utf8ErrorTypeName,
+  },
   sleep: {
     cName: "z_sleep_ms",
     parameters: [{ name: "milliseconds", mode: "value", type: "u64" }],

@@ -152,6 +152,7 @@ export function createZProgramMetadata(
           .filter((symbol) => symbol.exported)
           .map(publicSymbolMetadata),
         calls: module.callResolutions.flatMap((resolution) => {
+          if (resolution.kind === "intrinsic") return [];
           const targetModule = graph.modules[resolution.targetModule];
           const targetSymbol = targetModule?.symbols[resolution.targetSymbol];
           if (!targetModule || !targetSymbol?.exported) return [];

@@ -102,6 +102,7 @@ function typeIsThreadShareableInner(
     || typeName == "f32"
     || typeName == "f64"
     || typeName == "String"
+    || typeName == "__z_std_text_Utf8Error"
     || typeName == "TaskControl"
     || typeName == "TaskScope"
   ) return true;
@@ -275,6 +276,7 @@ function typeIsThreadTransferableInner(
     || typeName == "f32"
     || typeName == "f64"
     || typeName == "String"
+    || typeName == "__z_std_text_Utf8Error"
     || typeName == "TextBuffer"
     || typeName == "TaskControl"
     || typeName == "TaskScope"

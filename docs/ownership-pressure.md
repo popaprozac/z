@@ -9388,6 +9388,34 @@ packing and restoration; tests cover every signed width, all byte patterns,
 signed bounds, single evaluation, primitive views, aliases, and suspension.
 These remain copied primitive values, not a new ownership or borrowing rule.
 
+## Turning engine byte buffers into owned text
+
+The JS-engine consumer constructs diagnostic text in `Array<u8>`. Passing that
+through `cstring` would introduce termination and lifetime assumptions that a
+length-delimited byte buffer does not satisfy. `String.fromBytes(bytes)` instead
+borrows a Slice, validates UTF-8, and returns a separately owned String through
+the ordinary typed-error path. It preserves embedded zero bytes.
+
+The [byte-decoding fixture](../tests/fixtures/string-from-bytes.zs) changes the
+original array after conversion, checks malformed-sequence offsets, and covers
+both fixed and growable buffers. Borrowing is not zero-copy: validation and
+copying are deliberate costs. A future consuming conversion must separately
+specify allocation compatibility and failure ownership; accepting `move` today
+would imply a guarantee this implementation does not make.
+
+Import aliases, cross-module error forwarding, inferred failure matching, and
+owned text surviving async suspension execute through both compiler paths.
+The throwing async-entry test also caught a missing C entry wrapper for native
+yield frames; successful and failed decoding now exercise that wrapper.
+
+The native execution test also exposed a real initializer-storage bug:
+`Array<u8>(65, ...)` used the first C expression's default integer width for its
+temporary buffer, then copied it as byte elements. Native emission now declares
+the temporary using the checked array element type. This preserves byte content
+and also avoids truncating wider numeric element storage. Typed fixed-array
+literal context remains a separate native-checker gap; this fixture spells its
+fixed-array elements with explicit `u8(...)` conversions to isolate borrowing.
+
 ## Stack removal and inferred collection exchange
 
 The JS-engine consumer used separate live-extent counters for stack-shaped

@@ -295,6 +295,9 @@ export function buildModuleSymbols(
         if (declaration.header == "std/channel") {
           symbol.standardTypeName = copy binding.importedName;
         }
+        if (declaration.header == "std/text" && binding.importedName == "Utf8Error") {
+          symbol.standardTypeName = "__z_std_text_Utf8Error";
+        }
         symbols.push(move symbol);
       }
     } else {

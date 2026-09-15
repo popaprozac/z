@@ -70,6 +70,7 @@ import {
   objcRegistrationTypeName,
   objcSelectorTypeName,
   fsLockTypeName,
+  utf8ErrorTypeName,
   nativeConnectionTypeName,
   standardFunctionSignature,
   standardModuleFunction,
@@ -593,6 +594,7 @@ type ViewOrigin = {
 };
 
 type StandardTypeName =
+  | "Utf8Error"
   | "TextBuffer"
   | "Arena"
   | "Map"
@@ -1550,15 +1552,15 @@ export function analyze(
           });
         }
         for (const binding of declaration.bindings) {
-          if (binding.importedName !== "TextBuffer") {
+          if (binding.importedName !== "TextBuffer" && binding.importedName !== "Utf8Error") {
             throw new DiagnosticError(fileName, binding.location, `std/text has no export ${JSON.stringify(binding.importedName)}`, {
               code: "Z0501",
-              helps: ["the bootstrap std/text module currently exports `TextBuffer`"],
+              helps: ["std/text exports `TextBuffer` and `Utf8Error`"],
             });
           }
           validateUserName(binding.localName, binding.location, fileName);
-          declareGlobal(globals, binding.localName, { kind: "standardType", type: "TextBuffer" }, binding.location, fileName);
-          state.standardTypeBindings.set(binding.localName, "TextBuffer");
+          declareGlobal(globals, binding.localName, { kind: "standardType", type: binding.importedName }, binding.location, fileName);
+          state.standardTypeBindings.set(binding.localName, binding.importedName);
         }
         continue;
       }
@@ -1844,6 +1846,19 @@ export function analyze(
     }
   }
 
+  // The intrinsic can infer this error even without an explicit std/text import.
+  // Keep its identity private; imports only provide a local spelling.
+  if (!program.structs.some((declaration) => declaration.name === utf8ErrorTypeName)) {
+    const location = { fileName, offset: 0, line: 1, column: 1 };
+    program.structs.push({
+      kind: "struct", name: utf8ErrorTypeName, implements: [],
+      fields: [{ name: "byteOffset", type: { name: "usize", location },
+        visibility: "public", readonly: true, location }],
+      constructor: null, methods: [], deinitializer: null, location,
+    });
+  }
+  typeDisplayNames.set(utf8ErrorTypeName, "Utf8Error");
+
   const onceStateSource = program.imports
     .filter((declaration) => declaration.header === "std/sync")
     .flatMap((declaration) => declaration.bindings ?? [])
@@ -1877,6 +1892,11 @@ export function analyze(
   for (const declaration of program.structs) {
     declareGlobal(globals, declaration.name, { kind: "struct", declaration }, declaration.location, fileName);
     structs.set(declaration.name, declaration);
+    if (declaration.name === utf8ErrorTypeName) {
+      for (const [localName, type] of state.standardTypeBindings) {
+        if (type === "Utf8Error") globals.set(localName, { kind: "struct", declaration });
+      }
+    }
   }
   for (const declaration of program.traits) {
     declareGlobal(globals, declaration.name, { kind: "trait", declaration }, declaration.location, fileName);
@@ -2330,6 +2350,11 @@ export function analyze(
   }
   if (state.generatedOptionalEnums.size > 0) {
     (program.enums as EnumDeclaration[]).push(...state.generatedOptionalEnums.values());
+  }
+  if (![...state.standardTypeBindings.values()].includes("Utf8Error")
+    && ![...state.standardFunctionReferences.values()].includes("String.fromBytes")) {
+    const index = program.structs.findIndex((declaration) => declaration.name === utf8ErrorTypeName);
+    if (index >= 0) program.structs.splice(index, 1);
   }
   return state;
 }
@@ -8693,7 +8718,7 @@ function ensureOptionalChainEnum(
   return name;
 }
 
-function ensureOptionalChainResult(
+function ensureResultEnum(
   successType: string,
   errorType: string,
   location: SourceLocation,
@@ -8904,7 +8929,7 @@ function inferOptionalChain(
       ? unwrappedValueType
       : ensureOptionalChainEnum(chainedValueType, expression.location, enums, state);
   const resultType = throwing
-    ? ensureOptionalChainResult(optionalValueType, throwing.errorType, expression.location, enums, state)
+    ? ensureResultEnum(optionalValueType, throwing.errorType, expression.location, enums, state)
     : optionalValueType;
 
   state.optionalChains.set(expression.location.offset, {
@@ -11297,7 +11322,8 @@ function inferExpressionInner(
           requireAssignable("usize", actual, capacity, fileName, structs, enums, state);
           return standardType.type;
         }
-        const aggregate = structs.get(expression.callee.name);
+        const aggregate = structs.get(state.standardTypeBindings.get(expression.callee.name) === "Utf8Error"
+          ? utf8ErrorTypeName : expression.callee.name);
         if (aggregate) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           if (aggregate.kind === "class") {
@@ -12016,6 +12042,20 @@ function inferExpressionInner(
             }
             return declaration.returnType.name;
           }
+        }
+        if (
+          expression.callee.object.kind === "identifier"
+          && expression.callee.object.name === "String"
+          && expression.callee.property === "fromBytes"
+        ) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          const declaration = standardFunctionDeclaration("String.fromBytes", "String.fromBytes", expression.callee.location);
+          state.standardFunctionReferences.set(expression.callee.location.offset, "String.fromBytes");
+          state.expressionTypes.set(expression.callee.location.offset,
+            functionTypeName([{ name: "bytes", mode: "value", type: sliceTypeName("u8") }], "String", utf8ErrorTypeName));
+          checkArguments(declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+          if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
+          return ensureResultEnum("String", utf8ErrorTypeName, expression.location, enums, state);
         }
         if (
           expression.callee.object.kind === "identifier"
@@ -20705,6 +20745,7 @@ function resolveSemanticTypeName(
     if (state.standardTypeBindings.get(name) === "OnceState") {
       return onceStateTypeName;
     }
+    if (state.standardTypeBindings.get(name) === "Utf8Error") return utf8ErrorTypeName;
     const declaration = structs.get(name) ?? enums.get(name);
     if (!declaration) return name;
     const resolution = { location: type.location, declaration };

@@ -547,6 +547,7 @@ export function emitProgramMetadata(
     output.append("],\"calls\":[");
     let emittedCalls: usize = 0;
     for (const resolution of resolved.semanticEvidence.callResolutions) {
+      if (resolution.kind == "intrinsic") continue;
       if (resolution.targetModuleIndex >= graph.modules.length) continue;
       const targetModule = view graph.modules[resolution.targetModuleIndex];
       if (resolution.targetSymbolIndex >= targetModule.symbols.length) continue;

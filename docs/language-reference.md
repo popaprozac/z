@@ -3279,6 +3279,42 @@ Equality performs no locale folding, Unicode normalization, or JavaScript-style
 coercion. Comparing text from different normalization domains therefore remains
 an explicit text-processing operation.
 
+`String.fromBytes(bytes)` validates borrowed `Slice<u8>` input and returns an
+independently owned `String`, or throws `Utf8Error` from `std/text`:
+
+```z
+import { Utf8Error } from "std/text";
+
+function decode(bytes: Slice<u8>): String throws Utf8Error {
+  return try String.fromBytes(bytes);
+}
+
+function inspect(): usize {
+  const bytes = Array<u8>(111, 107);
+  return match (attempt String.fromBytes(bytes)) {
+    success(text) => text.byteLength;
+    failure(error) => error.byteOffset;
+  };
+}
+```
+
+Dynamic and fixed byte arrays use the existing borrowed-Slice conversion. The
+Slice already expresses borrowing: do not add `in` or `move`. The source remains
+usable on success and failure; the result does not borrow its lifetime. Empty
+input succeeds, embedded NUL bytes are preserved, and no Unicode normalization
+occurs. `Utf8Error` is a value struct with a readonly `byteOffset: usize` field.
+The offset is the zero-based end of the valid UTF-8 prefix: the start of the
+malformed or truncated sequence, not necessarily the
+later continuation byte that revealed it. Overlong sequences, surrogate code
+points, and values above U+10FFFF are rejected.
+
+The borrowing form scans for validity and copies the bytes, with one allocation
+for nonempty successful input. Empty input and invalid input do not allocate
+output storage. Additional encodings (UTF-8 remaining the default) and consuming
+buffer conversion are future API work; no configuration or zero-copy promise is
+part of this signature. `String.from(cstring)` remains the separate trusted
+NUL-terminated native conversion.
+
 Repeated text construction uses the explicit `std/text` value type rather than
 repeatedly allocating intermediate `String` values:
 

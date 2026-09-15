@@ -48,6 +48,7 @@ import {
 import {
   isStandardModuleSpecifier,
   fsLockTypeName,
+  utf8ErrorTypeName,
   nativeConnectionTypeName,
   objcBindingTypeName,
   objcConnectionTypeName,
@@ -852,7 +853,7 @@ export function generateC(
   for (const type of explicitCopyTypes) {
     lines.push(generateExplicitCopy(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
-  if (usesFileSystem || usesProcess) {
+  if (usesFileSystem || usesProcess || usedStandardFunctions.has("String.fromBytes")) {
     lines.push(generateSystemStandardRuntime(usedStandardFunctions), "");
   }
   for (const closure of closures.filter((candidate) => candidate.captures.length > 0)) {
@@ -4290,7 +4291,7 @@ static Z_UNUSED_FUNCTION inline void z_string_append_bytes(Z_String *self, const
   ((char *)self->data)[self->length] = '\\0';
 }
 
-static Z_UNUSED_FUNCTION inline bool z_string_is_valid_utf8(const char *data, uintptr_t length) {
+static Z_UNUSED_FUNCTION inline uintptr_t z_string_utf8_valid_prefix(const char *data, uintptr_t length) {
   uintptr_t index = 0;
   while (index < length) {
     const uint8_t first = (uint8_t)data[index];
@@ -4299,36 +4300,40 @@ static Z_UNUSED_FUNCTION inline bool z_string_is_valid_utf8(const char *data, ui
       continue;
     }
     if (first >= 0xC2u && first <= 0xDFu) {
-      if (index + 1 >= length || ((uint8_t)data[index + 1] & 0xC0u) != 0x80u) return false;
+      if (length - index < 2 || ((uint8_t)data[index + 1] & 0xC0u) != 0x80u) return index;
       index += 2;
       continue;
     }
     if (first >= 0xE0u && first <= 0xEFu) {
-      if (index + 2 >= length) return false;
+      if (length - index < 3) return index;
       const uint8_t second = (uint8_t)data[index + 1];
       const uint8_t third = (uint8_t)data[index + 2];
-      if ((third & 0xC0u) != 0x80u) return false;
+      if ((third & 0xC0u) != 0x80u) return index;
       if (first == 0xE0u ? second < 0xA0u || second > 0xBFu
           : first == 0xEDu ? second < 0x80u || second > 0x9Fu
-          : (second & 0xC0u) != 0x80u) return false;
+          : (second & 0xC0u) != 0x80u) return index;
       index += 3;
       continue;
     }
     if (first >= 0xF0u && first <= 0xF4u) {
-      if (index + 3 >= length) return false;
+      if (length - index < 4) return index;
       const uint8_t second = (uint8_t)data[index + 1];
       const uint8_t third = (uint8_t)data[index + 2];
       const uint8_t fourth = (uint8_t)data[index + 3];
-      if ((third & 0xC0u) != 0x80u || (fourth & 0xC0u) != 0x80u) return false;
+      if ((third & 0xC0u) != 0x80u || (fourth & 0xC0u) != 0x80u) return index;
       if (first == 0xF0u ? second < 0x90u || second > 0xBFu
           : first == 0xF4u ? second < 0x80u || second > 0x8Fu
-          : (second & 0xC0u) != 0x80u) return false;
+          : (second & 0xC0u) != 0x80u) return index;
       index += 4;
       continue;
     }
-    return false;
+    return index;
   }
-  return true;
+  return length;
+}
+
+static Z_UNUSED_FUNCTION inline bool z_string_is_valid_utf8(const char *data, uintptr_t length) {
+  return z_string_utf8_valid_prefix(data, length) == length;
 }
 
 static Z_UNUSED_FUNCTION inline void z_string_append_cstring(Z_String *self, const char *value) {
@@ -11685,7 +11690,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
             : null;
           return `z_arena_new(${capacity ? `(uintptr_t)(${generateExpression(capacity, context)})` : "0"})`;
         }
-        if (context.structs.get(expression.callee.name)?.kind === "struct") {
+        const constructionType = standardType === "Utf8Error" ? utf8ErrorTypeName : expression.callee.name;
+        if (context.structs.get(constructionType)?.kind === "struct") {
           const initializer = expression.arguments[0];
           if (initializer?.kind === "objectExpression") {
             return generateExpression(
@@ -11693,7 +11699,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
               withObjectTypeOverride(
                 context,
                 initializer.location.offset,
-                expression.callee.name,
+                constructionType,
               ),
             );
           }
@@ -12386,6 +12392,16 @@ ${managedCleanup ? `${indent(managedCleanup, 2)}\n` : ""}${native ? "  std::dest
 
 function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>): string {
   const sections: string[] = [];
+  if (used.has("String.fromBytes")) {
+    const result = resultTypeName("String", utf8ErrorTypeName);
+    sections.push(`static ${enumName(result)} z_string_from_bytes(${sliceName(sliceTypeName("u8"))} bytes) {
+  const uintptr_t offset = z_string_utf8_valid_prefix((const char *)bytes.data, bytes.length);
+  if (offset != bytes.length) return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data = { .failure = { .byteOffset = offset } } };
+  Z_String text = z_string_new();
+  z_string_append_bytes(&text, (const char *)bytes.data, bytes.length);
+  return (${enumName(result)}){ .tag = ${variantTag(result, "success")}, .data = { .success = text } };
+}`);
+  }
   const bytesType = dynamicArrayTypeName("u8");
   const bytesArray = dynamicArrayName(bytesType);
   const bytesResult = enumName(resultTypeName(bytesType, "String"));
@@ -13393,6 +13409,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
           : signature.returnType;
       }
       if (expression.callee.kind === "identifier") {
+        if (context.semanticInfo.standardTypeBindings.get(expression.callee.name) === "Utf8Error") return utf8ErrorTypeName;
         if (context.structs.get(expression.callee.name)?.kind === "struct") return expression.callee.name;
         const closure = closureForType(context.localTypes.get(expression.callee.name), context.semanticInfo);
         if (closure) return closure.declaration.errorType

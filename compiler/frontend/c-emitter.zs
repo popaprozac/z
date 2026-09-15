@@ -5110,10 +5110,11 @@ function appendExpression(
     }
     output.append("Z_");
     output.append(declaration.expressions[index].value);
-    output.append("_from((__typeof__(");
-    const first = declaration.expressions[index].children[0];
-    try appendExpression(inout output, declaration, first);
-    output.append(")[]){");
+    // A contextual numeric literal still has C's default literal width.
+    // Form the temporary from the checked slot type, not its first expression.
+    output.append("_from((Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_Element[]){");
     let childIndex: usize = 0;
     while (childIndex < declaration.expressions[index].children.length) {
       if (childIndex > 0) output.append(", ");
@@ -6634,6 +6635,10 @@ function appendExpression(
         == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "String.from"
     ) output.append("z_stage1_string_from_cstring");
+    else if (
+      declaration.expressions[callee].kind == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "String.fromBytes"
+    ) output.append("z_stage1_string_from_bytes");
     else try appendExpression(inout output, declaration, callee);
     output.append("(");
     let argument: usize = 1;
@@ -11043,6 +11048,7 @@ function appendFunction(
 ): void throws String {
   if (declaration.asyncSuspension == "yield-frame") {
     try appendYieldFrameDriver(inout output, program, declaration, processArguments);
+    appendThrowingMainWrapper(inout output, program, declaration, processArguments);
     return;
   }
   if (declaration.compilerIntrinsic == "jsonDecode") {
@@ -23647,6 +23653,14 @@ function appendSystemStandardRuntime(
   inout output: TextBuffer,
   in program: LoweredProgram
 ): void {
+  if (programUsesStandardCall(program, "String.fromBytes")) {
+    output.append("static __attribute__((unused)) Z___z_Result_String___z_std_text_Utf8Error z_stage1_string_from_bytes(Z___z_Slice_u8 bytes) {\n");
+    output.append("  const size_t offset = z_stage1_string_utf8_valid_prefix((const char *)bytes.data, bytes.length);\n");
+    output.append("  if (offset != bytes.length) return (Z___z_Result_String___z_std_text_Utf8Error){ .tag = Z___z_Result_String___z_std_text_Utf8ErrorTag_failure, .payload.failure = { .byteOffset = offset } };\n");
+    output.append("  Z_String text = { NULL, 0, 0 };\n");
+    output.append("  z_string_append_bytes(&text, (const char *)bytes.data, bytes.length);\n");
+    output.append("  return (Z___z_Result_String___z_std_text_Utf8Error){ .tag = Z___z_Result_String___z_std_text_Utf8ErrorTag_success, .payload.success = text };\n}\n\n");
+  }
   const usesLock = programUsesStandardCall(program, "fs.lock");
   const usesReadBytes = programUsesStandardCall(program, "fs.readBytes");
   const usesReadText = programUsesStandardCall(program, "fs.readText");
@@ -25111,7 +25125,8 @@ function emitLoweredC(
     || usesRealPath
     || usesProcessArguments
     || usesProcessRun
-    || programUsesStandardCall(program, "String.from");
+    || programUsesStandardCall(program, "String.from")
+    || programUsesStandardCall(program, "String.fromBytes");
   for (const declaration of program.functions) {
     if (declaration.nativeCExportName.byteLength == 0) continue;
     for (const parameter of declaration.parameters) {
@@ -25551,36 +25566,38 @@ function emitLoweredC(
     output.append("}\n\n");
   }
   if (usesCStringConversion) {
-    output.append("static inline __attribute__((unused)) bool z_stage1_string_is_valid_utf8(const char *data, size_t length) {\n");
+    output.append("static inline __attribute__((unused)) size_t z_stage1_string_utf8_valid_prefix(const char *data, size_t length) {\n");
     output.append("  size_t index = 0;\n");
     output.append("  while (index < length) {\n");
     output.append("    const uint8_t first = (uint8_t)data[index];\n");
     output.append("    if (first <= 0x7Fu) { index += 1; continue; }\n");
     output.append("    if (first >= 0xC2u && first <= 0xDFu) {\n");
-    output.append("      if (index + 1 >= length || ((uint8_t)data[index + 1] & 0xC0u) != 0x80u) return false;\n");
+    output.append("      if (length - index < 2 || ((uint8_t)data[index + 1] & 0xC0u) != 0x80u) return index;\n");
     output.append("      index += 2; continue;\n");
     output.append("    }\n");
     output.append("    if (first >= 0xE0u && first <= 0xEFu) {\n");
-    output.append("      if (index + 2 >= length) return false;\n");
+    output.append("      if (length - index < 3) return index;\n");
     output.append("      const uint8_t second = (uint8_t)data[index + 1];\n");
     output.append("      const uint8_t third = (uint8_t)data[index + 2];\n");
-    output.append("      if ((third & 0xC0u) != 0x80u) return false;\n");
-    output.append("      if (first == 0xE0u ? second < 0xA0u || second > 0xBFu : first == 0xEDu ? second < 0x80u || second > 0x9Fu : (second & 0xC0u) != 0x80u) return false;\n");
+    output.append("      if ((third & 0xC0u) != 0x80u) return index;\n");
+    output.append("      if (first == 0xE0u ? second < 0xA0u || second > 0xBFu : first == 0xEDu ? second < 0x80u || second > 0x9Fu : (second & 0xC0u) != 0x80u) return index;\n");
     output.append("      index += 3; continue;\n");
     output.append("    }\n");
     output.append("    if (first >= 0xF0u && first <= 0xF4u) {\n");
-    output.append("      if (index + 3 >= length) return false;\n");
+    output.append("      if (length - index < 4) return index;\n");
     output.append("      const uint8_t second = (uint8_t)data[index + 1];\n");
     output.append("      const uint8_t third = (uint8_t)data[index + 2];\n");
     output.append("      const uint8_t fourth = (uint8_t)data[index + 3];\n");
-    output.append("      if ((third & 0xC0u) != 0x80u || (fourth & 0xC0u) != 0x80u) return false;\n");
-    output.append("      if (first == 0xF0u ? second < 0x90u || second > 0xBFu : first == 0xF4u ? second < 0x80u || second > 0x8Fu : (second & 0xC0u) != 0x80u) return false;\n");
+    output.append("      if ((third & 0xC0u) != 0x80u || (fourth & 0xC0u) != 0x80u) return index;\n");
+    output.append("      if (first == 0xF0u ? second < 0x90u || second > 0xBFu : first == 0xF4u ? second < 0x80u || second > 0x8Fu : (second & 0xC0u) != 0x80u) return index;\n");
     output.append("      index += 4; continue;\n");
     output.append("    }\n");
-    output.append("    return false;\n");
+    output.append("    return index;\n");
     output.append("  }\n");
-    output.append("  return true;\n");
+    output.append("  return length;\n");
     output.append("}\n\n");
+    output.append("static inline __attribute__((unused)) bool z_stage1_string_is_valid_utf8(const char *data, size_t length) {\n");
+    output.append("  return z_stage1_string_utf8_valid_prefix(data, length) == length;\n}\n\n");
     output.append("static inline __attribute__((unused)) Z_String z_stage1_string_from_cstring(const char *value) {\n");
     output.append("  if (value == NULL) abort();\n");
     output.append("  const size_t length = strlen(value);\n");
@@ -26010,6 +26027,11 @@ function emitLoweredC(
     const elementType = try cType(declaration.elementType);
     const objectiveCElements = declaration.elementType.kind
       == LoweredTypeKind.foreignObjCType;
+    output.append("typedef ");
+    output.append(elementType);
+    output.append(" Z_");
+    output.append(declaration.name);
+    output.append("_Element;\n\n");
     output.append("static inline __attribute__((unused)) Z_");
     output.append(declaration.name);
     output.append(" Z_");

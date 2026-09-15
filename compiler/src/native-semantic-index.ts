@@ -58,6 +58,23 @@ export class NativeSemanticIndex {
         if (resolution.parameterModes.length !== resolution.parameterTypes.length) {
           throw new Error(`native frontend returned an unbalanced parameter contract at offset ${resolution.offset} in ${module.path}`);
         }
+        if (resolution.kind === "intrinsic") {
+          // Built-ins have no source declaration. targetSymbol is an unused
+          // zero sentinel, not a reference to the module's first declaration.
+          if (resolution.targetName !== "String.fromBytes"
+            || resolution.targetSymbol !== 0
+            || graph.modules[resolution.targetModule] !== module
+            || resolution.asynchronous || resolution.receiverMode !== ""
+            || resolution.typeParameters.length !== 0
+            || resolution.parameterModes.join() !== "value"
+            || resolution.parameterTypes.join() !== "Slice<u8>"
+            || resolution.returnType !== "String"
+            || resolution.errorType !== "__z_std_text_Utf8Error") {
+            throw new Error(`native frontend returned an invalid intrinsic contract at offset ${resolution.offset} in ${module.path}`);
+          }
+          resolutions.set(resolution.offset, resolution);
+          continue;
+        }
         const target = graph.modules[resolution.targetModule]?.symbols[resolution.targetSymbol];
         if (!target) {
           throw new Error(`native frontend returned an invalid call target at offset ${resolution.offset} in ${module.path}`);

@@ -382,6 +382,12 @@ export function aggregateFieldShape(
   in ownerType: String,
   in fieldName: String
 ): Option<NativeFieldShape> {
+  if (ownerType == "__z_std_text_Utf8Error" && fieldName == "byteOffset") {
+    return Option.some(NativeFieldShape({ name: "byteOffset",
+      ownerName: copy ownerType, ownerModuleIndex: moduleIndex, ownerSymbolIndex: 0,
+      typeName: "usize", executorAffinity: "", visibility: "public",
+      readonlyField: true, optionalField: false, foreignUnion: false, viewLifetime: "" }));
+  }
   let arguments = Array<String>();
   match (genericTypeShape(ownerType)) {
     some(generic) => {
@@ -626,6 +632,13 @@ export function aggregateConstructionShape(
   moduleIndex: usize,
   in typeName: String
 ): Option<NativeAggregateConstructionShape> {
+  if (typeName == "__z_std_text_Utf8Error") {
+    return Option.some(NativeAggregateConstructionShape({
+      name: "__z_std_text_Utf8Error", valueStruct: true, customDeinit: false, genericInstance: false,
+      typeParameters: Array<String>(), typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+      fields: Array<String>("byteOffset"), allFields: Array<String>("byteOffset"),
+    }));
+  }
   match (inferredTypeSymbolLocation(modules, moduleIndex, typeName)) {
     some(location) => {
       match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {

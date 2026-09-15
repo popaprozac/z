@@ -115,7 +115,7 @@ export type Stage1ModuleCallResolution = {
   readonly column: number;
   readonly targetModule: number;
   readonly targetSymbol: number;
-  readonly kind: "function" | "method" | "staticMethod" | "constructor" | "standard" | "objectiveCDataCopy" | "objectiveCDataBorrow";
+  readonly kind: "function" | "method" | "staticMethod" | "constructor" | "standard" | "intrinsic" | "objectiveCDataCopy" | "objectiveCDataBorrow";
   readonly targetName: string;
   readonly asynchronous: boolean;
   readonly receiverMode: string;
@@ -431,7 +431,7 @@ export function decodeStage1ModuleGraphStream(
       const module = modules[moduleIndex];
       if (!module) throw new Error("stage-1 call resolution appeared before its module");
       const kind = Buffer.from(fields[7], "hex").toString("utf8");
-      if (kind !== "function" && kind !== "method" && kind !== "staticMethod" && kind !== "constructor" && kind !== "standard" && kind !== "objectiveCDataCopy" && kind !== "objectiveCDataBorrow") {
+      if (kind !== "function" && kind !== "method" && kind !== "staticMethod" && kind !== "constructor" && kind !== "standard" && kind !== "intrinsic" && kind !== "objectiveCDataCopy" && kind !== "objectiveCDataBorrow") {
         throw new Error(`malformed stage-1 call resolution kind: ${kind}`);
       }
       if (fields[9] !== "0" && fields[9] !== "1") {

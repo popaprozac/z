@@ -1841,8 +1841,9 @@ function isNativeAggregateSymbolKind(
 
 function isNativeCallResolutionKind(
   value: string,
-): value is "function" | "method" | "staticMethod" | "constructor" {
-  return value === "function" || value === "method" || value === "staticMethod" || value === "constructor";
+): value is Stage1ModuleCallResolution["kind"] {
+  return value === "function" || value === "method" || value === "staticMethod" || value === "constructor"
+    || value === "standard" || value === "intrinsic" || value === "objectiveCDataCopy" || value === "objectiveCDataBorrow";
 }
 
 function isNativeVisibility(value: string): value is "public" | "private" {

@@ -295,6 +295,13 @@ export function nativeStandardCall(
   argumentCount: usize,
   in argumentType: String
 ): Option<NativeStandardCallShape> {
+  if (namespaceName == "String" && memberName == "fromBytes") {
+    return Option.some(NativeStandardCallShape({
+      name: "String.fromBytes",
+      signature: standardSignature(Array<String>("value"), Array<String>("Slice<u8>"),
+        "String", "__z_std_text_Utf8Error"),
+    }));
+  }
   const header = namespaceHeader(program, namespaceName);
   if (header == "std/fs") return fsCall(memberName);
   if (header == "std/process") return processCall(memberName);

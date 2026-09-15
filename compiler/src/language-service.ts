@@ -61,6 +61,7 @@ import {
 } from "./foreign-declarations.ts";
 import {
   fsLockTypeName,
+  utf8ErrorTypeName,
   objcConnectionTypeName,
   objcRegistrationTypeName,
   standardFunctionSignature,
@@ -1622,6 +1623,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "TextBuffer") {
     return markdownHover("standard value type TextBuffer  // move-only UTF-8 construction storage", source, word.start, word.end);
   }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "Utf8Error") {
+    return markdownHover("struct Utf8Error { readonly byteOffset: usize; }\n// First byte after the valid UTF-8 prefix (start of the malformed sequence).", source, word.start, word.end);
+  }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Arena") {
     return markdownHover("Arena(options?: { initialCapacity: usize }): Arena  // move-only growable region storage", source, word.start, word.end);
   }
@@ -1944,6 +1948,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (memberText === "String" && word.text === "from") {
       return markdownHover("from(value: cstring): String  // copies borrowed C bytes", source, word.start, word.end);
+    }
+    if (memberText === "String" && word.text === "fromBytes") {
+      return markdownHover("fromBytes(bytes: Slice<u8>): String throws Utf8Error\n// Borrows bytes, validates UTF-8, and copies into independent owned text; preserves embedded NUL bytes.", source, word.start, word.end);
     }
     const foreignStaticOwner = resolveForeignValueType(context, memberText);
     const foreignStaticMethod = foreignStaticOwner?.staticMethods.find((item) => item.name === word.text);
@@ -2578,6 +2585,10 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       label: "TextBuffer",
       kind: completionKinds.struct,
       detail: "move-only UTF-8 text construction buffer",
+    }, {
+      label: "Utf8Error",
+      kind: completionKinds.struct,
+      detail: "struct Utf8Error { readonly byteOffset: usize; }",
     }];
   }
   if (specifier === "std/memory") {
@@ -3151,6 +3162,11 @@ function symbolCompletions(
     for (const declaration of parsed.imports) {
       if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration" && declaration.header !== "std/sync" && declaration.header !== "std/channel" && declaration.header !== "std/async") continue;
       for (const binding of declaration.bindings ?? []) {
+        if (declaration.header === "std/text" && binding.importedName === "Utf8Error") {
+          builtIns.push({ label: binding.localName, kind: completionKinds.struct,
+            detail: `struct ${binding.localName} { readonly byteOffset: usize; }` });
+          continue;
+        }
         if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "replace" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "OnceState" && binding.importedName !== "Mutex" && binding.importedName !== "Channel" && binding.importedName !== "Sender" && binding.importedName !== "Receiver" && binding.importedName !== "SyncSender" && binding.importedName !== "SyncReceiver" && binding.importedName !== "ChannelClosed" && binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") continue;
         const detail = binding.importedName === "TextBuffer"
           ? "move-only UTF-8 construction storage"
@@ -3281,6 +3297,7 @@ function symbolCompletions(
   }
   for (const declaration of context.program.structs) {
     if (declaration.name.startsWith("__z_mono_") || declaration.name.startsWith("__z_module_")) continue;
+    if (declaration.name === utf8ErrorTypeName) continue;
     const affinity = context.semanticInfo.aggregateExecutorAffinities.get(declaration.name);
     const mixedClass = declaration.kind === "class"
       && !declaration.executorAffinity
@@ -3393,6 +3410,11 @@ function symbolCompletions(
     });
   }
   for (const [name, standardType] of context.semanticInfo.standardTypeBindings) {
+    if (standardType === "Utf8Error") {
+      items.push({ label: name, kind: completionKinds.struct,
+        detail: `struct ${name} { readonly byteOffset: usize; }` });
+      continue;
+    }
     items.push({
       label: name,
       kind: standardType === "Hashable" || standardType === "Iterator"
@@ -4994,7 +5016,7 @@ function containsDeclarationName(start: number, name: string, offset: number): b
 function standardFunctionDetail(localName: string, name: StandardFunctionName): string {
   const signature = standardFunctionSignature(name);
   const displayStandardType = (type: string): string => (
-    type === fsLockTypeName ? "fs.Lock" : displayArrayType(type)
+    type === fsLockTypeName ? "fs.Lock" : type === utf8ErrorTypeName ? "Utf8Error" : displayArrayType(type)
   );
   const parameters = signature.parameters.map((parameter) => {
     const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
@@ -5544,6 +5566,11 @@ function memberCompletions(
       kind: completionKinds.method,
       detail: "from(value: cstring): String  // copies borrowed C bytes",
       insertText: "from()",
+    }, {
+      label: "fromBytes",
+      kind: completionKinds.method,
+      detail: "fromBytes(bytes: Slice<u8>): String throws Utf8Error  // validates and copies borrowed UTF-8",
+      insertText: "fromBytes()",
     }], prefix, 100);
   }
   const importContext = importAnalysis(source, fileName);

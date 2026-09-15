@@ -68,6 +68,30 @@ const owned = String.from(boundary);
 Use `cstring` at C boundaries that genuinely require it. Convert to `String`
 when the value must be owned independently or may outlive the native source.
 
+## Decode a byte buffer
+
+```z
+import { Utf8Error } from "std/text";
+
+function decode(bytes: Slice<u8>): String throws Utf8Error {
+  return try String.fromBytes(bytes);
+}
+```
+
+Pass a `Slice<u8>`, `Array<u8>`, or fixed byte array. Input is borrowed, so it
+stays usable on success and failure; no `in` or `move` is needed. The returned
+String owns a copy and remains valid after the original buffer changes or dies.
+
+UTF-8 is validated strictly. Empty input succeeds, embedded NUL bytes survive,
+and Unicode is not normalized. Catch locally with `attempt`, or propagate with
+`try`. `Utf8Error.byteOffset` identifies the zero-based start of the malformed or
+truncated sequence, immediately after the valid prefix.
+
+Cost: a validation scan plus a copy, with one allocation for nonempty valid
+input. Invalid and empty input do not allocate output storage. Other encodings
+and an explicitly consuming conversion are future work, not hidden behavior of
+this method.
+
 ## Build repeated text with `TextBuffer`
 
 Repeated template concatenation can create avoidable intermediate strings.

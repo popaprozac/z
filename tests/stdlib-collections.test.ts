@@ -574,6 +574,102 @@ test("owns exclusive filesystem locks and releases them deterministically", asyn
   );
 });
 
+test("decodes borrowed byte storage into independent UTF-8 Strings with typed errors", () => {
+  const file = resolve(projectRoot, "tests/fixtures/string-from-bytes.zs");
+  const source = readFileSync(file, "utf8");
+  const directory = mkdtempSync("/tmp/z-string-from-bytes-");
+  try {
+    const stage0 = compileToC(source, file);
+    const checked = spawnSync(process.execPath, [cli, "check", file, "--native-frontend"], {
+      encoding: "utf8", timeout: 240_000,
+    });
+    assert.equal(checked.status, 0, checked.stderr);
+    const native = spawnSync(process.execPath, [cli, "self-host-emit", file], {
+      encoding: "utf8", timeout: 240_000, maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr);
+    for (const [name, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+      const executable = resolve(directory, name);
+      const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
+        "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        input: generated, encoding: "utf8", timeout: 30_000,
+      });
+      assert.equal(built.status, 0, built.stderr);
+      const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+      assert.equal(run.status, 0, `${name}: ${run.stderr}`);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("preserves byte-decoding errors across modules and Strings across async suspension", () => {
+  const directory = mkdtempSync("/tmp/z-string-from-bytes-composition-");
+  try {
+    for (const [fixture, expectedStatus] of [
+      ["string-from-bytes-async.zs", 0],
+      ["string-from-bytes-async-error.zs", 1],
+      ["string-from-bytes-modules/main.zs", 0],
+      ["string-from-bytes-inferred.zs", 0],
+      ["string-from-bytes-error.zs", 0],
+    ] as const) {
+      const file = resolve(projectRoot, "tests/fixtures", fixture);
+      const source = readFileSync(file, "utf8");
+      const checked = spawnSync(process.execPath, [cli, "check", file, "--native-frontend"], {
+        encoding: "utf8", timeout: 240_000,
+      });
+      assert.equal(checked.status, 0, checked.stderr);
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", file], {
+        encoding: "utf8", timeout: 240_000, maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(native.status, 0, native.stderr);
+      for (const generated of [compileToC(source, file), native.stdout]) {
+        const executable = resolve(directory, "probe");
+        const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
+          "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+          encoding: "utf8", input: generated, timeout: 30_000,
+        });
+        assert.equal(built.status, 0, built.stderr);
+        const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+        assert.equal(run.status, expectedStatus, `${fixture}: ${run.stderr}`);
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("checks and explains byte decoding ownership, errors, and imported error types", () => {
+  const file = resolve(projectRoot, "tests/fixtures/string-from-bytes.zs");
+  const source = readFileSync(file, "utf8");
+  const missingHandling = source.replace("attempt String.fromBytes(bytes)", "String.fromBytes(bytes)");
+  assert.match(diagnostics(missingHandling, file)[0]?.message ?? "", /throwing call requires/);
+  const moved = source.replace("try String.fromBytes(bytes)", "try String.fromBytes(move bytes)");
+  assert.ok(diagnostics(moved, file).length > 0, "borrowing must not silently consume the buffer");
+  const wrongType = source.replace("try String.fromBytes(bytes)", "try String.fromBytes(42)");
+  assert.match(diagnostics(wrongType, file)[0]?.message ?? "", /Slice|slice/);
+  const redundantBorrow = source.replace("try String.fromBytes(bytes)", "try String.fromBytes(in bytes)");
+  assert.ok(diagnostics(redundantBorrow, file).length > 0, "Slice is already the borrowing contract");
+  const extraArgument = source.replace("try String.fromBytes(bytes)", "try String.fromBytes(bytes, bytes)");
+  assert.match(diagnostics(extraArgument, file)[0]?.message ?? "", /expects 1 argument/);
+  const changedError = 'import { Utf8Error } from "std/text"; function change(inout error: Utf8Error): void { error.byteOffset = 0; }';
+  assert.match(diagnostics(changedError, file)[0]?.message ?? "", /readonly/);
+  const wrongField = 'import { Utf8Error } from "std/text"; function main(): i32 { const error = Utf8Error({ offset: 1 }); return 0; }';
+  assert.ok(diagnostics(wrongField, file).length > 0);
+  const unknownEncoding = source.replace("try String.fromBytes(bytes)", "try String.fromBytes(bytes, { encoding: \"utf16\" })");
+  assert.ok(diagnostics(unknownEncoding, file).length > 0, "encoding options are not implemented implicitly");
+  const methodOffset = source.indexOf("fromBytes") + 2;
+  assert.match(hover(source, file, methodOffset)?.contents.value ?? "", /fromBytes.*Slice<u8>.*throws Utf8Error/);
+  const fieldOffset = source.indexOf("byteOffset") + 2;
+  assert.match(hover(source, file, fieldOffset)?.contents.value ?? "", /byteOffset: usize/);
+  const importSource = 'import { Utf } from "std/text";';
+  assert.ok(completions(importSource, file, importSource.indexOf("Utf") + 3)
+    .some((item) => item.label === "Utf8Error"));
+  const memberSource = "function main(): i32 { String.fromB; return 0; }";
+  assert.ok(completions(memberSource, file, memberSource.indexOf("fromB") + 5)
+    .some((item) => item.label === "fromBytes"));
+});
+
 test("builds owned UTF-8 String values through explicit std/text TextBuffer", () => {
   const directory = mkdtempSync("/tmp/z-text-buffer-");
   const fileName = resolve(directory, "main.zs");

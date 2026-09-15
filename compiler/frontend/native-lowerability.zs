@@ -2466,6 +2466,7 @@ function nativeYieldFrameStorageSupported(
 ): boolean {
   if (name == "String" || name == "cstring" || name == "boolean"
     || name == "f32" || name == "f64" || isIntegerTypeName(name)
+    || name == "__z_std_text_Utf8Error"
     || name == "TaskScope" || name == "TaskControl") return true;
   const parsedModule = parsedModuleIndexForGraphModule(modules, graph, moduleIndex);
   if (parsedModule < modules.length) {

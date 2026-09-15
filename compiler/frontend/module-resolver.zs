@@ -8205,6 +8205,14 @@ function inferExpressionNodeType(
       moduleIndex,
       authoredConstructionType
     );
+    if (constructionType == "__z_std_text_Utf8Error") {
+      if (children.length != 2 || tree.nodes[children[1]].kind != ExpressionKind.objectExpression) {
+        throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+          "Utf8Error construction requires one object literal", node.line, node.column);
+      }
+      return try inferContextualObjectExpressionNode(module, modules, moduleIndex, arena, tree,
+        children[1], constructionType, inout bindings, inout evidence);
+    }
     const constructionLocation = authoredConstructionType == constructionType
       ? typeSymbolLocation(modules, moduleIndex, constructionType)
       : inferredTypeSymbolLocation(modules, moduleIndex, constructionType);
@@ -9434,9 +9442,11 @@ function inferExpressionNodeType(
             if (
               namespaceSymbol
                 < modules[moduleIndex].symbols.length
+              || namespaceName == "String"
             ) {
               const substitutions = Array<NativeValueBinding>();
               const argumentNodes = callArgumentNodes(children);
+              const resolutionKind = namespaceName == "String" ? "intrinsic" : "standard";
               return try inferSignatureCallType(
                 module,
                 modules,
@@ -9453,8 +9463,8 @@ function inferExpressionNodeType(
                 standard.signature,
                 substitutions,
                 moduleIndex,
-                namespaceSymbol,
-                "standard",
+                namespaceName == "String" ? 0 : namespaceSymbol,
+                resolutionKind,
                 inout evidence
               );
             }

@@ -27,6 +27,7 @@ import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
 import {
   sourceStandardModuleRelativePath,
+  utf8ErrorTypeName,
   type StandardModuleName,
 } from "./standard-library.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
@@ -102,7 +103,7 @@ type ModuleScope = {
   readonly globals: Map<string, string>;
   readonly namespaces: Map<string, ModuleNode>;
   readonly standardModules: Map<string, StandardModuleName>;
-  readonly standardTypes: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "OnceState" | "Mutex" | "Channel" | "Sender" | "Receiver" | "SyncSender" | "SyncReceiver" | "ChannelClosed">;
+  readonly standardTypes: Map<string, "Utf8Error" | "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "OnceState" | "Mutex" | "Channel" | "Sender" | "Receiver" | "SyncSender" | "SyncReceiver" | "ChannelClosed">;
 };
 
 export function isLocalSourceModuleSpecifier(specifier: string): boolean {
@@ -580,7 +581,7 @@ function buildScope(node: ModuleNode): ModuleScope {
   );
   const namespaces = new Map<string, ModuleNode>();
   const standardModules = new Map<string, StandardModuleName>();
-  const standardTypes = new Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "OnceState" | "Mutex">();
+  const standardTypes = new Map<string, "Utf8Error" | "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "OnceState" | "Mutex">();
   const occupied = new Map<string, SourceLocation>();
   for (const declaration of [
     ...node.program.constants,
@@ -647,6 +648,8 @@ function buildScope(node: ModuleNode): ModuleScope {
       for (const binding of declaration.bindings) {
         if (declaration.header === "std/text" && binding.importedName === "TextBuffer") {
           standardTypes.set(binding.localName, "TextBuffer");
+        } else if (declaration.header === "std/text" && binding.importedName === "Utf8Error") {
+          standardTypes.set(binding.localName, "Utf8Error");
         } else if (declaration.header === "std/memory" && binding.importedName === "Arena") {
           standardTypes.set(binding.localName, "Arena");
         } else if (declaration.header === "std/collections" && binding.importedName === "Map") {
@@ -1195,6 +1198,7 @@ function renameTypeName(name: string, scope: ModuleScope, typeParameters: Readon
 function renameSimpleType(name: string, scope: ModuleScope): string {
   const standardType = scope.standardTypes.get(name);
   if (standardType === "OnceState") return onceStateTypeName;
+  if (standardType === "Utf8Error") return utf8ErrorTypeName;
   if (standardType) return standardType;
   const separator = name.indexOf(".");
   if (separator >= 0) {

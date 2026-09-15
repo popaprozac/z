@@ -8,6 +8,10 @@ production or compatibility-sensitive use.
 
 ## Implemented and exercised
 
+- `String.fromBytes(bytes)` validates borrowed byte arrays/Slices and returns
+  independently owned UTF-8 text. `Utf8Error` from `std/text` reports the start of
+  malformed input; embedded NUL bytes are preserved. Conversion scans and copies,
+  rather than consuming the source or silently replacing invalid bytes.
 - TypeScript-shaped parsing, nominal static types, generics, enums, exhaustive
   matching, `Option<T>`, `Result<T, E>`, typed errors, and statically dispatched
   trait constraints that specialize across module-private boundaries
