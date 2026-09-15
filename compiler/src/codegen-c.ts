@@ -13510,6 +13510,7 @@ function isForeignMember(
   context: GenerationContext,
 ): boolean {
   return expression.object.kind === "identifier"
+    && !context.semanticInfo.moduleConstantReferences.has(expression.object.location.offset)
     && !context.localTypes.has(expression.object.name)
     && !context.structs.has(expression.object.name)
     && !context.enums.has(expression.object.name);

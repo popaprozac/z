@@ -5310,6 +5310,26 @@ function effectiveCollectionMethodSignature(
   return Option.some(move effective);
 }
 
+function contextualizeNumericOperands(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  leftIndex: usize,
+  rightIndex: usize,
+  in bindings: Array<NativeValueBinding>,
+  inout left: String,
+  inout right: String
+): void throws ModuleResolveError {
+  if (isContextualNumericLiteral(tree, rightIndex)
+    && (isNumericTypeName(left) || isActiveTypeParameter(bindings, left))) {
+    try requireNumericLiteralRange(module, tree, rightIndex, left);
+    right = copy left;
+  } else if (isContextualNumericLiteral(tree, leftIndex)
+    && (isNumericTypeName(right) || isActiveTypeParameter(bindings, right))) {
+    try requireNumericLiteralRange(module, tree, leftIndex, right);
+    left = copy right;
+  }
+}
+
 function inferExpressionNodeType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -6776,26 +6796,8 @@ function inferExpressionNodeType(
     let right = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[1], right);
     if (left.byteLength == 0 || right.byteLength == 0) return "";
-    if (
-      isContextualNumericLiteral(tree, children[1])
-      && (
-        isNumericTypeName(left)
-        || isActiveTypeParameter(bindings, left)
-      )
-    ) {
-      try requireNumericLiteralRange(module, tree, children[1], left);
-      right = left.copyBytes(0, left.byteLength);
-    }
-    else if (
-      isContextualNumericLiteral(tree, children[0])
-      && (
-        isNumericTypeName(right)
-        || isActiveTypeParameter(bindings, right)
-      )
-    ) {
-      try requireNumericLiteralRange(module, tree, children[0], right);
-      left = right.copyBytes(0, right.byteLength);
-    }
+    try contextualizeNumericOperands(module, tree, children[0], children[1],
+      bindings, inout left, inout right);
     if (
       left == right
       && isActiveTypeParameter(bindings, left)
@@ -7771,6 +7773,45 @@ function inferExpressionNodeType(
   }
   if (kind == ExpressionKind.callExpression && children.length > 0) {
     const calleeIndex = children[0];
+    if (children.length == 2
+      && tree.nodes[calleeIndex].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeIndex].value == "toEqual"
+      && tree.nodes[calleeIndex].children.length == 1) {
+      const expectation = tree.nodes[calleeIndex].children[0];
+      if (tree.nodes[expectation].kind == ExpressionKind.callExpression
+        && tree.nodes[expectation].children.length == 2) {
+        const expectCallee = tree.nodes[expectation].children[0];
+        const expectName = view tree.nodes[expectCallee].value;
+        const shadow = valueBindingType(bindings, expectName);
+        if (tree.nodes[expectCallee].kind == ExpressionKind.identifierExpression
+          && shadow.byteLength == 0
+          && importedStandardType(module, expectName, "std/test", "expect")) {
+          let actualInput = tree.nodes[expectation].children[1];
+          let expectedInput = children[1];
+          if (tree.nodes[actualInput].kind == ExpressionKind.argumentReferenceExpression
+            && tree.nodes[actualInput].value == "in" && tree.nodes[actualInput].children.length == 1) {
+            actualInput = tree.nodes[actualInput].children[0];
+          }
+          if (tree.nodes[expectedInput].kind == ExpressionKind.argumentReferenceExpression
+            && tree.nodes[expectedInput].value == "in" && tree.nodes[expectedInput].children.length == 1) {
+            expectedInput = tree.nodes[expectedInput].children[0];
+          }
+          let actualType = try inferExpressionNodeType(module, modules, moduleIndex, arena,
+            tree, actualInput, inout bindings, inout evidence);
+          let expectedType = try inferExpressionNodeType(module, modules, moduleIndex, arena,
+            tree, expectedInput, inout bindings, inout evidence);
+          try requireSettledExpressionType(module, tree, actualInput, actualType);
+          try requireSettledExpressionType(module, tree, expectedInput, expectedType);
+          try contextualizeNumericOperands(module, tree, actualInput, expectedInput,
+            bindings, inout actualType, inout expectedType);
+          const comparisonType = try binaryOperatorType(module, modules, moduleIndex,
+            tree, index, "==", actualType, expectedType);
+          recordExpressionResolution(modules, moduleIndex, tree, actualInput, actualType, inout evidence);
+          recordExpressionResolution(modules, moduleIndex, tree, expectedInput, expectedType, inout evidence);
+          return "void";
+        }
+      }
+    }
     if (
       tree.nodes[calleeIndex].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeIndex].children.length == 1

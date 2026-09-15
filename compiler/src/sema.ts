@@ -8565,9 +8565,13 @@ function inferTestExpectationCall(
     location: expression.location,
   };
   inferExpression(comparison, locals, globals, structs, enums, fileName, state);
-  const actualType = state.expressionTypes.get(actual.location.offset)
+  // Equality contextualizes numeric literals without changing the types of
+  // already-typed values. Its temporary storage must use that checked context.
+  const actualType = state.numericLiteralTypes.get(actual.location.offset)
+    ?? state.expressionTypes.get(actual.location.offset)
     ?? inferExpression(actual, locals, globals, structs, enums, fileName, state);
-  const expectedType = state.expressionTypes.get(expected.location.offset)
+  const expectedType = state.numericLiteralTypes.get(expected.location.offset)
+    ?? state.expressionTypes.get(expected.location.offset)
     ?? inferExpression(expected, locals, globals, structs, enums, fileName, state);
   requireTestBorrowable(actualType, actual, structs, enums, fileName, state);
   requireTestBorrowable(expectedType, expected, structs, enums, fileName, state);

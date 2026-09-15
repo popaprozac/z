@@ -130,6 +130,13 @@ current test explicitly. Cleanup-bearing expression results must first be bound
 to named storage so their lifetime remains visible. Tests do not acquire an
 implicit user-facing `throws` channel; use `fail` for an unconditional failure.
 
+Numeric literals receive the other operand's numeric type on either side of
+the expectation: `expect(handle).toEqual(1)` and `expect(1).toEqual(handle)`
+both work when `handle` is `u32`. The literal must fit that type. Already-typed
+values are not implicitly converted; comparing `u32` and `i32` bindings still
+requires an explicit numeric conversion. Failure messages preserve the full
+signed or unsigned value, including 64-bit bounds.
+
 Expectation failures preserve deterministic cleanup, return an internal owned
 `String` failure to the runner, and do not prevent later tests from running.
 The first tier keeps `expect` and `fail` directly inside test declarations;

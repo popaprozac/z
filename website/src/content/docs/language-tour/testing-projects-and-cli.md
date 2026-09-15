@@ -45,6 +45,11 @@ it does not introduce implicit deep structural equality. Expectation operands
 are borrowed for the statement. The explicit `in` above is valid but optional,
 just as it is at an ordinary immutable-borrow call site.
 
+Numeric literals take their type from the other operand, in either order:
+`expect(handle).toEqual(1)` works for a `u32` handle, as does
+`expect(1).toEqual(handle)`. Out-of-range literals and mismatched numeric binding
+types remain compile-time errors; expectations do not introduce implicit casts.
+
 Failures preserve deterministic cleanup and do not prevent later tests from
 running. The current public runner supports synchronous tests; async tests and
 reusable assertion helpers need later test-context support.

@@ -3918,7 +3918,7 @@ test("keeps native test expectations in parser and semantic parity", () => {
   );
   assert.match(
     result.stdout,
-    /uses 3 expression native-authoritative contracts/,
+    /uses 9 expression native-authoritative contracts/,
   );
 });
 
@@ -9139,6 +9139,34 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       + "test entry module expectations run ... ok\n"
       + "test result: ok. 2 passed; 0 failed\n",
   );
+
+  for (const [name, status] of [["test-numeric-context", 0], ["test-numeric-context-failure", 1]] as const) {
+    const result = spawnSync(executable, ["test", resolve(projectRoot, `tests/fixtures/${name}.zs`)], {
+      encoding: "utf8", timeout: 30_000,
+    });
+    assert.equal(result.status, status, result.stderr);
+    if (status === 1) {
+      assert.match(result.stdout, /expected 0 to equal 18446744073709551615/);
+      assert.match(result.stdout, /expected 18446744073709551615 to equal 0/);
+      assert.match(result.stdout, /expected 0 to equal -9223372036854775808/);
+    }
+  }
+
+  const invalidExpectationFile = resolve(directory, "invalid-expectation.zs");
+  for (const body of [
+    "const value: u8 = 1; expect(value).toEqual(256);",
+    "const value: u8 = 1; expect(256).toEqual(value);",
+    "const value: u32 = 1; expect(value).toEqual(-1);",
+    "const value: u32 = 1; expect(-1).toEqual(value);",
+    "const value: u32 = 1; const other: i32 = 1; expect(value).toEqual(other);",
+    "const value: u32 = 1; const other: i32 = 1; expect(other).toEqual(value);",
+  ]) {
+    writeFileSync(invalidExpectationFile, `import { expect } from "std/test"; test "invalid comparison" { ${body} }`);
+    const result = spawnSync(executable, ["test", invalidExpectationFile], { encoding: "utf8", timeout: 30_000 });
+    assert.notEqual(result.status, 0, body);
+    assert.match(result.stderr, /invalid-expectation\.zs:\d+:\d+: error/);
+    assert.doesNotMatch(result.stderr, /internal compiler error|\.c:\d+|\[-W/);
+  }
 
   const failingNativeTests = spawnSync(
     executable,

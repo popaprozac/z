@@ -20899,21 +20899,6 @@ function lowerMatchTree(
   return outputIndex;
 }
 
-function standardTestBindingName(
-  in program: Program,
-  in importedName: String
-): String {
-  for (const declaration of program.imports) {
-    if (declaration.header != "std/test") continue;
-    for (const binding of declaration.bindings) {
-      if (binding.importedName == importedName) {
-        return binding.localName.copyBytes(0, binding.localName.byteLength);
-      }
-    }
-  }
-  return "";
-}
-
 function isImportedStandardBinding(
   in program: Program,
   in header: String,
@@ -20966,6 +20951,20 @@ function testExpressionTypeName(
   index: usize,
   in contextualType: String
 ): Option<String> {
+  let literalIndex = index;
+  if (tree.nodes[index].kind == ExpressionKind.unaryExpression
+    && tree.nodes[index].children.length == 1
+    && (tree.nodes[index].value == "+" || tree.nodes[index].value == "-")) {
+    literalIndex = tree.nodes[index].children[0];
+  }
+  if (tree.nodes[literalIndex].kind == ExpressionKind.numberExpression) {
+    // The peer's checked numeric context takes precedence over a literal's
+    // default type, including signed literals and literals on the actual side.
+    if (isIntegerTypeName(contextualType) || contextualType == "f32" || contextualType == "f64") {
+      return Option.some(copy contextualType);
+    }
+    return Option.some(moduleConstantNumericType(tree.nodes[literalIndex].value));
+  }
   match (staticallyResolvedExpressionTypeName(
     program,
     importedTypes,
@@ -20983,26 +20982,6 @@ function testExpressionTypeName(
   }
   if (tree.nodes[index].kind == ExpressionKind.booleanExpression) {
     return Option.some("boolean");
-  }
-  if (tree.nodes[index].kind == ExpressionKind.numberExpression) {
-    if (
-      contextualType == "i8"
-      || contextualType == "i16"
-      || contextualType == "i32"
-      || contextualType == "i64"
-      || contextualType == "isize"
-      || contextualType == "u8"
-      || contextualType == "u16"
-      || contextualType == "u32"
-      || contextualType == "u64"
-      || contextualType == "usize"
-      || contextualType == "f32"
-      || contextualType == "f64"
-    ) return Option.some(contextualType.copyBytes(
-      0,
-      contextualType.byteLength
-    ));
-    return Option.some("i32");
   }
   if (tree.nodes[index].kind == ExpressionKind.callExpression) {
     const resolutionIndex = resolvedCallResolutionIndex(
@@ -25293,11 +25272,9 @@ function lowerStatementCore(
             && tree.nodes[root].children.length == 2
           ) {
             const callee = tree.nodes[root].children[0];
-            const failName = standardTestBindingName(program, "fail");
             if (
-              failName.byteLength > 0
-              && tree.nodes[callee].kind == ExpressionKind.identifierExpression
-              && tree.nodes[callee].value == failName
+              tree.nodes[callee].kind == ExpressionKind.identifierExpression
+              && isImportedStandardBinding(program, "std/test", "fail", tree.nodes[callee].value)
             ) {
               const messageArgument = tree.nodes[root].children[1];
               const messageInput = testBorrowInput(
@@ -25362,12 +25339,10 @@ function lowerStatementCore(
                 && tree.nodes[expectation].children.length == 2
               ) {
                 const expectCallee = tree.nodes[expectation].children[0];
-                const expectName = standardTestBindingName(program, "expect");
                 if (
-                  expectName.byteLength > 0
-                  && tree.nodes[expectCallee].kind
+                  tree.nodes[expectCallee].kind
                     == ExpressionKind.identifierExpression
-                  && tree.nodes[expectCallee].value == expectName
+                  && isImportedStandardBinding(program, "std/test", "expect", tree.nodes[expectCallee].value)
                 ) {
                   const actualArgument =
                     tree.nodes[expectation].children[1];
@@ -25380,7 +25355,7 @@ function lowerStatementCore(
                     tree,
                     expectedArgument
                   );
-                  const actualType = match (testExpressionTypeName(
+                  let actualType = match (testExpressionTypeName(
                     program,
                     importedTypes,
                     evidence,
@@ -25416,6 +25391,13 @@ function lowerStatementCore(
                       throw `native test expectation lowering could not resolve the ${expectedKind} expected value type at ${tree.nodes[expectedInput].line}:${tree.nodes[expectedInput].column}`;
                     }
                   };
+                  match (testExpressionTypeName(
+                    program, importedTypes, evidence, arena, ownerName,
+                    tree, actualInput, expectedType
+                  )) {
+                    some(name) => actualType = move name;
+                    none => {}
+                  }
                   let actualValueType = actualType.copyBytes(
                     0,
                     actualType.byteLength
@@ -25482,12 +25464,13 @@ function lowerStatementCore(
                   ) {
                     throw `native test failure formatting does not support ${actualValueType} yet`;
                   }
-                  const actual = try lowerExpression(
+                  const actual = try lowerExpressionExpected(
                     program,
                     importedTypes,
                     evidence,
                     tree,
                     actualInput,
+                    actualType,
                     inout expressions
                   );
                   const expected = try lowerExpressionExpected(
@@ -25496,7 +25479,7 @@ function lowerStatementCore(
                     evidence,
                     tree,
                     expectedInput,
-                    actualType,
+                    expectedType,
                     inout expressions
                   );
                   let labels = Array<String>();

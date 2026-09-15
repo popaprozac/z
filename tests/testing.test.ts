@@ -10,14 +10,53 @@ import {
   hover,
   hostToolchainTest,
   mkdtempSync,
+  projectRoot,
   readFileSync,
   resolve,
+  rmSync,
   semanticTokens,
   semanticTokenTypes,
   spawnSync,
   test,
   writeFileSync,
 } from "./support/bootstrap.ts";
+
+hostToolchainTest("stores numeric expectation literals in their checked comparison types", () => {
+  const directory = mkdtempSync("/tmp/z-test-numeric-context-");
+  try {
+    for (const [name, status] of [["test-numeric-context", 0], ["test-numeric-context-failure", 1]] as const) {
+      const file = resolve(projectRoot, `tests/fixtures/${name}.zs`);
+      const artifact = compileTestsToNative(readFileSync(file, "utf8"), file);
+      const executable = resolve(directory, name);
+      const compiled = spawnSync("clang", ["-x", "c", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+        "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        input: artifact.source, encoding: "utf8", timeout: 30_000,
+      });
+      assert.equal(compiled.status, 0, compiled.stderr);
+      const result = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+      assert.equal(result.status, status, result.stderr);
+      if (status === 1) {
+        assert.match(result.stdout, /expected 0 to equal 18446744073709551615/);
+        assert.match(result.stdout, /expected 18446744073709551615 to equal 0/);
+        assert.match(result.stdout, /expected 0 to equal -9223372036854775808/);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("numeric expectations reject out-of-range literals and mismatched typed values in Z", () => {
+  for (const body of [
+    "const value: u8 = 1; expect(value).toEqual(256);",
+    "const value: u8 = 1; expect(256).toEqual(value);",
+    "const value: u32 = 1; expect(value).toEqual(-1);",
+    "const value: u32 = 1; expect(-1).toEqual(value);",
+    "const value: u32 = 1; const other: i32 = 1; expect(value).toEqual(other);",
+    "const value: u32 = 1; const other: i32 = 1; expect(other).toEqual(value);",
+  ]) {
+    const source = `import { expect } from "std/test"; test "invalid comparison" { ${body} }`;
+    assert.throws(() => compileTestsToNative(source, "/tmp/invalid-numeric-expectation.zs"), undefined, body);
+  }
+});
 
 test("parses top-level tests as hidden void functions", () => {
   const fileName = "/tmp/z-test-syntax.zs";

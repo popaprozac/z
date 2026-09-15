@@ -991,6 +991,64 @@ test("runs local, namespace-imported, and selectively aliased module constants",
   }
 });
 
+test("preserves module constant String receivers through imports, shadowing, and async frames", () => {
+  const directory = mkdtempSync("/tmp/z-module-constant-methods-");
+  const file = resolve(directory, "main.zs");
+  try {
+    writeFileSync(resolve(directory, "values.zs"), `export const TABLE: String = "abc";`);
+    const source = `
+      import values from "./values.zs";
+      import { TABLE as selected } from "./values.zs";
+      import { scheduler } from "std/async";
+      const TABLE: String = "abc";
+      const INFERRED = "abc";
+      function inspect(): i32 {
+        if (TABLE.byteAt(0) != 97) return 1;
+        if (INFERRED.byteAt(1) != 98) return 2;
+        if (values.TABLE.byteAt(2) != 99) return 3;
+        if (selected.byteAt(0) != 97) return 4;
+        if (TABLE.byteLength != 3) return 5;
+        const copied = selected.copyBytes(1, 3);
+        if (copied != "bc") return 6;
+        const TABLE: String = "xyz";
+        if (TABLE.byteAt(0) != 120) return 7;
+        return 0;
+      }
+      async function main(): i32 {
+        if (inspect() != 0) return 10;
+        if (TABLE.byteAt(0) != 97) return 11;
+        await scheduler.yield();
+        if (values.TABLE.byteAt(1) != 98) return 12;
+        const copied = TABLE.copyBytes(0, 2);
+        if (copied != "ab") return 13;
+        return 0;
+      }
+    `;
+    writeFileSync(file, source);
+    const generated = compileToC(source, file);
+    assert.match(generated, /z_string_byte_at\(TABLE,/);
+    assert.match(generated, /z_string_byte_at\(__z_module_\d+_TABLE,/);
+    assert.doesNotMatch(generated, /(?<![_a-zA-Z])byteAt\(/);
+    const run = (command: string, args: string[]) => spawnSync(command, args, {
+      encoding: "utf8", timeout: 180_000, maxBuffer: 32 * 1024 * 1024,
+    });
+    const stage0 = run(process.execPath, [cli, "run", file]);
+    assert.equal(stage0.status, 0, stage0.stderr);
+    const parity = run(process.execPath, [cli, "check", file, "--native-frontend"]);
+    assert.equal(parity.status, 0, parity.stderr);
+    const native = run(process.execPath, [cli, "self-host-emit", file]);
+    assert.equal(native.status, 0, native.stderr);
+    const executable = resolve(directory, "native");
+    const compiled = spawnSync("clang", ["-x", "c", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-fsanitize=undefined", "-fno-sanitize-recover=all", "-pthread", "-", "-o", executable], {
+      input: native.stdout, encoding: "utf8", timeout: 30_000,
+    });
+    assert.equal(compiled.status, 0, compiled.stderr);
+    const execution = run(executable, []);
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
 test("requires exported module constants to state their public type", () => {
   const source = "export const ANSWER = 42;";
   const diagnostic = diagnostics(source, "/tmp/z-module-constant-inferred-export.zs")[0];
