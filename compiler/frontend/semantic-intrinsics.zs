@@ -248,6 +248,30 @@ export function collectionHasLength(in ownerType: String): boolean {
   };
 }
 
+export function floatBitsSignature(in floatType: String, fromBits: boolean): ModuleFunctionSignature {
+  const bitsType = floatType == "f32" ? "u32" : "u64";
+  let parameterModes = Array<String>();
+  let parameterTypes = Array<String>();
+  if (fromBits) {
+    parameterModes.push("value");
+    parameterTypes.push(copy bitsType);
+  }
+  return ModuleFunctionSignature({
+    asynchronous: false,
+    executorAffinity: "",
+    threadContract: "",
+    typeParameters: Array<String>(),
+    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+    parameterModes,
+    parameterTypes,
+    viewParameter: Option<usize>.none,
+    invalidatesParameters: Array<usize>(),
+    invalidatesLifetimes: Array<String>(),
+    returnType: fromBits ? floatType.copyBytes(0, floatType.byteLength) : bitsType,
+    errorType: "",
+  });
+}
+
 export function collectionMethodSignature(
   in ownerType: String,
   in methodName: String
@@ -262,6 +286,9 @@ export function collectionMethodSignature(
   const sourceOwnerType = sourceCollectionTypeName(in ownerType);
   if (sourceOwnerType != ownerType) {
     return collectionMethodSignature(sourceOwnerType, methodName);
+  }
+  if ((ownerType == "f32" || ownerType == "f64") && methodName == "toBits") {
+    return Option.some(floatBitsSignature(ownerType, false));
   }
   let collectionOwnerType = ownerType.copyBytes(0, ownerType.byteLength);
   let readonlyCollection = false;

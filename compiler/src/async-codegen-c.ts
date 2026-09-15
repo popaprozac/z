@@ -49,6 +49,7 @@ import {
   functionValueLiteral,
   functionAdapterName,
   generateFunctionTypeParameters,
+  generateNumericLiteral,
   generateObjCBlockArgument,
   generateObjCMessage,
   semanticInfoUsesForeignRuntimeEntry,
@@ -7598,7 +7599,7 @@ function emitFrameExpressionInner(
     case "raw":
       unsupported(fileName, expression.location, "raw native expressions are not executable in async frames yet");
     case "number":
-      return expression.value;
+      return generateNumericLiteral(expression.value, plan.types.semanticInfo.numericLiteralTypes.get(expression.location.offset));
     case "boolean":
       return expression.value ? "true" : "false";
     case "null":
@@ -7945,7 +7946,10 @@ function emitFrameExpressionInner(
       }
       const numericConversion = plan.types.semanticInfo.numericConversions.get(expression.location.offset);
       if (numericConversion) {
-        const value = emitFrameExpression(expression.arguments[0], plan, fileName);
+        const operand = numericConversion.bitReinterpretation === "toBits" && expression.callee.kind === "member"
+          ? expression.callee.object : expression.arguments[0];
+        const value = emitFrameExpression(operand, plan, fileName);
+        if (numericConversion.bitReinterpretation) return `z_bits_${numericConversion.sourceType}_to_${numericConversion.targetType}(${value})`;
         const targetType = cFrameType(numericConversion.targetType, plan.types);
         return numericConversion.checked
           ? `z_checked_convert_${numericConversion.sourceType}_to_${numericConversion.targetType}(${value})`

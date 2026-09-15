@@ -3007,7 +3007,7 @@ test("suspends and resumes async closures on one dedicated native thread", () =>
   assert.match(artifact.source, /frame->task\.completion_executor/);
   assert.match(artifact.source, /z_async_enqueue_from_thread\(waiter->executor, waiter\)/);
   assert.match(artifact.source, /z_async_cancel_from_thread\(frame->task\.completion_executor/);
-  assert.match(artifact.source, /z_async_schedule_delay\(&frame->task, 1\)/);
+  assert.match(artifact.source, /z_async_schedule_delay\(&frame->task, 1ULL\)/);
   assert.match(artifact.source, /while \(!task->native_body_completed\)/);
 
   const workerOffset = source.indexOf("worker =") + 1;

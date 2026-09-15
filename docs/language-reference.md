@@ -836,6 +836,40 @@ C enum may convert outward through its ABI integer representation; ordinary
 assignment remains nominal, and an arbitrary integer cannot be constructed
 back into the enum.
 
+### Floating-point bit representations
+
+`toBits()` and `fromBits()` preserve the **representation**, not the mathematical
+value. They are intrinsic methods and require no import:
+
+```zs
+const value: f64 = 1.0;
+const bits = value.toBits(); // u64: 0x3FF0_0000_0000_0000
+const restored = f64.fromBits(bits);
+const negativeZero = f32.fromBits(0x8000_0000);
+const sign = negativeZero.toBits(); // u32
+```
+
+| Operation | Input | Output |
+|---|---|---|
+| `value.toBits()` | `f32` | `u32` |
+| `f32.fromBits(bits)` | `u32` | `f32` |
+| `value.toBits()` | `f64` | `u64` |
+| `f64.fromBits(bits)` | `u64` | `f64` |
+
+All IEEE 754 patterns are accepted, including signed zero, subnormals,
+infinities, and NaN payloads. A direct round trip preserves the bits; subsequent
+floating-point arithmetic is **not** promised to preserve NaN payloads.
+`fromBits` supplies the unsigned width to integer literals. Already-typed
+arguments must have the matching unsigned type; there is no implicit widening.
+
+The operand is evaluated once and not consumed. These operations need neither
+`unsafe` nor `try`, allocate nothing, and lower through alias-safe, fixed-size
+representation copies that optimizing native compilers can remove. They work
+in synchronous code and async frames. They do not perform byte-order conversion
+or define a wire format, and cannot reinterpret pointers, structs, enums,
+classes, or booleans. General bit casting and other bit utilities remain separate
+future design work.
+
 ## Structs, classes, and traits
 
 `struct` declares a value type. It may contain fields, instance methods, static

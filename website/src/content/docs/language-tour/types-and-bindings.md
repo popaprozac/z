@@ -193,6 +193,29 @@ const pixels = u32(math.trunc(measuredWidth));
 This is intentionally different from TypeScript's `as`: a Z type construction
 performs a real conversion rather than merely asserting a static interpretation.
 
+## Floating-point bits
+
+Use `toBits()` / `fromBits()` when you want the exact representation rather than
+a numeric conversion. No import is required:
+
+```zs
+const value: f64 = 1.0;
+const bits = value.toBits(); // u64: 0x3FF0_0000_0000_0000
+const restored = f64.fromBits(bits);
+const negativeZero = f32.fromBits(0x8000_0000);
+const sign = negativeZero.toBits(); // u32
+```
+
+The pairs are `f32` ↔ `u32` and `f64` ↔ `u64`. `fromBits` contextually types
+integer literals; an already-typed argument must have exactly the matching
+unsigned type. All IEEE 754 patterns are valid, including infinities and NaNs.
+A direct round trip preserves NaN payloads and signed zero; arithmetic need
+not preserve NaN payloads.
+
+These methods evaluate their input once without consuming it, allocating, or
+requiring `unsafe`. They work in async frames too. They are not endian conversion,
+serialization, or general-purpose casts of objects and pointers.
+
 :::note[Cost model]
 Primitive values normally use their direct native representation. Fixed arrays
 store their elements inline. `Array<T>` owns growable storage, `String` owns

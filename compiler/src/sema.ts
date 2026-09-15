@@ -320,6 +320,8 @@ export type IntegerOperation = {
 };
 
 export type NumericConversion = {
+  /** Exact representation transfer, distinct from value-preserving numeric construction. */
+  readonly bitReinterpretation?: "toBits" | "fromBits";
   readonly sourceType: string;
   readonly sourceDisplayType?: string;
   readonly targetType: string;
@@ -11003,6 +11005,25 @@ function inferExpressionInner(
         state,
       );
       if (testFailure) return testFailure;
+      if (expression.callee.kind === "member"
+        && expression.callee.property === "fromBits"
+        && expression.callee.object.kind === "identifier"
+        && floatTypes.has(expression.callee.object.name)) {
+        rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+        const targetType = expression.callee.object.name;
+        const sourceType = targetType === "f32" ? "u32" : "u64";
+        if (expression.arguments.length !== 1) {
+          throw new DiagnosticError(fileName, expression.location,
+            `${targetType}.fromBits expects exactly 1 ${sourceType} argument, received ${expression.arguments.length}`);
+        }
+        const argument = expression.arguments[0];
+        const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+        requireAssignable(sourceType, actual, argument, fileName, structs, enums, state);
+        state.numericConversions.set(expression.location.offset, {
+          sourceType, targetType, checked: false, bitReinterpretation: "fromBits",
+        });
+        return targetType;
+      }
       if (expression.callee.kind === "identifier") {
         if (integerTypes.has(expression.callee.name) || floatTypes.has(expression.callee.name)) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -13275,6 +13296,19 @@ function inferExpressionInner(
           return signature.result;
         }
         const integerReceiverType = canonicalType(receiverValueType, state.foreignNamedTypes);
+        if (isFloatType(integerReceiverType) && expression.callee.property === "toBits") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.arguments.length !== 0) {
+            throw new DiagnosticError(fileName, expression.location,
+              `${integerReceiverType}.toBits expects 0 arguments, received ${expression.arguments.length}`);
+          }
+          const targetType = integerReceiverType === "f32" ? "u32" : "u64";
+          requireAssignable(integerReceiverType, receiverType, expression.callee.object, fileName, structs, enums, state);
+          state.numericConversions.set(expression.location.offset, {
+            sourceType: integerReceiverType, targetType, checked: false, bitReinterpretation: "toBits",
+          });
+          return targetType;
+        }
         const integerMethod = isIntegerType(integerReceiverType)
           ? integerMethodKind(expression.callee.property)
           : null;

@@ -68,6 +68,7 @@ import {
 import {
   collectionMethodMutates,
   collectionMethodSignature,
+  floatBitsSignature,
   iterationElementType,
   iterationBindingIsBorrowed,
   iterationObjectFieldType,
@@ -9098,6 +9099,24 @@ function inferExpressionNodeType(
         const memberName = identifierLookupName(
           tree.nodes[calleeIndex].value
         );
+        if (memberName == "fromBits") {
+          const namespaceType = transparentTypeName(modules, moduleIndex, namespaceName);
+          if (isIntegerTypeName(namespaceType) || namespaceType == "boolean") {
+            throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+              "fromBits is available only on f32 and f64; use f32.fromBits(u32) or f64.fromBits(u64)",
+              tree.nodes[calleeIndex].line, tree.nodes[calleeIndex].column);
+          }
+          if (namespaceType == "f32" || namespaceType == "f64") {
+            const signature = floatBitsSignature(namespaceType, true);
+            const argumentNodes = callArgumentNodes(children);
+            const substitutions = Array<NativeValueBinding>();
+            return try inferSignatureCallType(
+              module, modules, moduleIndex, arena, tree, calleeIndex, index,
+              argumentNodes, inout bindings, "", "", `${namespaceType}.fromBits`,
+              signature, substitutions, 0, 0, "value", inout evidence
+            );
+          }
+        }
         if (
           memberName == "spawn"
           && importedStandardType(
@@ -10303,6 +10322,17 @@ function inferExpressionNodeType(
           none => {}
         }
         const readonlyOwnerType = transparentTypeName(modules, moduleIndex, ownerType);
+        if (methodName == "toBits" && (readonlyOwnerType == "f32" || readonlyOwnerType == "f64")) {
+          ownerType = copy readonlyOwnerType;
+        }
+        if ((methodName == "toBits" && (isIntegerTypeName(readonlyOwnerType) || readonlyOwnerType == "boolean"))
+          || (methodName == "fromBits" && (isIntegerTypeName(readonlyOwnerType) || readonlyOwnerType == "f32" || readonlyOwnerType == "f64"))) {
+          const message = methodName == "toBits" ? "toBits requires an f32 or f64 receiver"
+            : "fromBits is a static float method; use f32.fromBits(u32) or f64.fromBits(u64)";
+          throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+            message,
+            tree.nodes[calleeIndex].line, tree.nodes[calleeIndex].column);
+        }
         if (ownerType != readonlyOwnerType && collectionHasLength(readonlyOwnerType)) {
           ownerType = readonlyOwnerType.copyBytes(0, readonlyOwnerType.byteLength);
         }

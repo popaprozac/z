@@ -455,7 +455,7 @@ export function generateC(
     lines.push("#include <stdio.h>");
     includedHeaders.add("stdio.h");
   }
-  if (usesString) {
+  if (usesString || [...semanticInfo.numericConversions.values()].some(conversion => conversion.bitReinterpretation)) {
     lines.push("#include <string.h>");
     includedHeaders.add("string.h");
   }
@@ -11440,7 +11440,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       const numericConversion = context.semanticInfo.numericConversions.get(expression.location.offset);
       if (numericConversion) {
-        const value = generateExpression(expression.arguments[0], context);
+        const operand = numericConversion.bitReinterpretation === "toBits" && expression.callee.kind === "member"
+          ? expression.callee.object : expression.arguments[0];
+        const value = generateExpression(operand, context);
+        if (numericConversion.bitReinterpretation) return `${numericConversionName(numericConversion)}(${value})`;
         const targetType = primitiveTypeNames[numericConversion.targetType];
         if (!targetType) throw new Error(`unsupported numeric conversion target ${JSON.stringify(numericConversion.targetType)}`);
         const sourceType = primitiveTypeNames[numericConversion.sourceType];
@@ -12947,8 +12950,8 @@ function generateIntegerRuntime(
     .flatMap((operation) => [generateIntegerOperation(operation), ""]);
   const uniqueConversions = new Map<string, NumericConversion>();
   for (const conversion of conversions.values()) {
-    if (!conversion.checked) continue;
-    uniqueConversions.set(`${conversion.sourceType}:${conversion.targetType}`, conversion);
+    if (!conversion.checked && !conversion.bitReinterpretation) continue;
+    uniqueConversions.set(numericConversionName(conversion), conversion);
   }
   const generatedConversions = [...uniqueConversions.values()]
     .sort((left, right) => numericConversionName(left).localeCompare(numericConversionName(right)))
@@ -12957,6 +12960,7 @@ function generateIntegerRuntime(
 }
 
 function numericConversionName(conversion: NumericConversion): string {
+  if (conversion.bitReinterpretation) return `z_bits_${conversion.sourceType}_to_${conversion.targetType}`;
   return `z_checked_convert_${conversion.sourceType}_to_${conversion.targetType}`;
 }
 
@@ -12965,6 +12969,16 @@ function generateNumericConversion(conversion: NumericConversion): string {
   const targetCType = primitiveTypeNames[conversion.targetType];
   if (!sourceCType || !targetCType) {
     throw new Error(`unsupported numeric conversion ${conversion.sourceType} to ${conversion.targetType}`);
+  }
+  if (conversion.bitReinterpretation) {
+    return [
+      `static Z_UNUSED_FUNCTION inline ${targetCType} ${numericConversionName(conversion)}(${sourceCType} value) {`,
+      `  ${targetCType} result;`,
+      `  _Static_assert(sizeof(result) == sizeof(value), "float bit width must match");`,
+      `  memcpy(&result, &value, sizeof(result));`,
+      `  return result;`,
+      "}",
+    ].join("\n");
   }
   const sourceIsFloat = conversion.sourceType === "f32" || conversion.sourceType === "f64";
   const targetIsFloat = conversion.targetType === "f32" || conversion.targetType === "f64";
@@ -13171,7 +13185,7 @@ function generateIntegerOperation(operation: IntegerOperation): string {
   ].join("\n");
 }
 
-function generateNumericLiteral(value: string, type: string | undefined): string {
+export function generateNumericLiteral(value: string, type: string | undefined): string {
   const isFloating = /[.eE]/.test(value);
   if (type === "f32") return `${value}${isFloating ? "F" : ".0F"}`;
   if (type === "f64") return isFloating ? value : `${value}.0`;

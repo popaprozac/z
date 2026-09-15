@@ -26,6 +26,7 @@ import {
   lowerProgram,
   lowerTestModules,
   loweredTypeIdentity,
+  viewPayloadLoadsAsValue,
   decodedObjCProtocolIdentity,
   asyncFrameLocalRoots,
 } from "./lowering-ir.zs";
@@ -52,23 +53,6 @@ function labelsContain(in labels: Array<String>, in candidate: String): boolean 
 
 function isNicheViewOption(in name: String): boolean {
   return stringStartsWith(name, "__z_NicheViewOption_");
-}
-
-function viewPayloadLoadsAsValue(in type: LoweredType): boolean {
-  return type.kind == LoweredTypeKind.booleanType
-    || type.kind == LoweredTypeKind.i8Type
-    || type.kind == LoweredTypeKind.i16Type
-    || type.kind == LoweredTypeKind.i32Type
-    || type.kind == LoweredTypeKind.i64Type
-    || type.kind == LoweredTypeKind.u8Type
-    || type.kind == LoweredTypeKind.u16Type
-    || type.kind == LoweredTypeKind.u32Type
-    || type.kind == LoweredTypeKind.u64Type
-    || type.kind == LoweredTypeKind.isizeType
-    || type.kind == LoweredTypeKind.usizeType
-    || type.kind == LoweredTypeKind.f32Type
-    || type.kind == LoweredTypeKind.f64Type
-    || type.kind == LoweredTypeKind.foreignEnumType;
 }
 
 function cType(in type: LoweredType): String throws String {
@@ -5646,6 +5630,20 @@ function appendExpression(
     output.append(declaration.expressions[index].value);
     output.append("(");
     try appendExpression(inout output, declaration, operand);
+    output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.floatBitReinterpretation) {
+    if (declaration.expressions[index].children.length != 1 || declaration.expressions[index].labels.length != 1) {
+      throw "native C emission received malformed float bit reinterpretation";
+    }
+    output.append("z_bits_");
+    output.append(declaration.expressions[index].labels[0]);
+    output.append("_to_");
+    output.append(declaration.expressions[index].value);
+    output.append("(");
+    const argument = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, argument);
     output.append(")");
     return;
   }
@@ -23550,6 +23548,20 @@ function appendCheckedNumericConversionRuntime(
   emitted.push("u64:usize");
   for (const declaration of program.functions) {
     for (const expression of declaration.expressions) {
+      if (expression.kind == LoweredExpressionKind.floatBitReinterpretation && expression.labels.length == 1) {
+        const source = expression.labels[0].copyBytes(0, expression.labels[0].byteLength);
+        const target = expression.value.copyBytes(0, expression.value.byteLength);
+        const key = `bits:${source}:${target}`;
+        if (labelsContain(emitted, key)) continue;
+        emitted.push(key);
+        const sourceType = try integerCType(source);
+        const targetType = try integerCType(target);
+        output.append(`static inline __attribute__((unused)) ${targetType} z_bits_${source}_to_${target}(${sourceType} value) {\n`);
+        output.append(`  ${targetType} result;\n`);
+        output.append("  _Static_assert(sizeof(result) == sizeof(value), \"float bit width must match\");\n");
+        output.append("  memcpy(&result, &value, sizeof(result));\n  return result;\n}\n\n");
+        continue;
+      }
       if (
         expression.kind != LoweredExpressionKind.integerConversion
         || expression.labels.length != 1

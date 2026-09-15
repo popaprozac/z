@@ -9356,6 +9356,28 @@ the parameter's release. Type-aware retained-identity handling now preserves
 that release. Generated-translation-unit allocation accounting catches this
 even though observer destruction and returned values looked correct.
 
+## ZJS representation probe: numeric bits are not ownership casts
+
+The independent ZJS rewrite requested readable bit patterns and float/integer
+representation transfer for a compact value representation. Hexadecimal/binary
+literals and digit separators removed the spelling friction. The approved
+`f32`/`f64` `toBits()` / `fromBits()` pairing removes the raw-C requirement for
+representation transfer without introducing a general pointer/object cast.
+
+The executable [float-bits example](../examples/language/basics/float-bits.zs)
+checks both widths, signed zero, subnormals, infinities, NaN payloads, and
+single evaluation. These are copied primitives; no owner moves or new aliasing
+permission is involved. The tests also combine the methods with scoped scalar
+views and async suspension in both compiler paths.
+
+That composition exposed existing emitter omissions: high-bit unsigned async
+literals needed the same C suffixes as synchronous literals; primitive native
+view projections needed the existing address/load lowering; and a borrowed
+float method receiver needed an ordinary value load. These are implementation
+gaps, not new borrowing rules. General raw-pointer storage, dispatch strategy,
+math API breadth, and other bit operations remain independent follow-ups; this
+probe does not establish the performance of a complete Z-authored JS engine.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

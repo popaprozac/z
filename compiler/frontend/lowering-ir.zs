@@ -51,6 +51,7 @@ import {
 import {
   fixedArrayShape,
   genericTypeShape,
+  isIntegerTypeName,
   nativeFunctionSignature,
   nativeObjCObjectTypeName,
   nullableTargetType,
@@ -249,6 +250,7 @@ export enum LoweredExpressionKind {
   checkedShiftRightInteger,
   checkedNegateInteger,
   integerConversion,
+  floatBitReinterpretation,
   wrappingAddInteger,
   wrappingSubtractInteger,
   wrappingMultiplyInteger,
@@ -4800,6 +4802,25 @@ function moduleTypeRetainsCapturedIdentity(in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.taskScopeType
     || type.kind == LoweredTypeKind.taskControlType
     || type.kind == LoweredTypeKind.functionType;
+}
+
+// Shared with C emission: these borrowed match payloads are materialized as
+// loaded scalars even when their semantic type remains a view.
+export function viewPayloadLoadsAsValue(in type: LoweredType): boolean {
+  return type.kind == LoweredTypeKind.booleanType
+    || type.kind == LoweredTypeKind.i8Type
+    || type.kind == LoweredTypeKind.i16Type
+    || type.kind == LoweredTypeKind.i32Type
+    || type.kind == LoweredTypeKind.i64Type
+    || type.kind == LoweredTypeKind.u8Type
+    || type.kind == LoweredTypeKind.u16Type
+    || type.kind == LoweredTypeKind.u32Type
+    || type.kind == LoweredTypeKind.u64Type
+    || type.kind == LoweredTypeKind.isizeType
+    || type.kind == LoweredTypeKind.usizeType
+    || type.kind == LoweredTypeKind.f32Type
+    || type.kind == LoweredTypeKind.f64Type
+    || type.kind == LoweredTypeKind.foreignEnumType;
 }
 
 function threadShareablePrimitive(in name: String): boolean {
@@ -12141,8 +12162,12 @@ function lowerExpressionContextual(
         && operandType.kind != LoweredTypeKind.arrayType
         && operandType.kind != LoweredTypeKind.sliceType
         && operandType.kind != LoweredTypeKind.stringType
+        && !isIntegerTypeName(operandTypeName)
+        && operandType.kind != LoweredTypeKind.f32Type
+        && operandType.kind != LoweredTypeKind.f64Type
+        && operandType.kind != LoweredTypeKind.booleanType
       ) {
-        throw `native view lowering currently supports value-struct, enum, fixed-array, Array, Slice, and String projections, found ${operandTypeName}`;
+        throw `native view lowering currently supports primitive, value-struct, enum, fixed-array, Array, Slice, and String projections, found ${operandTypeName}`;
       }
       kind = LoweredExpressionKind.viewProjection;
     }
@@ -14561,6 +14586,47 @@ function lowerExpressionContextual(
       && tree.nodes[calleeInput].children.length == 1
     ) {
       const receiverInput = tree.nodes[calleeInput].children[0];
+      const bitMethod = view tree.nodes[calleeInput].value;
+      let bitSource = "";
+      let bitTarget = "";
+      let bitOperand = receiverInput;
+      if (bitMethod == "fromBits" && tree.nodes[index].children.length == 2
+        && tree.nodes[receiverInput].kind == ExpressionKind.identifierExpression) {
+        const namedType = attempt lowerModuleTypeName(program, importedTypes, tree.nodes[receiverInput].value);
+        match (namedType) {
+          success(type) => {
+            if (type.kind == LoweredTypeKind.f32Type || type.kind == LoweredTypeKind.f64Type) {
+              bitTarget = type.kind == LoweredTypeKind.f32Type ? "f32" : "f64";
+              bitSource = bitTarget == "f32" ? "u32" : "u64";
+              bitOperand = tree.nodes[index].children[1];
+            }
+          }
+          failure(_) => {}
+        }
+      } else if (bitMethod == "toBits" && tree.nodes[index].children.length == 1) {
+        match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+          some(name) => {
+            const receiverType = try lowerModuleTypeName(program, importedTypes, name);
+            const valueType = loweredTypeIdentity(receiverType);
+            if (valueType == "f32" || valueType == "f64") {
+              bitSource = valueType;
+              bitTarget = bitSource == "f32" ? "u32" : "u64";
+            }
+          }
+          none => {}
+        }
+      }
+      if (bitTarget.byteLength > 0) {
+        const operand = try lowerExpressionExpected(
+          program, importedTypes, evidence, tree, bitOperand, bitSource, inout output
+        );
+        let children = Array<usize>();
+        children.push(operand);
+        let labels = Array<String>();
+        labels.push(bitSource);
+        return pushExpression(inout output, LoweredExpressionKind.floatBitReinterpretation,
+          bitTarget, children, labels);
+      }
       if (
         tree.nodes[index].children.length == 2
         && (
@@ -18164,6 +18230,25 @@ function lowerExpressionExpected(
   in expectedTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  if (isIntegerTypeName(expectedTypeName) || expectedTypeName == "f32"
+    || expectedTypeName == "f64" || expectedTypeName == "boolean") {
+    match (loweringExpressionTypeName(program, evidence, tree, index)) {
+      some(actualType) => {
+        if (stringStartsWith(actualType, "view ")) {
+          const projectedType = actualType.copyBytes(5, actualType.byteLength);
+          if (projectedType == expectedTypeName) {
+            const pointer = try lowerExpression(program, importedTypes, evidence, tree, index, inout output);
+            let children = Array<usize>();
+            children.push(pointer);
+            let labels = Array<String>();
+            labels.push("primitive-view-load");
+            return pushExpression(inout output, LoweredExpressionKind.unaryOperation, "*", children, labels);
+          }
+        }
+      }
+      none => {}
+    }
+  }
   match (intrinsicOptionPayloadName(expectedTypeName)) {
     some(payload) => return try lowerExpressionExpected(
       program,
@@ -20482,6 +20567,25 @@ function rewriteLoweredMatchPayloadBinding(
     }
     expressionIndex = expressionIndex + 1;
   }
+  // Ordinary borrowed match arms already materialize cleanup-free scalar
+  // payloads by value. Their semantic view must not add a second dereference.
+  // Only payloads actually emitted as pointers retain the load.
+  if (!pointerPayload) {
+    let useIndex = expressionStart;
+    while (useIndex < expressions.length) {
+      if (expressions[useIndex].kind == LoweredExpressionKind.unaryOperation
+        && expressionHasLabel(expressions[useIndex], "primitive-view-load")
+        && expressions[useIndex].children.length == 1) {
+        const child = expressions[useIndex].children[0];
+        if (expressions[child].kind == LoweredExpressionKind.localValue
+          && expressions[child].value == emittedBinding) {
+          expressions[useIndex].kind = LoweredExpressionKind.moveValue;
+          expressions[useIndex].value = "";
+        }
+      }
+      useIndex = useIndex + 1;
+    }
+  }
 }
 
 function lowerMatchTree(
@@ -20671,8 +20775,9 @@ function lowerMatchTree(
     }
     let pointerPayload = nicheViewOption;
     match (in payloadType) {
-      some(type) => if (type.kind == LoweredTypeKind.classType) {
-        pointerPayload = true;
+      some(type) => {
+        if (viewPayloadLoadsAsValue(type)) pointerPayload = false;
+        else if (type.kind == LoweredTypeKind.classType) pointerPayload = true;
       }
       none => {}
     }
@@ -27506,8 +27611,9 @@ function lowerMainDelayMatchTree(
       "__z_NicheViewOption_"
     );
     match (in payloadType) {
-      some(type) => if (type.kind == LoweredTypeKind.classType) {
-        pointerPayload = true;
+      some(type) => {
+        if (viewPayloadLoadsAsValue(type)) pointerPayload = false;
+        else if (type.kind == LoweredTypeKind.classType) pointerPayload = true;
       }
       none => {}
     }

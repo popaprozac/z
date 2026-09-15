@@ -5499,6 +5499,9 @@ function memberCompletions(
   receiverStart: number,
   receiverDot: number,
 ): CompletionItem[] {
+  if (receiverText === "f32" || receiverText === "f64") {
+    return filterCompletions(floatBitsCompletions(receiverText, true), prefix, 1000);
+  }
   if (receiverText === "Option" || /^Option<[^<>]+>$/.test(receiverText)) {
     const explicit = receiverText.startsWith("Option<") ? receiverText.slice(7, -1) : "T";
     return filterCompletions([
@@ -5691,6 +5694,10 @@ function memberCompletions(
   }
 
   const receiverOffset = receiverStart;
+  const recoveredNumericType = declaredBindingType(source, receiverText, receiverOffset);
+  if (recoveredNumericType === "f32" || recoveredNumericType === "f64") {
+    return filterCompletions(floatBitsCompletions(recoveredNumericType, false), prefix, 1000);
+  }
   const sourceBinding = localSourceBinding(importContext, receiverText);
   const sourceConstant = sourceBinding
     ? sourceExportDeclaration(sourceBinding.module, sourceBinding.importedName)
@@ -5728,6 +5735,9 @@ function memberCompletions(
   }
   const fullContext = safeAnalysis(source, fileName);
   const directReceiver = fullContext ? resolveReceiver(fullContext, receiverText, receiverOffset) : null;
+  if (directReceiver?.kind === "float") {
+    return filterCompletions(floatBitsCompletions(directReceiver.type, false), prefix, 1000);
+  }
   if (directReceiver?.kind === "objc" && fullContext) {
     return filterCompletions(objcCompletions(directReceiver.declaration, directReceiver.instance, fullContext, offset), prefix, 1000);
   }
@@ -5871,6 +5881,9 @@ function memberCompletions(
     }
     if (isIntegerSourceType(iterationBinding.type)) {
       return filterCompletions(integerCompletions(iterationBinding.type), prefix, 1000);
+    }
+    if (iterationBinding.type === "f32" || iterationBinding.type === "f64") {
+      return filterCompletions(floatBitsCompletions(iterationBinding.type, false), prefix, 1000);
     }
     const aggregate = iterationContext.program.structs.find((item) => item.name === iterationBinding.type);
     if (aggregate) {
@@ -6150,6 +6163,9 @@ function memberCompletions(
   }
   if (resolved?.kind === "integer") {
     return filterCompletions(integerCompletions(resolved.type), prefix, 1000);
+  }
+  if (resolved?.kind === "float") {
+    return filterCompletions(floatBitsCompletions(resolved.type, false), prefix, 1000);
   }
   if (resolved?.kind === "weak") {
     return filterCompletions([{
@@ -7178,6 +7194,7 @@ type ResolvedReceiver =
   | { readonly kind: "foreignRecord"; readonly declaration: Extract<ForeignNamedType, { kind: "record" }> }
   | { readonly kind: "foreignValue"; readonly declaration: Extract<ForeignNamedType, { kind: "value" }> }
   | { readonly kind: "integer"; readonly type: string }
+  | { readonly kind: "float"; readonly type: string }
   | { readonly kind: "array"; readonly type: string }
   | { readonly kind: "string" }
   | { readonly kind: "textBuffer" }
@@ -7428,6 +7445,7 @@ function resolveReceiverType(context: AnalyzedSource, type: string): ResolvedRec
   const task = parseTaskType(receiverType);
   if (task) return { kind: "task", successType: task.successType, errorType: task.errorType };
   if (isIntegerSourceType(receiverType)) return { kind: "integer", type: receiverType };
+  if (receiverType === "f32" || receiverType === "f64") return { kind: "float", type: receiverType };
   const interfaceName = receiverType.replace(/^__z_objc:(?:nullable|nonnull):/, "");
   const objc = context.semanticInfo.foreignInterfaces.get(interfaceName);
   if (objc) return { kind: "objc", declaration: objc, instance: true };
@@ -7603,6 +7621,16 @@ function integerCompletions(type: string): CompletionItem[] {
     detail: integerMethodDetail(name, type)!,
     insertText: `${name}()`,
   }));
+}
+
+function floatBitsCompletions(type: string, fromBits: boolean): CompletionItem[] {
+  const name = fromBits ? "fromBits" : "toBits";
+  const bits = type === "f32" ? "u32" : "u64";
+  return [{
+    label: name, kind: completionKinds.method, insertText: `${name}()`,
+    detail: fromBits ? `fromBits(bits: ${bits}): ${type}  // exact IEEE 754 bit pattern`
+      : `toBits(): ${bits}  // exact IEEE 754 bit pattern`,
+  }];
 }
 
 function moduleCompletions(
@@ -9565,6 +9593,12 @@ function explicitMoveHover(typeName: string, context: AnalyzedSource): string {
 }
 
 function numericConversionHover(conversion: NumericConversion): string {
+  if (conversion.bitReinterpretation) {
+    const signature = conversion.bitReinterpretation === "toBits"
+      ? `${conversion.sourceType}.toBits(): ${conversion.targetType}`
+      : `${conversion.targetType}.fromBits(bits: ${conversion.sourceType}): ${conversion.targetType}`;
+    return `${signature}\n// preserves the exact IEEE 754 bit pattern, including signed zero and NaN payloads\n// no numeric conversion, allocation, or byte-order conversion; evaluates the operand once`;
+  }
   const behavior = conversion.checked
     ? "runtime representability check; traps rather than changing the value"
     : "source range is fully representable; lowers to a direct value-preserving cast";
