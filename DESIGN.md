@@ -1362,6 +1362,13 @@ function load(path: String): Config throws ConfigError {
 
 ## Pattern matching
 
+**Planned direction (2026-09-10; not implemented):** refutable pattern bindings
+with an explicit, non-fallthrough `else`, such as
+`const some(note) = selection else { return Option.none; };`. This reuses match
+patterns without changing `try` or `attempt`. See the
+[pattern-binding design handoff](docs/pattern-binding-else-design.md) for the
+agreed rationale, proposed examples, and ownership/grammar questions to settle.
+
 Each enum variant currently has zero or one payload. Payload patterns use the
 constructor-shaped spelling `success(user) => ...`; payloadless variants remain
 bare, as in `stopped => ...`. Struct payloads support contextual construction
