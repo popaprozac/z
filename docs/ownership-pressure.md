@@ -9474,6 +9474,41 @@ call. A single formatted String works and is used by this fixture. That
 deinitializer-call lowering gap remains open; the binding-name fix does not
 claim to resolve it.
 
+## Wrapping result bits without weakening shift counts
+
+The JS-engine consumer needs fixed-width shifts for tag packing and bitwise
+operations. Ordinary `<<` correctly rejects a mathematical result that does
+not fit, but arithmetic decomposition or a raw C shift obscures that intent.
+`wrappingShiftLeft(count: usize)` now expresses it directly for every integer
+width. It returns a new value, discards outgoing bits, and preserves signed
+two's-complement representation. Counts remain checked, never masked.
+
+The [rolling-byte example](../examples/language/basics/wrapping-shift.zs) uses
+the same operation for a small non-engine use case. The
+[regression fixture](../tests/fixtures/wrapping-shift.zs) exercises signed and
+unsigned widths, zero and boundary counts, aliases, numeric views, borrowed
+optional payloads, chaining, and exactly-once operand evaluation. Companion
+tests cover async suspension, editor contracts, dynamic count traps, and
+unchanged ordinary shift overflow checks.
+
+This pressure also exposed composition gaps: Stage 0 integer-method receivers
+were not loading numeric views, its async emitter lacked integer-method calls,
+and native view lowering recognized integer spellings instead of resolved
+alias types. These now use the existing value-load, expression, and lowered-type
+paths; no new ownership rule or user workaround is required.
+
+The runtime operation has no allocation or ARC traffic. Generated C shifts an
+unsigned representation and transfers the resulting bits without signed-shift
+undefined behavior. Dynamic counts require one range guard; a valid constant
+count can optimize to a single shift. Tests inspect optimized output and execute
+both compilers' code with undefined-behavior checking.
+
+A separate diagnostic gap surfaced while checking the example: the standalone
+native driver accepts a named `console` import from `std/console` and later
+emits an unresolved C call, whereas Stage 0 correctly requires the default
+module import. The example uses the correct default import. Native validation
+of that unsupported standard-import shape remains follow-up work.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

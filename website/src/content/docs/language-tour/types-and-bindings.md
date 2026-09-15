@@ -56,6 +56,30 @@ context. Already-typed values keep their types: an `i32` variable is not silentl
 widened to `u64`. Use `u64(value)` when you intend a conversion. Without numeric
 context, `true ? 7 : 6` remains `i32`.
 
+## Checked arithmetic and wrapping shifts
+
+Ordinary integer arithmetic, including `<<`, is checked in every build mode.
+Intentional result overflow is explicit:
+
+```z
+const word: u32 = 3;
+const shifted = word.wrappingShiftLeft(31); // 0x8000_0000; word stays 3
+const negative: i32 = -1;
+const signBit = negative.wrappingShiftLeft(31); // -2147483648
+```
+
+Every integer type has `wrappingShiftLeft(count: usize)`, returning its exact
+type. High result bits are discarded and low bits are zero-filled; signed
+results preserve the resulting two's-complement bits. There is no mutation,
+allocation, or reference counting.
+
+The **count does not wrap**: it must be less than the receiver's bit width.
+For `u32`, valid counts are 0 through 31. Known invalid counts are diagnosed;
+dynamic invalid counts trap. The count is never masked or reduced modulo 32.
+This is not rotation. Ordinary `<<` additionally checks that the complete
+mathematical result fits. A valid constant-count wrapping shift can optimize
+to one native shift.
+
 ## `const` and `let`
 
 - `const` creates an immutable lexical binding.

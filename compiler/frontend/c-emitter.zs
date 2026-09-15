@@ -5715,6 +5715,8 @@ function appendExpression(
       == LoweredExpressionKind.wrappingSubtractInteger
     || declaration.expressions[index].kind
       == LoweredExpressionKind.wrappingMultiplyInteger
+    || declaration.expressions[index].kind
+      == LoweredExpressionKind.wrappingShiftLeftInteger
   ) {
     if (declaration.expressions[index].children.length != 2) {
       throw "native C emission received malformed wrapping arithmetic";
@@ -5728,6 +5730,7 @@ function appendExpression(
       declaration.expressions[index].kind
         == LoweredExpressionKind.wrappingSubtractInteger
     ) output.append("subtract_");
+    else if (declaration.expressions[index].kind == LoweredExpressionKind.wrappingShiftLeftInteger) output.append("shift_left_");
     else output.append("multiply_");
     output.append(declaration.expressions[index].value);
     output.append("(");
@@ -23612,6 +23615,25 @@ function appendCheckedNumericConversionRuntime(
   emitted.push("u64:usize");
   for (const declaration of program.functions) {
     for (const expression of declaration.expressions) {
+      if (expression.kind == LoweredExpressionKind.wrappingShiftLeftInteger) {
+        const name = copy expression.value;
+        const key = `wrappingShiftLeft:${name}`;
+        if (labelsContain(emitted, key)) continue;
+        emitted.push(key);
+        const nativeType = try integerCType(name);
+        const widthName = name.copyBytes(1, name.byteLength);
+        const bitsType = try integerCType(`u${widthName}`);
+        output.append(`static inline __attribute__((unused)) ${nativeType} z_stage1_wrapping_shift_left_${name}(${nativeType} left, size_t count) {
+  if (count >= sizeof(left) * 8) abort();
+  ${bitsType} bits = (${bitsType})((uint64_t)(${bitsType})left << count);
+  ${nativeType} result;
+  memcpy(&result, &bits, sizeof(result));
+  return result;
+}
+
+`);
+        continue;
+      }
       if (expression.kind == LoweredExpressionKind.numericBitReinterpretation && expression.labels.length == 1) {
         const source = expression.labels[0].copyBytes(0, expression.labels[0].byteLength);
         const target = expression.value.copyBytes(0, expression.value.byteLength);

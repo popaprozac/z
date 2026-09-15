@@ -315,6 +315,7 @@ export type IntegerOperation = {
     | "wrappingAdd"
     | "wrappingSubtract"
     | "wrappingMultiply"
+    | "wrappingShiftLeft"
     | "saturatingAdd"
     | "saturatingSubtract"
     | "saturatingMultiply";
@@ -13391,16 +13392,33 @@ function inferExpressionInner(
             );
           }
           const argument = expression.arguments[0];
-          const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+          const argumentType = integerMethod === "wrappingShiftLeft" ? "usize" : integerReceiverType;
+          if (integerMethod === "wrappingShiftLeft") {
+            const count = constantIntegerValue(argument);
+            const width = integerBounds(integerReceiverType)!.width;
+            if (count !== null && (count < 0n || count >= BigInt(width))) {
+              throw new DiagnosticError(fileName, argument.location,
+                `shift count ${count} is outside the range for ${integerReceiverType}`, {
+                  code: "Z0103",
+                  notes: [`${integerReceiverType} shift counts must be between 0 and ${width - 1}; wrappingShiftLeft wraps result bits, not the count`],
+                  helps: ["use a shift count within the integer width"],
+                });
+            }
+          }
+          const actual = implicitlyLoadCopyableView(
+            inferExpression(argument, locals, globals, structs, enums, fileName, state, false, argumentType),
+            argument, structs, enums, state,
+          );
           if (argument.kind === "number") {
-            requireNumericLiteralFits(argument, integerReceiverType, fileName, state.numericLiteralTypes);
-          } else if (canonicalType(actual, state.foreignNamedTypes) !== integerReceiverType) {
+            requireNumericLiteralFits(argument, argumentType, fileName, state.numericLiteralTypes);
+          } else if (canonicalType(actual, state.foreignNamedTypes) !== argumentType) {
             throw new DiagnosticError(
               fileName,
               argument.location,
-              `${expression.callee.property} requires ${integerReceiverType}, found ${displayAssignableType(String(actual), state)}`,
+              `${expression.callee.property} requires ${argumentType}, found ${displayAssignableType(String(actual), state)}`,
             );
           }
+          requireAssignable(integerReceiverType, receiverType, expression.callee.object, fileName, structs, enums, state);
           state.integerOperations.set(expression.location.offset, { kind: integerMethod, type: integerReceiverType });
           return integerReceiverType;
         }
@@ -21431,6 +21449,7 @@ function integerMethodKind(name: string): IntegerOperation["kind"] | null {
     wrappingAdd: "wrappingAdd",
     wrappingSubtract: "wrappingSubtract",
     wrappingMultiply: "wrappingMultiply",
+    wrappingShiftLeft: "wrappingShiftLeft",
     saturatingAdd: "saturatingAdd",
     saturatingSubtract: "saturatingSubtract",
     saturatingMultiply: "saturatingMultiply",

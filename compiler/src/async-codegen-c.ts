@@ -7955,6 +7955,10 @@ function emitFrameExpressionInner(
           ? `z_checked_convert_${numericConversion.sourceType}_to_${numericConversion.targetType}(${value})`
           : `((${targetType})(${value}))`;
       }
+      const integerOperation = plan.types.semanticInfo.integerOperations.get(expression.location.offset);
+      if (integerOperation && expression.callee.kind === "member") {
+        return `${asyncIntegerOperationName(integerOperation.kind, integerOperation.type)}(${emitFrameExpression(expression.callee.object, plan, fileName)}, ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+      }
       const standard = plan.types.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
       if (standard) {
         const signature = standardFunctionSignature(standard);
@@ -9052,6 +9056,7 @@ function asyncIntegerOperationName(kind: IntegerOperation["kind"], type: string)
     wrappingAdd: "wrapping_add",
     wrappingSubtract: "wrapping_subtract",
     wrappingMultiply: "wrapping_multiply",
+    wrappingShiftLeft: "wrapping_shift_left",
     saturatingAdd: "saturating_add",
     saturatingSubtract: "saturating_subtract",
     saturatingMultiply: "saturating_multiply",

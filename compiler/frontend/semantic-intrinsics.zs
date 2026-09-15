@@ -346,12 +346,13 @@ export function collectionMethodSignature(
       methodName == "wrappingAdd"
       || methodName == "wrappingSubtract"
       || methodName == "wrappingMultiply"
+      || methodName == "wrappingShiftLeft"
     )
   ) {
     let parameterModes = Array<String>();
     parameterModes.push("value");
     let parameterTypes = Array<String>();
-    parameterTypes.push(ownerType.copyBytes(0, ownerType.byteLength));
+    parameterTypes.push(methodName == "wrappingShiftLeft" ? "usize" : ownerType.copyBytes(0, ownerType.byteLength));
     return Option.some(ModuleFunctionSignature({
       asynchronous: false,
       executorAffinity: "",

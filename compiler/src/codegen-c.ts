@@ -456,7 +456,8 @@ export function generateC(
     lines.push("#include <stdio.h>");
     includedHeaders.add("stdio.h");
   }
-  if (usesString || [...semanticInfo.numericConversions.values()].some(conversion => conversion.bitReinterpretation)) {
+  if (usesString || [...semanticInfo.numericConversions.values()].some(conversion => conversion.bitReinterpretation)
+    || [...semanticInfo.integerOperations.values()].some(operation => operation.kind === "wrappingShiftLeft")) {
     lines.push("#include <string.h>");
     includedHeaders.add("string.h");
   }
@@ -13137,6 +13138,7 @@ function integerOperationName(operation: IntegerOperation): string {
     wrappingAdd: "wrapping_add",
     wrappingSubtract: "wrapping_subtract",
     wrappingMultiply: "wrapping_multiply",
+    wrappingShiftLeft: "wrapping_shift_left",
     saturatingAdd: "saturating_add",
     saturatingSubtract: "saturating_subtract",
     saturatingMultiply: "saturating_multiply",
@@ -13164,6 +13166,19 @@ function generateIntegerOperation(operation: IntegerOperation): string {
   const limit = limits[operation.type]!;
   const binaryHeader = `static Z_UNUSED_FUNCTION inline ${cType} ${name}(${cType} left, ${cType} right) {`;
   const result = `  ${cType} result;`;
+  if (operation.kind === "wrappingShiftLeft") {
+    const unsignedType = primitiveTypeNames[operation.type.replace(/^i/, "u")];
+    return [
+      `static Z_UNUSED_FUNCTION inline ${cType} ${name}(${cType} left, uintptr_t count) {`,
+      "  if (count >= sizeof(left) * 8) abort();",
+      // uint64_t avoids signed integer promotion of u8/u16 before shifting.
+      `  ${unsignedType} bits = (${unsignedType})((uint64_t)(${unsignedType})left << count);`,
+      result,
+      "  memcpy(&result, &bits, sizeof(result));",
+      "  return result;",
+      "}",
+    ].join("\n");
+  }
   if (operation.kind === "checkedNegate") {
     return [
       `static Z_UNUSED_FUNCTION inline ${cType} ${name}(${cType} value) {`,

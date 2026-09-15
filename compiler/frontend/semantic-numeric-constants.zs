@@ -92,3 +92,20 @@ export function validateConstantShift(
   // Nonconstant operands remain subject to the ordinary checked runtime helper.
   const checked = try shiftConstant(module, tree, index, typeName);
 }
+
+export function validateWrappingShiftCount(
+  in module: ParsedModule, in tree: ExpressionTree, index: usize, in typeName: String
+): void throws ModuleResolveError {
+  // The receiver need not be constant: only the count determines this check.
+  const count = try shiftConstant(module, tree, index, "usize");
+  match (count) {
+    some(value) => {
+      if (value.negative || value.magnitude >= integerWidth(typeName)) {
+        throw moduleResolutionError(ModuleResolveErrorKind.invalidOperator, module.path,
+          `shift count is outside the range for ${typeName}; wrappingShiftLeft wraps result bits, not the count`,
+          tree.nodes[index].line, tree.nodes[index].column);
+      }
+    }
+    none => {}
+  }
+}

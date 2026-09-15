@@ -255,6 +255,7 @@ export enum LoweredExpressionKind {
   wrappingAddInteger,
   wrappingSubtractInteger,
   wrappingMultiplyInteger,
+  wrappingShiftLeftInteger,
   fsLockUnlock,
   moveValue,
   classOutputSlot,
@@ -12175,7 +12176,16 @@ function lowerExpressionContextual(
         && operandType.kind != LoweredTypeKind.arrayType
         && operandType.kind != LoweredTypeKind.sliceType
         && operandType.kind != LoweredTypeKind.stringType
-        && !isIntegerTypeName(operandTypeName)
+        && operandType.kind != LoweredTypeKind.i8Type
+        && operandType.kind != LoweredTypeKind.i16Type
+        && operandType.kind != LoweredTypeKind.i32Type
+        && operandType.kind != LoweredTypeKind.i64Type
+        && operandType.kind != LoweredTypeKind.u8Type
+        && operandType.kind != LoweredTypeKind.u16Type
+        && operandType.kind != LoweredTypeKind.u32Type
+        && operandType.kind != LoweredTypeKind.u64Type
+        && operandType.kind != LoweredTypeKind.isizeType
+        && operandType.kind != LoweredTypeKind.usizeType
         && operandType.kind != LoweredTypeKind.f32Type
         && operandType.kind != LoweredTypeKind.f64Type
         && operandType.kind != LoweredTypeKind.booleanType
@@ -14645,18 +14655,45 @@ function lowerExpressionContextual(
       }
       if (
         tree.nodes[index].children.length == 2
+        && tree.nodes[calleeInput].value == "wrappingShiftLeft"
+      ) {
+        const receiverName = match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, receiverInput)) {
+          some(name) => name;
+          none => throw "native wrapping shift could not resolve its receiver type";
+        };
+        const receiverType = try lowerModuleTypeName(program, importedTypes, receiverName);
+        const valueType = loweredTypeIdentity(receiverType);
+        if (isIntegerTypeName(valueType)) {
+          const receiver = try lowerExpressionExpected(
+            program, importedTypes, evidence, tree, receiverInput, valueType, inout output
+          );
+          const argumentInput = tree.nodes[index].children[1];
+          const argument = try lowerExpressionExpected(
+            program, importedTypes, evidence, tree, argumentInput, "usize", inout output
+          );
+          let children = Array<usize>();
+          children.push(receiver);
+          children.push(argument);
+          return pushExpression(inout output, LoweredExpressionKind.wrappingShiftLeftInteger,
+            valueType, children, Array<String>());
+        }
+      }
+      if (
+        tree.nodes[index].children.length == 2
         && (
           tree.nodes[calleeInput].value == "wrappingAdd"
           || tree.nodes[calleeInput].value == "wrappingSubtract"
           || tree.nodes[calleeInput].value == "wrappingMultiply"
         )
       ) {
-        const receiverType = match (
-          resolvedExpressionTypeName(evidence, tree, receiverInput)
+        const receiverName = match (
+          evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, receiverInput)
         ) {
           some(name) => name;
           none => throw "native wrapping arithmetic could not resolve its receiver type";
         };
+        const loweredReceiverType = try lowerModuleTypeName(program, importedTypes, receiverName);
+        const receiverType = loweredTypeIdentity(loweredReceiverType);
         if (
           receiverType == "i32"
           || receiverType == "u8"
@@ -14664,21 +14701,23 @@ function lowerExpressionContextual(
           || receiverType == "u64"
           || receiverType == "usize"
         ) {
-          const receiver = try lowerExpression(
+          const receiver = try lowerExpressionExpected(
             program,
             importedTypes,
             evidence,
             tree,
             receiverInput,
+            receiverType,
             inout output
           );
           const argumentInput = tree.nodes[index].children[1];
-          const argument = try lowerExpression(
+          const argument = try lowerExpressionExpected(
             program,
             importedTypes,
             evidence,
             tree,
             argumentInput,
+            receiverType,
             inout output
           );
           let children = Array<usize>();
@@ -18257,7 +18296,12 @@ function lowerExpressionExpected(
       some(actualType) => {
         if (stringStartsWith(actualType, "view ")) {
           const projectedType = actualType.copyBytes(5, actualType.byteLength);
-          if (projectedType == expectedTypeName) {
+          let matchesExpected = projectedType == expectedTypeName;
+          if (!matchesExpected) {
+            const loweredProjection = try lowerModuleTypeName(program, importedTypes, projectedType);
+            matchesExpected = loweredTypeIdentity(loweredProjection) == expectedTypeName;
+          }
+          if (matchesExpected) {
             const pointer = try lowerExpression(program, importedTypes, evidence, tree, index, inout output);
             let children = Array<usize>();
             children.push(pointer);

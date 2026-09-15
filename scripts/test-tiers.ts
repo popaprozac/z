@@ -18,6 +18,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
       "tests/numeric-literals.test.ts",
       "tests/float-bits.test.ts",
       "tests/integer-bits.test.ts",
+      "tests/wrapping-shift.test.ts",
       "tests/reference-identity.test.ts",
       "tests/callback-nonescape.test.ts",
       "tests/module-constants.test.ts",

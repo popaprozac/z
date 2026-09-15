@@ -2211,6 +2211,36 @@ tier is synchronous.
 Integer arithmetic is checked. Intentional overflow uses explicit wrapping or
 saturating operations.
 
+### Wrapping left shift
+
+All signed and unsigned integer types, including `isize` and `usize`, provide
+`wrappingShiftLeft(count: usize): T`, where `T` is the receiver's exact type:
+
+```z
+const word: u32 = 3;
+const shifted = word.wrappingShiftLeft(31); // 0x8000_0000; word stays 3
+const negative: i32 = -1;
+const signBit = negative.wrappingShiftLeft(31); // -2147483648
+```
+
+The method discards high bits and zero-fills low bits. Signed results preserve
+the resulting two's-complement representation. It does not mutate the receiver,
+allocate, or perform reference counting.
+
+Only the **result bits** wrap. The count must be in `0..bitWidth-1`: known invalid
+counts are compilation errors, including when the receiver is a parameter;
+dynamic invalid counts trap. Counts are never masked or reduced modulo the
+width. A typed count must be `usize`, not necessarily the receiver's type.
+Zero is valid and returns the original value. This is not rotation.
+
+Ordinary `<<` is unchanged: it checks both the count and whether the complete
+mathematical result fits. Use wrapping shifts for bit packing or a
+[rolling byte window](../examples/language/basics/wrapping-shift.zs), not as a way
+to bypass count validation. Optimized valid constant-count calls can become
+one native shift.
+
+### Numeric construction
+
 Non-literal numeric types never convert implicitly. Calling the target numeric
 type constructs the same mathematical value:
 

@@ -1,5 +1,6 @@
 import { TextBuffer } from "std/text";
 import { requireNumericLiteralRange } from "./semantic-expression-types.zs";
+import { validateWrappingShiftCount } from "./semantic-numeric-constants.zs";
 import { requireNativeAvailability, requireNativeReferenceAvailability } from "./semantic-native-availability.zs";
 import { planNativeObjCSubclasses } from "./semantic-objc-subclass-plans.zs";
 import { prepareObjCSelectorReferences, validateObjCSelectorTargets } from "./semantic-objc-selectors.zs";
@@ -10421,7 +10422,8 @@ function inferExpressionNodeType(
             message,
             tree.nodes[calleeIndex].line, tree.nodes[calleeIndex].column);
         }
-        if (ownerType != readonlyOwnerType && collectionHasLength(readonlyOwnerType)) {
+        if (ownerType != readonlyOwnerType
+          && (collectionHasLength(readonlyOwnerType) || isIntegerTypeName(readonlyOwnerType))) {
           ownerType = readonlyOwnerType.copyBytes(0, readonlyOwnerType.byteLength);
         }
         if (stringStartsWith(readonlyOwnerType, "readonly ")) {
@@ -10444,6 +10446,17 @@ function inferExpressionNodeType(
           methodName
         )) {
           some(effectiveSignature) => {
+            if (methodName == "wrappingShiftLeft") {
+              for (const label of tree.nodes[index].labels) {
+                if (label.byteLength > 0) throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch, module.path,
+                  "wrappingShiftLeft does not accept argument labels", node.line, node.column
+                );
+              }
+              if (children.length == 2) {
+                try validateWrappingShiftCount(module, tree, children[1], effectiveSignature.returnType);
+              }
+            }
             let receiverRoot = "";
             let receiverAccess = "";
             if (methodName == "freeze") {

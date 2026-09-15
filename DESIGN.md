@@ -1319,6 +1319,16 @@ The initial explicit surface includes `wrappingAdd`, `wrappingSubtract`,
 the receiver's exact integer type. A future checked-result surface should be
 designed with Z's optional-value type rather than inventing a sentinel.
 
+Every integer type also provides `wrappingShiftLeft(count: usize)`, returning
+the receiver's exact type without mutating it. It discards high result bits and
+zero-fills low bits; signed results preserve the resulting two's-complement
+representation. Counts must be less than the receiver's bit width. Known
+invalid counts are diagnosed even when the receiver is not constant; dynamic
+invalid counts trap. The count is never masked or reduced modulo the width.
+This is not rotation. Ordinary `<<` retains its count and result-overflow checks.
+The method requires no allocation or reference counting; a proven-valid
+constant count can optimize to a native shift without a runtime check.
+
 Integer type construction is the explicit width-conversion surface:
 
 ```z

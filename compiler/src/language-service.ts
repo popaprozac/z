@@ -7559,6 +7559,9 @@ function stringValueCompletions(): CompletionItem[] {
 }
 
 function integerMethodDetail(name: string, type: string): string | null {
+  if (name === "wrappingShiftLeft") {
+    return `wrappingShiftLeft(count: usize): ${type}  // discards high bits, zero-fills low bits; count must be below the bit width (not masked); no mutation or allocation`;
+  }
   const descriptions: Readonly<Record<string, string>> = {
     wrappingAdd: "wraps modulo the integer width",
     wrappingSubtract: "wraps modulo the integer width",
@@ -7654,6 +7657,7 @@ function integerCompletions(type: string): CompletionItem[] {
     "wrappingAdd",
     "wrappingSubtract",
     "wrappingMultiply",
+    "wrappingShiftLeft",
     "saturatingAdd",
     "saturatingSubtract",
     "saturatingMultiply",
