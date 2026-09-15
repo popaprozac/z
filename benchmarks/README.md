@@ -61,6 +61,57 @@ Do not interpret cross-language allocation cells as zero when they display
 `—`: equivalent allocator instrumentation has not yet been added for that
 toolchain.
 
+## Checked-indexing code-generation audit
+
+```sh
+bun run bootstrap
+bun benchmarks/checked-indexing.ts
+Z_INDEX_ISOLATE=1 bun benchmarks/checked-indexing.ts
+```
+
+This focused suite compares Stage 0, the bootstrapped native driver, and
+handwritten checked C at both `-O2 -DNDEBUG` and `-O3 -DNDEBUG`. It covers
+sequential reads, indirect table lookups, and a register loop with either direct
+field access or a sibling-field `view`. The normal run permits ordinary
+inlining. The isolated run makes only the selected kernel externally visible
+and `noinline` in generated C and the reference, so caller-specific buffer-size
+knowledge cannot specialize it. This is an experimental code-generation
+boundary, not a proposed Z attribute.
+
+Every variant has a paired **benchmark-only** bounds-removal control. The
+transformation recognizes exact array helper definitions and fails closed when
+their shapes change. It leaves overflow, conversion, shift, allocation, String,
+and Slice checks alone. These controls run only constructed valid inputs; they
+are not an unchecked Z API or a change to release-mode safety.
+
+Setup and allocation happen before the native clock interval; cleanup, process
+startup, compilation, and UBSan validation are outside it. Three small input
+sizes are checked against an independent BigInt oracle, with and without UBSan.
+Measured workloads must match the handwritten checked C checksum. Variant order
+rotates and alternates, and raw samples include medians and min–max ranges.
+The default is 4,096 elements × 32,768 rounds, two warmups and nine samples.
+
+Options: `Z_INDEX_WIDTH`, `Z_INDEX_ROUNDS`, `Z_INDEX_SAMPLES`,
+`Z_INDEX_WARMUPS`, `Z_INDEX_PROFILES=O2,O3`, `Z_INDEX_REPORT`, and
+`Z_BENCH_TIMEOUT_MS`. `Z_BENCH_NATIVE` selects a bootstrapped driver with its
+adjacent `.c`; the harness verifies that C against current compiler self-emission
+and records both source and binary hashes. A stale compiler is rejected.
+The compiler source must be committed; benchmark edits may be dirty and are
+recorded by hashes. Neither compiler nor benchmark source may change mid-run.
+
+Generated C, optimized LLVM IR, and assembly stay under a unique ignored
+`benchmarks/.build/checked-indexing/run-*` directory. Reports default to dated
+JSON/Markdown files, with a separate name for isolated runs. Every subprocess
+group has a watchdog and is terminated on interruption. Run without concurrent
+tests or other CPU-heavy work. Do not equate an `abort` anywhere in a binary
+with a hot bounds check: inspect the measured loop and its control flow.
+
+These are synthetic kernels, not an engine benchmark. An optimizer-eliminated
+check costs nothing even if it appears in generated C; a surviving predictable
+check can still be inexpensive. Conversely, opaque buffer sizes, aliasing,
+method calls, and interpreter dispatch may change the result. Engine-specific
+invariants and measurements remain necessary before choosing an unchecked API.
+
 ## Compiler build-latency matrix
 
 ```sh

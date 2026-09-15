@@ -1,0 +1,1340 @@
+{
+  "generatedAt": "2026-09-15T22:40:31.970Z",
+  "revision": "684ce9803a5a8185753b88764dc7f2207b74c9bb",
+  "dirty": true,
+  "system": {
+    "platform": "darwin",
+    "release": "25.4.0",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro"
+  },
+  "toolchain": "Apple clang version 17.0.0 (clang-1700.4.4.1)\nTarget: arm64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+  "bun": "1.3.14",
+  "width": 4096,
+  "rounds": 32768,
+  "operations": 134217728,
+  "samples": 9,
+  "warmups": 2,
+  "isolated": false,
+  "emitterCommands": {
+    "stage0": "bun compiler/src/cli.ts emit",
+    "native": "/Users/zach/code/z-lang/.z-cache/bootstrap/z emit"
+  },
+  "nativeSha256": "bbdb85a6a660532d9a64f4b880ff8cbac2ef66e5e30de772de3c1aedc512675b",
+  "nativeSourceSha256": "41a8f90f217fac4303a2f4625b938a8aed3cd292a38309d9af575e22353b74c9",
+  "sourceHashes": {
+    "input.h": "f897b8bbe9693d21474d1e45566b6731e7967d93d257fcf3c368a1ae06c18e5f",
+    "input.c": "942d6d47cb3e4d5d0f4d92720821a24607cfae2adc24d5ee82a8dccc2c8d36a1",
+    "kernels.zs": "0ccd2c4252132454a9ec47f3d791509bac8b55963900cdb0119f06873b78ff5a",
+    "reference.c": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+    "linear.zs": "7478bd7c192df32fc5c0d6bc4fff81d22eed615035b688df0b2b6478b1929e98",
+    "indirect.zs": "0163108fca4ea387bff38eee325df253a98ad6487bddc2d85b973cf79b123abe",
+    "registers-direct.zs": "e79de190497c4c691e59bde79060d6c504726f5a015b86cb8b140c1174542f77",
+    "registers-view.zs": "25377861771c19cfea895467330cbef245b8532b28835178f64875522d7e439a"
+  },
+  "harnessSha256": "b73d0e4cad677a3d0003d9a0b92b010e3f4a5ef7a7f5dd1bcb1621c3901cad72",
+  "supportHashes": {
+    "bench.c": "cc5fa910913c6151ee63f4c8cdb4584a60c0c9812bdd230b6f45535a1b32ba6e",
+    "bench.h": "6ca56615eaeafc28d97854dfa8391b59acfcbdff57f79a4612e45dec4b57ca5d"
+  },
+  "artifacts": "benchmarks/.build/checked-indexing/run-vBzAme",
+  "boundary": "Kernel clock time only. Setup, allocation, cleanup, compilation and process startup excluded. Data-dependent wrapping checksum prevents loop folding. Identical Clang profiles; bounds-removed variants change only array indexing guards and are valid-input experiments, not safe programs on arbitrary inputs. UBSan and independent BigInt oracle validate small inputs; checked C validates measured checksums. No allocation counts or engine-speed claims. Normal optimizer inlining; caller buffer construction is visible to Clang.",
+  "results": [
+    {
+      "kernel": "linear",
+      "profile": "O2",
+      "emitMilliseconds": {
+        "stage0": 183.21966600000087,
+        "native": 190.39083299999947
+      },
+      "variants": [
+        {
+          "id": "c-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/c-checked.c",
+          "defines": [
+            "-DBENCH_CASE=0",
+            "-DBENCH_NAME=\"linear\""
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/c-checked",
+          "compileMilliseconds": 53.39195800000016,
+          "binaryBytes": 34712,
+          "samples": [
+            102298000,
+            102805417,
+            107959292,
+            102736791,
+            103310459,
+            102390917,
+            106045334,
+            102530750,
+            104421167
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "c-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/c-bounds-removed.c",
+          "defines": [
+            "-DBENCH_CASE=0",
+            "-DBENCH_NAME=\"linear\"",
+            "-DBENCH_REMOVE_BOUNDS"
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/c-bounds-removed",
+          "compileMilliseconds": 54.28116599999885,
+          "binaryBytes": 34720,
+          "samples": [
+            104831375,
+            103660417,
+            102296458,
+            104666167,
+            102032792,
+            103207083,
+            103563542,
+            108169333,
+            102632000
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/stage0-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/stage0-checked",
+          "compileMilliseconds": 68.80337500000132,
+          "binaryBytes": 34720,
+          "samples": [
+            104384792,
+            102808208,
+            102724459,
+            102640042,
+            104905042,
+            101773583,
+            105779709,
+            102293959,
+            104892042
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "ee1e1b9c16c6d5d8cfd779bb5d4fcace3707a6a591e42420ca5a5621a6369465",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/stage0-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/stage0-bounds-removed",
+          "compileMilliseconds": 66.83420900000056,
+          "binaryBytes": 34728,
+          "samples": [
+            102231958,
+            103814208,
+            104347250,
+            104271625,
+            102706833,
+            105248416,
+            101840375,
+            103732750,
+            102483292
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "92cda4a931f5e2b78c1187622e79b632471318bedf5b5f582eba73ed2f50e556",
+          "removed": [
+            "z_bounds_index"
+          ],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/native-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/native-checked",
+          "compileMilliseconds": 72.31758300000001,
+          "binaryBytes": 34720,
+          "samples": [
+            103270208,
+            110275958,
+            108519958,
+            102275417,
+            105688500,
+            102366000,
+            104310375,
+            102554125,
+            104710334
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "e01919d177b683abaa2d478b11037db3fcfb425e541b76161c350b084722e751",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/native-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O2/native-bounds-removed",
+          "compileMilliseconds": 76.92491700000028,
+          "binaryBytes": 34728,
+          "samples": [
+            104252959,
+            129418292,
+            102007083,
+            102619875,
+            103791167,
+            105337292,
+            102596875,
+            105867417,
+            101953333
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "19161a94ec787eaeee5e067e11cef46ddea8d8cdf788055fcea20159ad7815df",
+          "removed": [
+            "Z___z_Array_u64_at",
+            "Z___z_Array_u64_at_mut",
+            "Z___z_Array_usize_at",
+            "Z___z_Array_usize_at_mut"
+          ],
+          "sanitizerValidated": true
+        }
+      ]
+    },
+    {
+      "kernel": "linear",
+      "profile": "O3",
+      "emitMilliseconds": {
+        "stage0": 183.21966600000087,
+        "native": 190.39083299999947
+      },
+      "variants": [
+        {
+          "id": "c-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/c-checked.c",
+          "defines": [
+            "-DBENCH_CASE=0",
+            "-DBENCH_NAME=\"linear\""
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/c-checked",
+          "compileMilliseconds": 118.42454100000032,
+          "binaryBytes": 34712,
+          "samples": [
+            109475208,
+            103799833,
+            102440333,
+            102734250,
+            102219666,
+            103025333,
+            101980500,
+            104455458,
+            101908167
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "c-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/c-bounds-removed.c",
+          "defines": [
+            "-DBENCH_CASE=0",
+            "-DBENCH_NAME=\"linear\"",
+            "-DBENCH_REMOVE_BOUNDS"
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/c-bounds-removed",
+          "compileMilliseconds": 57.891459000002214,
+          "binaryBytes": 34720,
+          "samples": [
+            102631084,
+            102040000,
+            103807959,
+            102275459,
+            106970042,
+            103259417,
+            103535000,
+            102833417,
+            106395208
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/stage0-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/stage0-checked",
+          "compileMilliseconds": 66.50624999999854,
+          "binaryBytes": 34720,
+          "samples": [
+            104779625,
+            105791833,
+            104491667,
+            108427917,
+            103980333,
+            104199291,
+            102388500,
+            103022000,
+            102846750
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "ee1e1b9c16c6d5d8cfd779bb5d4fcace3707a6a591e42420ca5a5621a6369465",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/stage0-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/stage0-bounds-removed",
+          "compileMilliseconds": 81.66337500000009,
+          "binaryBytes": 34728,
+          "samples": [
+            147216417,
+            104195750,
+            102794458,
+            102299083,
+            106232500,
+            102154083,
+            106739167,
+            102060042,
+            105187917
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "92cda4a931f5e2b78c1187622e79b632471318bedf5b5f582eba73ed2f50e556",
+          "removed": [
+            "z_bounds_index"
+          ],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/native-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/native-checked",
+          "compileMilliseconds": 73.05954199999906,
+          "binaryBytes": 34720,
+          "samples": [
+            110588333,
+            103614625,
+            102463292,
+            107922125,
+            102017750,
+            104266375,
+            102276708,
+            105910542,
+            103437833
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "e01919d177b683abaa2d478b11037db3fcfb425e541b76161c350b084722e751",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/native-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/linear-O3/native-bounds-removed",
+          "compileMilliseconds": 72.77958299999955,
+          "binaryBytes": 34728,
+          "samples": [
+            105677458,
+            102343500,
+            105520083,
+            103057875,
+            103686250,
+            102308375,
+            104382916,
+            102797541,
+            105235042
+          ],
+          "checksum": "10427388243156467712",
+          "sourceSha256": "19161a94ec787eaeee5e067e11cef46ddea8d8cdf788055fcea20159ad7815df",
+          "removed": [
+            "Z___z_Array_u64_at",
+            "Z___z_Array_u64_at_mut",
+            "Z___z_Array_usize_at",
+            "Z___z_Array_usize_at_mut"
+          ],
+          "sanitizerValidated": true
+        }
+      ]
+    },
+    {
+      "kernel": "indirect",
+      "profile": "O2",
+      "emitMilliseconds": {
+        "stage0": 195.10779100000218,
+        "native": 197.50858300000255
+      },
+      "variants": [
+        {
+          "id": "c-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/c-checked.c",
+          "defines": [
+            "-DBENCH_CASE=1",
+            "-DBENCH_NAME=\"indirect\""
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/c-checked",
+          "compileMilliseconds": 54.210958999996365,
+          "binaryBytes": 34712,
+          "samples": [
+            107153625,
+            102117583,
+            105261459,
+            102392041,
+            101972125,
+            104782250,
+            106421375,
+            103445333,
+            103065209
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "c-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/c-bounds-removed.c",
+          "defines": [
+            "-DBENCH_CASE=1",
+            "-DBENCH_NAME=\"indirect\"",
+            "-DBENCH_REMOVE_BOUNDS"
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/c-bounds-removed",
+          "compileMilliseconds": 57.25829099999828,
+          "binaryBytes": 34720,
+          "samples": [
+            102686042,
+            108346958,
+            103186083,
+            107126083,
+            103144042,
+            104630875,
+            102396958,
+            102592042,
+            102614209
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/stage0-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/stage0-checked",
+          "compileMilliseconds": 67.19050000000425,
+          "binaryBytes": 34720,
+          "samples": [
+            105319667,
+            102744417,
+            106945333,
+            102067667,
+            104544750,
+            102705500,
+            102190750,
+            105011666,
+            107040875
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "41c3649483ac9259d3233ab3e0b328737469435d75c023460326f840db4ceb83",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/stage0-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/stage0-bounds-removed",
+          "compileMilliseconds": 65.65950000000157,
+          "binaryBytes": 34728,
+          "samples": [
+            102556625,
+            103998750,
+            101937208,
+            103765834,
+            102440667,
+            105690333,
+            105582917,
+            106254625,
+            102590167
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "a090b97d256918b8c9b8f36c9424e81f511f831dbfb535d650604d5e92f73307",
+          "removed": [
+            "z_bounds_index"
+          ],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/native-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/native-checked",
+          "compileMilliseconds": 67.59379199999967,
+          "binaryBytes": 34720,
+          "samples": [
+            107449334,
+            101862834,
+            105555959,
+            102836334,
+            106209708,
+            102973834,
+            103397458,
+            102228083,
+            102438083
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "9f8617831b7fc7a35d7d16f213f42bf9f92c087c29722f50d3da0f4357945772",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/native-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O2/native-bounds-removed",
+          "compileMilliseconds": 80.81258300000627,
+          "binaryBytes": 34728,
+          "samples": [
+            102366500,
+            105792500,
+            102232500,
+            105788334,
+            101936417,
+            103367125,
+            102393125,
+            103903417,
+            104204167
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "bdd6cd5390b3e741913f8781cd68946089b013abf6ac89cebaabedeb6f00e733",
+          "removed": [
+            "Z___z_Array_u64_at",
+            "Z___z_Array_u64_at_mut",
+            "Z___z_Array_usize_at",
+            "Z___z_Array_usize_at_mut"
+          ],
+          "sanitizerValidated": true
+        }
+      ]
+    },
+    {
+      "kernel": "indirect",
+      "profile": "O3",
+      "emitMilliseconds": {
+        "stage0": 195.10779100000218,
+        "native": 197.50858300000255
+      },
+      "variants": [
+        {
+          "id": "c-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/c-checked.c",
+          "defines": [
+            "-DBENCH_CASE=1",
+            "-DBENCH_NAME=\"indirect\""
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/c-checked",
+          "compileMilliseconds": 65.18570799999725,
+          "binaryBytes": 34712,
+          "samples": [
+            108106292,
+            155392417,
+            138340792,
+            119903083,
+            114349959,
+            107810750,
+            122785666,
+            109993542,
+            105609917
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "c-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/c-bounds-removed.c",
+          "defines": [
+            "-DBENCH_CASE=1",
+            "-DBENCH_NAME=\"indirect\"",
+            "-DBENCH_REMOVE_BOUNDS"
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/c-bounds-removed",
+          "compileMilliseconds": 57.77179199999955,
+          "binaryBytes": 34720,
+          "samples": [
+            103394500,
+            112584709,
+            135450708,
+            126353375,
+            114811166,
+            103920000,
+            121042666,
+            111044416,
+            110808417
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/stage0-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/stage0-checked",
+          "compileMilliseconds": 67.37512499999866,
+          "binaryBytes": 34720,
+          "samples": [
+            102360916,
+            108956334,
+            141665708,
+            105078250,
+            104498125,
+            108275375,
+            105112042,
+            112359708,
+            108786042
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "41c3649483ac9259d3233ab3e0b328737469435d75c023460326f840db4ceb83",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/stage0-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/stage0-bounds-removed",
+          "compileMilliseconds": 71.70054099999834,
+          "binaryBytes": 34728,
+          "samples": [
+            103747958,
+            121633209,
+            117942792,
+            110312625,
+            120138250,
+            104315916,
+            105194250,
+            114651084,
+            123800333
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "a090b97d256918b8c9b8f36c9424e81f511f831dbfb535d650604d5e92f73307",
+          "removed": [
+            "z_bounds_index"
+          ],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/native-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/native-checked",
+          "compileMilliseconds": 70.7027919999964,
+          "binaryBytes": 34720,
+          "samples": [
+            104860541,
+            144798250,
+            140154583,
+            103878583,
+            109641375,
+            109217209,
+            102500750,
+            105137042,
+            104576625
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "9f8617831b7fc7a35d7d16f213f42bf9f92c087c29722f50d3da0f4357945772",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/native-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/indirect-O3/native-bounds-removed",
+          "compileMilliseconds": 74.25495799999771,
+          "binaryBytes": 34728,
+          "samples": [
+            102260417,
+            110305875,
+            134100292,
+            143326666,
+            108584250,
+            103114250,
+            168879333,
+            124554833,
+            119145958
+          ],
+          "checksum": "14796972127204311040",
+          "sourceSha256": "bdd6cd5390b3e741913f8781cd68946089b013abf6ac89cebaabedeb6f00e733",
+          "removed": [
+            "Z___z_Array_u64_at",
+            "Z___z_Array_u64_at_mut",
+            "Z___z_Array_usize_at",
+            "Z___z_Array_usize_at_mut"
+          ],
+          "sanitizerValidated": true
+        }
+      ]
+    },
+    {
+      "kernel": "registers-direct",
+      "profile": "O2",
+      "emitMilliseconds": {
+        "stage0": 229.15325000000303,
+        "native": 232.67137499999808
+      },
+      "variants": [
+        {
+          "id": "c-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/c-checked.c",
+          "defines": [
+            "-DBENCH_CASE=2",
+            "-DBENCH_NAME=\"registers-direct\""
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/c-checked",
+          "compileMilliseconds": 103.268167000002,
+          "binaryBytes": 34712,
+          "samples": [
+            45849542,
+            46326541,
+            46305833,
+            49383500,
+            46500333,
+            46506750,
+            47024833,
+            46309375,
+            46250917
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "c-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/c-bounds-removed.c",
+          "defines": [
+            "-DBENCH_CASE=2",
+            "-DBENCH_NAME=\"registers-direct\"",
+            "-DBENCH_REMOVE_BOUNDS"
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/c-bounds-removed",
+          "compileMilliseconds": 85.57445899999584,
+          "binaryBytes": 34720,
+          "samples": [
+            46015666,
+            46833375,
+            46244833,
+            48166500,
+            46242708,
+            46344584,
+            47306916,
+            46121500,
+            47309375
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/stage0-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/stage0-checked",
+          "compileMilliseconds": 75.62199999999575,
+          "binaryBytes": 34720,
+          "samples": [
+            46066250,
+            50513792,
+            51554458,
+            46431334,
+            48911584,
+            46368041,
+            47810625,
+            49394709,
+            50155042
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "1c328792ec9024a83239df3de698c4c4db925c4fad6e3f64e039095ea6fcb3c3",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/stage0-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/stage0-bounds-removed",
+          "compileMilliseconds": 71.02425000000221,
+          "binaryBytes": 34728,
+          "samples": [
+            50602083,
+            50064166,
+            48731458,
+            46191166,
+            48802292,
+            46501125,
+            49202833,
+            50880042,
+            46584542
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "a7a76a55a853213c9956a6fbcae3cafa01212c8f5a51c060b4dd0a2eec89c58c",
+          "removed": [
+            "z_bounds_index"
+          ],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/native-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/native-checked",
+          "compileMilliseconds": 73.72191700000258,
+          "binaryBytes": 34720,
+          "samples": [
+            46418083,
+            46188875,
+            48053708,
+            46867125,
+            46973917,
+            51073084,
+            46707500,
+            46590416,
+            47512042
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "48f03ff74381022bbf8b277f782aae491b294e32e2fde49d5973eac3b64323e8",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/native-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O2/native-bounds-removed",
+          "compileMilliseconds": 74.79095899999811,
+          "binaryBytes": 34728,
+          "samples": [
+            46067917,
+            45927708,
+            46509958,
+            46493458,
+            46369042,
+            47998708,
+            46214083,
+            46118291,
+            46392125
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "28b1dc4f7c79247b9b66d2d69da4efa3ef4b014fd6bacfa47862a6d789d5698d",
+          "removed": [
+            "Z___z_Array_u64_at",
+            "Z___z_Array_u64_at_mut",
+            "Z___z_Array_usize_at",
+            "Z___z_Array_usize_at_mut"
+          ],
+          "sanitizerValidated": true
+        }
+      ]
+    },
+    {
+      "kernel": "registers-direct",
+      "profile": "O3",
+      "emitMilliseconds": {
+        "stage0": 229.15325000000303,
+        "native": 232.67137499999808
+      },
+      "variants": [
+        {
+          "id": "c-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/c-checked.c",
+          "defines": [
+            "-DBENCH_CASE=2",
+            "-DBENCH_NAME=\"registers-direct\""
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/c-checked",
+          "compileMilliseconds": 67.25604200000816,
+          "binaryBytes": 34712,
+          "samples": [
+            46346958,
+            49843084,
+            46424416,
+            46388875,
+            46646541,
+            46245541,
+            46089125,
+            46894625,
+            46471958
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "c-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/c-bounds-removed.c",
+          "defines": [
+            "-DBENCH_CASE=2",
+            "-DBENCH_NAME=\"registers-direct\"",
+            "-DBENCH_REMOVE_BOUNDS"
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/c-bounds-removed",
+          "compileMilliseconds": 69.28500000000349,
+          "binaryBytes": 34720,
+          "samples": [
+            45683500,
+            46480958,
+            45582666,
+            46315958,
+            45880334,
+            45921417,
+            46014750,
+            49611875,
+            46285542
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/stage0-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/stage0-checked",
+          "compileMilliseconds": 68.6655000000028,
+          "binaryBytes": 34720,
+          "samples": [
+            46284750,
+            46111500,
+            45961709,
+            46279417,
+            46199792,
+            48330834,
+            45954167,
+            45910959,
+            46015208
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "1c328792ec9024a83239df3de698c4c4db925c4fad6e3f64e039095ea6fcb3c3",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/stage0-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/stage0-bounds-removed",
+          "compileMilliseconds": 78.6126249999943,
+          "binaryBytes": 34728,
+          "samples": [
+            46222833,
+            45668708,
+            47739125,
+            47154042,
+            46636417,
+            52129542,
+            48176750,
+            45977041,
+            48704458
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "a7a76a55a853213c9956a6fbcae3cafa01212c8f5a51c060b4dd0a2eec89c58c",
+          "removed": [
+            "z_bounds_index"
+          ],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/native-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/native-checked",
+          "compileMilliseconds": 78.33387500001118,
+          "binaryBytes": 34720,
+          "samples": [
+            48419959,
+            46453916,
+            47521334,
+            50560083,
+            50201834,
+            46218375,
+            47856416,
+            46111334,
+            47126750
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "48f03ff74381022bbf8b277f782aae491b294e32e2fde49d5973eac3b64323e8",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/native-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-direct-O3/native-bounds-removed",
+          "compileMilliseconds": 88.33775000000605,
+          "binaryBytes": 34728,
+          "samples": [
+            50250459,
+            46508000,
+            50196375,
+            49706625,
+            47271208,
+            46009458,
+            45925333,
+            45765167,
+            46685042
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "28b1dc4f7c79247b9b66d2d69da4efa3ef4b014fd6bacfa47862a6d789d5698d",
+          "removed": [
+            "Z___z_Array_u64_at",
+            "Z___z_Array_u64_at_mut",
+            "Z___z_Array_usize_at",
+            "Z___z_Array_usize_at_mut"
+          ],
+          "sanitizerValidated": true
+        }
+      ]
+    },
+    {
+      "kernel": "registers-view",
+      "profile": "O2",
+      "emitMilliseconds": {
+        "stage0": 176.89800000000105,
+        "native": 212.32304199998907
+      },
+      "variants": [
+        {
+          "id": "c-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/c-checked.c",
+          "defines": [
+            "-DBENCH_CASE=3",
+            "-DBENCH_NAME=\"registers-view\""
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/c-checked",
+          "compileMilliseconds": 54.482499999998254,
+          "binaryBytes": 34712,
+          "samples": [
+            46274875,
+            51489250,
+            47720541,
+            46072500,
+            47032792,
+            46908500,
+            46411458,
+            46948542,
+            45824167
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "c-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/c-bounds-removed.c",
+          "defines": [
+            "-DBENCH_CASE=3",
+            "-DBENCH_NAME=\"registers-view\"",
+            "-DBENCH_REMOVE_BOUNDS"
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/c-bounds-removed",
+          "compileMilliseconds": 55.879000000000815,
+          "binaryBytes": 34720,
+          "samples": [
+            46332417,
+            46370209,
+            46522333,
+            46221959,
+            46200416,
+            46464667,
+            46341458,
+            51240833,
+            46387750
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/stage0-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/stage0-checked",
+          "compileMilliseconds": 67.85925000000861,
+          "binaryBytes": 34720,
+          "samples": [
+            46238875,
+            45909583,
+            46449041,
+            46743250,
+            46748833,
+            46974416,
+            45985417,
+            45938125,
+            45932042
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "35474076fe54be2e83fc1088ee34f7107d1d75f446ff17fbec66175ddcb1e9f5",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/stage0-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/stage0-bounds-removed",
+          "compileMilliseconds": 65.13070799999696,
+          "binaryBytes": 34728,
+          "samples": [
+            45934416,
+            46293375,
+            48950250,
+            47691500,
+            46325083,
+            54026000,
+            46056375,
+            46395333,
+            51627667
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "09f22e4aeaa9434445113a0bce1213f4e5a4b3bf61f5331e7419eb2dbf0790f0",
+          "removed": [
+            "z_bounds_index"
+          ],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/native-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/native-checked",
+          "compileMilliseconds": 65.02787499999977,
+          "binaryBytes": 34720,
+          "samples": [
+            46120000,
+            46143584,
+            46118209,
+            52431875,
+            52532833,
+            46434333,
+            51807666,
+            46376458,
+            53668625
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "95eadbb54a4ef636dc86782eccf889d5e7601113990e3d0ed86d39314920474c",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/native-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O2/native-bounds-removed",
+          "compileMilliseconds": 62.893249999993714,
+          "binaryBytes": 34728,
+          "samples": [
+            50624334,
+            46082500,
+            48176084,
+            48879958,
+            49252708,
+            46713292,
+            49629208,
+            45955708,
+            47344292
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "23698c157195e91d026433076d2e68819bc11f729e6dd263bf06a5dc0af05dcc",
+          "removed": [
+            "Z___z_Array_u64_at",
+            "Z___z_Array_u64_at_mut",
+            "Z___z_Array_usize_at",
+            "Z___z_Array_usize_at_mut"
+          ],
+          "sanitizerValidated": true
+        }
+      ]
+    },
+    {
+      "kernel": "registers-view",
+      "profile": "O3",
+      "emitMilliseconds": {
+        "stage0": 176.89800000000105,
+        "native": 212.32304199998907
+      },
+      "variants": [
+        {
+          "id": "c-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/c-checked.c",
+          "defines": [
+            "-DBENCH_CASE=3",
+            "-DBENCH_NAME=\"registers-view\""
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/c-checked",
+          "compileMilliseconds": 75.94041700000525,
+          "binaryBytes": 34712,
+          "samples": [
+            46591167,
+            48160500,
+            48395958,
+            46466375,
+            49371584,
+            51219292,
+            50566750,
+            48963667,
+            52110334
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "c-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/c-bounds-removed.c",
+          "defines": [
+            "-DBENCH_CASE=3",
+            "-DBENCH_NAME=\"registers-view\"",
+            "-DBENCH_REMOVE_BOUNDS"
+          ],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/c-bounds-removed",
+          "compileMilliseconds": 67.77825000000303,
+          "binaryBytes": 34720,
+          "samples": [
+            55009041,
+            46743625,
+            51437041,
+            46744334,
+            50226959,
+            50445334,
+            46257959,
+            46140625,
+            45746500
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "89081d5130d7af4b1dfe486cd8d24eead16c809c2f15da12ecc667f16290ee9f",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/stage0-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/stage0-checked",
+          "compileMilliseconds": 80.75025000001187,
+          "binaryBytes": 34720,
+          "samples": [
+            50052459,
+            59267541,
+            47071125,
+            54256250,
+            47378625,
+            47764125,
+            47851083,
+            47418167,
+            46358583
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "35474076fe54be2e83fc1088ee34f7107d1d75f446ff17fbec66175ddcb1e9f5",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "stage0-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/stage0-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/stage0-bounds-removed",
+          "compileMilliseconds": 70.06316700000025,
+          "binaryBytes": 34728,
+          "samples": [
+            51133250,
+            48148084,
+            46801333,
+            49692792,
+            46665709,
+            46806875,
+            47045000,
+            46084375,
+            46240291
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "09f22e4aeaa9434445113a0bce1213f4e5a4b3bf61f5331e7419eb2dbf0790f0",
+          "removed": [
+            "z_bounds_index"
+          ],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-checked",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/native-checked.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/native-checked",
+          "compileMilliseconds": 65.30262499999662,
+          "binaryBytes": 34720,
+          "samples": [
+            46359208,
+            67074500,
+            46936208,
+            46662458,
+            46699250,
+            46464792,
+            46638417,
+            46630292,
+            46740250
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "95eadbb54a4ef636dc86782eccf889d5e7601113990e3d0ed86d39314920474c",
+          "removed": [],
+          "sanitizerValidated": true
+        },
+        {
+          "id": "native-bounds-removed",
+          "source": "benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/native-bounds-removed.c",
+          "defines": [],
+          "executable": "/Users/zach/code/z-lang/benchmarks/.build/checked-indexing/run-vBzAme/registers-view-O3/native-bounds-removed",
+          "compileMilliseconds": 68.88533299999835,
+          "binaryBytes": 34728,
+          "samples": [
+            47189125,
+            47671417,
+            46956334,
+            46832833,
+            48023709,
+            46960291,
+            47822042,
+            51268500,
+            47542208
+          ],
+          "checksum": "6254871960194920868",
+          "sourceSha256": "23698c157195e91d026433076d2e68819bc11f729e6dd263bf06a5dc0af05dcc",
+          "removed": [
+            "Z___z_Array_u64_at",
+            "Z___z_Array_u64_at_mut",
+            "Z___z_Array_usize_at",
+            "Z___z_Array_usize_at_mut"
+          ],
+          "sanitizerValidated": true
+        }
+      ]
+    }
+  ]
+}

@@ -841,3 +841,41 @@ SDK-heavy graphs, peak memory, native-emitter runtime parity, ARC identity,
 Map/Set, and generators. Keep compile latency, runtime, and allocation costs
 separate. No claim about beating all contemporary languages follows from these
 small workloads.
+
+## Checked-indexing audit — 2026-09-15
+
+The [checked-indexing suite](../benchmarks/README.md#checked-indexing-code-generation-audit)
+now compares both emitters and handwritten checked C at `-O2` and `-O3`, with
+normal inlining and an explicitly experimental opaque-function boundary.
+Bounds-removal controls modify only known array-index guards, not overflow or
+allocation checks. They are valid-input measurements, not release profiles.
+The compiler remained at `684ce980`; raw samples include hashes of the
+uncommitted benchmark additions and of the verified native bootstrap.
+
+On this Apple M4 Pro, normal-inlining register-view medians at `-O2` were
+46.91 ms for checked C, 46.24 ms for Stage 0, and 46.43 ms for native Z over
+134,217,728 synthetic operations. Clang eliminates all register bounds checks
+when it can see the allocation extent and masked indexes. A field view has no
+additional runtime mechanism in the optimized loop.
+
+The opaque-function control reveals a native-emitter optimization gap:
+48.73 ms checked C, 49.84 ms Stage 0, and 68.85 ms native. Native retains a
+dominated instruction-fetch check and an inner-loop descriptor reload; Stage 0
+eliminates/hoists them. The legitimate unknown-size register checks remain in
+all three. Bounds-removed controls converge near 45.8 ms, but remove legitimate
+checks too, so that difference is not the promised benefit of a safe fix.
+The same code-shape difference survives `-O3`.
+
+See the [assembly/IR audit](../benchmarks/results/checked-indexing-audit-2026-09-15.md),
+[normal report](../benchmarks/results/checked-indexing-2026-09-15-darwin-arm64.md),
+and [opaque-function report](../benchmarks/results/checked-indexing-isolated-2026-09-15-darwin-arm64.md).
+Small timing differences, especially the noisy normal indirect `-O3` rows, are
+not interpreted as gains. Synthetic kernel results do not predict engine-wide
+performance. Independent BigInt checksums, checked C, and UBSan validate the
+benchmark inputs; no compiler or language safety behavior changed.
+
+**Tracked next target:** improve the native checked accessor/emission shape
+before adding an unchecked indexing API. Verify that bounds checks remain for
+unproven accesses, compare the same kernels unchanged, and then return to the
+consumer's bounds-only measurements. Source-level method-effect analysis and
+new public access syntax require separate justification and deliberation.

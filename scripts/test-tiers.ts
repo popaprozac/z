@@ -36,6 +36,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
       "tests/struct-spread.test.ts",
       "tests/struct-spread-dx.test.ts",
       "tests/sibling-array-borrows.test.ts",
+      "tests/checked-indexing-benchmark.test.ts",
       "tests/program-metadata.test.ts",
       "tests/test-tiers.test.ts",
     ],

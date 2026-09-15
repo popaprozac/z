@@ -9610,6 +9610,33 @@ Index bounds and integer overflow checks are unchanged. The executable probe
 covers both emitters at `-O0` and `-O2` with UBSan; consumer timing/adoption is a
 separate step from compiler acceptance.
 
+## Checked indexing across an opaque kernel boundary
+
+The sibling-field borrowing checkpoint is now exercised by a compiler-owned
+register-loop benchmark alongside sequential scans and indirect reads. Both
+emitters run the same Z source, with direct code-field reads and with
+`const program = view state.code`. Normal optimizer inlining eliminates the
+register checks when constructor sizes and operand masks are visible. The view
+does not add a copy, allocation, retain, or runtime loan test.
+
+An experimental externally visible, non-inlined kernel prevents caller-specific
+size specialization without changing the algorithm. Here the native emitter
+retains a sequential instruction-fetch check and a descriptor reload that
+Stage 0 and checked C avoid. Unknown register-index checks remain appropriate.
+The [dated audit](../benchmarks/results/checked-indexing-audit-2026-09-15.md)
+records both code shapes and runtime samples, including noisy results rather
+than treating all differences as speedups. No unsafe API or release-only
+removal of checks was introduced.
+
+This distinguishes two questions: an unsafe indexing capability may eventually
+be useful to an interpreter with independently established invariants, but
+redundant checks in otherwise proven ordinary Z should first be addressed by
+the compiler. Investigate equivalent checked emission forms and rerun the
+unchanged benchmark before attributing any benefit to broader borrow syntax
+or proposing an unchecked-access surface. Whole-owner mutable method calls
+still overlap a field view; method-effect inference remains separate work,
+not an implicit extension of sibling-field precision.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
