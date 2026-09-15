@@ -5331,22 +5331,13 @@ function analyzeStatement(
         inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
         throw new DiagnosticError(fileName, statement.target.location, "assignment target must be local mutable storage");
       }
-      const readonlyField = readonlyFieldOnPath(statement.target, structs, state);
-      const initializesReadonlyField = state.activeFunction?.name === "constructor"
-        && state.constructorFieldInitializations.has(statement.location.offset);
-      if (readonlyField && !initializesReadonlyField) {
-        throw new DiagnosticError(fileName, statement.target.location, `cannot assign to readonly field ${JSON.stringify(readonlyField.name)}`, {
-          code: "Z0214",
-          helps: ["initialize the field during construction, or remove `readonly` if shared mutation is intended"],
-        });
-      }
       rejectOwnerMutationWhileViewed(
         root.name,
         statement.target.location,
         fileName,
         state,
         "mutate",
-        directFieldStoragePath(statement.target)?.fields ?? [],
+        ownedMutationFieldPath(statement.target, locals, structs, state),
       );
       const rootDeclaration = structs.get(underlyingType(stored));
       const mutatesThroughClassReference = statement.target.kind !== "identifier"
@@ -5361,6 +5352,16 @@ function analyzeStatement(
       const expected = statement.target.kind === "identifier"
         ? underlyingType(stored)
         : inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
+      // Indexed targets must be resolved before walking their readonly fields.
+      const readonlyField = readonlyFieldOnPath(statement.target, structs, state);
+      const initializesReadonlyField = state.activeFunction?.name === "constructor"
+        && state.constructorFieldInitializations.has(statement.location.offset);
+      if (readonlyField && !initializesReadonlyField) {
+        throw new DiagnosticError(fileName, statement.target.location, `cannot assign to readonly field ${JSON.stringify(readonlyField.name)}`, {
+          code: "Z0214",
+          helps: ["initialize the field during construction, or remove `readonly` if shared mutation is intended"],
+        });
+      }
       let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state, expected);
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
@@ -13468,7 +13469,10 @@ function inferExpressionInner(
             });
           }
           const root = storageRoot(expression.callee.object);
-          if (root) rejectOwnerMutationWhileViewed(root.name, expression.callee.location, fileName, state);
+          if (root) rejectOwnerMutationWhileViewed(
+            root.name, expression.callee.location, fileName, state, "mutate",
+            ownedMutationFieldPath(expression.callee.object, locals, structs, state),
+          );
           const stored = root ? locals.get(root.name) : null;
           if (!root || !stored || !isMutableBinding(stored)) {
             const iteration = root ? state.iterationBorrowOrigins.get(root.name) : null;
@@ -16456,6 +16460,46 @@ function directFieldStoragePath(expression: Expression): {
   }
   if (current.kind !== "identifier") return { root: root.name, fields: [] };
   return { root: root.name, fields };
+}
+
+// Preserve the fixed-layout prefix before the first indexed projection. All
+// elements within that collection still overlap; a sibling owned field does
+// not. Traversing shared identity cannot establish this storage disjointness.
+function ownedMutationFieldPath(
+  expression: Expression,
+  locals: ReadonlyMap<string, ValueType>,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  state: AnalysisState,
+): readonly string[] {
+  const parts: Extract<Expression, { kind: "member" | "index" }>[] = [];
+  let root = expression;
+  while (root.kind === "member" || root.kind === "index") {
+    if (root.kind === "member" && root.optional) return [];
+    parts.unshift(root);
+    root = root.object;
+  }
+  if (root.kind !== "identifier") return [];
+  let ownerType = String(underlyingType(locals.get(root.name) ?? "unknown"));
+  const fields: string[] = [];
+  let indexed = false;
+  for (const part of parts) {
+    ownerType = parseViewType(ownerType)?.target ?? ownerType;
+    if (part.kind === "member") {
+      const owner = structs.get(ownerType);
+      if (!owner || (owner.kind !== "struct"
+        && !(owner.kind === "class" && part.object === root))) return [];
+      const field = owner.fields.find((candidate) => candidate.name === part.property);
+      if (!field) return [];
+      if (!indexed) fields.push(part.property);
+      ownerType = String(underlyingType(state.expressionTypes.get(part.location.offset) ?? field.type.name));
+    } else {
+      const array = parseDynamicArrayType(ownerType) ?? parseFixedArrayType(ownerType);
+      if (!array) return [];
+      indexed = true;
+      ownerType = array.elementType;
+    }
+  }
+  return fields;
 }
 
 function validateProjectedCapabilityPath(

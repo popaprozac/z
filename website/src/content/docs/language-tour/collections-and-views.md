@@ -77,6 +77,25 @@ the next iteration acquires a fresh view. Once the loop has finished and the
 view has no later uses, the owner becomes mutable again. These lifetime checks
 happen at compile time; they do not add runtime borrow tracking.
 
+A direct view of one array field does not freeze an independently owned sibling
+array. In a mutable method, for example:
+
+```z
+const program = view this.code;
+let ip: usize = 0;
+while (ip < program.length) {
+  this.registers[0] = this.registers[0] + program[ip];
+  ip = ip + 1;
+}
+```
+
+The method still needs `inout this`. `registers.push`, `registers.pop`, and
+`registers.clear` also remain available, while writes to `code` are blocked
+until the view's last use. Indexed elements of one array are not proved
+disjoint, nested shared class identity remains conservative, and deeper views
+through an indexed owner still loan the whole named owner. Bounds checks are
+unchanged.
+
 ## Slices borrow contiguous storage
 
 `Slice<T>` is a non-owning descriptor accepted by functions without copying the

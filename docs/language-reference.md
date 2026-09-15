@@ -1718,6 +1718,29 @@ end that loan. A view created within an iteration can end at its last use
 before an invalidating mutation; the next iteration creates a fresh view.
 Both frontends enforce this distinction without runtime loan tracking.
 
+An indexed write or a non-consuming `Array` mutator retains the fixed-layout
+field prefix of its owned storage. A direct view of `machine.code` can therefore
+coexist with writes to `machine.registers[index]`, or with `push`, `pop`, and
+`clear` on that sibling array:
+
+```z
+const program = view this.code;
+let ip: usize = 0;
+while (ip < program.length) {
+  this.registers[0] = this.registers[0] + program[ip];
+  ip = ip + 1;
+}
+```
+
+This example belongs in an `inout this` method. Disjointness does not grant
+mutability: immutable receivers and readonly fields remain protected. The
+checker stops distinguishing paths at the first array index and does not carry
+the proof through nested class identity. Views derived through an indexed owner
+such as `view machine.functions[index].code` still conservatively loan the
+complete named owner. Mutating the viewed array, replacing its owner, or calling
+a whole-owner `inout` method remains invalid while the view is live. Indexing
+continues to perform its ordinary bounds check.
+
 `view expression` must directly initialize an inferred `const` local or a
 direct retained-result field, and must project a field or indexed element from
 named value storage or a direct field from a named Z ARC owner. Hover reports both

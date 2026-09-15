@@ -9580,6 +9580,36 @@ and repeat bounds-only measurements before designing explicit unchecked
 access. Ordinary indexing remains checked in release builds; no unchecked API
 or profile-dependent safety exemption is introduced here.
 
+## Sibling array storage during borrowed instruction reads
+
+The next interpreter-shaped probe needed a direct `view this.code` while
+updating `this.registers[index]`. The compiler already distinguished direct
+value-struct field loans, but indexed assignment and array mutators fell back
+to the whole owner. Both frontends now retain the owned fixed-layout prefix
+before the first index for mutations. A sibling array may be written, grown,
+cleared, or popped while the code-field view remains live, including in loops.
+Nested value fields and arrays of value structs preserve this boundary; nested
+class identity does not. Aliases of a named class continue to share the same
+loan evidence.
+
+Negative probes exposed a native check previously masked by the whole-owner
+loan error: indexed writes could bypass immutable receiver and readonly-field
+checks. Native assignment and collection mutation now enforce those existing
+capabilities independently of loan overlap. Stage 0 resolves an indexed target
+before checking its readonly ancestor fields, and native index typing follows
+transparent array aliases so an aliased field does not lose its element type
+during lowering. Tests include side effects in an
+index expression so a sibling destination cannot hide a whole-owner mutation.
+
+This is mutation-path precision, not arbitrary region splitting. Views obtained
+through indexed owners still loan the complete named owner, dynamic elements
+within one collection are not independently writable, and whole-owner methods
+remain conservative. The generated view remains one pointer to the original
+array descriptor, with no allocation, copy, retain, or runtime alias test.
+Index bounds and integer overflow checks are unchanged. The executable probe
+covers both emitters at `-O0` and `-O2` with UBSan; consumer timing/adoption is a
+separate step from compiler acceptance.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

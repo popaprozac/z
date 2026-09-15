@@ -914,6 +914,62 @@ function expressionDirectFieldPath(
   return path;
 }
 
+// An indexed mutation still belongs to its containing owned collection field.
+// Never distinguish dynamic elements or carry that proof through shared identity.
+function expressionOwnedMutationPath(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>,
+  arrayReceiverOnly: boolean
+): String {
+  const root = expressionStorageRootName(tree, index);
+  if (root.byteLength == 0) return "";
+  let parts = Array<usize>();
+  let current = index;
+  while (tree.nodes[current].kind == ExpressionKind.memberExpression
+    || tree.nodes[current].kind == ExpressionKind.indexExpression) {
+    if (tree.nodes[current].optionalAccess || tree.nodes[current].children.length == 0) return root;
+    parts.push(current);
+    current = tree.nodes[current].children[0];
+  }
+  if (tree.nodes[current].kind != ExpressionKind.identifierExpression) return root;
+  let ownerType = valueBindingType(bindings, root);
+  let path = root.copyBytes(0, root.byteLength);
+  let indexed = false;
+  let position = parts.length;
+  while (position > 0) {
+    position = position - 1;
+    const part = parts[position];
+    ownerType = transparentTypeName(modules, moduleIndex, ownerType);
+    if (tree.nodes[part].kind == ExpressionKind.memberExpression) {
+      if (typeIsClassReference(module, modules, moduleIndex, ownerType)
+        && position + 1 != parts.length) return root;
+      match (aggregateFieldShape(modules, moduleIndex, ownerType, tree.nodes[part].value)) {
+        some(field) => {
+          if (field.objectiveCGetter.byteLength > 0) return root;
+          if (!indexed) path = `${path}.${field.name}`;
+          ownerType = field.typeName.copyBytes(0, field.typeName.byteLength);
+        }
+        none => return root;
+      }
+    } else {
+      if (stringStartsWith(ownerType, "Slice<") || ownerType == "embed.StaticBytes") return root;
+      const element = arrayElementType(ownerType);
+      if (element.byteLength == 0) return root;
+      indexed = true;
+      ownerType = move element;
+    }
+  }
+  if (arrayReceiverOnly) {
+    const canonical = transparentTypeName(modules, moduleIndex, ownerType);
+    if (!stringStartsWith(canonical, "Array<")) return root;
+  }
+  return path;
+}
+
 function projectedFieldCount(in tree: ExpressionTree, index: usize): usize {
   let count: usize = 0;
   let current = index;
@@ -1078,7 +1134,8 @@ function requireWritableAssignmentAncestors(
   moduleIndex: usize,
   in tree: ExpressionTree,
   index: usize,
-  in evidence: ModuleSemanticEvidence
+  in evidence: ModuleSemanticEvidence,
+  includeLeaf: boolean
 ): void throws ModuleResolveError {
   let current = index;
   while (
@@ -1088,7 +1145,7 @@ function requireWritableAssignmentAncestors(
       && tree.nodes[current].children.length == 2)
   ) {
     const receiver = tree.nodes[current].children[0];
-    if (current != index && tree.nodes[current].kind == ExpressionKind.memberExpression) {
+    if ((includeLeaf || current != index) && tree.nodes[current].kind == ExpressionKind.memberExpression) {
       const storedIndex = expressionResolutionIndex(evidence, tree.nodes[receiver].offset);
       if (storedIndex < evidence.expressionResolutions.length) {
         const ownerType = view evidence.expressionResolutions[storedIndex].typeName;
@@ -4380,7 +4437,14 @@ function inferSignatureCallType(
     }
     if (receiverMode == "inout" || receiverMode == "out" || receiverMode == "move") {
       markClosureCaptureMutation(inout bindings, receiverRoot);
-      const liveView = liveViewBindingForOwner(bindings, receiverRoot);
+      let mutationPath = receiverRoot.copyBytes(0, receiverRoot.byteLength);
+      if (receiverMode == "inout" && tree.nodes[calleeIndex].kind == ExpressionKind.memberExpression
+        && tree.nodes[calleeIndex].children.length == 1) {
+        const receiverNode = tree.nodes[calleeIndex].children[0];
+        mutationPath = expressionOwnedMutationPath(module, modules, moduleIndex, tree,
+          receiverNode, bindings, true);
+      }
+      const liveView = liveViewBindingForStoragePath(bindings, receiverRoot, mutationPath);
       if (liveView.byteLength > 0) {
         const action = receiverMode == "move" ? "move" : "mutate";
         throw resolutionError(
@@ -7418,7 +7482,8 @@ function inferExpressionNodeType(
         tree.nodes[children[1]].column
       );
     }
-    const elementType = arrayElementType(owner);
+    const indexedOwner = transparentTypeName(modules, moduleIndex, owner);
+    const elementType = arrayElementType(indexedOwner);
     let elementViewVisiting = Array<String>();
     if (typeContainsStoredView(
       modules,
@@ -10510,19 +10575,9 @@ function inferExpressionNodeType(
                 );
               }
               receiverAccess = "inout";
-              const liveView = liveViewBindingForOwner(
-                bindings,
-                receiverRoot
+              try requireWritableAssignmentAncestors(
+                module, modules, moduleIndex, tree, receiverIndex, evidence, true
               );
-              if (liveView.byteLength > 0) {
-                throw resolutionError(
-                  ModuleResolveErrorKind.typeMismatch,
-                  module.path,
-                  `cannot mutate "${receiverRoot}" while view "${liveView}" is live`,
-                  tree.nodes[calleeIndex].line,
-                  tree.nodes[calleeIndex].column
-                );
-              }
             }
             const substitutions = Array<NativeValueBinding>();
             const argumentNodes = callArgumentNodes(children);
@@ -12101,14 +12156,20 @@ function inferStatement(
           some(tree) => {
             const root = tree.root;
             const mutationRoot = expressionStorageRootName(tree, root);
-            const mutationPath = expressionDirectFieldPath(tree, root);
+            const mutationPath = expressionOwnedMutationPath(
+              module, modules, moduleIndex, tree, root, bindings, false
+            );
             if (mutationRoot.byteLength > 0) {
               const rootType = valueBindingType(bindings, mutationRoot);
               const storageType = transparentTypeName(modules, moduleIndex, rootType);
-              if (stringStartsWith(storageType, "Slice<")
-                && !valueBindingIsMutable(bindings, mutationRoot)) {
+              const mutableClassIdentity = typeIsClassReference(module, modules, moduleIndex, storageType)
+                && !valueBindingIsBorrowed(bindings, mutationRoot);
+              if (tree.nodes[root].kind != ExpressionKind.identifierExpression
+                && !valueBindingIsMutable(bindings, mutationRoot)
+                && !mutableClassIdentity
+                && !isNativeObjectiveCObjectType(modules, moduleIndex, storageType)) {
                 throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
-                  `cannot mutate an indexed element through immutable binding "${mutationRoot}"`,
+                  `cannot mutate storage through immutable binding "${mutationRoot}"`,
                   tree.nodes[root].line, tree.nodes[root].column);
               }
               const mutationType = mutationRoot == "this" ? valueBindingType(bindings, mutationRoot) : "";
@@ -12256,8 +12317,9 @@ function inferStatement(
                 none => {}
               }
             }
-            if (!assignmentObjectiveCProperty && tree.nodes[root].kind == ExpressionKind.memberExpression) try requireWritableAssignmentAncestors(
-              module, modules, moduleIndex, tree, root, evidence
+            if (!assignmentObjectiveCProperty && (tree.nodes[root].kind == ExpressionKind.memberExpression
+              || tree.nodes[root].kind == ExpressionKind.indexExpression)) try requireWritableAssignmentAncestors(
+              module, modules, moduleIndex, tree, root, evidence, false
             );
           }
           none => {}
