@@ -230,6 +230,18 @@ export function throwingGeneratorHandleType(
 
 // Readonly/view wrappers restrict access, not the scalar type of a length read.
 // Share this classification with the standalone native lowerability gate.
+export function collectionHasCapacity(in ownerType: String): boolean {
+  if (stringStartsWith(ownerType, "readonly ")) {
+    const target = ownerType.copyBytes(9, ownerType.byteLength);
+    return collectionHasCapacity(target);
+  }
+  const source = sourceCollectionTypeName(ownerType);
+  return match (genericTypeShape(source)) {
+    some(generic) => generic.base == "Array" && generic.arguments.length == 1;
+    none => false;
+  };
+}
+
 export function collectionHasLength(in ownerType: String): boolean {
   if (stringStartsWith(ownerType, "view ") && ownerType.byteLength > 5) {
     const target = ownerType.copyBytes(5, ownerType.byteLength);
@@ -485,6 +497,8 @@ export function collectionMethodSignature(
       returnType = "void";
     } else if (!readonlyCollection && methodName == "clear") {
       returnType = "void";
+    } else if (!readonlyCollection && methodName == "pop") {
+      returnType = `Option<${elementType}>`;
     } else if (!readonlyCollection && methodName == "freeze") {
       returnType = `readonly ${collectionOwnerType}`;
     }
@@ -639,7 +653,7 @@ export function collectionMethodMutates(
   }
   return match (genericTypeShape(ownerType)) {
     some(generic) => generic.base == "Array"
-      ? methodName == "push" || methodName == "clear"
+      ? methodName == "push" || methodName == "clear" || methodName == "pop"
       : generic.base == "Map"
       ? methodName == "set"
         || methodName == "remove"

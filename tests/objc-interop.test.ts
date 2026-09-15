@@ -55,6 +55,48 @@ import type {
   ImportDeclaration,
 } from "./support/bootstrap.ts";
 
+test("pops Objective-C Array references into an independently owned Option", () => {
+  if (process.platform !== "darwin") return;
+  const input = resolve(projectRoot, "tests/fixtures/objc-array-pop.zs");
+  const directory = mkdtempSync("/tmp/z-objc-array-pop-");
+  try {
+    const stage0 = compileToNative(readFileSync(input, "utf8"), input).source;
+    assert.match(stage0, /self->data\[self->length\] = nil/);
+    const emittedOracle = spawnSync(process.execPath, [cli, "self-host-emit",
+      resolve(projectRoot, "tests/fixtures/self-host-objc-subclass-execution.zs")], {
+      encoding: "utf8", timeout: 120_000, maxBuffer: 24 * 1024 * 1024,
+    });
+    assert.equal(emittedOracle.status, 0, emittedOracle.stderr);
+    const oracle = resolve(directory, "emitter");
+    const builtOracle = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", oracle], {
+      encoding: "utf8", input: emittedOracle.stdout, timeout: 30_000,
+    });
+    assert.equal(builtOracle.status, 0, builtOracle.stderr);
+    const wire = resolve(directory, "native.zfdcl");
+    writeFileSync(wire, resolveForeignFunctionDeclarationStreams([{
+      kind: "import", moduleName: "native", bindings: null, header: "objc-array-pop.h",
+      location: { fileName: input, offset: 0, line: 1, column: 1 },
+    }], input, []).get("native")!);
+    const contract = resolve(directory, "native.zd");
+    writeFileSync(contract, 'declare module "objc-array-pop.h" {}');
+    const native = spawnSync(oracle, [wire, input, "", contract], {
+      encoding: "utf8", timeout: 30_000, maxBuffer: 24 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr);
+    for (const [name, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+      const executable = resolve(directory, name);
+      const built = spawnSync("clang", ["-x", "objective-c", "-fobjc-arc", "-fblocks", "-Wall", "-Wextra", "-Werror",
+        "-fsanitize=undefined", "-fno-sanitize-recover=all", "-I", resolve(projectRoot, "tests/fixtures"),
+        "-framework", "Foundation", "-mmacosx-version-min=14.0", "-", "-o", executable], {
+        encoding: "utf8", input: generated, timeout: 30_000,
+      });
+      assert.equal(built.status, 0, built.stderr);
+      const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+      assert.equal(run.status, 0, run.stderr);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 hostToolchainTest("infers native enum equality across imports and ObjC property flag expressions", () => {
   if (process.platform !== "darwin") return;
   const file = resolve(projectRoot, "tests/fixtures/objc-enum-comparison/main.zs");

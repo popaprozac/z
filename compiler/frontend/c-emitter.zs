@@ -5189,6 +5189,7 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.arrayLength
+    || declaration.expressions[index].kind == LoweredExpressionKind.arrayCapacity
   ) {
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received a malformed Array.length";
@@ -5198,8 +5199,9 @@ function appendExpression(
       && declaration.expressions[index].labels[0] == "view";
     output.append("(");
     try appendExpression(inout output, declaration, receiver);
-    if (viewReceiver) output.append(")->length");
-    else output.append(").length");
+    if (viewReceiver) output.append(")->");
+    else output.append(").");
+    output.append(declaration.expressions[index].kind == LoweredExpressionKind.arrayCapacity ? "capacity" : "length");
     return;
   }
   if (
@@ -5325,13 +5327,15 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.arrayClear
+    || declaration.expressions[index].kind == LoweredExpressionKind.arrayPop
   ) {
     if (declaration.expressions[index].children.length != 1) {
-      throw "native C emission received a malformed Array.clear";
+      throw "native C emission received a malformed zero-argument Array mutation";
     }
     output.append("Z_");
     output.append(declaration.expressions[index].value);
-    output.append("_clear(&(");
+    output.append(declaration.expressions[index].kind == LoweredExpressionKind.arrayPop
+      ? "_pop(&(" : "_clear(&(");
     const receiver = declaration.expressions[index].children[0];
     try appendExpression(
       inout output,
@@ -7424,6 +7428,8 @@ function appendBorrowedTemporaryInitializers(
       "__z_Array_"
     )
     && !stringStartsWith(declaration.expressions[index].value, "Function_")
+    && !(declaration.expressions[index].labels.length == 1
+      && declaration.expressions[index].labels[0] == "discarded")
   ) {
     throw "native C emission received an unsupported borrowed temporary type";
   }
@@ -8794,7 +8800,10 @@ function appendStatement(
     }
     appendIndent(inout output, depth);
     match (in declaration.statements[index].expression) {
-      some(expression) => try appendExpression(inout output, declaration, expression);
+      some(expression) => {
+        if (declaration.expressions[expression].kind == LoweredExpressionKind.borrowedTemporary) output.append("(void)");
+        try appendExpression(inout output, declaration, expression);
+      }
       none => throw "native C emission received an empty expression statement";
     }
     output.append(";\n");
@@ -22926,6 +22935,36 @@ function appendMapRuntime(
   }
 }
 
+function appendArrayPopRuntime(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const declaration of program.arrays) {
+    // The array name already contains the canonical element identity, including
+    // foreign Objective-C types which are not scalar collection-key identities.
+    const elementIdentity = declaration.name.copyBytes(10, declaration.name.byteLength);
+    const optionName = `__z_Option_${elementIdentity}`;
+    let supported = false;
+    for (const enumeration of program.enums) {
+      if (enumeration.name == optionName) supported = true;
+    }
+    if (!supported) continue;
+    const elementType = try cType(declaration.elementType);
+    output.append(`static __attribute__((unused)) Z_${optionName} Z_${declaration.name}_pop(Z_${declaration.name} *self) {\n`);
+    output.append(`  if (self->length == 0) return (Z_${optionName}){ .tag = Z_${optionName}Tag_none };\n`);
+    output.append("  self->length -= 1;\n");
+    const objectiveC = declaration.elementType.kind == LoweredTypeKind.foreignObjCType;
+    if (objectiveC) output.append(`  ${elementType} __strong *items = (${elementType} __strong *)self->data;\n`);
+    else output.append(`  ${elementType} *items = (${elementType} *)self->data;\n`);
+    output.append(`  Z_${optionName} result = (Z_${optionName}){ .tag = Z_${optionName}Tag_some, .payload = { .some = `);
+    if (objectiveC) output.append("z_stage1_objc_owned(items[self->length])");
+    else output.append("items[self->length]");
+    output.append(" } };\n");
+    if (objectiveC) output.append("  items[self->length] = nil;\n");
+    output.append("  return result;\n}\n\n");
+  }
+}
+
 function appendSetRuntime(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -26153,6 +26192,7 @@ function emitLoweredC(
     }
     output.append("}\n\n");
   }
+  try appendArrayPopRuntime(inout output, program);
   try appendMapRuntime(inout output, program);
   try appendSetRuntime(inout output, program);
   appendAsyncCallableRuntime(inout output, program);

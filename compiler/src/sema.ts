@@ -13369,6 +13369,7 @@ function inferExpressionInner(
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           if (
             expression.callee.property !== "push"
+            && expression.callee.property !== "pop"
             && expression.callee.property !== "clear"
             && expression.callee.property !== "freeze"
           ) {
@@ -13392,7 +13393,8 @@ function inferExpressionInner(
             return readonlyTypeName(receiverValueType);
           }
           const clearing = expression.callee.property === "clear";
-          const expectedArguments = clearing ? 0 : 1;
+          const popping = expression.callee.property === "pop";
+          const expectedArguments = clearing || popping ? 0 : 1;
           if (expression.arguments.length !== expectedArguments) {
             throw new DiagnosticError(
               fileName,
@@ -13422,9 +13424,13 @@ function inferExpressionInner(
                   labels: [{ location: iteration, message: "iteration borrow begins here", length: 3 }],
                   notes: [clearing
                     ? "Array.clear destroys the element currently being visited"
+                    : popping
+                    ? "Array.pop may remove the element currently being visited"
                     : "Array.push may reallocate storage and invalidate the element currently being visited"],
                   helps: [clearing
                     ? "finish the loop before clearing the Array"
+                    : popping
+                    ? "finish the loop before popping from the Array"
                     : "finish the loop before pushing, or iterate a separate snapshot"],
                 },
               );
@@ -13437,6 +13443,13 @@ function inferExpressionInner(
           }
           if (clearing) {
             return "void";
+          }
+          if (popping) {
+            if (containsStoredViewType(dynamic.elementType, structs, enums)) {
+              const origin = state.viewOrigins.get(root.name);
+              if (origin) state.viewCallOrigins.set(expression.location.offset, origin);
+            }
+            return ensureOptionalChainEnum(dynamic.elementType, expression.location, enums, state);
           }
           const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
           requireAssignable(dynamic.elementType, actual, expression.arguments[0], fileName, structs, enums, state);

@@ -331,6 +331,7 @@ export enum LoweredExpressionKind {
   fixedArrayValue,
   arrayRequireLength,
   arrayLength,
+  arrayCapacity,
   fixedArrayLength,
   staticBytesIndex,
   staticBytesSlice,
@@ -339,6 +340,7 @@ export enum LoweredExpressionKind {
   arraySlice,
   arrayPush,
   arrayClear,
+  arrayPop,
   mapEmpty,
   mapLength,
   mapHas,
@@ -4750,7 +4752,7 @@ function moduleTypeNeedsCleanupDepth(
           payloadName
         );
         return match (payload) {
-          success(lowered) => moduleTypeNeedsCleanupDepth(
+          success(lowered) => lowered.kind == LoweredTypeKind.foreignObjCType || moduleTypeNeedsCleanupDepth(
             program,
             importedTypes,
             lowered,
@@ -15063,7 +15065,7 @@ function lowerExpressionContextual(
     }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
-      && tree.nodes[calleeInput].value == "clear"
+      && (tree.nodes[calleeInput].value == "clear" || tree.nodes[calleeInput].value == "pop")
       && tree.nodes[calleeInput].children.length == 1
       && tree.nodes[index].children.length == 1
     ) {
@@ -15095,7 +15097,9 @@ function lowerExpressionContextual(
             children.push(receiver);
             return pushExpression(
               inout output,
-              LoweredExpressionKind.arrayClear,
+              tree.nodes[calleeInput].value == "pop"
+                ? LoweredExpressionKind.arrayPop
+                : LoweredExpressionKind.arrayClear,
               receiverType.name,
               children,
               Array<String>()
@@ -17700,7 +17704,7 @@ function lowerExpressionContextual(
       }
       none => {}
     }
-    if (tree.nodes[index].value == "length") {
+    if (tree.nodes[index].value == "length" || tree.nodes[index].value == "capacity") {
       match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
         some(receiverTypeName) => {
           let receiverValueTypeName = receiverTypeName.copyBytes(
@@ -17765,7 +17769,9 @@ function lowerExpressionContextual(
             if (receiverView) labels.push("view");
             return pushExpression(
               inout output,
-              LoweredExpressionKind.arrayLength,
+              tree.nodes[index].value == "capacity"
+                ? LoweredExpressionKind.arrayCapacity
+                : LoweredExpressionKind.arrayLength,
               receiverType.name,
               children,
               labels
@@ -26248,6 +26254,30 @@ function lowerStatementCore(
             source,
             inout expressions
           );
+        }
+        // An ignored native aggregate result can own ARC payload wrappers even
+        // though it does not require an explicit Z binding. Retire that fresh
+        // call result at the statement boundary, not at process shutdown.
+        if (arena.nodes[index].kind == StatementKind.expressionStatement) {
+          match (in source.tree) {
+            some(tree) => {
+              const root = tree.root;
+              if (tree.nodes[root].kind == ExpressionKind.callExpression) {
+                match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, root)) {
+                  some(resultName) => {
+                    const resultType = try lowerModuleTypeName(program, importedTypes, resultName);
+                    if ((resultType.kind == LoweredTypeKind.structType || resultType.kind == LoweredTypeKind.enumType)
+                      && moduleTypeNeedsCleanup(program, importedTypes, resultType)) {
+                      loweredValue = pushExpression(inout expressions, LoweredExpressionKind.borrowedTemporary,
+                        resultType.name, Array<usize>(loweredValue), Array<String>("discarded"));
+                    }
+                  }
+                  none => {}
+                }
+              }
+            }
+            none => {}
+          }
         }
         if (arena.nodes[index].kind == StatementKind.assignmentStatement) {
           markMutableStorage(inout expressions, loweredValue);

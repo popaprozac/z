@@ -8071,6 +8071,10 @@ function emitFrameExpressionInner(
           }
           if (expression.callee.property === "finish") return receiver;
         }
+        if (parseDynamicArrayType(receiverType) && expression.callee.property === "pop") {
+          const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+          return `Z_DynamicArray_${asyncNativeSymbolPart(writableTypeName(receiverType))}_pop(&(${receiver}))`;
+        }
         if (parseDynamicArrayType(receiverType) && expression.callee.property === "clear") {
           const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
           return `${dynamicArrayClearName(receiverType)}(&(${receiver}))`;

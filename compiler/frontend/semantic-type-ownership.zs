@@ -528,9 +528,30 @@ export function typeHasCleanup(
   in typeName: String,
   in visiting: Array<String>
 ): boolean {
+  return typeHasCleanupInner(modules, moduleIndex, typeName, visiting, false);
+}
+
+// Imported Objective-C references are cleaned up by ARC even when an ordinary
+// expression result is ignored. Z-owned storage must have an explicit owner.
+export function typeRequiresOwnedBinding(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  return typeHasCleanupInner(modules, moduleIndex, typeName, visiting, true);
+}
+
+function typeHasCleanupInner(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in visiting: Array<String>,
+  requiresOwnedBinding: boolean
+): boolean {
   const nullableTarget = nullableTargetType(typeName);
   if (nullableTarget.byteLength > 0) {
-    return typeHasCleanup(modules, moduleIndex, nullableTarget, visiting);
+    return typeHasCleanupInner(modules, moduleIndex, nullableTarget, visiting, requiresOwnedBinding);
   }
   if (stringStartsWith(typeName, "view ") || stringStartsWith(typeName, "Slice<")) {
     return false;
@@ -540,11 +561,11 @@ export function typeHasCleanup(
   // through aliases, aggregate fields, and Option/Result payloads.
   if (stringStartsWith(typeName, "readonly ")) {
     const target = typeName.copyBytes(9, typeName.byteLength);
-    return typeHasCleanup(modules, moduleIndex, target, visiting);
+    return typeHasCleanupInner(modules, moduleIndex, target, visiting, requiresOwnedBinding);
   }
   const transparent = transparentTypeName(modules, moduleIndex, typeName);
   if (transparent != typeName) {
-    return typeHasCleanup(modules, moduleIndex, transparent, visiting);
+    return typeHasCleanupInner(modules, moduleIndex, transparent, visiting, requiresOwnedBinding);
   }
   if (
     typeName == "String"
@@ -555,11 +576,12 @@ export function typeHasCleanup(
     || stringStartsWith(typeName, "__z_native_function:")
   ) return true;
   match (fixedArrayShape(typeName)) {
-    some(array) => return typeHasCleanup(
+    some(array) => return typeHasCleanupInner(
       modules,
       moduleIndex,
       array.elementType,
-      visiting
+      visiting,
+      requiresOwnedBinding
     );
     none => {}
   }
@@ -585,16 +607,17 @@ export function typeHasCleanup(
         generic.base == "ChannelClosed"
         && generic.arguments.length == 1
       ) {
-        return typeHasCleanup(
+        return typeHasCleanupInner(
           modules,
           moduleIndex,
           generic.arguments[0],
-          visiting
+          visiting,
+          requiresOwnedBinding
         );
       }
       if (generic.base == "Option" || generic.base == "Result") {
         for (const argument of generic.arguments) {
-          if (typeHasCleanup(modules, moduleIndex, argument, visiting)) return true;
+          if (typeHasCleanupInner(modules, moduleIndex, argument, visiting, requiresOwnedBinding)) return true;
         }
         return false;
       }
@@ -607,7 +630,17 @@ export function typeHasCleanup(
   match (inferredTypeSymbolLocation(modules, moduleIndex, typeName)) {
     some(location) => {
       const kind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
-      if (kind == ModuleSymbolKind.classSymbol) return true;
+      if (kind == ModuleSymbolKind.classSymbol) {
+        if (requiresOwnedBinding) {
+          match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+            some(signature) => {
+              if (signature.foreignKind == "objcInterface") return false;
+            }
+            none => {}
+          }
+        }
+        return true;
+      }
       const identity = semanticTypeIdentity(modules, moduleIndex, typeName);
       if (containsString(visiting, identity)) return false;
       let nextVisiting = copyStrings(visiting);
@@ -639,11 +672,12 @@ export function typeHasCleanup(
               field.typeName,
               substitutions
             );
-            if (typeHasCleanup(
+            if (typeHasCleanupInner(
               modules,
               location.moduleIndex,
               fieldType,
-              nextVisiting
+              nextVisiting,
+              requiresOwnedBinding
             )) return true;
           }
           for (const variant of signature.variants) {
@@ -652,11 +686,12 @@ export function typeHasCleanup(
               variant.payloadType,
               substitutions
             );
-            if (typeHasCleanup(
+            if (typeHasCleanupInner(
               modules,
               location.moduleIndex,
               payloadType,
-              nextVisiting
+              nextVisiting,
+              requiresOwnedBinding
             )) return true;
           }
           return false;

@@ -2283,6 +2283,29 @@ moving the whole array transfers its buffer without relocating its elements.
 requires addressable mutable `let` storage and is unavailable through
 `readonly Array<T>`, a live element view, or an active `for...of` borrow.
 
+`pop(): Option<T>` removes and transfers the last element, or returns `none`
+when empty. Its container work is O(1): it retains capacity without allocating
+or resizing the buffer and transfers rather than clones the element.
+The returned owner is responsible for cleanup; clearing or reusing
+the array does not destroy it. Like any ownership-bearing result, it must be
+bound or transferred rather than silently discarded. Native C++ elements use
+move construction and retire the moved-from slot; those type-defined operations
+can have their own cost. ARC elements preserve shared identity.
+
+```z
+let history = Array<String>("Draft", "Published");
+const previous = history.pop();
+match (previous) {
+  some(title) => console.log(title);
+  none => console.log("No previous revision");
+}
+```
+
+Like `clear`, `pop` requires mutable storage and is rejected while the array
+is borrowed by a live view or iteration. Popping an element that contains an
+arena view transfers the element, not the arena: its original provenance and
+lifetime restrictions remain.
+
 A completed collection can permanently surrender mutation without copying its
 allocation:
 
@@ -2297,7 +2320,7 @@ const handlers: readonly Map<String, Handler> = routes.freeze();
 corresponding type-position `readonly` value. The buffer or hash buckets are
 transferred unchanged: there is no element copy, allocation, or retain pass at
 the freeze boundary. Read operations and iteration remain available; `push`,
-`set`, `add`, `remove`, `delete`, `clear`, and a second `freeze` are absent.
+`pop`, `set`, `add`, `remove`, `delete`, `clear`, and a second `freeze` are absent.
 There is no implicit thaw. Construct mutable storage, finish initialization,
 then freeze at the publication boundary.
 

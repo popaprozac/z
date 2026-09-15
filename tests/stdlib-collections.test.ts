@@ -2276,6 +2276,116 @@ test("moves Array storage and destroys initialized owned elements in reverse ord
   assert.throws(() => compileToC(movedArray, "dynamic-array-owner-move.zs"), /use of moved value "first"/);
 });
 
+test("pops the last Array element by ownership transfer and retains capacity", () => {
+  const input = resolve(projectRoot, "tests/fixtures/array-pop.zs");
+  const directory = mkdtempSync("/tmp/z-array-pop-");
+  try {
+    const source = readFileSync(input, "utf8");
+    const stage0 = compileToC(source, input);
+    assert.match(stage0, /_pop\([^)]*\*self\) \{\s+if \(self->length == 0\)/);
+    const nativeCheck = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
+      encoding: "utf8", timeout: 120_000,
+    });
+    assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+    const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr);
+    for (const [name, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+      for (const optimization of ["-O0", "-O2"]) {
+        const executable = resolve(directory, name + optimization);
+        const built = spawnSync("clang", ["-x", "c", "-std=c11", optimization, "-Wall", "-Wextra", "-Werror",
+          "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+          encoding: "utf8", input: generated, timeout: 30_000,
+        });
+        assert.equal(built.status, 0, built.stderr);
+        const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+        assert.equal(run.status, 0, run.stderr);
+        assert.equal(run.stdout, "released 1\nreleased 2\nreleased 3\nreleased 4\n");
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("preserves popped ARC identity, Arena provenance, and async frame ownership", () => {
+  const directory = mkdtempSync("/tmp/z-array-pop-composition-");
+  try {
+    for (const name of ["array-pop-class", "array-pop-arena", "array-pop-async"]) {
+      const input = resolve(projectRoot, `tests/fixtures/${name}.zs`);
+      const stage0 = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8", timeout: 30_000 });
+      assert.equal(stage0.status, 0, stage0.stderr);
+      if (name.endsWith("class")) assert.equal(stage0.stdout, "released 42\n");
+      const parity = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(parity.status, 0, parity.stderr);
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(native.status, 0, native.stderr);
+      const executable = resolve(directory, name);
+      const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable], {
+        encoding: "utf8", input: native.stdout, timeout: 30_000,
+      });
+      assert.equal(built.status, 0, built.stderr);
+      const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.stdout, stage0.stdout);
+    }
+    const source = readFileSync(resolve(projectRoot, "tests/fixtures/array-pop-arena.zs"), "utf8")
+      .replace("let arena = Arena();", "let arena = Arena(); let other = Arena();")
+      .replace("arena.create(removed)", "other.create(removed)");
+    assert.match(diagnostics(source, "array-pop-wrong-arena.zs")[0]?.message ?? "", /only in the Arena that owns every embedded view/);
+    const invalid = resolve(directory, "invalid.zs");
+    writeFileSync(invalid, source);
+    const rejected = spawnSync(process.execPath, [cli, "self-host-resolve", invalid], {
+      encoding: "utf8", timeout: 120_000,
+    });
+    assert.equal(rejected.status, 1, rejected.stderr);
+    assert.match(rejected.stderr, /Arena|arena/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("checks Array.pop mutability, arity, live views, and iteration", () => {
+  const cases: [string, RegExp][] = [
+    ["const values = Array<i32>(42); values.pop();", /requires addressable let storage/],
+    ["let values = Array<i32>(42); values.pop(1);", /expects 0 arguments/],
+    ["let values = Array<i32>(42); const frozen = values.freeze(); frozen.pop();", /readonly Array/],
+    ["let values = Array<i32>(42); const current = view values[0]; values.pop(); console.log(current);", /cannot mutate.*while view/],
+    ["let values = Array<i32>(42); for (const value of values) { values.pop(); }", /cannot structurally mutate Array/],
+    ["let values = Array<i32>(42); for (const value of values) { values.push(1); }", /cannot structurally mutate Array/],
+    ["let values = Array<i32>(42); for (const value of values) { values.clear(); }", /cannot structurally mutate Array/],
+    ["let values = Array<i32>(42); const result = for (const value of values) { values.pop(); select value; } else { select 0; };", /cannot structurally mutate Array/],
+    ["let values = Array<String>(\"Draft\"); values.pop();", /ownership-bearing value must be bound or transferred/],
+    ["let values = Array<Owner>(); values.push(new Owner({ id: 42 })); values.pop();", /ownership-bearing value must be bound or transferred/],
+  ];
+  const directory = mkdtempSync("/tmp/z-array-pop-invalid-");
+  try {
+    for (const [body, message] of cases) {
+      const source = `import console from "std/console"; class Owner { id: i32; } function main(): i32 { ${body} return 0; }`;
+      assert.throws(() => compileToC(source, "array-pop-invalid.zs"), message);
+      const file = resolve(directory, "invalid.zs");
+      writeFileSync(file, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-resolve", file], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(native.status, 1, `${body}\n${native.stderr}`);
+      assert.match(native.stderr, /Array|array|pop|mutat|ownership-bearing/);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  const source = "function main(): i32 { let values = Array<i32>(42); const last = values.pop(); return 0; }";
+  const offset = source.indexOf("pop");
+  const help = hover(source, "array-pop-hover.zs", offset);
+  assert.match(help?.contents.value ?? "", /pop\(\): Option<i32>/);
+  assert.match(help?.contents.value ?? "", /retains capacity/);
+  const entries = completions(source, "array-pop-hover.zs", offset + 3);
+  assert.ok(entries.some((entry) => entry.label === "pop"));
+}, 300_000);
+
 test("clears dynamic Arrays with deterministic cleanup while retaining capacity", () => {
   const directory = mkdtempSync("/tmp/z-array-clear-");
   const input = resolve(directory, "main.zs");

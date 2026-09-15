@@ -5168,6 +5168,39 @@ test("moves non-copyable C++ values through owned Z bindings and value structs",
   );
 });
 
+test("pops move-only C++ Array elements without copying or double cleanup", () => {
+  const directory = mkdtempSync("/tmp/z-cpp-array-pop-");
+  const input = resolve(directory, "main.zs");
+  try {
+    writeFileSync(input, `
+      import { zcpp } from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};
+      function exercise(): i32 {
+        let values = Array<zcpp.UniqueValue>();
+        values.push(zcpp.UniqueValue(42));
+        const removed = values.pop();
+        values.push(zcpp.UniqueValue(7));
+        values.clear();
+        return match (removed) {
+          some(value) => value.value() - 42;
+          none => 1;
+        };
+      }
+      function main(): i32 {
+        const result = exercise();
+        return result + zcpp.unique_live();
+      }
+    `);
+    const generated = compileToNative(readFileSync(input, "utf8"), input).source;
+    assert.match(generated, /_pop\([^)]*\*self\)/);
+    assert.match(generated, /make_some\(std::move\(self->data\[self->length\]\)\)/);
+    assert.match(generated, /std::destroy_at\(&self->data\[self->length\]\)/);
+    const run = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8", timeout: 30_000 });
+    assert.equal(run.status, 0, run.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("stores move-only C++ values in Array and named enum payloads", () => {
   const arrayExample = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-array.zs");
   const arraySource = readFileSync(arrayExample, "utf8");

@@ -46,6 +46,25 @@ sets `length` to zero. The backing allocation and `capacity` remain available
 for later `push` calls. Clearing requires mutable `let` storage and is rejected
 while an element view or `for...of` borrow is live.
 
+Use `pop()` when you want ownership of the last element:
+
+```z
+let history = Array<String>("Draft", "Published");
+const previous = history.pop(); // Option<String>
+match (previous) {
+  some(title) => console.log(title);
+  none => console.log("No previous revision");
+}
+```
+
+`pop()` returns `none` when empty. Its container work is O(1): it retains capacity
+without allocating or resizing the buffer and transfers rather than clones
+the element. Native C++ move/destructor operations can have their own cost.
+The returned owner handles
+cleanup, independently of later changes to the array. As with `clear`, it
+requires mutable storage and rejects live array views or iteration borrows.
+An element containing an arena view still depends on that arena after removal.
+
 Both shapes expose `.length` and checked indexing. A growable array may allocate
 when it expands. Moving the whole array transfers its buffer; an indexed owned
 element is borrowed rather than moved out, because extraction would leave a

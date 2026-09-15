@@ -76,6 +76,7 @@ import {
   numberLiteralType,
   sourceCollectionTypeName,
   collectionHasLength,
+  collectionHasCapacity,
   throwingGeneratorHandleType,
 } from "./semantic-intrinsics.zs";
 import { nativeStandardCall } from "./semantic-standard-library.zs";
@@ -227,6 +228,7 @@ import {
   typeContainsNativeObjCStorage,
   typeContainsStoredView,
   typeHasCleanup,
+  typeRequiresOwnedBinding,
   typeHasCustomConstructor,
   typeIsBorrowedForeignResource,
   typeIsForeignResource,
@@ -6395,9 +6397,9 @@ function inferExpressionNodeType(
     if (node.optionalAccess || receiverWasView) try requireNonnullableMemberReceiver(
       module, modules, moduleIndex, tree, children[0], receiverValueType
     );
-    if (memberName == "length") {
+    if (memberName == "length" || memberName == "capacity") {
       const lengthOwnerType = transparentTypeName(modules, moduleIndex, receiverValueType);
-      if (collectionHasLength(lengthOwnerType)) {
+      if (memberName == "length" ? collectionHasLength(lengthOwnerType) : collectionHasCapacity(lengthOwnerType)) {
         recordExpressionResolution(
           modules,
           moduleIndex,
@@ -7196,6 +7198,10 @@ function inferExpressionNodeType(
 
     let bodyBindings = copyValueBindings(bindings);
     markRegionControlFlow(inout bodyBindings, "loop");
+    if (collectionHasLength(iterableType)) {
+      const root = expressionStorageRootName(tree, children[1]);
+      if (root.byteLength > 0) borrowValueBindingInPlace(inout bodyBindings, root);
+    }
     const patternChildren = copyIndices(tree.nodes[children[0]].children);
     for (const pattern of patternChildren) {
       if (tree.nodes[pattern].kind == ExpressionKind.matchBindingExpression) {
@@ -10518,6 +10524,22 @@ function inferExpressionNodeType(
                 NativeOwnershipState.moved
               );
             }
+            if (methodName == "pop") {
+              match (genericTypeShape(ownerType)) {
+                some(array) => {
+                  if (array.base == "Array" && array.arguments.length == 1) {
+                    let visiting = Array<String>();
+                    if (typeContainsStoredView(modules, moduleIndex, array.arguments[0], visiting)) {
+                      const owner = valueBindingViewOwner(bindings, receiverRoot);
+                      if (owner.byteLength > 0) setExpressionViewOrigin(
+                        inout bindings, tree.nodes[index].offset, owner
+                      );
+                    }
+                  }
+                }
+                none => {}
+              }
+            }
             if (methodName == "push") {
               match (genericTypeShape(ownerType)) {
                 some(array) => {
@@ -12465,6 +12487,38 @@ function inferStatement(
           inout evidence
         );
         if (expressionType == "__z_never") return false;
+        if (kind == StatementKind.expressionStatement) {
+          let visiting = Array<String>();
+          if (typeRequiresOwnedBinding(modules, moduleIndex, expressionType, visiting)) {
+            // A checked superclass initializer transfers its result into this;
+            // the constructor's expression statement does not discard it.
+            let initializesReceiver = false;
+            if (valueBindingType(bindings, "__z_native_function_name") == "constructor") {
+              match (in expression.tree) {
+                some(tree) => {
+                  const root = view tree.nodes[tree.root];
+                  if (root.kind == ExpressionKind.callExpression) {
+                    for (const call of evidence.callResolutions) {
+                      if (call.offset == root.offset && call.kind == "objcSuperInitializer") {
+                        initializesReceiver = true;
+                      }
+                    }
+                  }
+                }
+                none => {}
+              }
+            }
+            if (!initializesReceiver) {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                "an ownership-bearing value must be bound or transferred; it cannot be discarded",
+                arena.nodes[index].line,
+                arena.nodes[index].column
+              );
+            }
+          }
+        }
       }
       none => {}
     }
@@ -12762,6 +12816,18 @@ function inferStatement(
       some(iterable) => {
         iterableType = try inferExpressionType(module, modules, moduleIndex, arena, iterable, inout bindings, inout evidence);
         elementType = iterationElementType(iterableType);
+        // The collection stays borrowed for the complete iteration body, even
+        // when an individual scalar element is copied into its loop binding.
+        if (collectionHasLength(iterableType)) {
+          match (in iterable.tree) {
+            some(tree) => {
+              const rootIndex = tree.root;
+              const root = expressionStorageRootName(tree, rootIndex);
+              if (root.byteLength > 0) borrowValueBindingInPlace(inout loopBindings, root);
+            }
+            none => {}
+          }
+        }
       }
       none => {}
     }

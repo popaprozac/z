@@ -9388,6 +9388,40 @@ packing and restoration; tests cover every signed width, all byte patterns,
 signed bounds, single evaluation, primitive views, aliases, and suspension.
 These remain copied primitive values, not a new ownership or borrowing rule.
 
+## Stack removal and inferred collection exchange
+
+The JS-engine consumer used separate live-extent counters for stack-shaped
+arrays because there was no operation that removed and returned the tail.
+`Array.pop(): Option<T>` now makes that ownership transfer explicit, without
+changing indexed access into partial moves. It removes the final live slot,
+keeps capacity, and hands cleanup to the returned owner. The
+[history fixture](../tests/fixtures/array-pop.zs) verifies that clearing and
+refilling the remaining buffer cannot invalidate the removed document.
+
+The same operation preserves ARC identity and the Arena provenance of
+view-bearing elements. Removal does not detach an interior view from its
+Arena. A popped String can remain owned across an async suspension. Native
+C++ slots use move construction followed by retirement of the moved-from
+slot; the logical resource remains owned by the returned Option.
+
+Native Objective-C payloads also exposed a cleanup distinction: ordinary ARC
+temporaries may be ignored, but their native Option wrappers still need to be
+released. Native lowering now retires ignored fresh aggregate call results
+and unused bound Options correctly. The Objective-C fixture checks that no
+objects remain alive after the program's autorelease pool drains.
+
+Direct native negative tests also pin two pre-existing rules: the source
+collection stays borrowed for the complete iteration body even when scalar
+elements are copied, and ownership-bearing expression results must be bound
+or transferred. Neither scalar iteration nor a bare `pop()` can bypass them.
+
+Reloading an owned collection also exposed a code-generation type handoff:
+`let previous = replace(inout this.documents, move fresh)` was checked as an
+Array but emitted as a scalar local. The emitter now uses the checked exchange
+type directly. Both compiler paths execute the inferred field-exchange
+fixture, with exact cleanup counts. No annotation or helper-method workaround
+is required for this case.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -955,6 +955,9 @@ export function generateC(
 
   for (const type of dynamicArrayTypes) {
     lines.push(generateDynamicArrayClear(type, structs, enums, semanticInfo), "");
+    if (enums.has(optionTypeName(parseDynamicArrayType(type)!.elementType))) {
+      lines.push(generateDynamicArrayPop(type, structs, enums, semanticInfo), "");
+    }
   }
 
   for (const valueType of onceValueTypes) {
@@ -5070,6 +5073,36 @@ function generateDynamicArrayPush(
   }
   self->data[self->length] = value;
   self->length += 1;
+}`;
+}
+
+function generateDynamicArrayPop(
+  name: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const elementType = parseDynamicArrayType(name)!.elementType;
+  const option = optionTypeName(elementType);
+  const mappedOption = mapType(option, structs, enums, semanticInfo.foreignNamedTypes);
+  const niche = nicheOptionPayload(enums.get(option)!, semanticInfo.foreignNamedTypes);
+  const nativeMove = requiresNativeMove(elementType, structs, enums, semanticInfo.foreignNamedTypes);
+  const slot = "self->data[self->length]";
+  const none = nativeMove ? `${enumName(option)}::make_none()`
+    : niche ? nicheOptionNull(niche)
+    : `(${mappedOption}){ .tag = ${variantTag(option, "none")} }`;
+  const some = nativeMove ? `${enumName(option)}::make_some(std::move(${slot}))`
+    : niche ? slot
+    : `(${mappedOption}){ .tag = ${variantTag(option, "some")}, .data = { .some = ${slot} } }`;
+  // Native C++ and Objective-C slots have language-managed lifetimes even
+  // after removal from Z's live range. Z-owned bytes transfer without cleanup.
+  const retire = nativeMove ? `\n  std::destroy_at(&${slot});`
+    : isObjCReferenceType(elementType, semanticInfo.foreignNamedTypes) ? `\n  ${slot} = nil;` : "";
+  return `static Z_UNUSED_FUNCTION ${mappedOption} ${dynamicArrayName(name)}_pop(${dynamicArrayName(name)} *self) {
+  if (self->length == 0) return ${none};
+  self->length -= 1;
+  ${mappedOption} result = ${some};${retire}
+  return result;
 }`;
 }
 
@@ -11858,6 +11891,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
             return generateExpression(expression.callee.object, context);
           }
           const receiver = generateExpression(expression.callee.object, context);
+          if (expression.callee.property === "pop") {
+            return `${dynamicArrayName(receiverValueType)}_pop(&(${receiver}))`;
+          }
           if (expression.callee.property === "clear") {
             return `${dynamicArrayClearName(receiverValueType)}(&(${receiver}))`;
           }
@@ -13403,6 +13439,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
           return "void";
         }
         if (parseDynamicArrayType(receiverType)) {
+          if (expression.callee.property === "pop") return optionTypeName(parseDynamicArrayType(receiverType)!.elementType);
           return expression.callee.property === "freeze" ? readonlyTypeName(receiverType) : "void";
         }
         const weak = parseWeakType(receiverType);
