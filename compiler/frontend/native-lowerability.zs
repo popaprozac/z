@@ -2439,12 +2439,13 @@ function validateNativeBody(
               iterableType.byteLength > 0
               && !typeUsesGeneric(iterableType, "Array")
               && !typeUsesGeneric(iterableType, "Map")
+              && iterableType != "Slice<u8>"
               && !nativeFixedArrayTypeSupported(iterableType)
             ) {
               throw loweringBoundary(
                 path,
                 "Z1000",
-                `iteration over "${iterableType}" is not executable in the native compiler yet; only Array and fixed arrays are supported`,
+                `iteration over "${iterableType}" is not executable in the native compiler yet; Array, fixed arrays, Map, and Slice<u8> are supported`,
                 statement.line,
                 statement.column,
                 3

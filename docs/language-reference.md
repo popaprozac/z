@@ -554,11 +554,17 @@ c enum Status: i32 {
 ```
 
 The implemented ABI tier accepts synchronous, non-throwing, non-generic
-signatures containing fixed-width scalars, owned `String` inputs, and checked
+signatures containing fixed-width scalars, owned `String` inputs, borrowed
+read-only `Slice<u8>` inputs, and checked
 C-layout structs/enums. A `String` input appears as `const char *` in the
 generated header; the wrapper validates UTF-8, makes one owned copy, and
 transfers it to the ordinary Z implementation. `String` results remain
 unsupported until the ABI can describe their allocator and release contract.
+A `Slice<u8>` input becomes adjacent `const uint8_t *` and `uintptr_t` length
+arguments, with no byte copy, NUL scan, or UTF-8 validation. `(NULL, 0)` is empty;
+null with nonzero length traps. The host keeps the range valid and unmodified
+for the synchronous call, and Z's slice rules prevent mutation or escape.
+The parameter needs no `in` prefix because `Slice` is already borrowed.
 Library artifacts also generate target-scoped runtime initialize/shutdown
 functions and bounded entry for host-created threads. A library manifest may
 name one cleanup-bearing `target.runtime.initialize` result that the generated

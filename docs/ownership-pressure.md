@@ -9509,6 +9509,38 @@ emits an unresolved C call, whereas Stage 0 correctly requires the default
 module import. The example uses the correct default import. Native validation
 of that unsupported standard-import shape remains follow-up work.
 
+## Borrowed byte inputs for native consumers
+
+A JavaScript engine's source-input boundary exposed the difference between
+owned text and borrowed bytes. Exporting a Z `String` asks the wrapper to scan
+NUL-terminated UTF-8, validate it, and create an owned copy. That is the wrong
+contract for a host that needs to supply an explicit byte extent, including
+embedded NUL and malformed UTF-8, without implicit text conversion.
+
+`export c function` now accepts read-only `Slice<u8>` inputs. Each input becomes
+adjacent `const uint8_t *` and `uintptr_t` length arguments. The wrapper projects
+them into the private slice representation without allocating, copying, or
+decoding. It accepts null only at zero length. The host still owns the proof
+that the range remains valid and unmodified during the call; Z prevents the
+borrowed slice from being mutated or retained in checked code. Owning the bytes
+past the call requires an explicit copy.
+
+The [byte library](../examples/interop/c/z-bytes-export) and its handwritten C
+consumer exercise both directions: C calls the wrapper, and Z calls another
+export's private implementation with an ordinary borrowed slice. Tests cover
+multiple inputs, aliases, parameter-name collisions, empty inputs, embedded
+NUL, invalid UTF-8, and C/C++ callers. Null-contract tests intercept the terminal
+trap rather than producing OS crash reports. The boundary's ABI and host
+obligations are also included in generated headers.
+
+This exposed native parity gaps that were invisible in the owned-String tier:
+indexed writes through immutable slice parameters, slice storage/capture
+restrictions, array-to-slice conversion through transparent aliases, and byte
+slice iteration. Native checking/lowering now applies the existing Z rules to
+those shapes; no new ownership syntax or application workaround is involved.
+General slice element types at C boundaries, mutable or returned slices, and
+asynchronous exports remain separate future design work.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

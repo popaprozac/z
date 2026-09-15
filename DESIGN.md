@@ -2568,13 +2568,19 @@ export c function z_math_add(left: i32, right: i32): i32 {
 
 The source name is initially the exact C symbol. The compiler must reject
 cross-module collisions rather than silently module-mangling public ABI names.
-Its implemented value tier accepts ABI-stable scalars, checked by-value
+Its implemented value tier accepts ABI-stable scalars, owned UTF-8 `String`
+inputs, borrowed read-only `Slice<u8>` inputs, checked by-value
 `c struct` records, and payload-free `c enum Name: integerType` values; emits a
 public wrapper plus a C/C++-compatible header; validates enum inputs from C; and
 rejects generics, errors, async, affinity, and Z-owned representations at the
 source declaration. Static-library output and a handwritten strict-C consumer
-prove that boundary before strings/slices, projected errors, owned results,
-callbacks, or async exports. An optional manifest-selected runtime initializer
+prove that boundary before general slices, projected errors, owned results,
+callbacks, or async exports. Byte inputs expand to `const uint8_t *` plus
+`uintptr_t` length without copying or decoding; null is accepted only at zero
+length. The host maintains valid, unmodified storage during the synchronous
+call, and the Z slice cannot escape or be mutated. String inputs instead
+validate and copy NUL-terminated UTF-8 into owned Z storage.
+An optional manifest-selected runtime initializer
 may return one cleanup-bearing owner such as `OnceLifetime<T>`; generated
 initialize retains it and generated shutdown destroys it after active foreign
 entries leave. Main-bound roots require explicit host thread proof and release

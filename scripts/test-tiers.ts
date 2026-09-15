@@ -43,6 +43,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
     timeoutMilliseconds: 60_000,
     files: [
       "tests/native-interop.test.ts",
+      "tests/c-export-bytes.test.ts",
       "tests/project-commands.test.ts",
     ],
   },

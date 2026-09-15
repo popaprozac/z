@@ -228,6 +228,7 @@ import {
   typeContainsForeignValueStorage,
   typeContainsNativeObjCStorage,
   typeContainsStoredView,
+  typeContainsSlice,
   typeHasCleanup,
   typeRequiresOwnedBinding,
   typeHasCustomConstructor,
@@ -7599,6 +7600,11 @@ function inferExpressionNodeType(
         );
       }
       const captureType = valueBindingType(bindings, capture);
+      if (typeContainsSlice(modules, moduleIndex, captureType)) {
+        throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+          `capturing Slice value "${capture}" requires an explicit lifetime contract`,
+          node.line, node.column);
+      }
       if (closureSignature.threadContract == "thread.any") {
         if (valueBindingIsBorrowed(bindings, capture)) {
           throw resolutionError(
@@ -11533,6 +11539,12 @@ function inferStatement(
       contextualExpected == "String"
       && qualifiedTypeMember(inferred) == "NSString"
     ) inferred = "String";
+    if (typeContainsSlice(modules, moduleIndex, inferred)
+      || typeContainsSlice(modules, moduleIndex, contextualExpected)) {
+      throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+        "Slice values cannot be stored in local bindings yet",
+        arena.nodes[index].line, arena.nodes[index].column);
+    }
     let stored = inferred.copyBytes(0, inferred.byteLength);
     let viewOwner = "";
     let viewPath = "";
@@ -12091,6 +12103,14 @@ function inferStatement(
             const mutationRoot = expressionStorageRootName(tree, root);
             const mutationPath = expressionDirectFieldPath(tree, root);
             if (mutationRoot.byteLength > 0) {
+              const rootType = valueBindingType(bindings, mutationRoot);
+              const storageType = transparentTypeName(modules, moduleIndex, rootType);
+              if (stringStartsWith(storageType, "Slice<")
+                && !valueBindingIsMutable(bindings, mutationRoot)) {
+                throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+                  `cannot mutate an indexed element through immutable binding "${mutationRoot}"`,
+                  tree.nodes[root].line, tree.nodes[root].column);
+              }
               const mutationType = mutationRoot == "this" ? valueBindingType(bindings, mutationRoot) : "";
               const nativeBase = mutationType.byteLength > 0 ? nativeObjCSubclassBase(modules, moduleIndex, mutationType) : "";
               if (nativeBase.byteLength > 0) {
@@ -13686,7 +13706,7 @@ function validateNativeCExports(
           throw nativeCExportError(
             module,
             declaration,
-            `C export parameter "${parameter.name}" must be an ordinary by-value scalar`
+            `C export parameter "${parameter.name}" must be an ordinary value or read-only Slice<u8> without a capability prefix`
           );
         }
         if (
@@ -13694,6 +13714,7 @@ function validateNativeCExports(
           || (
             !isNativeCExportScalarType(parameter.type.name)
             && parameter.type.name != "String"
+            && transparentTypeName(modules, moduleIndex, parameter.type.name) != "Slice<u8>"
             && !isNativeCLayoutType(modules, moduleIndex, parameter.type.name)
           )
         ) {

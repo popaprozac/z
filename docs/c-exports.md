@@ -1,6 +1,6 @@
 # C Export Design
 
-Status: scalar functions, owned UTF-8 `String` inputs, checked by-value C-layout
+Status: scalar functions, owned UTF-8 `String` inputs, borrowed `Slice<u8>` inputs, checked by-value C-layout
 structs, and fixed-representation C enums implemented in both the Stage-0 and
 fixed-point native compilers. Project-built libraries also publish a
 target-scoped runtime lifecycle and enter it around every public call.
@@ -85,10 +85,10 @@ The first executable slice accepts only types with an unambiguous scalar C ABI:
 | `boolean` | `bool` |
 | `void` | `void` |
 
-The boundary still rejects `String` results, collections, slices, nullable
+The boundary still rejects `String` results, collections, general slices, nullable
 values, ordinary Z structs and enums, classes, closures, generic functions,
 typed errors, async functions, and executor-affine functions. Owned `String`
-inputs plus checked `c struct` and `c enum` values are the deliberate
+inputs, read-only `Slice<u8>` inputs, and checked `c struct` and `c enum` values are the deliberate
 exceptions described below. A targeted diagnostic must name the unsupported
 boundary type or effect rather than letting generated C fail.
 
@@ -125,9 +125,64 @@ value.
 This mapping applies only to C calls. An ordinary Z caller invokes the same
 function with a `String` and does not cross the public wrapper or make the
 boundary copy. Returning `String` to C remains unsupported until the ABI can
-name an allocator and ownership/release contract. A later `cstring` parameter
-tier will provide zero-copy synchronous access with an enforced non-escaping
-lifetime.
+name an allocator and ownership/release contract. A borrowed NUL-terminated
+`cstring` input remains a separate future tier; use the byte slice below for
+arbitrary bytes with an explicit extent.
+
+## Borrowed byte inputs
+
+A synchronous, read-only `Slice<u8>` parameter projects to two adjacent C
+arguments, in data-then-length order:
+
+```z
+export c function byteCount(bytes: Slice<u8>): usize {
+  return bytes.length;
+}
+```
+
+```c
+Z_API uintptr_t byteCount(const uint8_t *bytes_data, uintptr_t bytes_length);
+```
+
+Each slice expands independently; other arguments retain their source order.
+The length uses `uintptr_t`, matching Z's public `usize` mapping. Parameter
+names are descriptive but may be escaped to avoid collisions; use the generated
+header rather than depending on their spelling. No public slice descriptor or
+internal Z layout enters the ABI. Transparent aliases of `Slice<u8>` have the
+same contract. Ordinary Z callers still pass one slice or compatible array and
+invoke the private implementation directly.
+
+| Concern | Contract |
+| --- | --- |
+| Encoding | Arbitrary bytes, with no UTF-8 validation or NUL scan |
+| Embedded NUL | Preserved and counted in the supplied length |
+| Lifetime | Borrowed for the synchronous call only |
+| Host obligation | The stated range must remain valid and unmodified throughout the call |
+| Empty input | `(NULL, 0)` and non-null zero-length inputs are accepted |
+| Invalid null | `(NULL, positive_length)` traps before entering the Z function |
+| Retention | Copy bytes into owned storage during the call if they must survive it |
+
+`Slice` is already borrowed: write `bytes: Slice<u8>`, not
+`in bytes: Slice<u8>`. Existing Z rules reject mutation, local slice storage,
+field/enum storage, returning slices, and closure capture. Forwarding the borrow
+to a synchronous read-only helper is allowed. The public C declaration is
+`const`; the compiler's private slice representation does not change that
+source-level restriction.
+
+The wrapper validates the null/length relationship, **not arbitrary external
+pointer validity**. A C caller still owns the allocation, extent, lifetime, and
+data-race proof. This is an explicit foreign trust boundary, not a memory
+sandbox.
+
+The projection itself performs no allocation, copy, retain, or text scan.
+Project-library calls retain their ordinary runtime entry/leave checks. An
+explicit later `String.fromBytes` validates UTF-8 and copies; it is not implicit
+in receiving bytes.
+
+Only read-only `Slice<u8>` inputs are supported here. Mutable slices, other
+element types, returned slices, asynchronous exports, and borrowed pointer
+results remain unsupported. See the runnable
+[byte library and C consumer](../examples/interop/c/z-bytes-export).
 
 ## C-layout structs
 
@@ -498,7 +553,8 @@ Broader exports should land only with an end-to-end C consumer:
 
 1. ABI-stable scalar functions and static/shared-library header output.
 2. Explicit C-layout structs and fixed-representation payload-free enums.
-3. Borrowed strings and slices projected as pointer-plus-length inputs.
+3. Broader borrowed inputs beyond the implemented read-only `Slice<u8>`
+   pointer-plus-length boundary; NUL-terminated borrowed strings remain distinct.
 4. Typed `throws` projected into explicit status and output channels.
 5. Owned results paired with generated destruction functions.
 6. Callback exports with explicit context, ownership, and threading.

@@ -936,6 +936,25 @@ export function typeMovesOnOwnedUse(
   return typeHasCleanup(modules, moduleIndex, typeName, visiting);
 }
 
+export function typeContainsSlice(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  const canonical = transparentTypeName(modules, moduleIndex, typeName);
+  if (stringStartsWith(canonical, "Slice<")) return true;
+  match (fixedArrayShape(canonical)) {
+    some(array) => return typeContainsSlice(modules, moduleIndex, array.elementType);
+    none => {}
+  }
+  return match (genericTypeShape(canonical)) {
+    some(generic) => generic.base == "Array"
+      && generic.arguments.length == 1
+      && typeContainsSlice(modules, moduleIndex, generic.arguments[0]);
+    none => false;
+  };
+}
+
 function typeContainsStoredViewInner(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

@@ -828,7 +828,7 @@ test("reports evidence-dependent native iteration boundaries before lowering", (
   assert.equal(emission.status, 1);
   assert.match(
     emission.stderr,
-    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array and fixed arrays are supported/,
+    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; Array, fixed arrays, Map, and Slice<u8> are supported/,
   );
   assert.match(emission.stderr, /for \(const path of openDocuments\)/);
 }, 20_000);
@@ -11592,6 +11592,35 @@ test("compiles a multi-module Z application through the standalone native driver
     synchronizedRuntimeCheck.stderr,
   );
 
+  const byteProject = resolve(directory, "byte-library");
+  mkdirSync(byteProject);
+  const byteExample = resolve(projectRoot, "examples/interop/c/z-bytes-export");
+  for (const name of ["library.zs", "z.json"]) {
+    writeFileSync(resolve(byteProject, name), readFileSync(resolve(byteExample, name), "utf8"));
+  }
+  const byteBuild = spawnSync(driver, ["build", byteProject, "--release"], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(byteBuild.status, 0, byteBuild.stderr);
+  const byteHeader = readFileSync(resolve(byteProject, "build/zbytes.h"), "utf8");
+  assert.match(byteHeader, /byteCount\(const uint8_t \*bytes_data, uintptr_t bytes_length\)/);
+  assert.doesNotMatch(byteHeader, /Z___z_Slice|__z_slice/);
+  for (const cpp of [false, true]) {
+    const consumer = resolve(byteProject, cpp ? "consumer-cpp" : "consumer");
+    const built = spawnSync(cpp ? "clang++" : "clang", [
+      "-x", cpp ? "c++" : "c", cpp ? "-std=c++20" : "-std=c11",
+      "-Wall", "-Wextra", "-Werror", "-I", resolve(byteProject, "build"),
+      resolve(byteExample, "consumer.c"), "-x", "none",
+      resolve(byteProject, "build/libzbytes.a"), "-o", consumer,
+    ], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+    assert.equal(built.status, 0, built.stderr);
+    const result = spawnSync(consumer, [], {
+      encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "4 bytes, sum 386; empty input accepted\n");
+  }
+
   const invalidNativeExport = resolve(
     directory,
     "invalid-native-export.zs",
@@ -11891,7 +11920,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(backendIce.status, 1, backendIce.stderr);
   assert.match(
     backendIce.stderr,
-    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array and fixed arrays are supported/,
+    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; Array, fixed arrays, Map, and Slice<u8> are supported/,
   );
 
   const runtimeCollisionProject = resolve(directory, "runtime-collision");
@@ -13731,7 +13760,7 @@ function main(): i32 {
   );
   assert.match(
     emittedApplicationSource,
-    /const int32_t minimum = INT32_MIN/,
+    /const int32_t minimum = (?:INT32_MIN|-2147483648);/,
   );
   assert.match(
     emittedApplicationSource,

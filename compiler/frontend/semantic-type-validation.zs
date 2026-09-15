@@ -52,6 +52,7 @@ import {
 } from "./semantic-model.zs";
 import {
   typeContainsStoredView,
+  typeContainsSlice,
   typeIsArenaOwnerBundle,
   typeIsRetainedParameterViewAggregate,
   typeIsThreadTransferable,
@@ -829,6 +830,11 @@ function validateFunctionTypes(
     }
   }
   try validateTypeReference(module, modules, moduleIndex, bindings, declaration.returnType);
+  if (typeContainsSlice(modules, moduleIndex, declaration.returnType.name)) {
+    throw validationError(ModuleResolveErrorKind.typeMismatch, module.path,
+      "returning Slice values requires an explicit lifetime contract and is not implemented yet",
+      declaration.returnType.line, declaration.returnType.column);
+  }
   let returnViewVisiting = Array<String>();
   if (typeContainsStoredView(
     modules,
@@ -1079,6 +1085,11 @@ function validateAggregateTypes(
   }
   for (const field of declaration.fields) {
     try validateTypeReference(module, modules, moduleIndex, bindings, field.type);
+    if (typeContainsSlice(modules, moduleIndex, field.type.name)) {
+      throw validationError(ModuleResolveErrorKind.typeMismatch, module.path,
+        "Slice values cannot be stored in struct or class fields",
+        field.type.line, field.type.column);
+    }
     let fieldViewVisiting = Array<String>();
     if (typeContainsStoredView(
       modules,
@@ -1274,6 +1285,10 @@ function validateEnumTypes(
     match (in variant.payload) {
       some(payload) => {
         try validateTypeReference(module, modules, moduleIndex, empty, payload);
+        if (typeContainsSlice(modules, moduleIndex, payload.name)) {
+          throw validationError(ModuleResolveErrorKind.typeMismatch, module.path,
+            "Slice values cannot be stored in enum payloads", payload.line, payload.column);
+        }
         let payloadViewVisiting = Array<String>();
         if (typeContainsStoredView(
           modules,

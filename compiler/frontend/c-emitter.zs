@@ -20573,6 +20573,24 @@ function appendTestRunner(
   output.append("}\n\n");
 }
 
+function nativeCExportByteParameterName(
+  in declaration: LoweredFunction,
+  index: usize,
+  in part: String
+): String {
+  let candidateBuffer = TextBuffer();
+  appendCBindingName(inout candidateBuffer, declaration.parameters[index].name);
+  candidateBuffer.append("_");
+  candidateBuffer.append(part);
+  const candidate = candidateBuffer.finish();
+  for (const parameter of declaration.parameters) {
+    let name = TextBuffer();
+    appendCBindingName(inout name, parameter.name);
+    if (name.finish() == candidate) return `_z_export_${index}_${part}`;
+  }
+  return candidate;
+}
+
 function appendNativeCExportSignature(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -20586,13 +20604,23 @@ function appendNativeCExportSignature(
   output.append(name);
   output.append("(");
   let first = true;
+  let parameterIndex: usize = 0;
   for (const parameter of declaration.parameters) {
     if (!first) output.append(", ");
     first = false;
-    const parameterType = try nativeCExportType(program, parameter.type);
-    output.append(parameterType);
-    output.append(" ");
-    appendCBindingName(inout output, parameter.name);
+    // Export validation restricts slices to synchronous, read-only u8 inputs.
+    if (parameter.type.kind == LoweredTypeKind.sliceType) {
+      output.append("const uint8_t *");
+      output.append(nativeCExportByteParameterName(declaration, parameterIndex, "data"));
+      output.append(", uintptr_t ");
+      output.append(nativeCExportByteParameterName(declaration, parameterIndex, "length"));
+    } else {
+      const parameterType = try nativeCExportType(program, parameter.type);
+      output.append(parameterType);
+      output.append(" ");
+      appendCBindingName(inout output, parameter.name);
+    }
+    parameterIndex = parameterIndex + 1;
   }
   if (first) output.append("void");
   output.append(")");
@@ -21099,6 +21127,17 @@ function appendNativeCExportDefinition(
   );
   output.append(" {\n");
   appendAsyncNativeEntry(inout output, program);
+  let validationIndex: usize = 0;
+  for (const parameter of declaration.parameters) {
+    if (parameter.type.kind == LoweredTypeKind.sliceType) {
+      output.append("  if (");
+      output.append(nativeCExportByteParameterName(declaration, validationIndex, "data"));
+      output.append(" == NULL && ");
+      output.append(nativeCExportByteParameterName(declaration, validationIndex, "length"));
+      output.append(" != 0) abort();\n");
+    }
+    validationIndex = validationIndex + 1;
+  }
   for (const parameter of declaration.parameters) {
     if (parameter.type.kind != LoweredTypeKind.enumType) continue;
     match (loweredEnumIndex(program, parameter.type.name)) {
@@ -21138,6 +21177,7 @@ function appendNativeCExportDefinition(
   appendCBindingName(inout output, declaration.name);
   output.append("(");
   let first = true;
+  let parameterIndex: usize = 0;
   for (const parameter of declaration.parameters) {
     if (!first) output.append(", ");
     first = false;
@@ -21145,9 +21185,19 @@ function appendNativeCExportDefinition(
       output.append("z_stage1_string_from_cstring(");
       appendCBindingName(inout output, parameter.name);
       output.append(")");
+    } else if (parameter.type.kind == LoweredTypeKind.sliceType) {
+      const sliceType = try cType(parameter.type);
+      output.append("(");
+      output.append(sliceType);
+      output.append("){ (void *)");
+      output.append(nativeCExportByteParameterName(declaration, parameterIndex, "data"));
+      output.append(", ");
+      output.append(nativeCExportByteParameterName(declaration, parameterIndex, "length"));
+      output.append(" }");
     } else {
       appendCBindingName(inout output, parameter.name);
     }
+    parameterIndex = parameterIndex + 1;
   }
   output.append(");\n");
   if (runtimeName.byteLength > 0) {
@@ -26620,9 +26670,11 @@ function emitLoweredCHeader(
   }
   let emittedTypes = Array<String>();
   let visitingTypes = Array<String>();
+  let borrowedByteInputs = false;
   for (const declaration of program.functions) {
     if (declaration.nativeCExportName.byteLength == 0) continue;
     for (const parameter of declaration.parameters) {
+      if (parameter.type.kind == LoweredTypeKind.sliceType) borrowedByteInputs = true;
       try appendNativeCHeaderType(
         inout output,
         program,
@@ -26638,6 +26690,11 @@ function emitLoweredCHeader(
       inout emittedTypes,
       inout visitingTypes
     );
+  }
+  if (borrowedByteInputs) {
+    output.append("/* Slice<u8> inputs are borrowed pointer/length pairs. Keep each range valid and\n");
+    output.append("   unmodified until the call returns. NULL is accepted only with zero length.\n");
+    output.append("   Bytes are not copied or validated as UTF-8. */\n\n");
   }
   output.append("#if defined(__cplusplus)\nextern \"C\" {\n#endif\n\n");
   if (embeddedRuntimeName.byteLength > 0) {

@@ -2494,7 +2494,7 @@ function validateNativeExport(
   const reject = (summary: string, help?: string): never => {
     throw new DiagnosticError(location.fileName ?? fileName, location, summary, {
       code: "Z0830",
-      notes: ["the current C-export tier supports synchronous, non-throwing, non-generic functions over scalars, owned String inputs, and checked C-layout values"],
+      notes: ["the current C-export tier supports synchronous, non-throwing, non-generic functions over scalars, owned String inputs, borrowed Slice<u8> inputs, and checked C-layout values"],
       helps: help ? [help] : undefined,
     });
   };
@@ -2512,7 +2512,7 @@ function validateNativeExport(
     if (parameter.mode !== "value") {
       reject(
         `C export parameter ${JSON.stringify(parameter.name)} cannot use \`${parameter.mode}\` in the first ABI tier`,
-        "pass an ordinary by-value scalar parameter; explicit pointer ABI contracts are a later tier",
+        "use an ordinary value parameter or a read-only Slice<u8> without a capability prefix; mutable pointer ABI contracts are a later tier",
       );
     }
     const aggregate = structs.get(parameter.type.name);
@@ -2522,6 +2522,7 @@ function validateNativeExport(
       (
         !nativeExportScalarTypes.has(parameter.type.name)
         && parameter.type.name !== "String"
+        && parseSliceType(parameter.type.name)?.elementType !== "u8"
         && !cLayoutStruct
         && !cLayoutEnum
       )

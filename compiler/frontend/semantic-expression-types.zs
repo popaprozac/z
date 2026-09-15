@@ -229,8 +229,10 @@ function compatibleSliceTypes(
   in expected: String,
   in actual: String
 ): boolean {
-  const actualElement = arrayElementType(actual);
-  return match (genericTypeShape(expected)) {
+  const actualType = transparentTypeName(modules, moduleIndex, actual);
+  const expectedType = transparentTypeName(modules, moduleIndex, expected);
+  const actualElement = arrayElementType(actualType);
+  return match (genericTypeShape(expectedType)) {
     some(generic) => generic.base == "Slice"
       && generic.arguments.length == 1
       && equivalentTypes(

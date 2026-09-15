@@ -1,0 +1,7 @@
+{
+  "target": {
+    "kind": "static-library",
+    "name": "zbytes",
+    "entry": "library.zs"
+  }
+}

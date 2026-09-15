@@ -16902,10 +16902,18 @@ function lowerExpressionContextual(
         inout output
       );
       if (parameterTypes.length >= argument) {
-        const expectedTypeName = parameterTypes[argument - 1].copyBytes(
+        let expectedTypeName = parameterTypes[argument - 1].copyBytes(
           0,
           parameterTypes[argument - 1].byteLength
         );
+        let expectedAliasDepth: usize = 0;
+        while (expectedAliasDepth < program.typeAliases.length) {
+          match (localTypeAliasTarget(program, expectedTypeName)) {
+            some(target) => expectedTypeName = move target;
+            none => break;
+          }
+          expectedAliasDepth = expectedAliasDepth + 1;
+        }
         if (output[value].kind == LoweredExpressionKind.localValue
           && output[value].labels.length == 0) {
           output[value].labels.push(copy expectedTypeName);
@@ -16928,6 +16936,14 @@ function lowerExpressionContextual(
                     0,
                     actualTypeName.byteLength
                   );
+                  let actualAliasDepth: usize = 0;
+                  while (actualAliasDepth < program.typeAliases.length) {
+                    match (localTypeAliasTarget(program, actualStorageTypeName)) {
+                      some(target) => actualStorageTypeName = move target;
+                      none => break;
+                    }
+                    actualAliasDepth = actualAliasDepth + 1;
+                  }
                   let alreadyViewed = false;
                   if (
                     stringStartsWith(actualStorageTypeName, "view ")
@@ -26659,9 +26675,10 @@ function lowerStatementCore(
           if (
             iterableType.kind != LoweredTypeKind.arrayType
             && iterableType.kind != LoweredTypeKind.fixedArrayType
+            && iterableType.kind != LoweredTypeKind.sliceType
             && iterableType.kind != LoweredTypeKind.mapType
           ) {
-            throw `native lowering only supports Array, fixed arrays, and Map for iteration, found ${typeName}`;
+            throw `native lowering only supports Array, fixed arrays, Slice, and Map for iteration, found ${typeName}`;
           }
           const missingElementType = match (in type) {
             some(_) => false;
@@ -26682,7 +26699,7 @@ function lowerStatementCore(
             match (genericTypeShape(typeName)) {
               some(generic) => {
                 if (
-                  generic.base == "Array"
+                  (generic.base == "Array" || generic.base == "Slice")
                   && generic.arguments.length == 1
                 ) {
                   const elementType = try lowerModuleTypeName(

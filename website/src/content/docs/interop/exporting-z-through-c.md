@@ -49,6 +49,36 @@ Z storage, and runs ordinary Z cleanup on every path. Z-to-Z calls pass the
 `String` directly and make no boundary copy. Returning an owned `String` to C
 remains unsupported until the public ABI can state allocator and release rules.
 
+## Borrow arbitrary bytes without copying
+
+Use a read-only `Slice<u8>` when the input is bytes rather than promised text:
+
+```z
+export c function byteCount(bytes: Slice<u8>): usize {
+  return bytes.length;
+}
+```
+
+The generated C header exposes a pointer and length, not Z's slice layout:
+
+```c
+Z_API uintptr_t byteCount(const uint8_t *bytes_data, uintptr_t bytes_length);
+```
+
+There is no allocation, byte copy, UTF-8 validation, or NUL scan in this
+projection. Embedded NUL and invalid UTF-8 remain ordinary bytes. Each slice
+expands to its own adjacent pair; ordinary Z callers still pass a single slice
+or compatible array. `Slice` is already borrowed, so omit the `in` prefix.
+
+The caller keeps the byte range valid and unmodified until the synchronous call
+returns. `(NULL, 0)` is empty; `(NULL, positive_length)` traps. The wrapper
+cannot verify arbitrary pointer validity or concurrent host mutation. Z code
+cannot mutate or retain the slice; explicitly copy into owned byte storage if
+the data must survive the call.
+
+Mutable slices, other element types, returned slices, and async exports remain
+unsupported. Receiving bytes never implicitly converts them to `String`.
+
 ## Publish C-layout values deliberately
 
 Ordinary Z structs do not silently become public native layouts. Mark the
@@ -161,7 +191,8 @@ The generated header includes an `extern "C"` guard, so the same library is
 directly consumable from C++, Objective-C++, and Swift's C importer.
 
 :::caution[Current boundary]
-Collections, slices, nullable values, classes, closures, generic functions,
+Collections, general slices (other than read-only `Slice<u8>` inputs), nullable
+values, classes, closures, generic functions,
 typed errors, async functions, executor-affine functions, and owned result
 strings do not yet have a stable public C representation. Z rejects them with a
 source diagnostic rather than leaking an internal layout.
@@ -176,6 +207,7 @@ whether Clang removes wrapper-internal call overhead where semantics permit.
 
 Runnable examples:
 [static library](https://github.com/popaprozac/z/tree/main/examples/interop/c/z-export),
+[borrowed bytes](https://github.com/popaprozac/z/tree/main/examples/interop/c/z-bytes-export),
 [shared library](https://github.com/popaprozac/z/tree/main/examples/interop/c/z-shared-export),
 and [embedded runtime root](https://github.com/popaprozac/z/tree/main/examples/interop/c/z-runtime-export).
 

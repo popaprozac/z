@@ -1959,14 +1959,32 @@ function nativeExportCType(
   throw new Error(`unsupported C export type ${JSON.stringify(type)}`);
 }
 
+function nativeExportByteParameterName(
+  declaration: FunctionDeclaration,
+  index: number,
+  part: "data" | "length",
+): string {
+  const candidate = `${cBindingName(declaration.parameters[index]!.name)}_${part}`;
+  // Public argument names are descriptive when possible. The reserved compiler
+  // namespace keeps expansion hygienic when a source parameter has that name.
+  return declaration.parameters.some(parameter => cBindingName(parameter.name) === candidate)
+    ? `_z_export_${index}_${part}`
+    : candidate;
+}
+
 function nativeExportSignature(
   declaration: FunctionDeclaration,
   terminator: string,
   structs: ReadonlyMap<string, StructDeclaration>,
   enums: ReadonlyMap<string, EnumDeclaration>,
 ): string {
-  const parameters = declaration.parameters.map((parameter) => (
-    `${nativeExportCType(parameter.type.name, structs, enums)} ${cBindingName(parameter.name)}`
+  const parameters = declaration.parameters.flatMap((parameter, index) => (
+    parseSliceType(parameter.type.name)?.elementType === "u8"
+      ? [
+          `const uint8_t *${nativeExportByteParameterName(declaration, index, "data")}`,
+          `uintptr_t ${nativeExportByteParameterName(declaration, index, "length")}`,
+        ]
+      : [`${nativeExportCType(parameter.type.name, structs, enums)} ${cBindingName(parameter.name)}`]
   ));
   return `Z_API ${nativeExportCType(declaration.returnType.name, structs, enums)} ${declaration.nativeExport!.name}(${parameters.join(", ") || "void"})${terminator}`;
 }
@@ -2288,7 +2306,12 @@ function generateNativeExportDefinitions(
   runtime: EmbeddedRuntimeExport | null,
 ): string {
   const definitions = declarations.map((declaration) => {
-    const validations = declaration.parameters.flatMap((parameter) => {
+    const validations = declaration.parameters.flatMap((parameter, index) => {
+      if (parseSliceType(parameter.type.name)?.elementType === "u8") {
+        const data = nativeExportByteParameterName(declaration, index, "data");
+        const length = nativeExportByteParameterName(declaration, index, "length");
+        return [`  if (${data} == NULL && ${length} != 0) abort();`];
+      }
       const enumeration = enums.get(parameter.type.name);
       if (enumeration?.nativeLayout?.language !== "c") return [];
       const cases = enumeration.variants.map((variant) => (
@@ -2296,8 +2319,15 @@ function generateNativeExportDefinitions(
       )).join("\n");
       return [`  switch (${cBindingName(parameter.name)}) {\n${cases}\n    default:\n      abort();\n  }`];
     });
-    const arguments_ = declaration.parameters.map((parameter) => {
+    const arguments_ = declaration.parameters.map((parameter, index) => {
       const name = cBindingName(parameter.name);
+      if (parseSliceType(parameter.type.name)?.elementType === "u8") {
+        const data = nativeExportByteParameterName(declaration, index, "data");
+        const length = nativeExportByteParameterName(declaration, index, "length");
+        // Slice mutability is checked in Z; its private storage uses a mutable
+        // pointer, unlike this public read-only C boundary.
+        return `(${sliceName(parameter.type.name)}){ (uint8_t *)${data}, ${length} }`;
+      }
       return parameter.type.name === "String"
         ? `z_string_from_cstring(${name})`
         : name;
@@ -2382,6 +2412,11 @@ export function generateCHeader(
     return `typedef struct ${name} {\n${fields}\n} ${name};`;
   });
   const typeDeclarations = [...enumDeclarations, ...structDeclarations].join("\n\n");
+  const byteContract = declarations.some(declaration => declaration.parameters.some(
+    parameter => parseSliceType(parameter.type.name)?.elementType === "u8",
+  )) ? "/* Slice<u8> inputs are borrowed pointer/length pairs. Keep each range valid and\n"
+    + "   unmodified until the call returns. NULL is accepted only with zero length.\n"
+    + "   Bytes are not copied or validated as UTF-8. */\n\n" : "";
   const runtime = embeddedRuntimeName === null
     ? null
     : {
@@ -2401,7 +2436,7 @@ export function generateCHeader(
 #define Z_API
 #endif
 
-${typeDeclarations}${typeDeclarations ? "\n\n" : ""}${runtime === null ? "" : `${embeddedRuntimeTypeDeclarations(runtime)}\n\n`}#if defined(__cplusplus)
+${typeDeclarations}${typeDeclarations ? "\n\n" : ""}${byteContract}${runtime === null ? "" : `${embeddedRuntimeTypeDeclarations(runtime)}\n\n`}#if defined(__cplusplus)
 extern "C" {
 #endif
 
