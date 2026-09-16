@@ -146,6 +146,11 @@ ARC retains/releases, nullable properties, selector lookup, inheritance, and
 availability remain compiler-visible. Z syntax does not turn a message send
 into a JavaScript-style dynamic property access.
 
+Class and instance properties have separate lookup scopes, even when their
+names match. For example, `event.modifierFlags` reads the original event's
+flags; `AppKit.NSEvent.modifierFlags` reads the class property. An override in
+one scope does not hide an inherited property in the other.
+
 ## Supported C++ stays namespaced
 
 C++ namespace identity is retained under `zcpp`:

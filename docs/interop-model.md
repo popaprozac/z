@@ -888,6 +888,11 @@ const window = AppKit.NSWindow.alloc().initWithContentRect(
 window.title = "Z Notes";
 ```
 
+Class and instance properties remain distinct even when they share a name:
+`event.modifierFlags` reads that event's flags, while
+`AppKit.NSEvent.modifierFlags` reads the class property. Inheritance preserves
+both scopes, including when a subclass overrides only one of them.
+
 Native enum equality uses native type identity, not an import alias spelling.
 An enum-valued Objective-C property or a value returned from another Z module
 can be compared with that enum's constants without a type annotation or cast.

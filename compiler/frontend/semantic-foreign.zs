@@ -467,7 +467,8 @@ function objcInterfaceTypeSignature(
       let fieldIndex: usize = 0;
       while (
         fieldIndex < fields.length
-        && fields[fieldIndex].name != property.name
+        && (fields[fieldIndex].name != property.name
+          || fields[fieldIndex].classProperty != !property.instance)
       ) {
         fieldIndex = fieldIndex + 1;
       }
