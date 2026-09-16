@@ -44,6 +44,29 @@ class HandoffCounter extends native.ZSubclassFixture on thread.main {
     if (value > 0) return super.delegatedWrite(value);
     return this.total;
   }
+  function matchDelegate(inout this, mode: i32): i32 as "matchDelegate:" {
+    const value: Option<i32> = mode == 0 ? Option.none : Option.some(mode);
+    match (value) {
+      some(amount) => {
+        const after = super.delegatedWrite(amount);
+        if (this.total != after) return -1;
+        super.delegatedPhase(1);
+      }
+      none => super.delegatedPhase(1);
+    }
+    return this.total;
+  }
+  function guardedMatch(inout this, mode: i32): i32 as "guardedMatch:" {
+    const value: Option<i32> = Option.some(1);
+    match (value) {
+      some(amount) => {
+        if (mode == 0) return super.delegatedWrite(amount) + 0;
+        const after = super.delegatedWrite(amount);
+        return native.z_subclass_call_read(this, after);
+      }
+      none => return 0;
+    }
+  }
   function releaseDuringHandoff(inout this): i32 as "releaseDuringHandoff" {
     const value = super.delegatedWrite(3);
     return native.z_subclass_live_count();
@@ -91,10 +114,14 @@ function exercise(): i32 on thread.main {
   if (scenario == 5) return counter.nestedHandoff();
   if (scenario == 6) return counter.borrowedArgument() == 40 ? 0 : 8;
   if (scenario == 7) return counter.senderCleanup();
+  if (scenario == 8) return counter.guardedMatch(0);
+  if (scenario == 9) return counter.guardedMatch(1);
   if (counter.update(1) != 42) return 1;
   if (counter.readerDelegate() != 43) return 2;
   if (counter.readAccess(0) != 43) return 3;
   if (counter.conditionalDelegate(1) != 44) return 7;
+  if (counter.matchDelegate(1) != 46) return 13;
+  if (counter.matchDelegate(0) != 47) return 14;
   return objectSnapshots();
 }
 

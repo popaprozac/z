@@ -70,13 +70,15 @@ hostToolchainTest("delegates native superclass calls without dropping other loan
         });
         assert.equal(built.status, 0, `${compiler} ${optimization}: ${built.stderr}`);
         // 0: repeated writer/reader delegation, value and void returns,
-        //    conditional return, retained snapshot survives field replacement,
+        //    conditional return, block/direct match arms, retained snapshot survives field replacement,
         //    ARC cleanup, and the last external owner released during reentry.
         // 1: restored guard; 2: argument evaluation; 3: local ARC destruction;
         // 4: another reader still active; 5: nested expression;
         // 6: safe receiver-as-object snapshot; 7: sender destructor reentry
         // after argument-temp cleanup (must happen AFTER guard reacquisition).
-        for (let scenario = 0; scenario <= 7; scenario++) {
+        // 8: nested super expression inside a match arm stays guarded;
+        // 9: a match-arm handoff reacquires the guard before its next statement.
+        for (let scenario = 0; scenario <= 9; scenario++) {
           const result = spawnSync(executable, [], {
             encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL",
             env: { ...process.env, Z_SUBCLASS_ACCESS_SCENARIO: String(scenario) },

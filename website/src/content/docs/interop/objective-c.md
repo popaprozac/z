@@ -279,6 +279,10 @@ mutable `setFrame` override without disabling its guard. Nested expressions,
 blocks, and writable arguments remain outside the tier, and live receiver-field
 storage loans are rejected.
 
+Statement bodies inside `match` arms follow the same rule, including direct
+expression arms such as `none => super.sendEvent(event);`. The match subject
+and superclass calls nested inside a larger expression remain guarded.
+
 Reentry may change fields. Retained or copied locals remain snapshots, not
 proof that the receiver is unchanged. This boundary adds stack state and access
 checks plus native ARC retain/release for object arguments, not another heap

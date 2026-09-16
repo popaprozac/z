@@ -20,6 +20,26 @@ function boundary(in arena: StatementArena, statement: usize, offset: usize): bo
       none => {}
     }
   }
+  if (node.kind == StatementKind.matchStatement) {
+    // The native AST stores match-arm bodies on expression nodes, not in
+    // Statement.children. Only visit these statement bodies: the subject and
+    // value-producing/nested match expressions are not handoff boundaries.
+    match (in node.expression) {
+      some(expression) => match (in expression.tree) {
+        some(tree) => {
+          for (const child of tree.nodes[tree.root].children) {
+            if (tree.nodes[child].kind == ExpressionKind.matchArmExpression) {
+              for (const body of tree.nodes[child].statements) {
+                if (boundary(arena, body, offset)) return true;
+              }
+            }
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
   // Only descend through statement nesting, never a partially evaluated
   // enclosing expression or a closure's independently executed body.
   for (const child of node.children) { if (boundary(arena, child, offset)) return true; }
