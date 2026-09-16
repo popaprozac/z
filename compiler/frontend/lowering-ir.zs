@@ -4972,6 +4972,9 @@ function moduleTypeIsWorkerDestructible(
   if (threadShareablePrimitive(name)) return true;
   match (genericTypeShape(name)) {
     some(generic) => {
+      if (generic.base == "OnceLifetime" && generic.arguments.length == 1) {
+        return moduleTypeIsThreadShareable(program, importedTypes, generic.arguments[0], visiting);
+      }
       if (
         (
           generic.base == "Option"
@@ -9037,6 +9040,14 @@ function collectThreadClosureCaptures(
       && importedTypeThreadShareable(importedTypes, type);
     const sharedScope = type.kind == LoweredTypeKind.taskScopeType;
     const channelEndpoint = type.kind == LoweredTypeKind.channelEndpointType;
+    const onceLifetime = type.kind == LoweredTypeKind.onceLifetimeType;
+    if (onceLifetime) {
+      const payload = type.name.copyBytes(13, type.name.byteLength);
+      const visiting = Array<String>();
+      if (!moduleTypeIsThreadShareable(program, importedTypes, payload, visiting)) {
+        throw `native thread.spawn cannot transfer main-bound OnceLifetime capture ${captureName}`;
+      }
+    }
     if (
       needsCleanup
       && type.kind == LoweredTypeKind.classType
@@ -9050,6 +9061,7 @@ function collectThreadClosureCaptures(
       && !sharedArc
       && !sharedScope
       && !channelEndpoint
+      && !onceLifetime
     ) {
       throw `native thread.spawn does not support ownership-bearing capture ${captureName} yet`;
     }

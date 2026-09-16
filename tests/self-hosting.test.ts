@@ -10812,6 +10812,42 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(driverCompilation.status, 0, driverCompilation.stderr);
   exerciseGeneratedAdapterLinking([driver]);
+  const sharedRootProject = resolve(directory, "shared-root-project");
+  mkdirSync(sharedRootProject);
+  for (const file of ["library.zs", "z.json", "consumer.c"]) {
+    copyFileSync(
+      resolve(projectRoot, "tests/fixtures/shareable-once-library", file),
+      resolve(sharedRootProject, file),
+    );
+  }
+  const sharedRootBuild = spawnSync(driver, ["build", sharedRootProject, "--release"], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(sharedRootBuild.status, 0, sharedRootBuild.stderr || String(sharedRootBuild.error));
+  const sharedRootConsumer = resolve(sharedRootProject, "consumer");
+  const sharedRootCompilation = spawnSync("clang", [
+    "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread",
+    "-I", resolve(sharedRootProject, "build"), resolve(sharedRootProject, "consumer.c"),
+    resolve(sharedRootProject, "build/libshared_root.a"), "-o", sharedRootConsumer,
+  ], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+  assert.equal(sharedRootCompilation.status, 0, sharedRootCompilation.stderr);
+  const sharedRootRun = spawnSync(sharedRootConsumer, [], {
+    encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL",
+  });
+  assert.equal(sharedRootRun.status, 0, sharedRootRun.stderr || String(sharedRootRun.error));
+  assert.equal(sharedRootRun.stdout, "released shared root\nworker-first lifecycle ok\n");
+
+  // A shared root cannot erase an unrelated main-bound requirement in the library.
+  const sharedRootEntry = resolve(sharedRootProject, "library.zs");
+  writeFileSync(sharedRootEntry, readFileSync(sharedRootEntry, "utf8")
+    + "\nclass MainIdentity on thread.main { readonly value: i32; }\n");
+  const mixedRootBuild = spawnSync(driver, ["build", sharedRootProject], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(mixedRootBuild.status, 0, mixedRootBuild.stderr || String(mixedRootBuild.error));
+  const mixedRootHeader = readFileSync(resolve(sharedRootProject, "build/shared_root.h"), "utf8");
+  assert.match(mixedRootHeader, /SHARED_ROOT_RUNTIME_REQUIRES_MAIN_THREAD 1/);
+  assert.match(mixedRootHeader, /SHARED_ROOT_RUNTIME_REQUIRES_ENQUEUE_RELEASE 1/);
   const readonlyLengthFixture = resolve(projectRoot, "tests/fixtures/self-host-emit-readonly-collection-length.zs");
   for (const operation of ["check", "metadata", "run"]) {
     const result = spawnSync(driver, [operation, readonlyLengthFixture], {

@@ -2087,7 +2087,7 @@ ${indent(rootCleanup, 2)}
   ${storage}.root = NULL;
 }
 
-static void ${storage}_complete_root_release(void *opaque) {
+static __attribute__((unused)) void ${storage}_complete_root_release(void *opaque) {
   (void)opaque;
 ${initializer?.requiresMainThread ? `  if (${storage}.is_main_thread == NULL
       || !${storage}.is_main_thread(${storage}.context)) abort();

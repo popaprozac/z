@@ -56,6 +56,7 @@ import {
   typeIsArenaOwnerBundle,
   typeIsRetainedParameterViewAggregate,
   typeIsThreadTransferable,
+  typeIsThreadShareable,
   typeNameIsArena,
 } from "./semantic-type-ownership.zs";
 
@@ -502,7 +503,7 @@ function validateTypeNameShape(
         genericBase == "Once"
         || genericBase == "OnceLifetime"
       ) {
-        try requireMainAffineOncePayload(
+        try requireSafeOncePayload(
           module,
           modules,
           moduleIndex,
@@ -1430,7 +1431,7 @@ export function typeHasMainExecutorLifecycle(
   );
 }
 
-function requireMainAffineOncePayload(
+function requireSafeOncePayload(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -1448,10 +1449,7 @@ function requireMainAffineOncePayload(
       column
     );
   };
-  const payload = generic.arguments[0].copyBytes(
-    0,
-    generic.arguments[0].byteLength
-  );
+  const payload = transparentTypeName(modules, moduleIndex, generic.arguments[0]);
   const location = match (typeSymbolLocation(
     modules,
     moduleIndex,
@@ -1461,7 +1459,7 @@ function requireMainAffineOncePayload(
     none => throw validationError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,
-      `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${payload}`,
+      `Once<T> requires a thread.main-lifecycle or safely shareable Z class, found ${payload}`,
       line,
       column
     );
@@ -1473,7 +1471,7 @@ function requireMainAffineOncePayload(
     throw validationError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,
-      `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${payload}`,
+      `Once<T> requires a thread.main-lifecycle or safely shareable Z class, found ${payload}`,
       line,
       column
     );
@@ -1485,10 +1483,11 @@ function requireMainAffineOncePayload(
     location.symbolIndex,
     inout visiting
   )) return;
+  if (typeIsThreadShareable(modules, moduleIndex, payload)) return;
   throw validationError(
     ModuleResolveErrorKind.typeMismatch,
     module.path,
-    `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${payload}`,
+    `Once<T> requires a thread.main-lifecycle or safely shareable Z class, found ${payload}`,
     line,
     column
   );
@@ -1551,7 +1550,7 @@ function validateModuleConstantTypes(
             declaration.column,
             false
           );
-          try requireMainAffineOncePayload(
+          try requireSafeOncePayload(
             module,
             modules,
             moduleIndex,

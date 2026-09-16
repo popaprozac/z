@@ -3959,7 +3959,8 @@ test("applies readonly aggregate shorthand to every stored field", () => {
     }
 
     function main(): i32 {
-      const snapshot = Snapshot<i32>({ value: 39, revision: 3 });
+      // A mutable binding isolates readonly-field enforcement from const storage.
+      let snapshot = Snapshot<i32>({ value: 39, revision: 3 });
       const configuration = new Configuration(3);
       return snapshot.value + configuration.count();
     }

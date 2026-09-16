@@ -1914,6 +1914,7 @@ export function analyze(
   // declaration-specific affinity diagnostics still run in the normal pass.
   collectAggregateExecutorAffinities(program, structs, enums, state);
   registerObjCSubclasses(program, globals, fileName, state);
+  collectShareableClasses(program, structs, enums, state);
 
   for (const declaration of program.constants) {
     if (!moduleConstantInitializerSupported(declaration.initializer)) {
@@ -1959,19 +1960,8 @@ export function analyze(
     }
     const once = parseOnceType(constantType);
     if (once) {
-      const stored = structs.get(once.valueType);
-      if (stored?.kind !== "class" || !state.aggregateExecutorAffinities.has(once.valueType)) {
-        throw new DiagnosticError(
-          declaration.location.fileName ?? fileName,
-          declaration.type?.location ?? declaration.initializer.location,
-          `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${JSON.stringify(displayAssignableType(once.valueType, state))}`,
-          {
-            code: "Z0604",
-            notes: ["one-time initialization does not by itself make mutable identity safe to share across threads"],
-            helps: ["declare the stored class with `on thread.main`, give it a main-bound field, or keep the owner local and pass it explicitly"],
-          },
-        );
-      }
+      validateOncePayload(once.valueType, "Once<T>", declaration.type?.location ?? declaration.initializer.location,
+        declaration.location.fileName ?? fileName, structs, enums, state);
     }
     if (declaration.type) {
       initializerType = contextualCStringLiteral(constantType, declaration.initializer, state) ?? initializerType;
@@ -2258,15 +2248,7 @@ export function analyze(
   }
 
   validateValueLayouts(program.structs, program.enums, structs, enums, fileName);
-  for (const declaration of program.structs) {
-    if (
-      declaration.kind === "class"
-      && !state.aggregateExecutorAffinities.has(declaration.name)
-      && !shareableTypeIssue(declaration.name, structs, enums, state)
-    ) {
-      state.shareableClasses.add(declaration.name);
-    }
-  }
+  collectShareableClasses(program, structs, enums, state);
   collectMixedAffinityFieldAccesses(program, structs, enums, state);
 
   for (const declaration of program.structs) {
@@ -2824,6 +2806,49 @@ function collectAggregateExecutorAffinities(
       }
     }
   }
+}
+
+function collectShareableClasses(
+  program: Program,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+): void {
+  // Mutex payloads can depend on other shareable classes. Reach a fixed point
+  // before checking module cells, independent of source declaration order.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const declaration of program.structs) {
+      if (declaration.kind === "class"
+        && !state.shareableClasses.has(declaration.name)
+        && !state.aggregateExecutorAffinities.has(declaration.name)
+        && !shareableTypeIssue(declaration.name, structs, enums, state)) {
+        state.shareableClasses.add(declaration.name);
+        changed = true;
+      }
+    }
+  }
+}
+
+function validateOncePayload(
+  valueType: string,
+  container: string,
+  location: SourceLocation,
+  fileName: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+): void {
+  if (structs.get(valueType)?.kind === "class"
+    && (state.aggregateExecutorAffinities.has(valueType) || state.shareableClasses.has(valueType))) return;
+  const issue = shareableTypeIssue(valueType, structs, enums, state);
+  throw new DiagnosticError(fileName, location,
+    `${container} requires a thread.main-lifecycle or safely shareable Z class, found ${JSON.stringify(displayAssignableType(valueType, state))}`, {
+      code: "Z0604",
+      notes: ["Once synchronizes publication, not mutation of the published object", ...(issue ? [issue.reason] : [])],
+      helps: [issue?.help ?? "use a Z class with readonly shared state or Mutex-protected mutable state"],
+    });
 }
 
 function collectMixedAffinityFieldAccesses(
@@ -11220,14 +11245,7 @@ function inferExpressionInner(
               helps: ["declare `const cell = Once<T>();` at module scope"],
             });
           }
-          const stored = structs.get(once.valueType);
-          if (stored?.kind !== "class" || !state.aggregateExecutorAffinities.has(once.valueType)) {
-            throw new DiagnosticError(fileName, expression.callee.location, `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${JSON.stringify(displayAssignableType(once.valueType, state))}`, {
-              code: "Z0604",
-              notes: ["one-time initialization does not by itself make mutable identity safe to share across threads"],
-              helps: ["declare the stored class with `on thread.main` or give it a main-bound field"],
-            });
-          }
+          validateOncePayload(once.valueType, "Once<T>", expression.callee.location, fileName, structs, enums, state);
           state.onceConstructors.set(expression.location.offset, once.valueType);
           return expression.callee.name;
         }
@@ -12569,7 +12587,7 @@ function inferExpressionInner(
           }
           if (expression.callee.property === "initialize") {
             requireMainExecutorContext(
-              true,
+              state.aggregateExecutorAffinities.has(once.valueType),
               expression.location,
               `Once<${displayAssignableType(once.valueType, state)}> initialization`,
               fileName,
@@ -18053,6 +18071,8 @@ function initialThreadTransferKind(
   if (callable) return callable.thread === "any" ? "share" : null;
   if (actual === "String" || actual === "TextBuffer") return "move";
   if (parseViewType(actual) || parseSliceType(actual) || parseTaskType(actual)) return null;
+  const onceLifetime = parseOnceLifetimeType(actual);
+  if (onceLifetime) return state.shareableClasses.has(onceLifetime.valueType) ? "move" : null;
   const mutex = parseMutexType(actual);
   if (mutex) {
     return initialThreadTransferKind(mutex.valueType, structs, enums, state, visiting)
@@ -20596,29 +20616,13 @@ function validateType(
   const once = parseOnceType(type.name);
   if (once) {
     validateType({ name: once.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
-    const stored = structs.get(once.valueType);
-    if (
-      stored?.kind !== "class"
-      || !typeHasMainLifecycleDeclaration(once.valueType, structs, enums, foreignNamedTypes)
-    ) {
-      throw new DiagnosticError(fileName, type.location, `Once<T> requires a class whose lifecycle belongs to thread.main, found ${JSON.stringify(displayAssignableType(once.valueType, state))}`, {
-        code: "Z0604",
-      });
-    }
+    validateOncePayload(once.valueType, "Once<T>", type.location, fileName, structs, enums, state);
     return;
   }
   const onceLifetime = parseOnceLifetimeType(type.name);
   if (onceLifetime) {
     validateType({ name: onceLifetime.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
-    const stored = structs.get(onceLifetime.valueType);
-    if (
-      stored?.kind !== "class"
-      || !typeHasMainLifecycleDeclaration(onceLifetime.valueType, structs, enums, foreignNamedTypes)
-    ) {
-      throw new DiagnosticError(fileName, type.location, `OnceLifetime<T> requires a class whose lifecycle belongs to thread.main, found ${JSON.stringify(displayAssignableType(onceLifetime.valueType, state))}`, {
-        code: "Z0604",
-      });
-    }
+    validateOncePayload(onceLifetime.valueType, "OnceLifetime<T>", type.location, fileName, structs, enums, state);
     return;
   }
   const generator = parseGeneratorType(type.name);

@@ -1,0 +1,8 @@
+{
+  "target": {
+    "kind": "static-library",
+    "name": "shared_root",
+    "entry": "library.zs",
+    "runtime": { "initialize": "initializeRuntime" }
+  }
+}

@@ -1657,7 +1657,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover("TaskControl  // non-joining per-operation cancellation control; its TaskScope owns completion", source, word.start, word.end);
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Once") {
-    return markdownHover("Once<T>()  // synchronized one-time root for a main-lifecycle class; state() and get() work on any Z-managed thread", source, word.start, word.end);
+    return markdownHover("Once<T>()  // synchronized one-time root for a main-lifecycle or safely shareable class; state() and get() work on any Z-managed thread", source, word.start, word.end);
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "OnceLifetime") {
     return markdownHover("OnceLifetime<T>  // move-only guard for one initialized Once<T> interval", source, word.start, word.end);
@@ -2109,8 +2109,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (resolved?.kind === "once") {
       const value = displayType(resolved.valueType, context.typeDisplayNames);
+      const placement = context.semanticInfo.shareableClasses.has(resolved.valueType) ? "" : " on thread.main";
       const detail = word.text === "initialize"
-        ? `initialize(move value: ${value}): OnceLifetime<${value}> on thread.main\n// publishes exactly once; the returned move-only guard owns the initialized interval`
+        ? `initialize(move value: ${value}): OnceLifetime<${value}>${placement}\n// publishes exactly once; the returned move-only guard owns the initialized interval`
         : word.text === "get"
           ? `get(): ${value}\n// synchronized retrieval from any Z-managed thread; member executor contracts still govern use`
           : word.text === "state"
@@ -2629,7 +2630,7 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       {
         label: "Once",
         kind: completionKinds.struct,
-        detail: "Once<T>()  // synchronized main-lifecycle root; state() and get() are cross-thread",
+        detail: "Once<T>()  // synchronized main-lifecycle or safely shareable root; state() and get() are cross-thread",
       },
       {
         label: "OnceLifetime",
@@ -3445,7 +3446,7 @@ function symbolCompletions(
                   : standardType === "TaskControl"
                     ? "TaskControl  // returned by TaskScope.schedule; non-joining cancellation control"
                   : standardType === "Once"
-                    ? "Once<T>()  // synchronized main-lifecycle root; state() and get() are cross-thread"
+                    ? "Once<T>()  // synchronized main-lifecycle or safely shareable root; state() and get() are cross-thread"
                   : standardType === "OnceLifetime"
                     ? "OnceLifetime<T>  // move-only initialized-interval guard"
                   : standardType === "OnceState"
@@ -6269,7 +6270,7 @@ function memberCompletions(
   }
   if (resolved?.kind === "once") {
     return filterCompletions(
-      onceCompletions(resolved.valueType, context.typeDisplayNames),
+      onceCompletions(resolved.valueType, context.typeDisplayNames, context.semanticInfo.shareableClasses.has(resolved.valueType)),
       prefix,
       1000,
     );
@@ -6572,6 +6573,7 @@ function onceExecutorAffinity(
 ): ExecutorAffinityInfo | undefined {
   const once = parseOnceType(type) ?? parseOnceLifetimeType(type);
   if (!once) return undefined;
+  if (context.semanticInfo.shareableClasses.has(once.valueType)) return undefined;
   return context.semanticInfo.aggregateExecutorAffinities.get(once.valueType)
     ?? {
       executor: "main",
@@ -7275,13 +7277,16 @@ function mapValueHasReferenceIdentity(context: AnalyzedSource, type: string): bo
 function onceCompletions(
   valueType: string,
   typeDisplayNames: ReadonlyMap<string, string>,
+  shareable?: boolean,
 ): CompletionItem[] {
   const value = displayType(valueType, typeDisplayNames);
+  const placement = shareable === true ? "" : shareable === false
+    ? " on thread.main" : "  // initialization and cleanup affinity follow the payload class";
   return [
     {
       label: "initialize",
       kind: completionKinds.method,
-      detail: `initialize(move value: ${value}): OnceLifetime<${value}> on thread.main`,
+      detail: `initialize(move value: ${value}): OnceLifetime<${value}>${placement}`,
       insertText: "initialize()",
     },
     {

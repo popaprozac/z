@@ -317,6 +317,33 @@ before publication and are handled through ordinary `try`/`attempt`.
 fields inside `Application` safe; mutable shared state still belongs behind a
 mutex or executor contract.
 
+The payload may be a main-lifecycle class or a compiler-proven shareable class.
+Main-bound payloads keep main-thread initialization and guard cleanup. Shareable
+payloads—readonly graphs, including safe `Mutex<T>` fields—can initialize and
+close on any registered thread. Custom cleanup needs `deinit on thread.any`.
+Their `OnceLifetime<T>` guard stays move-only but can move to another thread.
+Closing the guard prevents future retrieval; existing retained handles survive.
+
+```z
+import { Mutex, Once, OnceLifetime } from "std/sync";
+import { thread } from "std/thread";
+
+struct Registry { count: usize; }
+class Engine { readonly registry: Mutex<Registry>; }
+const engine = Once<Engine>();
+
+function start(): OnceLifetime<Engine> on thread.any {
+  return engine.initialize(new Engine({
+    registry: Mutex(Registry({ count: 0 }))
+  }));
+}
+```
+
+For an embedded C library, this also permits worker-first runtime initialization
+and shutdown without main-thread callbacks, provided no other part of the
+library requires main-thread lifecycle support. `Once` remains one-shot; there
+is no reset, replacement, or implicit lazy initialization.
+
 `state(): OnceState` returns a synchronized `empty`, `initialized`, or `closed`
 snapshot. It is useful for diagnostics and for mapping a framework lifecycle to
 typed errors. The snapshot is not an atomic promise that a later `get()` or

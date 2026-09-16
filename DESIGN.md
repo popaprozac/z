@@ -1855,7 +1855,7 @@ empty. The failure is not stored and a later `get()` cannot replay it. This
 keeps `Once<T>` responsible only for publication and lifetime, while ordinary
 `try`/`attempt` remain responsible for creating the value.
 
-The first tier accepts ARC class payloads whose lifecycle belongs to
+`Once` accepts ARC class payloads whose lifecycle belongs to
 `thread.main`, whether that affinity is declared on the class or inherited
 from a main-bound field. Construction and initialization require main-executor
 proof. `get()` itself is intentionally unrestricted: it returns retained ARC
@@ -1863,9 +1863,20 @@ identity, after which each field and method enforces its own executor contract.
 A worker may therefore use readonly thread-safe metadata and `Mutex`-guarded
 methods directly, while main-only behavior still requires explicit placement.
 Final release from a worker is queued to main so guard cleanup and `deinit`
-retain their lifecycle affinity. Ordinary mutable or readonly-shareable
-classes, structs, native owners, arbitrary cross-thread publication,
-replacement, and optional storage remain future designs. In particular,
+retain their lifecycle affinity.
+
+Compiler-proven shareable ARC classes are also valid payloads. Their immutable
+graph may contain `Mutex<T>`-protected mutable state; the existing shareability
+and worker-destruction rules apply, including checked `deinit on thread.any`
+for custom cleanup. Initialization and guard cleanup then require no main-thread
+placement. The guard remains move-only and may transfer to another thread;
+closing it releases the cell's reference, not handles already retained by callers.
+A library with only thread-independent state can initialize and shut down on
+host worker threads without main-thread proof or release hooks. Any other
+main-bound requirement in that library still requires those hooks.
+
+Unsynchronized mutable classes, structs, native owners, replacement, and
+optional storage remain outside this contract. In particular,
 `Once<T>` is not module-level mutation, a lock, or a general singleton keyword;
 `Application` remains an ordinary user-defined framework type.
 

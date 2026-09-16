@@ -5355,6 +5355,11 @@ function effectiveCollectionMethodSignature(
   collectionOwnerType = sourceCollectionTypeName(in collectionOwnerType);
   match (genericTypeShape(collectionOwnerType)) {
     some(mapType) => {
+      if (mapType.base == "Once" && mapType.arguments.length == 1
+        && methodName == "initialize"
+        && typeIsThreadShareable(modules, moduleIndex, mapType.arguments[0])) {
+        effective.executorAffinity = "";
+      }
       if (
         mapType.base == "Map"
         && mapType.arguments.length == 2
@@ -9321,6 +9326,20 @@ function inferExpressionNodeType(
             const captures = closureCaptureNames(arena, tree, argument, bindings);
             for (const capture of captures) {
               const captureType = valueBindingType(bindings, capture);
+              const actualCaptureType = transparentTypeName(modules, moduleIndex, captureType);
+              match (genericTypeShape(actualCaptureType)) {
+                some(generic) => {
+                  if (generic.base == "OnceLifetime"
+                    && !typeIsThreadTransferable(modules, moduleIndex, actualCaptureType)) {
+                    throw resolutionError(
+                      ModuleResolveErrorKind.typeMismatch, module.path,
+                      `thread.spawn cannot transfer main-bound OnceLifetime capture "${capture}"; its payload must be safely shareable`,
+                      tree.nodes[argument].line, tree.nodes[argument].column
+                    );
+                  }
+                }
+                none => {}
+              }
               const visiting = Array<String>();
               if (typeContainsNativeObjCStorage(modules, moduleIndex, captureType, visiting)) {
                 throw resolutionError(

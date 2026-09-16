@@ -9701,6 +9701,33 @@ accounting pin lifetime. Both compiler paths run at O0/O2 under UBSan.
 Owned indexed `match` destinations remain separately gated until their
 control-flow lowering has equivalent single-evaluation storage evidence.
 
+## Shareable module roots without artificial main affinity
+
+An embeddable interpreter registry needs one shared root with independent
+mutex-protected contexts. Requiring that registry to contain a dummy main-bound
+field made startup depend on an unrelated UI executor and forced hosts to
+provide main-thread proof and release callbacks they did not otherwise need.
+
+`Once<T>` now accepts a compiler-proven shareable ARC class as well as the
+existing main-lifecycle class. This reuses readonly-graph, `Mutex<T>` payload,
+atomic ARC, and checked `deinit on thread.any` rules. The cell still only
+serializes publication and retrieval; it does not make mutable fields safe.
+The lifetime guard is uniquely owned and transferable for a shared payload,
+not copyable or concurrently shareable. Removing the root releases its strong
+reference after unlocking, so retained readers survive publication teardown.
+
+The [shared-root fixture](../tests/fixtures/shareable-once.zs) transfers its
+guard to a worker and uses a retained handle after that worker closes the root.
+Both compiler paths execute it at O0/O2 under UBSan. The
+[embedding fixture](../tests/fixtures/shareable-once-library/library.zs) starts
+on a host pthread without hooks, receives 20,000 synchronized updates from two
+other pthreads, and shuts down on a worker with exactly one root destruction.
+An unrelated main-bound class keeps the library's main-thread requirements.
+
+Negative tests retain main-bound lifetime transfer restrictions, unique guard
+ownership, and rejection of mutable or unsafely destructible payload graphs.
+No root replacement, reset, lazy initialization, or unchecked sharing was added.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

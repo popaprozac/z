@@ -24,7 +24,7 @@ import {
   nullableTargetType,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
-import { typeHasCleanup } from "./semantic-type-ownership.zs";
+import { typeHasCleanup, typeIsThreadTransferable } from "./semantic-type-ownership.zs";
 import { channelTypeKind } from "./channel-shapes.zs";
 import { transparentTypeName, typeSymbolLocation } from "./semantic-type-identities.zs";
 import { aggregateFieldShape } from "./semantic-member-lookups.zs";
@@ -1606,12 +1606,15 @@ function validateNativeThreadCaptureExpression(
       || stringStartsWith(actualType, "SyncSender<")
       || stringStartsWith(actualType, "Receiver<")
       || stringStartsWith(actualType, "SyncReceiver<");
+    const sharedOnceLifetime = stringStartsWith(actualType, "OnceLifetime<")
+      && typeIsThreadTransferable(graph.modules, moduleIndex, actualType);
     if (
       typeName.byteLength > 0
       && typeName != "String"
       && typeName != "TextBuffer"
       && typeName != "TaskScope"
       && !channelEndpoint
+      && !sharedOnceLifetime
       && moduleIndex < graph.modules.length
     ) {
       let visiting = Array<String>();

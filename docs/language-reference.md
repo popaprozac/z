@@ -292,9 +292,9 @@ const lifetime = application.initialize(
 );
 ```
 
-The first tier permits only ARC class payloads whose lifecycle belongs to
-`thread.main`, either through a whole-class declaration or a main-bound field.
-Construction, initialization, and guard cleanup require main-executor proof.
+For ARC class payloads whose lifecycle belongs to
+`thread.main`, either through a whole-class declaration or a main-bound field,
+construction, initialization, and guard cleanup require main-executor proof.
 `get()` is synchronized and may run on any Z-managed thread; it retains and
 returns the same identity without granting permission to use main-only members:
 
@@ -339,7 +339,33 @@ later `get()` traps as a closed-lifetime access. Code must therefore join
 workers that may retrieve the cell before allowing `OnceLifetime<T>` to leave
 scope. This is an ordering contract, not a use-after-free race.
 
-Ordinary mutable or readonly-shareable classes, structs, native resources,
+Compiler-proven shareable ARC classes are also supported: readonly state and
+`Mutex<T>`-protected mutable state use the existing thread-shareability rules.
+Custom cleanup must be checked with `deinit on thread.any`. For these payloads,
+initialization and guard cleanup can run on any registered thread. A
+`OnceLifetime<T>` remains move-only but may be transferred to another thread.
+No reset, replacement, or lazy initialization is introduced.
+
+```z
+import { Mutex, Once, OnceLifetime } from "std/sync";
+import { thread } from "std/thread";
+
+struct Registry { count: usize; }
+class Engine { readonly registry: Mutex<Registry>; }
+const engine = Once<Engine>();
+
+function start(): OnceLifetime<Engine> on thread.any {
+  return engine.initialize(new Engine({
+    registry: Mutex(Registry({ count: 0 }))
+  }));
+}
+```
+
+The guard returned by `start()` owns the publication interval. This can also be
+a C library's configured runtime root: worker-first initialization and shutdown
+need no main-thread hooks when the entire library has no main-bound requirement.
+
+Unsynchronized mutable classes, structs, native resources,
 replacement, optional storage, and concurrent weak upgrade are not implied by
 this tier. `Application` is an example of a user-defined framework type, not a
 language or standard-library global.
@@ -3547,7 +3573,7 @@ kernel lock, so this is not a stale lock-file protocol. This primitive protects
 cross-process artifacts. The current `std/sync` `Mutex<T>` tier provides
 scoped synchronous in-process mutual exclusion; `RwLock<T>`, public guards,
 atomics, condition variables, and semaphores remain later tiers. `Once<T>`
-serializes publication and retrieval of main-lifecycle application identity;
+serializes publication and retrieval of main-lifecycle or safely shareable ARC identity;
 it does not protect mutable fields inside that identity, which still belong
 behind `Mutex<T>` or an executor contract.
 

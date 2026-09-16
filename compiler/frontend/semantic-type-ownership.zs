@@ -310,6 +310,9 @@ function typeIsThreadTransferableInner(
   let arguments = Array<String>();
   match (genericTypeShape(actual)) {
     some(generic) => {
+      if (generic.base == "OnceLifetime" && generic.arguments.length == 1) {
+        return typeIsThreadShareable(modules, moduleIndex, generic.arguments[0]);
+      }
       if (
         (generic.base == "Sender" || generic.base == "SyncSender")
         && generic.arguments.length == 1
@@ -595,6 +598,7 @@ function typeHasCleanupInner(
         || generic.base == "Map"
         || generic.base == "Set"
         || generic.base == "Task"
+        || generic.base == "OnceLifetime"
         || generic.base == "Weak"
         || generic.base == "Mutex"
         || generic.base == "Sender"
@@ -1255,6 +1259,7 @@ export function typeSupportsExplicitCopy(
     || actual == "__z_std_fs_Lock"
     || stringStartsWith(actual, "Weak<")
     || stringStartsWith(actual, "Mutex<")
+    || stringStartsWith(actual, "OnceLifetime<")
     || stringStartsWith(actual, "Channel<")
     || stringStartsWith(actual, "Sender<")
     || stringStartsWith(actual, "Receiver<")

@@ -31,6 +31,149 @@ import {
   prepareProject,
 } from "../compiler/src/project.ts";
 
+test("transfers a shared Once lifetime to a worker without invalidating retained handles", () => {
+  const file = resolve(projectRoot, "tests/fixtures/shareable-once.zs");
+  const source = readFileSync(file, "utf8");
+  const native = spawnSync(process.execPath, [cli, "self-host-emit", file], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(native.status, 0, native.stderr || String(native.error));
+  const directory = mkdtempSync("/tmp/z-shared-once-");
+  try {
+    for (const generated of [compileToC(source, file), native.stdout]) {
+      for (const optimization of ["-O0", "-O2"]) {
+        const executable = resolve(directory, "program");
+        const compilation = spawnSync("clang", [
+          "-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread",
+          optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable,
+        ], { input: generated, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+        assert.equal(compilation.status, 0, compilation.stderr || String(compilation.error));
+        const result = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+        assert.equal(result.status, 0, result.stderr || String(result.error));
+        assert.equal(result.stdout, "released engine\n");
+      }
+    }
+    for (const [fragment, within] of [["engine.initialize", "engine.".length], ["lifetime =", 1], ["const engine", "const ".length + 1]] as const) {
+      const offset = source.indexOf(fragment) + within;
+      const detail = hover(source, file, offset)?.contents.value ?? "";
+      assert.notEqual(detail, "");
+      assert.doesNotMatch(detail, /thread\.main/);
+    }
+    const offset = source.indexOf("engine.initialize") + "engine.".length;
+    const item = completions(source, file, offset).find((entry) => entry.label === "initialize");
+    assert.match(item?.detail ?? "", /OnceLifetime<Engine>/);
+    assert.doesNotMatch(item?.detail ?? "", /on thread\.main/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("proves shared Once payloads independently of declaration order", () => {
+  const source = `
+    import { Mutex, Once } from "std/sync";
+    class Root { readonly leaf: Mutex<Leaf>; }
+    class Leaf { readonly answer: i32; }
+    type RootAlias = Root;
+    const root = Once<RootAlias>();
+    function main(): i32 {
+      const lifetime = root.initialize(new Root({ leaf: Mutex(new Leaf({ answer: 42 })) }));
+      return 0;
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-shared-once-order-");
+  const file = resolve(directory, "main.zs");
+  try {
+    for (const variant of [source, source.replace(
+      "class Root { readonly leaf: Mutex<Leaf>; }\n    class Leaf { readonly answer: i32; }",
+      "class Leaf { readonly answer: i32; }\n    class Root { readonly leaf: Mutex<Leaf>; }",
+    )]) {
+      assert.deepEqual(diagnostics(variant, file), []);
+      writeFileSync(file, variant);
+      const native = spawnSync(process.execPath, [cli, "check", file, "--native-frontend"], {
+        encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL",
+      });
+      assert.equal(native.status, 0, native.stderr || String(native.error));
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("rejects unsafe Once sharing and preserves unique and main-bound lifetime rules", () => {
+  const prelude = `import { Mutex, Once, OnceLifetime } from "std/sync";
+    import { thread } from "std/thread";`;
+  const cases = [
+    `struct Root { value: i32; } const root = Once<Root>();`,
+    `class Root { value: i32; } const root = Once<Root>();`,
+    `class Root { readonly value: i32; function update(inout this): void {} }
+      const root = Once<Root>();`,
+    `class Root { readonly value: i32; deinit {} } const root = Once<Root>();`,
+    `class Mutable { value: i32; } class Root { readonly state: Mutex<Mutable>; }
+      const root = Once<Root>();`,
+    `class UI on thread.main {} class Root { readonly ui: UI; } const root = Once<Root>();`,
+    `function touch(): void on thread.main {}
+      class Root { readonly value: i32; deinit on thread.any { touch(); } }
+      const root = Once<Root>();`,
+    `class Root on thread.main {} const root = Once<Root>();
+      function start(): OnceLifetime<Root> { return root.initialize(new Root({})); }`,
+    `class Root on thread.main {} const root = Once<Root>();
+      function publish(value: Root): OnceLifetime<Root> { return root.initialize(move value); }`,
+    `class Root on thread.main {} const root = Once<Root>();
+      async function transfer(): i32 on thread.main {
+        const lifetime = root.initialize(new Root({}));
+        const worker = thread.spawn(move (): i32 => { const owner = move lifetime; return 0; });
+        return await worker;
+      }`,
+    `class Root { readonly value: i32; } const root = Once<Root>();
+      function duplicate(): void {
+        const lifetime = root.initialize(new Root({ value: 1 }));
+        const alias = copy lifetime;
+      }`,
+    `class Root { readonly value: i32; } const root = Once<Root>();
+      function close(value: OnceLifetime<Root>): void {}
+      function twice(): void {
+        const lifetime = root.initialize(new Root({ value: 1 }));
+        close(move lifetime);
+        close(move lifetime);
+      }`,
+  ];
+  const directory = mkdtempSync("/tmp/z-once-safety-");
+  const file = resolve(directory, "main.zs");
+  try {
+    for (const body of cases) {
+      const source = `${prelude}\n${body}\nfunction main(): i32 { return 0; }`;
+      const result = diagnostics(source, file);
+      assert.ok(result.length, body);
+      assert.match(result[0].message, /shareable|thread\.main|arbitrary thread|move-only|cannot copy|cannot.*thread|moved/i);
+      writeFileSync(file, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-resolve", file], {
+        encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL",
+      });
+      assert.equal(native.status, 1, `${body}\n${native.stderr}`);
+      assert.match(native.stderr, /shareable|thread\.main|arbitrary thread|move-only|cannot.*cop|cannot.*thread|moved/i);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("embeds a worker-initialized shared Once root without main-thread hooks", () => {
+  const project = resolve(projectRoot, "tests/fixtures/shareable-once-library");
+  const build = spawnSync(process.execPath, [cli, "build", project], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(build.status, 0, build.stderr || String(build.error));
+  const executable = resolve(project, "build/consumer");
+  const compilation = spawnSync("clang", [
+    "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread",
+    "-I", resolve(project, "build"), resolve(project, "consumer.c"),
+    resolve(project, "build/libshared_root.a"), "-o", executable,
+  ], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+  assert.equal(compilation.status, 0, compilation.stderr || String(compilation.error));
+  const result = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+  assert.equal(result.status, 0, result.stderr || String(result.error));
+  assert.equal(result.stdout, "released shared root\nworker-first lifecycle ok\n");
+  const file = resolve(project, "library.zs");
+  const mixed = compileToNative(readFileSync(file, "utf8")
+    + "\nclass MainIdentity on thread.main { readonly value: i32; }\n", file);
+  assert.match(mixed.header ?? "", /SHARED_ROOT_RUNTIME_REQUIRES_MAIN_THREAD 1/);
+  assert.match(mixed.header ?? "", /SHARED_ROOT_RUNTIME_REQUIRES_ENQUEUE_RELEASE 1/);
+});
+
 test("embeds immutable file bytes as a cleanup-free module constant", () => {
   const example = resolve(projectRoot, "examples/language/modules/embedded-assets.zs");
   const asset = resolve(projectRoot, "examples/language/modules/assets/embedded-message.txt");
@@ -1512,7 +1655,7 @@ test("leaves Once empty when evaluating its class value throws", () => {
   }
 });
 
-test("restricts Once to main-lifecycle classes while allowing synchronized retrieval", () => {
+test("restricts Once to main-lifecycle or safely shareable classes", () => {
   const structSource = `
     import { Once } from "std/sync";
     struct Application { id: i32; }
@@ -1521,7 +1664,7 @@ test("restricts Once to main-lifecycle classes while allowing synchronized retri
   `;
   assert.match(
     diagnostics(structSource, "/tmp/z-once-struct.zs")[0]?.message ?? "",
-    /Once<T>.*class.*thread\.main/i,
+    /Once<T>.*thread\.main-lifecycle or safely shareable Z class/i,
   );
 
   const ordinaryClassSource = `
@@ -1533,12 +1676,12 @@ test("restricts Once to main-lifecycle classes while allowing synchronized retri
       return application.id - 42;
     }
   `;
-  assert.match(
+  assert.deepEqual(
     diagnostics(
       ordinaryClassSource,
       "/tmp/z-once-ordinary-class.zs",
-    )[0]?.message ?? "",
-    /Once<T>.*class.*thread\.main/i,
+    ),
+    [],
   );
 
   const storedHandleSource = `
@@ -1561,7 +1704,7 @@ test("restricts Once to main-lifecycle classes while allowing synchronized retri
       storedHandleSource,
       "/tmp/z-once-stored-handle.zs",
     )[0]?.message ?? "",
-    /Once<T>.*class.*thread\.main/i,
+    /Once<T>.*thread\.main-lifecycle or safely shareable Z class/i,
   );
 
   const inheritedValueAffinitySource = `
@@ -1825,7 +1968,7 @@ test("keeps OnceLifetime payloads main-affine and emits their standalone ABI sha
   `;
   assert.match(
     diagnostics(invalid, "/tmp/z-once-lifetime-invalid.zs")[0]?.message ?? "",
-    /OnceLifetime<T>.*class.*thread\.main/i,
+    /OnceLifetime<T>.*thread\.main-lifecycle or safely shareable Z class/i,
   );
 
   const valid = `

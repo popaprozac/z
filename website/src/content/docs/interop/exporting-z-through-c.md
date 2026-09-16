@@ -177,6 +177,13 @@ The initializer's owner remains alive until host shutdown, providing a natural
 home for application identity, `Once<T>`, callback registrations, and other
 embedding-lifetime resources.
 
+A root such as `OnceLifetime<Engine>` can be thread-independent when `Engine`
+is a compiler-proven shareable class (for example, a readonly `Mutex<Registry>`
+field). The host can initialize and shut down that library on worker threads
+without main-thread callbacks if both generated requirement macros are zero.
+Main-affine classes elsewhere in the library still keep those requirements;
+a shareable root does not override them.
+
 ## Why the generated wrapper exists
 
 The compiler keeps internal Z symbols private and places the stable ABI in a

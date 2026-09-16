@@ -3842,6 +3842,16 @@ function loweredTypeForIdentity(
     return LoweredType({ kind: LoweredTypeKind.channelEndpointType, name: copy identity });
   }
   if (identity == "cstring") return LoweredType({ kind: LoweredTypeKind.cstringType, name: "cstring" });
+  if (identity.byteLength > 13 && identity.copyBytes(0, 13) == "OnceLifetime_") {
+    const onceNames = programOnceTypeNames(program);
+    for (const onceName of onceNames) {
+      const valueName = onceName.copyBytes(5, onceName.byteLength);
+      if (identity == `OnceLifetime_${valueName}`) return LoweredType({
+        kind: LoweredTypeKind.onceLifetimeType,
+        name: copy identity,
+      });
+    }
+  }
   if (
     identity.byteLength > 5
     && identity.copyBytes(identity.byteLength - 5, identity.byteLength)
