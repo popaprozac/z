@@ -12222,6 +12222,9 @@ test("compiles a multi-module Z application through the standalone native driver
     missingForeignAdapter.stderr,
     /:1:1: error: could not launch z-foreign-adapter for "\.\/foreign-functions-only\.h":/,
   );
+  const adjacentAdapter = resolve(directory, "z-foreign-adapter");
+  writeFileSync(adjacentAdapter, `#!${process.execPath}\nimport ${JSON.stringify(resolve(projectRoot, "compiler/src/foreign-adapter-cli.ts"))};\n`);
+  chmodSync(adjacentAdapter, 0o755);
   const foreignProjectCheck = spawnSync(
     driver,
     ["check", foreignProjectSource],
@@ -12459,6 +12462,18 @@ test("compiles a multi-module Z application through the standalone native driver
     /cache hit: reused build\/foreign-project/,
   );
   assert.equal(statSync(builtForeignApplication).mtimeMs, 0);
+
+  // A helper-only update must invalidate the outer executable cache even when
+  // neither the Z driver binary nor the application/header sources changed.
+  writeFileSync(adjacentAdapter, readFileSync(adjacentAdapter, "utf8") + "// updated producer entry\n");
+  const producerInvalidatedForeignBuild = spawnSync(
+    driver,
+    ["build", foreignProject],
+    { encoding: "utf8", env: foreignAdapterEnvironment },
+  );
+  assert.equal(producerInvalidatedForeignBuild.status, 0, producerInvalidatedForeignBuild.stderr);
+  assert.doesNotMatch(producerInvalidatedForeignBuild.stdout, /cache hit:/);
+  assert.ok(statSync(builtForeignApplication).mtimeMs > 0);
 
   writeFileSync(
     foreignProjectDependency,

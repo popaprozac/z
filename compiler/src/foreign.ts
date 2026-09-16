@@ -4,7 +4,7 @@ import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import { apiNotesFreshness, readApiNotes, type ApiNotes, type PointerNote } from "./foreign-api-notes.ts";
+import { apiNoteInputs, apiNotesFreshness, readApiNotes, type ApiNotes, type PointerNote } from "./foreign-api-notes.ts";
 import { normalizeForeignContracts } from "./foreign-contracts.ts";
 import { parseForeignDeclarationContracts, type ForeignValueContract } from "./foreign-declarations.ts";
 import {
@@ -258,12 +258,16 @@ export function resolveForeignFunctionDeclarationStream(
   fileName: string,
   projectIncludeDirectories: readonly string[] = [],
   deploymentTarget: DeploymentTarget | null = null,
+  producerIdentity = "",
 ): string {
   const resolved = resolveImportedHeaders(
     [declaration],
     fileName,
     projectIncludeDirectories,
     deploymentTarget,
+    {},
+    {},
+    producerIdentity,
   ).get(declaration.moduleName);
   if (!resolved) {
     throw new Error(
@@ -362,6 +366,9 @@ export function fingerprintForeignFunctionDeclarations(
     "-include", declaration.header,
     "-E",
     "-P",
+    // Macro-only edits and Clang's predefined toolchain macros also affect
+    // declaration evidence, even when no declaration expands those macros.
+    "-dD",
     "/dev/null",
   ];
   const command = objectiveC ? "xcrun" : "clang";
@@ -400,13 +407,12 @@ export function fingerprintForeignFunctionDeclarations(
       `could not fingerprint header ${JSON.stringify(declaration.header)}: ${detail}`,
     );
   }
-  const value = createHash("sha256")
+  const fingerprint = createHash("sha256")
     .update(command)
     .update("\0")
     .update(fingerprintArguments.join("\0"))
     .update("\0")
-    .update(result.stdout)
-    .digest("hex");
+    .update(result.stdout);
   const dependencies = dependencyOutputPath && existsSync(dependencyOutputPath)
     ? parseClangDependencies(
         readFileSync(dependencyOutputPath, "utf8"),
@@ -414,7 +420,17 @@ export function fingerprintForeignFunctionDeclarations(
       )
     : [];
   if (dependencyOutputPath) rmSync(dependencyOutputPath, { force: true });
-  return { value, dependencies };
+  // The wire format carries source locations: identical preprocessed tokens
+  // are not sufficient when a header moves or gains comments/blank lines.
+  for (const path of dependencies) {
+    fingerprint.update("\0").update(path).update("\0").update(readFileSync(path));
+  }
+  const notes = apiNoteInputs(declaration, headerDirectory);
+  fingerprint.update("\0").update(JSON.stringify(notes));
+  return {
+    value: fingerprint.digest("hex"),
+    dependencies: [...new Set([...dependencies, ...notes.map(({ path }) => path)])],
+  };
 }
 
 function resolveImportedHeaders(
@@ -424,6 +440,7 @@ function resolveImportedHeaders(
   deploymentTarget: DeploymentTarget | null = null,
   projectApiNotes: Readonly<Record<string, ApiNotes>> = {},
   declarationOverrides: Readonly<Record<string, { readonly source: string; readonly fileName: string }>> = {},
+  producerIdentity = "",
 ): ReadonlyMap<string, {
   readonly declaration: ImportDeclaration;
   readonly header: ImportedHeader;
@@ -455,7 +472,7 @@ function resolveImportedHeaders(
       declarationOverride ? `${declarationOverride.fileName}:${declarationOverride.source}` : ""
     }`;
     const targetKey = deploymentTarget ? `${deploymentTarget.platform}:${deploymentTarget.minimumVersion}` : "host-default";
-    const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${notesFreshness}\0${framework ?? language}\0${targetKey}`;
+    const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${notesFreshness}\0${framework ?? language}\0${targetKey}\0${producerIdentity}`;
     let cachedHeader = headerCache.get(cacheKey);
     if (!cachedHeader) {
       const namespace = `__z_foreign_cache_${createHash("sha256")

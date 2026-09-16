@@ -1,0 +1,41 @@
+{
+  "date": "2026-09-16",
+  "host": { "platform": "macOS", "version": "26.4", "build": "25E5223i", "architecture": "arm64" },
+  "baselineRevision": "9dea8eb8",
+  "candidate": "shared declaration cache changes accompanying this report",
+  "consumerRevision": "zapp 46da3e93",
+  "method": "Independent adapter processes; fresh private artifact directory for each variant; same Zapp manifest and real same-directory importing modules. Each cold row is a different importing module. Warm rows repeat those outputs. One sample per row, not statistical medians; OS/Clang caches not cleared. No GUI launch.",
+  "headers": [
+    {
+      "header": "AppKit/AppKit.h",
+      "modules": ["clipboard-backend.zs", "context-menu-backend.zs", "dialog-backend.zs"],
+      "baselineColdSeconds": [9.457281584, 7.623337375, 7.828694375],
+      "candidateColdSeconds": [9.515377875, 0.431417084, 0.448064667],
+      "baselineWarmSeconds": [0.285647041, 0.267149417, 0.287013209],
+      "candidateWarmSeconds": [0.368931334, 0.3170355, 0.325111042],
+      "verificationColdSeconds": [4.699243292, 0.342260833, 0.347187833],
+      "verificationWarmSeconds": [0.297318042, 0.287369708, 0.302938333],
+      "identicalDeclarationSha256": "ae6af481ba489ed2d8ee98b5d3f91cd396c43cb295c3166979cc66e4f862a286"
+    },
+    {
+      "header": "WebKit/WebKit.h",
+      "modules": ["configured-webview.zs", "document-transport.zs", "configured-smoke.zs"],
+      "baselineColdSeconds": [7.648222167, 7.8251845, 7.171676167],
+      "candidateColdSeconds": [9.87787925, 0.579150709, 0.637562125],
+      "baselineWarmSeconds": [0.316022417, 0.7634705, 0.311507084],
+      "candidateWarmSeconds": [0.342039666, 0.379299917, 0.347567542],
+      "verificationColdSeconds": [5.476302333, 0.368762583, 0.369054792],
+      "verificationWarmSeconds": [0.330881208, 0.334324667, 0.324602125],
+      "identicalDeclarationSha256": "f075174cc907c937eab0a3f6f6203ef22f26ca5f0a6e4b0198e80d80edf2a601"
+    }
+  ],
+  "zNotesDevelopmentBuild": {
+    "exclusions": "Vite startup, worker bundling, application launch, WebView load. Service metadata reused; producer revision invalidated staged foreign evidence. Not a clean-machine build or a controlled comparison to previous failed builds.",
+    "refreshedSdkSeconds": { "zBuild": 82.978662958, "pipeline": 85.241915083 },
+    "unchangedSeconds": { "zBuild": 0.255697708, "pipeline": 1.037009 },
+    "finalInputSchemaRefreshSeconds": { "zBuild": 80.774543042, "pipeline": 84.575397833 },
+    "finalUnchangedWithProducerDependencySeconds": { "zBuild": 0.574468959, "pipeline": 1.326350375 },
+    "producerDependencyNote": "The final rows include hashing the bundled helper. Input-schema refresh reuses existing SDK artifacts but rebuilds the native application. Earlier unchangedSeconds predates that guard.",
+    "unchangedReportedInputCacheHit": true
+  }
+}

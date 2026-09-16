@@ -3,10 +3,12 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse } from "./parser.ts";
 import { lex } from "./lexer.ts";
 import { prepareProject } from "./project.ts";
@@ -19,7 +21,7 @@ import { foreignDeclarationProtocolVersion } from "./foreign-declaration-protoco
 // Bump when producer semantics change without changing the ZFDCL wire shape.
 // Cached declaration evidence must be regenerated even when an older artifact
 // remains structurally decodable by the native frontend.
-const foreignDeclarationProducerRevision = 6;
+const foreignDeclarationProducerRevision = 7;
 
 function adjacentContract(
   sourcePath: string,
@@ -53,6 +55,45 @@ function writeAtomic(path: string, contents: string): void {
   renameSync(temporary, path);
 }
 
+function readSharedArtifact(path: string, key: string, prefix: string): string | null {
+  try {
+    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!value || typeof value !== "object") return null;
+    const cached = value as Record<string, unknown>;
+    if (
+      cached.key !== key
+      || typeof cached.stream !== "string"
+      || !cached.stream.startsWith(prefix)
+      || cached.digest !== createHash("sha256").update(cached.stream).digest("hex")
+    ) return null;
+    return cached.stream;
+  } catch {
+    // Missing, interrupted, or corrupt cache entries are misses, not evidence.
+    return null;
+  }
+}
+
+function producerDependencies(): string[] {
+  // The driver can reuse an executable before invoking this adapter. Record
+  // the producer itself so replacing the helper invalidates that outer cache.
+  // A packaged adapter is its executable; a source-run adapter additionally
+  // depends on the entry script and the compiler's TypeScript implementation.
+  const paths = [process.execPath];
+  const sourceDirectory = dirname(fileURLToPath(import.meta.url));
+  if (existsSync(resolve(sourceDirectory, "foreign-adapter.ts"))) {
+    const entry = process.argv[1];
+    if (entry && existsSync(entry)) paths.push(resolve(entry));
+    for (const entry of readdirSync(sourceDirectory, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith(".ts")) {
+        paths.push(resolve(sourceDirectory, entry.name));
+      }
+    }
+  }
+  // Standalone Bun's argv[1] names an embedded virtual file, not an OS input.
+  // Its bytes are already covered by the executable recorded above.
+  return [...new Set(paths)];
+}
+
 export function writeForeignDeclarationArtifact(
   sourceArgument: string,
   header: string,
@@ -69,12 +110,14 @@ export function writeForeignDeclarationArtifact(
       `source does not import foreign header ${JSON.stringify(header)}`,
     );
   }
+  const outputPath = resolve(outputArgument);
+  mkdirSync(dirname(outputPath), { recursive: true });
   const producerFingerprint = fingerprintForeignFunctionDeclarations(
     declaration,
     sourcePath,
     project.includeDirectories,
     project.deploymentTarget,
-    `${resolve(outputArgument)}.deps.make`,
+    `${outputPath}.${process.pid}.deps.make`,
   );
   const contract = adjacentContract(
     sourcePath,
@@ -89,19 +132,23 @@ export function writeForeignDeclarationArtifact(
     .update("\0")
     .update(producerFingerprint.value)
     .update("\0")
+    // ZFDCL contains qualified type names; never share between import aliases.
+    .update(declaration.moduleName)
+    .update("\0")
+    .update(contract.path ?? "")
+    .update("\0")
     .update(contract.source)
     .digest("hex");
-  const outputPath = resolve(outputArgument);
   const metadataPath = `${outputPath}.meta`;
   const dependencyPath = `${outputPath}.deps`;
   const dependencies = [
     ...producerFingerprint.dependencies,
     ...(contract.path ? [resolve(contract.path)] : []),
+    ...producerDependencies(),
   ];
   const dependencySource = dependencies.length > 0
     ? `${dependencies.join("\0")}\0`
     : "";
-  mkdirSync(dirname(outputPath), { recursive: true });
   writeAtomic(dependencyPath, dependencySource);
   const expectedProtocolPrefix =
     `ZFDCL${foreignDeclarationProtocolVersion.toString(16).padStart(16, "0")}\n`;
@@ -112,12 +159,29 @@ export function writeForeignDeclarationArtifact(
     && readFileSync(outputPath, "utf8").startsWith(expectedProtocolPrefix)
   ) return;
 
-  const stream = resolveForeignFunctionDeclarationStream(
+  // Native imports have per-module output paths. Share the expensive producer
+  // work only after validating identical headers, include order, target,
+  // toolchain macros, namespace, and all sidecar/API-note contents. Keep the
+  // module's own artifact/dependency files for normal native-driver validation.
+  const sharedPath = resolve(dirname(outputPath), "shared", `${cacheKey}.json`);
+  const shared = readSharedArtifact(sharedPath, cacheKey, expectedProtocolPrefix);
+  const stream = shared ?? resolveForeignFunctionDeclarationStream(
     declaration,
     sourcePath,
     project.includeDirectories,
     project.deploymentTarget,
+    // Also invalidate the in-process header cache when this API is called
+    // repeatedly and only a transitive header (not the root header) changed.
+    producerFingerprint.value,
   );
+  if (shared === null) {
+    mkdirSync(dirname(sharedPath), { recursive: true });
+    writeAtomic(sharedPath, JSON.stringify({
+      key: cacheKey,
+      digest: createHash("sha256").update(stream).digest("hex"),
+      stream,
+    }));
+  }
   writeAtomic(outputPath, stream);
   writeAtomic(metadataPath, `${cacheKey}\n`);
 }

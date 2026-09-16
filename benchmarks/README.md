@@ -171,3 +171,24 @@ separately. Existing caches are not cleared by this probe. A failed build is
 not a completed build-time measurement, and dev results exclude server startup,
 worker bundling, application launch, and WebView load. See
 [the dated performance log](../docs/performance.md#z-notes-end-to-end-build-sweep--2026-09-08).
+
+## Repeated SDK imports
+
+```sh
+bun benchmarks/foreign-cache.ts sample ../zapp
+```
+
+Runs the real Z Notes AppKit/WebKit imports in separate declaration-adapter
+processes with a fresh private artifact directory. Three modules import each
+SDK header, followed by unchanged repetitions. Outputs must have identical
+declaration hashes for each header. It does not clear application caches,
+compile the app, or launch a GUI. Each child process group is bounded at 120
+seconds; the private cache is removed on normal completion/failure. JSONL samples
+are written to `.z-cache/benchmarks/foreign-cache.jsonl`.
+
+The first module pays full producer cost. Later modules may reuse shared
+evidence only with matching import alias, include order, target, header bytes,
+and contracts/API notes. Existing-artifact hits still validate these inputs.
+Fresh project evidence is not a cold OS/SDK filesystem cache. The
+[initial before/after samples](results/foreign-cache-2026-09-16.json) are local
+single observations, not medians or complete app-startup measurements.

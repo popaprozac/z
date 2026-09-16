@@ -908,6 +908,65 @@ regression claim.
 
 Include this case in the next build-latency pass: distinguish producer-version
 invalidation, header changes, cold application staging, and unchanged rebuilds.
+
+### Shared SDK declaration evidence — 2026-09-16
+
+The foreign adapter now shares produced declaration streams across importing
+processes in the same artifact directory. Per-module artifacts and dependency
+manifests remain. Reuse requires matching wire/producer revisions, qualified
+import namespace, ordered include arguments, deployment target, preprocessed
+macros (including toolchain macros), transitive header paths and contents, and
+all selected `.zd`/built-in API-note contents. Different contracts or aliases
+are not merged. Header-content hashing also preserves source-location changes
+that preprocessing alone can hide. Concurrent writers publish atomically;
+shared entries have a checked key, protocol prefix, and content digest.
+Producer executables (or the interpreter, entry script, and compiler sources
+for source-run adapters) are recorded in dependency manifests as well, so a
+helper-only update invalidates the outer executable cache. The native input
+schema was advanced to reject old manifests lacking this evidence.
+
+An isolated probe used three real Zapp modules per header, each in a fresh
+adapter process. The before/after declaration streams were byte-identical:
+
+| Workload | Before | Shared evidence |
+| --- | ---: | ---: |
+| First AppKit import | 9.46 s | 9.52 s |
+| Next two AppKit imports | 7.62 / 7.83 s | 0.43 / 0.45 s |
+| First WebKit import | 7.65 s | 9.88 s |
+| Next two WebKit imports | 7.83 / 7.17 s | 0.58 / 0.64 s |
+| Existing-artifact checks | 0.27–0.76 s | 0.32–0.38 s |
+
+These are single local observations, not statistical medians. Initial producer
+work is not optimized by this change; the first WebKit sample was slower.
+Stronger dependency validation adds work to cache checks. The repeatable win is
+avoiding another Clang AST/importer pass for matching imports (asserted by
+subprocess-count tests), not a claim that every import is faster.
+A subsequent fresh-artifact verification retained the same declaration hashes:
+first AppKit/WebKit imports took 4.70/5.48 s and repeated imports 0.34–0.37 s.
+This first-import variation reinforces why these samples are not medians.
+
+The real Z Notes dev build-and-bundle passed after refreshing staged SDK
+evidence: **85.24 s total / 82.98 s in `z build`**. Its unchanged repeat reported
+an input-cache hit and took **1.04 s total / 0.26 s in `z build`** before the
+producer-dependency guard was added. With that guard enabled, the final
+unchanged repeat was **1.33 s total / 0.57 s in `z build`**; it now hashes the
+packaged helper as well. The preceding input-schema refresh rebuilt in
+84.58 s (SDK artifacts already warm), so genuine rebuild latency remains a
+material target. Source-facing service metadata was reused. These exclude Vite startup, worker bundling, app
+launch, and WebView load; they are not a clean-machine test or a valid speedup
+ratio against the earlier timed-out builds. Raw timings and declaration hashes
+are in [the benchmark record](../benchmarks/results/foreign-cache-2026-09-16.json).
+
+Keep three experiences separate: ordinary frontend dev HMR needs no native
+compile; unchanged native builds validate inputs and reuse the executable;
+production frontend changes can invalidate embedded assets and require native
+recompilation/relinking. Mode switches and genuine Z changes remain separate
+benchmarks. This checkpoint does not implement module-level incremental codegen.
+
+Next performance targets: the first distinct SDK import, importer process
+startup/preprocessing, separate dev/release caches, and asset-only/source-only
+invalidation measurements. The cache is deliberately project-local, not a
+cross-project SDK cache, and concurrent cold misses can still duplicate work.
 Investigate sharing ABI/header evidence across imports with identical target,
 include paths, and preprocessor inputs, while keeping module namespaces and
 sidecar semantic contracts correctly separate. Do not weaken cache invalidation

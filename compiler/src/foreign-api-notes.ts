@@ -382,6 +382,18 @@ export function apiNotesFreshness(declaration: ImportDeclaration, includeDirecto
     .join("\0");
 }
 
+// Persistent evidence must track the same complete set of semantic inputs as
+// readApiNotes, including built-in notes and both local/header-side contracts.
+export function apiNoteInputs(
+  declaration: ImportDeclaration,
+  includeDirectory: string,
+): readonly { readonly path: string; readonly source: string }[] {
+  return apiNoteSources(declaration, includeDirectory).map(({ path }) => ({
+    path,
+    source: readFileSync(path, "utf8"),
+  }));
+}
+
 function apiNoteSources(
   declaration: ImportDeclaration,
   includeDirectory: string,

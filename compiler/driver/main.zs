@@ -1265,7 +1265,7 @@ function runCacheMetadata(
     "schema",
     "z-native-project-cache-v3"
   );
-  appendCacheField(inout inputs, "schema", "z-native-build-inputs-v2");
+  appendCacheField(inout inputs, "schema", "z-native-build-inputs-v3");
   if (release) {
     appendCacheField(inout output, "profile", "release");
     appendCacheField(inout inputs, "profile", "release");
@@ -1486,7 +1486,7 @@ function buildCacheInputsMatch(
   let offset: usize = 0;
   if (
     try buildCacheField(source, inout offset, "schema")
-    != "z-native-build-inputs-v2"
+    != "z-native-build-inputs-v3"
   ) return false;
   const expectedProfile = release ? "release" : "debug";
   if (
