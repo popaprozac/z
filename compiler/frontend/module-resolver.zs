@@ -12262,9 +12262,24 @@ function inferStatement(
               const storageType = transparentTypeName(modules, moduleIndex, rootType);
               const mutableClassIdentity = typeIsClassReference(module, modules, moduleIndex, storageType)
                 && !valueBindingIsBorrowed(bindings, mutationRoot);
+              let importedObjectReceiver = false;
+              if (rootType.byteLength == 0
+                && tree.nodes[root].kind == ExpressionKind.memberExpression
+                && tree.nodes[root].children.length == 1) {
+                // A namespace is not owned storage. A class property can return
+                // a native object whose setter is checked below, independently
+                // of the import binding (for example NSApplication.sharedApplication).
+                const receiverIndex = tree.nodes[root].children[0];
+                const receiverType = try inferExpressionNodeType(
+                  module, modules, moduleIndex, arena, tree, receiverIndex,
+                  inout bindings, inout evidence
+                );
+                importedObjectReceiver = isNativeObjectiveCObjectType(modules, moduleIndex, receiverType);
+              }
               if (tree.nodes[root].kind != ExpressionKind.identifierExpression
                 && !valueBindingIsMutable(bindings, mutationRoot)
                 && !mutableClassIdentity
+                && !importedObjectReceiver
                 && !isNativeObjectiveCObjectType(modules, moduleIndex, storageType)) {
                 throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
                   `cannot mutate storage through immutable binding "${mutationRoot}"`,

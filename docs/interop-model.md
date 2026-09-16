@@ -892,6 +892,10 @@ Class and instance properties remain distinct even when they share a name:
 `event.modifierFlags` reads that event's flags, while
 `AppKit.NSEvent.modifierFlags` reads the class property. Inheritance preserves
 both scopes, including when a subclass overrides only one of them.
+Chaining through an object-returning class property does not make the import
+namespace mutable storage: `AppKit.NSApplication.sharedApplication.windowsMenu`
+is an instance property on the returned application. Assignment still requires
+a writable native property; readonly and unknown properties are rejected.
 
 Native enum equality uses native type identity, not an import alias spelling.
 An enum-valued Objective-C property or a value returned from another Z module

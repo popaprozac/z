@@ -30,6 +30,17 @@ hostToolchainTest("keeps class and instance Objective-C properties distinct thro
     }], fixture, [fixtures]).get("native")!);
     writeFileSync(contract, 'declare module "objc-property-scopes.h" {}');
     const native = command(oracle, [wire, fixture, "", contract]);
+    for (const [field, diagnostic] of [["value", "readonly field"], ["missing", "no field"]]) {
+      const invalid = source.replace("shared.writableValue = 61", `shared.${field} = 61`);
+      assert.throws(() => compileToNative(invalid, fixture));
+      const invalidInput = resolve(temporary, `invalid-${field}.zs`);
+      writeFileSync(invalidInput, invalid);
+      const rejected = spawnSync(oracle, [wire, invalidInput, "", contract], {
+        encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+      });
+      assert.notEqual(rejected.status, 0);
+      assert.match(rejected.stderr + rejected.stdout, new RegExp(diagnostic));
+    }
     for (const [name, output] of [["stage0", compileToNative(source, fixture).source], ["native", native]]) {
       for (const optimization of ["-O0", "-O2"]) {
         const executable = resolve(temporary, `${name}${optimization}`);

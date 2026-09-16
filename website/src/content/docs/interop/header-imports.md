@@ -150,6 +150,9 @@ Class and instance properties have separate lookup scopes, even when their
 names match. For example, `event.modifierFlags` reads the original event's
 flags; `AppKit.NSEvent.modifierFlags` reads the class property. An override in
 one scope does not hide an inherited property in the other.
+You can also assign a writable property directly through a returned native
+object, such as `AppKit.NSApplication.sharedApplication.windowsMenu`. This
+mutates the object, not the import namespace; readonly properties stay checked.
 
 ## Supported C++ stays namespaced
 

@@ -4,6 +4,8 @@
 @property(nonatomic, readonly) int value;
 @property(class, readonly) double value;
 @property(nonatomic, readonly) int marker;
+@property(nonatomic) int writableValue;
+@property(class, readonly, nonnull) ZPropertyScopeBase *shared;
 @end
 
 @interface ZPropertyScopeChild : ZPropertyScopeBase
@@ -15,6 +17,11 @@
 - (int)value { return 11; }
 + (double)value { return 22.5; }
 - (int)marker { return 31; }
++ (ZPropertyScopeBase * _Nonnull)shared {
+    static ZPropertyScopeBase *value;
+    if (value == nil) value = [[ZPropertyScopeBase alloc] init];
+    return value;
+}
 @end
 
 @implementation ZPropertyScopeChild

@@ -10,5 +10,7 @@ function main(): i32 {
   if (child.value != 41) return 2;
   if (base.marker != 31 || child.marker != 31) return 3;
   if (native.ZPropertyScopeChild.marker != 51) return 4;
+  native.ZPropertyScopeBase.shared.writableValue = 61;
+  if (native.ZPropertyScopeBase.shared.writableValue != 61) return 5;
   return 0;
 }
