@@ -2632,16 +2632,17 @@ function appendAsyncTailSynchronousMatch(
           && viewPayloadLoadsAsValue(type);
         const objectiveCPayload = type.kind
           == LoweredTypeKind.foreignObjCType;
+        const classPayload = objectiveCPayload || type.kind == LoweredTypeKind.classType;
         if (
           !arm.matchBindingNeedsCleanup
           && !nicheViewOption
-          && !objectiveCPayload
+          && !classPayload
         ) {
           output.append("const ");
         }
         const payloadType = try cType(type);
         output.append(payloadType);
-        if (!arm.matchBindingNeedsCleanup && objectiveCPayload) {
+        if (!arm.matchBindingNeedsCleanup && classPayload) {
           output.append(" const");
         }
         if (
@@ -8474,16 +8475,20 @@ function appendEnumMatchArmStart(
           type.kind == LoweredTypeKind.classType
           || type.kind == LoweredTypeKind.foreignObjCType
         );
+      // A class is already a pointer. Borrowed payload bindings freeze the
+      // pointer slot, not its pointee, matching ordinary `in Class` parameters.
+      const constantClassPayload = !declaration.statements[arm].matchBindingNeedsCleanup
+        && (type.kind == LoweredTypeKind.classType || type.kind == LoweredTypeKind.foreignObjCType);
       if (
         !declaration.statements[arm].matchBindingNeedsCleanup
         && !nicheViewOption
-        && !transferredClassPayload
+        && !constantClassPayload
       ) {
         output.append("const ");
       }
       const payloadType = try cType(type);
       output.append(payloadType);
-      if (transferredClassPayload) output.append(" const");
+      if (constantClassPayload) output.append(" const");
       if (
         nicheViewOption
         && !loadViewValue

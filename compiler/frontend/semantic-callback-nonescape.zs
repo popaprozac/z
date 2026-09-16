@@ -1,6 +1,6 @@
 import { Map } from "std/collections";
 import { ParsedModule, moduleSymbolIndex } from "./module-symbols.zs";
-import { ResolvedModule, ModuleSymbolKind, ModuleFunctionSignature, ModuleTypeSignature } from "./semantic-model.zs";
+import { ResolvedModule, ModuleSymbolKind, ModuleFunctionSignature, ModuleTypeSignature, moduleTypeSignatureWithMethods } from "./semantic-model.zs";
 import { nativeFunctionSignature } from "./semantic-type-shapes.zs";
 import { transparentTypeName } from "./semantic-type-identities.zs";
 import {
@@ -239,15 +239,15 @@ export function inferCallbackNonescape(
         let replacement = Option<ModuleTypeSignature>.none;
         match (in modules[moduleIndex].symbols[symbolIndex].typeSignature) {
           some(signature) => {
-            let updated = copy signature;
+            let methods = copy signature.methods;
             let index: usize = 0;
-            while (index < updated.methods.length) {
-              if (updated.methods[index].name == method.name) {
-                updated.methods[index].signature.nonEscapingParameters = copy proven;
+            while (index < methods.length) {
+              if (methods[index].name == method.name) {
+                methods[index].signature.nonEscapingParameters = copy proven;
               }
               index = index + 1;
             }
-            replacement = Option.some(move updated);
+            replacement = Option.some(moduleTypeSignatureWithMethods(signature, move methods));
           }
           none => {}
         }

@@ -19,6 +19,8 @@ import {
   ModuleSymbolKind,
   ModuleTypeParameterConstraint,
   ModuleTypeSignature,
+  ModuleForeignUnionVariantSignature,
+  ModuleObjCAvailabilitySignature,
   ModuleVariantSignature,
 } from "./semantic-model.zs";
 import {
@@ -992,7 +994,7 @@ export function programTypeSignature(
         }
         none => {}
       }
-      return Option.some(ModuleTypeSignature({
+      return Option.some(new ModuleTypeSignature({
         nativeCName: aggregate.nativeCLayout
           ? aggregate.name.copyBytes(0, aggregate.name.byteLength)
           : "",
@@ -1014,6 +1016,17 @@ export function programTypeSignature(
         foreignNativeName: "",
         foreignUnderlyingType: "",
         foreignResourceRelease: "",
+        foreignCanonicalNativeName: "",
+        foreignFlags: false,
+        foreignDiscriminantMember: "",
+        foreignDiscriminantType: "",
+        foreignUnionVariants: Array<ModuleForeignUnionVariantSignature>(),
+        foreignFallbackVariant: "",
+        foreignObjCSuperName: "",
+        foreignObjCSubclassingRestricted: false,
+        foreignObjCAvailability: Array<ModuleObjCAvailabilitySignature>(),
+        foreignObjCUnrepresentableMethods: Array<ModuleMethodSignature>(),
+        foreignObjCProtocolName: "",
       }));
     }
   }
@@ -1041,7 +1054,7 @@ export function programTypeSignature(
           signature: functionDeclarationSignature(program, method),
         }));
       }
-      return Option.some(ModuleTypeSignature({
+      return Option.some(new ModuleTypeSignature({
         nativeCName: "",
         nativeCUnderlyingType: "",
         typeParameters,
@@ -1059,6 +1072,19 @@ export function programTypeSignature(
         foreignNativeName: "",
         foreignUnderlyingType: "",
         foreignResourceRelease: "",
+        deinitThreadAny: false,
+        constructorVisibility: "public",
+        foreignCanonicalNativeName: "",
+        foreignFlags: false,
+        foreignDiscriminantMember: "",
+        foreignDiscriminantType: "",
+        foreignUnionVariants: Array<ModuleForeignUnionVariantSignature>(),
+        foreignFallbackVariant: "",
+        foreignObjCSuperName: "",
+        foreignObjCSubclassingRestricted: false,
+        foreignObjCAvailability: Array<ModuleObjCAvailabilitySignature>(),
+        foreignObjCUnrepresentableMethods: Array<ModuleMethodSignature>(),
+        foreignObjCProtocolName: "",
       }));
     }
   }
@@ -1086,7 +1112,7 @@ export function programTypeSignature(
           none => {}
         }
       }
-      return Option.some(ModuleTypeSignature({
+      return Option.some(new ModuleTypeSignature({
         nativeCName: enumDeclaration.nativeCLayout
           ? enumDeclaration.name.copyBytes(0, enumDeclaration.name.byteLength)
           : "",
@@ -1106,6 +1132,19 @@ export function programTypeSignature(
         foreignNativeName: "",
         foreignUnderlyingType: "",
         foreignResourceRelease: "",
+        deinitThreadAny: false,
+        constructorVisibility: "public",
+        foreignCanonicalNativeName: "",
+        foreignFlags: false,
+        foreignDiscriminantMember: "",
+        foreignDiscriminantType: "",
+        foreignUnionVariants: Array<ModuleForeignUnionVariantSignature>(),
+        foreignFallbackVariant: "",
+        foreignObjCSuperName: "",
+        foreignObjCSubclassingRestricted: false,
+        foreignObjCAvailability: Array<ModuleObjCAvailabilitySignature>(),
+        foreignObjCUnrepresentableMethods: Array<ModuleMethodSignature>(),
+        foreignObjCProtocolName: "",
       }));
     }
   }

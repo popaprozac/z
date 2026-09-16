@@ -2450,16 +2450,16 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_type_signature_item_count(
         continue;
       }
       count += response->result.graph.resolved.modules.data[module_index]
-        .symbols.data[symbol_index].typeSignature.data.some.typeParameters.length;
+        .symbols.data[symbol_index].typeSignature.data.some->typeParameters.length;
       count += response->result.graph.resolved.modules.data[module_index]
         .symbols.data[symbol_index].typeSignature.data.some
-        .typeParameterConstraints.length;
+        ->typeParameterConstraints.length;
       count += response->result.graph.resolved.modules.data[module_index]
-        .symbols.data[symbol_index].typeSignature.data.some.implementedTraits.length;
+        .symbols.data[symbol_index].typeSignature.data.some->implementedTraits.length;
       count += response->result.graph.resolved.modules.data[module_index]
-        .symbols.data[symbol_index].typeSignature.data.some.fields.length;
+        .symbols.data[symbol_index].typeSignature.data.some->fields.length;
       count += response->result.graph.resolved.modules.data[module_index]
-        .symbols.data[symbol_index].typeSignature.data.some.variants.length;
+        .symbols.data[symbol_index].typeSignature.data.some->variants.length;
     }
   }
   return count;
@@ -2488,7 +2488,7 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_member_signature_count(
         continue;
       }
       count += response->result.graph.resolved.modules.data[module_index]
-        .symbols.data[symbol_index].typeSignature.data.some.methods.length;
+        .symbols.data[symbol_index].typeSignature.data.some->methods.length;
       if (stage1TypeHasConstructorSignature(
         &response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
@@ -2528,29 +2528,29 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_member_signature_item_count(
       )) {
         count += response->result.graph.resolved.modules.data[module_index]
           .symbols.data[symbol_index].typeSignature.data.some
-          .constructorSignature.data.some.typeParameters.length;
+          ->constructorSignature.data.some.typeParameters.length;
         count += response->result.graph.resolved.modules.data[module_index]
           .symbols.data[symbol_index].typeSignature.data.some
-          .constructorSignature.data.some.parameterTypes.length;
+          ->constructorSignature.data.some.parameterTypes.length;
         count += response->result.graph.resolved.modules.data[module_index]
           .symbols.data[symbol_index].typeSignature.data.some
-          .constructorSignature.data.some.typeParameterConstraints.length;
+          ->constructorSignature.data.some.typeParameterConstraints.length;
       }
       for (
         uintptr_t method_index = 0;
         method_index < response->result.graph.resolved.modules.data[module_index]
-          .symbols.data[symbol_index].typeSignature.data.some.methods.length;
+          .symbols.data[symbol_index].typeSignature.data.some->methods.length;
         method_index += 1
       ) {
         count += response->result.graph.resolved.modules.data[module_index]
           .symbols.data[symbol_index].typeSignature.data.some
-          .methods.data[method_index].signature.typeParameters.length;
+          ->methods.data[method_index].signature.typeParameters.length;
         count += response->result.graph.resolved.modules.data[module_index]
           .symbols.data[symbol_index].typeSignature.data.some
-          .methods.data[method_index].signature.parameterTypes.length;
+          ->methods.data[method_index].signature.parameterTypes.length;
         count += response->result.graph.resolved.modules.data[module_index]
           .symbols.data[symbol_index].typeSignature.data.some
-          .methods.data[method_index].signature.typeParameterConstraints.length;
+          ->methods.data[method_index].signature.typeParameterConstraints.length;
       }
     }
   }
@@ -2948,46 +2948,46 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_records(
         .symbol_index = (uint64_t)symbol_index,
         .executor_affinity_data = (uint64_t)(uintptr_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.executorAffinity.data,
+          .typeSignature.data.some->executorAffinity.data,
         .executor_affinity_length = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.executorAffinity.length,
+          .typeSignature.data.some->executorAffinity.length,
         .native_c_name_data = (uint64_t)(uintptr_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.nativeCName.data,
+          .typeSignature.data.some->nativeCName.data,
         .native_c_name_length = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.nativeCName.length,
+          .typeSignature.data.some->nativeCName.length,
         .native_c_underlying_type_data = (uint64_t)(uintptr_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.nativeCUnderlyingType.data,
+          .typeSignature.data.some->nativeCUnderlyingType.data,
         .native_c_underlying_type_length = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.nativeCUnderlyingType.length,
+          .typeSignature.data.some->nativeCUnderlyingType.length,
         .custom_deinit = response->result.graph.resolved.modules.data[module_index]
-          .symbols.data[symbol_index].typeSignature.data.some.deinitThreadAny ? 2 :
+          .symbols.data[symbol_index].typeSignature.data.some->deinitThreadAny ? 2 :
           response->result.graph.resolved.modules.data[module_index]
-          .symbols.data[symbol_index].typeSignature.data.some.customDeinit ? 1 : 0,
+          .symbols.data[symbol_index].typeSignature.data.some->customDeinit ? 1 : 0,
         .custom_constructor = response->result.graph.resolved.modules.data[module_index]
-          .symbols.data[symbol_index].typeSignature.data.some.customConstructor ? 1 : 0,
+          .symbols.data[symbol_index].typeSignature.data.some->customConstructor ? 1 : 0,
         .type_parameter_count = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.typeParameters.length,
+          .typeSignature.data.some->typeParameters.length,
         .constraint_count = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.typeParameterConstraints.length,
+          .typeSignature.data.some->typeParameterConstraints.length,
         .implemented_trait_count = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.implementedTraits.length,
+          .typeSignature.data.some->implementedTraits.length,
         .field_count = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.fields.length,
+          .typeSignature.data.some->fields.length,
         .method_count = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.methods.length,
+          .typeSignature.data.some->methods.length,
         .variant_count = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
-          .typeSignature.data.some.variants.length,
+          .typeSignature.data.some->variants.length,
       };
       written += 1;
     }
@@ -3022,7 +3022,7 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
       for (
         uintptr_t item_index = 0;
         item_index < response->result.graph.resolved.modules.data[module_index]
-          .symbols.data[symbol_index].typeSignature.data.some.typeParameters.length;
+          .symbols.data[symbol_index].typeSignature.data.some->typeParameters.length;
         item_index += 1
       ) {
         if (written >= capacity) return written;
@@ -3033,10 +3033,10 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
           .index = (uint64_t)item_index,
           .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.typeParameters.data[item_index].data,
+            .typeSignature.data.some->typeParameters.data[item_index].data,
           .first_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.typeParameters.data[item_index].length,
+            .typeSignature.data.some->typeParameters.data[item_index].length,
           .second_data = 0,
           .second_length = 0,
           .third_data = 0,
@@ -3051,7 +3051,7 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
         uintptr_t item_index = 0;
         item_index < response->result.graph.resolved.modules.data[module_index]
           .symbols.data[symbol_index].typeSignature.data.some
-          .typeParameterConstraints.length;
+          ->typeParameterConstraints.length;
         item_index += 1
       ) {
         if (written >= capacity) return written;
@@ -3062,19 +3062,19 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
           .index = (uint64_t)item_index,
           .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.typeParameterConstraints
+            .typeSignature.data.some->typeParameterConstraints
             .data[item_index].parameter.data,
           .first_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.typeParameterConstraints
+            .typeSignature.data.some->typeParameterConstraints
             .data[item_index].parameter.length,
           .second_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.typeParameterConstraints
+            .typeSignature.data.some->typeParameterConstraints
             .data[item_index].traitName.data,
           .second_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.typeParameterConstraints
+            .typeSignature.data.some->typeParameterConstraints
             .data[item_index].traitName.length,
           .third_data = 0,
           .third_length = 0,
@@ -3087,7 +3087,7 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
       for (
         uintptr_t item_index = 0;
         item_index < response->result.graph.resolved.modules.data[module_index]
-          .symbols.data[symbol_index].typeSignature.data.some.implementedTraits.length;
+          .symbols.data[symbol_index].typeSignature.data.some->implementedTraits.length;
         item_index += 1
       ) {
         if (written >= capacity) return written;
@@ -3098,10 +3098,10 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
           .index = (uint64_t)item_index,
           .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.implementedTraits.data[item_index].data,
+            .typeSignature.data.some->implementedTraits.data[item_index].data,
           .first_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.implementedTraits.data[item_index].length,
+            .typeSignature.data.some->implementedTraits.data[item_index].length,
           .second_data = 0,
           .second_length = 0,
           .third_data = 0,
@@ -3115,7 +3115,7 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
       for (
         uintptr_t item_index = 0;
         item_index < response->result.graph.resolved.modules.data[module_index]
-          .symbols.data[symbol_index].typeSignature.data.some.fields.length;
+          .symbols.data[symbol_index].typeSignature.data.some->fields.length;
         item_index += 1
       ) {
         if (written >= capacity) return written;
@@ -3126,38 +3126,38 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
           .index = (uint64_t)item_index,
           .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.fields.data[item_index].name.data,
+            .typeSignature.data.some->fields.data[item_index].name.data,
           .first_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.fields.data[item_index].name.length,
+            .typeSignature.data.some->fields.data[item_index].name.length,
           .second_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.fields.data[item_index].typeName.data,
+            .typeSignature.data.some->fields.data[item_index].typeName.data,
           .second_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.fields.data[item_index].typeName.length,
+            .typeSignature.data.some->fields.data[item_index].typeName.length,
           .third_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.fields.data[item_index].visibility.data,
+            .typeSignature.data.some->fields.data[item_index].visibility.data,
           .third_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.fields.data[item_index].visibility.length,
+            .typeSignature.data.some->fields.data[item_index].visibility.length,
           .fourth_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.fields.data[item_index].executorAffinity.data,
+            .typeSignature.data.some->fields.data[item_index].executorAffinity.data,
           .fourth_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.fields.data[item_index].executorAffinity.length,
+            .typeSignature.data.some->fields.data[item_index].executorAffinity.length,
           .flag = response->result.graph.resolved.modules.data[module_index]
             .symbols.data[symbol_index].typeSignature.data.some
-            .fields.data[item_index].readonlyField ? 1 : 0,
+            ->fields.data[item_index].readonlyField ? 1 : 0,
         };
         written += 1;
       }
       for (
         uintptr_t item_index = 0;
         item_index < response->result.graph.resolved.modules.data[module_index]
-          .symbols.data[symbol_index].typeSignature.data.some.variants.length;
+          .symbols.data[symbol_index].typeSignature.data.some->variants.length;
         item_index += 1
       ) {
         if (written >= capacity) return written;
@@ -3168,16 +3168,16 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
           .index = (uint64_t)item_index,
           .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.variants.data[item_index].name.data,
+            .typeSignature.data.some->variants.data[item_index].name.data,
           .first_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.variants.data[item_index].name.length,
+            .typeSignature.data.some->variants.data[item_index].name.length,
           .second_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.variants.data[item_index].payloadType.data,
+            .typeSignature.data.some->variants.data[item_index].payloadType.data,
           .second_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.variants.data[item_index].payloadType.length,
+            .typeSignature.data.some->variants.data[item_index].payloadType.length,
           .third_data = 0,
           .third_length = 0,
           .fourth_data = 0,
@@ -3230,46 +3230,46 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_records(
           .static_method = 0,
           .visibility_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.constructorVisibility.data,
+            .typeSignature.data.some->constructorVisibility.data,
           .visibility_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.constructorVisibility.length,
+            .typeSignature.data.some->constructorVisibility.length,
           .receiver_mode_data = 0,
           .receiver_mode_length = 0,
           .asynchronous = response->result.graph.resolved.modules.data[module_index]
             .symbols.data[symbol_index].typeSignature.data.some
-            .constructorSignature.data.some.asynchronous ? 1 : 0,
+            ->constructorSignature.data.some.asynchronous ? 1 : 0,
           .return_type_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.constructorSignature.data.some.returnType.data,
+            .typeSignature.data.some->constructorSignature.data.some.returnType.data,
           .return_type_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.constructorSignature.data.some.returnType.length,
+            .typeSignature.data.some->constructorSignature.data.some.returnType.length,
           .error_type_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.constructorSignature.data.some.errorType.data,
+            .typeSignature.data.some->constructorSignature.data.some.errorType.data,
           .error_type_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.constructorSignature.data.some.errorType.length,
+            .typeSignature.data.some->constructorSignature.data.some.errorType.length,
           .executor_affinity_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.constructorSignature.data.some
+            .typeSignature.data.some->constructorSignature.data.some
             .executorAffinity.data,
           .executor_affinity_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.constructorSignature.data.some
+            .typeSignature.data.some->constructorSignature.data.some
             .executorAffinity.length,
           .type_parameter_count = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.constructorSignature.data.some
+            .typeSignature.data.some->constructorSignature.data.some
             .typeParameters.length,
           .parameter_count = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.constructorSignature.data.some
+            .typeSignature.data.some->constructorSignature.data.some
             .parameterTypes.length,
           .constraint_count = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.constructorSignature.data.some
+            .typeSignature.data.some->constructorSignature.data.some
             .typeParameterConstraints.length,
         };
         written += 1;
@@ -3277,7 +3277,7 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_records(
       for (
         uintptr_t method_index = 0;
         method_index < response->result.graph.resolved.modules.data[module_index]
-          .symbols.data[symbol_index].typeSignature.data.some.methods.length;
+          .symbols.data[symbol_index].typeSignature.data.some->methods.length;
         method_index += 1
       ) {
         if (written >= capacity) return written;
@@ -3288,59 +3288,59 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_records(
           .index = (uint64_t)method_index,
           .name_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index].name.data,
+            .typeSignature.data.some->methods.data[method_index].name.data,
           .name_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index].name.length,
+            .typeSignature.data.some->methods.data[method_index].name.length,
           .static_method = response->result.graph.resolved.modules.data[module_index]
             .symbols.data[symbol_index].typeSignature.data.some
-            .methods.data[method_index].staticMethod ? 1 : 0,
+            ->methods.data[method_index].staticMethod ? 1 : 0,
           .visibility_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index].visibility.data,
+            .typeSignature.data.some->methods.data[method_index].visibility.data,
           .visibility_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index].visibility.length,
+            .typeSignature.data.some->methods.data[method_index].visibility.length,
           .receiver_mode_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index].receiverMode.data,
+            .typeSignature.data.some->methods.data[method_index].receiverMode.data,
           .receiver_mode_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index].receiverMode.length,
+            .typeSignature.data.some->methods.data[method_index].receiverMode.length,
           .asynchronous = response->result.graph.resolved.modules.data[module_index]
             .symbols.data[symbol_index].typeSignature.data.some
-            .methods.data[method_index].signature.asynchronous ? 1 : 0,
+            ->methods.data[method_index].signature.asynchronous ? 1 : 0,
           .return_type_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index].signature.returnType.data,
+            .typeSignature.data.some->methods.data[method_index].signature.returnType.data,
           .return_type_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index].signature.returnType.length,
+            .typeSignature.data.some->methods.data[method_index].signature.returnType.length,
           .error_type_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index].signature.errorType.data,
+            .typeSignature.data.some->methods.data[method_index].signature.errorType.data,
           .error_type_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index].signature.errorType.length,
+            .typeSignature.data.some->methods.data[method_index].signature.errorType.length,
           .executor_affinity_data = (uint64_t)(uintptr_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index]
+            .typeSignature.data.some->methods.data[method_index]
             .signature.executorAffinity.data,
           .executor_affinity_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index]
+            .typeSignature.data.some->methods.data[method_index]
             .signature.executorAffinity.length,
           .type_parameter_count = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index]
+            .typeSignature.data.some->methods.data[method_index]
             .signature.typeParameters.length,
           .parameter_count = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index]
+            .typeSignature.data.some->methods.data[method_index]
             .signature.parameterTypes.length,
           .constraint_count = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
-            .typeSignature.data.some.methods.data[method_index]
+            .typeSignature.data.some->methods.data[method_index]
             .signature.typeParameterConstraints.length,
         };
         written += 1;
@@ -3382,7 +3382,7 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
           uintptr_t item_index = 0;
           item_index < response->result.graph.resolved.modules.data[module_index]
             .symbols.data[symbol_index].typeSignature.data.some
-            .constructorSignature.data.some.typeParameters.length;
+            ->constructorSignature.data.some.typeParameters.length;
           item_index += 1
         ) {
           if (written >= capacity) return written;
@@ -3395,11 +3395,11 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
             .item_index = (uint64_t)item_index,
             .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.constructorSignature.data.some
+              .typeSignature.data.some->constructorSignature.data.some
               .typeParameters.data[item_index].data,
             .first_length = (uint64_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.constructorSignature.data.some
+              .typeSignature.data.some->constructorSignature.data.some
               .typeParameters.data[item_index].length,
             .second_data = 0,
             .second_length = 0,
@@ -3410,7 +3410,7 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
           uintptr_t item_index = 0;
           item_index < response->result.graph.resolved.modules.data[module_index]
             .symbols.data[symbol_index].typeSignature.data.some
-            .constructorSignature.data.some.parameterTypes.length;
+            ->constructorSignature.data.some.parameterTypes.length;
           item_index += 1
         ) {
           if (written >= capacity) return written;
@@ -3423,19 +3423,19 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
             .item_index = (uint64_t)item_index,
             .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.constructorSignature.data.some
+              .typeSignature.data.some->constructorSignature.data.some
               .parameterModes.data[item_index].data,
             .first_length = (uint64_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.constructorSignature.data.some
+              .typeSignature.data.some->constructorSignature.data.some
               .parameterModes.data[item_index].length,
             .second_data = (uint64_t)(uintptr_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.constructorSignature.data.some
+              .typeSignature.data.some->constructorSignature.data.some
               .parameterTypes.data[item_index].data,
             .second_length = (uint64_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.constructorSignature.data.some
+              .typeSignature.data.some->constructorSignature.data.some
               .parameterTypes.data[item_index].length,
           };
           written += 1;
@@ -3444,7 +3444,7 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
           uintptr_t item_index = 0;
           item_index < response->result.graph.resolved.modules.data[module_index]
             .symbols.data[symbol_index].typeSignature.data.some
-            .constructorSignature.data.some.typeParameterConstraints.length;
+            ->constructorSignature.data.some.typeParameterConstraints.length;
           item_index += 1
         ) {
           if (written >= capacity) return written;
@@ -3457,19 +3457,19 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
             .item_index = (uint64_t)item_index,
             .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.constructorSignature.data.some
+              .typeSignature.data.some->constructorSignature.data.some
               .typeParameterConstraints.data[item_index].parameter.data,
             .first_length = (uint64_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.constructorSignature.data.some
+              .typeSignature.data.some->constructorSignature.data.some
               .typeParameterConstraints.data[item_index].parameter.length,
             .second_data = (uint64_t)(uintptr_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.constructorSignature.data.some
+              .typeSignature.data.some->constructorSignature.data.some
               .typeParameterConstraints.data[item_index].traitName.data,
             .second_length = (uint64_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.constructorSignature.data.some
+              .typeSignature.data.some->constructorSignature.data.some
               .typeParameterConstraints.data[item_index].traitName.length,
           };
           written += 1;
@@ -3478,14 +3478,14 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
       for (
         uintptr_t method_index = 0;
         method_index < response->result.graph.resolved.modules.data[module_index]
-          .symbols.data[symbol_index].typeSignature.data.some.methods.length;
+          .symbols.data[symbol_index].typeSignature.data.some->methods.length;
         method_index += 1
       ) {
         for (
           uintptr_t item_index = 0;
           item_index < response->result.graph.resolved.modules.data[module_index]
             .symbols.data[symbol_index].typeSignature.data.some
-            .methods.data[method_index].signature.typeParameters.length;
+            ->methods.data[method_index].signature.typeParameters.length;
           item_index += 1
         ) {
           if (written >= capacity) return written;
@@ -3498,11 +3498,11 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
             .item_index = (uint64_t)item_index,
             .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.methods.data[method_index]
+              .typeSignature.data.some->methods.data[method_index]
               .signature.typeParameters.data[item_index].data,
             .first_length = (uint64_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.methods.data[method_index]
+              .typeSignature.data.some->methods.data[method_index]
               .signature.typeParameters.data[item_index].length,
             .second_data = 0,
             .second_length = 0,
@@ -3513,7 +3513,7 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
           uintptr_t item_index = 0;
           item_index < response->result.graph.resolved.modules.data[module_index]
             .symbols.data[symbol_index].typeSignature.data.some
-            .methods.data[method_index].signature.parameterTypes.length;
+            ->methods.data[method_index].signature.parameterTypes.length;
           item_index += 1
         ) {
           if (written >= capacity) return written;
@@ -3526,19 +3526,19 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
             .item_index = (uint64_t)item_index,
             .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.methods.data[method_index]
+              .typeSignature.data.some->methods.data[method_index]
               .signature.parameterModes.data[item_index].data,
             .first_length = (uint64_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.methods.data[method_index]
+              .typeSignature.data.some->methods.data[method_index]
               .signature.parameterModes.data[item_index].length,
             .second_data = (uint64_t)(uintptr_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.methods.data[method_index]
+              .typeSignature.data.some->methods.data[method_index]
               .signature.parameterTypes.data[item_index].data,
             .second_length = (uint64_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.methods.data[method_index]
+              .typeSignature.data.some->methods.data[method_index]
               .signature.parameterTypes.data[item_index].length,
           };
           written += 1;
@@ -3547,7 +3547,7 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
           uintptr_t item_index = 0;
           item_index < response->result.graph.resolved.modules.data[module_index]
             .symbols.data[symbol_index].typeSignature.data.some
-            .methods.data[method_index].signature.typeParameterConstraints.length;
+            ->methods.data[method_index].signature.typeParameterConstraints.length;
           item_index += 1
         ) {
           if (written >= capacity) return written;
@@ -3560,19 +3560,19 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
             .item_index = (uint64_t)item_index,
             .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.methods.data[method_index]
+              .typeSignature.data.some->methods.data[method_index]
               .signature.typeParameterConstraints.data[item_index].parameter.data,
             .first_length = (uint64_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.methods.data[method_index]
+              .typeSignature.data.some->methods.data[method_index]
               .signature.typeParameterConstraints.data[item_index].parameter.length,
             .second_data = (uint64_t)(uintptr_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.methods.data[method_index]
+              .typeSignature.data.some->methods.data[method_index]
               .signature.typeParameterConstraints.data[item_index].traitName.data,
             .second_length = (uint64_t)response->result.graph.resolved
               .modules.data[module_index].symbols.data[symbol_index]
-              .typeSignature.data.some.methods.data[method_index]
+              .typeSignature.data.some->methods.data[method_index]
               .signature.typeParameterConstraints.data[item_index].traitName.length,
           };
           written += 1;

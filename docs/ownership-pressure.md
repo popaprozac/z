@@ -9766,6 +9766,34 @@ uses a positive `if (item != null)` scope. Improving this requires preserving
 loop-transfer ownership states as well as nullable facts, not simply treating
 `continue` as a function return.
 
+## Immutable semantic evidence across SDK imports
+
+The native compiler's Z Notes workload showed that ownership shape matters as
+much as cache lookup speed. Validated foreign declarations were already shared,
+but each importing module rebuilt owned value-struct signatures containing the
+same SDK methods, inherited properties, and availability facts. Repeated imports
+therefore multiplied both allocations and semantic-table storage.
+
+Resolved type signatures are now readonly ARC identities. A graph-local cache
+shares their projection only when the normalized contract identity and local
+namespace both match. Symbols still own module-local names, visibility, headers,
+and diagnostic locations. A different `.zd` contract or alias cannot silently
+reuse another import's meaning. Source callback proofs and Objective-C subclass
+preparation publish new immutable signatures instead of mutating shared aliases.
+
+This required no new language API. The compiler's own use of borrowed class
+payloads did expose a native C-emission bug: `match (in option)` qualified the
+class pointee rather than the pointer slot. Passing that binding to an ordinary
+`in Class` parameter then failed in Clang. Statement/expression regression cases
+and the fixed-point bootstrap now cover the corrected representation.
+
+The SDK-heavy emission probe reduced peak footprint from about 5.54 GB to
+1.41–1.42 GB and instructions from 283.4 to 171.1 billion. This is compiler
+storage/work, not a change to application ownership or safety checks. The
+sharing regression verifies repeated imports, alias localization, different
+thread-affinity contracts, and independent source-proof refinement. See the
+[performance measurements](performance.md) for timing boundaries and caveats.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

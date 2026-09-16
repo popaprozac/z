@@ -9,6 +9,7 @@ export type SelfHostDifferentialCase = {
 };
 
 export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferentialCase[] = [
+  { entry: "tests/fixtures/borrowed-class-match.zs" },
   { entry: "tests/fixtures/wrapping-shift.zs" },
   {
     entry: "tests/fixtures/lifecycle-callbacks.zs",

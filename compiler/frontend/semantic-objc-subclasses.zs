@@ -5,7 +5,7 @@ import {
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import {
-  ModuleMethodSignature, ModuleResolveError, ModuleResolveErrorKind, ModuleSymbolKind,
+  ModuleMethodSignature, ModuleResolveError, ModuleResolveErrorKind, ModuleSymbolKind, ModuleTypeSignature,
   ResolvedModule, codedModuleResolutionError,
 } from "./semantic-model.zs";
 import {
@@ -613,21 +613,18 @@ export function prepareNativeObjCSubclassTypes(
         none => throw subclassError(module, "missing native subclass type identity", aggregate.line, aggregate.column);
       };
       const methods = try nativeObjCSubclassInheritedMethods(module, modules, moduleIndex, aggregate, baseName);
-      let signature = match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
-        some(value) => copy value;
+      const signature = match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(value) => value;
         none => throw subclassError(module, "missing native subclass signature", aggregate.line, aggregate.column);
       };
-      signature.foreignKind = "objcSubclass";
-      signature.foreignLayout = "reference";
-      signature.foreignObjCSuperName = copy baseName;
-      signature.customDeinit = true;
+      let fields = copy signature.fields;
+      let sourceMethods = copy signature.methods;
       // Native allocation and owned storage name the generated Objective-C
       // class, while the base identity remains available for checked conversion.
       const baseSignature = match (in modules[baseLocation.moduleIndex].symbols[baseLocation.symbolIndex].typeSignature) {
-        some(value) => copy value;
+        some(value) => value;
         none => throw subclassError(module, "missing imported superclass signature", aggregate.line, aggregate.column);
       };
-      signature.foreignNativeName = `ZNative_${moduleIndex}_${aggregate.name}`;
       for (const field of baseSignature.fields) {
         let property = copy field;
         property.typeName = rebaseTypeName(modules, baseLocation.moduleIndex, moduleIndex, field.typeName);
@@ -635,11 +632,11 @@ export function prepareNativeObjCSubclassTypes(
         for (const protocol of field.objectiveCProtocols) {
           property.objectiveCProtocols.push(rebaseTypeName(modules, baseLocation.moduleIndex, moduleIndex, protocol));
         }
-        signature.fields.push(move property);
+        fields.push(move property);
       }
       let methodIndex: usize = 0;
-      while (methodIndex < signature.methods.length) {
-        const selector = copy signature.methods[methodIndex].objectiveCImplementationSelector;
+      while (methodIndex < sourceMethods.length) {
+        const selector = copy sourceMethods[methodIndex].objectiveCImplementationSelector;
         if (selector.byteLength == 0) {
           methodIndex = methodIndex + 1;
           continue;
@@ -649,15 +646,15 @@ export function prepareNativeObjCSubclassTypes(
           if (native.objectiveCSelector != selector) continue;
           inherited = true;
           let method = copy native;
-          method.name = copy signature.methods[methodIndex].name;
-          method.receiverMode = copy signature.methods[methodIndex].receiverMode;
-          method.signature = copy signature.methods[methodIndex].signature;
+          method.name = copy sourceMethods[methodIndex].name;
+          method.receiverMode = copy sourceMethods[methodIndex].receiverMode;
+          method.signature = copy sourceMethods[methodIndex].signature;
           method.objectiveCImplementationSelector = copy selector;
-          signature.methods[methodIndex] = move method;
+          sourceMethods[methodIndex] = move method;
           break;
         }
         if (!inherited) {
-          let method = copy signature.methods[methodIndex];
+          let method = copy sourceMethods[methodIndex];
           method.objectiveCSelector = copy selector;
           method.objectiveCNativeReturnType = try newEntryABI(module, modules, moduleIndex,
             method.signature.returnType, true, aggregate.line, aggregate.column);
@@ -670,12 +667,43 @@ export function prepareNativeObjCSubclassTypes(
                 parameter.type.name, false, parameter.line, parameter.column));
             }
           }
-          signature.methods[methodIndex] = move method;
+          sourceMethods[methodIndex] = move method;
         }
         methodIndex = methodIndex + 1;
       }
       const header = copy modules[baseLocation.moduleIndex].symbols[baseLocation.symbolIndex].foreignHeader;
-      modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature = Option.some(move signature);
+      modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature = Option.some(new ModuleTypeSignature({
+        nativeCName: copy signature.nativeCName,
+        nativeCUnderlyingType: copy signature.nativeCUnderlyingType,
+        typeParameters: copy signature.typeParameters,
+        typeParameterConstraints: copy signature.typeParameterConstraints,
+        executorAffinity: copy signature.executorAffinity,
+        implementedTraits: copy signature.implementedTraits,
+        fields,
+        methods: sourceMethods,
+        variants: copy signature.variants,
+        customDeinit: true,
+        deinitThreadAny: signature.deinitThreadAny,
+        customConstructor: signature.customConstructor,
+        constructorVisibility: copy signature.constructorVisibility,
+        constructorSignature: copy signature.constructorSignature,
+        foreignKind: "objcSubclass",
+        foreignLayout: "reference",
+        foreignNativeName: `ZNative_${moduleIndex}_${aggregate.name}`,
+        foreignCanonicalNativeName: copy signature.foreignCanonicalNativeName,
+        foreignUnderlyingType: copy signature.foreignUnderlyingType,
+        foreignFlags: signature.foreignFlags,
+        foreignResourceRelease: copy signature.foreignResourceRelease,
+        foreignDiscriminantMember: copy signature.foreignDiscriminantMember,
+        foreignDiscriminantType: copy signature.foreignDiscriminantType,
+        foreignUnionVariants: copy signature.foreignUnionVariants,
+        foreignFallbackVariant: copy signature.foreignFallbackVariant,
+        foreignObjCSuperName: copy baseName,
+        foreignObjCSubclassingRestricted: signature.foreignObjCSubclassingRestricted,
+        foreignObjCAvailability: copy signature.foreignObjCAvailability,
+        foreignObjCUnrepresentableMethods: copy signature.foreignObjCUnrepresentableMethods,
+        foreignObjCProtocolName: copy signature.foreignObjCProtocolName,
+      }));
       modules[location.moduleIndex].symbols[location.symbolIndex].foreignHeader = move header;
     }
     moduleIndex = moduleIndex + 1;

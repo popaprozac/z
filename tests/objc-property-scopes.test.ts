@@ -4,6 +4,23 @@ import { assert, cli, compileToNative, hostToolchainTest, mkdtempSync, projectRo
 
 const fixtures = resolve(projectRoot, "tests/fixtures");
 
+hostToolchainTest("shares immutable foreign signatures without merging namespaces or contracts", () => {
+  const fixture = resolve(fixtures, "foreign-signature-sharing.zs");
+  const temporary = mkdtempSync("/tmp/z-foreign-signature-sharing-");
+  try {
+    const wire = resolve(temporary, "native.zfdcl");
+    writeFileSync(wire, resolveForeignFunctionDeclarationStreams([{
+      kind: "import", moduleName: "native", bindings: null, header: "foreign-signature-sharing.h",
+      location: { fileName: fixture, offset: 0, line: 1, column: 1 },
+    }], fixture, [fixtures]).get("native")!);
+    const emitted = command(process.execPath, [cli, "self-host-emit", fixture], undefined, 180_000);
+    const executable = resolve(temporary, "probe");
+    command("clang", ["-x", "c", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+      "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], emitted, 60_000);
+    assert.equal(command(executable, [wire], undefined, 5_000), "signature sharing passed\n");
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+}, 240_000);
+
 function command(executable: string, args: string[], input?: string, timeout = 30_000): string {
   const result = spawnSync(executable, args, {
     encoding: "utf8", input, timeout, killSignal: "SIGKILL", maxBuffer: 24 * 1024 * 1024,

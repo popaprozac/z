@@ -87,7 +87,7 @@ export function planNativeObjCSubclasses(
       none => throw planError(module, "native subclass plan lost source identity");
     };
     const signature = match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
-      some(value) => copy value;
+      some(value) => value;
       none => throw planError(module, "native subclass plan requires a checked native signature");
     };
     if (signature.foreignKind != "objcSubclass"

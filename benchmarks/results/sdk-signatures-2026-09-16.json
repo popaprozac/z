@@ -1,0 +1,113 @@
+{
+  "date": "2026-09-16",
+  "host": {
+    "platform": "macOS",
+    "version": "26.4",
+    "build": "25E5223i",
+    "architecture": "arm64"
+  },
+  "baselineRevision": "cfd31d82",
+  "candidate": "Immutable semantic signatures and borrowed class match qualification changes accompanying this report",
+  "consumerRevision": "zapp 46da3e93",
+  "method": "One matched baseline and two candidate emissions, in candidate/baseline/candidate order. Warm validated SDK evidence; OS caches not cleared. No concurrent test builds during timing. Limited local observations, not statistical medians or clean-machine startup measurements. Compiler binaries built at -O2 -DNDEBUG, with the same bundled foreign adapter. No GUI or Vite launch.",
+  "emission": {
+    "command": "bun benchmarks/native-emission.ts <native-z> <generated-project> <service-registration.zbuild.json> <report.json>",
+    "scope": "Always load/check/lower/emit; excludes application Clang compilation, linking, signing, and launch. Does not use final executable reuse.",
+    "samples": [
+      {
+        "label": "shared-signatures-before-1",
+        "measuredAt": "2026-09-16T22:04:48.909Z",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "compilerHash": "4630dba81e01b925bc92a5a33b4a39f34f6914f31810dd09abfceff339fa6269",
+        "compilerSourceHash": "50b535b435a995e7d32e72d8af165c2515105c4480b8c96624664ae782024e17",
+        "seconds": 54.990314082999994,
+        "emittedBytes": 5755193,
+        "emittedHash": "ef76f16793d3909538e8e7329244ede01d738647de928a715945254981a95300",
+        "maximumResidentBytes": 2094235648,
+        "peakFootprintBytes": 5536699384,
+        "resourceUsage": "54.98 real        33.58 user        15.61 sys\n          2094235648  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n             2833857  page reclaims\n               20991  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                 717  messages sent\n                1630  messages received\n                   0  signals received\n                3194  voluntary context switches\n              225114  involuntary context switches\n        283404118422  instructions retired\n        130240569245  cycles elapsed\n          5536699384  peak memory footprint"
+      },
+      {
+        "label": "shared-signatures-after-1",
+        "measuredAt": "2026-09-16T22:03:40.495Z",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "compilerHash": "5ebaf446ed0ac298419319d1cec7d9b285a3ccc1e494a059e5ed0a7ee3d9eee6",
+        "compilerSourceHash": "62a0fc47c6ac2670aedffbbbf0e703df3f6251e141a266d94614372427e7100d",
+        "seconds": 31.362438542,
+        "emittedBytes": 5755193,
+        "emittedHash": "a92212c4475cb15e8b43d8511005c5a0e3d7f217f0b09869c26b345644f76151",
+        "maximumResidentBytes": 1293320192,
+        "peakFootprintBytes": 1419822664,
+        "resourceUsage": "31.35 real        22.11 user         7.20 sys\n          1293320192  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n             1231285  page reclaims\n               19274  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                 717  messages sent\n                1662  messages received\n                   0  signals received\n                3233  voluntary context switches\n               51294  involuntary context switches\n        171132925651  instructions retired\n         53948182553  cycles elapsed\n          1419822664  peak memory footprint"
+      },
+      {
+        "label": "shared-signatures-after-2",
+        "measuredAt": "2026-09-16T22:05:47.897Z",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "compilerHash": "5ebaf446ed0ac298419319d1cec7d9b285a3ccc1e494a059e5ed0a7ee3d9eee6",
+        "compilerSourceHash": "62a0fc47c6ac2670aedffbbbf0e703df3f6251e141a266d94614372427e7100d",
+        "seconds": 29.231166417,
+        "emittedBytes": 5755193,
+        "emittedHash": "a92212c4475cb15e8b43d8511005c5a0e3d7f217f0b09869c26b345644f76151",
+        "maximumResidentBytes": 1373175808,
+        "peakFootprintBytes": 1414776416,
+        "resourceUsage": "29.22 real        21.64 user         6.83 sys\n          1373175808  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n             1224265  page reclaims\n               20983  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                 717  messages sent\n                1708  messages received\n                   0  signals received\n                3265  voluntary context switches\n               55471  involuntary context switches\n        171154667178  instructions retired\n         52271436407  cycles elapsed\n          1414776416  peak memory footprint"
+      }
+    ]
+  },
+  "applicationOutput": {
+    "bytes": 5755193,
+    "baselineSha256": "ef76f16793d3909538e8e7329244ede01d738647de928a715945254981a95300",
+    "candidateSha256": "a92212c4475cb15e8b43d8511005c5a0e3d7f217f0b09869c26b345644f76151",
+    "difference": "Exactly 49 borrowed class match payload declarations change const Class * to Class * const. All other generated application lines are identical. No application operations or safety checks removed."
+  },
+  "developmentBuildAndBundle": {
+    "command": "bun benchmarks/profile-zapp-build.ts ../zapp dev <label>",
+    "scope": "Build and ad-hoc signed bundle, with source service metadata reused. Excludes Vite startup, worker bundling, app launch, and WebView load. Native rebuilds forced by compiler identity/location change, not deletion of SDK caches.",
+    "priorCheckpoint": {
+      "revision": "cfd31d82",
+      "zBuildSeconds": 51.703866292,
+      "totalSeconds": 52.840845292,
+      "unchangedTotalSeconds": 1.361997375
+    },
+    "runs": [
+      {
+        "label": "shared-signatures-build",
+        "zBuildSeconds": 35.614392417000005,
+        "totalSeconds": 36.394012208,
+        "reportedInputCacheHit": false
+      },
+      {
+        "label": "shared-signatures-default",
+        "zBuildSeconds": 36.900205457999995,
+        "totalSeconds": 38.140645875000004,
+        "reportedInputCacheHit": false
+      },
+      {
+        "label": "shared-signatures-unchanged",
+        "zBuildSeconds": 1.0744202909999998,
+        "totalSeconds": 1.949040833,
+        "reportedInputCacheHit": true
+      },
+      {
+        "label": "shared-signatures-unchanged-repeat",
+        "zBuildSeconds": 1.0289667500000002,
+        "totalSeconds": 1.877651,
+        "reportedInputCacheHit": true
+      }
+    ]
+  },
+  "validation": [
+    "Native fixed-point bootstrap passed (13192894 compiler C bytes)",
+    "Stage 0/native executable differential corpus passed, including borrowed class Option/enum payloads passed to in parameters",
+    "Immutable signature regression passed under UBSan: identity sharing, distinct aliases, different contract affinity despite identical cache keys, records/protocols, independent method refinements",
+    "Objective-C header composition and inherited property O0/O2 UBSan tests passed",
+    "All 13 callback nonescape tests passed",
+    "Generated adapter linking/lifetime/error tests passed with Stage 0 and optimized native compiler",
+    "Z Notes compiled, linked, ad-hoc signed, and reused its executable on two unchanged builds"
+  ],
+  "remaining": "Further frontend analysis/copying, SDK-cold import cost, source-vs-asset invalidation, and separate dev/release artifact namespaces. Unchanged pipeline samples (1.88-1.95s) are slower than the prior single 1.36s observation; this change does not claim to improve executable-cache hits."
+}

@@ -132,6 +132,11 @@ source stays beside the report. Compare output hashes as well as timing. Alterna
 before/after binaries, run without concurrent tests, and distinguish warm SDK
 evidence from a clean-machine build. Every process group has a 180-second watchdog.
 
+The [immutable SDK signature checkpoint](results/sdk-signatures-2026-09-16.json)
+records a matched prior compiler and two optimized emission runs on Z Notes,
+including the narrowly audited generated-code difference from a borrowed-class
+pointer-qualification correction. Do not silently ignore differing output hashes.
+
 ```sh
 bun run bootstrap
 Z_BUILD_BENCH_REPORT=benchmarks/results/build-latency-2026-09-08.json \

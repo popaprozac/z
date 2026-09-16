@@ -59,6 +59,52 @@ struct ForeignNameIndices {
   objectiveCProtocols: Map<String, usize>;
 }
 
+// One immutable semantic projection per validated contract identity and local
+// namespace. Different sidecars, aliases, and target facts must never merge.
+// The cache lives only for one graph resolution; symbols keep their own source
+// locations, headers, and visibility while retaining these shared signatures.
+readonly class ForeignTypeSignatures {
+  contracts: NativeForeignContractSet;
+  namespace: String;
+  indices: ForeignNameIndices;
+  types: Array<ModuleTypeSignature>;
+  interfaces: Array<ModuleTypeSignature>;
+  protocols: Array<ModuleTypeSignature>;
+}
+
+function sharedForeignTypeSignatures(
+  in contracts: NativeForeignContractSet,
+  in namespace: String,
+  inout cache: Array<ForeignTypeSignatures>
+): ForeignTypeSignatures {
+  for (const entry of cache) {
+    if (entry.contracts == contracts && entry.namespace == namespace) return entry;
+  }
+  const indices = foreignNameIndices(contracts);
+  let types = Array<ModuleTypeSignature>();
+  for (const type of contracts.types) {
+    types.push(foreignTypeSignature(type, indices, namespace));
+  }
+  let interfaces = Array<ModuleTypeSignature>();
+  for (const interface_ of contracts.objectiveCInterfaces) {
+    interfaces.push(objcInterfaceTypeSignature(interface_, contracts, indices, namespace));
+  }
+  let protocols = Array<ModuleTypeSignature>();
+  for (const protocol of contracts.objectiveCProtocols) {
+    protocols.push(objcProtocolTypeSignature(protocol, contracts, indices, namespace));
+  }
+  const signatures = new ForeignTypeSignatures({
+    contracts,
+    namespace: copy namespace,
+    indices,
+    types,
+    interfaces,
+    protocols,
+  });
+  cache.push(signatures);
+  return signatures;
+}
+
 function foreignNameIndices(
   in contracts: NativeForeignContractSet
 ): ForeignNameIndices {
@@ -484,7 +530,7 @@ function objcInterfaceTypeSignature(
   for (const fact of interface_.availability) {
     availability.push(objcAvailabilitySignature(fact));
   }
-  return ModuleTypeSignature({
+  return new ModuleTypeSignature({
     nativeCName: "",
     nativeCUnderlyingType: "",
     typeParameters: Array<String>(),
@@ -512,6 +558,15 @@ function objcInterfaceTypeSignature(
     foreignObjCSubclassingRestricted: interface_.subclassingRestricted,
     foreignObjCAvailability: availability,
     foreignObjCUnrepresentableMethods: unrepresentableMethods,
+    deinitThreadAny: false,
+    constructorVisibility: "public",
+    foreignCanonicalNativeName: "",
+    foreignFlags: false,
+    foreignDiscriminantMember: "",
+    foreignDiscriminantType: "",
+    foreignUnionVariants: Array<ModuleForeignUnionVariantSignature>(),
+    foreignFallbackVariant: "",
+    foreignObjCProtocolName: "",
   });
 }
 
@@ -534,7 +589,7 @@ function objcProtocolTypeSignature(
   for (const name of protocol.inherited) {
     inherited.push(`${namespace}.${name}`);
   }
-  return ModuleTypeSignature({
+  return new ModuleTypeSignature({
     nativeCName: "",
     nativeCUnderlyingType: "",
     typeParameters: Array<String>(),
@@ -562,6 +617,18 @@ function objcProtocolTypeSignature(
       0,
       protocol.nativeName.byteLength
     ),
+    deinitThreadAny: false,
+    constructorVisibility: "public",
+    foreignCanonicalNativeName: "",
+    foreignFlags: false,
+    foreignDiscriminantMember: "",
+    foreignDiscriminantType: "",
+    foreignUnionVariants: Array<ModuleForeignUnionVariantSignature>(),
+    foreignFallbackVariant: "",
+    foreignObjCSuperName: "",
+    foreignObjCSubclassingRestricted: false,
+    foreignObjCAvailability: Array<ModuleObjCAvailabilitySignature>(),
+    foreignObjCUnrepresentableMethods: Array<ModuleMethodSignature>(),
   });
 }
 
@@ -1029,7 +1096,7 @@ function foreignTypeSignature(
       payloadType: discriminantType.copyBytes(0, discriminantType.byteLength),
     }));
   }
-  return ModuleTypeSignature({
+  return new ModuleTypeSignature({
     nativeCName: "",
     nativeCUnderlyingType: "",
     typeParameters: Array<String>(),
@@ -1078,6 +1145,13 @@ function foreignTypeSignature(
       0,
       type.fallback.byteLength
     ),
+    deinitThreadAny: false,
+    constructorVisibility: "public",
+    foreignObjCSuperName: "",
+    foreignObjCSubclassingRestricted: false,
+    foreignObjCAvailability: Array<ModuleObjCAvailabilitySignature>(),
+    foreignObjCUnrepresentableMethods: Array<ModuleMethodSignature>(),
+    foreignObjCProtocolName: "",
   });
 }
 
@@ -1085,7 +1159,7 @@ function attachForeignTypes(
   moduleIndex: usize,
   inout modules: Array<ResolvedModule>,
   in contracts: NativeForeignContractSet,
-  in indices: ForeignNameIndices,
+  in signatures: ForeignTypeSignatures,
   in namespace: String,
   offset: usize,
   line: usize,
@@ -1132,7 +1206,10 @@ function attachForeignTypes(
         contracts.moduleSpecifier.byteLength
       );
   }
+  let typeIndex: usize = 0;
   for (const type of contracts.types) {
+    const signature = signatures.types[typeIndex];
+    typeIndex = typeIndex + 1;
     const name = `${namespace}.${type.name}`;
     if (moduleSymbolIndex(modules[moduleIndex], name) < modules[moduleIndex].symbols.length) {
       continue;
@@ -1150,7 +1227,7 @@ function attachForeignTypes(
       valueType: "",
       functionSignature: Option<ModuleFunctionSignature>.none,
       typeSignature: Option<ModuleTypeSignature>.some(
-        foreignTypeSignature(type, indices, namespace)
+        signature
       ),
       foreignHeader: contracts.moduleSpecifier.copyBytes(
         0,
@@ -1172,13 +1249,16 @@ function attachForeignObjCTypes(
   moduleIndex: usize,
   inout modules: Array<ResolvedModule>,
   in contracts: NativeForeignContractSet,
-  in indices: ForeignNameIndices,
+  in signatures: ForeignTypeSignatures,
   in namespace: String,
   offset: usize,
   line: usize,
   column: usize
 ): void {
+  let protocolIndex: usize = 0;
   for (const protocol of contracts.objectiveCProtocols) {
+    const signature = signatures.protocols[protocolIndex];
+    protocolIndex = protocolIndex + 1;
     const name = `${namespace}.${protocol.name}`;
     const existingProtocol = moduleSymbolIndex(modules[moduleIndex], name);
     if (existingProtocol < modules[moduleIndex].symbols.length) {
@@ -1188,12 +1268,7 @@ function attachForeignObjCTypes(
         protocol.nativeName.copyBytes(0, protocol.nativeName.byteLength);
       modules[moduleIndex].symbols[existingProtocol].valueType = "";
       modules[moduleIndex].symbols[existingProtocol].typeSignature =
-        Option<ModuleTypeSignature>.some(objcProtocolTypeSignature(
-          protocol,
-          contracts,
-          indices,
-          namespace
-        ));
+        Option<ModuleTypeSignature>.some(signature);
       modules[moduleIndex].symbols[existingProtocol].foreignHeader =
         contracts.moduleSpecifier.copyBytes(
           0,
@@ -1214,12 +1289,7 @@ function attachForeignObjCTypes(
       ),
       valueType: "",
       functionSignature: Option<ModuleFunctionSignature>.none,
-      typeSignature: Option<ModuleTypeSignature>.some(objcProtocolTypeSignature(
-        protocol,
-        contracts,
-        indices,
-        namespace
-      )),
+      typeSignature: Option<ModuleTypeSignature>.some(signature),
       foreignHeader: contracts.moduleSpecifier.copyBytes(
         0,
         contracts.moduleSpecifier.byteLength
@@ -1231,7 +1301,10 @@ function attachForeignObjCTypes(
       column,
     }));
   }
+  let interfaceIndex: usize = 0;
   for (const interface_ of contracts.objectiveCInterfaces) {
+    const signature = signatures.interfaces[interfaceIndex];
+    interfaceIndex = interfaceIndex + 1;
     const name = `${namespace}.${interface_.name}`;
     const existingInterface = moduleSymbolIndex(modules[moduleIndex], name);
     if (existingInterface < modules[moduleIndex].symbols.length) {
@@ -1247,12 +1320,7 @@ function attachForeignObjCTypes(
         );
       modules[moduleIndex].symbols[existingInterface].valueType = "";
       modules[moduleIndex].symbols[existingInterface].typeSignature =
-        Option<ModuleTypeSignature>.some(objcInterfaceTypeSignature(
-          interface_,
-          contracts,
-          indices,
-          namespace
-        ));
+        Option<ModuleTypeSignature>.some(signature);
       modules[moduleIndex].symbols[existingInterface].foreignHeader =
         contracts.moduleSpecifier.copyBytes(
           0,
@@ -1273,12 +1341,7 @@ function attachForeignObjCTypes(
       ),
       valueType: "",
       functionSignature: Option<ModuleFunctionSignature>.none,
-      typeSignature: Option<ModuleTypeSignature>.some(objcInterfaceTypeSignature(
-        interface_,
-        contracts,
-        indices,
-        namespace
-      )),
+      typeSignature: Option<ModuleTypeSignature>.some(signature),
       foreignHeader: contracts.moduleSpecifier.copyBytes(
         0,
         contracts.moduleSpecifier.byteLength
@@ -1327,7 +1390,7 @@ function attachSelectiveType(
   moduleIndex: usize,
   inout modules: Array<ResolvedModule>,
   in contracts: NativeForeignContractSet,
-  in indices: ForeignNameIndices,
+  in signatures: ForeignTypeSignatures,
   in namespace: String,
   in localName: String,
   typeIndex: usize
@@ -1345,11 +1408,7 @@ function attachSelectiveType(
   modules[moduleIndex].symbols[symbolIndex].valueType = "";
   modules[moduleIndex].symbols[symbolIndex].typeSignature =
     Option<ModuleTypeSignature>.some(
-      foreignTypeSignature(
-        contracts.types[typeIndex],
-        indices,
-        namespace
-      )
+      signatures.types[typeIndex]
     );
   modules[moduleIndex].symbols[symbolIndex].foreignHeader =
     contracts.moduleSpecifier.copyBytes(
@@ -1362,7 +1421,7 @@ function attachSelectiveObjCInterface(
   moduleIndex: usize,
   inout modules: Array<ResolvedModule>,
   in contracts: NativeForeignContractSet,
-  in indices: ForeignNameIndices,
+  in signatures: ForeignTypeSignatures,
   in namespace: String,
   in localName: String,
   typeIndex: usize
@@ -1374,7 +1433,7 @@ function attachSelectiveObjCInterface(
     interface_.nativeName.copyBytes(0, interface_.nativeName.byteLength);
   modules[moduleIndex].symbols[symbolIndex].valueType = "";
   modules[moduleIndex].symbols[symbolIndex].typeSignature = Option<ModuleTypeSignature>.some(
-    objcInterfaceTypeSignature(interface_, contracts, indices, namespace)
+    signatures.interfaces[typeIndex]
   );
   modules[moduleIndex].symbols[symbolIndex].foreignHeader =
     contracts.moduleSpecifier.copyBytes(
@@ -1387,7 +1446,7 @@ function attachSelectiveObjCProtocol(
   moduleIndex: usize,
   inout modules: Array<ResolvedModule>,
   in contracts: NativeForeignContractSet,
-  in indices: ForeignNameIndices,
+  in signatures: ForeignTypeSignatures,
   in namespace: String,
   in localName: String,
   typeIndex: usize
@@ -1399,7 +1458,7 @@ function attachSelectiveObjCProtocol(
     protocol.nativeName.copyBytes(0, protocol.nativeName.byteLength);
   modules[moduleIndex].symbols[symbolIndex].valueType = "";
   modules[moduleIndex].symbols[symbolIndex].typeSignature = Option<ModuleTypeSignature>.some(
-    objcProtocolTypeSignature(protocol, contracts, indices, namespace)
+    signatures.protocols[typeIndex]
   );
   modules[moduleIndex].symbols[symbolIndex].foreignHeader =
     contracts.moduleSpecifier.copyBytes(
@@ -1411,7 +1470,8 @@ function attachSelectiveObjCProtocol(
 function attachModuleContract(
   in parsed: Array<ParsedModule>,
   in binding: NativeForeignModuleContract,
-  inout modules: Array<ResolvedModule>
+  inout modules: Array<ResolvedModule>,
+  inout cache: Array<ForeignTypeSignatures>
 ): void throws ModuleResolveError {
   let moduleIndex: usize = 0;
   while (moduleIndex < parsed.length) {
@@ -1427,17 +1487,18 @@ function attachModuleContract(
       1
     );
   }
-  const indices = foreignNameIndices(binding.contracts);
   let matched = false;
   for (const declaration of parsed[moduleIndex].program.imports) {
     if (declaration.header != binding.contracts.moduleSpecifier) continue;
     matched = true;
     const namespace = moduleBindingName(declaration);
+    const signatures = sharedForeignTypeSignatures(binding.contracts, namespace, inout cache);
+    const indices = view signatures.indices;
     attachForeignTypes(
       moduleIndex,
       inout modules,
       binding.contracts,
-      indices,
+      signatures,
       namespace,
       declaration.offset,
       declaration.line,
@@ -1447,7 +1508,7 @@ function attachModuleContract(
       moduleIndex,
       inout modules,
       binding.contracts,
-      indices,
+      signatures,
       namespace,
       declaration.offset,
       declaration.line,
@@ -1493,7 +1554,7 @@ function attachModuleContract(
                 moduleIndex,
                 inout modules,
                 binding.contracts,
-                indices,
+                signatures,
                 namespace,
                 localName,
                 index
@@ -1506,7 +1567,7 @@ function attachModuleContract(
                   moduleIndex,
                   inout modules,
                   binding.contracts,
-                  indices,
+                  signatures,
                   namespace,
                   localName,
                   index
@@ -1519,7 +1580,7 @@ function attachModuleContract(
                     moduleIndex,
                     inout modules,
                     binding.contracts,
-                    indices,
+                    signatures,
                     namespace,
                     localName,
                     index
@@ -1576,7 +1637,8 @@ export function attachForeignContracts(
   in contracts: Array<NativeForeignModuleContract>,
   inout modules: Array<ResolvedModule>
 ): void throws ModuleResolveError {
+  let cache = Array<ForeignTypeSignatures>();
   for (const binding of contracts) {
-    try attachModuleContract(parsed, binding, inout modules);
+    try attachModuleContract(parsed, binding, inout modules, inout cache);
   }
 }

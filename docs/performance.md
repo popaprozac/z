@@ -1013,3 +1013,44 @@ Remaining work: avoid repeatedly constructing per-module SDK semantic tables,
 measure source-only versus asset-only invalidation, and separate dev/release
 artifact namespaces. The roughly 5.6 GB compiler footprint is still too large;
 this checkpoint reduces overlapping ownership, not the model's underlying size.
+
+### Immutable SDK semantic signatures — 2026-09-16
+
+The per-module duplication above is now reduced. Resolved type signatures are
+immutable ARC identities, shared within one resolution only for the same
+validated contract identity and local namespace. Module-local visibility,
+header provenance, aliases, and diagnostic locations remain distinct. Source
+method proofs and native subclass preparation construct replacement signatures;
+they never mutate shared SDK evidence. Both generated-adapter semantic passes
+still run.
+
+| Measurement | Prior compiler | Shared signatures |
+| --- | ---: | ---: |
+| Matched native emission | 54.99 s | 29.23–31.36 s |
+| Emission instructions retired | 283.40 billion | 171.13–171.15 billion |
+| Emission peak memory footprint | 5.54 GB | 1.41–1.42 GB |
+| Maximum resident size | 2.09 GB | 1.29–1.37 GB |
+| Z Notes dev rebuild + signed bundle | 52.84 s (prior checkpoint) | 36.39–38.14 s |
+
+The emission probe alternated candidate/baseline/candidate, using the same
+validated SDK evidence and no concurrent test builds. These are limited local
+observations, not clean-machine measurements or stable statistical medians.
+The application build includes Clang/link/sign; neither measurement includes
+Vite, app launch, or WebView loading. Unchanged builds report explicit executable
+reuse and took **1.88–1.95 s**. That is slower than the prior single 1.36 s
+observation; this optimization targets actual frontend work, not the cache-hit
+path. The optimized compiler is installed at the normal bootstrap location.
+
+Self-hosting also caught a native emission defect when a borrowed `Option<Class>`
+payload is passed to an `in Class` parameter. C now qualifies the pointer slot,
+not the object pointee. Exactly 49 such declarations differ in the 5,755,193-byte
+Z Notes output; every other line is identical. Output hashes therefore differ
+for an audited correctness fix, not because application checks were removed.
+
+Fixed-point bootstrap, the executable differential corpus, immutable-signature
+isolation, callback nonescape, generated adapters, and Objective-C composition
+regressions passed. [Raw measurements and hashes](../benchmarks/results/sdk-signatures-2026-09-16.json)
+capture both compiler and application-output identities. Remaining targets are
+frontend analysis/copying, SDK-cold import work, source-versus-asset invalidation,
+and dev/release artifact separation; a 36–38-second genuine rebuild is progress,
+not the final DX target.

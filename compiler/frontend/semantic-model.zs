@@ -413,7 +413,10 @@ export struct ModuleTypeParameterConstraint {
   traitName: String;
 }
 
-export struct ModuleTypeSignature {
+// Resolved signatures are immutable evidence. Imports may share the same
+// signature without sharing module-local names, locations, or visibility.
+// Source-body refinements publish a replacement instead of mutating aliases.
+export readonly class ModuleTypeSignature {
   nativeCName: String;
   nativeCUnderlyingType: String;
   typeParameters: Array<String>;
@@ -424,30 +427,66 @@ export struct ModuleTypeSignature {
   methods: Array<ModuleMethodSignature>;
   variants: Array<ModuleVariantSignature>;
   customDeinit: boolean;
-  deinitThreadAny: boolean = false;
+  deinitThreadAny: boolean;
   customConstructor: boolean;
-  constructorVisibility: String = "public";
+  constructorVisibility: String;
   constructorSignature: Option<ModuleFunctionSignature>;
   foreignKind: String;
   foreignLayout: String;
   foreignNativeName: String;
-  foreignCanonicalNativeName: String = "";
+  foreignCanonicalNativeName: String;
   foreignUnderlyingType: String;
-  foreignFlags: boolean = false;
+  foreignFlags: boolean;
   foreignResourceRelease: String;
-  foreignDiscriminantMember: String = "";
-  foreignDiscriminantType: String = "";
-  foreignUnionVariants: Array<ModuleForeignUnionVariantSignature> =
-    Array<ModuleForeignUnionVariantSignature>();
-  foreignFallbackVariant: String = "";
-  foreignObjCSuperName: String = "";
-  foreignObjCSubclassingRestricted: boolean = false;
-  foreignObjCAvailability: Array<ModuleObjCAvailabilitySignature> = Array<ModuleObjCAvailabilitySignature>();
+  foreignDiscriminantMember: String;
+  foreignDiscriminantType: String;
+  foreignUnionVariants: Array<ModuleForeignUnionVariantSignature>;
+  foreignFallbackVariant: String;
+  foreignObjCSuperName: String;
+  foreignObjCSubclassingRestricted: boolean;
+  foreignObjCAvailability: Array<ModuleObjCAvailabilitySignature>;
   // Retain rejected ABI declarations for subclass validation without making
   // them available through ordinary method lookup or completion.
-  foreignObjCUnrepresentableMethods: Array<ModuleMethodSignature> =
-    Array<ModuleMethodSignature>();
-  foreignObjCProtocolName: String = "";
+  foreignObjCUnrepresentableMethods: Array<ModuleMethodSignature>;
+  foreignObjCProtocolName: String;
+}
+
+export function moduleTypeSignatureWithMethods(
+  in signature: ModuleTypeSignature,
+  methods: Array<ModuleMethodSignature>
+): ModuleTypeSignature {
+  return new ModuleTypeSignature({
+    nativeCName: copy signature.nativeCName,
+    nativeCUnderlyingType: copy signature.nativeCUnderlyingType,
+    typeParameters: copy signature.typeParameters,
+    typeParameterConstraints: copy signature.typeParameterConstraints,
+    executorAffinity: copy signature.executorAffinity,
+    implementedTraits: copy signature.implementedTraits,
+    fields: copy signature.fields,
+    methods,
+    variants: copy signature.variants,
+    customDeinit: signature.customDeinit,
+    deinitThreadAny: signature.deinitThreadAny,
+    customConstructor: signature.customConstructor,
+    constructorVisibility: copy signature.constructorVisibility,
+    constructorSignature: copy signature.constructorSignature,
+    foreignKind: copy signature.foreignKind,
+    foreignLayout: copy signature.foreignLayout,
+    foreignNativeName: copy signature.foreignNativeName,
+    foreignCanonicalNativeName: copy signature.foreignCanonicalNativeName,
+    foreignUnderlyingType: copy signature.foreignUnderlyingType,
+    foreignFlags: signature.foreignFlags,
+    foreignResourceRelease: copy signature.foreignResourceRelease,
+    foreignDiscriminantMember: copy signature.foreignDiscriminantMember,
+    foreignDiscriminantType: copy signature.foreignDiscriminantType,
+    foreignUnionVariants: copy signature.foreignUnionVariants,
+    foreignFallbackVariant: copy signature.foreignFallbackVariant,
+    foreignObjCSuperName: copy signature.foreignObjCSuperName,
+    foreignObjCSubclassingRestricted: signature.foreignObjCSubclassingRestricted,
+    foreignObjCAvailability: copy signature.foreignObjCAvailability,
+    foreignObjCUnrepresentableMethods: copy signature.foreignObjCUnrepresentableMethods,
+    foreignObjCProtocolName: copy signature.foreignObjCProtocolName,
+  });
 }
 
 export struct ModuleFunctionSignature {
