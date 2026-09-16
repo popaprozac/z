@@ -5385,18 +5385,30 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.arrayPush
+    || declaration.expressions[index].kind == LoweredExpressionKind.arrayReserveCapacity
   ) {
     if (declaration.expressions[index].children.length != 2) {
       throw "native C emission received a malformed Array.push";
     }
     output.append("Z_");
     output.append(declaration.expressions[index].value);
-    output.append("_push(&(");
+    output.append(declaration.expressions[index].kind == LoweredExpressionKind.arrayPush
+      ? "_push(&(" : "_reserveCapacity(&(");
     const receiver = declaration.expressions[index].children[0];
     const value = declaration.expressions[index].children[1];
     try appendExpression(inout output, declaration, receiver);
     output.append("), ");
     try appendExpression(inout output, declaration, value);
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.arrayWithCapacity
+  ) {
+    if (declaration.expressions[index].children.length != 1) throw "malformed Array.withCapacity";
+    output.append(`Z_${declaration.expressions[index].value}_withCapacity(`);
+    const capacity = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, capacity);
     output.append(")");
     return;
   }
@@ -26277,17 +26289,12 @@ function emitLoweredC(
     output.append("}\n\n");
     output.append("static inline __attribute__((unused)) void Z_");
     output.append(declaration.name);
-    output.append("_push(Z_");
+    output.append("_reserveCapacity(Z_");
     output.append(declaration.name);
-    output.append(" *self, ");
-    output.append(elementType);
-    output.append(" value) {\n");
-    output.append("  if (self->length == self->capacity) {\n");
-    output.append("    size_t next = self->capacity == 0 ? 8 : self->capacity;\n");
-    output.append("    if (self->capacity != 0) {\n");
-    output.append("      if (next > SIZE_MAX / 2) abort();\n");
-    output.append("      next *= 2;\n");
-    output.append("    }\n");
+    output.append(" *self, size_t minimumCapacity) {\n");
+    output.append("  if (minimumCapacity > self->capacity) {\n");
+    output.append("    size_t next = minimumCapacity;\n");
+    output.append(`    if (self->capacity <= SIZE_MAX / sizeof(${elementType}) / 2 && self->capacity * 2 > next) next = self->capacity * 2;\n`);
     output.append("    if (next > SIZE_MAX / sizeof(");
     output.append(elementType);
     output.append(")) abort();\n");
@@ -26317,6 +26324,14 @@ function emitLoweredC(
     }
     output.append("    self->capacity = next;\n");
     output.append("  }\n");
+    output.append("}\n\n");
+    output.append(`static inline __attribute__((unused)) Z_${declaration.name} Z_${declaration.name}_withCapacity(size_t minimumCapacity) {\n`);
+    output.append(`  Z_${declaration.name} result = { .data = NULL, .length = 0, .capacity = 0 };\n`);
+    output.append(`  Z_${declaration.name}_reserveCapacity(&result, minimumCapacity);\n  return result;\n}\n\n`);
+    output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_push(Z_${declaration.name} *self, ${elementType} value) {\n`);
+    output.append("  if (self->length == self->capacity) {\n");
+    output.append("    if (self->length == SIZE_MAX) abort();\n");
+    output.append(`    Z_${declaration.name}_reserveCapacity(self, self->capacity == 0 ? 8 : self->length + 1);\n  }\n`);
     output.append("  ((");
     output.append(elementType);
     if (objectiveCElements) {

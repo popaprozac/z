@@ -498,6 +498,10 @@ export function collectionMethodSignature(
       returnType = "void";
     } else if (!readonlyCollection && methodName == "clear") {
       returnType = "void";
+    } else if (!readonlyCollection && methodName == "reserveCapacity") {
+      parameterModes.push("value");
+      parameterTypes.push("usize");
+      returnType = "void";
     } else if (!readonlyCollection && methodName == "pop") {
       returnType = `Option<${elementType}>`;
     } else if (!readonlyCollection && methodName == "freeze") {
@@ -654,7 +658,7 @@ export function collectionMethodMutates(
   }
   return match (genericTypeShape(ownerType)) {
     some(generic) => generic.base == "Array"
-      ? methodName == "push" || methodName == "clear" || methodName == "pop"
+      ? methodName == "push" || methodName == "clear" || methodName == "pop" || methodName == "reserveCapacity"
       : generic.base == "Map"
       ? methodName == "set"
         || methodName == "remove"

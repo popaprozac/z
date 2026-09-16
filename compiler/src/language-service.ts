@@ -2152,6 +2152,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (resolved?.kind === "array" && word.text === "length") {
       return markdownHover(`length: usize  // ${displayType(resolved.type, context.typeDisplayNames)}`, source, word.start, word.end);
     }
+    if (resolved?.kind === "arrayFactory" && word.text === "withCapacity") {
+      return markdownHover(`withCapacity(minimumCapacity: usize): Array<${resolved.elementType}>\n// reserves at least this many elements; length starts at zero`, source, word.start, word.end);
+    }
     if (resolved?.kind === "array" && parseDynamicArrayType(resolved.type)) {
       const dynamic = parseDynamicArrayType(resolved.type)!;
       if (word.text === "capacity") return markdownHover("capacity: usize", source, word.start, word.end);
@@ -2172,6 +2175,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
           `pop(): Option<${displayType(dynamic.elementType, context.typeDisplayNames)}>  // O(1); transfers the last element, or none; retains capacity`,
           source, word.start, word.end,
         );
+      }
+      if (!dynamic.readonly && word.text === "reserveCapacity") {
+        return markdownHover("reserveCapacity(minimumCapacity: usize): void\n// ensures minimum total capacity; preserves length and elements; may reallocate; requires exclusive mutable storage", source, word.start, word.end);
       }
       if (!dynamic.readonly && word.text === "freeze") {
         return markdownHover(
@@ -5532,6 +5538,14 @@ function memberCompletions(
   if (numericBitsType(receiverText)) {
     return filterCompletions(numericBitsCompletions(receiverText, true), prefix, 1000);
   }
+  const arrayFactory = parseSourceGenericType(receiverText.replace(/\s+/g, ""));
+  if (arrayFactory?.base === "Array" && arrayFactory.arguments.length === 1) {
+    return filterCompletions([{
+      label: "withCapacity", kind: completionKinds.method,
+      detail: `withCapacity(minimumCapacity: usize): Array<${arrayFactory.arguments[0]}>  // empty; minimum total capacity`,
+      insertText: "withCapacity()",
+    }], prefix, 1000);
+  }
   if (receiverText === "Option" || /^Option<[^<>]+>$/.test(receiverText)) {
     const explicit = receiverText.startsWith("Option<") ? receiverText.slice(7, -1) : "T";
     return filterCompletions([
@@ -5576,6 +5590,15 @@ function memberCompletions(
   }
   const importContext = importAnalysis(source, fileName);
   if (!importContext) return [];
+  try {
+    const sourceProgram = parse(lex(source, fileName), fileName);
+    const element = arrayFactoryElement(importContext, receiverText, sourceProgram);
+    if (element) return filterCompletions([{
+      label: "withCapacity", kind: completionKinds.method,
+      detail: `withCapacity(minimumCapacity: usize): Array<${element}>  // empty; minimum total capacity`,
+      insertText: "withCapacity()",
+    }], prefix, 1000);
+  } catch { /* Incomplete source is handled by the recovery paths below. */ }
   if (inObjCSelectorReference(source, receiverStart, importContext)) {
     // An unfinished method name is expected here. Completion only needs the
     // authored declaration, not successful analysis of the registration call.
@@ -6091,6 +6114,13 @@ function memberCompletions(
       insertText: `${method.name}()`,
     })), prefix, 1000);
   }
+  if (resolved?.kind === "arrayFactory") {
+    return filterCompletions([{
+      label: "withCapacity", kind: completionKinds.method,
+      detail: `withCapacity(minimumCapacity: usize): Array<${resolved.elementType}>  // empty; minimum total capacity`,
+      insertText: "withCapacity()",
+    }], prefix, 1000);
+  }
   if (resolved?.kind === "array") {
     const items: CompletionItem[] = [{ label: "length", kind: completionKinds.property, detail: "usize" }];
     const dynamic = parseDynamicArrayType(resolved.type);
@@ -6114,6 +6144,11 @@ function memberCompletions(
           kind: completionKinds.method,
           detail: `pop(): Option<${displayType(dynamic.elementType, context.typeDisplayNames)}>  // transfers the last element; retains capacity`,
           insertText: "pop()",
+        }, {
+          label: "reserveCapacity",
+          kind: completionKinds.method,
+          detail: "reserveCapacity(minimumCapacity: usize): void  // minimum total capacity; length unchanged; may reallocate",
+          insertText: "reserveCapacity()",
         }, {
           label: "freeze",
           kind: completionKinds.method,
@@ -7240,6 +7275,7 @@ type ResolvedReceiver =
   | { readonly kind: "integer"; readonly type: string }
   | { readonly kind: "float"; readonly type: string }
   | { readonly kind: "array"; readonly type: string }
+  | { readonly kind: "arrayFactory"; readonly elementType: string }
   | { readonly kind: "string" }
   | { readonly kind: "textBuffer" }
   | { readonly kind: "arena" }
@@ -7424,8 +7460,29 @@ function channelMemberDetail(
     .find((completion) => completion.label === member)?.detail ?? null;
 }
 
+function arrayFactoryElement(context: AnalyzedSource, text: string, program = context.sourceProgram): string | null {
+  let type = text.replace(/\s+/g, "");
+  const visited = new Set<string>();
+  while (!visited.has(type)) {
+    visited.add(type);
+    const generic = parseSourceGenericType(type);
+    if (generic?.base === "Array" && generic.arguments.length === 1) return generic.arguments[0];
+    const dynamic = parseDynamicArrayType(type);
+    if (dynamic && !dynamic.readonly) return displayType(dynamic.elementType, context.typeDisplayNames);
+    const local = program.typeAliases.find((alias) => alias.name === type);
+    if (local) { type = local.target.name; continue; }
+    const binding = localSourceBinding(context, type);
+    const imported = binding ? sourceExportDeclaration(binding.module, binding.importedName) : null;
+    if (imported?.kind === "type") { type = imported.target.name; program = binding!.module.program; continue; }
+    return null;
+  }
+  return null;
+}
+
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
   const compactText = text.replace(/\s+/g, "");
+  const element = arrayFactoryElement(context, compactText);
+  if (element && !sourceVariableAtOffset(context, compactText, offset)) return { kind: "arrayFactory", elementType: element };
   if (compactText === "super") {
     const owner = sourceAggregateAtOffset(context, offset);
     const base = owner?.nativeBase ? resolveReceiver(context, owner.nativeBase.name, offset) : null;

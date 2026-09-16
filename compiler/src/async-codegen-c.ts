@@ -7847,6 +7847,10 @@ function emitFrameExpressionInner(
         plan.types,
       );
     case "call": {
+      if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier"
+        && parseDynamicArrayType(expression.callee.object.name) && expression.callee.property === "withCapacity") {
+        return `Z_DynamicArray_${asyncNativeSymbolPart(writableTypeName(expression.callee.object.name))}_withCapacity(${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+      }
       const memoryReplace = plan.types.semanticInfo.memoryReplaceCalls.get(expression.location.offset);
       if (memoryReplace) {
         return `${asyncMemoryReplaceName(memoryReplace)}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
@@ -8082,6 +8086,10 @@ function emitFrameExpressionInner(
         if (parseDynamicArrayType(receiverType) && expression.callee.property === "clear") {
           const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
           return `${dynamicArrayClearName(receiverType)}(&(${receiver}))`;
+        }
+        if (parseDynamicArrayType(receiverType) && expression.callee.property === "reserveCapacity") {
+          const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+          return `Z_DynamicArray_${asyncNativeSymbolPart(writableTypeName(receiverType))}_reserveCapacity(&(${receiver}), ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
         }
         if (parseDynamicArrayType(receiverType) && expression.callee.property === "push") {
           const receiver = emitFrameExpression(expression.callee.object, plan, fileName);

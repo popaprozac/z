@@ -109,8 +109,19 @@ construction under the same ownership rules as `push`. A guarded temporary
 owns each element as soon as it is inserted, then transfers the completed
 buffer to its destination. This preserves deterministic ownership internally
 without exposing a sequence of user-authored mutations. The one-argument form
-is deliberately one element, leaving capacity reservation to a future
-explicitly named factory.
+is deliberately one element. Capacity reservation is separate:
+`Array<T>.withCapacity(n)` starts empty, and `reserveCapacity(n)` guarantees
+minimum total capacity without changing length.
+
+JavaScript-engine string builders made the allocation cost concrete: known-size
+byte and UTF-16-unit results were grown through repeated `push`, sometimes with
+an additional representation-conversion buffer. Explicit reservation removes
+intermediate buffer growth while preserving existing exclusive-loan rules. It
+does not eliminate the second buffer or allocations owned by each element.
+The [capacity probe](../tests/fixtures/array-capacity.zs) verifies growth and
+exact-once cleanup; companion generic and async probes exercise aliases,
+projected mutable storage, and ARC identity across suspension. Reserved slots
+are not initialized values and never receive element cleanup.
 
 The follow-up [`arena.zs`](../examples/language/ownership/arena.zs) probe gives a
 region owner stable allocation addresses. Multiple direct views coexist across

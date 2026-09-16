@@ -343,6 +343,8 @@ export enum LoweredExpressionKind {
   arrayPush,
   arrayClear,
   arrayPop,
+  arrayWithCapacity,
+  arrayReserveCapacity,
   mapEmpty,
   mapLength,
   mapHas,
@@ -13771,6 +13773,35 @@ function lowerExpressionContextual(
     }
     if (tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[calleeInput].value == "withCapacity"
+      && tree.nodes[index].children.length == 2) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      // Resolve the authored type name, not the call's result: user methods
+      // can also be named withCapacity and return an Array. Module type
+      // lookup preserves both local and imported transparent aliases.
+      const factoryType = attempt lowerModuleTypeName(
+        program, importedTypes, tree.nodes[receiverInput].value
+      );
+      const arrayFactory = match (factoryType) {
+        success(type) => type.kind == LoweredTypeKind.arrayType;
+        failure(_) => false;
+      };
+      if (arrayFactory) match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, index)) {
+        some(typeName) => {
+          const type = try lowerModuleTypeName(program, importedTypes, typeName);
+          if (type.kind == LoweredTypeKind.arrayType) {
+            const capacityInput = tree.nodes[index].children[1];
+            const capacity = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+              capacityInput, "usize", inout output);
+            return pushExpression(inout output, LoweredExpressionKind.arrayWithCapacity,
+              type.name, Array<usize>(capacity), Array<String>());
+          }
+        }
+        none => {}
+      }
+    }
+    if (tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
       && programUsesChannels(program)) {
       const receiverInput = tree.nodes[calleeInput].children[0];
       const method = view tree.nodes[calleeInput].value;
@@ -15176,7 +15207,7 @@ function lowerExpressionContextual(
     }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
-      && tree.nodes[calleeInput].value == "push"
+      && (tree.nodes[calleeInput].value == "push" || tree.nodes[calleeInput].value == "reserveCapacity")
       && tree.nodes[calleeInput].children.length == 1
       && tree.nodes[index].children.length == 2
     ) {
@@ -15199,6 +15230,12 @@ function lowerExpressionContextual(
             );
             markMutableStorage(inout output, receiver);
             const argumentInput = tree.nodes[index].children[1];
+            if (tree.nodes[calleeInput].value == "reserveCapacity") {
+              const capacity = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+                argumentInput, "usize", inout output);
+              return pushExpression(inout output, LoweredExpressionKind.arrayReserveCapacity,
+                receiverType.name, Array<usize>(receiver, capacity), Array<String>());
+            }
             const argument = try lowerExpression(
               program,
               importedTypes,

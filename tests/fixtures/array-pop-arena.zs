@@ -6,8 +6,9 @@ struct Link { item: view Item; }
 function main(): i32 {
   let arena = Arena();
   const item = arena.create(Item({ value: 42 }));
-  let links = Array<Link>();
+  let links = Array<Link>.withCapacity(1);
   links.push(Link({ item }));
+  links.reserveCapacity(8);
   const removed = links.pop();
   links.clear();
   const stored = arena.create(removed);

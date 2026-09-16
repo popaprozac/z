@@ -5201,6 +5201,31 @@ test("pops move-only C++ Array elements without copying or double cleanup", () =
   }
 }, 60_000);
 
+test("reserves Array capacity while relocating move-only C++ elements", () => {
+  const input = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-array.zs");
+  const source = readFileSync(input, "utf8")
+    .replace("Array<zcpp.UniqueValue>()", "Array<zcpp.UniqueValue>.withCapacity(2)")
+    .replace("return values;", "values.reserveCapacity(64); return values;")
+    .replace("Array<LabeledValue>()", "Array<LabeledValue>.withCapacity(0)")
+    .replace("return values[0]", "labeled.reserveCapacity(32); return values[0]");
+  const generated = compileToNative(source, input).source;
+  assert.match(generated, /_reserveCapacity/);
+  assert.match(generated, /std::construct_at\(&storage\[index\], std::move\(self->data\[index\]\)\)/);
+  assert.doesNotMatch(generated, /realloc\(self->data/);
+  const directory = mkdtempSync("/tmp/z-cpp-array-capacity-");
+  try {
+    const executable = resolve(directory, "capacity");
+    const built = spawnSync("clang++", ["-x", "c++", "-std=c++20", "-I", resolve(projectRoot, "examples/interop/cpp"), "-Wall", "-Wextra", "-Werror",
+      "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+      encoding: "utf8", input: generated, timeout: 30_000,
+    });
+    assert.equal(built.status, 0, built.stderr);
+    const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /^array answer=42, moves=[1-9][0-9]*, live=0\n$/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 60_000);
+
 test("stores move-only C++ values in Array and named enum payloads", () => {
   const arrayExample = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-array.zs");
   const arraySource = readFileSync(arrayExample, "utf8");

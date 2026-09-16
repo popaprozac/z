@@ -2372,6 +2372,146 @@ test("moves Array storage and destroys initialized owned elements in reverse ord
   assert.throws(() => compileToC(movedArray, "dynamic-array-owner-move.zs"), /use of moved value "first"/);
 });
 
+test("reserves Array capacity across native lowering, generics, ownership, and async frames", () => {
+  const directory = mkdtempSync("/tmp/z-array-capacity-");
+  try {
+    for (const name of ["array-capacity", "array-capacity-generic", "array-capacity-async"]) {
+      const input = resolve(projectRoot, `tests/fixtures/${name}.zs`);
+      const source = readFileSync(input, "utf8");
+      const stage0 = compileToC(source, input);
+      const checked = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(checked.status, 0, checked.stderr);
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(native.status, 0, native.stderr);
+      const expected = name === "array-capacity" ? "released 2\nreleased 1\n"
+        : name.endsWith("async") ? "released 42\n" : "";
+      for (const [tier, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+        for (const optimization of ["-O0", "-O2"]) {
+          const executable = resolve(directory, `${name}-${tier}${optimization}`);
+          const built = spawnSync("clang", ["-x", "c", "-std=c11", optimization,
+            "-Wall", "-Wextra", "-Werror", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+            encoding: "utf8", input: generated, timeout: 30_000,
+          });
+          assert.equal(built.status, 0, built.stderr);
+          const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+          assert.equal(run.status, 0, `${name} ${tier}: ${run.stderr}`);
+          assert.equal(run.stdout, expected);
+        }
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("checks Array capacity arity, numeric types, mutability, and live loans", () => {
+  const cases: [string, RegExp][] = [
+    ["let values = Array<i32>.withCapacity();", /expects 1 argument/],
+    ["let values = Array<i32>.withCapacity(1, 2);", /expects 1 argument/],
+    ["let values = Array<i32>.withCapacity(-1);", /usize|range|negative/],
+    ["let values = Array<i32>.withCapacity(1.5);", /usize|integer/],
+    ["let values = Array<view i32>.withCapacity(1);", /cannot carry stored provenance/],
+    ["const size: i32 = 8; let values = Array<i32>.withCapacity(size);", /usize/],
+    ["const values = Array<i32>.withCapacity(8); values.reserveCapacity(16);", /requires addressable let storage/],
+    ["let values = Array<i32>(); values.reserveCapacity();", /expects 1 argument/],
+    ["let values = Array<i32>(); values.reserveCapacity(-1);", /usize|range|negative/],
+    ["let values = Array<i32>(); values.reserveCapacity(true);", /usize|boolean/],
+    ["let values = Array<i32>(); values.reserveCapacity(1, 2);", /expects 1 argument/],
+    ["let values = Array<i32>(); const frozen = values.freeze(); frozen.reserveCapacity(8);", /readonly/],
+    ["let values = Array<i32>(42); const current = view values[0]; values.reserveCapacity(8); console.log(current);", /cannot mutate.*while view/],
+    ["let values = Array<i32>(42); for (const value of values) { values.reserveCapacity(8); }", /cannot structurally mutate Array/],
+    ["let values = Array<i32>(42); const [first, ...rest] = view values; values.reserveCapacity(8); console.log(rest[0]);", /borrow|view/],
+  ];
+  const directory = mkdtempSync("/tmp/z-array-capacity-invalid-");
+  try {
+    for (const [body, message] of cases) {
+      const source = `import console from "std/console"; function main(): i32 { ${body} return 0; }`;
+      assert.throws(() => compileToC(source, "array-capacity-invalid.zs"), message);
+      const input = resolve(directory, "invalid.zs");
+      writeFileSync(input, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(native.status, 1, `${body}\n${native.stderr}`);
+      assert.match(native.stderr, /Array|array|usize|mutat|borrow|view|argument/);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("surfaces Array capacity contracts in hover and completion", () => {
+  const source = "function main(): i32 { let values = Array<i32>.withCapacity(8); values.reserveCapacity(16); return 0; }";
+  for (const method of ["withCapacity", "reserveCapacity"]) {
+    const offset = source.indexOf(method);
+    const help = hover(source, "array-capacity-hover.zs", offset);
+    assert.match(help?.contents.value ?? "", new RegExp(`${method}\\(minimumCapacity: usize\\)`));
+    const entries = completions(source, "array-capacity-hover.zs", offset + method.length);
+    assert.ok(entries.some((entry) => entry.label === method), method);
+  }
+  const alias = "type Bytes = Array<u8>; function main(): i32 { let bytes = Bytes.withCapacity(8); return 0; }";
+  const offset = alias.indexOf("withCapacity");
+  assert.match(hover(alias, "array-capacity-alias-hover.zs", offset)?.contents.value ?? "", /withCapacity.*Array<u8>/);
+  assert.ok(completions(alias, "array-capacity-alias-hover.zs", offset + 12).some((item) => item.label === "withCapacity"));
+  const importedFile = resolve(projectRoot, "tests/fixtures/array-capacity-generic.zs");
+  const imported = readFileSync(importedFile, "utf8");
+  const importedOffset = imported.indexOf("ByteBuffer.withCapacity") + "ByteBuffer.".length;
+  assert.match(hover(imported, importedFile, importedOffset)?.contents.value ?? "", /withCapacity.*Array<u8>/);
+  assert.ok(completions(imported, importedFile, importedOffset + 12).some((item) => item.label === "withCapacity"));
+});
+
+test("Array capacity reservation eliminates intermediate buffer growth allocations", () => {
+  const directory = mkdtempSync("/tmp/z-array-capacity-allocations-");
+  const instrumentation = `
+    #include <stdlib.h>
+    #include <stdio.h>
+    static unsigned allocation_calls;
+    static void *counted_realloc(void *pointer, size_t bytes) {
+      allocation_calls += 1;
+      return realloc(pointer, bytes);
+    }
+    #define realloc counted_realloc
+    #define main measured_main
+  `;
+  const wrapper = `
+    #undef main
+    int main(void) {
+      int result = measured_main();
+      printf("%u\\n", allocation_calls);
+      return result;
+    }
+  `;
+  try {
+    for (const reserved of [false, true]) {
+      const input = resolve(directory, "main.zs");
+      const source = `function main(): i32 {
+        let bytes = ${reserved ? "Array<u8>.withCapacity(1024)" : "Array<u8>()"};
+        let index: usize = 0;
+        while (index < 1024) { bytes.push(65); index = index + 1; }
+        return bytes.length == 1024 && bytes[1023] == 65 ? 0 : 1;
+      }`;
+      writeFileSync(input, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(native.status, 0, native.stderr);
+      for (const [tier, generated] of [["stage0", compileToC(source, input)], ["native", native.stdout]]) {
+        const executable = resolve(directory, tier);
+        const entryWrapper = /main\(int argc, char \*\*argv\)/.test(generated)
+          ? wrapper.replace("measured_main()", "measured_main(0, NULL)") : wrapper;
+        const built = spawnSync("clang", ["-x", "c", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-", "-o", executable], {
+          encoding: "utf8", input: instrumentation + generated + entryWrapper, timeout: 30_000,
+        });
+        assert.equal(built.status, 0, built.stderr);
+        const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+        assert.equal(run.status, 0, run.stderr);
+        if (reserved) assert.equal(Number(run.stdout), 1, tier);
+        else assert.ok(Number(run.stdout) > 1, tier);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
 test("pops the last Array element by ownership transfer and retains capacity", () => {
   const input = resolve(projectRoot, "tests/fixtures/array-pop.zs");
   const directory = mkdtempSync("/tmp/z-array-pop-");

@@ -9657,7 +9657,8 @@ function inferExpressionNodeType(
       );
       let staticMethod = false;
       if (ownerType.byteLength == 0) {
-        const candidate = typeExpressionName(tree, receiverIndex);
+        const authoredCandidate = typeExpressionName(tree, receiverIndex);
+        const candidate = transparentTypeName(modules, moduleIndex, authoredCandidate);
         const candidateBase = qualifiedTypeBase(candidate);
         if (
           qualifiedTypeMember(candidate) == "NSData"
@@ -9674,7 +9675,7 @@ function inferExpressionNodeType(
           match (genericTypeShape(candidate)) {
             some(generic) => {
               channelFactory = generic.arguments.length == 1
-                && standardChannelTypeKind(module, generic.base) == "Channel";
+                && (generic.base == "Array" || standardChannelTypeKind(module, generic.base) == "Channel");
             }
             none => {}
           }
@@ -9703,6 +9704,52 @@ function inferExpressionNodeType(
         if (staticMethod) {
           match (genericTypeShape(ownerType)) {
             some(channel) => {
+              if (channel.base == "Array" && channel.arguments.length == 1) {
+                const elementType = view channel.arguments[0];
+                let visiting = Array<String>();
+                if (typeContainsStoredView(modules, moduleIndex, elementType, visiting)) {
+                  const valueStruct = match (typeSymbolLocation(modules, moduleIndex, elementType)) {
+                    some(location) => modules[location.moduleIndex].symbols[location.symbolIndex].kind == ModuleSymbolKind.structSymbol;
+                    none => false;
+                  };
+                  if (!valueStruct) throw resolutionError(
+                    ModuleResolveErrorKind.typeMismatch, module.path,
+                    `Array<${elementType}> cannot carry stored provenance in the first container tier`, node.line, node.column
+                  );
+                }
+                const argumentNodes = callArgumentNodes(children);
+                for (const label of tree.nodes[index].labels) {
+                  if (label.byteLength > 0) throw resolutionError(
+                    ModuleResolveErrorKind.typeMismatch, module.path,
+                    "Array.withCapacity does not accept argument labels", node.line, node.column
+                  );
+                }
+                if (optionalMethodCall || methodName != "withCapacity") throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch, module.path,
+                  `Array has no static method "${methodName}"; use Array<T>.withCapacity(minimumCapacity)`,
+                  tree.nodes[calleeIndex].line, tree.nodes[calleeIndex].column
+                );
+                if (argumentNodes.length != 1) throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch, module.path,
+                  `Array.withCapacity expects 1 argument, received ${argumentNodes.length}`,
+                  tree.nodes[calleeIndex].line, tree.nodes[calleeIndex].column
+                );
+                const capacity = argumentNodes[0];
+                let capacityType = try inferExpressionNodeType(
+                  module, modules, moduleIndex, arena, tree, capacity, inout bindings, inout evidence
+                );
+                if (isContextualNumericOperand(tree, capacity)) {
+                  try contextualizeNumericOperand(module, modules, moduleIndex, tree, capacity, "usize", inout evidence);
+                  capacityType = "usize";
+                }
+                capacityType = transparentTypeName(modules, moduleIndex, capacityType);
+                if (capacityType != "usize") throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch, module.path,
+                  `Array.withCapacity requires usize, found ${capacityType}`,
+                  tree.nodes[capacity].line, tree.nodes[capacity].column
+                );
+                return ownerType;
+              }
               if (
                 channel.arguments.length == 1
                 && standardChannelTypeKind(module, channel.base) == "Channel"

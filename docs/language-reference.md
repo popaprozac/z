@@ -2373,7 +2373,36 @@ const oneNumber = Array<i32>(42);
 
 Arguments are evaluated in source order and enter the array under the same
 copy/move rules as `push`. The one-argument form contains one element; it does
-not reserve capacity. A future capacity operation will have an explicit name.
+not reserve capacity. Use the explicit capacity operations when the expected
+element count is known:
+
+```z
+let bytes = Array<u8>.withCapacity(1024); // length == 0; capacity >= 1024
+bytes.push(65);
+bytes.reserveCapacity(4096); // length == 1; capacity >= 4096
+bytes.reserveCapacity(bytes.length + 100); // room for 100 additional elements
+```
+
+`withCapacity(minimumCapacity: usize): Array<T>` and
+`reserveCapacity(minimumCapacity: usize): void` use **minimum total capacity in
+elements**, not additional elements or bytes. They construct no elements, never
+shrink storage, and may provide more capacity than requested. A sufficient
+capacity requires no allocation; `withCapacity(0)` is an unallocated empty Array.
+Existing values and their ownership are preserved by growth, with native C++
+move operations and Objective-C strong slots handled as for `push`.
+
+`reserveCapacity` needs addressable mutable `let` storage and is unavailable through
+`readonly Array<T>`, a live element view/slice, or an active iteration borrow,
+even when the requested capacity might already be available. Capacity is not an
+escape hatch for borrowing or indexing. Allocation failure and capacity-size
+overflow trap, consistently with ordinary Array growth. Known negative or
+out-of-range capacities are diagnosed before emission; typed capacities must be
+`usize` (or a transparent alias).
+
+Normal `push` already grows geometrically. Reserving a known size avoids
+intermediate growth allocations; it does not eliminate allocations inside the
+elements or create valid indices beyond `length`. `T[N]` and `Slice<T>` do not
+have capacity reservation methods.
 
 `Array<T>` supports move-only native C++ values. `push(value)` transfers the
 element into the buffer. Growth allocates native storage, move-constructs each

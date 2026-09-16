@@ -8,8 +8,10 @@ function fill(inout objects: Array<native.ZArrayPopOwner>): void {
 
 function main(): i32 {
   native.z_array_pop_watch_cleanup();
-  let objects = Array<native.ZArrayPopOwner>();
+  let objects = Array<native.ZArrayPopOwner>.withCapacity(1);
   fill(inout objects);
+  objects.reserveCapacity(64);
+  if (objects.length != 1 || objects.capacity < 64) return 3;
   objects[0] = objects[0];
   objects[0].title = "Draft";
   const removed = objects.pop();

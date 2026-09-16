@@ -1168,7 +1168,14 @@ fixed-array elements require their own async-frame cleanup lowering.
 literals remain fixed inline arrays. Constructor elements are evaluated in
 source order and transfer or copy according to the same ownership rules as
 `push`. `Array<T>(value)` therefore means one initialized element, not reserved
-capacity; a future reservation operation will use an explicitly named factory.
+capacity. `Array<T>.withCapacity(minimumCapacity: usize)` creates empty owned
+storage with at least the requested total element capacity. The instance method
+`reserveCapacity(minimumCapacity: usize): void` grows only when needed and never
+shrinks or changes initialized length. Zero initial capacity needs no allocation.
+Both operations check allocation-size arithmetic and trap on allocation failure,
+as ordinary growth does. Reserving an existing Array requires exclusive mutable storage; it does
+not make a live view compatible with potential relocation. Uninitialized capacity
+is inaccessible and contributes no element construction or destruction.
 `Array<T>` carries its allocation, initialized length, and capacity as one
 move-only value. `push` requires addressable `let` storage, checks capacity
 arithmetic, grows geometrically, and transfers or copies the element according

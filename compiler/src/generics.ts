@@ -544,7 +544,21 @@ export function materializeGenerics(
       return { ...transformed, callee };
     }
     if (value.kind === "member" && value.object?.kind === "identifier") {
-      const generic = parseGenericType(value.object.name);
+      const ownerName = typeAliasTargets.has(value.object.name)
+        ? substituteName(value.object.name, substitutions) : value.object.name;
+      const generic = parseGenericType(ownerName);
+      const array = parseDynamicArrayType(ownerName);
+      if (generic?.base === "Array" || array) {
+        if (generic && generic.arguments.length !== 1) {
+          throw new DiagnosticError(fileName, value.location, "Array<T> expects one type argument");
+        }
+        const transformed = transformObject(value, substitutions, remapLocation);
+        return {
+          ...transformed,
+          object: { ...transformed.object, name: array ? substituteName(ownerName, substitutions)
+            : dynamicArrayTypeName(substituteName(generic!.arguments[0], substitutions)) },
+        };
+      }
       const channelBinding = generic ? channelBindings.get(generic.base) : null;
       if (generic && channelBinding) {
         if (generic.arguments.length !== 1) {

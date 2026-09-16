@@ -12097,6 +12097,22 @@ function inferExpressionInner(
           return "String";
         }
         if (expression.callee.object.kind === "identifier") {
+          const arrayFactory = parseDynamicArrayType(expression.callee.object.name);
+          if (arrayFactory && !locals.has(expression.callee.object.name)) {
+            rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+            if (arrayFactory.readonly || expression.callee.property !== "withCapacity") {
+              throw new DiagnosticError(fileName, expression.callee.location, `Array has no static method ${JSON.stringify(expression.callee.property)}`);
+            }
+            if (expression.arguments.length !== 1) {
+              throw new DiagnosticError(fileName, expression.location, `Array.withCapacity expects 1 argument, received ${expression.arguments.length}`);
+            }
+            const empty: Expression = { kind: "dynamicArrayExpression", elementType: arrayFactory.elementType, elements: [], location: expression.location };
+            const type = inferExpression(empty, locals, globals, structs, enums, fileName, state);
+            const capacity = expression.arguments[0];
+            const actual = inferExpression(capacity, locals, globals, structs, enums, fileName, state, false, "usize");
+            requireAssignable("usize", actual, capacity, fileName, structs, enums, state);
+            return type;
+          }
           const foreignOwner = !locals.has(expression.callee.object.name)
             ? globals.get(expression.callee.object.name)
             : null;
@@ -13446,6 +13462,7 @@ function inferExpressionInner(
             && expression.callee.property !== "pop"
             && expression.callee.property !== "clear"
             && expression.callee.property !== "freeze"
+            && expression.callee.property !== "reserveCapacity"
           ) {
             throw new DiagnosticError(fileName, expression.callee.location, `Array has no method ${JSON.stringify(expression.callee.property)}`);
           }
@@ -13468,6 +13485,7 @@ function inferExpressionInner(
           }
           const clearing = expression.callee.property === "clear";
           const popping = expression.callee.property === "pop";
+          const reserving = expression.callee.property === "reserveCapacity";
           const expectedArguments = clearing || popping ? 0 : 1;
           if (expression.arguments.length !== expectedArguments) {
             throw new DiagnosticError(
@@ -13503,12 +13521,12 @@ function inferExpressionInner(
                     ? "Array.clear destroys the element currently being visited"
                     : popping
                     ? "Array.pop may remove the element currently being visited"
-                    : "Array.push may reallocate storage and invalidate the element currently being visited"],
+                    : `Array.${expression.callee.property} may reallocate storage and invalidate the element currently being visited`],
                   helps: [clearing
                     ? "finish the loop before clearing the Array"
                     : popping
                     ? "finish the loop before popping from the Array"
-                    : "finish the loop before pushing, or iterate a separate snapshot"],
+                    : "finish the loop before growing the Array, or iterate a separate snapshot"],
                 },
               );
             }
@@ -13519,6 +13537,12 @@ function inferExpressionInner(
             );
           }
           if (clearing) {
+            return "void";
+          }
+          if (reserving) {
+            const capacity = expression.arguments[0];
+            const actual = inferExpression(capacity, locals, globals, structs, enums, fileName, state, false, "usize");
+            requireAssignable("usize", actual, capacity, fileName, structs, enums, state);
             return "void";
           }
           if (popping) {

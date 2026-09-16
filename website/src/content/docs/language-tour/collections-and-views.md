@@ -41,6 +41,26 @@ The one-argument form contains one element; it does not mean “reserve this muc
 capacity.” Arguments enter the array in source order under the same ownership
 rules as `push`.
 
+Reserve storage explicitly when the eventual size is known:
+
+```z
+let bytes = Array<u8>.withCapacity(1024); // empty; room for at least 1,024 bytes
+bytes.push(65);
+bytes.reserveCapacity(4096); // length stays 1
+```
+
+Both operations take a `usize` **minimum total element capacity**. To make room
+for `extra` more elements, use `bytes.reserveCapacity(bytes.length + extra)`.
+They never shrink, initialize extra elements, or relax checked indexing.
+Sufficient capacity requires no allocation; `withCapacity(0)` remains
+unallocated. Growth preserves existing values and their cleanup obligations.
+`reserveCapacity` needs exclusive mutable storage, so live element views,
+slices, and iteration borrows still prevent it. Allocation-size overflow and
+allocation failure trap just as they do during normal `push` growth.
+
+This avoids intermediate growth allocations, not allocations made by the
+elements themselves. Ordinary `push` already grows the buffer geometrically.
+
 `values.clear()` destroys every live element immediately in reverse order and
 sets `length` to zero. The backing allocation and `capacity` remain available
 for later `push` calls. Clearing requires mutable `let` storage and is rejected

@@ -860,6 +860,9 @@ export function generateC(
   for (const closure of closures.filter((candidate) => candidate.captures.length > 0)) {
     lines.push(generateClosureEnvironmentDefinition(closure, structs, enums, semanticInfo), "");
   }
+  for (const type of new Set([...dynamicArrayTypes, ...dynamicArrayPushTypes])) {
+    lines.push(generateDynamicArrayReserveCapacity(type, structs, enums, semanticInfo.foreignNamedTypes), "");
+  }
   for (const type of dynamicArrayPushTypes) {
     lines.push(generateDynamicArrayPush(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
@@ -5008,7 +5011,7 @@ function generateFixedArray(
   return `struct ${arrayName(name)} {\n  ${mapType(elementType, structs, enums, foreignNamedTypes)} data[${length}];\n};`;
 }
 
-function generateDynamicArrayPush(
+function generateDynamicArrayReserveCapacity(
   name: string,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
@@ -5017,15 +5020,24 @@ function generateDynamicArrayPush(
   const dynamic = parseDynamicArrayType(name)!;
   const arrayType = dynamicArrayName(name);
   const elementType = mapType(dynamic.elementType, structs, enums, foreignNamedTypes);
+  const prefix = `static Z_UNUSED_FUNCTION void ${arrayType}_reserveCapacity(${arrayType} *self, uintptr_t minimumCapacity) {
+  if (minimumCapacity <= self->capacity) return;
+  if (minimumCapacity > SIZE_MAX / sizeof(${elementType})) abort();
+  uintptr_t next = minimumCapacity;
+  if (self->capacity <= SIZE_MAX / sizeof(${elementType}) / 2 && self->capacity * 2 > next) next = self->capacity * 2;
+`;
+  const suffix = `  self->capacity = next;
+}
+static Z_UNUSED_FUNCTION ${arrayType} ${arrayType}_withCapacity(uintptr_t minimumCapacity) {
+  ${arrayType} result = { .data = NULL, .length = 0, .capacity = 0 };
+  ${arrayType}_reserveCapacity(&result, minimumCapacity);
+  return result;
+}`;
   if (isObjCReferenceType(dynamic.elementType, foreignNamedTypes)) {
     // ARC slots must start zeroed and cannot be grown with bytewise realloc.
     // Transfer through strong assignments, then clear the old slots before
     // freeing their backing storage.
-    return `static void ${dynamicArrayPushName(name)}(${arrayType} *self, ${elementType} value) {
-  if (self->length == self->capacity) {
-    if (self->capacity > SIZE_MAX / 2) abort();
-    uintptr_t next = self->capacity == 0 ? 4 : self->capacity * 2;
-    if (next > SIZE_MAX / sizeof(${elementType})) abort();
+    return prefix + `
     ${elementType} __strong *storage = (${elementType} __strong *)calloc(next, sizeof(${elementType}));
     if (storage == NULL) abort();
     for (uintptr_t index = 0; index < self->length; index += 1) {
@@ -5034,24 +5046,12 @@ function generateDynamicArrayPush(
     }
     free(self->data);
     self->data = storage;
-    self->capacity = next;
-  }
-  self->data[self->length++] = value;
-}`;
+` + suffix;
   }
   const mapEntry = parseMapEntryType(dynamic.elementType);
   if (mapEntry && requiresNativeMove(mapEntry.valueType, structs, enums, foreignNamedTypes)) {
     const keyType = mapType(mapEntry.keyType, structs, enums, foreignNamedTypes);
-    return `static void ${dynamicArrayPushName(name)}(${arrayType} *self, ${elementType} value) {
-  if (self->length == self->capacity) {
-    uintptr_t next;
-    if (self->capacity == 0) {
-      next = 4;
-    } else {
-      if (self->capacity > SIZE_MAX / 2) abort();
-      next = self->capacity * 2;
-    }
-    if (next > SIZE_MAX / sizeof(${elementType})) abort();
+    return prefix + `
     ${elementType} *storage = static_cast<${elementType} *>(::operator new(next * sizeof(${elementType}), std::nothrow));
     if (storage == NULL) abort();
     for (uintptr_t index = 0; index < self->length; index += 1) {
@@ -5064,23 +5064,10 @@ function generateDynamicArrayPush(
     }
     ::operator delete(self->data);
     self->data = storage;
-    self->capacity = next;
-  }
-  std::construct_at(&self->data[self->length], std::move(value));
-  self->length += 1;
-}`;
+` + suffix;
   }
   if (requiresNativeMove(dynamic.elementType, structs, enums, foreignNamedTypes)) {
-    return `static void ${dynamicArrayPushName(name)}(${arrayType} *self, ${elementType} value) {
-  if (self->length == self->capacity) {
-    uintptr_t next;
-    if (self->capacity == 0) {
-      next = 4;
-    } else {
-      if (self->capacity > SIZE_MAX / 2) abort();
-      next = self->capacity * 2;
-    }
-    if (next > SIZE_MAX / sizeof(${elementType})) abort();
+    return prefix + `
     ${elementType} *storage = static_cast<${elementType} *>(::operator new(next * sizeof(${elementType}), std::nothrow));
     if (storage == NULL) abort();
     for (uintptr_t index = 0; index < self->length; index += 1) {
@@ -5091,28 +5078,34 @@ function generateDynamicArrayPush(
     }
     ::operator delete(self->data);
     self->data = storage;
-    self->capacity = next;
+` + suffix;
   }
-  std::construct_at(&self->data[self->length], std::move(value));
-  self->length += 1;
-}`;
-  }
-  return `static void ${dynamicArrayPushName(name)}(${arrayType} *self, ${elementType} value) {
-  if (self->length == self->capacity) {
-    uintptr_t next;
-    if (self->capacity == 0) {
-      next = 4;
-    } else {
-      if (self->capacity > SIZE_MAX / 2) abort();
-      next = self->capacity * 2;
-    }
-    if (next > SIZE_MAX / sizeof(${elementType})) abort();
+  return prefix + `
     void *storage = realloc(self->data, next * sizeof(${elementType}));
     if (storage == NULL) abort();
-    self->data = storage;
-    self->capacity = next;
+    self->data = (${elementType} *)storage;
+` + suffix;
+}
+
+function generateDynamicArrayPush(
+  name: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const dynamic = parseDynamicArrayType(name)!;
+  const arrayType = dynamicArrayName(name);
+  const elementType = mapType(dynamic.elementType, structs, enums, foreignNamedTypes);
+  const entry = parseMapEntryType(dynamic.elementType);
+  const nativeMove = requiresNativeMove(entry?.valueType ?? dynamic.elementType, structs, enums, foreignNamedTypes);
+  return `static void ${dynamicArrayPushName(name)}(${arrayType} *self, ${elementType} value) {
+  if (self->length == self->capacity) {
+    if (self->length == SIZE_MAX) abort();
+    ${arrayType}_reserveCapacity(self, self->capacity == 0 ? 4 : self->length + 1);
   }
-  self->data[self->length] = value;
+  ${nativeMove
+    ? "std::construct_at(&self->data[self->length], std::move(value));"
+    : "self->data[self->length] = value;"}
   self->length += 1;
 }`;
 }
@@ -11540,6 +11533,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return maybeRetainClass(expression, value, context);
     }
     case "call": {
+      if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier"
+        && parseDynamicArrayType(expression.callee.object.name) && expression.callee.property === "withCapacity") {
+        return `${dynamicArrayName(expression.callee.object.name)}_withCapacity(${generateExpression(expression.arguments[0], context)})`;
+      }
       const memoryReplace = context.semanticInfo.memoryReplaceCalls.get(expression.location.offset);
       if (memoryReplace) {
         return `${memoryReplaceName(memoryReplace)}(${generateCallArgument(expression.arguments[0], context)}, ${generateCallArgument(expression.arguments[1], context)})`;
@@ -11970,6 +11967,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           }
           if (expression.callee.property === "clear") {
             return `${dynamicArrayClearName(receiverValueType)}(&(${receiver}))`;
+          }
+          if (expression.callee.property === "reserveCapacity") {
+            return `${dynamicArrayName(receiverValueType)}_reserveCapacity(&(${receiver}), ${generateExpression(expression.arguments[0], context)})`;
           }
           const argument = generateCallArgument(expression.arguments[0], context);
           return `${dynamicArrayPushName(receiverValueType)}(&(${receiver}), ${argument})`;
@@ -13484,6 +13484,10 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     }
     case "call": {
       const standard = context.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
+      if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier"
+        && parseDynamicArrayType(expression.callee.object.name) && expression.callee.property === "withCapacity") {
+        return expression.callee.object.name;
+      }
       if (standard) {
         const signature = standardFunctionSignature(standard);
         return signature.errorType
