@@ -895,3 +895,20 @@ API/safety deliberation and consumer measurements. Whole-owner method effects,
 indexed-owner views, and more general proof-driven bounds elimination remain
 separate work; the consumer need not restructure its interpreter merely to
 exercise this optimization.
+
+## SDK-evidence invalidation follow-up
+
+The WebView-inspection integration changed Objective-C protocol-member import
+semantics and bumped the foreign evidence producer revision. A fully invalidated
+Z Notes build exceeded the launch smoke's 240-second build/run deadline before
+startup. Process observations showed repeated Clang AST production for the same
+WebKit/AppKit/Foundation headers under different importing module paths. This is
+an integration observation, not a controlled before/after benchmark or a runtime
+regression claim.
+
+Include this case in the next build-latency pass: distinguish producer-version
+invalidation, header changes, cold application staging, and unchanged rebuilds.
+Investigate sharing ABI/header evidence across imports with identical target,
+include paths, and preprocessor inputs, while keeping module namespaces and
+sidecar semantic contracts correctly separate. Do not weaken cache invalidation
+or increase the normal launch deadline to conceal this cost.

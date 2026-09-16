@@ -77,6 +77,7 @@ const output = resolve(root, "build", "zapp-z-webview");
 await phase("native pipeline", () => compileNative({
   root, buildFile: "", buildConfigFile: "", nativeDir: resolve(repository, "native"),
   output, optimize: mode === "release", target: "macos", config, preparedZServices,
+  mode: mode === "dev" ? "development" : "production",
   ...(mode === "dev" ? { devUrl: "http://localhost:5173" } : {}),
 }));
 await phase("bundle + ad-hoc sign", () => createDevBundle(root, output, config, { smoke: false }));
