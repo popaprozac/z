@@ -8772,6 +8772,16 @@ function appendStatement(
         );
         none => {}
       }
+      // Resolve the owned destination only after the replacement succeeds.
+      // Indexed and computed paths must not be replayed for cleanup/store.
+      appendIndent(inout output, depth);
+      output.append(replacementType);
+      output.append(` *_z_stage1_assignment_slot_${index} = &(`);
+      match (in declaration.statements[index].expression) {
+        some(target) => try appendExpression(inout output, declaration, target);
+        none => throw "native C emission received an assignment without a target";
+      }
+      output.append(");\n");
       appendIndent(inout output, depth);
       if (declaration.statements[index].cleanups[0].guard.byteLength > 0) {
         output.append("if (");
@@ -8784,36 +8794,14 @@ function appendStatement(
       ) {
         output.append("Z_");
         output.append(declaration.statements[index].cleanups[0].type.name);
-        output.append("_release(");
-        match (in declaration.statements[index].expression) {
-          some(target) => try appendExpression(
-            inout output,
-            declaration,
-            target
-          );
-          none => throw "native C emission received an assignment without a target";
-        }
-        output.append(");\n");
+        output.append(`_release(*_z_stage1_assignment_slot_${index});\n`);
       } else {
         output.append("Z_");
         output.append(declaration.statements[index].cleanups[0].type.name);
-        output.append("_deinit(&");
-        match (in declaration.statements[index].expression) {
-          some(target) => try appendExpression(
-            inout output,
-            declaration,
-            target
-          );
-          none => throw "native C emission received an assignment without a target";
-        }
-        output.append(");\n");
+        output.append(`_deinit(_z_stage1_assignment_slot_${index});\n`);
       }
       appendIndent(inout output, depth);
-      match (in declaration.statements[index].expression) {
-        some(target) => try appendExpression(inout output, declaration, target);
-        none => throw "native C emission received an assignment without a target";
-      }
-      output.append(` = _z_stage1_assignment_${index};\n`);
+      output.append(`*_z_stage1_assignment_slot_${index} = _z_stage1_assignment_${index};\n`);
       if (declaration.statements[index].cleanups[0].guard.byteLength > 0) {
         appendIndent(inout output, depth);
         output.append(declaration.statements[index].cleanups[0].guard);

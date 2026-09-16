@@ -9733,7 +9733,12 @@ function generateCleanupAwareAssignment(
     context,
     (value) => `${temporary} = ${value};`,
   );
-  const cleanup = generateValueCleanup(target, targetType, liveFlag, context);
+  // Build the replacement first: failure must leave the old owner untouched.
+  // Then resolve the destination once for both destruction and the new store.
+  const slot = `_z_assignment_slot_${context.valueCounter.value++}`;
+  const slotType = mapType(targetType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+  const destination = `(*${slot})`;
+  const cleanup = generateValueCleanup(destination, targetType, liveFlag, context);
   const revive = liveFlag ? `\n${liveFlag} = true;` : "";
   const transferred = requiresNativeMove(
     targetType,
@@ -9741,7 +9746,7 @@ function generateCleanupAwareAssignment(
     context.enums,
     context.semanticInfo.foreignNamedTypes,
   ) ? `std::move(${temporary})` : temporary;
-  return `${temporaryDeclaration};\n${replacement}\n${cleanup}\n${target} = ${transferred};${revive}`;
+  return `${temporaryDeclaration};\n${replacement}\n${slotType} *${slot} = &(${target});\n${cleanup}\n${destination} = ${transferred};${revive}`;
 }
 
 function generateValueCleanup(

@@ -6494,7 +6494,8 @@ function attachReplacementCleanup(
           }
           if (!initializedParameter) return;
         }
-        else if (tree.nodes[tree.root].kind != ExpressionKind.memberExpression) {
+        else if (tree.nodes[tree.root].kind != ExpressionKind.memberExpression
+          && tree.nodes[tree.root].kind != ExpressionKind.indexExpression) {
           return;
         }
         let memberType = Option<LoweredType>.none;
@@ -10803,6 +10804,10 @@ function staticallyResolvedExpressionTypeName(
         if (stringStartsWith(receiverTypeName, "readonly ")) {
           receiverTypeName = receiverTypeName.copyBytes(9, receiverTypeName.byteLength);
         }
+        match (fixedArrayShape(receiverTypeName)) {
+          some(array) => return Option.some(copy array.elementType);
+          none => {}
+        }
         match (genericTypeShape(receiverTypeName)) {
           some(generic) => {
             if (
@@ -10923,6 +10928,10 @@ function evidenceResolvedExpressionTypeName(
         }
         if (stringStartsWith(receiverTypeName, "readonly ")) {
           receiverTypeName = receiverTypeName.copyBytes(9, receiverTypeName.byteLength);
+        }
+        match (fixedArrayShape(receiverTypeName)) {
+          some(array) => return Option.some(copy array.elementType);
+          none => {}
         }
         match (genericTypeShape(receiverTypeName)) {
           some(generic) => {

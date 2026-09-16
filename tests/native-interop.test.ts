@@ -5231,7 +5231,7 @@ test("stores move-only C++ values in Array and named enum payloads", () => {
   assert.match(enumGenerated, /const Z_NativeState \*_z_match_/);
   assert.match(enumGenerated, /zcpp::UniqueValue const \*value = &\(_z_match_[0-9]+->data\.ready\)/);
   assert.match(enumGenerated, /zcpp::UniqueValue value = std::move\(_z_match_[0-9]+\.data\.ready\)/);
-  assert.match(enumGenerated, /Z_LabeledValue_deinit\(&\(\(labeled\)\.data\.ready\)\);[\s\S]*labeled = std::move\(_z_replacement_[0-9]+\);/);
+  assert.match(enumGenerated, /Z_LabeledState \*(_z_assignment_slot_\d+) = &\(labeled\);[\s\S]*Z_LabeledValue_deinit\(&\(\(\(\*\1\)\)\.data\.ready\)\);[\s\S]*\(\*\1\) = std::move\(_z_replacement_[0-9]+\);/);
   const borrowedPayloadOffset = enumSource.indexOf("ready(value)") + "ready(".length + 1;
   assert.match(
     hover(enumSource, enumExample, borrowedPayloadOffset)?.contents.value ?? "",

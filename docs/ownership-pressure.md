@@ -9677,6 +9677,30 @@ The initial consumer probe checked its weak handle while the original strong
 local still existed. Returning only a weak handle from a helper makes the
 lifetime boundary explicit and prevents that false positive.
 
+## Indexed owner replacement
+
+The same lifecycle probe exposed a separate native-lowering fault: assigning
+`Option.none` into an `Array<Option<Context>>` slot replaced the bits without
+destroying the previous payload. Array-element replacement now receives the
+same cleanup planning as named locals and fields. Fixed-array element types
+are also recovered during lowering, so their owned values cannot silently
+miss replacement cleanup.
+
+Both emitters evaluate the replacement first, then resolve one destination
+address, destroy the old value, and store the replacement. This also fixes
+Stage 0 replaying effectful index expressions during destruction and storage.
+A throwing replacement leaves the original owner intact; ARC self-assignment
+retains the incoming handle before releasing the previous one. The address
+temporary is local storage, not another heap allocation.
+
+The [indexed replacement fixture](../tests/fixtures/indexed-owned-replacement.zs)
+checks dynamic and fixed arrays, nested indices, Strings, ARC identity,
+cleanup-bearing structs, empty enum payloads, and throwing replacement.
+Call traces pin evaluation/destruction order; weak handles and allocation
+accounting pin lifetime. Both compiler paths run at O0/O2 under UBSan.
+Owned indexed `match` destinations remain separately gated until their
+control-flow lowering has equivalent single-evaluation storage evidence.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

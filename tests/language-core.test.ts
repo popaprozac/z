@@ -4373,10 +4373,10 @@ test("type-checks assignments and replaces cleanup-bearing values safely", () =>
   assert.equal(result.stdout, "make=2\ndrop=1\nlive=5\ndrop=10\nholder=20\ndrop=20\ndrop=5\n");
 
   const generated = compileToC(readFileSync(example, "utf8"), example);
-  assert.match(generated, /_z_replacement_\d+ = make\(2\);\n\s+if \(_z_live_resource_\d+\) Z_Resource_deinit\(&\(resource\)\);/);
+  assert.match(generated, /_z_replacement_\d+ = make\(2\);\n\s+Z_Resource \*(_z_assignment_slot_\d+) = &\(resource\);\n\s+if \(_z_live_resource_\d+\) Z_Resource_deinit\(&\(\(\*\1\)\)\);/);
   assert.match(generated, /_z_replacement_\d+ = Z_Resource_bumped\(\(_z_live_resource_\d+ = false, resource\), 3\);/);
-  assert.match(generated, /resource = _z_replacement_\d+;\n\s+_z_live_resource_\d+ = true;/);
-  assert.match(generated, /Z_Resource_deinit\(&\(\(holder\)\.resource\)\);\n\s+\(holder\)\.resource = _z_replacement_\d+;/);
+  assert.match(generated, /\(\*_z_assignment_slot_\d+\) = _z_replacement_\d+;\n\s+_z_live_resource_\d+ = true;/);
+  assert.match(generated, /Z_Resource \*(_z_assignment_slot_\d+) = &\(\(holder\)\.resource\);\n\s+Z_Resource_deinit\(&\(\(\*\1\)\)\);\n\s+\(\*\1\) = _z_replacement_\d+;/);
 });
 
 test("runs ARC classes with shared identity and one final deinit", () => {

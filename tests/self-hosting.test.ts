@@ -9140,7 +9140,10 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       + "test result: ok. 2 passed; 0 failed\n",
   );
 
-  for (const name of ["numeric-expression-context", "numeric-conditional-operands", "integer-shift-widths"]) {
+  for (const name of [
+    "numeric-expression-context", "numeric-conditional-operands", "integer-shift-widths",
+    "borrowed-capture-retention", "indexed-owned-replacement",
+  ]) {
     const result = spawnSync(executable, ["run", resolve(projectRoot, `tests/fixtures/${name}.zs`)], {
       encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
     });
