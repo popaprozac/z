@@ -1722,7 +1722,13 @@ function collectObjCInterfaces(
 ): Map<string, ForeignObjCInterface> {
   const declarations = new Map<string, ClangNode>();
   const categories = new Map<string, ClangNode[]>();
+  const protocolDeclarations = new Map<string, ClangNode>();
   visit(root, (node) => {
+    if (node.kind === "ObjCProtocolDecl" && node.name) {
+      const existing = protocolDeclarations.get(node.name);
+      if (!existing || (node.inner?.length ?? 0) > (existing.inner?.length ?? 0)) protocolDeclarations.set(node.name, node);
+      return;
+    }
     if (node.kind === "ObjCInterfaceDecl" && node.name) {
       const existing = declarations.get(node.name);
       if (!existing || (node.inner?.length ?? 0) > (existing.inner?.length ?? 0)) declarations.set(node.name, node);
@@ -1753,8 +1759,28 @@ function collectObjCInterfaces(
 
   const interfaces = new Map<string, ForeignObjCInterface>();
   for (const [className, declaration] of declarations) {
-    const members = [declaration, ...(categories.get(className) ?? [])]
-      .flatMap((owner) => owner.inner ?? []);
+    const owners = [declaration, ...(categories.get(className) ?? [])];
+    const members = owners.flatMap((owner) => owner.inner ?? []);
+    // A concrete class promises the required members of every adopted
+    // protocol, even when its @interface does not repeat their declarations.
+    // Optional members remain unavailable unless the class declares them.
+    const memberKey = (member: ClangNode) => `${member.kind}:${member.instance ?? member.class ?? false}:${member.name}`;
+    const known = new Set(members.map(memberKey));
+    const visited = new Set<string>();
+    const inheritProtocol = (name: string) => {
+      if (visited.has(name)) return;
+      visited.add(name);
+      const protocol = protocolDeclarations.get(name);
+      if (!protocol) return;
+      for (const member of protocol.inner ?? []) {
+        if ((member.kind !== "ObjCMethodDecl" && member.kind !== "ObjCPropertyDecl")
+          || !objcProtocolMethodRequired(protocol, member) || known.has(memberKey(member))) continue;
+        known.add(memberKey(member));
+        members.push(member);
+      }
+      for (const inherited of protocol.protocols ?? []) if (inherited.name) inheritProtocol(inherited.name);
+    };
+    for (const owner of owners) for (const protocol of owner.protocols ?? []) if (protocol.name) inheritProtocol(protocol.name);
     restoreObjCPropertyNullability(members);
     const methods = members
       .filter((child) => child.kind === "ObjCMethodDecl" && child.name && child.returnType?.qualType)

@@ -9739,6 +9739,33 @@ Negative tests retain main-bound lifetime transfer restrictions, unique guard
 ownership, and rejection of mutable or unsafely destructible payload graphs.
 No root replacement, reset, lazy initialization, or unchecked sharing was added.
 
+## WebView inspection through native subclass composition
+
+Zapp's WebView menu policy required a Z-defined `WKWebView` subclass whose
+constructor forwards a `WKWebViewConfiguration`. Constructor parameters now
+accept concrete imported Objective-C references without consuming the caller's
+alias. Native stored fields retain their own strong references. The regression
+keeps the caller usable after construction and checks exact native destruction
+after the containing owner returns.
+
+`NSMenuItem.identifier` exposed a separate importer gap: required members of
+adopted protocols were missing from concrete classes. Required inherited
+protocol methods and properties now participate in ordinary member lookup;
+optional members are not assumed implemented. The foreign evidence producer
+revision invalidates older cached streams that lack these facts.
+
+The same menu loop exposed Stage 0 `continue` labels inside an Objective-C ARC
+local scope. Continue targets now sit outside the iteration's local lifetime
+scope, so forward jumps cannot bypass strong-reference initialization. Both
+compilers exercise native reference cleanup around loop transfers at O0/O2
+under UBSan.
+
+One conservative native flow limitation remains explicit: an early
+`if (item == null) continue;` does not yet narrow `item` afterward. The menu
+uses a positive `if (item != null)` scope. Improving this requires preserving
+loop-transfer ownership states as well as nullable facts, not simply treating
+`continue` as a function return.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

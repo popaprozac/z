@@ -7978,6 +7978,12 @@ function renderStringValue(
   throw new Error(`String formatting does not support ${JSON.stringify(type)}`);
 }
 
+function withLoopContinueLabel(body: string, label: string): string {
+  // A forward jump must leave the iteration's local lifetime scope, not
+  // bypass initialization inside it (notably Objective-C strong references).
+  return `{\n${indent(body, 2)}\n  ${label}: ;\n}`;
+}
+
 function generateWhile(statement: Extract<Statement, { kind: "while" }>, context: GenerationContext): string {
   const index = context.loopCounter.value++;
   const frame: LoopGenerationFrame = {
@@ -7994,7 +8000,7 @@ function generateWhile(statement: Extract<Statement, { kind: "while" }>, context
   } finally {
     context.loopStack.pop();
   }
-  if (frame.usedContinue) body = body.replace(/\n}$/, `\n  ${frame.continueLabel}: ;\n}`);
+  if (frame.usedContinue) body = withLoopContinueLabel(body, frame.continueLabel);
   const breakLabel = frame.usedBreak ? `\n${frame.breakLabel}: ;` : "";
   return `while ${controlCondition(generateExpression(statement.condition, context))} ${body}${breakLabel}`;
 }
@@ -8261,7 +8267,7 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
   }
   const bindings = context.generatorFrame ? persistentBindings : bindingDeclarations;
   body = body.replace("{\n", `{\n${bindings.map((line) => `  ${line}`).join("\n")}\n`);
-  if (frame.usedContinue) body = body.replace(/\n}$/, `\n  ${frame.continueLabel}: ;\n}`);
+  if (frame.usedContinue) body = withLoopContinueLabel(body, frame.continueLabel);
   if (persistentIndex) {
     body = body.replace(/\n}$/, `\n  ${persistentIndex} += 1;\n}`);
   }
@@ -8391,7 +8397,7 @@ function generateIteratorFor(
   const normalBindingCleanup = generateCleanup([bindingScope], bindingContext);
   body = body.replace("{\n", `{\n${bindingDeclarations.map((line) => `  ${line}`).join("\n")}\n`);
   if (normalBindingCleanup) body = body.replace(/\n}$/, `\n${indent(normalBindingCleanup, 2)}\n}`);
-  if (frame.usedContinue) body = body.replace(/\n}$/, `\n  ${frame.continueLabel}: ;\n}`);
+  if (frame.usedContinue) body = withLoopContinueLabel(body, frame.continueLabel);
   const breakLabel = frame.usedBreak ? `\n${frame.breakLabel}: ;` : "";
   const loop = `while (true) {\n  ${nextType} ${nextName} = ${nextCall};\n  if (${exhausted}) break;\n${indent(body, 2)}\n}${breakLabel}`;
   return [...prefix, loop, iteratorCleanup].filter(Boolean).join("\n");

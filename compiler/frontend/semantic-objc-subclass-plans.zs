@@ -45,6 +45,8 @@ function constructorNativeType(
   if (name == "usize") return "uintptr_t";
   if (name == "f32") return "float";
   if (name == "f64") return "double";
+  const objectABI = nativeObjCStoredObjectABI(modules, moduleIndex, name);
+  if (objectABI.byteLength > 0) return objectABI;
   const location = match (typeSymbolLocation(modules, moduleIndex, name)) {
     some(value) => value;
     none => throw planError(module, `native subclass constructor lost ABI for ${sourceName}`);

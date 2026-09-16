@@ -47,9 +47,15 @@ int z_subclass_constructor_cleanups(void);
 
 // Inline owned native state: its destructor deliberately dispatches through
 // the owner while the owner's generated dealloc is clearing stored fields.
-@interface ZSubclassStoredResource : NSObject
-- (int)value;
+@protocol ZSubclassStoredValue <NSObject>
 @property(readonly) int storedValue;
+@end
+@protocol ZSubclassInheritedStoredValue <ZSubclassStoredValue>
+@optional
+- (int)optionalUnimplementedValue;
+@end
+@interface ZSubclassStoredResource : NSObject <ZSubclassInheritedStoredValue>
+- (int)value;
 - (void)attach:(ZSubclassFixture *)receiver;
 - (void)touch;
 @end

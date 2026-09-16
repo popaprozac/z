@@ -2370,7 +2370,7 @@ test("keeps for-of iteration storage stable and owned elements borrowed", () => 
   const mutationDiagnostics = diagnostics(structuralMutation, "iteration-mutation.zs");
   assert.equal(mutationDiagnostics[0].code, "Z0311");
   assert.match(mutationDiagnostics[0].message, /may reallocate storage/);
-  assert.match(mutationDiagnostics[0].message, /finish the loop before pushing/);
+  assert.match(mutationDiagnostics[0].message, /finish the loop before growing the Array/);
   assert.equal(mutationDiagnostics[0].relatedInformation?.length, 1);
 
   const movedElement = `

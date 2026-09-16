@@ -29,6 +29,12 @@ app.run();
 Classes, methods, properties, constants, inheritance, nullability, and ARC
 identity come from Clang. `std/objc` is not required for ordinary message sends.
 
+A concrete imported class also exposes required methods and properties from its
+adopted protocols, including inherited protocols. For example, `NSMenuItem`'s
+`identifier` property is available without repeating its protocol declaration.
+Optional protocol members are not assumed implemented unless the class declares
+them.
+
 Objective-C identity follows the Clang runtime name rather than the header or Z
 namespace that surfaced it. If Foundation and a vendor header both mention
 `NSString`, they describe the same nominal native class—no wrapper or cast is
@@ -246,6 +252,9 @@ The superclass designated initializer must be first and non-nullable. Generated
 code checks the returned identity and the main thread, without scheduling a hop.
 Its generated constructor helper explicitly transfers an owned native reference;
 `new` does not defer that ownership to an enclosing autorelease pool.
+Constructor parameters can include concrete imported Objective-C references,
+such as a `WKWebViewConfiguration`, alongside scalar and native record values.
+Passing a reference does not consume the caller's alias; storing it retains it.
 Virtual calls during construction and destruction invoke the superclass, **not**
 the Z override. Z overrides become active only after the constructor body and
 its local cleanup finish, including cleanup of native ARC temporaries. This also

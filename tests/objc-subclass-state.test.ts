@@ -11,6 +11,8 @@ const helperFixture = resolve(directory, "objc-subclass-private-helpers.zs");
 const helperSource = readFileSync(helperFixture, "utf8");
 const methodFixture = resolve(directory, "objc-subclass-z-methods.zs");
 const methodSource = readFileSync(methodFixture, "utf8");
+const objectConstructorFixture = resolve(directory, "objc-subclass-object-constructor.zs");
+const objectConstructorSource = readFileSync(objectConstructorFixture, "utf8");
 const methodCases: [string, string, RegExp][] = [
   ["private installation", methodSource.replace("function observe(", "private function observe("), /private/],
   ["off-main installation", methodSource.replace("function install(window: WindowState): i32 on thread.main", "function install(window: WindowState): i32"), /thread.main|main.executor/],
@@ -129,6 +131,11 @@ hostToolchainTest("owns weak Z state and visibility-checked Z methods in native 
     assert.equal(helperResult.status, 0, helperResult.stderr);
     const methodResult = native(methodSource);
     assert.equal(methodResult.status, 0, methodResult.stderr);
+    const objectConstructorResult = native(objectConstructorSource);
+    assert.equal(objectConstructorResult.status, 0, objectConstructorResult.stderr);
+    const optionalMember = objectConstructorSource.replace("resource.storedValue", "resource.optionalUnimplementedValue()");
+    assert.throws(() => compileToNative(optionalMember, objectConstructorFixture), /no method.*optionalUnimplementedValue/);
+    assert.notEqual(native(optionalMember).status, 0, "optional protocol members cannot be assumed implemented");
     for (const [name, candidate, expected] of methodCases) {
       const rejected = native(candidate);
       assert.equal(rejected.status, 1, `${name}: ${rejected.stderr}`);
@@ -206,6 +213,8 @@ hostToolchainTest("owns weak Z state and visibility-checked Z methods in native 
     const importedResult = native(imported, companion);
     assert.equal(importedResult.status, 0, importedResult.stderr);
     for (const [name, generated] of [
+      ["stage0-object-constructor", compileToNative(objectConstructorSource, objectConstructorFixture).source],
+      ["native-object-constructor", objectConstructorResult.stdout],
       ["stage0", compileToNative(source, fixture).source], ["native", result.stdout],
       ["stage0-helpers", compileToNative(helperSource, helperFixture).source], ["native-helpers", helperResult.stdout],
       ["stage0-helpers-import", compileToNative(importedHelpers, input).source], ["native-helpers-import", importedHelperResult.stdout],
@@ -216,7 +225,7 @@ hostToolchainTest("owns weak Z state and visibility-checked Z methods in native 
       ["stage0-import", compileToNative(imported, input).source], ["native-import", importedResult.stdout],
     ]) {
       const teardown = generated.slice(generated.indexOf("- (void)dealloc"));
-      assert.ok(/_deinit\(&self->_z_native_field_observer\)|z_weak_release\(\(self->_z_native_field_observer\)\.data.some\)/.test(teardown), `${name}: missing optional weak cleanup`);
+      if (!name.includes("object-constructor")) assert.ok(/_deinit\(&self->_z_native_field_observer\)|z_weak_release\(\(self->_z_native_field_observer\)\.data.some\)/.test(teardown), `${name}: missing optional weak cleanup`);
       if (name.includes("helpers") || name.includes("methods")) {
         assert.doesNotMatch(generated, /[-+]\s*\([^\n]+\)currentObserver\b|@selector\(currentObserver\)/);
         assert.match(generated, /currentObserver\([^\n]+_z_native_subclass_parent_loan/);
@@ -224,9 +233,9 @@ hostToolchainTest("owns weak Z state and visibility-checked Z methods in native 
           assert.doesNotMatch(generated, /[-+]\s*\([^\n]+\)(?:observe|snapshot)\b|@selector\((?:observe|snapshot)\b/);
           assert.match(generated, /observe\([^\n]+_z_native_subclass_parent_loan/);
         }
-      } else assert.ok(/_deinit\(&self->_z_native_field_previous\)|z_weak_release\(self->_z_native_field_previous\)/.test(teardown), `${name}: missing direct weak cleanup`);
+      } else if (!name.includes("object-constructor")) assert.ok(/_deinit\(&self->_z_native_field_previous\)|z_weak_release\(self->_z_native_field_previous\)/.test(teardown), `${name}: missing direct weak cleanup`);
       const path = resolve(temporary, `${name}.m`);
-      writeFileSync(path, allocationChecked(generated));
+      writeFileSync(path, name.includes("object-constructor") ? generated : allocationChecked(generated));
       for (const optimization of ["-O0", "-O2"]) {
         const executable = resolve(temporary, "probe");
         const built = spawnSync("clang", [optimization, "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-fsanitize=undefined", "-fno-sanitize-recover=all",

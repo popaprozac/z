@@ -3138,8 +3138,11 @@ function registerObjCSubclasses(program: Program, globals: Map<string, SymbolVal
     for (const parameter of declaration.constructor!.parameters) {
       const native = state.foreignNamedTypes.get(parameter.type.name);
       const plainRecord = native?.kind === "record" && !native.resource && !native.viewOnly;
-      if (parameter.mode !== "value" || (!isNumericType(canonicalType(parameter.type.name, state.foreignNamedTypes)) && parameter.type.name !== "boolean" && !plainRecord && native?.kind !== "enum")) {
-        objcSubclassError(fileName, parameter.location, "native subclass constructor parameters must be scalar or plain native value parameters in the first tier");
+      const objectName = publicObjCTypeName(parameter.type.name);
+      const nativeObject = state.foreignNamedTypes.get(objectName)?.kind === "object"
+        && state.foreignInterfaces.has(objectName) && !state.objcSubclasses.has(objectName);
+      if (parameter.mode !== "value" || (!isNumericType(canonicalType(parameter.type.name, state.foreignNamedTypes)) && parameter.type.name !== "boolean" && !plainRecord && native?.kind !== "enum" && !nativeObject)) {
+        objcSubclassError(fileName, parameter.location, "native subclass constructor parameters must be scalar, plain native value, or imported Objective-C reference values");
       }
     }
     validateExecutorAffinity(declaration.executorAffinity, declaration.location, globals, fileName);

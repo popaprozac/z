@@ -84,9 +84,11 @@ the override. Local method names may differ from their explicit native selector.
 An explicit `constructor` begins with exactly one direct superclass designated
 initializer. Its arguments cannot refer to `this` or `super`. After that call,
 ordinary native property assignments and synchronous calls are available.
-Constructor arguments currently accept scalars, enums, and plain native records
-(including `NSRect`), by value. Constructors must fall through rather than return
-early in this first tier.
+Constructor arguments accept scalars, enums, plain native records (including
+`NSRect`), and concrete imported Objective-C references by value. Native reference
+arguments retain normal ARC alias semantics: construction does not consume the
+caller's reference, and a stored reference owns its own strong alias.
+Constructors must fall through rather than return early in this first tier.
 
 The generated initializer assigns the native result back to `self`; it does not
 discard the returned object. Nil, replacement objects with a different dynamic

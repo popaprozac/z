@@ -485,9 +485,11 @@ function validateNativeObjCSubclassDeclaration(
         none => {}
       }
       for (const parameter of declaration.parameters) {
+        const objectABI = nativeObjCStoredObjectABI(modules, moduleIndex, parameter.type.name);
         if (parameter.mode != ParameterMode.value
-          || !plainNativeValue(modules, moduleIndex, parameter.type.name)) throw subclassError(module,
-          "native subclass constructor parameters must be scalar or plain native value parameters in the first tier",
+          || (!plainNativeValue(modules, moduleIndex, parameter.type.name)
+            && objectABI.byteLength == 0)) throw subclassError(module,
+          "native subclass constructor parameters must be scalar, plain native value, or imported Objective-C reference values",
           parameter.line, parameter.column);
       }
     }
