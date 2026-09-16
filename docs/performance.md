@@ -874,8 +874,24 @@ not interpreted as gains. Synthetic kernel results do not predict engine-wide
 performance. Independent BigInt checksums, checked C, and UBSan validate the
 benchmark inputs; no compiler or language safety behavior changed.
 
-**Tracked next target:** improve the native checked accessor/emission shape
-before adding an unchecked indexing API. Verify that bounds checks remain for
-unproven accesses, compare the same kernels unchanged, and then return to the
-consumer's bounds-only measurements. Source-level method-effect analysis and
-new public access syntax require separate justification and deliberation.
+**Follow-up completed:** compiler `db73fb6c` preserves direct descriptor paths
+in checked native subscripts. In the unchanged opaque register-view kernel,
+native `-O2` time falls from 68.85 ms to 49.19 ms, alongside same-run checked C
+at 49.25 ms and Stage 0 at 48.86 ms. At `-O3`, native is 50.45 ms versus the
+previous 69.29 ms. The redundant instruction-fetch check disappears and the
+register pointer loads before the inner loop; the two unknown-size register
+checks remain. Sample ranges overlap checked C and Stage 0, so no advantage
+over those implementations is claimed.
+
+The [descriptor-path follow-up](../benchmarks/results/checked-indexing-paths-audit-2026-09-15.md)
+records equivalent-code experiments, unchanged input hashes, samples, and
+safety tests. It also captures a separate Stage 0 correction: complex nested
+index receivers now evaluate once. No unchecked API, `restrict` promise, or
+release-only safety change was added. These synthetic native-emitter gains do
+not predict gains in the consumer, which currently measures Stage 0.
+
+**Remaining boundary:** independently justified unchecked access still needs
+API/safety deliberation and consumer measurements. Whole-owner method effects,
+indexed-owner views, and more general proof-driven bounds elimination remain
+separate work; the consumer need not restructure its interpreter merely to
+exercise this optimization.
