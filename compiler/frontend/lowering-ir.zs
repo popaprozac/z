@@ -7,6 +7,7 @@
 
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
+import { isContextualNumericOperand } from "./semantic-expression-types.zs";
 
 import {
   ArrayBindingKind,
@@ -11091,11 +11092,7 @@ function lowerExpressionUsingNumericPeerType(
   in peerType: Option<String>,
   inout output: Array<LoweredExpression>
 ): usize throws String {
-  if (tree.nodes[index].kind == ExpressionKind.numberExpression
-      || (tree.nodes[index].kind == ExpressionKind.unaryExpression
-        && tree.nodes[index].children.length == 1
-        && (tree.nodes[index].value == "+" || tree.nodes[index].value == "-")
-        && tree.nodes[tree.nodes[index].children[0]].kind == ExpressionKind.numberExpression)) {
+  if (isContextualNumericOperand(tree, index)) {
     match (in peerType) {
       some(expected) => return try lowerExpressionExpected(
         program,

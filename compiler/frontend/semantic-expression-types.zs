@@ -70,6 +70,21 @@ export function requireNumericLiteralRange(in module: ParsedModule, in tree: Exp
   }
 }
 
+// Only result branches contribute a numeric operand's context. Conditions
+// are ordinary expressions and must still be checked exactly once.
+export function isContextualNumericOperand(
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (isContextualNumericLiteral(tree, index)) return true;
+  if (tree.nodes[index].kind != ExpressionKind.conditionalExpression
+    || tree.nodes[index].children.length != 3) return false;
+  const thenIndex = tree.nodes[index].children[1];
+  const elseIndex = tree.nodes[index].children[2];
+  return isContextualNumericOperand(tree, thenIndex)
+    && isContextualNumericOperand(tree, elseIndex);
+}
+
 function isVerifiedForeignNominalType(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

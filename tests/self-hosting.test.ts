@@ -9140,7 +9140,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       + "test result: ok. 2 passed; 0 failed\n",
   );
 
-  for (const name of ["numeric-expression-context", "integer-shift-widths"]) {
+  for (const name of ["numeric-expression-context", "numeric-conditional-operands", "integer-shift-widths"]) {
     const result = spawnSync(executable, ["run", resolve(projectRoot, `tests/fixtures/${name}.zs`)], {
       encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
     });
@@ -9154,6 +9154,8 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     "const typed: i32 = 7; const value: u64 = true ? typed : 0;",
     "const typed: i32 = 7; const value: u64 = typed << 1;",
     "const value: Small = 256;",
+    "const index: usize = 1; const value = index + (true ? -1 : 0);",
+    "const index: usize = 1; const typed: i32 = 2; const value = index + (true ? typed : 0);",
   ]) {
     writeFileSync(invalidNumericFile, `type Small = u8; function main(): i32 { ${body} return 0; }`);
     const result = spawnSync(executable, ["check", invalidNumericFile], {

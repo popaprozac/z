@@ -151,6 +151,7 @@ import {
 } from "./semantic-expression-ownership.zs";
 import {
   isContextualNumericLiteral,
+  isContextualNumericOperand,
   nativeObjectiveCStringConversionCopiesSource,
   nativeBorrowedCallbackType,
   requireExpressionSyntaxType,
@@ -5386,6 +5387,36 @@ function effectiveCollectionMethodSignature(
   return Option.some(move effective);
 }
 
+function contextualizeNumericOperand(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize,
+  in target: String,
+  inout evidence: ModuleSemanticEvidence
+): void throws ModuleResolveError {
+  if (tree.nodes[index].kind == ExpressionKind.conditionalExpression) {
+    const thenIndex = tree.nodes[index].children[1];
+    const elseIndex = tree.nodes[index].children[2];
+    try contextualizeNumericOperand(module, modules, moduleIndex, tree,
+      thenIndex, target, inout evidence);
+    try contextualizeNumericOperand(module, modules, moduleIndex, tree,
+      elseIndex, target, inout evidence);
+    // A conditional and its condition share an offset. Its branch evidence
+    // supplies the result type without replacing the condition's own type.
+    return;
+  }
+  try requireNumericLiteralRange(module, tree, index, target);
+  const offset = tree.nodes[index].offset;
+  const storedIndex = expressionResolutionIndex(evidence, offset);
+  if (storedIndex < evidence.expressionResolutions.length) {
+    evidence.expressionResolutions[storedIndex].typeName = copy target;
+  } else {
+    recordExpressionResolution(modules, moduleIndex, tree, index, target, inout evidence);
+  }
+}
+
 function contextualizeNumericOperands(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -5395,22 +5426,23 @@ function contextualizeNumericOperands(
   rightIndex: usize,
   in bindings: Array<NativeValueBinding>,
   inout left: String,
-  inout right: String
+  inout right: String,
+  inout evidence: ModuleSemanticEvidence
 ): void throws ModuleResolveError {
   // Resolve aliases only when a literal needs a peer context. Ordinary
   // value/value operations already resolve their types in binaryOperatorType.
-  if (isContextualNumericLiteral(tree, rightIndex)) {
+  if (isContextualNumericOperand(tree, rightIndex)) {
     const target = transparentTypeName(modules, moduleIndex, left);
     if (isNumericTypeName(target) || isActiveTypeParameter(bindings, left)) {
-      try requireNumericLiteralRange(module, tree, rightIndex, target);
+      try contextualizeNumericOperand(module, modules, moduleIndex, tree, rightIndex, target, inout evidence);
       right = copy target;
       return;
     }
   }
-  if (isContextualNumericLiteral(tree, leftIndex)) {
+  if (isContextualNumericOperand(tree, leftIndex)) {
     const target = transparentTypeName(modules, moduleIndex, right);
     if (isNumericTypeName(target) || isActiveTypeParameter(bindings, right)) {
-      try requireNumericLiteralRange(module, tree, leftIndex, target);
+      try contextualizeNumericOperand(module, modules, moduleIndex, tree, leftIndex, target, inout evidence);
       left = copy target;
     }
   }
@@ -6893,7 +6925,7 @@ function inferExpressionNodeType(
     try requireSettledExpressionType(module, tree, children[1], right);
     if (left.byteLength == 0 || right.byteLength == 0) return "";
     try contextualizeNumericOperands(module, modules, moduleIndex, tree, children[0], children[1],
-      bindings, inout left, inout right);
+      bindings, inout left, inout right, inout evidence);
     if (
       left == right
       && isActiveTypeParameter(bindings, left)
@@ -7909,7 +7941,7 @@ function inferExpressionNodeType(
           try requireSettledExpressionType(module, tree, actualInput, actualType);
           try requireSettledExpressionType(module, tree, expectedInput, expectedType);
           try contextualizeNumericOperands(module, modules, moduleIndex, tree, actualInput, expectedInput,
-            bindings, inout actualType, inout expectedType);
+            bindings, inout actualType, inout expectedType, inout evidence);
           const comparisonType = try binaryOperatorType(module, modules, moduleIndex,
             tree, index, "==", actualType, expectedType);
           recordExpressionResolution(modules, moduleIndex, tree, actualInput, actualType, inout evidence);

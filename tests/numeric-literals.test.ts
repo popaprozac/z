@@ -33,6 +33,14 @@ const invalidNumericContexts = [
   'type Byte = u8; function main(): i32 { const n: Byte = 256; return 0; }',
   'type Wide = u64; function main(): i32 { const n: i32 = 7; const value: Wide = n; return 0; }',
   'function main(): i32 { const n: u64 = true ? 1.5 : 0; return 0; }',
+  'function main(): i32 { const n: u8 = 1; const result = n + (true ? 256 : 0); return 0; }',
+  'function main(): i32 { const n: u8 = 1; const result = (false ? 0 : 256) + n; return 0; }',
+  'function main(): i32 { const n: usize = 1; const result = n + (true ? -1 : 0); return 0; }',
+  'function main(): i32 { const n: u8 = 1; const result = n + (true ? 0 : (false ? 256 : 1)); return 0; }',
+  'function main(): i32 { const n: usize = 1; const other: i32 = 2; const result = n + (true ? other : 0); return 0; }',
+  'function main(): i32 { const n: usize = 1; const other: i32 = 2; const result = (true ? 0 : other) + n; return 0; }',
+  'function main(): i32 { const n: usize = 1; const result = n + (true ? 1.5 : 2.5); return 0; }',
+  'function main(): i32 { const n: usize = 1; const result = n + (1 ? 2 : 3); return 0; }',
 ];
 
 test("numeric expression contexts reach literals without converting typed values", () => {
@@ -40,8 +48,13 @@ test("numeric expression contexts reach literals without converting typed values
   const source = readFileSync(input, "utf8");
   assert.doesNotThrow(() => compileToC(source, input));
   assert.match(hover(source, input, source.indexOf("mask: u64"))?.contents.value ?? "", /mask: u64/);
+  const operands = resolve(projectRoot, "tests/fixtures/numeric-conditional-operands.zs");
+  const operandSource = readFileSync(operands, "utf8");
+  assert.doesNotThrow(() => compileToC(operandSource, operands));
+  assert.match(hover(operandSource, operands, operandSource.indexOf("nested ="))?.contents.value ?? "", /nested: usize/);
+  assert.match(hover(operandSource, operands, operandSource.indexOf("sum ="))?.contents.value ?? "", /sum: f32/);
   for (const source of invalidNumericContexts) {
-    assert.throws(() => check(source, "context.zs"), /fit|range|overflow|shift|branch|expected|cannot initialize/);
+    assert.throws(() => check(source, "context.zs"), /fit|range|overflow|shift|branch|expected|cannot initialize|matching numeric|boolean/);
     assert.ok(diagnostics(source, "context.zs").length > 0);
   }
 });
@@ -52,7 +65,7 @@ hostToolchainTest("numeric expression contexts execute in both compiler paths", 
     encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
   });
   try {
-    for (const name of ["numeric-expression-context", "integer-shift-widths"]) {
+    for (const name of ["numeric-expression-context", "numeric-conditional-operands", "integer-shift-widths"]) {
       const input = resolve(projectRoot, `tests/fixtures/${name}.zs`);
       for (const native of [false, true]) {
         const emitted = native ? run(process.execPath, [cli, "self-host-emit", input]) : null;
@@ -76,15 +89,19 @@ hostToolchainTest("numeric expression contexts execute in both compiler paths", 
       writeFileSync(file, source);
       const result = run(process.execPath, [cli, "self-host-emit", file]);
       assert.notEqual(result.status, 0, source);
-      assert.match(result.stderr, /fit|range|overflow|shift|branch|expected/, source);
+      assert.match(result.stderr, /fit|range|overflow|shift|branch|expected|matching numeric|boolean/, source);
     }
     const asynchronous = resolve(directory, "async-context.zs");
     writeFileSync(asynchronous, `import { scheduler } from "std/async";
       async function main(): i32 {
         const mask: u64 = true ? 0xFFFE << 48 : 0;
+        let index: usize = 3;
+        index = index + (true ? 2 : 1);
         await scheduler.yield();
         const restored: u64 = false ? 0 : mask;
         if (restored != 0xFFFE_0000_0000_0000) return 1;
+        index = (false ? 2 : 1) + index;
+        if (index != 6) return 2;
         return 0;
       }`);
     for (const args of [["run", asynchronous], ["check", asynchronous, "--native-frontend"]]) {

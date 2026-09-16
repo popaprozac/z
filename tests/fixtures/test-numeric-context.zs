@@ -47,4 +47,10 @@ test "numeric expectations use the comparison literal type" {
   const aliased: Handle = 0xFFFF_FFFF;
   expect(aliased).toEqual(0xFFFF_FFFF);
   expect(0xFFFF_FFFF).toEqual(aliased);
+
+  expect(size).toEqual(true ? 42 : 0);
+  expect(false ? 0 : 42).toEqual(size);
+  expect(wide).toEqual(true ? (false ? 0 : 0xFFFF_FFFF_FFFF_FFFF) : 1);
+  expect(true ? -128 : 0).toEqual(tiny);
+  expect(fraction).toEqual(false ? 0.5 : -1.5);
 }

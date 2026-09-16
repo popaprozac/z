@@ -9773,15 +9773,11 @@ function inferExpressionInner(
       if (beforeRight) mergeOwnershipStates(locals, [beforeRight, rightLocals], state);
       let canonicalLeft = canonicalType(left, state.foreignNamedTypes);
       let canonicalRight = canonicalType(right, state.foreignNamedTypes);
-      if (expression.right.kind === "number" && isNumericType(canonicalLeft)) {
-        requireNumericLiteralFits(expression.right, canonicalLeft, fileName, state.numericLiteralTypes);
+      if (isNumericType(canonicalLeft) && isContextualNumericOperand(expression.right)) {
+        contextualizeNumericOperand(expression.right, canonicalLeft, fileName, state);
         canonicalRight = canonicalLeft;
-      } else if (expression.left.kind === "number" && isNumericType(canonicalRight)) {
-        requireNumericLiteralFits(expression.left, canonicalRight, fileName, state.numericLiteralTypes);
-        canonicalLeft = canonicalRight;
-      } else if (isNumericType(canonicalLeft) && requireContextualSignedLiteral(expression.right, canonicalLeft, fileName, state.numericLiteralTypes)) {
-        canonicalRight = canonicalLeft;
-      } else if (isNumericType(canonicalRight) && requireContextualSignedLiteral(expression.left, canonicalRight, fileName, state.numericLiteralTypes)) {
+      } else if (isNumericType(canonicalRight) && isContextualNumericOperand(expression.left)) {
+        contextualizeNumericOperand(expression.left, canonicalRight, fileName, state);
         canonicalLeft = canonicalRight;
       }
       if (["+", "-", "*", "/", "%"].includes(expression.operator)) {
@@ -21401,6 +21397,35 @@ function displayAssignableType(type: ValueType, state: AnalysisState): string {
   return isNullableObjCTypeName(name)
     ? `${publicObjCTypeName(name)} | null`
     : displayArrayType(name, (element) => displayAssignableType(element, state));
+}
+
+function isContextualNumericOperand(expression: Expression): boolean {
+  if (expression.kind === "number") return true;
+  if (expression.kind === "unary" && ["+", "-"].includes(expression.operator)) {
+    return expression.operand.kind === "number";
+  }
+  return expression.kind === "conditional"
+    && isContextualNumericOperand(expression.thenExpression)
+    && isContextualNumericOperand(expression.elseExpression);
+}
+
+function contextualizeNumericOperand(
+  expression: Expression,
+  type: string,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  // Conditions have already been checked in source order. Only specialize
+  // literal result branches; never replay their effects or convert a binding.
+  if (expression.kind === "conditional") {
+    contextualizeNumericOperand(expression.thenExpression, type, fileName, state);
+    contextualizeNumericOperand(expression.elseExpression, type, fileName, state);
+    state.expressionTypes.set(expression.location.offset, type);
+  } else if (expression.kind === "number") {
+    requireNumericLiteralFits(expression, type, fileName, state.numericLiteralTypes);
+  } else {
+    requireContextualSignedLiteral(expression, type, fileName, state.numericLiteralTypes);
+  }
 }
 
 function requireContextualSignedLiteral(

@@ -805,6 +805,18 @@ function tag(enabled: boolean): TagBits {
 const mask: TagBits = 0xFFFE << 48;
 ```
 
+An already-typed numeric operand also supplies context to literal-only ternary
+branches on either side of a binary operation, including nested ternaries:
+
+```z
+let index: usize = 0;
+index = index + (wide ? 2 : 1);
+const next = (wide ? 2 : 1) + index; // usize, without an extra annotation
+```
+
+Each condition is still evaluated once in ordinary expression order; it does
+not acquire the numeric result context.
+
 This types literals; it does not convert already-typed values. A ternary without
 numeric context still infers from its arms (`true ? 7 : 6` is `i32`). A typed
 `i32` operand does not become `u64` just because the result is assigned to `u64`;

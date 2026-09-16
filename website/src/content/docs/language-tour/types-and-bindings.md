@@ -56,6 +56,18 @@ context. Already-typed values keep their types: an `i32` variable is not silentl
 widened to `u64`. Use `u64(value)` when you intend a conversion. Without numeric
 context, `true ? 7 : 6` remains `i32`.
 
+The other numeric operand can supply context too, including through nested
+literal-only ternaries:
+
+```z
+let index: usize = 0;
+index = index + (wide ? 2 : 1);
+const next = (wide ? 2 : 1) + index; // usize
+```
+
+The conditions remain boolean and run once in normal expression order. A
+branch containing an already-typed value does not gain an implicit conversion.
+
 ## Checked arithmetic and wrapping shifts
 
 Ordinary integer arithmetic, including `<<`, is checked in every build mode.
