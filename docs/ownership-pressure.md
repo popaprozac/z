@@ -9807,6 +9807,20 @@ The cross-module fixture executes success and either-field failure through
 both emitters at `-O0` and `-O2`, with UBSan and an allocation ledger checking
 the owned error message. No new syntax or framework workaround is needed.
 
+## Imported property setters through owned aggregate fields (2026-09-16)
+
+The AppKit window regression clears `this.window.delegate` in a value-struct
+destructor. Native semantic analysis incorrectly treated an imported Objective-C
+setter as mutation of the containing struct's storage, rejecting a pattern that
+Stage 0 already supports. The checker now identifies the immediate imported
+object receiver before applying the root-slot mutability check. The native
+setter still enforces its declared type and readonly status; replacing the
+object-holding slot in a const aggregate remains forbidden.
+
+The property-scope regression covers a setter through a const local aggregate,
+the same operation during destruction, and rejection of both readonly native
+properties and immutable slot replacement, under both emitters and UBSan.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

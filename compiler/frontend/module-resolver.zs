@@ -12263,12 +12263,12 @@ function inferStatement(
               const mutableClassIdentity = typeIsClassReference(module, modules, moduleIndex, storageType)
                 && !valueBindingIsBorrowed(bindings, mutationRoot);
               let importedObjectReceiver = false;
-              if (rootType.byteLength == 0
-                && tree.nodes[root].kind == ExpressionKind.memberExpression
+              if (tree.nodes[root].kind == ExpressionKind.memberExpression
                 && tree.nodes[root].children.length == 1) {
-                // A namespace is not owned storage. A class property can return
-                // a native object whose setter is checked below, independently
-                // of the import binding (for example NSApplication.sharedApplication).
+                // An imported object's setter mutates that native identity,
+                // not the slot that holds it. This also applies when a const
+                // aggregate or its deinit owns the slot. Readonly properties
+                // and assignments to the slot itself are still checked below.
                 const receiverIndex = tree.nodes[root].children[0];
                 const receiverType = try inferExpressionNodeType(
                   module, modules, moduleIndex, arena, tree, receiverIndex,
