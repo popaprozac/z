@@ -31013,9 +31013,73 @@ function nativeZMethodsForType(
   throw `native subclass type ${nativeName} lost its checked Z-method plan`;
 }
 
+function graphObjectiveCTypesForLowering(
+  in graph: ModuleGraph
+): Array<LoweredImportedType> throws String {
+  let types = Array<LoweredImportedType>();
+  let foreignObjCTypeNames = Set<String>();
+  for (const candidateModule of graph.modules) {
+    for (const symbol of candidateModule.symbols) {
+      if (
+        symbol.kind != ModuleSymbolKind.classSymbol
+        && symbol.kind != ModuleSymbolKind.traitSymbol
+        || symbol.foreignHeader.byteLength == 0
+      ) continue;
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          const objcInterface = (signature.foreignKind == "objcInterface" || signature.foreignKind == "objcSubclass")
+            && symbol.kind == ModuleSymbolKind.classSymbol;
+          const objcProtocol = signature.foreignKind == "objcProtocol"
+            && symbol.kind == ModuleSymbolKind.traitSymbol;
+          if (
+            (!objcInterface && !objcProtocol)
+            || signature.foreignNativeName.byteLength == 0
+          ) continue;
+          const loweredNativeName = objcProtocol
+            ? `id<${signature.foreignNativeName}>`
+            : signature.foreignNativeName.copyBytes(
+                0,
+                signature.foreignNativeName.byteLength
+              );
+          if (foreignObjCTypeNames.has(loweredNativeName)) continue;
+          foreignObjCTypeNames.add(loweredNativeName.copyBytes(
+            0,
+            loweredNativeName.byteLength
+          ));
+          types.push(LoweredImportedType({
+            localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+            targetName: loweredNativeName.copyBytes(
+              0,
+              loweredNativeName.byteLength
+            ),
+            nativeTypeName: loweredNativeName,
+            kind: LoweredTypeKind.foreignObjCType,
+            nativeObjCSubclass: signature.foreignKind == "objcSubclass",
+            nativeObjCZMethods: signature.foreignKind == "objcSubclass"
+              ? try nativeZMethodsForType(graph, signature.foreignNativeName)
+              : Array<ModuleObjCSubclassHelper>(),
+            executorBound: signature.executorAffinity.byteLength > 0,
+            threadShareable: false,
+            workerDestructible: false,
+            needsDeinit: false,
+            resourceRelease: "",
+            fields: Array<LoweredField>(),
+            variants: Array<LoweredVariant>(),
+            payloadBearing: false,
+            underlyingType: "",
+          }));
+        }
+        none => {}
+      }
+    }
+  }
+  return types;
+}
+
 function importedTypesForModule(
   in program: Program,
   in graph: ModuleGraph,
+  in graphObjectiveCTypes: Array<LoweredImportedType>,
   in structs: Array<LoweredStruct>,
   in enums: Array<LoweredEnum>,
   in genericStructUses: Array<LoweredGenericStructUse>,
@@ -31158,61 +31222,18 @@ function importedTypesForModule(
   // matching ABI type even when the consuming source file did not redundantly
   // import the originating header. This is lowering evidence only: source
   // visibility and member access remain enforced by semantic analysis.
-  for (const candidateModule of graph.modules) {
-    for (const symbol of candidateModule.symbols) {
-      if (
-        symbol.kind != ModuleSymbolKind.classSymbol
-        && symbol.kind != ModuleSymbolKind.traitSymbol
-        || symbol.foreignHeader.byteLength == 0
-      ) continue;
-      match (in symbol.typeSignature) {
-        some(signature) => {
-          const objcInterface = (signature.foreignKind == "objcInterface" || signature.foreignKind == "objcSubclass")
-            && symbol.kind == ModuleSymbolKind.classSymbol;
-          const objcProtocol = signature.foreignKind == "objcProtocol"
-            && symbol.kind == ModuleSymbolKind.traitSymbol;
-          if (
-            (!objcInterface && !objcProtocol)
-            || signature.foreignNativeName.byteLength == 0
-          ) continue;
-          const loweredNativeName = objcProtocol
-            ? `id<${signature.foreignNativeName}>`
-            : signature.foreignNativeName.copyBytes(
-                0,
-                signature.foreignNativeName.byteLength
-              );
-          if (foreignObjCTypeNames.has(loweredNativeName)) continue;
-          foreignObjCTypeNames.add(loweredNativeName.copyBytes(
-            0,
-            loweredNativeName.byteLength
-          ));
-          types.push(LoweredImportedType({
-            localName: symbol.name.copyBytes(0, symbol.name.byteLength),
-            targetName: loweredNativeName.copyBytes(
-              0,
-              loweredNativeName.byteLength
-            ),
-            nativeTypeName: loweredNativeName,
-            kind: LoweredTypeKind.foreignObjCType,
-            nativeObjCSubclass: signature.foreignKind == "objcSubclass",
-            nativeObjCZMethods: signature.foreignKind == "objcSubclass"
-              ? try nativeZMethodsForType(graph, signature.foreignNativeName)
-              : Array<ModuleObjCSubclassHelper>(),
-            executorBound: signature.executorAffinity.byteLength > 0,
-            threadShareable: false,
-            workerDestructible: false,
-            needsDeinit: false,
-            resourceRelease: "",
-            fields: Array<LoweredField>(),
-            variants: Array<LoweredVariant>(),
-            payloadBearing: false,
-            underlyingType: "",
-          }));
-        }
-        none => {}
-      }
-    }
+  for (const type of graphObjectiveCTypes) {
+    if (foreignObjCTypeNames.has(type.nativeTypeName)) continue;
+    foreignObjCTypeNames.add(copy type.nativeTypeName);
+    types.push(copy type);
   }
+  // SDK interfaces repeat property types heavily. Resolve each spelling once
+  // per imported-type table shape, retaining exact-name precedence and the
+  // ordinary diagnostics. Appending a type can change lookup precedence, so
+  // discard the memo whenever the table grows. Field population itself does
+  // not change the name/kind/target evidence used by lowerModuleTypeName.
+  let propertyTypeMemo = Map<String, LoweredType>();
+  let propertyTypeMemoLength = types.length;
   for (const symbol of graph.modules[moduleIndex].symbols) {
     if (
       (
@@ -31245,11 +31266,23 @@ function importedTypesForModule(
             }
             let fields = Array<LoweredField>();
             for (const field of signature.fields) {
-              const fieldType = try lowerModuleTypeName(
-                program,
-                types,
-                field.typeName
-              );
+              if (propertyTypeMemoLength != types.length) {
+                propertyTypeMemo = Map<String, LoweredType>();
+                propertyTypeMemoLength = types.length;
+              }
+              const cached = propertyTypeMemo.get(field.typeName);
+              const fieldType = match (in cached) {
+                some(type) => LoweredType({ kind: type.kind, name: copy type.name });
+                none => {
+                  const type = try lowerModuleTypeName(
+                    program,
+                    types,
+                    field.typeName
+                  );
+                  propertyTypeMemo.set(copy field.typeName, copy type);
+                  select type;
+                }
+              };
               fields.push(LoweredField({
                 name: field.name.copyBytes(0, field.name.byteLength),
                 type: fieldType,
@@ -34537,10 +34570,15 @@ function lowerModulesIncludingTests(
   const deferredGenericMethodUses = Array<LoweredGenericMethodUse>();
   const deferredGenericFunctionUses = Array<LoweredGenericFunctionUse>();
   const entryIndex = graph.entry;
+  // Canonical SDK ABI identities are graph-wide and immutable. Discover them
+  // once, preserving first-declaration order; local imports still take
+  // precedence when each module extends its own lowering table.
+  const graphObjectiveCTypes = try graphObjectiveCTypesForLowering(graph);
   for (const moduleIndex of graph.dependencyOrder) {
     const importedTypesOutcome = attempt importedTypesForModule(
       parsed[moduleIndex].program,
       graph,
+      graphObjectiveCTypes,
       structs,
       enums,
       genericStructUses,
@@ -34704,6 +34742,7 @@ function lowerModulesIncludingTests(
     const importedTypesOutcome = attempt importedTypesForModule(
       parsed[genericOwnerModuleIndex].program,
       graph,
+      graphObjectiveCTypes,
       structs,
       enums,
       genericStructUses,
@@ -34777,6 +34816,7 @@ function lowerModulesIncludingTests(
     const importedTypesOutcome = attempt importedTypesForModule(
       parsed[genericOwnerModuleIndex].program,
       graph,
+      graphObjectiveCTypes,
       structs,
       enums,
       genericStructUses,

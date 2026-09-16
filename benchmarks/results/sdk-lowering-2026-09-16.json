@@ -1,0 +1,50 @@
+{
+  "date": "2026-09-16",
+  "host": { "platform": "macOS", "version": "26.4", "build": "25E5223i", "architecture": "arm64" },
+  "baselineRevision": "d39d2d17",
+  "candidate": "SDK lowering and graph lifetime changes accompanying this report",
+  "consumerRevision": "zapp 46da3e93",
+  "method": "Real generated Z Notes development project with its service overlay. Existing SDK evidence reused and validated; OS caches not cleared. No concurrent test runs during timing. Single observations, not statistical medians. Compiler binaries built at -O2 -DNDEBUG. No GUI or Vite launch. Earlier sampled baseline emission took 61.864520459 seconds, showing substantial wall-time variation; do not treat these rows as stable speedup ratios.",
+  "emission": {
+    "command": "bun benchmarks/native-emission.ts <native-z> <generated-project> <service-registration.zbuild.json> <report.json>",
+    "scope": "Always load/check/lower/emit; excludes application Clang compilation, linking, signing, and launch. Does not use the final executable cache.",
+    "baseline": {
+      "compilerHash": "56fe106a3dfc4a904113024f6024f14182cf7bba694208e5e8653a294b47e01a",
+      "seconds": 83.085555875,
+      "userSeconds": 39.05,
+      "systemSeconds": 21.50,
+      "instructionsRetired": 340235381412,
+      "maximumResidentBytes": 1646002176,
+      "peakFootprintBytes": 9968918904
+    },
+    "candidate": {
+      "compilerHash": "4630dba81e01b925bc92a5a33b4a39f34f6914f31810dd09abfceff339fa6269",
+      "compilerSourceHash": "50b535b435a995e7d32e72d8af165c2515105c4480b8c96624664ae782024e17",
+      "seconds": 53.90481675,
+      "userSeconds": 32.93,
+      "systemSeconds": 15.10,
+      "instructionsRetired": 282481552227,
+      "maximumResidentBytes": 2249588736,
+      "peakFootprintBytes": 5556884208
+    },
+    "emittedBytes": 5755193,
+    "identicalEmittedSha256": "ef76f16793d3909538e8e7329244ede01d738647de928a715945254981a95300",
+    "memoryNote": "macOS peak footprint and maximum resident set size are different counters; the former fell while the latter increased. Do not label footprint as RSS. Memory compression and scheduling contribute to wall-time variation."
+  },
+  "developmentBuildAndBundle": {
+    "command": "bun benchmarks/profile-zapp-build.ts ../zapp dev <label>",
+    "scope": "Build and ad-hoc signed bundle; source service metadata reused. Excludes Vite startup, worker bundling, application launch, and WebView load. Rebuild forced by changed compiler identity, not deletion of SDK caches.",
+    "priorCheckpoint": { "zBuildSeconds": 80.774543042, "totalSeconds": 84.575397833 },
+    "candidate": { "zBuildSeconds": 51.703866292, "totalSeconds": 52.840845292 },
+    "unchanged": { "zBuildSeconds": 0.598827209, "totalSeconds": 1.361997375, "reportedInputCacheHit": true }
+  },
+  "validation": [
+    "Native fixed-point bootstrap passed (13174088 emitted compiler C bytes)",
+    "Stage 0/native executable differential corpus passed",
+    "Generated service adapter linking/lifetime/error checks passed on baseline, optimized native driver, and Stage 0",
+    "Objective-C header composition passed in both import orders with Stage 0/native emission and O0/O2 UBSan execution",
+    "Inherited class/instance, native-record, and nullable-object properties passed Stage 0/native O0/O2 UBSan checks",
+    "Display-link controller and interpolation checks passed without opening windows",
+    "Real Z Notes application rebuilt, linked, and ad-hoc signed; unchanged build reused executable"
+  ]
+}

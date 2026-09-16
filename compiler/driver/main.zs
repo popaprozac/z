@@ -389,11 +389,18 @@ function loadProject(
     }
   };
   if (config.generatedCallAdapters.length > 0) {
-    const generatedPaths = try applyGeneratedCallAdapters(
-      inout modules,
-      graph,
-      config
-    );
+    let generatedPaths = Array<String>();
+    {
+      // Adapter discovery needs the first checked graph, but rebuilding the
+      // adapted graph does not. Release its SDK-sized semantic tables before
+      // constructing their replacement instead of keeping both graphs alive.
+      const initialGraph = move graph;
+      generatedPaths = try applyGeneratedCallAdapters(
+        inout modules,
+        initialGraph,
+        config
+      );
+    }
     for (const adapterModulePath of generatedPaths) {
       try loadModule(
         adapterModulePath,

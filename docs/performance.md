@@ -967,7 +967,49 @@ Next performance targets: the first distinct SDK import, importer process
 startup/preprocessing, separate dev/release caches, and asset-only/source-only
 invalidation measurements. The cache is deliberately project-local, not a
 cross-project SDK cache, and concurrent cold misses can still duplicate work.
-Investigate sharing ABI/header evidence across imports with identical target,
-include paths, and preprocessor inputs, while keeping module namespaces and
-sidecar semantic contracts correctly separate. Do not weaken cache invalidation
-or increase the normal launch deadline to conceal this cost.
+Do not weaken cache invalidation or increase the normal launch deadline to
+conceal this cost.
+
+### Native SDK lowering and graph lifetime — 2026-09-16
+
+The next real-application profile found redundant work after SDK import:
+generated service adapters kept the initial checked graph alive while building
+its replacement, and lowering repeatedly rediscovered the same graph-wide
+Objective-C identities and resolved the same inherited property types.
+
+The native driver now ends the initial graph's ownership scope after adapter
+discovery, before checking the adapted program. Both checks still run. Lowering
+builds its canonical Objective-C ABI list once per graph; each module's local
+imports still take precedence. Property-type lookup results are memoized only
+while the imported-type table has the same shape, and invalidated when types
+are appended. These are compiler implementation changes, not new language rules,
+unchecked application accesses, or weaker interop contracts.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Real Z Notes dev rebuild + signed bundle | 84.58 s | 52.84 s |
+| `z build` portion | 80.77 s | 51.70 s |
+| Separate `z emit` probe | 83.09 s | 53.90 s |
+| Emission instructions retired | 340.24 billion | 282.48 billion |
+| Emission peak memory footprint | 9.97 GB | 5.56 GB |
+
+The unchanged build remains **1.36 s total / 0.60 s in `z build`**, with an
+explicit executable-cache hit. The optimized fixed-point compiler is installed
+in the normal local bootstrap location. The full rebuild is back below one
+minute in this observation, not a guarantee for clean-machine or SDK-cold builds.
+
+These are single local samples with warm SDK evidence, not medians. A separate
+sampled baseline emission took 61.86 s, so wall-time variation is substantial;
+the reduced instruction count and footprint are stronger evidence of removed
+work than a single speedup ratio. macOS peak footprint is **not RSS**: maximum
+resident size increased from 1.65 to 2.25 GB in the resource-counter probe.
+The build-and-bundle measurements exclude Vite startup, worker bundling, app
+launch, and WebView loading. Application C output is byte-identical at 5,755,193
+bytes; runtime performance and application safety checks are unchanged by these
+optimizations. [Raw measurements and hashes](../benchmarks/results/sdk-lowering-2026-09-16.json)
+record the exact boundaries.
+
+Remaining work: avoid repeatedly constructing per-module SDK semantic tables,
+measure source-only versus asset-only invalidation, and separate dev/release
+artifact namespaces. The roughly 5.6 GB compiler footprint is still too large;
+this checkpoint reduces overlapping ownership, not the model's underlying size.

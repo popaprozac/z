@@ -114,6 +114,24 @@ invariants and measurements remain necessary before choosing an unchecked API.
 
 ## Compiler build-latency matrix
 
+For a real generated application graph, compare native compiler binaries without
+deleting build caches or modifying application source:
+
+```sh
+bun benchmarks/native-emission.ts /path/to/native-z /path/to/project \
+  /path/to/generated/services.zbuild.json .z-cache/benchmarks/emission.json
+```
+
+Use `-` instead of the overlay path when none is needed. This runs `z emit`, so
+it always loads, checks, lowers, and emits the graph instead of taking the final
+executable-cache shortcut. Existing SDK evidence is still validated/reused.
+It excludes Clang compilation, linking, signing, frontend tooling, and launch.
+The report records compiler/output hashes, wall time, and (on macOS) peak memory,
+instructions, and other `/usr/bin/time -l` resource counters. Emitted native
+source stays beside the report. Compare output hashes as well as timing. Alternate
+before/after binaries, run without concurrent tests, and distinguish warm SDK
+evidence from a clean-machine build. Every process group has a 180-second watchdog.
+
 ```sh
 bun run bootstrap
 Z_BUILD_BENCH_REPORT=benchmarks/results/build-latency-2026-09-08.json \
