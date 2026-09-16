@@ -5119,7 +5119,10 @@ function appendExpression(
         output.append("Z_TEMPLATE_BOOLEAN, .value.boolean_value = ");
       } else if (declaration.expressions[index].labels[part] == "i32") {
         output.append("Z_TEMPLATE_I32, .value.i32_value = ");
-      } else if (declaration.expressions[index].labels[part] == "i64") {
+      } else if (
+        declaration.expressions[index].labels[part] == "i64"
+        || declaration.expressions[index].labels[part] == "isize"
+      ) {
         output.append("Z_TEMPLATE_I64, .value.i64_value = ");
       } else if (declaration.expressions[index].labels[part] == "u8") {
         output.append("Z_TEMPLATE_U8, .value.u8_value = ");

@@ -11816,6 +11816,7 @@ function lowerExpressionContextual(
         && typeName != "boolean"
         && typeName != "i32"
         && typeName != "i64"
+        && typeName != "isize"
         && typeName != "u8"
         && typeName != "u64"
         && typeName != "usize"

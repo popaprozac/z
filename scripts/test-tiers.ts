@@ -16,6 +16,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
     files: [
       "tests/language-core.test.ts",
       "tests/numeric-literals.test.ts",
+      "tests/native-template-scalars.test.ts",
       "tests/float-bits.test.ts",
       "tests/integer-bits.test.ts",
       "tests/wrapping-shift.test.ts",
