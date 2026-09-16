@@ -29,6 +29,11 @@ export function removeBenchmarkBounds(source: string, emitter: Emitter) {
       return helper.replace("if (index >= length) abort();", "(void)length; /* benchmark-only: valid indices */");
     });
   } else {
+    const helper = "static inline __attribute__((unused)) size_t z_stage1_bounds_index(size_t index, size_t length) {\n  if (index >= length) abort();\n  return index;\n}";
+    source = source.replaceAll(helper, () => {
+      removed.push("z_stage1_bounds_index");
+      return helper.replace("if (index >= length) abort();", "(void)length; /* benchmark-only: valid indices */");
+    });
     changed = source.replace(
       /(^static inline __attribute__\(\(unused\)\) [^\n]+ \*(Z_\w*Array_\w+_at(?:_mut)?)\([^\n]*, size_t index\) \{\n)  if \(index >= self->length\) abort\(\);/gm,
       (_, header: string, name: string) => {
@@ -39,7 +44,7 @@ export function removeBenchmarkBounds(source: string, emitter: Emitter) {
   }
   // These fixtures have exactly two Array element types. Fail closed if the
   // emitter changes shape; never replace aborts, overflow or allocation checks.
-  const expected = emitter === "stage0" ? 1 : 4;
+  const expected = emitter === "stage0" ? 1 : 5;
   if (removed.length !== expected) throw new Error(`${emitter}: expected ${expected} known bounds helpers, found ${removed.length}`);
   return { source: changed, removed };
 }

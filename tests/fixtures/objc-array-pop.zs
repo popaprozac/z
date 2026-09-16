@@ -10,6 +10,8 @@ function main(): i32 {
   native.z_array_pop_watch_cleanup();
   let objects = Array<native.ZArrayPopOwner>();
   fill(inout objects);
+  objects[0] = objects[0];
+  objects[0].title = "Draft";
   const removed = objects.pop();
   objects.clear();
   fill(inout objects);

@@ -9686,9 +9686,21 @@ function generateAssignmentTarget(expression: Expression, context: GenerationCon
       ? generateAssignmentTarget(expression.object, context)
       : generateExpression(expression.object, context);
     const length = array ? String(array.length) : `(${owner}).length`;
+    if (!array && !isDirectIndexStorage(expression.object)) {
+      const temporary = `_z_index_owner_${context.valueCounter.value++}`;
+      const mapped = mapType(ownerType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+      return `(*({ ${mapped} *${temporary} = &(${owner}); &(${temporary}->data[z_bounds_index((uintptr_t)(${generateExpression(expression.index, context)}), ${temporary}->length)]); }))`;
+    }
     return `((${owner}).data[z_bounds_index((uintptr_t)(${generateExpression(expression.index, context)}), ${length})])`;
   }
   return generateExpression(expression, context);
+}
+
+// A nested subscript or call can have observable effects. Only direct field
+// paths may be repeated when emitting the separate data and length reads.
+function isDirectIndexStorage(expression: Expression): boolean {
+  return expression.kind === "identifier" || expression.kind === "argumentReference"
+    || (expression.kind === "member" && isDirectIndexStorage(expression.object));
 }
 
 function generateCleanupAwareAssignment(
@@ -11323,6 +11335,14 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const owner = generateExpression(expression.object, context);
       const storage = ownerView ? `(*(${owner}))` : `(${owner})`;
       const length = array ? String(array.length) : `${storage}.length`;
+      if (!array && !isDirectIndexStorage(expression.object)) {
+        const temporary = `_z_index_owner_${context.valueCounter.value++}`;
+        const mapped = mapType(ownerValueType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+        // Borrow the descriptor, not its elements: no retain, allocation, or
+        // ownership transfer, and the returned address is in its backing store.
+        const value = `(*({ const ${mapped} ${temporary} = ${storage}; &(${temporary}.data[z_bounds_index((uintptr_t)(${generateExpression(expression.index, context)}), ${temporary}.length)]); }))`;
+        return maybeRetainClass(expression, value, context);
+      }
       const value = `(${storage}.data[z_bounds_index((uintptr_t)(${generateExpression(expression.index, context)}), ${length})])`;
       return maybeRetainClass(expression, value, context);
     }

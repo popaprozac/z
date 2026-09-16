@@ -4844,6 +4844,29 @@ function appendAsyncFrameCleanups(
   }
 }
 
+// Direct descriptor paths preserve the containing aggregate's alias information
+// in C. Calls and nested indexing retain the single-evaluation accessor path.
+function stableIndexOperand(
+  in declaration: LoweredFunction,
+  index: usize
+): boolean {
+  const kind = declaration.expressions[index].kind;
+  if (
+    kind == LoweredExpressionKind.localValue
+    || kind == LoweredExpressionKind.parameterValue
+    || kind == LoweredExpressionKind.receiverValue
+    || kind == LoweredExpressionKind.integerValue
+  ) return true;
+  if (
+    kind == LoweredExpressionKind.fieldValue
+    && declaration.expressions[index].children.length == 1
+  ) {
+    const receiver = declaration.expressions[index].children[0];
+    return stableIndexOperand(declaration, receiver);
+  }
+  return false;
+}
+
 function appendExpression(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -5296,8 +5319,6 @@ function appendExpression(
     if (declaration.expressions[index].children.length != 2) {
       throw "native C emission received a malformed Array index";
     }
-    output.append("(*Z_");
-    output.append(declaration.expressions[index].value);
     const receiver = declaration.expressions[index].children[0];
     const offset = declaration.expressions[index].children[1];
     const viewReceiver = declaration.expressions[index].labels.length > 0
@@ -5306,6 +5327,30 @@ function appendExpression(
       declaration.expressions[index].labels,
       "bounds-proven"
     );
+    const mutable = declaration.expressions[index].kind
+      == LoweredExpressionKind.arrayMutableIndex;
+    if (mutable && viewReceiver) {
+      throw "native C emission cannot mutate through a view Array";
+    }
+    if (
+      stringStartsWith(declaration.expressions[index].value, "__z_Array_")
+      && !boundsProven
+      && stableIndexOperand(declaration, receiver)
+      && stableIndexOperand(declaration, offset)
+    ) {
+      output.append("(((Z_");
+      output.append(declaration.expressions[index].value);
+      output.append(mutable ? "_Data)(" : "_ConstData)(");
+      try appendExpression(inout output, declaration, receiver);
+      output.append(viewReceiver ? ")->data)[z_stage1_bounds_index(" : ").data)[z_stage1_bounds_index(");
+      try appendExpression(inout output, declaration, offset);
+      output.append(", (");
+      try appendExpression(inout output, declaration, receiver);
+      output.append(viewReceiver ? ")->length)])" : ").length)])");
+      return;
+    }
+    output.append("(*Z_");
+    output.append(declaration.expressions[index].value);
     if (
       declaration.expressions[index].kind
         == LoweredExpressionKind.arrayMutableIndex
@@ -25524,6 +25569,8 @@ function emitLoweredC(
   output.append("  return (size_t)value;\n");
   output.append("}\n\n");
   try appendCheckedNumericConversionRuntime(inout output, program);
+  output.append("static inline __attribute__((unused)) size_t z_stage1_bounds_index(size_t index, size_t length) {\n");
+  output.append("  if (index >= length) abort();\n  return index;\n}\n\n");
   appendWrappingIntegerRuntime(inout output, "i32", "int32_t");
   appendWrappingIntegerRuntime(inout output, "u8", "uint8_t");
   appendWrappingIntegerRuntime(inout output, "u32", "uint32_t");
@@ -26123,6 +26170,16 @@ function emitLoweredC(
     output.append(" Z_");
     output.append(declaration.name);
     output.append("_Element;\n\n");
+    output.append("typedef ");
+    output.append(elementType);
+    output.append(objectiveCElements ? " __strong *Z_" : " *Z_");
+    output.append(declaration.name);
+    output.append("_Data;\n");
+    output.append("typedef ");
+    output.append(elementType);
+    output.append(objectiveCElements ? " const __strong *Z_" : " const *Z_");
+    output.append(declaration.name);
+    output.append("_ConstData;\n\n");
     output.append("static inline __attribute__((unused)) Z_");
     output.append(declaration.name);
     output.append(" Z_");

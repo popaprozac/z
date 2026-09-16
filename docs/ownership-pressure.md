@@ -9637,6 +9637,26 @@ or proposing an unchecked-access surface. Whole-owner mutable method calls
 still overlap a field view; method-effect inference remains separate work,
 not an implicit extension of sibling-field precision.
 
+## Checked descriptor paths and single evaluation
+
+The native emitter now keeps direct Array descriptor paths visible in checked
+C subscripts. The data access and the length check retain their containing
+aggregate path instead of passing through a generic descriptor accessor. This
+lets Clang distinguish, for example, a machine's code descriptor from its
+register descriptor. It does not add `restrict`, assume an index is valid, or
+change release-mode safety. Dynamic indexes still call a checked index helper.
+Calls and nested subscript receivers keep the single-evaluation accessor form;
+the direct form is limited to side-effect-free local and field operands.
+
+The regression probe exposed an independent Stage 0 bug: indexing
+`rows[next()].values[0]` emitted `next()` twice, once for the backing pointer and
+once for the length. Complex descriptor receivers are now captured once before
+indexing. A borrowed descriptor snapshot is not an element copy or an ownership
+transfer. Both emitters are exercised with nested reads/writes, call counters,
+field views, fixed arrays, Slices, and owned String elements. Bounds failures
+remain failures at `-O0`, `-O2`, and `-O3`; the test intercepts `abort` to avoid
+creating operating-system crash reports and uses UBSan for valid accesses.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

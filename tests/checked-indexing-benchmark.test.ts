@@ -28,6 +28,7 @@ test("bounds experiment changes only the known Stage 0 index helper", () => {
 });
 
 test("native bounds experiment leaves Slice, overflow, and unrelated guards intact", () => {
+  const direct = "static inline __attribute__((unused)) size_t z_stage1_bounds_index(size_t index, size_t length) {\n  if (index >= length) abort();\n  return index;\n}\n";
   const functions = ["u64", "usize"].flatMap(type => ["at", "at_mut"].map(method =>
     `static inline __attribute__((unused)) uint64_t *Z___z_Array_${type}_${method}(Z___z_Array_${type} *self, size_t index) {\n  if (index >= self->length) abort();\n  return &((uint64_t *)self->data)[index];\n}`));
   const other = `
@@ -38,8 +39,9 @@ static inline __attribute__((unused)) uint64_t *Z___z_Slice_u64_at(Z___z_Slice_u
 if (__builtin_add_overflow(left, right, &result)) abort();
 if (storage == NULL) abort();
 `;
-  const experiment = removeBenchmarkBounds(functions.join("\n") + other, "native");
-  expect(experiment.removed).toHaveLength(4);
+  const experiment = removeBenchmarkBounds(direct + functions.join("\n") + other, "native");
+  expect(experiment.removed).toHaveLength(5);
+  expect(experiment.removed).toContain("z_stage1_bounds_index");
   expect(experiment.source.endsWith(other)).toBe(true);
   expect(() => removeBenchmarkBounds(functions[0]! + other, "native")).toThrow("found 1");
   expect(() => removeBenchmarkBounds(functions.join("\n").replaceAll("size_t index", "uintptr_t index"), "native")).toThrow("found 0");
