@@ -24154,9 +24154,9 @@ function appendNestedTryPreludeTree(
             for (const variant of declaration.variants) {
               if (variant.name != "success") continue;
               match (in variant.payload) {
-                some(payload) => directSuccessTypeName = Option.some(
-                  payload.name.copyBytes(0, payload.name.byteLength)
-                );
+                // Primitive types are represented by kind, with no nominal
+                // name. Recover the complete type identity for nested `try`.
+                some(payload) => directSuccessTypeName = Option.some(loweredTypeIdentity(payload));
                 none => {}
               }
             }

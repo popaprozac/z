@@ -9794,6 +9794,19 @@ sharing regression verifies repeated imports, alias localization, different
 thread-affinity contracts, and independent source-proof refinement. See the
 [performance measurements](performance.md) for timing boundaries and caveats.
 
+## Nested fallible scalar construction (2026-09-16)
+
+Window-size validation in Zapp constructs a value with two independently
+fallible scalar fields: `Size({ width: try dimension(width), height: try
+dimension(height) })`. Stage 0 accepted and executed this, but native lowering
+lost the `u32` success type when recovering the imported helper's checked
+signature. Primitive lowered types carry their identity in their kind rather
+than a nominal name; the fallback now uses that full identity.
+
+The cross-module fixture executes success and either-field failure through
+both emitters at `-O0` and `-O2`, with UBSan and an allocation ledger checking
+the owned error message. No new syntax or framework workaround is needed.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

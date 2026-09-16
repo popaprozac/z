@@ -91,6 +91,7 @@ for (const [fixture, expected] of [
   ["named-callback-fields.zs", "callbacks reset\n"],
   ["lifecycle-callbacks.zs", "released owner\nreleased owner\nreleased owner\nreleased owner\n"],
   ["nested-match-construction.zs", "released selected arm\nanswer\nreleased fallback arm\nmissing\nreleased early arm\nreleased outer\nanswer\nanswer\nrejected\nanswer\n"],
+  ["nested-try-construction.zs", ""],
   ["self-host-emit-block-closure-owners.zs",
     'notes: {"text":"early"}\nreleased early\n'
     + 'notes: {"text":"move"}\nconsumed move\nreleased move\n'
