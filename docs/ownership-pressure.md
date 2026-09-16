@@ -9657,6 +9657,26 @@ field views, fixed arrays, Slices, and owned String elements. Bounds failures
 remain failures at `-O0`, `-O2`, and `-O3`; the test intercepts `abort` to avoid
 creating operating-system crash reports and uses UBSan for valid accesses.
 
+## Borrowed callback capture and storage ownership
+
+The JS-engine lifecycle probe exposed an extra ARC retain when a non-escaping
+callback stored a captured class in an owned collection. Capture setup reused
+the source location of the first body use, accidentally replaying the retain
+required by collection insertion. The borrowed stack environment did not own
+that extra reference and had no destructor to balance it.
+
+Capture setup now reads the existing binding without replaying body-use copy
+effects. The insertion itself still retains: collection storage must survive
+the original local owner's scope. The
+[borrowed-capture fixture](../tests/fixtures/borrowed-capture-retention.zs)
+separately proves survival while stored and expiration after removal, normal
+and throwing lock callbacks, and ordinary synchronous callback arguments.
+Allocation accounting and O0/O2 UBSan runs cover both compiler paths.
+
+The initial consumer probe checked its weak handle while the original strong
+local still existed. Returning only a weak handle from a helper makes the
+lifetime boundary explicit and prevents that false positive.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

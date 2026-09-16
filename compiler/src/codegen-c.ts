@@ -8967,10 +8967,9 @@ function generateClosureValue(
     ? `_z_closure_environment_${closure.declaration.location.offset}`
     : `_z_borrowed_closure_environment_${closure.declaration.location.offset}`;
   const captures = closure.captures.map((capture) => {
-    const captured: Expression = { kind: "identifier", name: capture.name, location: capture.location };
     const value = closure.owned
       ? generateOwnedClosureCaptureValue(capture, context, closure.scopedOneShot)
-      : generateExpression(captured, context);
+      : generateClosureCaptureRead(capture, context);
     const borrowedPointer = !closure.owned
       && capture.mode !== "value"
       && !(capture.mode === "in" && closureCaptureHasReferenceIdentity(capture.type, context.structs, context.semanticInfo.foreignNamedTypes));
@@ -9001,7 +9000,7 @@ ${captures.join("\n")}
 ${consumeValue(value, context)}`;
 }
 
-function generateOwnedClosureCaptureValue(
+function generateClosureCaptureRead(
   capture: ClosureInfo["captures"][number],
   context: GenerationContext,
   scopedOneShot = false,
@@ -9014,8 +9013,8 @@ function generateOwnedClosureCaptureValue(
       ...context.semanticInfo,
       // A capture's location is its first body use, not a distinct expression.
       // That use may pass an owned argument and legitimately retain inside the
-      // callback. Capture storage retains explicitly below; do not apply the
-      // body-use copy here as well (leaking one reference per environment).
+      // callback. Reading capture storage must not replay that body-use copy:
+      // owned environments retain explicitly, borrowed environments do not.
       managedCopies: bodyUseCopies
         ? new Set([...context.semanticInfo.managedCopies]
           .filter((offset) => offset !== capture.location.offset))
@@ -9026,7 +9025,15 @@ function generateOwnedClosureCaptureValue(
         : context.semanticInfo.movedExpressions,
     },
   } : context;
-  let value = generateExpression(captured, captureContext);
+  return generateExpression(captured, captureContext);
+}
+
+function generateOwnedClosureCaptureValue(
+  capture: ClosureInfo["captures"][number],
+  context: GenerationContext,
+  scopedOneShot = false,
+): string {
+  let value = generateClosureCaptureRead(capture, context, scopedOneShot);
   const capturedClass = context.structs.get(capture.type);
   const capturedFunction = parseFunctionType(capture.type);
   if (capture.type === "TaskScope") value = `z_task_scope_retain(${value})`;

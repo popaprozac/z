@@ -72,6 +72,7 @@ int main(void) {
 }
 
 for (const [fixture, expected] of [
+  ["borrowed-capture-retention.zs", "released 1\nreleased 2\nreleased 3\nreleased 4\n"],
   ["retained-imports.zs", "released imported item\n"],
   ["weak-array-storage.zs", "released observed item\n"],
   ["parenthesized-conditional-arms.zs", ""],
