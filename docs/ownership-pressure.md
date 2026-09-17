@@ -9846,7 +9846,8 @@ design checkpoint.
 ## Window positioning: fallible typed JSON encoding
 
 Returning fractional desktop coordinates exposed the encoding half of the
-existing finite-`f64` decoder. `json.encode` now consistently throws
+existing finite-`f64` decoder. `json.encode` now consistently declares
+`throws`
 `JsonEncodeError`, rather than giving each generic specialization different
 effects. NaN and infinities report a field path; finite values round-trip,
 including negative zero and subnormals. `json.stringify` remains nonthrowing

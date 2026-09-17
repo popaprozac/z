@@ -200,7 +200,7 @@ The decoder also accepts `f64` fields (including nested structs and
 `Option<f64>`). JSON fractions and exponents round to binary floating point;
 overflow to infinity is a decoding error. Very small values may round to zero.
 Conversion uses the C numeric locale without changing the process-wide locale.
-Typed encoding always throws `JsonEncodeError`, even for integer/string-only
+Typed encoding always declares `throws JsonEncodeError`, even for integer/string-only
 structs. Finite `f64` values round-trip, including negative zero. NaN and
 infinities fail with a `path` such as `items[3].position.x` and a `message`;
 they never silently become `null`. Use `try json.encode(in value)` to

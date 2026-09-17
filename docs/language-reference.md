@@ -3553,7 +3553,7 @@ fractions and exponents round to binary floating point, overflow to infinity
 throws `JsonError`, and tiny values may underflow to zero. Conversion uses the
 C numeric locale without changing the process-wide locale.
 
-`json.encode<T>(in value)` always throws `JsonEncodeError`, even for a struct
+`json.encode<T>(in value)` always declares `throws JsonEncodeError`, even for a struct
 containing only strings or integers. Use `try` to propagate the error or
 `attempt` to handle it locally. Finite `f64` values encode with enough digits
 to round-trip (including negative zero); NaN and either infinity fail instead
