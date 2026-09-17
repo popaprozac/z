@@ -9821,6 +9821,28 @@ The property-scope regression covers a setter through a const local aggregate,
 the same operation during destruction, and rejection of both readonly native
 properties and immutable slot replacement, under both emitters and UBSan.
 
+## Native geometry branch composition (2026-09-16)
+
+Zapp window positioning combines AppKit's `NSRect` property type with its
+canonical `CGRect` typedef identity. Stage 0 accepted either at ordinary call
+and return boundaries but compared branch results by spelling. Conditional,
+value-producing if, and loop-selection joins now recognize the same imported
+record identity without merging unrelated layouts or stripping view wrappers.
+A small C fixture exercises both alias orders and rejects a distinct record.
+
+The native checker also omitted condition narrowing inside ternaries. A checked
+snapshot such as `screen == null ? fallback : screen.visibleFrame` now uses the
+same branch-local narrowing as ordinary conditional control flow. Positive and
+negative Objective-C property tests cover both arms and ensure the proof does
+not escape the join. Native Zapp geometry tests execute these compositions
+through both compilers at `-O0`/`-O2` with UBSan.
+
+Window positioning also exposed a pending standard-library contract: typed
+JSON decoding supports finite `f64`, but nonthrowing derived encoding does not.
+Fractional coordinates should not be truncated or hand-serialized to bypass
+that boundary; float encoding's treatment of nonfinite values needs an explicit
+design checkpoint.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

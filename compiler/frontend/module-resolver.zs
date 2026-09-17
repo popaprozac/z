@@ -7365,6 +7365,8 @@ function inferExpressionNodeType(
     let elseBindings = copyValueBindings(bindings);
     markRegionControlFlow(inout thenBindings, "branch");
     markRegionControlFlow(inout elseBindings, "branch");
+    applyConditionNarrowing(tree, children[0], true, inout thenBindings);
+    applyConditionNarrowing(tree, children[0], false, inout elseBindings);
     const expectedType = contextualExpectedType(bindings, tree, index);
     const thenType = try inferExpressionNodeTypeExpected(
       module,

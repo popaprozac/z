@@ -3160,6 +3160,51 @@ test("requires and enforces checked contracts for pointer-bearing C value resour
   assert.doesNotMatch(unsafeDiagnostic.message, /checked \.zd projection/);
 });
 
+hostToolchainTest("joins canonical C record aliases in conditional and if expressions", () => {
+  const directory = mkdtempSync("/tmp/z-record-branches-");
+  try {
+    const header = resolve(directory, "records.h");
+    const input = resolve(directory, "main.zs");
+    writeFileSync(header, `
+      typedef struct ZBranchRecord { int value; } ZBranchRecord;
+      typedef ZBranchRecord ZBranchAlias;
+      typedef struct ZBranchOther { int value; } ZBranchOther;
+      static inline ZBranchRecord branch_record(int v) { return (ZBranchRecord){v}; }
+      static inline ZBranchAlias branch_alias(int v) { return (ZBranchAlias){v}; }
+      static inline ZBranchOther branch_other(int v) { return (ZBranchOther){v}; }
+    `);
+    const source = `import native from "./records.h";
+      function choose(flag: boolean): native.ZBranchRecord {
+        return flag ? native.branch_record(11) : native.branch_alias(22);
+      }
+      function reverse(flag: boolean): native.ZBranchAlias {
+        return flag ? native.branch_alias(33) : native.branch_record(44);
+      }
+      function block(flag: boolean): native.ZBranchAlias {
+        return if (flag) { select native.branch_record(55); } else { select native.branch_alias(66); };
+      }
+      function main(): i32 {
+        if (choose(true).value != 11 || choose(false).value != 22) return 1;
+        if (reverse(true).value != 33 || reverse(false).value != 44) return 2;
+        if (block(true).value != 55 || block(false).value != 66) return 3;
+        return 0;
+      }`;
+    const generated = resolve(directory, "main.c");
+    writeFileSync(generated, compileToNative(source, input).source);
+    for (const optimization of ["-O0", "-O2"]) {
+      const executable = resolve(directory, `probe${optimization}`);
+      const compiled = spawnSync("clang", ["-std=c11", "-Wall", "-Wextra", "-Werror", optimization,
+        "-fsanitize=undefined", "-fno-sanitize-recover=all", "-I", directory, generated, "-o", executable],
+        { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+      assert.equal(compiled.status, 0, compiled.stderr);
+      const run = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+      assert.equal(run.status, 0, run.stderr);
+    }
+    const unrelated = source.replace("native.branch_alias(22)", "native.branch_other(22)");
+    assert.throws(() => compileToNative(unrelated, input), /branch produces|expected/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 test("moves, borrows, aliases, and destroys native C value resources", () => {
   const fileName = resolve(projectRoot, "tests/fixtures/value-resource-main.zs");
   const source = `

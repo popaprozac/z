@@ -7271,7 +7271,7 @@ function inferIfExpression(
     continuingLoans.push(snapshotAccessLoanState(state));
   }
 
-  const resultType = commonBranchType("if", thenType, elseType, expression.elseBranch.location, fileName);
+  const resultType = commonBranchType("if", thenType, elseType, expression.elseBranch.location, fileName, state.foreignNamedTypes);
   if (
     containsStoredViewType(String(resultType), structs, enums)
     && !isArenaOwnerBundleType(String(resultType), structs, enums)
@@ -7374,10 +7374,17 @@ function commonBranchType(
   second: ValueType,
   location: Expression["location"],
   fileName: string,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
 ): ValueType {
   if (first === "never" || first === "unknown") return second;
   if (second === "never" || second === "unknown") return first;
-  if (first !== second) {
+  // C typedef names preserve one record identity. Do not erase view/ownership
+  // wrappers or generalize this to unrelated records with matching layouts.
+  const firstNative = foreignNamedTypes.get(String(first));
+  const secondNative = foreignNamedTypes.get(String(second));
+  const sameRecord = firstNative?.kind === "record" && secondNative?.kind === "record"
+    && firstNative.canonicalNativeName === secondNative.canonicalNativeName;
+  if (first !== second && !sameRecord) {
     throw new DiagnosticError(fileName, location, `${construct} branch produces ${second}, but the other branch produces ${first}`);
   }
   return first;
@@ -7548,6 +7555,7 @@ function finishLoopExpression(
       selection.type,
       elseBranch.location,
       fileName,
+      state.foreignNamedTypes,
     );
   }
   mergeOwnershipStates(locals, continuing, state);
@@ -9940,7 +9948,7 @@ function inferExpressionInner(
         );
         mergeAccessLoanStates(state, continuingLoans);
       }
-      return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName);
+      return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName, state.foreignNamedTypes);
     }
     case "new": {
       const standardType = [...state.standardTypeBindings.entries()]

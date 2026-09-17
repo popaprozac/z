@@ -52,6 +52,10 @@ hostToolchainTest("keeps class and instance Objective-C properties distinct thro
       ["missing", source.replace("shared.writableValue = 61", "shared.missing = 61"), "no field"],
       ["slot", source.replace("owner.object.writableValue = 72", "owner.object = object"), "immutable binding"],
       ["nested-readonly", source.replace("owner.object.writableValue = 72", "owner.object.value = 72"), "readonly field"],
+      ["nullable-true-arm", source.replace("object == null ? -1 : object.value", "object == null ? object.value : -1"), "nullable receiver"],
+      ["nullable-false-arm", source.replace("object != null ? object.value : -2", "object != null ? -2 : object.value"), "nullable receiver"],
+      ["nullable-after-join", source.replace("return object != null ? object.value : -2;",
+        "const value = object != null ? object.value : -2; return object.value;"), "nullable receiver"],
     ]) {
       assert.throws(() => compileToNative(invalid, fixture));
       const invalidInput = resolve(temporary, `invalid-${name}.zs`);

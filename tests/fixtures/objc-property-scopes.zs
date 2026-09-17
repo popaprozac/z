@@ -13,6 +13,14 @@ function scopedProperty(object: native.ZPropertyScopeBase): i32 {
   return owner.object.writableValue;
 }
 
+function nullableValue(object: native.ZPropertyScopeBase | null): i32 {
+  return object == null ? -1 : object.value;
+}
+
+function nullableReverse(object: native.ZPropertyScopeBase | null): i32 {
+  return object != null ? object.value : -2;
+}
+
 function main(): i32 {
   const base = native.ZPropertyScopeBase.alloc().init();
   const child = native.ZPropertyScopeChild.alloc().init();
@@ -31,5 +39,7 @@ function main(): i32 {
   if (child.span.location != 5 || child.span.length != 7) return 7;
   if (base.caption != null || child.caption != null) return 8;
   if (scopedProperty(base) != 72 || base.writableValue != 73) return 9;
+  if (nullableValue(null) != -1 || nullableValue(base) != 11) return 10;
+  if (nullableReverse(null) != -2 || nullableReverse(base) != 11) return 11;
   return 0;
 }
