@@ -564,7 +564,7 @@ export function generateC(
   }
 
   if (usesString) lines.push(generateStringRuntime(), "");
-  if (usesDerivedJson) lines.push(generateDerivedJsonRuntime(), "");
+  if (usesDerivedJson) lines.push(generateDerivedJsonRuntime(), generateDerivedJsonEncodeRuntime(), "");
   if (semanticInfo.swiftStringsToZ.size > 0) lines.push(generateSwiftStringRuntime(), "");
   if (semanticInfo.objcStringsToNative.size > 0 || semanticInfo.objcStringsToZ.size > 0) {
     lines.push(generateObjCStringRuntime(), "");
@@ -4868,6 +4868,74 @@ static Z_UNUSED_FUNCTION void z_json_derived_append_string(Z_String *output, Z_S
 }`;
 }
 
+function generateDerivedJsonEncodeRuntime(): string {
+  return `typedef struct Z_JsonEncodePath {
+  const struct Z_JsonEncodePath *parent;
+  const char *field;
+  size_t index;
+} Z_JsonEncodePath;
+
+typedef struct {
+  Z_String path;
+  const char *message;
+#if defined(_WIN32)
+  _locale_t locale;
+#else
+  locale_t locale;
+#endif
+} Z_JsonEncodeFailure;
+
+static Z_UNUSED_FUNCTION void z_json_encode_path(Z_String *output, const Z_JsonEncodePath *path) {
+  if (path == NULL) return;
+  z_json_encode_path(output, path->parent);
+  if (path->field != NULL) {
+    if (path->parent != NULL) z_string_append_bytes(output, ".", 1);
+    z_string_append_bytes(output, path->field, strlen(path->field));
+  } else {
+    char index[32];
+    const int length = snprintf(index, sizeof(index), "[%zu]", path->index);
+    if (length < 0 || (size_t)length >= sizeof(index)) abort();
+    z_string_append_bytes(output, index, (size_t)length);
+  }
+}
+
+static Z_UNUSED_FUNCTION bool z_json_encode_fail(Z_JsonEncodeFailure *failure, const Z_JsonEncodePath *path, const char *message) {
+  failure->message = message;
+  z_json_encode_path(&failure->path, path);
+  return false;
+}
+
+static Z_UNUSED_FUNCTION void z_json_encode_finish(Z_JsonEncodeFailure *failure) {
+  if (failure->locale == 0) return;
+#if defined(_WIN32)
+  _free_locale(failure->locale);
+#else
+  freelocale(failure->locale);
+#endif
+}
+
+static Z_UNUSED_FUNCTION bool z_json_encode_f64(Z_String *output, double value, const Z_JsonEncodePath *path, Z_JsonEncodeFailure *failure) {
+  if (!isfinite(value)) return z_json_encode_fail(failure, path, "JSON cannot encode a non-finite f64");
+  char text[64];
+#if defined(_WIN32)
+  if (failure->locale == 0) failure->locale = _create_locale(LC_NUMERIC, "C");
+  if (failure->locale == 0) abort();
+  const int length = _snprintf_l(text, sizeof(text), "%.17g", failure->locale, value);
+#else
+  if (failure->locale == 0) failure->locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+  if (failure->locale == 0) abort();
+  locale_t previous = uselocale(failure->locale);
+  if (previous == (locale_t)0) abort();
+  const int length = snprintf(text, sizeof(text), "%.17g", value);
+  if (uselocale(previous) == (locale_t)0) abort();
+#endif
+  if (length < 0 || (size_t)length >= sizeof(text)) return z_json_encode_fail(failure, path, "cannot format JSON f64");
+  z_string_append_bytes(output, text, (size_t)length);
+  return true;
+}
+`;
+}
+
 function generateObjCStringRuntime(): string {
   return `static Z_UNUSED_FUNCTION NSString *z_nsstring_from_string(Z_String value) {
   const void *bytes = value.data != NULL ? (const void *)value.data : (const void *)"";
@@ -6341,8 +6409,8 @@ function derivedJsonStruct(
     const location = intrinsic.requestLocation;
     throw new DiagnosticError(location.fileName ?? "<source>", location, message, {
       notes: [
-        "derived JSON codecs support ordinary value structs containing String, boolean, integer, nested value structs, arrays of strings or those structs, and Option fields wrapping those types",
-        "json.decode also supports finite f64 fields; floating-point encoding remains unsupported",
+        "derived JSON codecs support ordinary value structs containing String, boolean, integer, f64, nested value structs, arrays of strings or those structs, and Option fields wrapping those types",
+        "json.encode throws JsonEncodeError for nonfinite f64 values",
         "use json.parse/json.stringify for a dynamic JSON tree while the derived type surface expands",
       ],
     });
@@ -6370,7 +6438,7 @@ function derivedJsonStruct(
       if (
         typeName === "String"
         || typeName === "boolean"
-        || (typeName === "f64" && intrinsic.kind === "jsonDecode")
+        || typeName === "f64"
         || parseDynamicArrayType(typeName)?.elementType === "String"
         || typeName in derivedJsonUnsignedLimits
         || typeName in derivedJsonSignedLimits
@@ -6736,12 +6804,14 @@ ${derivedJsonEncodeField(payloadField, declaration, context, `${value}.data.some
   }`;
   }
   if (field.type.name === "String") return `  z_json_derived_append_string(output, ${value});`;
+  if (field.type.name === "f64") return `  if (!z_json_encode_f64(output, ${value}, &_z_json_field, failure)) return false;`;
   const dynamicArray = parseDynamicArrayType(field.type.name);
   if (dynamicArray) {
     const item = `((${mapType(dynamicArray.elementType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} *)${value}.data)[_z_json_index]`;
     const appendItem = dynamicArray.elementType === "String"
       ? `z_json_derived_append_string(output, ${item});`
-      : `${derivedJsonEncodeHelperName(declaration, context.structs.get(dynamicArray.elementType)!)}(output, &${item});`;
+      : `const Z_JsonEncodePath _z_json_item = { .parent = &_z_json_field, .field = NULL, .index = _z_json_index };
+    if (!${derivedJsonEncodeHelperName(declaration, context.structs.get(dynamicArray.elementType)!)}(output, &${item}, &_z_json_item, failure)) return false;`;
     return `  z_string_append_bytes(output, "[", 1u);
   for (uintptr_t _z_json_index = 0; _z_json_index < ${value}.length; _z_json_index += 1u) {
     if (_z_json_index > 0) z_string_append_bytes(output, ",", 1u);
@@ -6751,7 +6821,7 @@ ${derivedJsonEncodeField(payloadField, declaration, context, `${value}.data.some
   }
   const nested = context.structs.get(field.type.name);
   if (nested?.kind === "struct") {
-    return `  ${derivedJsonEncodeHelperName(declaration, nested)}(output, &${value});`;
+    return `  if (!${derivedJsonEncodeHelperName(declaration, nested)}(output, &${value}, &_z_json_field, failure)) return false;`;
   }
   if (field.type.name === "boolean") {
     return `  z_string_append_bytes(output, ${value} ? "true" : "false", ${value} ? 4u : 5u);`;
@@ -6780,28 +6850,43 @@ function generateDerivedJsonEncode(
   );
   const reachable = derivedJsonDecodeStructs(target, context);
   const prototypes = reachable.map(candidate =>
-    `static void ${derivedJsonEncodeHelperName(declaration, candidate)}(Z_String *output, const ${structName(candidate.name)} *value);`
+    `static bool ${derivedJsonEncodeHelperName(declaration, candidate)}(Z_String *output, const ${structName(candidate.name)} *value, const Z_JsonEncodePath *path, Z_JsonEncodeFailure *failure);`
   ).join("\n");
   const helpers = reachable.map(candidate => {
     const fields = candidate.fields.flatMap((field, index) => {
       const prefix = `${index === 0 ? "" : ","}${JSON.stringify(field.name)}:`;
       const literal = cTestNameLiteral(prefix);
       return [
+        `  { const Z_JsonEncodePath _z_json_field = { .parent = path, .field = ${cTestNameLiteral(field.name)}, .index = 0 }; (void)_z_json_field;`,
         `  z_string_append_bytes(output, ${literal}, ${Buffer.byteLength(prefix, "utf8")}u);`,
         derivedJsonEncodeField(field, declaration, context),
+        `  }`,
       ];
     });
-    return `static void ${derivedJsonEncodeHelperName(declaration, candidate)}(Z_String *output, const ${structName(candidate.name)} *value) {
-  (void)value;
+    return `static bool ${derivedJsonEncodeHelperName(declaration, candidate)}(Z_String *output, const ${structName(candidate.name)} *value, const Z_JsonEncodePath *path, Z_JsonEncodeFailure *failure) {
+  (void)value; (void)path; (void)failure;
   z_string_append_bytes(output, "{", 1u);
 ${fields.join("\n")}
   z_string_append_bytes(output, "}", 1u);
+  return true;
 }`;
   }).join("\n\n");
+  const result = resultTypeName("String", declaration.errorType!.name);
+  const resultC = enumName(result);
+  const errorC = structName(declaration.errorType!.name);
   return `${prototypes}\n\n${helpers}\n\n${signature} {
   Z_String output = z_string_new();
-  ${derivedJsonEncodeHelperName(declaration, target)}(&output, value);
-  return output;
+  Z_JsonEncodeFailure failure = {0};
+  if (!${derivedJsonEncodeHelperName(declaration, target)}(&output, value, NULL, &failure)) {
+    z_json_encode_finish(&failure);
+    if (output.capacity > 0) free((void *)output.data);
+    return (${resultC}){ .tag = ${variantTag(result, "failure")}, .data = { .failure = (${errorC}){
+      .path = failure.path,
+      .message = (Z_String){ .data = failure.message, .length = (uintptr_t)strlen(failure.message), .capacity = 0 }
+    } } };
+  }
+  z_json_encode_finish(&failure);
+  return (${resultC}){ .tag = ${variantTag(result, "success")}, .data = { .success = output } };
 }`;
 }
 

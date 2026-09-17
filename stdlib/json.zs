@@ -69,6 +69,11 @@ export struct JsonError {
   column: usize;
 }
 
+export struct JsonEncodeError {
+  path: String;
+  message: String;
+}
+
 struct JsonCursor {
   offset: usize;
   line: usize;
@@ -725,6 +730,6 @@ export function decode<T>(in source: String): T throws JsonError {
   });
 }
 
-export function encode<T>(in value: T): String {
-  return "";
+export function encode<T>(in value: T): String throws JsonEncodeError {
+  throw JsonEncodeError({ path: "", message: "the compiler did not materialize json.encode<T>" });
 }

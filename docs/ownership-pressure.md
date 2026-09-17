@@ -6537,7 +6537,7 @@ Zapp's second-instance launch callback now motivates a direct composition probe:
 
 ```zs
 const handler: (in message: Message) => void = move (in message: Message): void => {
-  const encoded = json.encode(in message);
+  const encoded = try json.encode(in message);
   console.log(`${listener.prefix}: ${encoded}`);
 };
 ```
@@ -9842,6 +9842,24 @@ JSON decoding supports finite `f64`, but nonthrowing derived encoding does not.
 Fractional coordinates should not be truncated or hand-serialized to bypass
 that boundary; float encoding's treatment of nonfinite values needs an explicit
 design checkpoint.
+
+## Window positioning: fallible typed JSON encoding
+
+Returning fractional desktop coordinates exposed the encoding half of the
+existing finite-`f64` decoder. `json.encode` now consistently throws
+`JsonEncodeError`, rather than giving each generic specialization different
+effects. NaN and infinities report a field path; finite values round-trip,
+including negative zero and subnormals. `json.stringify` remains nonthrowing
+over already-validated dynamic values.
+
+Both emitters stream directly into an owned String. Path breadcrumbs stay on
+the stack and materialize an owned error path only on failure; a numeric locale
+is allocated lazily once per encoding operation, never installed process-wide,
+and released on either outcome. Failures discard partial output without
+consuming the borrowed source. Nested arrays, Options, repeated non-finite
+failures, and intact inputs are covered at `-O0` and `-O2` with UBSan and an
+allocation ledger. The locale regression uses a comma-decimal locale when the
+host provides one and always checks restoration.
 
 ## Not tested yet
 

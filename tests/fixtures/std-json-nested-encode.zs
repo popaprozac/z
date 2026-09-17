@@ -12,12 +12,19 @@ readonly struct Envelope {
 }
 
 function main(): i32 {
+  return match (attempt run()) {
+    success(status) => status;
+    failure(_) => 99;
+  };
+}
+
+function run(): i32 throws json.JsonEncodeError {
   const source = '{"version":1,"document":{"title":"Draft","tags":["a","b"],"children":[{"title":"Child","tags":[],"children":[]}]}}';
   const decoded = attempt json.decode<Envelope>(in source);
   return match (decoded) {
     failure(_) => 1;
     success(value) => {
-      const encoded = json.encode(in value);
+      const encoded = try json.encode(in value);
       if (encoded != source) return 2;
       // Encoding borrows the entire graph, including published collections.
       if (value.document.children[0].title != "Child") return 3;

@@ -8,12 +8,19 @@ struct Project {
 }
 
 function main(): i32 {
+  return match (attempt run()) {
+    success(status) => status;
+    failure(_) => 99;
+  };
+}
+
+function run(): i32 throws json.JsonEncodeError {
   const decoded = attempt json.decode<Project>(
     '{"name":"Zapp","downloads":18446744073709551615}'
   );
   return match (decoded) {
     success(project) => {
-      const encoded = json.encode(in project);
+      const encoded = try json.encode(in project);
       console.log(encoded);
       select 0;
     }

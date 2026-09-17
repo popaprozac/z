@@ -4038,13 +4038,13 @@ test("rejects ambiguous and unsupported Option JSON codecs natively", () => {
   try {
     for (const [type, message] of [
       ["Option<Option<String>>", /JSON null cannot distinguish none from some\(none\)/],
-      ["Option<f64>", /does not support field type f64/],
+      ["Option<f32>", /does not support field type f32/],
       ["Array<Option<String>>", /does not support Array element type/],
     ] as const) {
       writeFileSync(input, `
         import json from "std/json";
         struct Value { value: ${type}; }
-        function encode(in value: Value): String { return json.encode(in value); }
+        function encode(in value: Value): String throws json.JsonEncodeError { return try json.encode(in value); }
         function main(): i32 { return 0; }
       `);
       const emission = spawnSync(process.execPath, [cli, "self-host-emit", input], {

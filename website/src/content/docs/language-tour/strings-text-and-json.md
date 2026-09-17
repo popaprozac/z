@@ -157,9 +157,11 @@ struct User {
 }
 
 function decodeUser(in source: String): User throws json.JsonError {
-  const user = try json.decode<User>(source);
-  const encoded = json.encode(in user);
-  return user;
+  return try json.decode<User>(source);
+}
+
+function encodeUser(in user: User): String throws json.JsonEncodeError {
+  return try json.encode(in user);
 }
 ```
 
@@ -184,12 +186,12 @@ struct Request {
 
 :::caution[Current typed-codec boundary]
 The derived encoder and decoder support public, non-optional `String`,
-`boolean`, signed or unsigned integer, nested value structs, and arrays of
+`boolean`, signed or unsigned integer, `f64`, nested value structs, and arrays of
 strings or those structs. Readonly arrays and recursive trees through arrays
 are supported too, as are `Option<T>` fields wrapping those supported types.
 Stage 0 and the fixed-point compiler emit direct streaming codecs without an
 intermediate dynamic tree. Optional property syntax (`?`), arrays of Options,
-`f32`, floating-point encoding, other collections, classes, custom constructors, and custom
+`f32`, other collections, classes, custom constructors, and custom
 field-name policies remain later tiers. Nested `Option<Option<T>>` is rejected:
 JSON `null` cannot distinguish `none` from `some(none)`.
 Dynamic `json.parse` and `json.stringify` cover broader JSON shapes today.
@@ -198,8 +200,14 @@ The decoder also accepts `f64` fields (including nested structs and
 `Option<f64>`). JSON fractions and exponents round to binary floating point;
 overflow to infinity is a decoding error. Very small values may round to zero.
 Conversion uses the C numeric locale without changing the process-wide locale.
-Floating-point encoding remains unsupported pending its non-finite-value
-policy; use the existing exact `JsonNumber` representation for lossless forwarding.
+Typed encoding always throws `JsonEncodeError`, even for integer/string-only
+structs. Finite `f64` values round-trip, including negative zero. NaN and
+infinities fail with a `path` such as `items[3].position.x` and a `message`;
+they never silently become `null`. Use `try json.encode(in value)` to
+propagate or `attempt` to inspect the error. Failure frees the partial output
+without consuming or changing the input. Dynamic `json.stringify` remains
+nonthrowing because its input contains validated numbers. Use `JsonNumber`
+for lossless forwarding of arbitrary JSON number spellings.
 :::
 
 :::note[Cost model]

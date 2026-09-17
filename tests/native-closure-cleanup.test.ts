@@ -3,7 +3,7 @@ import {
   resolve, rmSync, spawnSync, test, writeFileSync,
 } from "./support/bootstrap.ts";
 
-function execute(source: string, expected: string, expectedAllocations?: number, optimization = "-O1"): void {
+function execute(source: string, expected: string, expectedAllocations?: number, optimization = "-O1", numericLocale = false): void {
   const directory = mkdtempSync("/tmp/z-closure-cleanup-");
   try {
     const executable = resolve(directory, "program");
@@ -13,6 +13,8 @@ function execute(source: string, expected: string, expectedAllocations?: number,
     const trackedSource = `
 #include <stdlib.h>
 #include <stdio.h>
+#include <locale.h>
+#include <string.h>
 static void *allocations[4096];
 static size_t allocation_count;
 static size_t allocation_calls;
@@ -52,7 +54,23 @@ static __attribute__((unused)) void probe_free(void *pointer) {
 ${source}
 #undef main
 int main(void) {
+  ${numericLocale ? `
+  // Some Linux CI images install only C locales. Exercise comma-decimal
+  // formatting whenever available, and always verify locale restoration.
+  if (!setlocale(LC_NUMERIC, "de_DE.UTF-8")) (void)setlocale(LC_NUMERIC, "de_DE.utf8");
+  char numeric_locale[256];
+  snprintf(numeric_locale, sizeof(numeric_locale), "%s", setlocale(LC_NUMERIC, NULL));
+#if !defined(_WIN32)
+  locale_t thread_locale = uselocale((locale_t)0);
+#endif
+  ` : ""}
   const int status = fixture_main(${/\bmain\(int argc/.test(source) ? "0, NULL" : ""});
+  ${numericLocale ? `
+  if (strcmp(numeric_locale, setlocale(LC_NUMERIC, NULL)) != 0) return 95;
+#if !defined(_WIN32)
+  if (thread_locale != uselocale((locale_t)0)) return 96;
+#endif
+  ` : ""}
   if (allocation_count) { fprintf(stderr, "leaked %zu allocations\\n", allocation_count); return 93; }
   ${expectedAllocations === undefined ? "" : `if (allocation_calls != ${expectedAllocations}) { fprintf(stderr, "unexpected allocation count %zu\\n", allocation_calls); return 94; }`}
   return status;
@@ -92,6 +110,7 @@ for (const [fixture, expected] of [
   ["lifecycle-callbacks.zs", "released owner\nreleased owner\nreleased owner\nreleased owner\n"],
   ["nested-match-construction.zs", "released selected arm\nanswer\nreleased fallback arm\nmissing\nreleased early arm\nreleased outer\nanswer\nanswer\nrejected\nanswer\n"],
   ["nested-try-construction.zs", ""],
+  ["std-json-f64-encode.zs", ""],
   ["self-host-emit-block-closure-owners.zs",
     'notes: {"text":"early"}\nreleased early\n'
     + 'notes: {"text":"move"}\nconsumed move\nreleased move\n'
@@ -106,12 +125,12 @@ for (const [fixture, expected] of [
   test(`owns invocation-local storage in ${fixture}`, () => {
     const input = resolve(projectRoot, "tests/fixtures", fixture);
     const stage0 = compileToC(readFileSync(input, "utf8"), input);
-    for (const optimization of ["-O0", "-O2"]) execute(stage0, expected, undefined, optimization);
+    for (const optimization of ["-O0", "-O2"]) execute(stage0, expected, undefined, optimization, fixture === "std-json-f64-encode.zs");
     const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
       encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
     });
     assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error ?? emitted.signal));
-    for (const optimization of ["-O0", "-O2"]) execute(emitted.stdout, expected, undefined, optimization);
+    for (const optimization of ["-O0", "-O2"]) execute(emitted.stdout, expected, undefined, optimization, fixture === "std-json-f64-encode.zs");
   }, 240_000);
 }
 

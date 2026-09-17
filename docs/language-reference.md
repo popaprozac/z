@@ -3513,14 +3513,16 @@ struct User {
 }
 
 function readUser(in source: String): User throws json.JsonError {
-  const user = try json.decode<User>(source);
-  const encoded = json.encode(in user); // T is inferred as User
-  return user;
+  return try json.decode<User>(source);
+}
+
+function writeUser(in user: User): String throws json.JsonEncodeError {
+  return try json.encode(in user); // T is inferred as User
 }
 ```
 
 The derived encoder and decoder support public, non-optional `String`,
-`boolean`, signed or unsigned integer, nested value structs, and arrays of
+`boolean`, signed or unsigned integer, `f64`, nested value structs, and arrays of
 strings or those structs, including `readonly Array<T>` and recursive trees
 whose recursion passes through an array. `Option<T>` fields can wrap any of
 those supported field types. JSON `null` maps to `none`; a non-null value maps
@@ -3544,13 +3546,24 @@ fields are rejected, names match exactly, and encoding follows declaration
 order. Source field names remain the JSON keys even when generated C must use
 an internal name for fields such as `signed` or `unsigned`; that spelling change
 adds no runtime work. Classes, custom constructors or `deinit`, optional property syntax (`?`),
-`f32`, floating-point encoding, other collections, and field-name policies remain later
+`f32`, other collections, and field-name policies remain later
 derived-codec tiers.
 The decoder accepts `f64` fields, including nested structs and `Option<f64>`:
 fractions and exponents round to binary floating point, overflow to infinity
 throws `JsonError`, and tiny values may underflow to zero. Conversion uses the
-C numeric locale without changing the process-wide locale. Floating-point
-encoding remains unsupported pending its non-finite-value policy.
+C numeric locale without changing the process-wide locale.
+
+`json.encode<T>(in value)` always throws `JsonEncodeError`, even for a struct
+containing only strings or integers. Use `try` to propagate the error or
+`attempt` to handle it locally. Finite `f64` values encode with enough digits
+to round-trip (including negative zero); NaN and either infinity fail instead
+of trapping or silently becoming `null`. The error contains an owned `path`
+and `message`; for example, `items[3].position.x` identifies a non-finite
+field inside an array. A failed encoder releases partial output and leaves
+the borrowed input unchanged. Unsupported field types remain compile-time
+errors. Successful encoding builds no field-path strings or intermediate tree.
+`json.stringify(in value)` stays nonthrowing because `JsonValue` already
+contains validated numbers.
 `json.parse` / `json.stringify` remain the implemented dynamic route for those
 shapes. Stage 0 and the fixed-point native compiler materialize the same direct
 streaming codecs without an intermediate dynamic JSON tree.

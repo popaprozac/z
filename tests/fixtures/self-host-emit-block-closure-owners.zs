@@ -35,7 +35,10 @@ function consume(receipt: Receipt): void {
 function main(): i32 {
   const listener = new Listener({ prefix: "notes" });
   const handler: Handler = move (in message: Message): void => {
-    const encoded = json.encode(in message);
+    const encoded = match (attempt json.encode(in message)) {
+      success(value) => value;
+      failure(_) => return;
+    };
     console.log(`${listener.prefix}: ${encoded}`);
     const outer = Receipt({ label: copy message.text });
     if (message.text == "early") return;

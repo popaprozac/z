@@ -33,10 +33,17 @@ function update(inout words: NativeWords): void {
 }
 
 function main(): i32 {
+  return match (attempt run()) {
+    success(status) => status;
+    failure(_) => 99;
+  };
+}
+
+function run(): i32 throws json.JsonEncodeError {
   let words = NativeWords();
   update(inout words);
   const snapshot = NativeWords({ copy ...words, z_signed: 8 });
-  const encoded = json.encode(in snapshot);
+  const encoded = try json.encode(in snapshot);
   if (encoded != "{\"signed\":-42,\"unsigned\":42,\"z_signed\":8,\"z_field_signed\":6,\"template\":\"kept\"}") return 1;
   const decoded = match (attempt json.decode<NativeWords>(encoded)) {
     success(value) => value;

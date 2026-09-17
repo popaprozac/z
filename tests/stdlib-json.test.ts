@@ -104,6 +104,21 @@ test("decodes finite f64 JSON fields without truncating fractions", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("encodes finite f64 JSON fields and reports non-finite field paths", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/std-json-f64-encode.zs");
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8", timeout: 60000 });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("requires explicit error handling for every typed JSON encoder", () => {
+  assert.throws(() => compileToC(`
+    import json from "std/json";
+    struct Item { name: String; count: i32; }
+    function encode(in item: Item): String { return json.encode(in item); }
+    function main(): i32 { return 0; }
+  `, "json-encode-requires-try.zs"), /requires.*try|try.*attempt|throw/i);
+});
+
 test("derives Option fields with explicit nulls, required presence, and defaults", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/std-json-option.zs");
   const result = spawnSync(process.execPath, [cli, "run", fixture], {
@@ -116,13 +131,13 @@ test("derives Option fields with explicit nulls, required presence, and defaults
 test("rejects ambiguous nested Options and unsupported Option payload codecs", () => {
   for (const [type, message] of [
     ["Option<Option<String>>", /JSON null cannot distinguish none from some\(none\)/],
-    ["Option<f64>", /unsupported type/],
+    ["Option<f32>", /unsupported type/],
     ["Array<Option<String>>", /unsupported type/],
   ] as const) {
     const source = `
       import json from "std/json";
       struct Value { value: ${type}; }
-      function encode(in value: Value): String { return json.encode(in value); }
+      function encode(in value: Value): String throws json.JsonEncodeError { return try json.encode(in value); }
       function main(): i32 { return 0; }
     `;
     assert.throws(() => compileToC(source, "unsupported-option-json.zs"), message);
@@ -176,6 +191,11 @@ test("offers source-backed std/json namespace completion and hover", () => {
     .find((item) => item.label === "decode");
   assert.ok(decode);
   assert.match(decode.detail ?? "", /decode<T>\(in source: String\): T throws JsonError/);
+
+  const encode = completions(source.replace("json.str", "json.enc"), fileName, completionOffset)
+    .find((item) => item.label === "encode");
+  assert.ok(encode);
+  assert.match(encode.detail ?? "", /encode<T>\(in value: T\): String throws JsonEncodeError/);
 
   const hoverSource = source.replace(
     "const encoded = json.str;",
