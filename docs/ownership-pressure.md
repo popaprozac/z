@@ -9883,6 +9883,50 @@ rectangles, a String identity, a scale factor, and a boolean. Borrowed native
 screen references remain local; typed JSON carries only copied values to the
 frontend. An offscreen window is `Option.none`, not an invented primary display.
 
+## Window placement persistence and nested match diagnostics
+
+Zapp's opt-in window restoration uses ordinary Z structs and typed JSON for a
+versioned state file, an ARC inbox containing a `Mutex`, and a bounded channel
+to wake one native writer thread. Native callbacks coalesce owned snapshots;
+encoding, filesystem locking, and atomic replacement run outside the UI thread.
+The close path publishes memory only, with the writer joined during application
+teardown. Both compiler paths execute the persistence and hidden AppKit geometry
+fixtures at `-O0`/`-O2` with UBSan.
+
+Sharing an optional main-isolated observer between the native delegate and a
+notification closure uses a borrowed `Option` input and a direct local `match`
+that retains its ARC payload. `copy Option<Class>` is not the spelling for
+creating another alias. An inline match in the class object initializer exposed
+an unresolved diagnostic parity gap: Stage 0 rejects it with `match must be the
+direct value of a binding, return, or expression statement`, while native
+metadata accepts it and native lowering later reports an unsupported match.
+The framework uses the already-supported named-local form. Broadening nested
+value-expression contexts needs a deliberate, cleanup- and evaluation-order-safe
+compiler slice; accepting them only in metadata is not evidence of support.
+
+The same integration found native acceptance of an unqualified `Option.none`
+at a borrowed call boundary that Stage 0 rejects for missing generic context;
+the native output retained the source spelling rather than an enum value. The
+supported form is a typed `Option<Observer>.none` local passed with `in`. A
+separate composition limit appears when explicitly awaiting the writer inside
+the application's existing main-isolated async shutdown sequence: native
+lowering rejects that suspension combination. The application uses Z's
+scope-owned native-thread join after signalling its writer, with a bounded
+early-return test verifying signal-before-join and final-save completion. These
+diagnostic/composition gaps remain open; no new language rules were introduced.
+
+The reentrant-creation regression also found that explicitly spelling an imported
+`WindowError` in a closure's `throws` clause is rejected as an unknown type by
+Stage 0, although the same imported type resolves in the enclosing function and
+the closure body. Using the already-declared `WindowCreateOperation` contextual
+error contract compiles and runs through both frontends. Explicit closure-effect
+type resolution across modules still needs a minimal compiler regression.
+
+A teardown probe also confirmed an important lifetime rule: native child threads
+join before local destructors run. A destructor-only wake of a blocked receiver
+therefore deadlocks. The framework explicitly signals the writer on every
+startup-failure path and on normal shutdown; `deinit` is not its stop protocol.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
