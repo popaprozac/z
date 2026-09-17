@@ -150,12 +150,7 @@ function nativeTemplateInterpolationTypeSupported(in name: String): boolean {
   return name == "String"
     || name == "view String"
     || name == "boolean"
-    || name == "i32"
-    || name == "i64"
-    || name == "isize"
-    || name == "u8"
-    || name == "u64"
-    || name == "usize"
+    || isIntegerTypeName(name)
     || name == "f64";
 }
 
@@ -1882,15 +1877,14 @@ function validateNativeExpressionTree(
             length
           );
         }
-        if (
-          !nativeTemplateInterpolationTypeSupported(interpolationType)
-        ) {
+        const actualType = transparentTypeName(graph.modules, moduleIndex, interpolationType);
+        if (!nativeTemplateInterpolationTypeSupported(actualType)) {
           let length = tree.nodes[child].value.byteLength;
           if (length == 0) length = 1;
           throw loweringBoundary(
             path,
             "Z1000",
-            `template interpolation of "${interpolationType}" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, i64, isize, u8, u64, usize, and f64`,
+            `template interpolation of "${interpolationType}" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, all integer types, and f64`,
             tree.nodes[child].line,
             tree.nodes[child].column,
             length

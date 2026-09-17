@@ -9862,6 +9862,27 @@ failures, and intact inputs are covered at `-O0` and `-O2` with UBSan and an
 allocation ledger. The locale regression uses a comma-decimal locale when the
 host provides one and always checks restoration.
 
+## Display snapshots and integer interpolation
+
+Consumer: Zapp's macOS window/display snapshots, 2026-09-17. Reading
+`NSScreenNumber` through checked Objective-C calls produces a `u32`. Converting
+that opaque ID to text exposed a native-emitter parity boundary: Stage 0 accepted
+integer interpolation, while native lowering omitted `i8`, `i16`, `u16`, and
+`u32`. The consumer should not need a widening cast solely to format an ID.
+
+Native validation and lowering now accept all existing integer widths, resolving
+transparent scalar aliases before choosing a formatter. Signed narrow values
+use the existing signed formatter; unsigned values use lossless unsigned storage.
+No new formatting API or intermediate String conversion is introduced. Differential
+Stage 0/native tests cover limits, alias spelling, fields, and method returns at
+`-O0`/`-O2` with UBSan. `f32` interpolation remains a source-located native
+boundary rather than escaping to C; existing `f64` formatting is unchanged.
+
+The application snapshot itself is ordinary readonly Z data: nested finite-`f64`
+rectangles, a String identity, a scale factor, and a boolean. Borrowed native
+screen references remain local; typed JSON carries only copied values to the
+frontend. An offscreen window is `Option.none`, not an invented primary display.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

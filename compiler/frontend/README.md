@@ -457,7 +457,7 @@ retention remain executable; recursively ownership-bearing value captures stop
 at their source use until native worker-context destruction supports them.
 Template interpolation now follows the same evidence-first boundary: the
 fixed-point emitter accepts its implemented owned/viewed `String`, `boolean`,
-`i32`, `u8`, and `usize` parts, while another valid Z interpolation type
+all integer types, and `f64` parts, while another valid Z interpolation type
 reports `Z1000` at the embedded expression rather than surfacing a lowerer
 exception.
 Struct-spread capability syntax is deliberately classified separately from

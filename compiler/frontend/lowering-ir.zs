@@ -11810,16 +11810,20 @@ function lowerExpressionContextual(
           none => {}
         }
       }
+      // Evidence may retain the source spelling of a transparent scalar alias.
+      let aliasDepth: usize = 0;
+      while (aliasDepth < program.typeAliases.length) {
+        match (localTypeAliasTarget(program, typeName)) {
+          some(target) => typeName = move target;
+          none => break;
+        }
+        aliasDepth = aliasDepth + 1;
+      }
       if (
         typeName != "String"
         && typeName != "view String"
         && typeName != "boolean"
-        && typeName != "i32"
-        && typeName != "i64"
-        && typeName != "isize"
-        && typeName != "u8"
-        && typeName != "u64"
-        && typeName != "usize"
+        && !isIntegerTypeName(typeName)
         && typeName != "f64"
       ) {
         const childKind = expressionKindName(tree.nodes[childInput].kind);

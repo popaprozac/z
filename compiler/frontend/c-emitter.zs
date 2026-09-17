@@ -5118,7 +5118,11 @@ function appendExpression(
         declaration.expressions[index].labels[part] == "boolean"
       ) {
         output.append("Z_TEMPLATE_BOOLEAN, .value.boolean_value = ");
-      } else if (declaration.expressions[index].labels[part] == "i32") {
+      } else if (
+        declaration.expressions[index].labels[part] == "i8"
+        || declaration.expressions[index].labels[part] == "i16"
+        || declaration.expressions[index].labels[part] == "i32"
+      ) {
         output.append("Z_TEMPLATE_I32, .value.i32_value = ");
       } else if (
         declaration.expressions[index].labels[part] == "i64"
@@ -5127,7 +5131,11 @@ function appendExpression(
         output.append("Z_TEMPLATE_I64, .value.i64_value = ");
       } else if (declaration.expressions[index].labels[part] == "u8") {
         output.append("Z_TEMPLATE_U8, .value.u8_value = ");
-      } else if (declaration.expressions[index].labels[part] == "u64") {
+      } else if (
+        declaration.expressions[index].labels[part] == "u16"
+        || declaration.expressions[index].labels[part] == "u32"
+        || declaration.expressions[index].labels[part] == "u64"
+      ) {
         output.append("Z_TEMPLATE_U64, .value.u64_value = ");
       } else if (declaration.expressions[index].labels[part] == "usize") {
         output.append("Z_TEMPLATE_USIZE, .value.usize_value = ");

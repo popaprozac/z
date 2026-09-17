@@ -11842,7 +11842,7 @@ test("compiles a multi-module Z application through the standalone native driver
       source: [
         'import { console } from "std";',
         "function main(): i32 {",
-        "  const value: u16 = 42;",
+        "  const value: f32 = 42;",
         "  console.log(`value ${value}`);",
         "  return 0;",
         "}",
@@ -11852,7 +11852,7 @@ test("compiles a multi-module Z application through the standalone native driver
       column: 24,
       marker: "^^^^^",
       code: "Z1000",
-      summary: 'template interpolation of "u16" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, i64, isize, u8, u64, usize, and f64',
+      summary: 'template interpolation of "f32" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, all integer types, and f64',
     },
     {
       name: "template-unresolved-evidence",
