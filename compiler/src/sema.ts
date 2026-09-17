@@ -10696,7 +10696,9 @@ function inferExpressionInner(
       );
     }
     case "matchExpression":
-      throw new DiagnosticError(fileName, expression.location, "match must be the direct value of a binding, return, or expression statement");
+      throw new DiagnosticError(fileName, expression.location, "match must be the direct value of a binding, return, or expression statement", {
+        helps: ["bind the match result to a local before using it in this expression"],
+      });
     case "ifExpression":
       throw new DiagnosticError(fileName, expression.location, "if must be the direct value of a binding, return, or expression statement");
     case "whileExpression":
@@ -10704,6 +10706,13 @@ function inferExpressionInner(
     case "forExpression":
       throw new DiagnosticError(fileName, expression.location, "for must be the direct value of a binding, return, or expression statement");
     case "member": {
+      if (expression.object.kind === "identifier" && expression.object.name === "Option"
+        && expression.property === "none" && !locals.has("Option") && !globals.has("Option")) {
+        throw new DiagnosticError(fileName, expression.location,
+          "Option.none requires a contextual Option<T> type; bind a typed local before borrowing it", {
+            helps: ["write `const empty = Option<T>.none;` and pass `in empty` to the borrowed parameter"],
+          });
+      }
       if (expression.optional) {
         return inferOptionalChain(
           expression,

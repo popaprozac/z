@@ -1,0 +1,75 @@
+import {
+  assert, check, cli, compileToC, diagnostics, mkdtempSync, projectRoot,
+  readFileSync, resolve, rmSync, spawnSync, test,
+} from "./support/bootstrap.ts";
+
+function native(command: "self-host-resolve" | "self-host-emit", input: string) {
+  return spawnSync(process.execPath, [cli, command, input], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+  });
+}
+
+function execute(source: string): void {
+  const directory = mkdtempSync("/tmp/z-module-expression-");
+  try {
+    for (const optimization of ["-O0", "-O2"]) {
+      const executable = resolve(directory, `program${optimization}`);
+      const compiled = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
+        optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        input: source, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+      });
+      assert.equal(compiled.status, 0, compiled.stderr || String(compiled.error));
+      const ran = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+      assert.equal(ran.status, 0, ran.stderr || String(ran.error));
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}
+
+for (const fixture of ["imported-closure-errors/main.zs", "expression-diagnostics/valid.zs"]) {
+  test(`executes checked module expressions in ${fixture}`, () => {
+    const input = resolve(projectRoot, "tests/fixtures", fixture);
+    const source = readFileSync(input, "utf8");
+    assert.deepEqual(diagnostics(source, input), []);
+    execute(compileToC(source, input));
+    const resolved = native("self-host-resolve", input);
+    assert.equal(resolved.status, 0, resolved.stderr || String(resolved.error));
+    const emitted = native("self-host-emit", input);
+    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+    execute(emitted.stdout);
+  }, 240_000);
+}
+
+test("keeps imported explicit closure errors distinct from same-named local types", () => {
+  const input = resolve(projectRoot, "tests/fixtures/imported-closure-errors/main.zs");
+  const source = readFileSync(input, "utf8")
+    .replace("throws ImportedFailure =>", "throws Failure =>")
+    .replace('throw ImportedFailure({ message: "named" });', "throw Failure({ code: 1 });");
+  assert.throws(() => check(source, input), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.doesNotMatch(error.message, /unknown type/);
+    assert.match(error.message, /Failure/);
+    return true;
+  });
+});
+
+for (const [fixture, message, line] of [
+  ["class-field-match", /match must be the direct value/, 4],
+  ["struct-field-match", /match must be the direct value/, 4],
+  ["borrowed-contextual-none", /Option\.none requires a contextual Option<T> type/, 5],
+] as const) {
+  test(`rejects ${fixture} during native resolution, before C emission`, () => {
+    const input = resolve(projectRoot, `tests/fixtures/expression-diagnostics/${fixture}.zs`);
+    const source = readFileSync(input, "utf8");
+    assert.throws(() => check(source, input), message);
+    const editor = diagnostics(source, input);
+    assert.equal(editor.length, 1);
+    assert.match(editor[0].message, message);
+    for (const command of ["self-host-resolve", "self-host-emit"] as const) {
+      const result = native(command, input);
+      assert.equal(result.status, 1, result.stderr || String(result.error));
+      assert.equal(result.stdout, "", "Invalid native semantics must not publish metadata or generated C");
+      assert.match(result.stderr, message);
+      assert.ok(result.stderr.includes(`${input}:${line}:`), result.stderr);
+    }
+  }, 240_000);
+}

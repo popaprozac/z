@@ -32224,6 +32224,57 @@ function importedTypesForModule(
     }
     identityModuleIndex = identityModuleIndex + 1;
   }
+  // Preserve namespace-qualified source names before local collision aliases
+  // are appended. Looking up only the final component of `errors.Failure`
+  // can otherwise select this module's unrelated private `Failure` type.
+  for (const namespaceSymbol of graph.modules[moduleIndex].symbols) {
+    if (namespaceSymbol.kind != ModuleSymbolKind.namespaceSymbol) continue;
+    let targetModule = graph.modules.length;
+    match (in namespaceSymbol.targetModule) {
+      some(index) => targetModule = index;
+      none => {}
+    }
+    if (targetModule >= graph.modules.length) continue;
+    for (const symbol of graph.modules[targetModule].symbols) {
+      if (
+        symbol.kind != ModuleSymbolKind.structSymbol
+        && symbol.kind != ModuleSymbolKind.classSymbol
+        && symbol.kind != ModuleSymbolKind.enumSymbol
+        && symbol.kind != ModuleSymbolKind.typeAliasSymbol
+      ) continue;
+      const qualifiedName = `${namespaceSymbol.name}.${symbol.name}`;
+      if (importedLocalIndices.has(qualifiedName)) continue;
+      match (typeSymbolLocation(graph.modules, moduleIndex, qualifiedName)) {
+        some(location) => {
+          const target = view graph.modules[location.moduleIndex].symbols[
+            location.symbolIndex
+          ];
+          const identityName = `__z_module_${location.moduleIndex}_${target.name}`;
+          let sourceIndex = indexedImportedType(
+            importedLocalIndices, identityName, types.length
+          );
+          if (sourceIndex >= types.length) {
+            const collisionName = emittedPrivateTypeName(
+              location.moduleIndex, target.name
+            );
+            sourceIndex = indexedImportedType(
+              importedTargetIndices, collisionName, types.length
+            );
+          }
+          if (sourceIndex >= types.length) {
+            sourceIndex = indexedImportedType(
+              importedLocalIndices, target.name, types.length
+            );
+          }
+          if (sourceIndex >= types.length) continue;
+          const alias = copyImportedTypeAlias(types[sourceIndex], qualifiedName);
+          importedLocalIndices.set(copy qualifiedName, types.length);
+          types.push(move alias);
+        }
+        none => {}
+      }
+    }
+  }
   return types;
 }
 

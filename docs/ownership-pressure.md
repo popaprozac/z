@@ -9896,31 +9896,44 @@ fixtures at `-O0`/`-O2` with UBSan.
 Sharing an optional main-isolated observer between the native delegate and a
 notification closure uses a borrowed `Option` input and a direct local `match`
 that retains its ARC payload. `copy Option<Class>` is not the spelling for
-creating another alias. An inline match in the class object initializer exposed
-an unresolved diagnostic parity gap: Stage 0 rejects it with `match must be the
-direct value of a binding, return, or expression statement`, while native
-metadata accepts it and native lowering later reports an unsupported match.
-The framework uses the already-supported named-local form. Broadening nested
-value-expression contexts needs a deliberate, cleanup- and evaluation-order-safe
-compiler slice; accepting them only in metadata is not evidence of support.
+creating another alias. An inline match in a class object initializer exposed a
+diagnostic parity gap: native metadata accepted it before lowering rejected it.
+Both resolvers now reject direct struct/class field matches at the source
+expression and recommend a named local. The framework uses that supported form.
+Broadening nested value-expression contexts still needs a deliberate, cleanup-
+and evaluation-order-safe compiler slice. Existing supported nested enum-payload
+matches remain covered separately; this diagnostic change does not expand or
+contract that surface.
 
 The same integration found native acceptance of an unqualified `Option.none`
 at a borrowed call boundary that Stage 0 rejects for missing generic context;
-the native output retained the source spelling rather than an enum value. The
-supported form is a typed `Option<Observer>.none` local passed with `in`. A
+the native output retained the source spelling rather than an enum value. Both
+paths now report the missing `Option<T>` context before publishing metadata or
+C. The supported form is a typed `Option<Observer>.none` local passed with `in`;
+contextual `Option.none` in a typed binding or return remains valid. A
 separate composition limit appears when explicitly awaiting the writer inside
 the application's existing main-isolated async shutdown sequence: native
 lowering rejects that suspension combination. The application uses Z's
 scope-owned native-thread join after signalling its writer, with a bounded
-early-return test verifying signal-before-join and final-save completion. These
-diagnostic/composition gaps remain open; no new language rules were introduced.
+early-return test verifying signal-before-join and final-save completion. This
+async composition limit remains open; no new language rules were introduced.
 
 The reentrant-creation regression also found that explicitly spelling an imported
-`WindowError` in a closure's `throws` clause is rejected as an unknown type by
-Stage 0, although the same imported type resolves in the enclosing function and
-the closure body. Using the already-declared `WindowCreateOperation` contextual
-error contract compiles and runs through both frontends. Explicit closure-effect
-type resolution across modules still needs a minimal compiler regression.
+`WindowError` in a closure's `throws` clause was rejected as an unknown type by
+Stage 0: linking renamed its parameters and return type but omitted its error
+type. Explicit effects now follow the same import resolution. The regression
+also exposed native lowering discarding a namespace qualifier and selecting a
+same-named local struct. Qualified imports now retain their nominal ABI identity.
+Named aliases, namespace-qualified errors, and forwarded aliases execute through
+both frontends at `-O0`/`-O2` with UBSan, with an incompatible local type present.
+The existing contextual `WindowCreateOperation` form remains valid as well.
+
+Building the regression fix also caught inconsistent escaping of borrowed
+`for...of` binding names: the use of `namespace` was escaped, but its declaration
+was not. Ordinary and destructured borrowed bindings now use the same native-name
+mapping, including both value and ARC elements; C and C++ compilation pin this.
+The native compiler executes the ordinary loop form in C; destructured loop
+bindings and C++ output remain Stage 0 test paths here.
 
 A teardown probe also confirmed an important lifetime rule: native child threads
 join before local destructors run. A destructor-only wake of a blocked receiver

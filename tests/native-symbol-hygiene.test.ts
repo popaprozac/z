@@ -3,6 +3,36 @@ import {
 } from "./support/bootstrap.ts";
 import { readFileSync } from "node:fs";
 
+test("escapes borrowed collection bindings with native keyword names", () => {
+  const input = resolve("tests/fixtures/borrowed-loop-binding-hygiene.zs");
+  const source = readFileSync(input, "utf8");
+  const directory = mkdtempSync("/tmp/z-loop-hygiene-");
+  try {
+    const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr || String(native.error));
+    // Destructuring for-bindings are still a Stage 0 execution tier.
+    const destructured = source.replace("for (const entry of entries)",
+      "for (const { label: namespace, item: template } of entries)")
+      .replace("entry.label", "namespace").replace("entry.item.text", "template.text");
+    for (const [emitter, emission] of [["Stage 0", compileToC(source, input)],
+      ["Stage 0 destructured", compileToC(destructured, input)], ["native", native.stdout]]) {
+      for (const language of emitter === "native" ? ["c"] : ["c", "c++"]) {
+        const binary = resolve(directory, "program");
+        const built = spawnSync("clang", ["-x", language, language === "c" ? "-std=c11" : "-std=c++20",
+          "-Wall", "-Wextra", "-Werror", "-O2", "-fsanitize=undefined", "-fno-sanitize-recover=all",
+          "-", "-o", binary], {
+          input: emission, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+        });
+        assert.equal(built.status, 0, `${emitter}/${language}: ${built.stderr || built.error}`);
+        const ran = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+        assert.equal(ran.status, 0, ran.stderr || String(ran.error));
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 test("keeps authored self bindings distinct from receivers and raw native boundaries", () => {
   const input = resolve("tests/fixtures/self-host-emit-receiver-hygiene.zs");
   const source = readFileSync(input, "utf8");

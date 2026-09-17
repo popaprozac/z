@@ -975,6 +975,7 @@ function transformExpression(
           type: parameter.type ? renameTypeReference(parameter.type, scope, typeParameters) : null,
         })),
         returnType: expression.returnType ? renameTypeReference(expression.returnType, scope, typeParameters) : null,
+        errorType: expression.errorType ? renameTypeReference(expression.errorType, scope, typeParameters) : null,
         body: expression.body.kind === "block"
           ? { ...expression.body, statements: transformStatements(expression.body.statements, scope, closureLocals, typeParameters) }
           : transformExpression(expression.body, scope, closureLocals, typeParameters),

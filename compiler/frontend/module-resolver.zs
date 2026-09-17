@@ -2397,6 +2397,18 @@ function inferContextualObjectExpressionNode(
           genericParameters,
           substitutions
         );
+        // Field initializers are ordinary expressions, not direct-value
+        // contexts. Do not publish semantic evidence for a match that neither
+        // frontend can lower here with correct conditional cleanup.
+        if (tree.nodes[children[childIndex]].kind == ExpressionKind.matchExpression) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "match must be the direct value of a binding, return, or expression statement; bind its result to a local before initializing this field",
+            tree.nodes[children[childIndex]].line,
+            tree.nodes[children[childIndex]].column
+          );
+        }
         let bundleFieldVisiting = Array<String>();
         const fieldExpression = children[childIndex];
         if (
@@ -4593,6 +4605,23 @@ function inferSignatureCallType(
       signature.parameterModes[argumentIndex].byteLength
     );
     const access = expressionCapabilityAccess(tree, nodeIndex);
+    if (mode == "in" && tree.nodes[nodeIndex].kind == ExpressionKind.memberExpression
+      && tree.nodes[nodeIndex].value == "none" && tree.nodes[nodeIndex].children.length == 1) {
+      const qualifier = tree.nodes[nodeIndex].children[0];
+      const qualifierBinding = valueBindingType(bindings, "Option");
+      if (tree.nodes[qualifier].kind == ExpressionKind.identifierExpression
+        && tree.nodes[qualifier].value == "Option"
+        && qualifierBinding.byteLength == 0
+        && moduleSymbolIndex(modules[moduleIndex], "Option") >= modules[moduleIndex].symbols.length) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "Option.none requires a contextual Option<T> type; bind a typed local before borrowing it",
+          tree.nodes[nodeIndex].line,
+          tree.nodes[nodeIndex].column
+        );
+      }
+    }
     let bindingName = "";
     const bindingIndex = expressionCapabilityBindingIndex(tree, nodeIndex);
     if (access.byteLength > 0) {
