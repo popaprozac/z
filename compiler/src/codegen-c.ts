@@ -11814,7 +11814,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const signature = standardFunctionSignature(referencedStandard);
         const arguments_ = expression.arguments.map((argument, index) => (
           signature.parameters[index]?.abi === "value"
-            ? generateExpression(argument, context)
+            // Runtime helpers borrow String descriptors by value even when
+            // Z spells the loan explicitly. Do not forward its storage address.
+            ? generateExpression(capabilityStorageTargetExpression(argument) ?? argument, context)
             : generateCallArgument(argument, context)
         ));
         return `${signature.cName}(${arguments_.join(", ")})`;

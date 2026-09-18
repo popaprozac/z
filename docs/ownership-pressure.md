@@ -9988,6 +9988,44 @@ promise, or relaxation of constructor/teardown guards.
 Zapp still needs application-level acceptance, grants, document identity checks,
 and ordinary non-file drag preservation tests before advertising file-drop support.
 
+## File-drop integration and borrowed runtime descriptors
+
+Zapp now uses checked optional superclass delegation for its native WebView drag
+callbacks. The application layer stages a complete file-grant batch, runs a
+synchronous cancellable request, rechecks the receiving document, and only then
+commits authority. Renderer delivery carries that document's token, so queued
+paths cannot enter a replacement page. Model tests exercise cancellation,
+replacement, closure, duplicate delivery, and teardown through both compilers.
+Private-pasteboard tests validate multiple local files and reject directories,
+missing files, and remote file URLs. These are automated checks, not a substitute
+for Finder-drag and ordinary HTML-drag testing of the complete application.
+
+The integration exposed two Stage 0 emission defects, now covered by regressions:
+
+- A callback field used as a condition needs parentheses around the complete
+  invocation, not just its receiver. Testing only the first and last characters
+  of generated C incorrectly treated `(receiver).call(...)` as enclosed.
+- Filesystem runtime helpers borrow `String` descriptors by value at the C ABI,
+  even though their Z parameters are `in`. An explicit `fs.writeText(in path,
+  in contents)` must load those descriptors, not pass their addresses. Named,
+  projected, and forwarded borrows now use the same ABI as inferred borrows;
+  both emitters execute the regression with strict Clang and UBSan.
+
+Remaining fixture friction is recorded rather than disguised as implemented:
+
+- `NSArray<id<NSPasteboardWriting>>` is not yet an imported parameter shape.
+  Pasteboard setup uses a test-only raw helper; production reads ordinary checked
+  pasteboard APIs without a native shim.
+- Explicit borrowing of indexed storage still requires a named value in this
+  tier. Native emission of a borrowed interpolated temporary also needs its own
+  materialized storage rather than taking a C rvalue's address.
+- Direct Stage 0 C emission of an ordinary function named `write` can collide
+  with the POSIX declaration introduced by filesystem support. Native symbol
+  hygiene needs a separate regression and fix.
+
+Hover notifications and related-window drop inheritance are not implemented by
+this checkpoint; they remain framework API decisions.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
