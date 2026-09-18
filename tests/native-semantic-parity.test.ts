@@ -95,6 +95,22 @@ test("does not permit mutable callable arguments from immutable receivers", () =
   `, /mutable|inout|immutable/, /mutable|inout|immutable/);
 }, 240_000);
 
+test("requires deinitializers to complete without nonlocal control flow", () => {
+  for (const body of [
+    "return;",
+    "if (true) { return; }",
+    "while (false) { return; }",
+    "unsafe { return; }",
+    "const selected = if (true) { return; select 1; } else { select 2; };",
+    "match (Option<i32>.some(1)) { some(value) => { return; } none => {} }",
+  ]) {
+    for (const declaration of ["struct", "class"]) {
+      rejects(`${declaration} Owner { deinit { ${body} } }
+        function main(): i32 { return 0; }`, /deinit cannot contain/, /deinit cannot contain/);
+    }
+  }
+}, 240_000);
+
 test("checks dependent literal ranges and concrete parameter types at specialization", () => {
   for (const [type, literal, message] of [
     ["u8", "300", /literal 300.*u8.*specialization/],

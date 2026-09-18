@@ -1,4 +1,4 @@
-import { Map } from "std/collections";
+import { Map, Set } from "std/collections";
 
 export struct ModuleSource {
   path: String;
@@ -90,6 +90,9 @@ export struct ModuleSemanticEvidence {
   expressionResolutions: Array<ModuleExpressionResolution>;
   // Derived lookup state; expressionResolutions remains the protocol truth.
   expressionResolutionIndices: Map<usize, usize> = Map<usize, usize>();
+  // Borrowing is determined in the lexical scope, including closure parameters
+  // and projected storage. Lowering must not reconstruct it from top-level names.
+  borrowedMatchOffsets: Set<usize> = Set<usize>();
   foreignUnionMatches: Array<ModuleForeignUnionMatch> =
     Array<ModuleForeignUnionMatch>();
   objectiveCRegistrations: Array<ModuleObjCRegistrationResolution> =

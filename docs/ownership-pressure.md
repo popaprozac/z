@@ -10029,6 +10029,26 @@ Passing an ARC method receiver as a writable callable argument also needs a
 separate ownership audit: the callee can replace the handle slot, not merely
 mutate fields, so correcting its C pointer depth alone is insufficient.
 
+The first complete native interpreter build exposed a lifecycle error despite
+matching Stage 0 on the language corpus: handing an ARC reference out of a
+registry's `Mutex.withLock` callback could prematurely destroy the stored object.
+The return already retained the reference, but lowering misclassified a match
+on borrowed indexed storage as consuming and released its borrowed payload.
+That cancelled the new reference; the caller's later cleanup spent the registry's
+reference instead. Native semantic evidence now carries lexical match borrowing
+into lowering and cleanup, including closure parameters and nested projections,
+rather than reconstructing ownership from top-level parameter names.
+
+Borrowed native match subjects are evaluated once into a storage pointer, without
+an owning copy. Regression coverage includes side-effecting indices, nested
+Options, ordinary and lock callbacks, `in` and `inout`, throwing exits, retained
+results after registry removal, and owned shadowing bindings. Destruction counts
+and a tracked-allocation ledger check for premature release, double release, and
+leaks at `-O0` and `-O2` under UBSan. Deinitializer control-flow validation also
+rejects early returns in nested blocks; `unsafe` does not bypass that rule in
+either compiler. Complete consumer lifecycle and differential gates still need
+to be rerun against each newly published compiler checkpoint.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

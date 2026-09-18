@@ -15027,6 +15027,7 @@ function validateDeinitControlFlow(statements: Statement[], fileName: string): v
       throw new DiagnosticError(fileName, statement.location, `deinit cannot contain ${JSON.stringify(statement.kind)}`);
     }
     if (statement.kind === "block") validateDeinitControlFlow(statement.statements, fileName);
+    if (statement.kind === "unsafe") validateDeinitControlFlow(statement.body.statements, fileName);
     if (statement.kind === "variable" && statement.initializer) validateDeinitExpression(statement.initializer, fileName);
     if (statement.kind === "destructure") validateDeinitExpression(statement.initializer, fileName);
     if (statement.kind === "assignment") {

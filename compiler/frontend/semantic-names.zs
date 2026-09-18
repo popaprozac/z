@@ -500,6 +500,19 @@ function resolveDeinitNames(
   in symbols: Array<ModuleSymbol>,
   in declaration: DeinitDeclaration
 ): void throws ModuleResolveError {
+  // The arena includes nested statement/expression blocks, including
+  // unreachable ones. A deinitializer must always finish its cleanup body.
+  for (const statement of declaration.body.nodes) {
+    let forbidden = "";
+    if (statement.kind == StatementKind.returnStatement) forbidden = "return";
+    else if (statement.kind == StatementKind.throwStatement) forbidden = "throw";
+    else if (statement.kind == StatementKind.yieldStatement) forbidden = "yield";
+    else if (statement.kind == StatementKind.selectStatement) forbidden = "select";
+    if (forbidden.byteLength > 0) throw moduleResolutionError(
+      ModuleResolveErrorKind.typeMismatch, module.path,
+      `deinit cannot contain "${forbidden}"`, statement.line, statement.column
+    );
+  }
   let bindings = Array<String>();
   bindings.push("this");
   try resolveStatementSequence(module, symbols, declaration.body, declaration.body.roots, bindings);

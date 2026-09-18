@@ -2763,6 +2763,7 @@ function inferMatchExpressionNodeType(
     subjectRoot.byteLength > 0
     && valueBindingIsBorrowed(bindings, subjectRoot)
   ) borrowedMatch = true;
+  if (borrowedMatch) evidence.borrowedMatchOffsets.add(tree.nodes[index].offset);
   if (
     tree.nodes[index].value == "in"
     && (

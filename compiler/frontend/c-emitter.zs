@@ -8372,6 +8372,10 @@ function appendEnumMatchStart(
     output.append(" = false;\n");
   }
   const matchTemporary = `_z_stage1_match_${index}`;
+  const nicheViewOption = labelsContain(
+    declaration.statements[index].labels,
+    "niche-view-option"
+  );
   if (declaration.statements[index].matchConsumesSubject) {
     const subjectType = match (in declaration.statements[index].type) {
       some(type) => try cType(type);
@@ -8397,10 +8401,33 @@ function appendEnumMatchStart(
       );
       none => {}
     }
+  } else if (!nicheViewOption) {
+    // Keep borrowed storage borrowed, and evaluate a projected subject only
+    // once (its index or receiver may have side effects).
+    const subjectType = match (in declaration.statements[index].type) {
+      some(type) => try cType(type);
+      none => throw "native C emission received an untyped borrowed match subject";
+    };
+    appendIndent(inout output, depth);
+    output.append("const ");
+    output.append(subjectType);
+    output.append(" * const ");
+    output.append(matchTemporary);
+    output.append(" = ");
+    const viewSubject = labelsContain(declaration.statements[index].labels, "view-subject");
+    if (!viewSubject) output.append("&(");
+    match (in declaration.statements[index].expression) {
+      some(subject) => try appendExpression(inout output, declaration, subject);
+      none => throw "native C emission received a match without a subject";
+    }
+    if (!viewSubject) output.append(")");
+    output.append(";\n");
   }
   appendIndent(inout output, depth);
   output.append("switch (");
-  if (declaration.statements[index].matchConsumesSubject) {
+  if (!declaration.statements[index].matchConsumesSubject && !nicheViewOption
+    && !labelsContain(declaration.statements[index].labels, "tagged")) output.append("*");
+  if (declaration.statements[index].matchConsumesSubject || !nicheViewOption) {
     output.append(matchTemporary);
   } else {
     match (in declaration.statements[index].expression) {
@@ -8410,13 +8437,10 @@ function appendEnumMatchStart(
       none => throw "native C emission received a match without a subject";
     }
   }
-  const nicheViewOption = labelsContain(
-    declaration.statements[index].labels,
-    "niche-view-option"
-  );
   if (nicheViewOption) output.append(" != NULL ? 1 : 0");
   else if (labelsContain(declaration.statements[index].labels, "tagged")) {
-    if (labelsContain(declaration.statements[index].labels, "view-subject")) {
+    if (!declaration.statements[index].matchConsumesSubject
+      || labelsContain(declaration.statements[index].labels, "view-subject")) {
       output.append("->tag");
     } else {
       output.append(".tag");
@@ -8506,7 +8530,7 @@ function appendEnumMatchArmStart(
           ? "z_stage1_objc_take(&"
           : "z_stage1_objc_borrow(&");
       }
-      if (declaration.statements[index].matchConsumesSubject) {
+      if (declaration.statements[index].matchConsumesSubject || !nicheViewOption) {
         output.append(matchTemporary);
       } else {
         match (in declaration.statements[index].expression) {
@@ -8521,7 +8545,8 @@ function appendEnumMatchArmStart(
       if (loadViewValue) output.append(")");
       if (nicheViewOption) {
         // The nullable pointer is the payload; no tag or union survives.
-      } else if (labelsContain(declaration.statements[index].labels, "view-subject")) {
+      } else if (!declaration.statements[index].matchConsumesSubject
+        || labelsContain(declaration.statements[index].labels, "view-subject")) {
         output.append("->payload.");
       } else {
         output.append(".payload.");

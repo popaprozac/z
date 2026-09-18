@@ -91,6 +91,7 @@ int main(void) {
 
 for (const [fixture, expected] of [
   ["borrowed-capture-retention.zs", "released 1\nreleased 2\nreleased 3\nreleased 4\n"],
+  ["borrowed-match-retention.zs", "ok\n"],
   ["indexed-owned-replacement.zs", "index\nreleased item 1\nvalue\nindex\nreleased old\nreject\nreleased new\n"
     + "value\nrow\nindex\nreleased nested old\nreleased nested new\nindex\nindex\nreleased item 2\nreleased item 3\n"
     + "index\nvalue\nindex\nreleased fixed old\nreleased fixed new\nreleased item 4\n"],

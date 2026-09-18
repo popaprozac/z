@@ -6693,7 +6693,7 @@ function planMatchCleanup(
             || tree.nodes[root].kind != ExpressionKind.matchExpression) {
             throw "native cleanup planning lost the source match expression";
           }
-          const consuming = tree.nodes[root].value != "in";
+          const consuming = statements[loweredIndex].matchConsumesSubject;
           const subject = tree.nodes[root].children[0];
           if (
             consuming
@@ -20839,47 +20839,11 @@ function lowerMatchTree(
     some(_) => nicheViewOption = true;
     none => {}
   }
-  let consuming = tree.nodes[root].value != "in";
+  let consuming = tree.nodes[root].value != "in"
+    && !evidence.borrowedMatchOffsets.has(tree.nodes[root].offset);
   match (in foreignPlan) {
     some(_) => consuming = false;
     none => {}
-  }
-  if (
-    consuming
-    && tree.nodes[subjectInput].kind == ExpressionKind.identifierExpression
-  ) {
-    const subjectName = tree.nodes[subjectInput].value.copyBytes(
-      0,
-      tree.nodes[subjectInput].value.byteLength
-    );
-    for (const functionDeclaration of program.functions) {
-      if (functionDeclaration.name != ownerName) continue;
-      for (const parameter of functionDeclaration.parameters) {
-        if (
-          parameter.name == subjectName
-          && parameter.mode != ParameterMode.value
-        ) consuming = false;
-      }
-    }
-    for (const aggregate of program.aggregates) {
-      for (const method of aggregate.methods) {
-        if (!semanticMethodOwnerMatches(
-          ownerName,
-          aggregate.name,
-          method.name
-        )) continue;
-        if (
-          subjectName == "this"
-          && method.receiverMode != ReceiverMode.move
-        ) consuming = false;
-        for (const parameter of method.parameters) {
-          if (
-            parameter.name == subjectName
-            && parameter.mode != ParameterMode.value
-          ) consuming = false;
-        }
-      }
-    }
   }
   let armStatements = Array<usize>();
   let armPosition: usize = 1;
@@ -27681,7 +27645,8 @@ function lowerMainDelayMatchTree(
     importedTypes,
     subjectType
   );
-  const consuming = tree.nodes[root].value != "in";
+  const consuming = tree.nodes[root].value != "in"
+    && !evidence.borrowedMatchOffsets.has(tree.nodes[root].offset);
   const subjectInput = tree.nodes[root].children[0];
   if (subjectNeedsCleanup && !consuming) {
     throw `native lowering requires a consuming match for cleanup-bearing suspended subject in ${declaration.name}; omit in so the invocation frame can own the selected payload`;
