@@ -14,6 +14,23 @@ function command(executable: string, args: string[], input?: string, timeout = 3
   return result.stdout;
 }
 
+hostToolchainTest("preserves Objective-C protocol identity across imported namespaces", () => {
+  if (process.platform !== "darwin") return;
+  const source = `
+import first from "objc-optional-overrides.h";
+import second from "objc-optional-overrides.h";
+import { thread } from "std/thread";
+function value(in sender: first.ZDropInfo): i32 on thread.main { return 35; }
+function forward(in sender: second.ZDropInfo): i32 on thread.main { return value(in sender); }
+function main(): i32 { return 0; }
+`;
+  const artifact = compileToNative(source, fixture);
+  command("clang", ["-x", "objective-c", "-fobjc-arc", "-fblocks", "-Wall", "-Wextra", "-Werror",
+    "-I", fixtures, "-fsyntax-only", "-"], artifact.source);
+  const different = source.replace("in sender: second.ZDropInfo", "in sender: second.ZOptionalCallbacks");
+  assert.throws(() => compileToNative(different, fixture), /expected.*ZDropInfo.*found.*ZOptionalCallbacks/);
+}, 60_000);
+
 hostToolchainTest("checks optional inherited Objective-C callbacks without promising superclass implementations", () => {
   if (process.platform !== "darwin") return;
   const temporary = mkdtempSync("/tmp/z-objc-optional-overrides-");

@@ -10023,8 +10023,40 @@ Remaining fixture friction is recorded rather than disguised as implemented:
   with the POSIX declaration introduced by filesystem support. Native symbol
   hygiene needs a separate regression and fix.
 
-Hover notifications and related-window drop inheritance are not implemented by
-this checkpoint; they remain framework API decisions.
+Related-window drop inheritance remains a framework API decision.
+
+### Coalesced drag feedback and contextual call arguments
+
+The follow-on hover integration keeps the latest position in a main-isolated
+Z object and schedules one weak, one-shot AppKit timer. Leaving, dropping,
+rejection, and document retirement cancel pending movement before serialization.
+The pure transaction is exercised through both emitters with UBSan; real Finder
+tracking and appearance still need application-level visual verification.
+
+Passing `Option.some(weak coordinator)` directly to a typed function exposed a
+native lowering gap: ordinary arguments received contextual lowering only for
+literals and closures. Other expressions could fall through as unresolved C
+member calls. All checked parameter types now reach argument lowering, including
+nested Option payload construction. Weak-handle ownership tests execute fresh
+and retained payloads under both emitters at debug and optimized settings.
+
+The larger module graph also exposed a Stage 0 identity mismatch when one
+Objective-C protocol was imported under two module namespaces. Borrowed protocol
+arguments now compare their checked native protocol identity; unrelated
+protocols remain rejected. This does not add protocol storage, subtyping, or a
+new runtime wrapper.
+
+Additional contextual enum edges remain separate follow-ups: a transparent
+Option alias as the expected argument type, and a context-only `Option.none`
+nested inside an ownership-bearing payload. These need parity regressions before
+being treated as general contextual-construction support.
+
+The alias-identity fixture also exposed separate emission pressure: an ordinary
+Stage 0 function's protocol parameter is emitted as unqualified `id`. Calling a
+scalar getter whose selector conflicts with Foundation object getters can
+therefore fail in Clang. Keeping `id<P>` on those parameter declarations needs
+its own focused codegen/ABI regression; the identity fix does not claim to solve
+that dispatch issue.
 
 ## Not tested yet
 

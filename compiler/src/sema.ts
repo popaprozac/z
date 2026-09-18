@@ -21311,6 +21311,11 @@ function requireAssignable(
   const actualProtocol = actual === "unknown" || actual === "never"
     ? null
     : parseObjCProtocolType(String(underlyingType(actual)));
+  // Protocol references carry the importing module's local spelling. Their
+  // native identity is the checked Objective-C protocol declaration, just as
+  // class references retain their identity across header import namespaces.
+  if (expectedProtocol && actualProtocol
+    && importedObjCProtocol(actualProtocol.protocol, state)?.protocolName === expectedProtocol) return;
   if (expectedObject && !expectedObject.className && actualProtocol) return;
   if (
     expectedObject

@@ -16939,15 +16939,10 @@ function lowerExpressionContextual(
     while (argument < tree.nodes[index].children.length) {
       const argumentInput = tree.nodes[index].children[argument];
       let value: usize = 0;
-      if (
-        parameterTypes.length >= argument
-        && (tree.nodes[argumentInput].kind == ExpressionKind.closureExpression
-          || tree.nodes[argumentInput].kind == ExpressionKind.numberExpression
-          || (tree.nodes[argumentInput].kind == ExpressionKind.unaryExpression
-            && tree.nodes[argumentInput].children.length == 1
-            && (tree.nodes[argumentInput].value == "+" || tree.nodes[argumentInput].value == "-")
-            && tree.nodes[tree.nodes[argumentInput].children[0]].kind == ExpressionKind.numberExpression))
-      ) value = try lowerExpressionExpected(
+      // Every checked argument has the parameter's context, including enum
+      // constructors such as Option.some(weak value), not only literals and
+      // closures. Keep ordinary calls consistent with method-call lowering.
+      if (parameterTypes.length >= argument) value = try lowerExpressionExpected(
         program,
         importedTypes,
         evidence,
@@ -19153,12 +19148,13 @@ function lowerExpressionExpected(
               && tree.nodes[callee].value == "some"
             ) {
               const payloadIndex = tree.nodes[index].children[1];
-              let payload = try lowerExpression(
+              let payload = try lowerExpressionExpected(
                 program,
                 importedTypes,
                 evidence,
                 tree,
                 payloadIndex,
+                generic.arguments[0],
                 inout output
               );
               if (stringStartsWith(generic.arguments[0], "view ")) {

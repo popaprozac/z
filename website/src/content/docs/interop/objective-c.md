@@ -226,6 +226,12 @@ can implement `draggingEntered:` with an `in sender: AppKit.NSDraggingInfo`
 parameter and an `AppKit.NSDragOperation` result. This retains the native
 protocol-qualified parameter and does not introduce a wrapper.
 
+The protocol's identity does not depend on the local header-import name.
+For example, a borrowed `AppKit.NSDraggingInfo` can be passed to a Z function
+whose parameter names that same native protocol through a `WebKit` import.
+An unrelated protocol is still rejected; matching an import spelling does not
+replace checking the native declaration.
+
 Optional does **not** mean safe to call without an implementation: unimplemented
 optional members remain unavailable to ordinary calls and `super` delegation.
 If no superclass implementation is promised, callbacks during construction or
