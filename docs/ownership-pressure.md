@@ -9967,6 +9967,33 @@ programs run through both compiler paths at `-O0` and `-O2` with UBSan. They do
 not establish correctness of a complete natively compiled JavaScript engine;
 that remains a separate consumer verification step.
 
+The next native build exposed the same dependent-type boundary in argument
+positions: a literal passed to `Array<T>.push` or an ordinary generic parameter
+was fixed to `i32` before specialization. Expected-type inference now retains
+the dependent destination alongside the literal syntax. Each demanded concrete
+body applies ordinary numeric compatibility and range checks before lowering,
+including signed literals and values wider than `i32`. Errors identify the
+literal's source position and concrete specialization; emitted constants use
+the concrete numeric representation. This does not add a collection-specific
+conversion or relax checks for an incompatible concrete type.
+
+Private implementation types also need to survive representation lowering.
+An exported holder can expose `Array<Hidden>` without exporting the source name
+`Hidden`. Native lowering previously followed direct aggregate fields but lost
+the element identity behind a container. It now follows checked canonical type
+definitions through nested storage and carries the declaring type's layout,
+cleanup, and executor metadata into lowering-only aliases. Same-named private
+types from different modules remain distinct, and private/internal members and
+direct imports remain subject to normal source visibility. Runtime regressions
+cover nested arrays, String fields, and custom cleanup executing exactly once.
+
+One separate inference limit remains outside this parity fix: an ordinary
+generic call inside another generic body may still require explicit type
+arguments when a later literal conflicts with the inferred dependent argument.
+Stage 0 rejects that spelling too; the accepted `append<T>(..., 36)` form is
+covered here. These bounded regressions still do not replace the consumer's
+complete native-engine build and correctness gates.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

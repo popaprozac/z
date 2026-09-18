@@ -32,6 +32,8 @@ for (const [fixture, expected] of [
   ["deinit-mutable-field", "3\n0\n2\n0\n1\n0\ndone\n"],
   ["generic-element-equality", "ok\n"],
   ["generic-imported-equality", "ok\n"],
+  ["generic-literal-arguments", "ok\n"],
+  ["private-aggregate-reachability", "right 300\nleft 42\ndone\n"],
 ]) {
   test(`executes ${fixture} with Stage 0 and native semantics`, () => {
     const input = resolve(projectRoot, `tests/fixtures/native-semantic-parity/${fixture}.zs`);
@@ -63,6 +65,59 @@ function rejects(source: string, stage0Message: RegExp, nativeMessage = stage0Me
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
+
+test("checks dependent literal ranges and concrete parameter types at specialization", () => {
+  for (const [type, literal, message] of [
+    ["u8", "300", /literal 300.*u8.*specialization/],
+    ["u8", "-1", /literal -1.*u8.*specialization/],
+    ["String", "36", /numeric type.*String.*specialization/],
+  ] as const) {
+    for (const body of [
+      `let values = Array<T>(); values.push(${literal});`,
+      `const value = accept<T>(${literal});`,
+    ]) {
+      rejects(`
+        function accept<T>(value: T): T { return value; }
+        function fill<T>(): void { ${body} }
+        function main(): i32 { fill<${type}>(); return 0; }
+      `, /does not fit|expected String|expected .*String|numeric/, message, ["self-host-emit"]);
+    }
+  }
+}, 240_000);
+
+test("keeps reachable implementation type names unimportable", () => {
+  rejects(`
+    import { Hidden } from "./implementation.zs";
+    function main(): i32 { return 0; }
+  `, /no export|not export/, /no export|not export/, undefined, {
+    "implementation.zs": `struct Hidden { value: i32; }
+      export struct Holder { items: Array<Hidden>; }`,
+  });
+}, 240_000);
+
+test("keeps private and package-internal members restricted through hidden elements", () => {
+  for (const visibility of ["private", "internal"]) {
+    for (const use of ["holder.items[0].secret", "holder.items[0].hiddenMethod()"] ) {
+      rejects(`
+        import { createHolder } from "./implementation.zs";
+        function main(): i32 { const holder = createHolder(); return ${use}; }
+      `, /private|internal/, /private|internal/, undefined, {
+        "implementation.zs": `
+          struct Hidden {
+            ${visibility} secret: i32;
+            ${visibility} function hiddenMethod(): i32 { return this.secret; }
+            static function create(): Hidden { return Hidden({ secret: 42 }); }
+          }
+          export struct Holder { items: Array<Hidden>; }
+          export function createHolder(): Holder {
+            let items = Array<Hidden>(); items.push(Hidden.create());
+            return Holder({ items });
+          }
+        `,
+      });
+    }
+  }
+}, 240_000);
 
 test("validates concrete generic equality operands before C emission", () => {
   for (const operator of ["==", "!="]) {

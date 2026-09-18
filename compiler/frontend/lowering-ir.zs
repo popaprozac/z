@@ -90,7 +90,7 @@ import {
 import fs from "std/fs";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
-import { validateSpecializedComparisons } from "./semantic-specialization-comparisons.zs";
+import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
@@ -11147,6 +11147,14 @@ function lowerExpressionUsingNumericPeerType(
   );
 }
 
+function concreteLiteralTypeName(
+  in program: Program, in importedTypes: Array<LoweredImportedType>, in name: String
+): String throws String {
+  if (name.byteLength == 0 || isNumericTypeName(name)) return copy name;
+  const concrete = try lowerModuleTypeName(program, importedTypes, name);
+  return loweredTypeIdentity(concrete);
+}
+
 function lowerAsyncMethodTailCall(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -11744,7 +11752,7 @@ function lowerExpressionContextual(
       tree,
       index
     )) {
-      some(typeName) => labels.push(move typeName);
+      some(typeName) => labels.push(try concreteLiteralTypeName(program, importedTypes, typeName));
       none => {}
     }
     return pushExpression(
@@ -18590,7 +18598,7 @@ function lowerExpressionExpected(
   }
   if (tree.nodes[index].kind == ExpressionKind.numberExpression) {
     let labels = Array<String>();
-    labels.push(expectedTypeName.copyBytes(0, expectedTypeName.byteLength));
+    labels.push(try concreteLiteralTypeName(program, importedTypes, expectedTypeName));
     return pushExpression(
       inout output,
       LoweredExpressionKind.integerValue,
@@ -18607,7 +18615,7 @@ function lowerExpressionExpected(
     const sign = view tree.nodes[index].value;
     const value = view tree.nodes[operand].value;
     return pushExpression(inout output, LoweredExpressionKind.integerValue,
-      `${sign}${value}`, Array<usize>(), Array<String>(copy expectedTypeName));
+      `${sign}${value}`, Array<usize>(), Array<String>(try concreteLiteralTypeName(program, importedTypes, expectedTypeName)));
   }
   if (tree.nodes[index].kind == ExpressionKind.arrayExpression) {
     match (fixedArrayShape(expectedTypeName)) {
@@ -30970,6 +30978,109 @@ function appendHiddenConcreteTypeIdentities(
   }
 }
 
+// Follow checked nominal definitions, not container emission names. An
+// Array<Hidden> field has an array ABI kind, but Hidden still needs its full
+// layout and cleanup proof when the consumer indexes it. These are lowering
+// aliases only; no source symbol or visibility fact is added to the module.
+function appendReachableTypeDefinitions(
+  in graph: ModuleGraph,
+  in structs: Array<LoweredStruct>,
+  in enums: Array<LoweredEnum>,
+  in privateTypeCollisionNames: Array<String>,
+  inout requiredNames: Set<String>,
+  inout types: Array<LoweredImportedType>
+): void {
+  let availableLocals = Set<String>();
+  for (const type of types) {
+    availableLocals.add(copy type.localName);
+  }
+  let structIndices = Map<String, usize>();
+  let index: usize = 0;
+  while (index < structs.length) {
+    structIndices.set(copy structs[index].name, index);
+    index = index + 1;
+  }
+  let enumIndices = Map<String, usize>();
+  index = 0;
+  while (index < enums.length) {
+    enumIndices.set(copy enums[index].name, index);
+    index = index + 1;
+  }
+  let pending = Array<ModuleTypeIdentity>();
+  let moduleIndex: usize = 0;
+  while (moduleIndex < graph.modules.length) {
+    let symbolIndex: usize = 0;
+    for (const symbol of graph.modules[moduleIndex].symbols) {
+      const currentSymbol = symbolIndex;
+      symbolIndex = symbolIndex + 1;
+      if (symbol.foreignHeader.byteLength > 0
+        || (symbol.kind != ModuleSymbolKind.structSymbol
+          && symbol.kind != ModuleSymbolKind.classSymbol
+          && symbol.kind != ModuleSymbolKind.enumSymbol)) continue;
+      const identity = `__z_module_${moduleIndex}_${symbol.name}`;
+      if (requiredNames.has(identity)) {
+        pending.push(ModuleTypeIdentity({ path: "", targetModuleIndex: moduleIndex,
+          targetSymbolIndex: currentSymbol }));
+      }
+    }
+    moduleIndex = moduleIndex + 1;
+  }
+  let visited = Set<String>();
+  index = 0;
+  while (index < pending.length) {
+    const owner = pending[index].targetModuleIndex;
+    const symbolIndex = pending[index].targetSymbolIndex;
+    index = index + 1;
+    if (owner >= graph.modules.length || symbolIndex >= graph.modules[owner].symbols.length) continue;
+    const symbol = view graph.modules[owner].symbols[symbolIndex];
+    if (symbol.foreignHeader.byteLength > 0) continue;
+    const identity = `__z_module_${owner}_${symbol.name}`;
+    if (visited.has(identity)) continue;
+    visited.add(copy identity);
+    requiredNames.add(copy identity);
+    match (in symbol.typeSignature) {
+      some(signature) => {
+        for (const field of signature.fields) {
+          collectTypeIdentities(graph.modules, owner, field.typeName, "", inout pending);
+        }
+        for (const variant of signature.variants) {
+          collectTypeIdentities(graph.modules, owner, variant.payloadType, "", inout pending);
+        }
+      }
+      none => {}
+    }
+    if (availableLocals.has(identity)) continue;
+    const emitted = !symbol.exported && containsName(privateTypeCollisionNames, symbol.name)
+      ? emittedPrivateTypeName(owner, symbol.name) : copy symbol.name;
+    const structIndex = indexedImportedType(structIndices, emitted, structs.length);
+    const enumIndex = indexedImportedType(enumIndices, emitted, enums.length);
+    if (structIndex < structs.length) {
+      const definition = view structs[structIndex];
+      types.push(LoweredImportedType({
+        localName: copy identity, targetName: copy emitted, nativeTypeName: "",
+        kind: definition.referenceType ? LoweredTypeKind.classType : LoweredTypeKind.structType,
+        executorBound: definition.executorBound,
+        threadShareable: definition.threadShareable,
+        workerDestructible: definition.workerDestructible,
+        needsDeinit: definition.needsDeinit, resourceRelease: "",
+        fields: copy definition.fields, variants: Array<LoweredVariant>(),
+        payloadBearing: false, underlyingType: "",
+      }));
+      availableLocals.add(copy identity);
+    } else if (enumIndex < enums.length) {
+      const definition = view enums[enumIndex];
+      types.push(LoweredImportedType({
+        localName: copy identity, targetName: copy emitted, nativeTypeName: "",
+        kind: LoweredTypeKind.enumType, executorBound: false, threadShareable: false,
+        workerDestructible: !definition.needsDeinit, needsDeinit: definition.needsDeinit,
+        resourceRelease: "", fields: Array<LoweredField>(), variants: copy definition.variants,
+        payloadBearing: definition.payloadBearing, underlyingType: "",
+      }));
+      availableLocals.add(copy identity);
+    }
+  }
+}
+
 function collectRequiredHiddenTypeNames(
   in typeName: String,
   inout names: Set<String>
@@ -31119,6 +31230,7 @@ function importedTypesForModule(
   in structs: Array<LoweredStruct>,
   in enums: Array<LoweredEnum>,
   in genericStructUses: Array<LoweredGenericStructUse>,
+  in privateTypeCollisionNames: Array<String>,
   moduleIndex: usize
 ): Array<LoweredImportedType> throws String {
   let types = Array<LoweredImportedType>();
@@ -31179,6 +31291,19 @@ function importedTypesForModule(
   }
   for (const call of graph.modules[moduleIndex].semanticEvidence
     .callResolutions) {
+    // Call results can be traversed directly without introducing an inferred
+    // local, and their ordinary source spelling still has canonical identity.
+    let identities = Array<ModuleTypeIdentity>();
+    collectTypeIdentities(graph.modules, moduleIndex, call.returnType, "", inout identities);
+    for (const parameter of call.parameterTypes) {
+      collectTypeIdentities(graph.modules, moduleIndex, parameter, "", inout identities);
+    }
+    for (const identity of identities) {
+      if (identity.targetModuleIndex >= graph.modules.length
+        || identity.targetSymbolIndex >= graph.modules[identity.targetModuleIndex].symbols.length) continue;
+      const symbol = view graph.modules[identity.targetModuleIndex].symbols[identity.targetSymbolIndex];
+      requiredHiddenTypeNames.add(`__z_module_${identity.targetModuleIndex}_${symbol.name}`);
+    }
     collectRequiredHiddenTypeNames(
       call.returnType,
       inout requiredHiddenTypeNames
@@ -31813,6 +31938,8 @@ function importedTypesForModule(
     }
     reachableTypeIndex = reachableTypeIndex + 1;
   }
+  appendReachableTypeDefinitions(graph, structs, enums, privateTypeCollisionNames,
+    inout requiredHiddenTypeNames, inout types);
   // Callable aliases can contain compiler-only nominal spellings for types
   // that are not directly nameable by this module. Make those concrete
   // identities available before resolving transparent aliases.
@@ -34571,7 +34698,7 @@ function collectGenericDemands(in parsed: Array<ParsedModule>, in graph: ModuleG
   return LoweredGenericDemands({ structs, methods, functions });
 }
 
-function validateGenericDemandComparisons(
+function validateGenericDemandExpressions(
   in parsed: Array<ParsedModule>, in graph: ModuleGraph, in demands: LoweredGenericDemands
 ): void throws String {
   for (const use of demands.structs) {
@@ -34579,7 +34706,7 @@ function validateGenericDemandComparisons(
       if (aggregate.name != use.ownerName) continue;
       for (const method of aggregate.methods) {
         if (method.typeParameters.length > 0) continue;
-        const result = attempt validateSpecializedComparisons(parsed[use.ownerModuleIndex], graph.modules,
+        const result = attempt validateSpecializedExpressions(parsed[use.ownerModuleIndex], graph.modules,
           use.ownerModuleIndex, method, use.typeParameters, use.typeArguments,
           use.typeArgumentModules, use.typeArgumentSymbols);
         match (result) {
@@ -34592,7 +34719,7 @@ function validateGenericDemandComparisons(
   for (const use of demands.functions) {
     for (const declaration of parsed[use.ownerModuleIndex].program.functions) {
       if (declaration.name != use.name) continue;
-      const result = attempt validateSpecializedComparisons(parsed[use.ownerModuleIndex], graph.modules,
+      const result = attempt validateSpecializedExpressions(parsed[use.ownerModuleIndex], graph.modules,
         use.ownerModuleIndex, declaration, use.typeParameters, use.typeArguments,
         use.typeArgumentModules, use.typeArgumentSymbols);
       match (result) {
@@ -34609,7 +34736,7 @@ function validateGenericDemandComparisons(
         let parameters = Array<String>();
         for (const parameter of aggregate.typeParameters) { parameters.push(copy parameter.name); }
         for (const parameter of method.typeParameters) { parameters.push(copy parameter.name); }
-        const result = attempt validateSpecializedComparisons(parsed[use.ownerModuleIndex], graph.modules,
+        const result = attempt validateSpecializedExpressions(parsed[use.ownerModuleIndex], graph.modules,
           use.ownerModuleIndex, method, parameters, use.allTypeArguments,
           use.typeArgumentModules, use.typeArgumentSymbols);
         match (result) {
@@ -34631,7 +34758,7 @@ function lowerCheckedModules(
   };
   // A failed concrete constraint is a source error, not an internal backend
   // failure. Validate before lowering and reuse this same closed demand graph.
-  try validateGenericDemandComparisons(parsed, graph, demands);
+  try validateGenericDemandExpressions(parsed, graph, demands);
   const outcome = attempt lowerModulesIncludingTests(parsed, graph, includeTests, demands);
   return match (outcome) {
     success(lowered) => lowered;
@@ -34720,6 +34847,7 @@ function lowerModulesIncludingTests(
       structs,
       enums,
       genericStructUses,
+      privateTypeCollisionNames,
       moduleIndex
     );
     let importedTypes = match (importedTypesOutcome) {
@@ -34884,6 +35012,7 @@ function lowerModulesIncludingTests(
       structs,
       enums,
       genericStructUses,
+      privateTypeCollisionNames,
       genericOwnerModuleIndex
     );
     let importedTypes = match (importedTypesOutcome) {
@@ -34958,6 +35087,7 @@ function lowerModulesIncludingTests(
       structs,
       enums,
       genericStructUses,
+      privateTypeCollisionNames,
       genericOwnerModuleIndex
     );
     let importedTypes = match (importedTypesOutcome) {

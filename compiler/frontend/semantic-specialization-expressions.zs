@@ -1,10 +1,13 @@
-// Dependent comparisons are checked once their concrete callable demand is
-// known. Use the ordinary operator checker and nominal type identities, not
-// the eventual C representation, to decide whether an operand is comparable.
+// Dependent expressions are checked once their concrete callable demand is
+// known. Preserve ordinary literal ranges and nominal operator rules rather
+// than relying on the eventual C representation or implicit conversions.
 import { ExpressionKind, ExpressionSyntax, ExpressionTree, FunctionDeclaration } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
-import { ModuleResolveError, ModuleSemanticEvidence, ResolvedModule } from "./semantic-model.zs";
+import { ModuleResolveError, ModuleResolveErrorKind, ModuleSemanticEvidence, ResolvedModule, moduleResolutionError } from "./semantic-model.zs";
 import { binaryOperatorType } from "./semantic-operators.zs";
+import { isContextualNumericLiteral, requireNumericLiteralRange } from "./semantic-expression-types.zs";
+import { isNumericTypeName } from "./semantic-type-shapes.zs";
+import { transparentTypeName } from "./semantic-type-identities.zs";
 
 function operandType(in tree: ExpressionTree, index: usize, in evidence: ModuleSemanticEvidence): String {
   const node = view tree.nodes[index];
@@ -23,6 +26,7 @@ function validateSyntax(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
+  in callableName: String,
   in syntax: Option<ExpressionSyntax>,
   in evidence: ModuleSemanticEvidence,
   in parameters: Array<String>,
@@ -36,6 +40,26 @@ function validateSyntax(
         let index: usize = 0;
         while (index < tree.nodes.length) {
           const node = view tree.nodes[index];
+          if (isContextualNumericLiteral(tree, index)) {
+            const expected = operandType(tree, index, evidence);
+            let parameterIndex: usize = 0;
+            while (parameterIndex < parameters.length && parameterIndex < arguments.length) {
+              if (expected == parameters[parameterIndex]) {
+                const concrete = transparentTypeName(modules, moduleIndex, arguments[parameterIndex]);
+                if (!isNumericTypeName(concrete)) throw moduleResolutionError(
+                  ModuleResolveErrorKind.typeMismatch, module.path,
+                  `numeric literal requires a numeric type, found ${concrete} (in specialization ${callableName}<${expected} = ${concrete}>)`,
+                  node.line, node.column);
+                const range = attempt requireNumericLiteralRange(module, tree, index, concrete);
+                match (range) {
+                  success => {}
+                  failure(error) => throw moduleResolutionError(error.kind, error.path,
+                    `${error.message} (in specialization ${callableName}<${expected} = ${concrete}>)`, error.line, error.column);
+                }
+              }
+              parameterIndex = parameterIndex + 1;
+            }
+          }
           if (node.kind == ExpressionKind.binaryExpression && node.children.length == 2
             && (node.value == "==" || node.value == "!=" || node.value == "<"
               || node.value == "<=" || node.value == ">" || node.value == ">=")) {
@@ -68,7 +92,7 @@ function validateSyntax(
   }
 }
 
-export function validateSpecializedComparisons(
+export function validateSpecializedExpressions(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -79,9 +103,9 @@ export function validateSpecializedComparisons(
   in argumentSymbols: Array<usize>
 ): void throws ModuleResolveError {
   for (const statement of declaration.body.nodes) {
-    try validateSyntax(module, modules, moduleIndex, statement.expression,
+    try validateSyntax(module, modules, moduleIndex, declaration.name, statement.expression,
       modules[moduleIndex].semanticEvidence, parameters, arguments, argumentModules, argumentSymbols);
-    try validateSyntax(module, modules, moduleIndex, statement.secondExpression,
+    try validateSyntax(module, modules, moduleIndex, declaration.name, statement.secondExpression,
       modules[moduleIndex].semanticEvidence, parameters, arguments, argumentModules, argumentSymbols);
   }
 }

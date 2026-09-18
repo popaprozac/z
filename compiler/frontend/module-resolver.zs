@@ -4202,8 +4202,10 @@ function inferExpressionNodeTypeExpected(
 ): String throws ModuleResolveError {
   if (expectedType.byteLength > 0 && isContextualNumericLiteral(tree, index)) {
     const target = transparentTypeName(modules, moduleIndex, expectedType);
-    if (isNumericTypeName(target)) {
-      try requireNumericLiteralRange(module, tree, index, target);
+    if (isNumericTypeName(target) || isActiveTypeParameter(bindings, target)) {
+      // A dependent destination keeps the literal syntax and expected type in
+      // semantic evidence. Its concrete range is checked at specialization.
+      if (isNumericTypeName(target)) try requireNumericLiteralRange(module, tree, index, target);
       recordExpressionResolution(modules, moduleIndex, tree, index, target, inout evidence);
       return target;
     }
