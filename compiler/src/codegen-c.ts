@@ -8515,7 +8515,19 @@ function generateIf(statement: Extract<Statement, { kind: "if" }>, context: Gene
 function controlCondition(value: string): string {
   // A Clang statement expression needs its own parentheses inside the
   // condition's parentheses: if (({ ...; result; })), not if ({ ... }).
-  return value.startsWith("(") && !value.startsWith("({") && value.endsWith(")") ? value : `(${value})`;
+  if (value.startsWith("(") && !value.startsWith("({") && value.endsWith(")")) {
+    // Leading/trailing parentheses need not enclose the whole expression:
+    // ((owner->backend).predicate).call(...) is a function-value invocation.
+    // Ignore quoted text and comments when finding the first closing pair.
+    let depth = 0;
+    for (const token of value.matchAll(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\/|\/\/[^\n]*|[()]/g)) {
+      if (token[0] === "(") depth++;
+      else if (token[0] === ")" && --depth === 0) {
+        return token.index === value.length - 1 ? value : `(${value})`;
+      }
+    }
+  }
+  return `(${value})`;
 }
 
 function generateDirectValue(
