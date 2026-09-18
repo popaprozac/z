@@ -10007,6 +10007,28 @@ existing include-search model; it does not introduce isolated namespaces for
 same-spelled native headers. Passing these build regressions still leaves the
 consumer's full native-engine runtime gates to independent verification.
 
+The next C-build checkpoint exposed three more representation boundaries.
+Owned call arguments now use destination-aware lowering just like typed local
+initializers, so a named function becomes a first-class callable wrapper rather
+than a bare C function passed to a retain helper. Local and imported functions,
+callable aliases, thread-any contracts, and captured-callable cleanup are covered.
+Explicit receiver arguments retain their receiver identity through lowering:
+`handler(inout this)` borrows a value receiver at the correct pointer depth.
+ARC receivers retain their existing, distinct handle representation. Ordinary
+immutable-receiver and callable-signature restrictions are still checked.
+
+Unused Z locals are legal. Native C now marks emitted local storage accordingly
+without a function-wide name-use heuristic: a later binding with the same
+spelling must not make an earlier unused binding a Clang error. Initializers
+and deterministic cleanup still execute; `-Wall -Wextra -Werror` remain enabled.
+Runtime regressions cover both return paths and cleanup at `-O0` and `-O2`
+under UBSan. A separate pre-existing boundary remains outside this checkpoint:
+explicitly borrowing a named function directly (`apply(in increment)`) also
+fails Stage 0 C emission; borrowing a typed callable binding already works.
+Passing an ARC method receiver as a writable callable argument also needs a
+separate ownership audit: the callee can replace the handle slot, not merely
+mutate fields, so correcting its C pointer depth alone is insufficient.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -4772,7 +4772,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /discardResource\(void\).*?Z___z_Option_Resource held __attribute__\(\(unused\)\) = resource\(0\);.*?Z___z_Option_Resource_deinit\(&held\);/s,
+    /discardResource\(void\).*?__attribute__\(\(unused\)\) Z___z_Option_Resource held = resource\(0\);.*?Z___z_Option_Resource_deinit\(&held\);/s,
   );
   assert.match(
     optionEmission.stdout,
@@ -4842,7 +4842,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     resultEmission.stdout,
-    /discardResult\(void\).*?Z___z_Result_Resource_Problem result __attribute__\(\(unused\)\) = loadResource\(false\);.*?Z___z_Result_Resource_Problem_deinit\(&result\);/s,
+    /discardResult\(void\).*?__attribute__\(\(unused\)\) Z___z_Result_Resource_Problem result = loadResource\(false\);.*?Z___z_Result_Resource_Problem_deinit\(&result\);/s,
   );
   assert.match(
     resultEmission.stdout,
@@ -4924,7 +4924,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectLocal\(Z_ResourceState state\) \{\n  \(void\)state;\n  bool _z_stage1_live_state = true;\n  int32_t value;\n  _z_stage1_live_state = false;\n  Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?value = _z_stage1_match_payload_\d+_\d+\.id;\n      Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);.*?int32_t _z_stage1_return_\d+ = value;\n  if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);\n  return _z_stage1_return_\d+;/s,
+    /inspectLocal\(Z_ResourceState state\) \{\n  \(void\)state;\n  bool _z_stage1_live_state = true;\n  __attribute__\(\(unused\)\) int32_t value;\n  _z_stage1_live_state = false;\n  Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?value = _z_stage1_match_payload_\d+_\d+\.id;\n      Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);.*?int32_t _z_stage1_return_\d+ = value;\n  if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);\n  return _z_stage1_return_\d+;/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
@@ -4958,7 +4958,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectLocalBlock\(Z_ResourceState state\) \{\n  \(void\)state;\n  bool _z_stage1_live_state = true;\n  int32_t value;.*?value = audit\.id;\n        Z_Resource_deinit\(&audit\);.*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);.*?int32_t _z_stage1_return_\d+ = value;\n  if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);\n  return _z_stage1_return_\d+;/s,
+    /inspectLocalBlock\(Z_ResourceState state\) \{\n  \(void\)state;\n  bool _z_stage1_live_state = true;\n  __attribute__\(\(unused\)\) int32_t value;.*?value = audit\.id;\n        Z_Resource_deinit\(&audit\);.*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);.*?int32_t _z_stage1_return_\d+ = value;\n  if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);\n  return _z_stage1_return_\d+;/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
@@ -5030,7 +5030,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     localCleanupEmission.stdout,
-    /moveLocal\(void\) \{\n  Z_Resource resource = .*?;\n  return inspect\(resource\);\n\}/s,
+    /moveLocal\(void\) \{\n  __attribute__\(\(unused\)\) Z_Resource resource = .*?;\n  return inspect\(resource\);\n\}/s,
   );
   const localCleanupExecutable = resolve(directory, "local-cleanup");
   const localCleanupCompilation = spawnSync(
@@ -5082,7 +5082,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     cleanupFlowEmission.stdout,
-    /static __attribute__\(\(unused\)\) void Z_AuditedEnvelope_deinit\(Z_AuditedEnvelope \*self\) \{\n  \(void\)self;\n  Z_Resource audit = \(Z_Resource\)\{\.id = self->resource\.id\};\n  record\(audit\.id\);\n  Z_Resource_deinit\(&audit\);\n  Z_Resource_deinit\(&self->resource\);\n\}/,
+    /static __attribute__\(\(unused\)\) void Z_AuditedEnvelope_deinit\(Z_AuditedEnvelope \*self\) \{\n  \(void\)self;\n  __attribute__\(\(unused\)\) Z_Resource audit = \(Z_Resource\)\{\.id = self->resource\.id\};\n  record\(audit\.id\);\n  Z_Resource_deinit\(&audit\);\n  Z_Resource_deinit\(&self->resource\);\n\}/,
   );
   assert.match(
     cleanupFlowEmission.stdout,

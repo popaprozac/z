@@ -34,6 +34,9 @@ for (const [fixture, expected] of [
   ["generic-imported-equality", "ok\n"],
   ["generic-literal-arguments", "ok\n"],
   ["private-aggregate-reachability", "right 300\nleft 42\ndone\n"],
+  ["named-callable-arguments", "released\nok\n"],
+  ["callable-receiver-borrows", "ok\n"],
+  ["rebound-unused-locals", "1\n2\nok\n"],
 ]) {
   test(`executes ${fixture} with Stage 0 and native semantics`, () => {
     const input = resolve(projectRoot, `tests/fixtures/native-semantic-parity/${fixture}.zs`);
@@ -65,6 +68,32 @@ function rejects(source: string, stage0Message: RegExp, nativeMessage = stage0Me
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
+
+test("keeps named callable signatures and executor contracts checked", () => {
+  rejects(`
+    function wrong(value: String): i32 { return 0; }
+    function apply(handler: (value: i32) => i32): i32 { return handler(1); }
+    function main(): i32 { return apply(wrong); }
+  `, /expected|assign|function type/, /expected|assign|function type/);
+  rejects(`
+    import { thread } from "std/thread";
+    function mainOnly(value: i32): i32 on thread.main { return value; }
+    function apply(handler: (value: i32) => i32 on thread.any): i32 { return handler(1); }
+    function main(): i32 { return apply(mainOnly); }
+  `, /thread|executor|expected/, /thread|executor|expected/);
+}, 240_000);
+
+test("does not permit mutable callable arguments from immutable receivers", () => {
+  rejects(`
+    struct Counter {
+      value: i32;
+      function invalid(handler: (inout counter: Counter) => i32): i32 {
+        return handler(inout this);
+      }
+    }
+    function main(): i32 { return 0; }
+  `, /mutable|inout|immutable/, /mutable|inout|immutable/);
+}, 240_000);
 
 test("checks dependent literal ranges and concrete parameter types at specialization", () => {
   for (const [type, literal, message] of [

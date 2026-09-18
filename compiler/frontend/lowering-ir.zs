@@ -11679,7 +11679,9 @@ function lowerExpressionContextual(
   ) {
     return pushExpression(
       inout output,
-      LoweredExpressionKind.localValue,
+      tree.nodes[index].value == "this"
+        ? LoweredExpressionKind.receiverValue
+        : LoweredExpressionKind.localValue,
       tree.nodes[index].value,
       Array<usize>(),
       Array<String>()
@@ -16948,15 +16950,18 @@ function lowerExpressionContextual(
     while (argument < tree.nodes[index].children.length) {
       const argumentInput = tree.nodes[index].children[argument];
       let value: usize = 0;
-      if (
-        parameterTypes.length >= argument
-        && (tree.nodes[argumentInput].kind == ExpressionKind.closureExpression
+      // Owned arguments need the same representation conversion as a typed
+      // binding, including named functions becoming first-class callables.
+      // Borrowed places keep their existing storage; literals and closures
+      // still need context even when passed to a borrowed parameter.
+      if (parameterTypes.length >= argument
+        && ((parameterModes.length >= argument && parameterModes[argument - 1] == "value")
+          || tree.nodes[argumentInput].kind == ExpressionKind.closureExpression
           || tree.nodes[argumentInput].kind == ExpressionKind.numberExpression
           || (tree.nodes[argumentInput].kind == ExpressionKind.unaryExpression
             && tree.nodes[argumentInput].children.length == 1
             && (tree.nodes[argumentInput].value == "+" || tree.nodes[argumentInput].value == "-")
-            && tree.nodes[tree.nodes[argumentInput].children[0]].kind == ExpressionKind.numberExpression))
-      ) value = try lowerExpressionExpected(
+            && tree.nodes[tree.nodes[argumentInput].children[0]].kind == ExpressionKind.numberExpression))) value = try lowerExpressionExpected(
         program,
         importedTypes,
         evidence,

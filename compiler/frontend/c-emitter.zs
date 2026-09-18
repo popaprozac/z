@@ -7630,19 +7630,6 @@ function appendCondition(
   if (!alreadyGrouped) output.append(")");
 }
 
-function localNameIsUsed(
-  in declaration: LoweredFunction,
-  in name: String
-): boolean {
-  for (const expression of declaration.expressions) {
-    if (
-      expression.kind == LoweredExpressionKind.localValue
-      && expression.value == name
-    ) return true;
-  }
-  return false;
-}
-
 function testValueTargetType(in typeName: String): String {
   if (stringStartsWith(typeName, "view ") && typeName.byteLength > 5) {
     return typeName.copyBytes(5, typeName.byteLength);
@@ -8033,6 +8020,10 @@ function appendLocalStatementStorage(
     none => {}
   }
   appendIndent(inout output, depth);
+  // An unused Z binding is legal and its initializer/cleanup still executes.
+  // Independent lexical bindings can share a name, so a function-wide name
+  // search cannot decide warning eligibility. Keep other C warnings enabled.
+  output.append("__attribute__((unused)) ");
   if (viewStorage) {
     output.append("const ");
     output.append(type);
@@ -8057,15 +8048,9 @@ function appendLocalStatementStorage(
     output.append(" ");
   }
   appendCBindingName(inout output, declaration.statements[index].name);
-  const unusedLocal = !localNameIsUsed(
-    declaration,
-    declaration.statements[index].name
-  );
   if (preciseObjCRegistration || preciseObjCConnection) {
-    output.append(" __attribute__((objc_precise_lifetime");
-    if (unusedLocal) output.append(", unused");
-    output.append("))");
-  } else if (unusedLocal) output.append(" __attribute__((unused))");
+    output.append(" __attribute__((objc_precise_lifetime))");
+  }
   match (in declaration.statements[index].expression) {
     some(expression) => {
       output.append(" = ");
