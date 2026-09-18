@@ -54,7 +54,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
   },
   "objc-interop": {
     timeoutMilliseconds: 60_000,
-    files: ["tests/objc-interop.test.ts", "tests/objc-object.test.ts", "tests/objc-instanceof-guards.test.ts", "tests/objc-subclasses.test.ts", "tests/objc-subclass-state.test.ts", "tests/objc-subclass-handoff.test.ts", "tests/objc-subclass-async.test.ts", "tests/objc-header-composition.test.ts", "tests/objc-property-scopes.test.ts", "tests/objc-callable-aliases.test.ts", "tests/objc-selector-contracts.test.ts", "tests/objc-selector-entries.test.ts", "tests/objc-selector-execution.test.ts", "tests/objc-adapter-lifetime.test.ts", "tests/objc-string-lifetime.test.ts", "tests/native-async-objc-storage.test.ts"],
+    files: ["tests/objc-interop.test.ts", "tests/objc-object.test.ts", "tests/objc-instanceof-guards.test.ts", "tests/objc-subclasses.test.ts", "tests/objc-subclass-state.test.ts", "tests/objc-subclass-handoff.test.ts", "tests/objc-subclass-async.test.ts", "tests/objc-header-composition.test.ts", "tests/objc-property-scopes.test.ts", "tests/objc-optional-overrides.test.ts", "tests/objc-callable-aliases.test.ts", "tests/objc-selector-contracts.test.ts", "tests/objc-selector-entries.test.ts", "tests/objc-selector-execution.test.ts", "tests/objc-adapter-lifetime.test.ts", "tests/objc-string-lifetime.test.ts", "tests/native-async-objc-storage.test.ts"],
   },
   "swift-interop": {
     timeoutMilliseconds: 60_000,

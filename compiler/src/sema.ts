@@ -3161,7 +3161,9 @@ function registerObjCSubclasses(program: Program, globals: Map<string, SymbolVal
     while (current && !seen.has(current.typeName)) {
       seen.add(current.typeName);
       for (const method of current.methods) {
-        if (!inherited.some((candidate) => candidate.instance === method.instance && candidate.selector === method.selector)) inherited.push(method);
+        const index = inherited.findIndex((candidate) => candidate.instance === method.instance && candidate.selector === method.selector);
+        if (index < 0) inherited.push(method);
+        else if (inherited[index].required === false && method.required !== false) inherited[index] = method;
       }
       const namespace = current.typeName.slice(0, current.typeName.lastIndexOf("."));
       current = current.superName ? state.foreignInterfaces.get(`${namespace}.${current.superName}`) : undefined;
@@ -3206,7 +3208,7 @@ function registerObjCSubclasses(program: Program, globals: Map<string, SymbolVal
           // Calls through the source-declared override have its checked Z
           // capabilities, including borrowed native object parameters. Keep
           // the inherited header contract unchanged for superclass/base calls.
-          return { ...native, baseName: method.name,
+          return { ...native, required: true, baseName: method.name,
             parameters: native.parameters.map((parameter, index) => ({
               ...parameter,
               ...(method.parameters[index].mode === "in" ? { access: "in" as const } : {}),
@@ -18345,7 +18347,8 @@ function objcProtocolReceiver(
       // methods in the protocol AST. Preserve the familiar property surface
       // for non-void, zero-argument getters on existential receivers.
       properties: methods.flatMap((method) => (
-        method.instance
+        method.required
+        && method.instance
         && method.parameters.length === 0
         && foreignValueType(method.returnType) !== "void"
           ? [{
@@ -18501,7 +18504,7 @@ function findObjCMethod(
   const matches: { readonly method: ForeignObjCMethod; readonly projected: boolean }[] = [];
   while (declaration) {
     matches.push(...declaration.methods.flatMap((method) => {
-      if (method.instance !== receiver.instance || method.baseName !== baseName) return [];
+      if (method.required === false || method.instance !== receiver.instance || method.baseName !== baseName) return [];
       const projected = method.asyncCallbackParameter !== null
         && method.parameters.length - 1 === argumentCount;
       if (!projected && method.parameters.length !== argumentCount) return [];

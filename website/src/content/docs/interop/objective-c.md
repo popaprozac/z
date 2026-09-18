@@ -220,6 +220,17 @@ depending on a convention in documentation.
 
 ## Native subclasses (experimental)
 
+An inherited optional protocol callback can use the same checked `override`
+syntax as a method declared on the superclass. For example, a WebView subclass
+can implement `draggingEntered:` with an `in sender: AppKit.NSDraggingInfo`
+parameter and an `AppKit.NSDragOperation` result. This retains the native
+protocol-qualified parameter and does not introduce a wrapper.
+
+Optional does **not** mean safe to call without an implementation: unimplemented
+optional members remain unavailable to ordinary calls and `super` delegation.
+If no superclass implementation is promised, callbacks during construction or
+teardown fail closed under the existing native-entry lifecycle guard.
+
 A protocol adapter does not become an `NSWindow`. When native virtual dispatch
 is required, the first subclass tier creates a real native ARC object:
 

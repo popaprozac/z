@@ -8527,7 +8527,7 @@ function collectObjCMethods(declaration: ForeignObjCInterface, instance: boolean
   const methods: ForeignObjCMethod[] = [];
   let current: ForeignObjCInterface | undefined = declaration;
   while (current) {
-    methods.push(...current.methods.filter((method) => method.instance === instance));
+    methods.push(...current.methods.filter((method) => method.required !== false && method.instance === instance));
     if (!current.superName) break;
     const moduleName = current.typeName.slice(0, current.typeName.lastIndexOf("."));
     current = context.semanticInfo.objcSubclasses.get(current.typeName)?.base

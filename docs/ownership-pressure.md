@@ -9940,6 +9940,34 @@ join before local destructors run. A destructor-only wake of a blocked receiver
 therefore deadlocks. The framework explicitly signals the writer on every
 startup-failure path and on normal shutdown; `deinit` is not its stop protocol.
 
+## Optional native callbacks for window file drops
+
+Zapp's incoming-file-drop work reached AppKit's `NSDraggingDestination` protocol.
+`NSView` adopts it, but its methods are optional and are not repeated on the
+`WKWebView` interface. The importer previously discarded those requirements,
+leaving `override function draggingEntered ... as "draggingEntered:"` without
+the header signature it needs for checking.
+
+Optional adopted signatures now survive as override evidence. They are not
+advertised as ordinary methods unless implemented. A concrete superclass method
+still takes precedence over a nearer optional requirement. Native parameter
+spelling retains `id<Protocol>` rather than erasing it to `id`, which otherwise
+lets Clang pick an unrelated same-named getter with a different return ABI.
+Required protocol getters also retain native semantic field evidence, allowing
+inferred object and record locals such as `const pasteboard = sender.draggingPasteboard`
+and `const point = sender.draggingLocation`. Previously the native compiler
+could reach lowering without a type for those locals.
+
+The lifecycle distinction matters as much as lookup: construction and teardown
+cannot blindly forward to a superclass callback that may not exist. Such entries
+use the same fail-closed Ready guard as newly declared native entries; no
+callback-specific default result is invented. Implemented inherited methods
+keep their existing superclass forwarding.
+
+This is a compiler prerequisite, not evidence that Zapp's drop grants, native
+acceptance policy, or renderer delivery are complete. Those remain application
+integration work and need their own cancellation and document-lifetime tests.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

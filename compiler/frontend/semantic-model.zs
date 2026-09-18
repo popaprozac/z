@@ -105,6 +105,7 @@ export struct ModuleSemanticEvidence {
 // These checked plans retain exact native entry ABIs and source-body locations.
 export struct ModuleObjCSubclassEntry {
   overridesInherited: boolean = false;
+  superclassImplemented: boolean = false;
   sourceIndex: usize;
   offset: usize;
   sourceName: String;

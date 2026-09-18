@@ -6733,7 +6733,8 @@ function inferExpressionNodeType(
       }
       none => {}
     }
-    if (hasKnownAggregate(modules, moduleIndex, receiverValueType)) {
+    if (hasKnownAggregate(modules, moduleIndex, receiverValueType)
+      || typeIsNativeObjCReference(modules, moduleIndex, receiverValueType)) {
       throw resolutionError(
         ModuleResolveErrorKind.unknownMember,
         module.path,

@@ -577,13 +577,28 @@ function objcProtocolTypeSignature(
   in namespace: String
 ): ModuleTypeSignature {
   let methods = Array<ModuleMethodSignature>();
+  let fields = Array<ModuleFieldSignature>();
   for (const method of protocol.methods) {
-    if (method.representable) methods.push(objcMethodSignature(
-      method,
-      contracts,
-      indices,
-      namespace
-    ));
+    if (!method.representable) continue;
+    const signature = objcMethodSignature(method, contracts, indices, namespace);
+    // Protocol properties are imported as accessor methods. Preserve the
+    // readonly getter surface, including enough type evidence for inferred
+    // native-object and record locals; optional getters are not promised.
+    if (method.required && method.instance && method.parameters.length == 0
+      && !signature.signature.asynchronous && signature.signature.returnType != "void") {
+      fields.push(ModuleFieldSignature({
+        name: copy method.name,
+        typeName: copy signature.signature.returnType,
+        executorAffinity: copy method.executorAffinity,
+        visibility: "public", readonlyField: true, hasDefault: false,
+        optionalField: false, viewLifetime: "",
+        objectiveCGetter: copy method.selector,
+        objectiveCOwnership: "unspecified",
+        objectiveCNativeType: copy method.nativeReturnType,
+        objectiveCAvailability: copy signature.objectiveCAvailability,
+      }));
+    }
+    methods.push(move signature);
   }
   let inherited = Array<String>();
   for (const name of protocol.inherited) {
@@ -599,7 +614,7 @@ function objcProtocolTypeSignature(
       protocol.executorAffinity.byteLength
     ),
     implementedTraits: inherited,
-    fields: Array<ModuleFieldSignature>(),
+    fields,
     methods,
     variants: Array<ModuleVariantSignature>(),
     customDeinit: false,

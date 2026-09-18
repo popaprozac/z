@@ -92,6 +92,7 @@ import {
 import { parseReadonlyType, readonlyTypeName, writableTypeName } from "./readonly-types.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { parseObjCProtocolType } from "./objc-types.ts";
+import { objcParameterNativeSpelling } from "./foreign-type-spelling.ts";
 import { isStaticBytesType, staticBytesTypeName } from "./static-bytes.ts";
 import type { ObjCSubclassPlan } from "./objc-subclasses.ts";
 
@@ -2468,7 +2469,7 @@ function generateObjCProtocolMethodDeclaration(
   if (requirement.parameters.length === 0) return `- (${result})${requirement.selector}`;
   const labels = requirement.selector.split(":").slice(0, -1);
   return `- (${result})${labels.map((label, index) => (
-    `${label}:(${foreignCType(requirement.parameters[index].type)})${argumentNames[index]}`
+    `${label}:(${objcParameterNativeSpelling(requirement.parameters[index])})${argumentNames[index]}`
   )).join(" ")}`;
 }
 
@@ -2594,7 +2595,8 @@ function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, Struc
     signature: generateFunctionSignature(method, structs, enums, plan.declaration, semanticInfo.foreignNamedTypes), isHelper: true,
   } : {
     signature: generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name))),
-    ...(method.override ? { superclassFallback: generateObjCMessage("super", plan.methods.get(method.location.offset)!.selector, method.parameters.map((parameter) => cBindingName(parameter.name))) } : {}),
+    ...(method.override && plan.methods.get(method.location.offset)!.required !== false
+      ? { superclassFallback: generateObjCMessage("super", plan.methods.get(method.location.offset)!.selector, method.parameters.map((parameter) => cBindingName(parameter.name))) } : {}),
   }));
   methods.push(`- (instancetype)_z_checkedSelectorTarget {\n  if (![NSThread isMainThread]) abort();\n  if (!_z_native_subclass_ready) { fputs("selector registration requires a Ready native target\\n", stderr); abort(); }\n  return self;\n}`);
   const arguments_ = constructor.parameters.map((parameter) => cBindingName(parameter.name));

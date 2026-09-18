@@ -21,7 +21,7 @@ import { foreignDeclarationProtocolVersion } from "./foreign-declaration-protoco
 // Bump when producer semantics change without changing the ZFDCL wire shape.
 // Cached declaration evidence must be regenerated even when an older artifact
 // remains structurally decodable by the native frontend.
-const foreignDeclarationProducerRevision = 7;
+const foreignDeclarationProducerRevision = 8;
 
 function adjacentContract(
   sourcePath: string,

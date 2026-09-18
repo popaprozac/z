@@ -431,7 +431,7 @@ function appendNativeObjCSubclassFallback(
   inout output: TextBuffer, in entry: ModuleObjCSubclassEntry
 ): void throws String {
   output.append("  if (!self->_z_native_subclass_ready) { ");
-  if (!entry.overridesInherited) {
+  if (!entry.superclassImplemented) {
     output.append("fputs(\"Z runtime error: native callback entered before Ready or during teardown\\n\", stderr); abort(); }\n");
     return;
   }

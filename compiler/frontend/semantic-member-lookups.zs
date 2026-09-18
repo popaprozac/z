@@ -817,6 +817,7 @@ export function methodCallShape(
           let matched = Option<NativeMethodCallShape>.none;
           let matchCount: usize = 0;
           for (const method of typeSignature.methods) {
+            if (!method.objectiveCRequired && method.objectiveCImplementationSelector.byteLength == 0) continue;
             if (method.name != methodName || method.staticMethod != staticMethod) continue;
             if (
               method.objectiveCSelector.byteLength > 0

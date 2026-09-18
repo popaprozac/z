@@ -1,3 +1,13 @@
+import type { ForeignParameter } from "./foreign-ir.ts";
+
+/** Preserve protocol-qualified receiver lookup in emitted native entries. */
+export function objcParameterNativeSpelling(parameter: ForeignParameter): string {
+  const protocols = parameter.protocols ?? [];
+  return parameter.type.kind === "object" && parameter.type.className === null && protocols.length > 0
+    ? `id<${protocols.join(", ")}>`
+    : parameter.type.cName;
+}
+
 export function callbackParameterSpellings(signature: string): string[] | null {
   const normalized = signature
     .replace(/\b(restrict|_Nonnull|_Nullable|_Null_unspecified)\b/g, "")
