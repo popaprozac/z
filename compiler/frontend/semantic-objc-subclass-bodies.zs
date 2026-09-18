@@ -15,9 +15,32 @@ export struct NativeSuperclassCallSite {
   argumentLabels: Array<String>;
   argumentCount: usize;
   initializes: boolean;
+  optional: boolean = false;
   offset: usize;
   line: usize;
   column: usize;
+}
+
+// Syntactic eligibility only; ordinary body inference also verifies namespace
+// shadowing, arguments, receiver lifetime, and the imported method signature.
+export function optionalSuperclassWrapper(in module: ParsedModule, in tree: ExpressionTree, index: usize): usize {
+  let parent: usize = 0;
+  while (parent < tree.nodes.length) {
+    const node = view tree.nodes[parent];
+    if (node.kind == ExpressionKind.callExpression && node.children.length >= 2 && node.children[1] == index) {
+      const callee = view tree.nodes[node.children[0]];
+      if (callee.kind == ExpressionKind.memberExpression && callee.value == "optionalCall" && callee.children.length == 1) {
+        const receiver = view tree.nodes[callee.children[0]];
+        if (receiver.kind == ExpressionKind.identifierExpression) {
+          for (const declaration of module.program.imports) {
+            if (!declaration.selective && declaration.header == "std/objc" && declaration.moduleName == receiver.value) return parent;
+          }
+        }
+      }
+    }
+    parent = parent + 1;
+  }
+  return tree.nodes.length;
 }
 
 struct BodyContext {
@@ -129,6 +152,7 @@ function visitExpression(
           argumentLabels: copy node.labels,
           argumentCount: node.children.length - 1,
           initializes,
+          optional: optionalSuperclassWrapper(module, tree, index) < tree.nodes.length,
           offset: node.offset, line: node.line, column: node.column,
         }));
         let argumentContext = copy context;

@@ -799,6 +799,14 @@ export function methodCallShape(
   argumentCount: usize,
   in argumentLabels: Array<String>
 ): Option<NativeMethodCallShape> {
+  return methodCallShapeWithOptional(modules, moduleIndex, ownerType, methodName, staticMethod, argumentCount, argumentLabels, false);
+}
+
+export function methodCallShapeWithOptional(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in ownerType: String,
+  in methodName: String, staticMethod: boolean, argumentCount: usize,
+  in argumentLabels: Array<String>, includeOptional: boolean
+): Option<NativeMethodCallShape> {
   let ownerArguments = Array<String>();
   match (genericTypeShape(ownerType)) {
     some(generic) => {
@@ -817,7 +825,7 @@ export function methodCallShape(
           let matched = Option<NativeMethodCallShape>.none;
           let matchCount: usize = 0;
           for (const method of typeSignature.methods) {
-            if (!method.objectiveCRequired && method.objectiveCImplementationSelector.byteLength == 0) continue;
+            if (!includeOptional && !method.objectiveCRequired && method.objectiveCImplementationSelector.byteLength == 0) continue;
             if (method.name != methodName || method.staticMethod != staticMethod) continue;
             if (
               method.objectiveCSelector.byteLength > 0
@@ -935,14 +943,15 @@ export function methodCallShape(
               moduleIndex,
               typeSignature.foreignObjCSuperName
             );
-            const inherited = methodCallShape(
+            const inherited = methodCallShapeWithOptional(
               modules,
               moduleIndex,
               superType,
               methodName,
               staticMethod,
               argumentCount,
-              argumentLabels
+              argumentLabels,
+              includeOptional
             );
             match (inherited) {
               some(method) => {

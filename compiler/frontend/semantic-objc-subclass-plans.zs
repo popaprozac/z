@@ -222,6 +222,7 @@ export function planNativeObjCSubclasses(
       for (const call of evidence.callResolutions) {
         if (call.offset != site.offset) continue;
         if (found || call.kind != (site.initializes ? "objcSuperInitializer" : "objcSuper")
+          || call.objectiveCOptionalSuper != site.optional
           || call.objectiveCSelector.byteLength == 0
           || call.objectiveCNativeReturnType.byteLength == 0
           || call.objectiveCParameterNativeTypes.length != site.argumentCount) {
@@ -260,6 +261,7 @@ export function planNativeObjCSubclasses(
           nativeReturnType: copy call.objectiveCNativeReturnType,
           nativeParameterTypes: copy call.objectiveCParameterNativeTypes,
           receiverHandoff: call.objectiveCReceiverHandoff,
+          optional: site.optional,
         }));
       }
       if (!found) throw planError(module, "native subclass plan requires typed evidence for every superclass call");

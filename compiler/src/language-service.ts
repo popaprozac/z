@@ -1718,7 +1718,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   }
 
   const chainedCall = objectiveCCallAt(context, word.start);
-  if (chainedCall) {
+  if (chainedCall && !chainedCall.optionalCall) {
     if (chainedCall.bridge === "dataCopy" || chainedCall.bridge === "dataBorrow") {
       const declaration = [...context.semanticInfo.foreignInterfaces.values()]
         .find((candidate) => candidate.className === "NSData");
@@ -1736,7 +1736,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         .find((candidate) => candidate.selector === chainedCall.selector)
       : null;
     const method = chainedCall.async?.method
-      ?? declaration?.methods.find((candidate) => (
+      ?? (declaration ? collectObjCMethods(declaration, chainedCall.instance, context, true) : []).find((candidate) => (
         candidate.selector === chainedCall.selector
         && candidate.instance === chainedCall.instance
       ))
@@ -1855,6 +1855,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (standardOwner === "objc" && word.text === "selector") {
       return markdownHover("selector(Type.method): objc.Selector  // checked declaration reference; use inline with a contracted native target/selector pair; no closure or automatic executor hop", source, word.start, word.end);
+    }
+    if (standardOwner === "objc" && word.text === "optionalCall") {
+      return markdownHover("optionalCall(super.method(...)): Option<T>  // void methods return void\n// checks the lexical superclass implementation before evaluating arguments; absent methods do not run\n// synchronous checked native dispatch; ownership and executor restrictions still apply", source, word.start, word.end);
     }
     if (standardOwner === "objc" && word.text === "pool") {
       return markdownHover(
@@ -5699,6 +5702,8 @@ function memberCompletions(
           ? "spawn<T, E?>(operation: () => T throws E?): Task<T, E?>  // starts one native thread; sync or worker-affine async closure"
           : standardModule === "objc" && member === "selector"
             ? "selector(Type.method): objc.Selector  // checked inline native target/selector registration"
+          : standardModule === "objc" && member === "optionalCall"
+            ? "optionalCall(super.method(...)): Option<T>  // void stays void; checks implementation before arguments"
           : standardModule === "objc" && member === "pool"
             ? "pool<T, E?>(operation: () => T throws E?): T throws E?  // synchronous lexical autorelease pool"
           : standardModule === "objc" && member === "connect"
@@ -5800,7 +5805,8 @@ function memberCompletions(
     return filterCompletions(numericBitsCompletions(directReceiver.type, false), prefix, 1000);
   }
   if (directReceiver?.kind === "objc" && fullContext) {
-    return filterCompletions(objcCompletions(directReceiver.declaration, directReceiver.instance, fullContext, offset), prefix, 1000);
+    return filterCompletions(objcCompletions(directReceiver.declaration, directReceiver.instance, fullContext, offset,
+      optionalSuperCompletion(source, receiverText, offset, fullContext)), prefix, 1000);
   }
   if (directReceiver?.kind === "arena") {
     return filterCompletions([
@@ -6083,7 +6089,8 @@ function memberCompletions(
     return [];
   }
   const resolved = resolveReceiver(context, receiverText, resolvedOffset);
-  if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context, offset), prefix, 1000);
+  if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context, offset,
+    optionalSuperCompletion(source, receiverText, offset, context)), prefix, 1000);
   if (resolved?.kind === "struct") {
     const includePrivate = insideAggregateBody(source, fileName, offset, resolved.declaration.name);
     return filterCompletions(
@@ -7840,7 +7847,14 @@ function resolveModuleHandleType(
   return canonical ? module.types.get(canonical) ?? null : null;
 }
 
-function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, context: AnalyzedSource, offset?: number): CompletionItem[] {
+function optionalSuperCompletion(source: string, receiver: string, offset: number, context: AnalyzedSource): boolean {
+  if (receiver.trim() !== "super") return false;
+  const namespace = source.slice(0, offset).match(/\b([A-Za-z_][A-Za-z0-9_]*)\.optionalCall\s*\(\s*super\.[A-Za-z0-9_]*$/)?.[1];
+  return Boolean(namespace && context.semanticInfo.standardModuleBindings.get(namespace) === "objc"
+    && !sourceVariableAtOffset(context, namespace, offset));
+}
+
+function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, context: AnalyzedSource, offset?: number, includeOptional = false): CompletionItem[] {
   const mainIsolated = foreignObjCRequiresMain(declaration, context);
   const properties = collectObjCProperties(declaration, instance, context);
   const accessors = new Set(properties.flatMap((property) => [property.getter, property.setter].filter(Boolean)));
@@ -7877,7 +7891,7 @@ function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, c
       insertTextFormat: 2,
     });
   }
-  for (const method of collectObjCMethods(declaration, instance, context)) {
+  for (const method of collectObjCMethods(declaration, instance, context, includeOptional)) {
     if (accessors.has(method.selector)) continue;
     items.push({
       label: method.baseName,
@@ -8523,11 +8537,11 @@ function insideAggregateBody(source: string, fileName: string, offset: number, n
   return false;
 }
 
-function collectObjCMethods(declaration: ForeignObjCInterface, instance: boolean, context: AnalyzedSource): ForeignObjCMethod[] {
+function collectObjCMethods(declaration: ForeignObjCInterface, instance: boolean, context: AnalyzedSource, includeOptional = false): ForeignObjCMethod[] {
   const methods: ForeignObjCMethod[] = [];
   let current: ForeignObjCInterface | undefined = declaration;
   while (current) {
-    methods.push(...current.methods.filter((method) => method.required !== false && method.instance === instance));
+    methods.push(...current.methods.filter((method) => (includeOptional || method.required !== false) && method.instance === instance));
     if (!current.superName) break;
     const moduleName = current.typeName.slice(0, current.typeName.lastIndexOf("."));
     current = context.semanticInfo.objcSubclasses.get(current.typeName)?.base

@@ -141,6 +141,7 @@ export type ObjCCallInfo = {
   readonly instance: boolean;
   readonly className: string;
   readonly superDispatch?: boolean;
+  readonly optionalCall?: { readonly valueType: string };
   readonly initializesSubclass?: boolean;
   readonly receiverHandoff?: {
     readonly parameterCTypes: readonly string[];
@@ -713,6 +714,7 @@ type AnalysisState = {
   }>;
   readonly objcProperties: Map<number, ObjCPropertyInfo>;
   readonly objcCalls: Map<number, ObjCCallInfo>;
+  activeOptionalObjCSuper?: { readonly offset: number; readonly wrapperOffset: number };
   readonly objcBlockArguments: Map<number, ForeignBlockType>;
   readonly objcStringLiterals: Set<number>;
   readonly objcStringsToNative: Set<number>;
@@ -11017,8 +11019,9 @@ function inferExpressionInner(
         const plan = state.activeReceiver ? state.objcSubclasses.get(state.activeReceiver) : null;
         if (!plan || expression.callee.kind !== "member") objcSubclassError(fileName, expression.location, "`super` calls require a native subclass method or constructor");
         if (/^(?:dealloc|retain|release|autorelease|retainCount)$/.test(expression.callee.property)) objcSubclassError(fileName, expression.location, "native ARC lifecycle methods cannot be called through `super`");
+        const optional = state.activeOptionalObjCSuper?.offset === expression.location.offset;
         const selected = findObjCMethod({ declaration: plan.base, instance: true }, expression.callee.property,
-          expression.arguments.length, expression.argumentLabels, state, fileName, expression.location);
+          expression.arguments.length, expression.argumentLabels, state, fileName, expression.location, optional);
         const method = selected.method;
         if (/^(?:dealloc|retain|release|autorelease|retainCount)$/.test(method.selector)) objcSubclassError(fileName, expression.location, "native ARC lifecycle methods cannot be called through `super`");
         const initializes = expression.location.offset === plan.initializer.location.offset;
@@ -11039,7 +11042,7 @@ function inferExpressionInner(
         checkObjCArguments(method, expression.arguments, locals, globals, structs, enums, fileName, state);
         const handoff = !initializes && state.activeFunction
           && plan.declaration.methods.includes(state.activeFunction)
-          && isObjCSubclassHandoffBoundary(state.activeFunction, expression.location.offset)
+          && isObjCSubclassHandoffBoundary(state.activeFunction, optional ? state.activeOptionalObjCSuper!.wrapperOffset : expression.location.offset, optional)
           && isObjCSubclassHandoffValue(method.returnType)
           && method.parameters.every((parameter) => parameter.access !== "inout" && parameter.access !== "out"
             && (isObjCSubclassHandoffValue(parameter.type) || parameter.type.kind === "object"));
@@ -11528,6 +11531,29 @@ function inferExpressionInner(
           const owner = globals.get(localModuleName);
           if (owner?.kind === "standardModule") {
             if (owner.module === "objc") {
+              if (expression.callee.property === "optionalCall") {
+                rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+                const call = expression.arguments[0];
+                if (expression.arguments.length !== 1 || !call || !isSuperCall(call)) {
+                  objcSubclassError(fileName, expression.location, "objc.optionalCall requires one direct synchronous super.method(...) call");
+                }
+                const previous = state.activeOptionalObjCSuper;
+                state.activeOptionalObjCSuper = { offset: call.location.offset, wrapperOffset: expression.location.offset };
+                let valueType: string;
+                try {
+                  valueType = String(inferExpression(call, locals, globals, structs, enums, fileName, state));
+                } finally {
+                  state.activeOptionalObjCSuper = previous;
+                }
+                const checked = state.objcCalls.get(call.location.offset);
+                if (!checked?.superDispatch || checked.initializesSubclass) {
+                  objcSubclassError(fileName, expression.location, "objc.optionalCall cannot conditionally initialize a native receiver");
+                }
+                const result = valueType === "void" ? "void" : ensureOptionalChainEnum(valueType, expression.location, enums, state);
+                state.objcCalls.set(expression.location.offset, { ...checked, optionalCall: { valueType } });
+                state.foreignCallTypes.set(expression.location.offset, result);
+                return result;
+              }
               if (expression.callee.property === "selector") {
                 if (!state.objcSelectorCalls.has(expression.location.offset)) {
                   objcSubclassError(fileName, expression.location, "objc.selector must be an inline argument of a checked target/selector registration");
@@ -18492,6 +18518,7 @@ function findObjCMethod(
   state: AnalysisState,
   fileName: string,
   location: SourceLocation,
+  includeOptional = false,
 ): { readonly method: ForeignObjCMethod; readonly projected: boolean } {
   const usesLabels = argumentLabels.some((label) => label !== null);
   if (argumentLabels[0] !== null && argumentLabels.length > 0) {
@@ -18504,7 +18531,7 @@ function findObjCMethod(
   const matches: { readonly method: ForeignObjCMethod; readonly projected: boolean }[] = [];
   while (declaration) {
     matches.push(...declaration.methods.flatMap((method) => {
-      if (method.required === false || method.instance !== receiver.instance || method.baseName !== baseName) return [];
+      if ((!includeOptional && method.required === false) || method.instance !== receiver.instance || method.baseName !== baseName) return [];
       const projected = method.asyncCallbackParameter !== null
         && method.parameters.length - 1 === argumentCount;
       if (!projected && method.parameters.length !== argumentCount) return [];

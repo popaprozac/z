@@ -91,7 +91,7 @@ import {
 } from "./channel-types.ts";
 import { parseReadonlyType, readonlyTypeName, writableTypeName } from "./readonly-types.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import { parseObjCProtocolType } from "./objc-types.ts";
+import { isNullableObjCTypeName, parseObjCProtocolType } from "./objc-types.ts";
 import { objcParameterNativeSpelling } from "./foreign-type-spelling.ts";
 import { isStaticBytesType, staticBytesTypeName } from "./static-bytes.ts";
 import type { ObjCSubclassPlan } from "./objc-subclasses.ts";
@@ -6108,7 +6108,8 @@ export function nicheOptionPayload(
   const option = parseOptionType(declaration.name);
   if (!option) return null;
   if (parseOptionalViewType(declaration.name)) return option.target;
-  if (foreignNamedTypes.get(option.target)?.kind === "object") return option.target;
+  const object = foreignNamedTypes.get(option.target);
+  if (object?.kind === "object" && !isNullableObjCTypeName(option.target)) return option.target;
   const pointer = parsePointerTypeName(option.target);
   return pointer && !pointer.nullable ? option.target : null;
 }
@@ -11891,6 +11892,19 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       const objcCall = context.semanticInfo.objcCalls.get(expression.location.offset);
       if (objcCall && expression.callee.kind === "member") {
+        if (objcCall.optionalCall) {
+          const present = `class_getInstanceMethod(objc_getClass(${JSON.stringify(objcCall.className)}), @selector(${objcCall.selector})) != NULL`;
+          const call = generateExpression(expression.arguments[0], context);
+          if (objcCall.optionalCall.valueType === "void") return `({ if (${present}) { ${call}; } (void)0; })`;
+          const type = inferExpressionType(expression, context);
+          const declaration = context.enums.get(type);
+          if (!declaration) throw new Error("optional superclass call lost its Option result");
+          const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
+          if (niche) return `(${present} ? ${call} : ${nicheOptionNull(niche)})`;
+          const some = generateEnumVariantConstruction(declaration, "some", call, context);
+          const none = generateEnumVariantConstruction(declaration, "none", null, context);
+          return `(${present} ? ${some} : ${none})`;
+        }
         if (objcCall.bridge === "dataCopy") {
           return `z_nsdata_copy_bytes(${generateCallArgument(expression.arguments[0], context)})`;
         }

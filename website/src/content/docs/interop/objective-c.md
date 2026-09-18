@@ -231,6 +231,32 @@ optional members remain unavailable to ordinary calls and `super` delegation.
 If no superclass implementation is promised, callbacks during construction or
 teardown fail closed under the existing native-entry lifecycle guard.
 
+Use `std/objc` when forwarding to an optional superclass implementation:
+
+```zs
+import objc from "std/objc";
+
+// Inside the corresponding native override:
+const inherited = objc.optionalCall(super.draggingEntered(sender));
+return match (in inherited) {
+  some(operation) => operation;
+  none => AppKit.NSDragOperationNone;
+};
+```
+
+`optionalCall` is compiler-recognized: it checks the lexical superclass before
+evaluating arguments, then invokes the method only if implemented. Results are
+`Option<T>`; void callbacks return `void`. `some(false)` and `some(null)` remain
+distinct from `none`. Native ARC, thread affinity, availability, and receiver
+guards still apply. A direct synchronous `super` call is required, and native
+initialization cannot be conditional. It does not allocate a closure or treat
+custom message forwarding as a concrete implementation.
+
+Choose the fallback for the particular callback. For example, an absent
+`draggingUpdated:` uses the previously accepted drag operation rather than an
+unconditional rejection. This API does not automatically implement a file-drop
+policy or grant access to dropped paths.
+
 A protocol adapter does not become an `NSWindow`. When native virtual dispatch
 is required, the first subclass tier creates a real native ARC object:
 

@@ -283,6 +283,7 @@ export enum LoweredExpressionKind {
   methodCall,
   objectiveCMessageCall,
   objectiveCSuperCall,
+  objectiveCOptionalSuperCall,
   objectiveCSuperInitializer,
   nativeObjCConstruction,
   objectiveCDataCopy,
@@ -13024,6 +13025,36 @@ function lowerExpressionContextual(
       throw "native lowering received a malformed call expression";
     }
     const calleeInput = tree.nodes[index].children[0];
+    if (tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[calleeInput].value == "optionalCall"
+      && tree.nodes[index].children.length == 2) {
+      const namespace = tree.nodes[calleeInput].children[0];
+      if (tree.nodes[namespace].kind == ExpressionKind.identifierExpression
+        && isImportedStandardNamespace(program, "std/objc", tree.nodes[namespace].value)) {
+        const inner = tree.nodes[index].children[1];
+        const resolution = resolvedCallResolutionIndex(evidence, tree, inner);
+        if (resolution >= evidence.callResolutions.length
+          || evidence.callResolutions[resolution].kind != "objcSuper"
+          || !evidence.callResolutions[resolution].objectiveCOptionalSuper) {
+          throw "optional superclass call lost checked dispatch evidence";
+        }
+        const valueType = view evidence.callResolutions[resolution].returnType;
+        const call = try lowerExpression(program, importedTypes, evidence, tree, inner, inout output);
+        let children = Array<usize>();
+        if (valueType == "void") {
+          children.push(call);
+        } else {
+          const optionType = try lowerModuleTypeName(program, importedTypes, `Option<${valueType}>`);
+          children.push(pushExpression(inout output, LoweredExpressionKind.enumPayloadValue,
+            optionType.name, Array<usize>(call), Array<String>("some")));
+          children.push(pushExpression(inout output, LoweredExpressionKind.enumValue,
+            optionType.name, Array<usize>(), Array<String>("none", "payload")));
+        }
+        return pushExpression(inout output, LoweredExpressionKind.objectiveCOptionalSuperCall,
+          evidence.callResolutions[resolution].objectiveCSelector, children, Array<String>());
+      }
+    }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1

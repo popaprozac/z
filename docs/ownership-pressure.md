@@ -9968,6 +9968,26 @@ This is a compiler prerequisite, not evidence that Zapp's drop grants, native
 acceptance policy, or renderer delivery are complete. Those remain application
 integration work and need their own cancellation and document-lifetime tests.
 
+## Optional superclass delegation
+
+Incoming file drops exposed the second half of optional Objective-C callbacks:
+knowing a protocol signature does not establish that a superclass implements it.
+`objc.optionalCall(super.method(...))` separates the two facts. It checks concrete
+method presence on the lexical superclass chain before evaluating arguments or
+handing off the receiver guard, then uses the checked native ABI. Missing value
+callbacks produce `none`, while missing void callbacks do nothing.
+
+The bounded fixture covers inherited implementations, absent callbacks despite
+the receiver's own override, skipped argument effects, native reentry, false and
+record results, ARC object results, and the distinction between a present nullable
+result and a missing method. Both emitters run under strict Clang at `-O0`/`-O2`
+with UBSan. Nullable payloads cannot use null itself as an Option discriminator.
+There is no generic Objective-C exception recovery, custom message-forwarding
+promise, or relaxation of constructor/teardown guards.
+
+Zapp still needs application-level acceptance, grants, document identity checks,
+and ordinary non-file drag preservation tests before advertising file-drop support.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

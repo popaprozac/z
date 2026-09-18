@@ -96,6 +96,43 @@ during teardown, a callback with no promised superclass implementation uses the
 existing fail-closed native-entry guard; the compiler does not invent a default
 return or send an unrecognized superclass selector.
 
+### Optional superclass calls
+
+`objc.optionalCall(super.method(...))` checks for an implementation starting at
+the lexical superclass, then performs the checked native superclass call. The
+argument must be one direct synchronous `super` call. Ordinary calls and selector
+strings are not accepted, and constructors cannot be made conditional.
+
+```zs
+import objc from "std/objc";
+
+// Inside a native override:
+const inherited = objc.optionalCall(super.draggingEntered(sender));
+return match (in inherited) {
+  some(operation) => operation;
+  none => AppKit.NSDragOperationNone;
+};
+```
+
+Value results are `Option<T>`; void callbacks conditionally run and return
+`void`. The runtime check precedes all argument evaluation. A missing method
+therefore neither evaluates arguments nor performs receiver handoff. `some(false)`
+is distinct from `none`; a nullable native result likewise preserves
+`some(null)` rather than flattening it into absence. Owned native results keep
+ordinary ARC lifetime rules.
+
+This is a compiler-recognized operation, not an ordinary function receiving an
+already evaluated call. Known ABI, availability, executor, and ownership checks
+still apply. Full-expression delegation preserves the existing guarded handoff;
+nested calls retain the receiver guard. There is no closure or method-handle
+allocation. The implementation checks concrete methods in the superclass chain;
+custom Objective-C message forwarding is not treated as an implementation.
+
+Application-specific absence behavior remains explicit. In particular, AppKit
+drag callbacks have different defaults; the compiler must not supply a blanket
+zero/false result. This feature does not relax construction/teardown entry guards
+or enable arbitrary optional calls on Objective-C objects.
+
 ## Approved construction and current restrictions
 
 An explicit `constructor` begins with exactly one direct superclass designated

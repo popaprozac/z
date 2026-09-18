@@ -123,6 +123,7 @@ export struct ModuleObjCSubclassSuperCall {
   nativeReturnType: String;
   nativeParameterTypes: Array<String>;
   receiverHandoff: boolean = false;
+  optional: boolean = false;
 }
 
 // An ordinary Z method: checked receiver capability, deliberately no selector/ABI.
@@ -257,6 +258,7 @@ export struct ModuleCallResolution {
   objectiveCReceiverNativeType: String = "";
   objectiveCNativeReturnType: String = "";
   objectiveCReceiverHandoff: boolean = false;
+  objectiveCOptionalSuper: boolean = false;
   objectiveCHandoffParameterObjects: Array<boolean> = Array<boolean>();
   objectiveCParameterNativeTypes: Array<String> = Array<String>();
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;

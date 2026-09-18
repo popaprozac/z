@@ -6486,6 +6486,29 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.objectiveCOptionalSuperCall) {
+    const expression = view declaration.expressions[index];
+    if (declaration.nativeObjCClass.byteLength == 0 || expression.children.length < 1 || expression.children.length > 2) {
+      throw "optional superclass dispatch requires a checked native entry";
+    }
+    const isVoid = expression.children.length == 1;
+    output.append(isVoid ? "({ if (" : "(");
+    output.append("class_getInstanceMethod(class_getSuperclass(objc_getClass(\"");
+    output.append(declaration.nativeObjCClass);
+    output.append("\")), @selector(");
+    output.append(expression.value);
+    output.append(isVoid ? ")) != NULL) { " : ")) != NULL ? ");
+    const present = expression.children[0];
+    try appendExpression(inout output, declaration, present);
+    if (isVoid) output.append("; } (void)0; })");
+    else {
+      output.append(" : ");
+      const absent = expression.children[1];
+      try appendExpression(inout output, declaration, absent);
+      output.append(")");
+    }
+    return;
+  }
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.objectiveCMessageCall

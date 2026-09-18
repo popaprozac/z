@@ -635,6 +635,14 @@ function typeHasCleanupInner(
   }
   match (inferredTypeSymbolLocation(modules, moduleIndex, typeName)) {
     some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          // A protocol-qualified id is an ARC reference. Its getter fields
+          // describe messages, not embedded storage whose cleanup we recurse.
+          if (signature.foreignKind == "objcProtocol") return !requiresOwnedBinding;
+        }
+        none => {}
+      }
       const kind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
       if (kind == ModuleSymbolKind.classSymbol) {
         if (requiresOwnedBinding) {
@@ -904,6 +912,7 @@ export function typeMovesOnOwnedUse(
   moduleIndex: usize,
   in typeName: String
 ): boolean {
+  if (typeIsNativeObjCReference(modules, moduleIndex, typeName)) return false;
   let managedType = typeName.copyBytes(0, typeName.byteLength);
   const nullableTarget = nullableTargetType(typeName);
   if (nullableTarget.byteLength > 0) {

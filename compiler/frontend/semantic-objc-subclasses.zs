@@ -430,7 +430,7 @@ function validateSuperclassCallContract(
   let index: usize = 0;
   while (index < methods.length) {
     const method = view methods[index];
-    if (method.objectiveCRequired && method.name == call.name && method.objectiveCParameterNativeTypes.length == call.argumentCount
+    if ((method.objectiveCRequired || call.optional) && method.name == call.name && method.objectiveCParameterNativeTypes.length == call.argumentCount
       && objcMethodLabelsMatch(method, call.argumentLabels)) {
       selected = index;
       count = count + 1;

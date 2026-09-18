@@ -186,7 +186,12 @@ recursive path.
   aggregate/array/enum storage, returns, or owned captures. This closes direct
   conversion parity; known synchronous `in` helpers also undergo the established
   non-escaping callback audit before stack-backed closures can enter them.
-  Typed checking requires attached superclass ABI evidence. The driver supplies
+  Typed checking requires attached superclass ABI evidence. The standalone native
+  driver's `check` and `emit` paths attach imported header metadata. The older
+  Stage 0 `check --native-frontend` parity mode sends source modules only; native
+  subclasses can fail there with missing ABI evidence even when standalone native
+  checking succeeds. Supplying foreign metadata to that parity mode remains open.
+  The driver supplies
   the existing deployment target as parsed-module context;
   `semantic-native-availability.zs` enforces applicable unavailable, introduced,
   and obsoleted facts on bases, overrides, native body calls, and properties.
