@@ -253,7 +253,7 @@ export function collectionHasLength(in ownerType: String): boolean {
   }
   const sourceType = sourceCollectionTypeName(ownerType);
   return match (genericTypeShape(sourceType)) {
-    some(generic) => ((generic.base == "Array" || generic.base == "Set")
+    some(generic) => ((generic.base == "Array" || generic.base == "Slice" || generic.base == "Set")
         && generic.arguments.length == 1)
       || (generic.base == "Map" && generic.arguments.length == 2);
     none => false;

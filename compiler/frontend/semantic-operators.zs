@@ -64,15 +64,25 @@ function unresolvedOperatorType(
   };
 }
 
-function isKnownEnumType(
+function isComparableEnumType(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
   in typeName: String
 ): boolean {
   return match (typeSymbolLocation(modules, moduleIndex, typeName)) {
-    some(location) => modules[location.moduleIndex]
-      .symbols[location.symbolIndex]
-      .kind == ModuleSymbolKind.enumSymbol;
+    some(location) => {
+      const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+      if (symbol.kind != ModuleSymbolKind.enumSymbol) return false;
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          for (const variant of signature.variants) {
+            if (variant.payloadType.byteLength > 0) return false;
+          }
+        }
+        none => return false;
+      }
+      return true;
+    }
     none => false;
   };
 }
@@ -265,7 +275,7 @@ export function binaryOperatorType(
   // their equality result as unresolved external semantics: inferred boolean
   // locals need this evidence, including flags read from ObjC properties.
   if ((operator == "==" || operator == "!=")
-    && isKnownEnumType(modules, moduleIndex, left)
+    && isComparableEnumType(modules, moduleIndex, left)
     && equivalentTypes(modules, moduleIndex, left, right)) return "boolean";
   if (
     operator == "&"
@@ -359,7 +369,7 @@ export function binaryOperatorType(
         isNumericTypeName(left)
         || left == "boolean"
         || left == "String"
-        || isKnownEnumType(modules, moduleIndex, left)
+        || isComparableEnumType(modules, moduleIndex, left)
       )
     ) return "boolean";
     if (

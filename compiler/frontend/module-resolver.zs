@@ -358,7 +358,10 @@ function directAggregateClassAliasNodeIdentity(
   return valueBindingClassAlias(bindings, bindingName);
 }
 
-function directAggregateClassAliasNodeIsTracked(
+function directAggregateClassAliasNodeMayAlias(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
   in tree: ExpressionTree,
   index: usize,
   in bindings: Array<NativeValueBinding>
@@ -375,7 +378,15 @@ function directAggregateClassAliasNodeIsTracked(
   const field = identifierLookupName(tree.nodes[index].value);
   const bindingName = aggregateClassAliasFieldBindingName(owner, field);
   const trackedType = valueBindingType(bindings, bindingName);
-  return trackedType.byteLength > 0;
+  if (trackedType.byteLength > 0) return true;
+  // Borrowed aggregate parameters have no constructor history in this scope.
+  // Their ARC fields may still refer to the same object; missing identity
+  // evidence must not turn different field names into a disjointness proof.
+  const ownerType = valueBindingType(bindings, owner);
+  return match (aggregateFieldShape(modules, moduleIndex, ownerType, field)) {
+    some(shape) => typeIsClassReference(module, modules, moduleIndex, shape.typeName);
+    none => false;
+  };
 }
 
 function expressionNodeClassAliasIdentity(
@@ -4435,7 +4446,8 @@ function inferSignatureCallType(
         bindings
       );
       receiverAliasUnknown = projectedIdentity == 0
-        && directAggregateClassAliasNodeIsTracked(
+        && directAggregateClassAliasNodeMayAlias(
+          module, modules, moduleIndex,
           tree,
           receiverNode,
           bindings
@@ -4494,14 +4506,20 @@ function inferSignatureCallType(
       && stringStartsWith(signature.parameterTypes[accessIndex], "Slice<")
     ) capability = "in";
     let accessIdentity = valueBindingClassAlias(bindings, root);
-    const accessPath = expressionDirectFieldPath(tree, nodeIndex);
+    // Indexing a value-owned collection reads that collection, not every
+    // sibling field of its aggregate. Reuse the typed storage proof: dynamic
+    // elements still overlap, and traversing shared identity stays conservative.
+    const accessPath = tree.nodes[nodeIndex].kind == ExpressionKind.indexExpression
+      ? expressionOwnedMutationPath(module, modules, moduleIndex, tree, nodeIndex, bindings, false)
+      : expressionDirectFieldPath(tree, nodeIndex);
     const projectedIdentity = directAggregateClassAliasNodeIdentity(
       tree,
       nodeIndex,
       bindings
     );
     const accessAliasUnknown = projectedIdentity == 0
-      && directAggregateClassAliasNodeIsTracked(
+      && directAggregateClassAliasNodeMayAlias(
+        module, modules, moduleIndex,
         tree,
         nodeIndex,
         bindings
@@ -6968,8 +6986,14 @@ function inferExpressionNodeType(
         || value == "<="
         || value == ">"
         || value == ">="
+        || value == "=="
+        || value == "!="
       )
-    ) return "boolean";
+    ) {
+      recordExpressionResolution(modules, moduleIndex, tree, children[0], left, inout evidence);
+      recordExpressionResolution(modules, moduleIndex, tree, children[1], right, inout evidence);
+      return "boolean";
+    }
     const result = try binaryOperatorType(
       module,
       modules,
@@ -9774,6 +9798,11 @@ function inferExpressionNodeType(
                   capacityType = "usize";
                 }
                 capacityType = transparentTypeName(modules, moduleIndex, capacityType);
+                if (capacityType.byteLength == 0) throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch, module.path,
+                  "Array.withCapacity requires usize; the argument type could not be resolved",
+                  tree.nodes[capacity].line, tree.nodes[capacity].column
+                );
                 if (capacityType != "usize") throw resolutionError(
                   ModuleResolveErrorKind.typeMismatch, module.path,
                   `Array.withCapacity requires usize, found ${capacityType}`,
@@ -13504,7 +13533,9 @@ function validateExpressionTypesAndLocals(
         let bindings = Array<NativeValueBinding>();
         addValueBinding(inout bindings, "__z_native_function_name", "deinit");
         addValueBinding(inout bindings, "__z_native_return_type", "void");
-        addValueBinding(inout bindings, "this", aggregate.name);
+        // Teardown exclusively borrows initialized storage; it does not own
+        // a receiver value that may be moved out of the deinitializer.
+        addBorrowedValueBinding(inout bindings, "this", aggregate.name, true);
         if (aggregate.kind == DeclarationKind.classDeclaration) {
           setValueBindingClassAlias(
             inout bindings,

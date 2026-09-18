@@ -1347,7 +1347,7 @@ test("materializes concrete generic value structs through native ownership", () 
   );
   assert.match(
     emission.stdout,
-    /Z_String _z_stage1_assignment_\d+ = next;\s+Z_String_deinit\(&self->value\);\s+self->value = _z_stage1_assignment_\d+;/,
+    /Z_String _z_stage1_assignment_(\d+) = next;\s+Z_String \*_z_stage1_assignment_slot_\1 = &\(self->value\);\s+Z_String_deinit\(_z_stage1_assignment_slot_\1\);\s+\*_z_stage1_assignment_slot_\1 = _z_stage1_assignment_\1;/,
   );
   assert.match(
     emission.stdout,
@@ -3156,7 +3156,7 @@ test("preserves weak identity for generic ARC class specializations", () => {
   );
   assert.match(
     emission.stdout,
-    /Z___z_mono_[A-Za-z0-9_]+_weak\(Z___z_mono_[A-Za-z0-9_]+ \*value\)/,
+    /Z___z_mono_[A-Za-z0-9_]+_weak\(const Z___z_mono_[A-Za-z0-9_]+ \*borrowed\)/,
   );
 
   const directory = mkdtempSync("/tmp/z-native-generic-weak-");
@@ -19435,7 +19435,7 @@ test("defers dependent generic comparisons to concrete specialization", () => {
   )?.[1];
   assert.equal(observedBindings, "4");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "18");
+  assert.equal(observedExpressions, "19");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 

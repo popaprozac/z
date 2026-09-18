@@ -53,6 +53,7 @@ import {
   fixedArrayShape,
   genericTypeShape,
   isIntegerTypeName,
+  isNumericTypeName,
   nativeFunctionSignature,
   nativeObjCObjectTypeName,
   nullableTargetType,
@@ -89,6 +90,7 @@ import {
 import fs from "std/fs";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
+import { validateSpecializedComparisons } from "./semantic-specialization-comparisons.zs";
 import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
@@ -955,6 +957,12 @@ struct LoweredGenericFunctionUse {
   typeArgumentIdentities: Array<String>;
   typeArgumentModules: Array<usize>;
   typeArgumentSymbols: Array<usize>;
+}
+
+struct LoweredGenericDemands {
+  structs: Array<LoweredGenericStructUse>;
+  methods: Array<LoweredGenericMethodUse>;
+  functions: Array<LoweredGenericFunctionUse>;
 }
 
 function structIndex(in program: Program, in name: String): Option<usize> {
@@ -12342,6 +12350,19 @@ function lowerExpressionContextual(
       some(name) => {
         comparesString = name == "String" || name == "view String";
         usesFloatingPoint = name == "f32" || name == "f64";
+        // A dependent operand still carries its source parameter spelling in
+        // semantic evidence. Select the operation from the concrete alias.
+        if (!comparesString && !isNumericTypeName(name) && name != "boolean" && name != "null") {
+          let aliasIndex = importedTypes.length;
+          while (aliasIndex > 0) {
+            aliasIndex = aliasIndex - 1;
+            const imported = view importedTypes[aliasIndex];
+            if (imported.localName != name) continue;
+            comparesString = imported.kind == LoweredTypeKind.stringType;
+            usesFloatingPoint = imported.kind == LoweredTypeKind.f32Type || imported.kind == LoweredTypeKind.f64Type;
+            break;
+          }
+        }
       }
       none => {}
     }
@@ -12350,6 +12371,17 @@ function lowerExpressionContextual(
         some(name) => {
           comparesString = name == "String" || name == "view String";
           if (name == "f32" || name == "f64") usesFloatingPoint = true;
+          if (!comparesString && !isNumericTypeName(name) && name != "boolean" && name != "null") {
+            let aliasIndex = importedTypes.length;
+            while (aliasIndex > 0) {
+              aliasIndex = aliasIndex - 1;
+              const imported = view importedTypes[aliasIndex];
+              if (imported.localName != name) continue;
+              comparesString = imported.kind == LoweredTypeKind.stringType;
+              if (imported.kind == LoweredTypeKind.f32Type || imported.kind == LoweredTypeKind.f64Type) usesFloatingPoint = true;
+              break;
+            }
+          }
         }
         none => {}
       }
@@ -34521,7 +34553,86 @@ export function lowerModules(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph
 ): LoweredProgram throws String {
-  const outcome = attempt lowerModulesIncludingTests(parsed, graph, false);
+  return try lowerCheckedModules(parsed, graph, false);
+}
+
+function collectGenericDemands(in parsed: Array<ParsedModule>, in graph: ModuleGraph): LoweredGenericDemands throws String {
+  const structs = collectGenericStructUses(parsed, graph);
+  let methods = try collectGenericMethodUses(parsed, graph);
+  let functions = try collectGenericFunctionUses(parsed, graph, methods);
+  let changed = true;
+  while (changed) {
+    const methodCount = methods.length;
+    const functionCount = functions.length;
+    try closeGenericMethodDemandGraph(parsed, graph, functions, inout methods);
+    functions = try collectGenericFunctionUses(parsed, graph, methods);
+    changed = methods.length != methodCount || functions.length != functionCount;
+  }
+  return LoweredGenericDemands({ structs, methods, functions });
+}
+
+function validateGenericDemandComparisons(
+  in parsed: Array<ParsedModule>, in graph: ModuleGraph, in demands: LoweredGenericDemands
+): void throws String {
+  for (const use of demands.structs) {
+    for (const aggregate of parsed[use.ownerModuleIndex].program.aggregates) {
+      if (aggregate.name != use.ownerName) continue;
+      for (const method of aggregate.methods) {
+        if (method.typeParameters.length > 0) continue;
+        const result = attempt validateSpecializedComparisons(parsed[use.ownerModuleIndex], graph.modules,
+          use.ownerModuleIndex, method, use.typeParameters, use.typeArguments,
+          use.typeArgumentModules, use.typeArgumentSymbols);
+        match (result) {
+          success => {}
+          failure(error) => throw `${error.path}:${error.line}:${error.column}: error: ${error.message}`;
+        }
+      }
+    }
+  }
+  for (const use of demands.functions) {
+    for (const declaration of parsed[use.ownerModuleIndex].program.functions) {
+      if (declaration.name != use.name) continue;
+      const result = attempt validateSpecializedComparisons(parsed[use.ownerModuleIndex], graph.modules,
+        use.ownerModuleIndex, declaration, use.typeParameters, use.typeArguments,
+        use.typeArgumentModules, use.typeArgumentSymbols);
+      match (result) {
+        success => {}
+        failure(error) => throw `${error.path}:${error.line}:${error.column}: error: ${error.message}`;
+      }
+    }
+  }
+  for (const use of demands.methods) {
+    for (const aggregate of parsed[use.ownerModuleIndex].program.aggregates) {
+      if (aggregate.name != use.ownerName) continue;
+      for (const method of aggregate.methods) {
+        if (method.name != use.methodName) continue;
+        let parameters = Array<String>();
+        for (const parameter of aggregate.typeParameters) { parameters.push(copy parameter.name); }
+        for (const parameter of method.typeParameters) { parameters.push(copy parameter.name); }
+        const result = attempt validateSpecializedComparisons(parsed[use.ownerModuleIndex], graph.modules,
+          use.ownerModuleIndex, method, parameters, use.allTypeArguments,
+          use.typeArgumentModules, use.typeArgumentSymbols);
+        match (result) {
+          success => {}
+          failure(error) => throw `${error.path}:${error.line}:${error.column}: error: ${error.message}`;
+        }
+      }
+    }
+  }
+}
+
+function lowerCheckedModules(
+  in parsed: Array<ParsedModule>, in graph: ModuleGraph, includeTests: boolean
+): LoweredProgram throws String {
+  const demandsOutcome = attempt collectGenericDemands(parsed, graph);
+  const demands = match (demandsOutcome) {
+    success(value) => value;
+    failure(message) => throw internalBackendFailure("native specialization", message);
+  };
+  // A failed concrete constraint is a source error, not an internal backend
+  // failure. Validate before lowering and reuse this same closed demand graph.
+  try validateGenericDemandComparisons(parsed, graph, demands);
+  const outcome = attempt lowerModulesIncludingTests(parsed, graph, includeTests, demands);
   return match (outcome) {
     success(lowered) => lowered;
     failure(message) => throw internalBackendFailure(
@@ -34535,20 +34646,14 @@ export function lowerTestModules(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph
 ): LoweredProgram throws String {
-  const outcome = attempt lowerModulesIncludingTests(parsed, graph, true);
-  return match (outcome) {
-    success(lowered) => lowered;
-    failure(message) => throw internalBackendFailure(
-      "native lowering",
-      message
-    );
-  };
+  return try lowerCheckedModules(parsed, graph, true);
 }
 
 function lowerModulesIncludingTests(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph,
-  includeTests: boolean
+  includeTests: boolean,
+  in demands: LoweredGenericDemands
 ): LoweredProgram throws String {
   let alignedModuleIndex: usize = 0;
   let objectiveCSubclasses = Array<ModuleObjCSubclassPlan>();
@@ -34597,31 +34702,9 @@ function lowerModulesIncludingTests(
     includeTests
   );
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
-  const genericStructUses = collectGenericStructUses(parsed, graph);
-  let genericMethodUses = try collectGenericMethodUses(parsed, graph);
-  let genericFunctionUses = try collectGenericFunctionUses(
-    parsed,
-    graph,
-    genericMethodUses
-  );
-  let demandGraphChanged = true;
-  while (demandGraphChanged) {
-    const methodCount = genericMethodUses.length;
-    const functionCount = genericFunctionUses.length;
-    try closeGenericMethodDemandGraph(
-      parsed,
-      graph,
-      genericFunctionUses,
-      inout genericMethodUses
-    );
-    genericFunctionUses = try collectGenericFunctionUses(
-      parsed,
-      graph,
-      genericMethodUses
-    );
-    demandGraphChanged = genericMethodUses.length != methodCount
-      || genericFunctionUses.length != functionCount;
-  }
+  const genericStructUses = view demands.structs;
+  const genericMethodUses = view demands.methods;
+  const genericFunctionUses = view demands.functions;
   const deferredGenericMethodUses = Array<LoweredGenericMethodUse>();
   const deferredGenericFunctionUses = Array<LoweredGenericFunctionUse>();
   const entryIndex = graph.entry;

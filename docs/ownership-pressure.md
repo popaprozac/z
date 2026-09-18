@@ -9940,6 +9940,33 @@ join before local destructors run. A destructor-only wake of a blocked receiver
 therefore deadlocks. The framework explicitly signals the writer on every
 startup-failure path and on normal shutdown; `deinit` is not its stop protocol.
 
+## Native parity under an interpreter workload
+
+Minimal interpreter-shaped programs exposed four gaps between the Stage 0 and
+native compilers: Slice length expressions lost their `usize` type at call
+boundaries, an indexed sibling-field read widened to the entire receiver,
+deinitializers lacked exclusive mutable receiver access, and generic element
+equality was rejected before concrete specialization.
+
+The native implementation now uses the ordinary collection-member type rule
+for Slice lengths, preserves the owned collection's storage-path prefix through
+indexing, and gives teardown a mutable borrow rather than ownership of `this`.
+Dynamic elements of one collection remain overlapping. Traversing nested ARC
+identity does not establish disjointness, and borrowed aggregate parameters'
+ARC fields remain potentially aliased when constructor history is unavailable.
+Cleanup tests cover unannotated and thread-any deinitializers, nested cleanup,
+and an ARC owner with multiple aliases; ordinary receiver and executor
+restrictions remain enforced.
+
+Dependent comparisons retain operand evidence and are validated against the
+closed concrete specialization graph before C lowering. This includes imported
+and forwarded generic functions and generic methods. String specializations
+select byte-content equality rather than C record equality. Unsupported concrete
+operands produce source diagnostics, not Clang failures. These regression
+programs run through both compiler paths at `-O0` and `-O2` with UBSan. They do
+not establish correctness of a complete natively compiled JavaScript engine;
+that remains a separate consumer verification step.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
