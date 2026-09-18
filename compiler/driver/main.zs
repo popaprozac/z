@@ -443,6 +443,28 @@ function loadProject(
       throw message;
     }
   }
+  // Foreign imports are resolved relative to their declaring source module.
+  // The emitted translation unit lives elsewhere, so final compilation needs
+  // those same directories, including generated modules and a nested entry.
+  // Add them only after import resolution; this is an effective build setting,
+  // not a change to which headers the foreign importer is allowed to discover.
+  let includeDirectories = Set<String>();
+  includeDirectories.add(copy config.directory);
+  for (const directory of config.includeDirectories) {
+    includeDirectories.add(copy directory);
+  }
+  const entryDirectory = directoryName(canonicalEntry);
+  if (!includeDirectories.has(entryDirectory)) {
+    includeDirectories.add(copy entryDirectory);
+    config.includeDirectories.push(copy entryDirectory);
+  }
+  for (const moduleIndex of graph.dependencyOrder) {
+    const directory = directoryName(graph.modules[moduleIndex].path);
+    if (!includeDirectories.has(directory)) {
+      includeDirectories.add(copy directory);
+      config.includeDirectories.push(copy directory);
+    }
+  }
   return NativeProject({
     entryPath: canonicalEntry,
     config,

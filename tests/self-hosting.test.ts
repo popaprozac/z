@@ -58,6 +58,7 @@ import type {
 import { selfHostExecutableDifferentialCorpus } from "./support/self-host-fixtures.ts";
 import { createHash } from "node:crypto";
 import { exerciseGeneratedAdapterLinking } from "./support/generated-adapter-linking.ts";
+import { exerciseModuleHeaderBuilds } from "./support/module-header-builds.ts";
 
 hostToolchainTest("releases captured class arguments and mutable deinit cleanup natively", () => {
   const directory = mkdtempSync("/tmp/z-native-capture-cleanup-");
@@ -8816,6 +8817,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       : "z-foreign-adapter",
   );
   assert.equal(existsSync(foreignAdapter), true);
+  exerciseModuleHeaderBuilds([executable], true);
 
   const typedScalarConstant = spawnSync(
     executable,

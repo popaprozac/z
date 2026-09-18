@@ -10,6 +10,11 @@ import {
   test,
   writeFileSync,
 } from "./support/bootstrap.ts";
+import { exerciseModuleHeaderBuilds } from "./support/module-header-builds.ts";
+
+test("builds module-relative headers across executable and library targets", () => {
+  exerciseModuleHeaderBuilds([process.execPath, cli]);
+}, 60_000);
 
 test("associates z.json with the implemented project-manifest schema", () => {
   const packagePath = resolve(projectRoot, "editors/vscode/package.json");

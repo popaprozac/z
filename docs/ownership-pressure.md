@@ -9994,6 +9994,19 @@ Stage 0 rejects that spelling too; the accepted `append<T>(..., 36)` form is
 covered here. These bounded regressions still do not replace the consumer's
 complete native-engine build and correctness gates.
 
+Once the consumer reached native C emission, its nested modules exposed a
+driver-only header lookup gap. Foreign import analysis found a header beside
+the declaring Z module, but final Clang compilation searched only the project
+directory and explicit manifest include paths. The native driver now preserves
+the entry and reachable module directories, deduplicated in deterministic order,
+in its effective build configuration. Executables, static libraries, and shared
+libraries share these paths; bare and `./`-relative header spellings need no
+manifest workaround. Explicit include paths remain intact, and transitive
+header changes or deletion invalidate cached builds. This matches Stage 0's
+existing include-search model; it does not introduce isolated namespaces for
+same-spelled native headers. Passing these build regressions still leaves the
+consumer's full native-engine runtime gates to independent verification.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
