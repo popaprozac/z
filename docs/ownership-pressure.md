@@ -10049,6 +10049,142 @@ rejects early returns in nested blocks; `unsafe` does not bypass that rule in
 either compiler. Complete consumer lifecycle and differential gates still need
 to be rerun against each newly published compiler checkpoint.
 
+Independent consumer verification at `9755f564` now covers the complete native
+interpreter build, not only the minimal probes: lifecycle admission and worker
+shutdown, 1,000 context creation/destruction cycles, 20 expectations, five
+collector checks, 61 unit tests, and three executable oracles all pass. Across
+53,330 test262 cases, native and Stage 0 builds have no differing outcomes;
+Stage 0 also has no outcome changes against the consumer's previous pin.
+This establishes parity for that workload and revision, not complete compiler
+equivalence or a claim that all test262 cases pass.
+
+Integration with contextual Option argument lowering exposed a distinct loan
+boundary. A borrowed callable argument must preserve its existing storage, not
+retain it into a temporary that C cannot borrow by address. Owned and constructed
+arguments still receive the destination type; borrowed places retain their
+checked representation. A regression combines an implicitly or explicitly
+borrowed captured callable with a contextually constructed Option in the same
+call, while the existing allocation-ledger fixtures verify capture cleanup.
+
+## Optional native callbacks for window file drops
+
+Zapp's incoming-file-drop work reached AppKit's `NSDraggingDestination` protocol.
+`NSView` adopts it, but its methods are optional and are not repeated on the
+`WKWebView` interface. The importer previously discarded those requirements,
+leaving `override function draggingEntered ... as "draggingEntered:"` without
+the header signature it needs for checking.
+
+Optional adopted signatures now survive as override evidence. They are not
+advertised as ordinary methods unless implemented. A concrete superclass method
+still takes precedence over a nearer optional requirement. Native parameter
+spelling retains `id<Protocol>` rather than erasing it to `id`, which otherwise
+lets Clang pick an unrelated same-named getter with a different return ABI.
+Required protocol getters also retain native semantic field evidence, allowing
+inferred object and record locals such as `const pasteboard = sender.draggingPasteboard`
+and `const point = sender.draggingLocation`. Previously the native compiler
+could reach lowering without a type for those locals.
+
+The lifecycle distinction matters as much as lookup: construction and teardown
+cannot blindly forward to a superclass callback that may not exist. Such entries
+use the same fail-closed Ready guard as newly declared native entries; no
+callback-specific default result is invented. Implemented inherited methods
+keep their existing superclass forwarding.
+
+This is a compiler prerequisite, not evidence that Zapp's drop grants, native
+acceptance policy, or renderer delivery are complete. Those remain application
+integration work and need their own cancellation and document-lifetime tests.
+
+## Optional superclass delegation
+
+Incoming file drops exposed the second half of optional Objective-C callbacks:
+knowing a protocol signature does not establish that a superclass implements it.
+`objc.optionalCall(super.method(...))` separates the two facts. It checks concrete
+method presence on the lexical superclass chain before evaluating arguments or
+handing off the receiver guard, then uses the checked native ABI. Missing value
+callbacks produce `none`, while missing void callbacks do nothing.
+
+The bounded fixture covers inherited implementations, absent callbacks despite
+the receiver's own override, skipped argument effects, native reentry, false and
+record results, ARC object results, and the distinction between a present nullable
+result and a missing method. Both emitters run under strict Clang at `-O0`/`-O2`
+with UBSan. Nullable payloads cannot use null itself as an Option discriminator.
+There is no generic Objective-C exception recovery, custom message-forwarding
+promise, or relaxation of constructor/teardown guards.
+
+Zapp still needs application-level acceptance, grants, document identity checks,
+and ordinary non-file drag preservation tests before advertising file-drop support.
+
+## File-drop integration and borrowed runtime descriptors
+
+Zapp now uses checked optional superclass delegation for its native WebView drag
+callbacks. The application layer stages a complete file-grant batch, runs a
+synchronous cancellable request, rechecks the receiving document, and only then
+commits authority. Renderer delivery carries that document's token, so queued
+paths cannot enter a replacement page. Model tests exercise cancellation,
+replacement, closure, duplicate delivery, and teardown through both compilers.
+Private-pasteboard tests validate multiple local files and reject directories,
+missing files, and remote file URLs. These are automated checks, not a substitute
+for Finder-drag and ordinary HTML-drag testing of the complete application.
+
+The integration exposed two Stage 0 emission defects, now covered by regressions:
+
+- A callback field used as a condition needs parentheses around the complete
+  invocation, not just its receiver. Testing only the first and last characters
+  of generated C incorrectly treated `(receiver).call(...)` as enclosed.
+- Filesystem runtime helpers borrow `String` descriptors by value at the C ABI,
+  even though their Z parameters are `in`. An explicit `fs.writeText(in path,
+  in contents)` must load those descriptors, not pass their addresses. Named,
+  projected, and forwarded borrows now use the same ABI as inferred borrows;
+  both emitters execute the regression with strict Clang and UBSan.
+
+Remaining fixture friction is recorded rather than disguised as implemented:
+
+- `NSArray<id<NSPasteboardWriting>>` is not yet an imported parameter shape.
+  Pasteboard setup uses a test-only raw helper; production reads ordinary checked
+  pasteboard APIs without a native shim.
+- Explicit borrowing of indexed storage still requires a named value in this
+  tier. Native emission of a borrowed interpolated temporary also needs its own
+  materialized storage rather than taking a C rvalue's address.
+- Direct Stage 0 C emission of an ordinary function named `write` can collide
+  with the POSIX declaration introduced by filesystem support. Native symbol
+  hygiene needs a separate regression and fix.
+
+Related-window drop inheritance remains a framework API decision.
+
+### Coalesced drag feedback and contextual call arguments
+
+The follow-on hover integration keeps the latest position in a main-isolated
+Z object and schedules one weak, one-shot AppKit timer. Leaving, dropping,
+rejection, and document retirement cancel pending movement before serialization.
+The pure transaction is exercised through both emitters with UBSan; real Finder
+tracking and appearance still need application-level visual verification.
+
+Passing `Option.some(weak coordinator)` directly to a typed function exposed a
+native lowering gap: ordinary arguments received contextual lowering only for
+literals and closures. Other expressions could fall through as unresolved C
+member calls. Constructed arguments now receive their checked parameter types,
+including nested Option payload construction, while borrowed places keep their
+existing storage representation. Weak-handle ownership tests execute fresh and
+retained payloads under both emitters at debug and optimized settings.
+
+The larger module graph also exposed a Stage 0 identity mismatch when one
+Objective-C protocol was imported under two module namespaces. Borrowed protocol
+arguments now compare their checked native protocol identity; unrelated
+protocols remain rejected. This does not add protocol storage, subtyping, or a
+new runtime wrapper.
+
+Additional contextual enum edges remain separate follow-ups: a transparent
+Option alias as the expected argument type, and a context-only `Option.none`
+nested inside an ownership-bearing payload. These need parity regressions before
+being treated as general contextual-construction support.
+
+The alias-identity fixture also exposed separate emission pressure: an ordinary
+Stage 0 function's protocol parameter is emitted as unqualified `id`. Calling a
+scalar getter whose selector conflicts with Foundation object getters can
+therefore fail in Clang. Keeping `id<P>` on those parameter declarations needs
+its own focused codegen/ABI regression; the identity fix does not claim to solve
+that dispatch issue.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct

@@ -217,6 +217,7 @@ export function standardModuleMemberNames(module: StandardModuleName): readonly 
   if (module === "objc") return [
     "Object",
     "selector",
+    "optionalCall",
     "pool",
     "connect",
     "bind",

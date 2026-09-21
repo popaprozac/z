@@ -4,6 +4,7 @@ import { ModuleCallResolution, ModuleResolveError, ModuleResolveErrorKind, Resol
 import { NativeValueBinding, liveViewBindingForOwner, valueBindingType } from "./semantic-flow-state.zs";
 import { transparentTypeName, typeSymbolLocation } from "./semantic-type-identities.zs";
 import { nativeObjCObjectType } from "./semantic-objc-subclasses.zs";
+import { optionalSuperclassWrapper } from "./semantic-objc-subclass-bodies.zs";
 
 function boundary(in arena: StatementArena, statement: usize, offset: usize): boolean {
   const node = view arena.nodes[statement];
@@ -80,7 +81,9 @@ export function checkedNativeSuperclassHandoff(
 ): NativeSuperclassHandoff throws ModuleResolveError {
   if (call.kind != "objcSuper" || valueBindingType(bindings, "__z_native_function_name") == "constructor") return NativeSuperclassHandoff();
   let atBoundary = false;
-  for (const root of arena.roots) { if (boundary(arena, root, tree.nodes[index].offset)) atBoundary = true; }
+  const wrapper = call.objectiveCOptionalSuper ? optionalSuperclassWrapper(module, tree, index) : tree.nodes.length;
+  const boundaryOffset = wrapper < tree.nodes.length ? tree.nodes[wrapper].offset : tree.nodes[index].offset;
+  for (const root of arena.roots) { if (boundary(arena, root, boundaryOffset)) atBoundary = true; }
   if (!atBoundary || !handoffValue(modules, moduleIndex, call.returnType)) return NativeSuperclassHandoff();
   if (call.parameterTypes.length + 1 != tree.nodes[index].children.length
     || call.parameterModes.length != call.parameterTypes.length) return NativeSuperclassHandoff();

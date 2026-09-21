@@ -213,6 +213,8 @@ export type ForeignObjCSelectorContract = {
 };
 
 export type ForeignObjCMethod = {
+  /** False for an adopted optional requirement, not a promised implementation. */
+  readonly required?: boolean;
   readonly selectorCallbacks?: readonly ForeignObjCSelectorContract[];
   readonly selector: string;
   readonly baseName: string;

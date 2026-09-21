@@ -2790,6 +2790,17 @@ cannot escape. Typed failures propagate only after the pool drains. Async
 closures are rejected because a lexical autorelease pool cannot remain live
 across suspension.
 
+Native subclasses can explicitly delegate optional inherited callbacks with
+`objc.optionalCall(super.method(...))`. The compiler checks the imported ABI;
+runtime lookup starts at the lexical superclass, not the overriding receiver.
+Arguments are evaluated only when an implementation exists. Value results are
+`Option<T>` (including distinct `some(null)` for nullable native results); void
+methods conditionally execute and return `void`. Ordinary `super` calls remain
+strict. The first tier accepts direct synchronous superclass calls, preserves
+executor/ownership/receiver guards, and does not make initialization conditional
+or treat custom message forwarding as a concrete implementation. Lowering adds
+a presence check, not a closure or an allocated method handle.
+
 The first selector component remains the TypeScript-style method name. Labeled
 calls resolve exact selector components and remove ambiguity. For now labels are
 reserved for imported Objective-C methods so the bootstrap does not prematurely

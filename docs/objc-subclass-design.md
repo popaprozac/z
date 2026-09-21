@@ -64,7 +64,9 @@ uses `new SmoothWindow(frame)`, not an object-literal initializer.
 
 - `extends` initially names one imported Objective-C superclass. It denotes a
   real native subclass, not an adapter or structural resemblance.
-- `override` requires an inherited native method with a compatible signature.
+- `override` requires an inherited native method or adopted protocol requirement
+  with a compatible signature. Optional requirements supply checked callback
+  signatures, not a promise that the superclass implements them.
 - `as "selector:"` reuses the existing explicit native-selector mapping.
 - `super` invokes the superclass implementation on the same native object;
   ordinary virtual dispatch back into the override would be incorrect.
@@ -78,6 +80,58 @@ The generated class has one native ARC identity. It does not allocate a Z ARC
 record or a protocol-adapter wrapper. Ordinary calls use Objective-C dispatch;
 `super` uses native superclass dispatch. A base-class reference still invokes
 the override. Local method names may differ from their explicit native selector.
+
+Optional requirements inherited through a superclass's protocols can be
+implemented with the same `override function ... as "selector:"` syntax. This
+includes AppKit drag-destination callbacks. A single non-null `id<Protocol>`
+input can use `in sender: Native.Protocol`; emitted entries preserve its native
+protocol qualifier so member lookup does not degrade to untyped `id`.
+Required protocol getters support readonly property access and inferred native
+object, scalar, and record locals in both compilers.
+
+Unimplemented optional members are not ordinary callable methods and do not
+appear in member-call completion. `super` cannot invoke such a member without
+an actual inherited implementation. Before construction reaches Ready, or
+during teardown, a callback with no promised superclass implementation uses the
+existing fail-closed native-entry guard; the compiler does not invent a default
+return or send an unrecognized superclass selector.
+
+### Optional superclass calls
+
+`objc.optionalCall(super.method(...))` checks for an implementation starting at
+the lexical superclass, then performs the checked native superclass call. The
+argument must be one direct synchronous `super` call. Ordinary calls and selector
+strings are not accepted, and constructors cannot be made conditional.
+
+```zs
+import objc from "std/objc";
+
+// Inside a native override:
+const inherited = objc.optionalCall(super.draggingEntered(sender));
+return match (in inherited) {
+  some(operation) => operation;
+  none => AppKit.NSDragOperationNone;
+};
+```
+
+Value results are `Option<T>`; void callbacks conditionally run and return
+`void`. The runtime check precedes all argument evaluation. A missing method
+therefore neither evaluates arguments nor performs receiver handoff. `some(false)`
+is distinct from `none`; a nullable native result likewise preserves
+`some(null)` rather than flattening it into absence. Owned native results keep
+ordinary ARC lifetime rules.
+
+This is a compiler-recognized operation, not an ordinary function receiving an
+already evaluated call. Known ABI, availability, executor, and ownership checks
+still apply. Full-expression delegation preserves the existing guarded handoff;
+nested calls retain the receiver guard. There is no closure or method-handle
+allocation. The implementation checks concrete methods in the superclass chain;
+custom Objective-C message forwarding is not treated as an implementation.
+
+Application-specific absence behavior remains explicit. In particular, AppKit
+drag callbacks have different defaults; the compiler must not supply a blanket
+zero/false result. This feature does not relax construction/teardown entry guards
+or enable arbitrary optional calls on Objective-C objects.
 
 ## Approved construction and current restrictions
 

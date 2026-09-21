@@ -285,6 +285,7 @@ export enum LoweredExpressionKind {
   methodCall,
   objectiveCMessageCall,
   objectiveCSuperCall,
+  objectiveCOptionalSuperCall,
   objectiveCSuperInitializer,
   nativeObjCConstruction,
   objectiveCDataCopy,
@@ -13066,6 +13067,36 @@ function lowerExpressionContextual(
       throw "native lowering received a malformed call expression";
     }
     const calleeInput = tree.nodes[index].children[0];
+    if (tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[calleeInput].value == "optionalCall"
+      && tree.nodes[index].children.length == 2) {
+      const namespace = tree.nodes[calleeInput].children[0];
+      if (tree.nodes[namespace].kind == ExpressionKind.identifierExpression
+        && isImportedStandardNamespace(program, "std/objc", tree.nodes[namespace].value)) {
+        const inner = tree.nodes[index].children[1];
+        const resolution = resolvedCallResolutionIndex(evidence, tree, inner);
+        if (resolution >= evidence.callResolutions.length
+          || evidence.callResolutions[resolution].kind != "objcSuper"
+          || !evidence.callResolutions[resolution].objectiveCOptionalSuper) {
+          throw "optional superclass call lost checked dispatch evidence";
+        }
+        const valueType = view evidence.callResolutions[resolution].returnType;
+        const call = try lowerExpression(program, importedTypes, evidence, tree, inner, inout output);
+        let children = Array<usize>();
+        if (valueType == "void") {
+          children.push(call);
+        } else {
+          const optionType = try lowerModuleTypeName(program, importedTypes, `Option<${valueType}>`);
+          children.push(pushExpression(inout output, LoweredExpressionKind.enumPayloadValue,
+            optionType.name, Array<usize>(call), Array<String>("some")));
+          children.push(pushExpression(inout output, LoweredExpressionKind.enumValue,
+            optionType.name, Array<usize>(), Array<String>("none", "payload")));
+        }
+        return pushExpression(inout output, LoweredExpressionKind.objectiveCOptionalSuperCall,
+          evidence.callResolutions[resolution].objectiveCSelector, children, Array<String>());
+      }
+    }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
@@ -16950,18 +16981,14 @@ function lowerExpressionContextual(
     while (argument < tree.nodes[index].children.length) {
       const argumentInput = tree.nodes[index].children[argument];
       let value: usize = 0;
-      // Owned arguments need the same representation conversion as a typed
-      // binding, including named functions becoming first-class callables.
-      // Borrowed places keep their existing storage; literals and closures
-      // still need context even when passed to a borrowed parameter.
-      if (parameterTypes.length >= argument
-        && ((parameterModes.length >= argument && parameterModes[argument - 1] == "value")
-          || tree.nodes[argumentInput].kind == ExpressionKind.closureExpression
-          || tree.nodes[argumentInput].kind == ExpressionKind.numberExpression
-          || (tree.nodes[argumentInput].kind == ExpressionKind.unaryExpression
-            && tree.nodes[argumentInput].children.length == 1
-            && (tree.nodes[argumentInput].value == "+" || tree.nodes[argumentInput].value == "-")
-            && tree.nodes[tree.nodes[argumentInput].children[0]].kind == ExpressionKind.numberExpression))) value = try lowerExpressionExpected(
+      // Owned and constructed arguments keep their destination context,
+      // including named functions and nested Option construction. Borrowed
+      // places already have checked storage: contextual value conversion can
+      // retain a callable or load a view, losing the place needed by the loan.
+      const borrowedPlace = parameterModes.length >= argument
+        && parameterModes[argument - 1] != "value"
+        && expressionBorrowsStoredReference(tree, argumentInput);
+      if (parameterTypes.length >= argument && !borrowedPlace) value = try lowerExpressionExpected(
         program,
         importedTypes,
         evidence,
@@ -19167,12 +19194,13 @@ function lowerExpressionExpected(
               && tree.nodes[callee].value == "some"
             ) {
               const payloadIndex = tree.nodes[index].children[1];
-              let payload = try lowerExpression(
+              let payload = try lowerExpressionExpected(
                 program,
                 importedTypes,
                 evidence,
                 tree,
                 payloadIndex,
+                generic.arguments[0],
                 inout output
               );
               if (stringStartsWith(generic.arguments[0], "view ")) {

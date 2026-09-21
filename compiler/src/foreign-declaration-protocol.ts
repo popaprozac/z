@@ -5,6 +5,7 @@ import type {
   ForeignObjCProperty,
   ForeignType,
 } from "./foreign-ir.ts";
+import { objcParameterNativeSpelling } from "./foreign-type-spelling.ts";
 
 export const foreignDeclarationProtocolVersion = 15;
 
@@ -290,7 +291,7 @@ export function encodeForeignFunctionDeclarationStream(
           hexNumber(methodIndex),
           hexNumber(parameterIndex),
           optionalText(parameter.name),
-          text(parameter.type.cName),
+          text(objcParameterNativeSpelling(parameter)),
           text(semanticTypeName(parameter.type)),
           boolean(method.consumedParameters?.includes(parameterIndex) === true),
           hexNumber(parameter.protocols?.length ?? 0),

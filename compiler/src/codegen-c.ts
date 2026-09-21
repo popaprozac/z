@@ -91,7 +91,8 @@ import {
 } from "./channel-types.ts";
 import { parseReadonlyType, readonlyTypeName, writableTypeName } from "./readonly-types.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import { parseObjCProtocolType } from "./objc-types.ts";
+import { isNullableObjCTypeName, parseObjCProtocolType } from "./objc-types.ts";
+import { objcParameterNativeSpelling } from "./foreign-type-spelling.ts";
 import { isStaticBytesType, staticBytesTypeName } from "./static-bytes.ts";
 import type { ObjCSubclassPlan } from "./objc-subclasses.ts";
 
@@ -2468,7 +2469,7 @@ function generateObjCProtocolMethodDeclaration(
   if (requirement.parameters.length === 0) return `- (${result})${requirement.selector}`;
   const labels = requirement.selector.split(":").slice(0, -1);
   return `- (${result})${labels.map((label, index) => (
-    `${label}:(${foreignCType(requirement.parameters[index].type)})${argumentNames[index]}`
+    `${label}:(${objcParameterNativeSpelling(requirement.parameters[index])})${argumentNames[index]}`
   )).join(" ")}`;
 }
 
@@ -2594,7 +2595,8 @@ function generateObjCSubclass(plan: ObjCSubclassPlan, structs: Map<string, Struc
     signature: generateFunctionSignature(method, structs, enums, plan.declaration, semanticInfo.foreignNamedTypes), isHelper: true,
   } : {
     signature: generateObjCProtocolMethodDeclaration({ ...plan.methods.get(method.location.offset)!, required: true }, method.parameters.map((parameter) => cBindingName(parameter.name))),
-    ...(method.override ? { superclassFallback: generateObjCMessage("super", plan.methods.get(method.location.offset)!.selector, method.parameters.map((parameter) => cBindingName(parameter.name))) } : {}),
+    ...(method.override && plan.methods.get(method.location.offset)!.required !== false
+      ? { superclassFallback: generateObjCMessage("super", plan.methods.get(method.location.offset)!.selector, method.parameters.map((parameter) => cBindingName(parameter.name))) } : {}),
   }));
   methods.push(`- (instancetype)_z_checkedSelectorTarget {\n  if (![NSThread isMainThread]) abort();\n  if (!_z_native_subclass_ready) { fputs("selector registration requires a Ready native target\\n", stderr); abort(); }\n  return self;\n}`);
   const arguments_ = constructor.parameters.map((parameter) => cBindingName(parameter.name));
@@ -6106,7 +6108,8 @@ export function nicheOptionPayload(
   const option = parseOptionType(declaration.name);
   if (!option) return null;
   if (parseOptionalViewType(declaration.name)) return option.target;
-  if (foreignNamedTypes.get(option.target)?.kind === "object") return option.target;
+  const object = foreignNamedTypes.get(option.target);
+  if (object?.kind === "object" && !isNullableObjCTypeName(option.target)) return option.target;
   const pointer = parsePointerTypeName(option.target);
   return pointer && !pointer.nullable ? option.target : null;
 }
@@ -8512,7 +8515,19 @@ function generateIf(statement: Extract<Statement, { kind: "if" }>, context: Gene
 function controlCondition(value: string): string {
   // A Clang statement expression needs its own parentheses inside the
   // condition's parentheses: if (({ ...; result; })), not if ({ ... }).
-  return value.startsWith("(") && !value.startsWith("({") && value.endsWith(")") ? value : `(${value})`;
+  if (value.startsWith("(") && !value.startsWith("({") && value.endsWith(")")) {
+    // Leading/trailing parentheses need not enclose the whole expression:
+    // ((owner->backend).predicate).call(...) is a function-value invocation.
+    // Ignore quoted text and comments when finding the first closing pair.
+    let depth = 0;
+    for (const token of value.matchAll(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\/|\/\/[^\n]*|[()]/g)) {
+      if (token[0] === "(") depth++;
+      else if (token[0] === ")" && --depth === 0) {
+        return token.index === value.length - 1 ? value : `(${value})`;
+      }
+    }
+  }
+  return `(${value})`;
 }
 
 function generateDirectValue(
@@ -11799,7 +11814,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const signature = standardFunctionSignature(referencedStandard);
         const arguments_ = expression.arguments.map((argument, index) => (
           signature.parameters[index]?.abi === "value"
-            ? generateExpression(argument, context)
+            // Runtime helpers borrow String descriptors by value even when
+            // Z spells the loan explicitly. Do not forward its storage address.
+            ? generateExpression(capabilityStorageTargetExpression(argument) ?? argument, context)
             : generateCallArgument(argument, context)
         ));
         return `${signature.cName}(${arguments_.join(", ")})`;
@@ -11889,6 +11906,19 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       const objcCall = context.semanticInfo.objcCalls.get(expression.location.offset);
       if (objcCall && expression.callee.kind === "member") {
+        if (objcCall.optionalCall) {
+          const present = `class_getInstanceMethod(objc_getClass(${JSON.stringify(objcCall.className)}), @selector(${objcCall.selector})) != NULL`;
+          const call = generateExpression(expression.arguments[0], context);
+          if (objcCall.optionalCall.valueType === "void") return `({ if (${present}) { ${call}; } (void)0; })`;
+          const type = inferExpressionType(expression, context);
+          const declaration = context.enums.get(type);
+          if (!declaration) throw new Error("optional superclass call lost its Option result");
+          const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
+          if (niche) return `(${present} ? ${call} : ${nicheOptionNull(niche)})`;
+          const some = generateEnumVariantConstruction(declaration, "some", call, context);
+          const none = generateEnumVariantConstruction(declaration, "none", null, context);
+          return `(${present} ? ${some} : ${none})`;
+        }
         if (objcCall.bridge === "dataCopy") {
           return `z_nsdata_copy_bytes(${generateCallArgument(expression.arguments[0], context)})`;
         }

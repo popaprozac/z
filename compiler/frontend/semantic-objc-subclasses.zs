@@ -133,13 +133,27 @@ function appendInheritedMethod(
   in method: ModuleMethodSignature, inout methods: Array<ModuleMethodSignature>
 ): void {
   if (method.staticMethod) return;
-  // The nearest declaration of a selector wins, including an unrepresentable
-  // declaration that shadows an otherwise callable ancestor.
-  for (const existing of methods) {
-    if (existing.objectiveCSelector == method.objectiveCSelector) return;
+  // An optional protocol signature does not shadow an actual implementation
+  // inherited from a more distant superclass.
+  let replacement = methods.length;
+  let index: usize = 0;
+  while (index < methods.length) {
+    if (methods[index].objectiveCSelector == method.objectiveCSelector) {
+      if (methods[index].objectiveCRequired || !method.objectiveCRequired) return;
+      replacement = index;
+      break;
+    }
+    index = index + 1;
   }
   let rebound = copy method;
   rebound.signature = rebaseModuleFunctionSignature(modules, sourceIndex, targetIndex, method.signature);
+  let protocolIndex: usize = 0;
+  while (protocolIndex < rebound.objectiveCParameterProtocols.length) {
+    rebound.objectiveCParameterProtocols[protocolIndex].protocolName = rebaseTypeName(
+      modules, sourceIndex, targetIndex, method.objectiveCParameterProtocols[protocolIndex].protocolName
+    );
+    protocolIndex = protocolIndex + 1;
+  }
   let callbackIndex: usize = 0;
   while (callbackIndex < rebound.objectiveCSelectorCallbacks.length) {
     rebound.objectiveCSelectorCallbacks[callbackIndex].signature = rebaseModuleFunctionSignature(
@@ -150,7 +164,8 @@ function appendInheritedMethod(
   rebound.objectiveCNativeResultType = rebaseTypeName(
     modules, sourceIndex, targetIndex, method.objectiveCNativeResultType
   );
-  methods.push(move rebound);
+  if (replacement < methods.length) methods[replacement] = move rebound;
+  else methods.push(move rebound);
 }
 
 export function nativeObjCSubclassInheritedMethods(
@@ -344,7 +359,18 @@ function validateOverrideContract(
   while (index < method.parameters.length) {
     const parameter = view method.parameters[index];
     const expected = view native.signature.parameterTypes[index];
-    if (expected.byteLength == 0 || !equivalentTypes(modules, moduleIndex, parameter.type.name, expected)) {
+    let protocolCompatible = false;
+    let protocolCount: usize = 0;
+    for (const qualifier of native.objectiveCParameterProtocols) {
+      if (qualifier.parameterIndex != index) continue;
+      protocolCount = protocolCount + 1;
+      protocolCompatible = equivalentTypes(modules, moduleIndex, parameter.type.name, qualifier.protocolName);
+    }
+    // Only a single non-null id<P> can enter a borrowed protocol receiver.
+    // Nullable and multi-protocol inputs keep their erased, checked ABI type.
+    const nullableExpected = nullableTargetType(expected);
+    protocolCompatible = protocolCompatible && protocolCount == 1 && nullableExpected.byteLength == 0;
+    if (expected.byteLength == 0 || (!protocolCompatible && !equivalentTypes(modules, moduleIndex, parameter.type.name, expected))) {
       const expectedDisplay = sourceTypeDisplayName(modules, moduleIndex, expected);
       const actualDisplay = sourceTypeDisplayName(modules, moduleIndex, parameter.type.name);
       throw subclassError(module,
@@ -404,7 +430,7 @@ function validateSuperclassCallContract(
   let index: usize = 0;
   while (index < methods.length) {
     const method = view methods[index];
-    if (method.name == call.name && method.objectiveCParameterNativeTypes.length == call.argumentCount
+    if ((method.objectiveCRequired || call.optional) && method.name == call.name && method.objectiveCParameterNativeTypes.length == call.argumentCount
       && objcMethodLabelsMatch(method, call.argumentLabels)) {
       selected = index;
       count = count + 1;

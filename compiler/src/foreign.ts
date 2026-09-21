@@ -1778,9 +1778,10 @@ function collectObjCInterfaces(
   for (const [className, declaration] of declarations) {
     const owners = [declaration, ...(categories.get(className) ?? [])];
     const members = owners.flatMap((owner) => owner.inner ?? []);
-    // A concrete class promises the required members of every adopted
-    // protocol, even when its @interface does not repeat their declarations.
-    // Optional members remain unavailable unless the class declares them.
+    // Keep optional requirements as override signatures, without claiming
+    // that the class implements them. Ordinary lookup must require a concrete
+    // declaration (or a required protocol member) before permitting a call.
+    const optionalMethods = new Set<ClangNode>();
     const memberKey = (member: ClangNode) => `${member.kind}:${member.instance ?? member.class ?? false}:${member.name}`;
     const known = new Set(members.map(memberKey));
     const visited = new Set<string>();
@@ -1790,8 +1791,18 @@ function collectObjCInterfaces(
       const protocol = protocolDeclarations.get(name);
       if (!protocol) return;
       for (const member of protocol.inner ?? []) {
-        if ((member.kind !== "ObjCMethodDecl" && member.kind !== "ObjCPropertyDecl")
-          || !objcProtocolMethodRequired(protocol, member) || known.has(memberKey(member))) continue;
+        if (member.kind !== "ObjCMethodDecl" && member.kind !== "ObjCPropertyDecl") continue;
+        const required = objcProtocolMethodRequired(protocol, member);
+        if (!required && member.kind === "ObjCPropertyDecl") continue;
+        if (known.has(memberKey(member))) {
+          const previous = members.find((candidate) => memberKey(candidate) === memberKey(member));
+          if (required && previous && optionalMethods.has(previous)) {
+            optionalMethods.delete(previous);
+            members[members.indexOf(previous)] = member;
+          }
+          continue;
+        }
+        if (!required) optionalMethods.add(member);
         known.add(memberKey(member));
         members.push(member);
       }
@@ -1802,6 +1813,7 @@ function collectObjCInterfaces(
     const methods = members
       .filter((child) => child.kind === "ObjCMethodDecl" && child.name && child.returnType?.qualType)
       .map((method): ForeignObjCMethod => ({
+        ...(optionalMethods.has(method) ? { required: false } : {}),
         selector: method.name!,
         baseName: method.name!.split(":")[0],
         instance: method.instance === true,

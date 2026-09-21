@@ -25,6 +25,20 @@ function retained(reference: Weak<Item>): () => i32 {
   return move (): i32 => take(reference);
 }
 
+function takeOptional(reference: Option<Weak<Item>>): i32 {
+  return match (in reference) {
+    some(observer) => take(observer);
+    none => -1;
+  };
+}
+
+function takeNested(reference: Option<Option<Weak<Item>>>): i32 {
+  return match (in reference) {
+    some(observer) => { select match (in observer) { some(value) => read(value); none => -1; }; }
+    none => -2;
+  };
+}
+
 function main(): i32 {
   const item = new Item({ value: 42 });
   const transferred = relay(take(weak item));
@@ -36,5 +50,8 @@ function main(): i32 {
   if (take(named) != 42 || read(named) != 42) return 4;
   const returned = forward(weak item);
   if (take(returned) != 42 || read(returned) != 42) return 5;
+  if (takeOptional(Option.some(weak item)) != 42) return 6;
+  if (takeOptional(Option.some(named)) != 42) return 7;
+  if (takeNested(Option.some(Option.some(weak item))) != 42) return 8;
   return 0;
 }

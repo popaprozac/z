@@ -901,6 +901,36 @@ for (const [name, source, expected, allocations] of [
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
+test("aggregate callback conditions enclose the complete invocation", () => {
+  const directory = mkdtempSync("/tmp/z-callback-condition-");
+  const source = `struct Backend { predicate: (in text: String) => boolean; }
+    class Owner {
+      backend: Backend;
+      function check(): boolean {
+        if (this.backend.predicate(")")) return true;
+        while (this.backend.predicate("(")) { return true; }
+        if (this.backend.predicate("other")) return true;
+        return false;
+      }
+    }
+    function accepts(in text: String): boolean { return text == "other"; }
+    function main(): i32 {
+      const owner = new Owner({ backend: Backend({ predicate: accepts }) });
+      if (!owner.check()) return 1;
+      return 0;
+    }`;
+  try {
+    const input = resolve(directory, "main.zs");
+    writeFileSync(input, source);
+    execute(compileToC(source, input), "");
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+    execute(emitted.stdout, "");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 test("native inline borrowed callbacks preserve conditional and loop evaluation", () => {
   const directory = mkdtempSync("/tmp/z-borrowed-loop-callback-");
   const source = `function invoke(in callback: () => boolean): boolean { return callback(); }

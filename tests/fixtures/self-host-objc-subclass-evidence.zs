@@ -5,7 +5,7 @@ import { decodeRawForeignDeclarations } from "../../compiler/frontend/foreign-de
 import { normalizeForeignContracts, parseForeignContracts } from "../../compiler/frontend/foreign-contracts.zs";
 import { buildResolvedModules, parseModule } from "../../compiler/frontend/module-graph.zs";
 import { ParsedModule } from "../../compiler/frontend/module-symbols.zs";
-import { ModuleSource } from "../../compiler/frontend/semantic-model.zs";
+import { ModuleSource, ModuleTypeSignature, moduleTypeSignatureWithMethods } from "../../compiler/frontend/semantic-model.zs";
 import { attachForeignContracts, NativeForeignModuleContract } from "../../compiler/frontend/semantic-foreign.zs";
 import {
   prepareNativeObjCSubclassTypes, validateNativeObjCSubclassDeclarations,
@@ -189,14 +189,19 @@ function inspect(in path: String, in sourcePath: String, in mode: String, in pla
       if (mode == "missing-access" || mode == "wrong-access") {
         let symbol: usize = 0;
         while (symbol < resolved[0].symbols.length) {
-          match (copy resolved[0].symbols[symbol].typeSignature) {
+          let replacement = Option<ModuleTypeSignature>.none;
+          match (in resolved[0].symbols[symbol].typeSignature) {
             some(signature) => {
               if (signature.foreignKind == "objcSubclass") {
-                let changed = move signature;
-                changed.methods[0].receiverMode = mode == "missing-access" ? "" : "inout";
-                resolved[0].symbols[symbol].typeSignature = Option.some(move changed);
+                let methods = copy signature.methods;
+                methods[0].receiverMode = mode == "missing-access" ? "" : "inout";
+                replacement = Option.some(moduleTypeSignatureWithMethods(signature, move methods));
               }
             }
+            none => {}
+          }
+          match (replacement) {
+            some(changed) => resolved[0].symbols[symbol].typeSignature = Option.some(changed);
             none => {}
           }
           symbol = symbol + 1;

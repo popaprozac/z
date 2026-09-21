@@ -17,6 +17,9 @@ function apply(handler: Unary, value: i32): i32 { return handler(value); }
 function applyInline(handler: (value: i32) => i32): i32 { return handler(41); }
 function applyShared(handler: SharedUnary): i32 { return handler(41); }
 function applyBorrowed(in handler: Unary): i32 { return handler(41); }
+function applyOptional(in handler: Unary, value: Option<i32>): i32 {
+  return match (value) { some(number) => handler(number); none => -1; };
+}
 function forward(handler: Unary): i32 { return apply(handler, 41); }
 
 class Token { deinit { console.log("released"); } }
@@ -27,6 +30,8 @@ function captureLifetime(): boolean {
     return value + 1;
   };
   if (applyBorrowed(in handler) != 42) return false;
+  if (applyOptional(handler, Option.some(41)) != 42) return false;
+  if (applyOptional(in handler, Option.some(41)) != 42) return false;
   return apply(handler, 41) == 42;
 }
 

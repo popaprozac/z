@@ -25,11 +25,11 @@ export function isSuperCall(expression: Expression): boolean {
 // A full-expression boundary has no surrounding partially evaluated call or
 // assignment that could still hold a receiver-field address. Nested super
 // expressions keep the ordinary entry guard in this first delegation tier.
-export function isObjCSubclassHandoffBoundary(method: FunctionDeclaration, offset: number): boolean {
+export function isObjCSubclassHandoffBoundary(method: FunctionDeclaration, offset: number, optional = false): boolean {
   const visit = (node: Statement): boolean => {
     const expression = node.kind === "variable" ? node.initializer
       : node.kind === "return" || node.kind === "expressionStatement" ? node.expression : null;
-    if (expression?.location.offset === offset && isSuperCall(expression)) return true;
+    if (expression?.location.offset === offset && (isSuperCall(expression) || optional)) return true;
     switch (node.kind) {
       case "block": return node.statements.some(visit);
       case "if": return visit(node.thenBranch) || (node.elseBranch !== null && visit(node.elseBranch));

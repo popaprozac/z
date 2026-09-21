@@ -215,6 +215,57 @@ test("sleeps the current thread through the portable std/time module", () => {
   assert.match(diagnostics(wrongType, "sleep-type.zs")[0].message, /integer literal -1 does not fit u64/);
 });
 
+test("preserves the value ABI of explicit standard-library borrows", () => {
+  const directory = mkdtempSync("/tmp/z-standard-borrow-abi-");
+  try {
+    const fileName = resolve(directory, "main.zs");
+    const output = resolve(directory, "written.txt");
+    const source = `
+      import fs from "std/fs";
+      struct Location { path: String; }
+      function writeBorrowedPath(in path: String, in contents: String): void throws String {
+        try fs.writeText(in path, in contents);
+      }
+      function exists(inout path: String): boolean { return fs.exists(in path); }
+      function run(): i32 throws String {
+        const directory: String = ${JSON.stringify(directory)};
+        let path = \`\${directory}/written.txt\`;
+        const description: String = "payload";
+        const contents = \`borrowed \${description}\`;
+        try fs.writeText(in path, in contents);
+        try writeBorrowedPath(in path, in contents);
+        if (!exists(inout path)) return 1;
+        const location = Location({ path: copy path });
+        const text = try fs.readText(in location.path);
+        const bytes = try fs.readBytes(in path);
+        if (text != contents || bytes.length != contents.byteLength) return 2;
+        if (!fs.exists(path) || path != ${JSON.stringify(output)}) return 3;
+        return 0;
+      }
+      function main(): i32 {
+        return match (attempt run()) { success(code) => code; failure(_) => 4; };
+      }
+    `;
+    writeFileSync(fileName, source);
+    const stage0 = compileToC(source, fileName);
+    const native = spawnSync(process.execPath, [cli, "self-host-emit", fileName], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr || String(native.error));
+    for (const [mode, generated] of [["stage0", stage0], ["native", native.stdout]] as const) {
+      const executable = resolve(directory, mode);
+      const compilation = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
+        "-O2", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        input: generated, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+      });
+      assert.equal(compilation.status, 0, `${mode}: ${compilation.stderr}`);
+      const executed = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+      assert.equal(executed.status, 0, `${mode}: ${executed.stderr}`);
+      assert.equal(readFileSync(output, "utf8"), "borrowed payload");
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 test("reads files, exposes program arguments, and runs child processes through standard modules", () => {
   const directory = mkdtempSync("/tmp/z-system-std-");
   const fileName = resolve(directory, "main.zs");

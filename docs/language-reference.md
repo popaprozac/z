@@ -4450,6 +4450,16 @@ values and preserves typed failures, draining before either leaves. Borrowed
 views and Slices cannot escape, and the closure cannot be async. Lowering emits
 `@autoreleasepool` directly without allocating a pool object.
 
+`objc.optionalCall(super.method(...))` conditionally invokes a synchronous native
+superclass implementation. It returns `Option<T>` for value results and `void`
+for void methods. The runtime lookup starts at the lexical superclass, not at
+the receiver's override. Missing implementations skip all argument evaluation.
+Nullable results preserve `some(null)` separately from an absent method.
+The compiler checks the imported signature, availability, executor, and ownership
+as for ordinary superclass calls. Only a direct `super` call is accepted;
+initialization cannot be conditional. This intrinsic adds no closure and does
+not bypass the native entry guard or claim support for custom message forwarding.
+
 `objc.connect(control, move () => { ... })` owns the
 native target/action control and Z closure, installs the target plus selector,
 and returns an `objc.Connection`. The connection must remain bound while the

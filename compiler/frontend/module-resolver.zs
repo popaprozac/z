@@ -28,7 +28,8 @@ import {
   resolveAggregateNames,
   validateModuleNames,
 } from "./semantic-names.zs";
-import { nativeInitializerSelector } from "./semantic-objc-subclass-bodies.zs";
+import { nativeInitializerSelector, optionalSuperclassWrapper } from "./semantic-objc-subclass-bodies.zs";
+import { methodCallShapeWithOptional } from "./semantic-member-lookups.zs";
 import {
   NativeCallAccess,
   pendingAsyncCallShape,
@@ -6754,7 +6755,8 @@ function inferExpressionNodeType(
       }
       none => {}
     }
-    if (hasKnownAggregate(modules, moduleIndex, receiverValueType)) {
+    if (hasKnownAggregate(modules, moduleIndex, receiverValueType)
+      || typeIsNativeObjCReference(modules, moduleIndex, receiverValueType)) {
       throw resolutionError(
         ModuleResolveErrorKind.unknownMember,
         module.path,
@@ -9426,7 +9428,42 @@ function inferExpressionNodeType(
           copyBindingFlowStates(inout bindings, workerBindings);
           return "";
         }
-        const shadowedSelectorNamespace = memberName == "selector" ? valueBindingType(bindings, namespaceName) : "";
+        const shadowedSelectorNamespace = memberName == "selector" || memberName == "optionalCall" ? valueBindingType(bindings, namespaceName) : "";
+        if (memberName == "optionalCall" && importedStandardNamespace(module, namespaceName, "std/objc")
+          && shadowedSelectorNamespace.byteLength == 0) {
+          if (children.length != 2 || tree.nodes[children[1]].kind != ExpressionKind.callExpression
+            || tree.nodes[children[1]].children.length == 0) {
+            throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+              "objc.optionalCall requires one direct synchronous super.method(...) call", tree.nodes[index].line, tree.nodes[index].column, 1);
+          }
+          const inner = children[1];
+          const innerCallee = view tree.nodes[tree.nodes[inner].children[0]];
+          if (innerCallee.kind != ExpressionKind.memberExpression || innerCallee.children.length != 1
+            || tree.nodes[innerCallee.children[0]].kind != ExpressionKind.identifierExpression
+            || tree.nodes[innerCallee.children[0]].value != "super") {
+            throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+              "objc.optionalCall requires one direct synchronous super.method(...) call", tree.nodes[index].line, tree.nodes[index].column, 1);
+          }
+          for (const label of tree.nodes[index].labels) {
+            if (label.byteLength > 0) throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+              "objc.optionalCall does not accept labeled arguments", tree.nodes[index].line, tree.nodes[index].column, 1);
+          }
+          const previousOptionalSuper = valueBindingType(bindings, "__z_optional_objc_super_offset");
+          addValueBinding(inout bindings, "__z_optional_objc_super_offset", `${tree.nodes[inner].offset}`);
+          const result = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, inner, inout bindings, inout evidence);
+          addValueBinding(inout bindings, "__z_optional_objc_super_offset", previousOptionalSuper);
+          let checked = false;
+          for (const call of evidence.callResolutions) {
+            if (call.offset == tree.nodes[inner].offset && call.kind == "objcSuper" && call.objectiveCOptionalSuper) checked = true;
+          }
+          if (!checked) {
+            if (!hasNativeObjCRegistrationMetadata(modules)) return "";
+            throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0814", module.path,
+              "objc.optionalCall requires checked superclass dispatch and cannot conditionally initialize a native receiver", tree.nodes[index].line, tree.nodes[index].column, 1);
+          }
+          recordExpressionResolution(modules, moduleIndex, tree, inner, result, inout evidence);
+          return result == "void" ? "void" : `Option<${result}>`;
+        }
         if (memberName == "selector" && importedStandardNamespace(module, namespaceName, "std/objc")
           && shadowedSelectorNamespace.byteLength == 0) {
           // The hybrid source-only graph cannot prove a foreign registration;
@@ -11271,7 +11308,13 @@ function inferExpressionNodeType(
             none => {}
           }
         }
-        match (callableMethodCallShape(
+        const optionalSuper = tree.nodes[receiverIndex].kind == ExpressionKind.identifierExpression
+          && tree.nodes[receiverIndex].value == "super"
+          && valueBindingType(bindings, "__z_optional_objc_super_offset") == `${tree.nodes[index].offset}`
+          && optionalSuperclassWrapper(module, tree, index) < tree.nodes.length;
+        const selectedMethod = optionalSuper
+          ? methodCallShapeWithOptional(modules, moduleIndex, ownerType, methodName, staticMethod, children.length - 1, tree.nodes[index].labels, true)
+          : callableMethodCallShape(
           modules,
           moduleIndex,
           bindings,
@@ -11280,7 +11323,8 @@ function inferExpressionNodeType(
           staticMethod,
           children.length - 1,
           tree.nodes[index].labels
-        )) {
+        );
+        match (selectedMethod) {
           some(method) => {
             const selector = view method.objectiveCSelector;
             if (nativeInitializerSelector(selector)
@@ -11539,6 +11583,7 @@ function inferExpressionNodeType(
                 let resolutionIndex: usize = 0;
                 while (resolutionIndex < evidence.callResolutions.length) {
                   if (evidence.callResolutions[resolutionIndex].offset == tree.nodes[index].offset) {
+                    evidence.callResolutions[resolutionIndex].objectiveCOptionalSuper = optionalSuper;
                     const handoff = try checkedNativeSuperclassHandoff(module, modules, moduleIndex,
                       arena, tree, index, bindings, evidence.callResolutions[resolutionIndex]);
                     evidence.callResolutions[resolutionIndex].objectiveCReceiverHandoff = handoff.eligible;
