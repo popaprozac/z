@@ -43,6 +43,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { channelIdentityKind, channelPayloadIdentity } from "./channel-shapes.zs";
 import { channelHandleDefinitions, channelRuntimeDeclarations, channelRuntimeDefinitions } from "./channel-runtime.zs";
 import { taskScopeJoinRuntime } from "./task-scope-join-runtime.zs";
+import { asyncHostWakeRuntime } from "./async-host-wake-runtime.zs";
 
 function labelsContain(in labels: Array<String>, in candidate: String): boolean {
   for (const label of labels) {
@@ -14026,12 +14027,13 @@ function appendAsyncCallableRuntime(
     output.append("static __attribute__((unused)) void z_stage1_async_remove_timer(Z_AsyncTask *task) {\n  if (task == NULL || !task->timer_scheduled) return;\n  if (task->executor == NULL) abort();\n  Z_AsyncTask **link = &task->executor->timers;\n  while (*link != NULL && *link != task) link = &(*link)->timer_next;\n  if (*link == NULL) abort();\n  *link = task->timer_next;\n  task->timer_scheduled = false;\n  task->timer_next = NULL;\n}\n\n");
   }
   if (usesExternalCompletion) {
+    output.append(asyncHostWakeRuntime(usesDelay));
     output.append("static void z_stage1_async_external_lock(Z_AsyncExecutor *executor) {\n#if defined(_WIN32)\n  EnterCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_mutex_lock(&executor->external_mutex) != 0) abort();\n#endif\n}\n\n");
     output.append("static void z_stage1_async_external_unlock(Z_AsyncExecutor *executor) {\n#if defined(_WIN32)\n  LeaveCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_mutex_unlock(&executor->external_mutex) != 0) abort();\n#endif\n}\n\n");
-    output.append("static __attribute__((unused)) void z_stage1_async_executor_init_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL) abort();\n  executor->external_completions = NULL;\n  executor->active_external_callbacks = 0;\n#if defined(_WIN32)\n  InitializeCriticalSection(&executor->external_mutex);\n  InitializeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_mutex_init(&executor->external_mutex, NULL) != 0) abort();\n  if (pthread_cond_init(&executor->external_condition, NULL) != 0) abort();\n#endif\n}\n\n");
-    output.append("static __attribute__((unused)) void z_stage1_async_executor_destroy_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL || executor->external_completions != NULL || executor->active_external_callbacks != 0) abort();\n#if defined(_WIN32)\n  DeleteCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_cond_destroy(&executor->external_condition) != 0) abort();\n  if (pthread_mutex_destroy(&executor->external_mutex) != 0) abort();\n#endif\n}\n\n");
+    output.append("static __attribute__((unused)) void z_stage1_async_executor_init_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL) abort();\n  executor->external_completions = NULL;\n  executor->active_external_callbacks = 0;\n#if defined(_WIN32)\n  InitializeCriticalSection(&executor->external_mutex);\n  InitializeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_mutex_init(&executor->external_mutex, NULL) != 0) abort();\n  if (pthread_cond_init(&executor->external_condition, NULL) != 0) abort();\n#endif\n  z_stage1_async_host_init(executor);\n}\n\n");
+    output.append("static __attribute__((unused)) void z_stage1_async_executor_destroy_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL || executor->external_completions != NULL || executor->active_external_callbacks != 0) abort();\n  z_stage1_async_host_destroy(executor);\n#if defined(_WIN32)\n  DeleteCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_cond_destroy(&executor->external_condition) != 0) abort();\n  if (pthread_mutex_destroy(&executor->external_mutex) != 0) abort();\n#endif\n}\n\n");
     output.append("static void z_stage1_async_begin_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL || task->external_completion) abort();\n  task->external_completion = true;\n  z_stage1_async_external_lock(task->executor);\n  task->executor->active_external_callbacks += 1;\n  z_stage1_async_external_unlock(task->executor);\n}\n\n");
-    output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL) abort();\n  Z_AsyncExecutor *executor = task->executor;\n  z_stage1_async_external_lock(executor);\n  if (!task->external_completion || task->completion_queued || executor->active_external_callbacks == 0) abort();\n  executor->active_external_callbacks -= 1;\n  if (!task->external_resume) {\n    task->cancelled = task->cancellation_requested;\n    task->completed = true;\n  }\n  task->completion_queued = true;\n  task->completion_next = executor->external_completions;\n  executor->external_completions = task;\n#if defined(_WIN32)\n  WakeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_cond_signal(&executor->external_condition) != 0) abort();\n#endif\n  z_stage1_async_external_unlock(executor);\n}\n\n");
+    output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL) abort();\n  Z_AsyncExecutor *executor = task->executor;\n  z_stage1_async_external_lock(executor);\n  if (!task->external_completion || task->completion_queued || executor->active_external_callbacks == 0) abort();\n  executor->active_external_callbacks -= 1;\n  if (!task->external_resume) {\n    task->cancelled = task->cancellation_requested;\n    task->completed = true;\n  }\n  task->completion_queued = true;\n  task->completion_next = executor->external_completions;\n  executor->external_completions = task;\n  z_stage1_async_host_signal(executor);\n#if defined(_WIN32)\n  WakeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_cond_signal(&executor->external_condition) != 0) abort();\n#endif\n  z_stage1_async_external_unlock(executor);\n}\n\n");
   }
   output.append("static __attribute__((unused)) void z_stage1_async_enqueue(Z_AsyncExecutor *executor, Z_AsyncTask *task) {\n");
   output.append("  if (executor == NULL || task == NULL || task->completed || task->queued) abort();\n");
@@ -14145,8 +14147,12 @@ function appendTaskScopeRuntime(
   output.append("static void z_stage1_task_scope_job_poll(Z_AsyncTask *task) {\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;\n  if (job->state == 0) {\n    job->state = 1;\n    if (task->cancellation_requested) {\n      task->cancelled = true;\n      z_stage1_task_scope_release_callable(job);\n      z_stage1_task_scope_job_finish(job);\n      return;\n    }\n    if (job->start == NULL) abort();\n    job->child = job->start(job->context, task->executor);\n    z_stage1_task_scope_release_callable(job);\n    if (task->cancellation_requested) z_stage1_async_request_cancel(job->child.task);\n    if (job->child.task == NULL) abort();\n    if (job->child.task->completed) z_stage1_async_enqueue(task->executor, task);\n    else {\n      if (job->child.task->waiter != NULL) abort();\n      job->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, job->child.task);\n    }\n    return;\n  }\n  if (job->state != 1 || job->child.task == NULL || !job->child.task->completed) abort();\n  task->cancelled = task->cancellation_requested || job->child.task->cancelled;\n  z_stage1_task_scope_release_invocation(&job->child);\n  z_stage1_task_scope_job_finish(job);\n}\n\n");
   output.append("static void z_stage1_task_scope_drain_external(Z_TaskScope *scope) {\n  z_stage1_task_scope_lock(scope);\n  Z_TaskScopeJob *job = scope->external_head;\n  scope->external_head = NULL;\n  scope->external_tail = NULL;\n  z_stage1_task_scope_unlock(scope);\n  while (job != NULL) {\n    Z_TaskScopeJob *next = job->external_next;\n    job->external_next = NULL;\n    z_stage1_async_enqueue(scope->executor, &job->task);\n    job = next;\n  }\n}\n\n");
   output.append("#if defined(__APPLE__)\nstatic void z_stage1_task_scope_dispatch_perform(void *context);\n#endif\n\n");
-  output.append("static void z_stage1_task_scope_perform(void *context) {\n  Z_TaskScope *scope = (Z_TaskScope *)context;\n  z_stage1_task_scope_lock(scope);\n  const bool joined = scope->closing && scope->pending == 0;\n  z_stage1_task_scope_unlock(scope);\n  if (joined) return; // A queued host wake must not touch a retired parent executor.\n  z_stage1_task_scope_drain_external(scope);\n  while (z_stage1_async_run_one(scope->executor)) {}\n");
-  if (usesDelay) {
+  output.append("static void z_stage1_task_scope_perform(void *context) {\n  Z_TaskScope *scope = (Z_TaskScope *)context;\n  z_stage1_task_scope_lock(scope);\n  const bool joined = scope->closing && scope->pending == 0;\n  z_stage1_task_scope_unlock(scope);\n  if (joined) return; // A queued host wake must not touch a retired parent executor.\n");
+  if (usesExternalCompletion) output.append("  z_stage1_async_host_enable(scope->executor);\n");
+  output.append("  z_stage1_task_scope_drain_external(scope);\n  while (z_stage1_async_run_one(scope->executor)) {}\n");
+  if (usesDelay && usesExternalCompletion) {
+    output.append("#if defined(__APPLE__)\n  z_stage1_async_host_arm_timer(scope->executor);\n#endif\n");
+  } else if (usesDelay) {
     output.append("#if defined(__APPLE__)\n  if (scope->executor->timers != NULL) {\n    const uint64_t now = z_stage1_async_now_ms();\n    const uint64_t remaining = scope->executor->timers->wake_at_ms > now ? scope->executor->timers->wake_at_ms - now : 0;\n    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(remaining * UINT64_C(1000000))), dispatch_get_main_queue(), Z_TaskScope_retain(scope), z_stage1_task_scope_dispatch_perform);\n  }\n#endif\n");
   }
   output.append("}\n\n");
@@ -22425,6 +22431,7 @@ function appendTypeDefinitions(
     if (usesAsyncDelay) output.append("  Z_AsyncTask *timers;\n");
     if (usesExternalCompletion) {
       output.append("  Z_AsyncTask *external_completions;\n");
+      output.append("#if defined(__APPLE__)\n  struct Z_AsyncHostWake *host_wake;\n#endif\n");
       output.append("  size_t active_external_callbacks;\n");
       output.append("#if defined(_WIN32)\n  CRITICAL_SECTION external_mutex;\n  CONDITION_VARIABLE external_condition;\n#else\n  pthread_mutex_t external_mutex;\n  pthread_cond_t external_condition;\n#endif\n");
     }
@@ -22439,6 +22446,7 @@ function appendTypeDefinitions(
     output.append("  void (*release_context)(void *context);\n");
     output.append("} Z_AsyncInvocation;\n\n");
     if (usesExternalCompletion) {
+      output.append("#if defined(__APPLE__)\ntypedef struct Z_AsyncHostWake Z_AsyncHostWake;\n#endif\n");
       output.append("static void z_stage1_async_begin_external_completion(Z_AsyncTask *task);\n");
       output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task);\n\n");
     }
@@ -25492,7 +25500,7 @@ function emitLoweredC(
   ) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <pthread.h>\n#endif\n");
   }
-  if (usesTaskScope) {
+  if (usesTaskScope || usesObjectiveCAsyncCompletion || programUsesAsyncThreadAwait(program)) {
     output.append("#if defined(__APPLE__)\n#include <dispatch/dispatch.h>\n#endif\n");
   }
   if (usesSleep || usesMainDelay) {

@@ -62,7 +62,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
   },
   "self-hosting": {
     timeoutMilliseconds: 120_000,
-    files: ["tests/self-hosting.test.ts", "tests/module-expression-diagnostics.test.ts", "tests/native-semantic-parity.test.ts", "tests/native-view-loans.test.ts", "tests/native-channel.test.ts", "tests/native-closure-cleanup.test.ts", "tests/native-weak-temporaries.test.ts", "tests/native-out-cleanup.test.ts", "tests/native-destructure-cleanup.test.ts", "tests/native-async-yield.test.ts", "tests/native-async-yield-child.test.ts", "tests/native-async-yield-match.test.ts", "tests/native-main-timer-completion.test.ts", "tests/native-async-linear-tail.test.ts", "tests/native-worker-yield.test.ts", "tests/native-symbol-hygiene.test.ts"],
+    files: ["tests/self-hosting.test.ts", "tests/module-expression-diagnostics.test.ts", "tests/native-semantic-parity.test.ts", "tests/native-view-loans.test.ts", "tests/native-channel.test.ts", "tests/native-closure-cleanup.test.ts", "tests/native-weak-temporaries.test.ts", "tests/native-out-cleanup.test.ts", "tests/native-destructure-cleanup.test.ts", "tests/native-async-yield.test.ts", "tests/native-async-yield-child.test.ts", "tests/native-async-yield-match.test.ts", "tests/native-main-timer-completion.test.ts", "tests/native-async-linear-tail.test.ts", "tests/native-async-host-wake.test.ts", "tests/native-worker-yield.test.ts", "tests/native-symbol-hygiene.test.ts"],
   },
   async: {
     timeoutMilliseconds: 60_000,

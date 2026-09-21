@@ -29,6 +29,7 @@ function execute(source: string, expected: string): void {
 for (const [fixture, expected] of [
   ["slice-length-expressions", "ok\n"],
   ["disjoint-indexed-call", "ok\n"],
+  ["distinct-class-call", "ok\n"],
   ["deinit-mutable-field", "3\n0\n2\n0\n1\n0\ndone\n"],
   ["generic-element-equality", "ok\n"],
   ["generic-imported-equality", "ok\n"],
@@ -219,6 +220,18 @@ test("keeps overlapping indexed call loans exclusive", () => {
 
 test("does not infer disjoint storage through potentially aliased ARC fields", () => {
   rejects(`
+    class Counter { value: i32; }
+    class Holder {
+      counter: Counter;
+      function inspect(inout this, in observed: Counter): void { this.counter.value = observed.value; }
+    }
+    function main(): i32 {
+      let holder = new Holder({ counter: new Counter({ value: 7 }) });
+      holder.inspect(in holder.counter);
+      return 0;
+    }
+  `, /overlapping/);
+  rejects(`
     class Counter {
       value: i32;
       function combine(inout this, in observed: Counter): void { this.value = observed.value; }
@@ -232,6 +245,23 @@ test("does not infer disjoint storage through potentially aliased ARC fields", (
       return 0;
     }
   `, /overlapping/);
+  rejects(`
+    import { Counter as Left } from "./counter.zs";
+    import { Counter as Right } from "./counter.zs";
+    struct Pair { left: Left; right: Right; }
+    function inspect(inout pair: Pair): void { pair.left.combine(pair.right); }
+    function main(): i32 {
+      const shared = new Left({ value: 7 });
+      let pair = Pair({ left: shared, right: shared });
+      inspect(inout pair);
+      return 0;
+    }
+  `, /overlapping/, /overlapping/, ["self-host-resolve", "self-host-emit"], {
+    "counter.zs": `export class Counter {
+      value: i32;
+      function combine(inout this, in observed: Counter): void { this.value = observed.value; }
+    }`,
+  });
 }, 240_000);
 
 test("does not permit main-only cleanup inside a thread-any deinitializer", () => {

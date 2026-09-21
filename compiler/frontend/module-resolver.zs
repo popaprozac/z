@@ -359,6 +359,37 @@ function directAggregateClassAliasNodeIdentity(
   return valueBindingClassAlias(bindings, bindingName);
 }
 
+function callAccessClassType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in bindings: Array<NativeValueBinding>,
+  in root: String
+): String {
+  let typeName = valueBindingType(bindings, root);
+  if (typeName.byteLength == 0) {
+    let separator: usize = 0;
+    while (separator < root.byteLength && root.byteAt(separator) != 46) {
+      separator = separator + 1;
+    }
+    if (separator < root.byteLength) {
+      const owner = root.copyBytes(0, separator);
+      const field = root.copyBytes(separator + 1, root.byteLength);
+      const ownerType = valueBindingType(bindings, owner);
+      match (aggregateFieldShape(modules, moduleIndex, ownerType, field)) {
+        some(shape) => { typeName = copy shape.typeName; }
+        none => {}
+      }
+    }
+  }
+  // Missing provenance can alias another instance of the same nominal class,
+  // not an unrelated class. Compare resolved declarations, not import spelling.
+  return match (inferredTypeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => modules[location.moduleIndex].symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol
+      ? `${location.moduleIndex}:${location.symbolIndex}` : "";
+    none => "";
+  };
+}
+
 function directAggregateClassAliasNodeMayAlias(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -4485,6 +4516,8 @@ function inferSignatureCallType(
         );
       }
     }
+    const receiverAliasType = receiverIdentity > 0 || receiverAliasUnknown
+      ? callAccessClassType(modules, moduleIndex, bindings, registeredReceiverRoot) : "";
     try registerCallAccess(
       module,
       tree,
@@ -4494,6 +4527,7 @@ function inferSignatureCallType(
       receiverPath,
       receiverIdentity,
       receiverAliasUnknown,
+      receiverAliasType,
       receiverMode
     );
   }
@@ -4557,6 +4591,8 @@ function inferSignatureCallType(
         );
       }
     }
+    const accessAliasType = accessIdentity > 0 || accessAliasUnknown
+      ? callAccessClassType(modules, moduleIndex, bindings, registeredRoot) : "";
     try registerCallAccess(
       module,
       tree,
@@ -4566,6 +4602,7 @@ function inferSignatureCallType(
       accessPath,
       accessIdentity,
       accessAliasUnknown,
+      accessAliasType,
       capability
     );
     accessIndex = accessIndex + 1;
@@ -4920,12 +4957,14 @@ function inferSignatureCallType(
               ),
               aliasIdentity: existingAccess.aliasIdentity,
               aliasUnknown: existingAccess.aliasUnknown,
+              aliasType: copy existingAccess.aliasType,
               capability: sharedNativeRead ? "in" : existingAccess.capability.copyBytes(
                 0,
                 existingAccess.capability.byteLength
               ),
             }));
           }
+          const captureAliasType = callAccessClassType(modules, moduleIndex, bindings, capture);
           try registerCallAccess(
             module,
             tree,
@@ -4935,6 +4974,7 @@ function inferSignatureCallType(
             capture,
             captureIdentity,
             false,
+            captureAliasType,
             captureMode
           );
         }

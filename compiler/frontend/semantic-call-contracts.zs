@@ -15,6 +15,7 @@ export struct NativeCallAccess {
   path: String;
   aliasIdentity: usize;
   aliasUnknown: boolean;
+  aliasType: String;
   capability: String;
 }
 
@@ -106,6 +107,7 @@ export function registerCallAccess(
   in path: String,
   aliasIdentity: usize,
   aliasUnknown: boolean,
+  in aliasType: String,
   in capability: String
 ): void throws ModuleResolveError {
   if (root.byteLength == 0) return;
@@ -113,10 +115,11 @@ export function registerCallAccess(
     if (
       (
         (
-          access.root == root
-          && callAccessPathsOverlap(access.path, path)
+          callAccessPathsOverlap(access.path, path)
         )
         || (
+          (access.aliasType.byteLength == 0 || aliasType.byteLength == 0 || access.aliasType == aliasType)
+          &&
           (
             (
               access.aliasIdentity > 0
@@ -160,6 +163,7 @@ export function registerCallAccess(
     path: path.copyBytes(0, path.byteLength),
     aliasIdentity,
     aliasUnknown,
+    aliasType: copy aliasType,
     capability: capability.copyBytes(0, capability.byteLength),
   }));
 }

@@ -10185,6 +10185,47 @@ therefore fail in Clang. Keeping `id<P>` on those parameter declarations needs
 its own focused codegen/ABI regression; the identity fix does not claim to solve
 that dispatch issue.
 
+### Unknown ARC provenance is still nominally typed
+
+Rebuilding Zapp with stricter native call-access validation rejected
+`this.insert(..., record.capabilities, ...)`: the mutable receiver is a document
+registry, while the retained argument is an unrelated readonly capability class.
+Unknown field provenance was being compared against every ARC receiver, without
+checking whether the two references could have the same nominal class identity.
+
+Call-access evidence now carries the resolved class declaration. Distinct class
+declarations cannot alias, but unknown/same-class cases stay conservative and an
+owner still overlaps its own projected storage regardless of nominal type. The
+regression executes registry mutation with an unrelated retained field through
+both emitters, and rejects overlapping same-class fields even when that class
+is imported under two different names. This is type precision, not a relaxation
+of exclusive access or proof that differently named fields cannot alias.
+
+### File imports must wake an idle application loop
+
+Manual Z Notes file drops exposed a native runtime integration gap that the
+transaction and pasteboard tests did not exercise. A completed `thread.spawn`
+read signaled the executor's condition variable but did not wake the macOS host
+loop. A later bridge request could drain the pending completion, making the
+first import appear missing and a subsequent drop complete both imports.
+
+Main-thread native executors now publish external completions to the host queue.
+A separate retained wake ticket is invalidated before executor destruction, so
+already-queued callbacks never access retired stack or scope storage. A resumed
+continuation also arms any subsequent timer; no periodic polling or second
+request is needed. Host driving enables these wakes; standalone drivers do not
+accumulate tickets on an unserviced main queue. Worker executors retain their
+condition-variable path.
+
+The regression gates a worker until the host loop starts, then requires delivery
+before any manual executor drain. Debug and optimized UBSan runs also cover a
+timer after the worker result, cancellation, and queued wakes after teardown.
+
+Separate standalone-driver pressure remains: when an executor has both a timer
+and an unfinished external callback, its blocking drive path currently waits
+for the external callback before servicing the timer. That needs a deadline-aware
+wait regression; waking the native host loop does not claim to fix it.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension; direct
