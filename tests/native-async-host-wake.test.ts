@@ -101,3 +101,65 @@ int main(void) {
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
+
+test("services timer deadlines and external completions without false exhaustion", () => {
+  if (process.platform === "win32") return;
+  const directory = mkdtempSync("/tmp/z-executor-wait-");
+  try {
+    const input = resolve(directory, "wait.zs");
+    writeFileSync(input, `import { delay } from "std/time";
+import { thread } from "std/thread";
+async function waitForTimer(): void on thread.main { await delay(5); }
+async function main(): i32 on thread.main {
+  const worker = thread.spawn((): i32 => 42);
+  return await worker;
+}`);
+    const compiler = process.env.Z_HOST_WAKE_COMPILER;
+    const emitted = spawnSync(compiler ?? process.execPath, compiler ? ["emit", input] : [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+    const source = resolve(directory, "wait.c");
+    writeFileSync(source, `#if !defined(__APPLE__)
+#define _POSIX_C_SOURCE 200809L
+#endif
+#include <pthread.h>
+static pthread_cond_t *spurious_condition;
+static int spurious_remaining;
+static void (*release_on_wait)(void);
+static int simulate_wake(pthread_cond_t *condition) {
+  if (condition != spurious_condition) return 0;
+  if (spurious_remaining > 0) { --spurious_remaining; return 1; }
+  if (release_on_wait != NULL) { release_on_wait(); release_on_wait = NULL; }
+  return 0;
+}
+static int test_cond_wait(pthread_cond_t *condition, pthread_mutex_t *mutex) {
+  return simulate_wake(condition) ? 0 : pthread_cond_wait(condition, mutex);
+}
+#if defined(__APPLE__)
+static __attribute__((unused)) int test_timedwait(pthread_cond_t *condition, pthread_mutex_t *mutex, const struct timespec *deadline) {
+  return simulate_wake(condition) ? 0 : pthread_cond_timedwait_relative_np(condition, mutex, deadline);
+}
+#define pthread_cond_timedwait_relative_np test_timedwait
+#else
+static __attribute__((unused)) int test_timedwait(pthread_cond_t *condition, pthread_mutex_t *mutex, const struct timespec *deadline) {
+  return simulate_wake(condition) ? 0 : pthread_cond_timedwait(condition, mutex, deadline);
+}
+#define pthread_cond_timedwait test_timedwait
+#endif
+#define pthread_cond_wait test_cond_wait
+#define main fixture_main
+${emitted.stdout}
+#undef main
+${readFileSync(resolve(projectRoot, "tests/fixtures/async-executor-wait.c"), "utf8")}`);
+    for (const optimization of ["-O0", "-O2"]) {
+      const binary = resolve(directory, `wait${optimization}`);
+      const compiled = spawnSync("clang", [source, "-std=c11", "-Wall", "-Wextra", "-Werror",
+        optimization, "-pthread", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-o", binary],
+      { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+      assert.equal(compiled.status, 0, compiled.stderr);
+      const run = spawnSync(binary, [], { encoding: "utf8", timeout: 3_000, killSignal: "SIGKILL" });
+      assert.equal(run.status, 0, `${optimization}: ${run.stderr || String(run.error)}`);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);

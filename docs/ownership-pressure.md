@@ -10221,10 +10221,15 @@ The regression gates a worker until the host loop starts, then requires delivery
 before any manual executor drain. Debug and optimized UBSan runs also cover a
 timer after the worker result, cancellation, and queued wakes after teardown.
 
-Separate standalone-driver pressure remains: when an executor has both a timer
-and an unfinished external callback, its blocking drive path currently waits
-for the external callback before servicing the timer. That needs a deadline-aware
-wait regression; waking the native host loop does not claim to fix it.
+The standalone driver now waits for either the earliest timer or an external
+completion. Timer waits use a monotonic deadline (a relative wait on macOS),
+completion predicates are read under their mutex, and spurious wakes request a
+fresh predicate check rather than reporting executor exhaustion. A completion
+without a waiter still counts as progress. Bounded debug/optimized UBSan tests
+cover a timer releasing a blocked worker, a worker preceding a distant timer,
+timer-driven cancellation, forced spurious wakes, and final exhaustion. These
+exercise the emitted runtime directly, without claiming broader mixed-suspension
+frontend support; the existing host-loop regression remains separate.
 
 ## Not tested yet
 
