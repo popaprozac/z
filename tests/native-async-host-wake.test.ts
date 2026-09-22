@@ -20,6 +20,10 @@ test("wakes an idle native host loop after the first worker completion", () => {
         encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
       });
       assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+      // Timer-free POSIX programs need neither clock-selection extensions nor
+      // timer headers; timed waits must use the monotonic clock when present.
+      if (mode === "worker") assert.doesNotMatch(emitted.stdout, /pthread_condattr_setclock/);
+      else assert.match(emitted.stdout, /pthread_condattr_setclock\(&attributes, CLOCK_MONOTONIC\)/);
       const frame = emitted.stdout.match(/typedef struct (\w+)_task \{[^}]*\bZ_Task_i32 _z_local_worker;/)?.[1];
       assert.ok(frame, "native worker-await frame");
       const start = `${frame}_start`;

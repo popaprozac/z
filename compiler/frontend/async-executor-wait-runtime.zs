@@ -12,11 +12,16 @@ static void z_stage1_async_init_condition(Z_AsyncExecutor *executor) {
 #elif defined(__APPLE__)
   if (pthread_cond_init(&executor->external_condition, NULL) != 0) abort();
 #else
+`);
+  if (timers) output.append(`
   pthread_condattr_t attributes;
   if (pthread_condattr_init(&attributes) != 0) abort();
   if (pthread_condattr_setclock(&attributes, CLOCK_MONOTONIC) != 0) abort();
   if (pthread_cond_init(&executor->external_condition, &attributes) != 0) abort();
   if (pthread_condattr_destroy(&attributes) != 0) abort();
+`);
+  else output.append("  if (pthread_cond_init(&executor->external_condition, NULL) != 0) abort();\n");
+  output.append(`
 #endif
 }
 static bool z_stage1_async_wait_for_work(Z_AsyncExecutor *executor) {
