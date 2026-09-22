@@ -97,6 +97,61 @@ function visibleValueLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
+export function callableIdentifierLocation(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in sourceName: String
+): Option<ModuleSymbolLocation> {
+  const name = identifierLookupName(sourceName);
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
+  if (symbolIndex < modules[moduleIndex].symbols.length) {
+    if (
+      modules[moduleIndex].symbols[symbolIndex].kind
+        == ModuleSymbolKind.functionSymbol
+    ) {
+      return Option.some(ModuleSymbolLocation({
+        moduleIndex,
+        symbolIndex,
+      }));
+    }
+    if (
+      modules[moduleIndex].symbols[symbolIndex].kind
+        == ModuleSymbolKind.importedSymbol
+    ) {
+      const importedName = modules[moduleIndex]
+        .symbols[symbolIndex]
+        .importedName
+        .copyBytes(
+          0,
+          modules[moduleIndex].symbols[symbolIndex].importedName.byteLength
+        );
+      const target = match (
+        in modules[moduleIndex].symbols[symbolIndex].targetModule
+      ) {
+        some(target) => visibleFunctionLocation(
+          modules,
+          target,
+          moduleIndex,
+          importedName
+        );
+        none => {
+          return match (
+            in modules[moduleIndex].symbols[symbolIndex].functionSignature
+          ) {
+            some(_) => Option<ModuleSymbolLocation>.some(ModuleSymbolLocation({
+              moduleIndex,
+              symbolIndex,
+            }));
+            none => Option<ModuleSymbolLocation>.none;
+          };
+        }
+      };
+      return target;
+    }
+  }
+  return Option<ModuleSymbolLocation>.none;
+}
+
 export function callableSymbolLocation(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -104,58 +159,7 @@ export function callableSymbolLocation(
   calleeIndex: usize
 ): Option<ModuleSymbolLocation> {
   if (tree.nodes[calleeIndex].kind == ExpressionKind.identifierExpression) {
-    const sourceName = tree.nodes[calleeIndex].value.copyBytes(
-      0,
-      tree.nodes[calleeIndex].value.byteLength
-    );
-    const name = identifierLookupName(sourceName);
-    const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
-    if (symbolIndex < modules[moduleIndex].symbols.length) {
-      if (
-        modules[moduleIndex].symbols[symbolIndex].kind
-          == ModuleSymbolKind.functionSymbol
-      ) {
-        return Option.some(ModuleSymbolLocation({
-          moduleIndex,
-          symbolIndex,
-        }));
-      }
-      if (
-        modules[moduleIndex].symbols[symbolIndex].kind
-          == ModuleSymbolKind.importedSymbol
-      ) {
-        const importedName = modules[moduleIndex]
-          .symbols[symbolIndex]
-          .importedName
-          .copyBytes(
-            0,
-            modules[moduleIndex].symbols[symbolIndex].importedName.byteLength
-          );
-        const target = match (
-          in modules[moduleIndex].symbols[symbolIndex].targetModule
-        ) {
-          some(target) => visibleFunctionLocation(
-            modules,
-            target,
-            moduleIndex,
-            importedName
-          );
-          none => {
-            return match (
-              in modules[moduleIndex].symbols[symbolIndex].functionSignature
-            ) {
-              some(_) => Option<ModuleSymbolLocation>.some(ModuleSymbolLocation({
-                moduleIndex,
-                symbolIndex,
-              }));
-              none => Option<ModuleSymbolLocation>.none;
-            };
-          }
-        };
-        return target;
-      }
-    }
-    return Option<ModuleSymbolLocation>.none;
+    return callableIdentifierLocation(modules, moduleIndex, tree.nodes[calleeIndex].value);
   }
   if (
     tree.nodes[calleeIndex].kind == ExpressionKind.memberExpression

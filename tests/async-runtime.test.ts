@@ -3231,7 +3231,7 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
   assert.match(artifact.source, /struct Z_AsyncFrame___z_thread_job_/);
   assert.match(artifact.source, /bool failed;\n\s+Z_WorkError error;/);
   assert.match(artifact.source, /bool live_error;/);
-  assert.match(artifact.source, /Z_Result_i32_WorkError _z_sync_try_\d+ = calculate\(/);
+  assert.match(artifact.source, /Z_Result_i32_WorkError _z_sync_try_\d+ = _z_function_calculate\(/);
   assert.match(artifact.source, /frame->error = _z_sync_try_\d+\.data\.failure/);
   assert.match(artifact.source, /frame->live_error = true/);
   assert.match(artifact.source, /child_\d+->live_error = false/);

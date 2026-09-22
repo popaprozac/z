@@ -27,7 +27,7 @@ test("float bit methods preserve type widths and differ from numeric conversion"
   const c = compileToC(source, fixture);
   assert.match(c, /#include <string.h>/);
   assert.match(c, /memcpy\(&result, &value, sizeof\(result\)\)/);
-  assert.match(c, /z_bits_f64_to_u64\(observe\(&\(calls\)\)\)/);
+  assert.match(c, /z_bits_f64_to_u64\(_z_function_observe\(&\(calls\)\)\)/);
   assert.doesNotMatch(c, /z_checked_convert/);
   for (const body of invalid) {
     const input = `function main(): i32 { ${body} return 0; }`;

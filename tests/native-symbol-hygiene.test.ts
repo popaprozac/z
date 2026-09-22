@@ -255,7 +255,7 @@ async function main(): i32 {
       encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
     });
     assert.equal(native.status, 0, native.stderr || String(native.error));
-    assert.match(native.stdout, /__z_module_\d+_listen/);
+    assert.match(native.stdout, /_z_function_\d+_listen/);
     for (const emission of [compileToC(source, input), native.stdout]) {
       const binary = resolve(directory, "program");
       const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", directory,
@@ -265,6 +265,75 @@ async function main(): i32 {
       assert.equal(built.status, 0, built.stderr || String(built.error));
       const ran = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
       assert.equal(ran.status, 0, ran.stderr || String(ran.error));
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("keeps Z function identities separate from runtime and imported C symbols", () => {
+  const directory = mkdtempSync("/tmp/z-function-hygiene-");
+  try {
+    writeFileSync(resolve(directory, "native.h"),
+      "static inline int customHook(int value) { return value + 1; }\n");
+    for (const asynchronous of [false, true]) {
+      const input = resolve(directory, asynchronous ? "async.zs" : "sync.zs");
+      const source = `import fs from "std/fs";
+import native from "./native.h";
+${asynchronous ? 'import { scheduler } from "std/async";' : ""}
+function write(depth: i32): i32 {
+  if (depth == 0) return 0;
+  return 1 + write(depth - 1);
+}
+function pause(): i32 { return 2; }
+export function puts(): i32 { return 3; }
+export function customHook(): i32 { return 4; }
+function nativeHook(): i32 = raw c { return customHook(10); }
+function releases(delta: i32): i32 = raw c {
+  static int count = 0;
+  count += delta;
+  return count;
+}
+class Resource {
+  value: i32;
+  constructor() { this.value = puts(); }
+  deinit { const count = releases(pause()); }
+}
+struct Defaults { value: i32 = puts(); }
+function exerciseLifecycle(): i32 {
+  const resource = new Resource();
+  const defaults = Defaults();
+  return resource.value + defaults.value;
+}
+function filesystemReady(): boolean { return fs.exists("."); }
+function checkFunctions(): i32 {
+  const callback = write;
+  if (callback(2) != 2 || write(3) != 3 || pause() != 2 || puts() != 3) return 1;
+  if (customHook() != 4 || nativeHook() != 11) return 2;
+  if (!filesystemReady()) return 3;
+  if (exerciseLifecycle() != 6 || releases(0) != 2) return 5;
+  return 0;
+}
+${asynchronous ? "async " : ""}function main(): i32 {
+  ${asynchronous ? "await scheduler.yield();" : ""}
+  if (pause() != 2 || write(1) != 1) return 4;
+  return checkFunctions();
+}`;
+      writeFileSync(input, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(native.status, 0, native.stderr || String(native.error));
+      for (const [emitter, emission] of [["Stage 0", compileToC(source, input)], ["native", native.stdout]]) {
+        for (const optimization of ["-O0", "-O2"]) {
+          const binary = resolve(directory, "program");
+          const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread",
+            "-I", directory, optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", binary], {
+            input: emission, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+          });
+          assert.equal(built.status, 0, `${emitter}/${asynchronous}/${optimization}: ${built.stderr || built.error}`);
+          const ran = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+          assert.equal(ran.status, 0, `${emitter}: ${ran.stderr || ran.error}`);
+        }
+      }
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);

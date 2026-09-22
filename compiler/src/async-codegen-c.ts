@@ -39,6 +39,7 @@ import type { ClosureInfo, IntegerOperation, ObjCCallInfo, SemanticInfo, ThreadT
 import {
   closureAdapterName,
   cBindingName,
+  cFunctionName,
   cFieldName,
   closureEnvironmentName,
   closureEnvironmentReleaseName,
@@ -8133,7 +8134,7 @@ function emitFrameExpressionInner(
           return `${asyncGeneratorFactoryName({ declaration, owner: null })}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
         }
         if (declaration && !declaration.async) {
-          return `${declaration.name}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
+          return `${cFunctionName(declaration.name)}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
         }
       }
       unsupported(fileName, expression.location, "only aggregate construction is executable as a synchronous async-frame call yet");

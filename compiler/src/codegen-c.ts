@@ -12288,7 +12288,7 @@ function capabilityStorageTargetExpression(expression: Expression): Expression |
 
 function generateCallArgument(expression: Expression, context: GenerationContext): string {
   const callbackTarget = context.semanticInfo.foreignCallbackTargets.get(expression.location.offset);
-  if (callbackTarget) return callbackTarget;
+  if (callbackTarget) return cFunctionName(callbackTarget);
   if (context.semanticInfo.cstringConversions.has(expression.location.offset)) {
     if (expression.kind === "string") return cStringLiteral(expression.value);
     const value = generateExpression(expression, context);
@@ -14245,8 +14245,10 @@ export function cFieldName(name: string): string {
   return cFamilyReservedIdentifiers.has(name) ? `_z_field_${name}` : name;
 }
 
-function cFunctionName(name: string): string {
-  return cBindingName(name);
+export function cFunctionName(name: string): string {
+  // Z functions do not belong to the native header namespace. Only the entry
+  // point and explicit C-export wrappers have an externally authored C name.
+  return name === "main" ? name : `_z_function_${name}`;
 }
 
 function hasCleanupType(

@@ -875,7 +875,7 @@ test("stores, returns, moves, and formats owned String values", () => {
   assert.match(generated, /Z_String _z_string_\d+ = z_string_new\(\);/);
   assert.match(generated, /Z_String _z_argument_\d+;/);
   assert.match(generated, /Z_String _z_aggregate_\d+;/);
-  assert.match(generated, /const int32_t _z_call_result_\d+ = inspect/);
+  assert.match(generated, /const int32_t _z_call_result_\d+ = _z_function_inspect/);
   assert.match(generated, /if \(\(_z_argument_\d+\)\.capacity > 0\) free\(\(void \*\)\(_z_argument_\d+\)\.data\);/);
   assert.match(generated, /Z_String doubleQuoted = \(Z_String\)\{ \.data = "double", \.length = sizeof\("double"\) - 1, \.capacity = 0 \}/);
   assert.match(generated, /puts\(\(\(doubleQuoted\)\.data != NULL/);
@@ -989,7 +989,7 @@ test("stores, returns, moves, and formats owned String values", () => {
   `;
   assert.deepEqual(diagnostics(throwingArgument, "throwing-string-argument.zs"), []);
   const throwingGenerated = compileToC(throwingArgument, "throwing-string-argument.zs");
-  assert.match(throwingGenerated, /const Z_Result_i32_ParseError _z_call_result_\d+ = parse/);
+  assert.match(throwingGenerated, /const Z_Result_i32_ParseError _z_call_result_\d+ = _z_function_parse/);
 
   const movedString = `
     import console from "std/console";
@@ -1475,7 +1475,7 @@ test("borrows fixed arrays as read-only and mutable Slice parameters", () => {
 
   const generated = compileToC(readFileSync(example, "utf8"), example);
   assert.match(generated, /struct Z_Slice_[\s\S]*int32_t \*data;\n\s+uintptr_t length;/);
-  assert.match(generated, /static int32_t sum\(Z_Slice_\S+ values\)/);
+  assert.match(generated, /static int32_t _z_function_sum\(Z_Slice_\S+ values\)/);
   assert.match(generated, /sum\(\(Z_Slice_\S+\)\{ \.data = \(void \*\)\(values\)\.data, \.length = 4 \}\)/);
 });
 
@@ -3706,7 +3706,7 @@ test("ties returned parameter views to every possible input owner", () => {
   const generated = compileToC(source, "parameter-views.zs");
   assert.match(
     generated,
-    /const Z_Item \*\s*choose\(bool condition, const Z_Store \*left, const Z_Store \*right\)/,
+    /const Z_Item \*\s*_z_function_choose\(bool condition, const Z_Store \*left, const Z_Store \*right\)/,
   );
   assert.match(generated, /return &\([^;]*\(\*left\)[^;]*items[^;]*data[^;]*\);/);
   assert.match(generated, /return &\([^;]*\(\*right\)[^;]*items[^;]*data[^;]*\);/);

@@ -272,10 +272,10 @@ test("exports checked scalar Z functions through a stable C ABI", () => {
     }
   `;
   const artifact = compileToNative(source, "zmath.zs", { requireMain: false });
-  assert.match(artifact.source, /static int32_t __z_c_impl_0_z_math_add\(int32_t left, int32_t right\)/);
+  assert.match(artifact.source, /static int32_t _z_function___z_c_impl_0_z_math_add\(int32_t left, int32_t right\)/);
   assert.match(artifact.source, /Z_API int32_t z_math_add\(int32_t left, int32_t right\)/);
-  assert.match(artifact.source, /static int32_t ordinary\(int32_t left, int32_t right\)[\s\S]*return __z_c_impl_0_z_math_add\(left, right\);/);
-  assert.match(artifact.source, /Z_API int32_t z_math_add\(int32_t left, int32_t right\) \{\s+return __z_c_impl_0_z_math_add\(left, right\);/);
+  assert.match(artifact.source, /static int32_t _z_function_ordinary\(int32_t left, int32_t right\)[\s\S]*return _z_function___z_c_impl_0_z_math_add\(left, right\);/);
+  assert.match(artifact.source, /Z_API int32_t z_math_add\(int32_t left, int32_t right\) \{\s+return _z_function___z_c_impl_0_z_math_add\(left, right\);/);
   assert.ok(artifact.header);
   assert.match(artifact.header, /extern "C"/);
   assert.match(artifact.header, /Z_API int32_t z_math_add\(int32_t left, int32_t right\);/);
@@ -328,8 +328,8 @@ test("exports checked scalar Z functions through a stable C ABI", () => {
     entryModule,
     { requireMain: false },
   );
-  assert.match(moduleArtifact.source, /return __z_c_impl_1_z_module_add\(left, right\);/);
-  assert.match(moduleArtifact.source, /return __z_c_impl_1_z_module_add\(20, 22\);/);
+  assert.match(moduleArtifact.source, /return _z_function___z_c_impl_1_z_module_add\(left, right\);/);
+  assert.match(moduleArtifact.source, /return _z_function___z_c_impl_1_z_module_add\(20, 22\);/);
   assert.match(moduleArtifact.header ?? "", /z_module_add/);
   assert.match(moduleArtifact.header ?? "", /z_module_answer/);
 
@@ -686,11 +686,11 @@ test("builds the Z-to-C example project and runs its handwritten C consumer", ()
 
   const generated = readFileSync(resolve(project, ".z-cache/build/zmath.c"), "utf8");
   const header = readFileSync(resolve(project, "build/zmath.h"), "utf8");
-  assert.match(generated, /static int32_t z_double\(int32_t value\)/);
-  assert.match(generated, /__z_c_impl_0_z_math_add\(z_double\(10\), 22\)/);
+  assert.match(generated, /static int32_t _z_function_double\(int32_t value\)/);
+  assert.match(generated, /_z_function___z_c_impl_0_z_math_add\(_z_function_double\(10\), 22\)/);
   assert.match(
     generated,
-    /z_math_text_byte_length\(const char \* text\)[\s\S]*__z_c_impl_0_z_math_text_byte_length\(z_string_from_cstring\(text\)\)/,
+    /z_math_text_byte_length\(const char \* text\)[\s\S]*_z_function___z_c_impl_0_z_math_text_byte_length\(z_string_from_cstring\(text\)\)/,
   );
   assert.match(
     generated,
@@ -894,7 +894,7 @@ test("lowers raw native expressions through isolated helpers and supports raw fu
   assert.match(artifact.source, /static int32_t _z_raw_expression_/);
   assert.match(artifact.source, /const int32_t \*left, int32_t \*right, int32_t \*output/);
   assert.match(artifact.source, /#line 15 .*native-boundary\.zs/);
-  assert.match(artifact.source, /static int32_t add\(int32_t left, int32_t right\)/);
+  assert.match(artifact.source, /static int32_t _z_function_add\(int32_t left, int32_t right\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -1984,10 +1984,10 @@ test("selectively imports C types and constants with the same aliases used by fu
   assert.equal(result.stdout, "selective point=23,19 score=42\n");
 
   const generated = compileToC(source, example);
-  assert.match(generated, /static ZDirection direction\(void\)/);
+  assert.match(generated, /static ZDirection _z_function_direction\(void\)/);
   assert.match(generated, /return ZForward;/);
-  assert.match(generated, /static ZPoint shift\(ZPoint point, ZCount amount\)/);
-  assert.match(generated, /return z_translate\(point, direction\(\), amount\);/);
+  assert.match(generated, /static ZPoint _z_function_shift\(ZPoint point, ZCount amount\)/);
+  assert.match(generated, /return z_translate\(point, _z_function_direction\(\), amount\);/);
   assert.match(generated, /const ZPoint point = \(ZPoint\)\{ \.x = 20, \.y = 19 \};/);
   assert.doesNotMatch(generated, /\b(Point|Direction|Count|forward|translate|score)\s*\(/);
 
@@ -2547,8 +2547,8 @@ test("passes typed Z functions to call-only C callbacks with optional context ad
   const fixture = resolve(projectRoot, "tests/fixtures/callbacks-main.zs");
   const source = readFileSync(fixture, "utf8");
   const generated = compileToC(source, fixture);
-  assert.match(generated, /z_apply_i32\(6, 7, multiply\)/);
-  assert.match(generated, /z_apply_twice_i32\(40, __z_closure_call_[0-9]+\)/);
+  assert.match(generated, /z_apply_i32\(6, 7, _z_function_multiply\)/);
+  assert.match(generated, /z_apply_twice_i32\(40, _z_function___z_closure_call_[0-9]+\)/);
   assert.match(
     generated,
     /z_apply_context_i32\(40, \(void \*\)&\(addOffset\), __z_c_callback_Z_Function_[0-9a-f]+_context_1\)/,
@@ -2691,7 +2691,7 @@ test("passes contextual inline closures directly to imported C callbacks", () =>
   const fixture = resolve(projectRoot, "tests/fixtures/callbacks-inline.zs");
   const source = readFileSync(fixture, "utf8");
   const generated = compileToC(source, fixture);
-  assert.match(generated, /z_apply_i32\(6, 7, __z_closure_call_[0-9]+\)/);
+  assert.match(generated, /z_apply_i32\(6, 7, _z_function___z_closure_call_[0-9]+\)/);
   assert.match(generated, /z_apply_context_i32\(40, \(void \*\)&\(_z_argument_[0-9]+\), __z_c_callback_/);
   assert.match(generated, /z_register_context_callback\(__z_c_callback_[^,]+, Z_Function_[0-9a-f]+_c_escape_box\(_z_argument_[0-9]+\)/);
   assert.doesNotMatch(generated, /__atomic_(?:add|sub)_fetch\(&environment->_z_refcount/);
@@ -3792,7 +3792,7 @@ test("ties borrowed C pointer views to an explicit native owner", () => {
   const generated = compileToC(source, fileName);
   assert.match(generated, /return z_owned_handle_child\(owner\);/);
   assert.match(generated, /const char \* const label = z_owned_handle_label\(owner\);/);
-  assert.match(generated, /selected = child\(owner\);/);
+  assert.match(generated, /selected = _z_function_child\(owner\);/);
   assert.match(generated, /z_owned_child_read\(value\)/);
   assert.match(generated, /z_owned_handle_close\(owner\)/);
 
@@ -4601,7 +4601,7 @@ test("imports C typedefs, records, enums, constants, and qualified signatures", 
   assert.equal(result.stdout, "point=13,20 width=640 flags=7 id=42\n");
 
   const generated = compileToC(readFileSync(example, "utf8"), example);
-  assert.match(generated, /static ZPoint move\(ZPoint point, ZCount amount\)/);
+  assert.match(generated, /static ZPoint _z_function_move\(ZPoint point, ZCount amount\)/);
   assert.match(generated, /\(ZPoint\)\{ \.x = 10, \.y = 20 \}/);
   assert.match(generated, /z_translate\(point, ZForward, amount\)/);
 });
@@ -4624,7 +4624,7 @@ test("checks contextual literals and preserves exact integer expression types", 
     }
   `;
   const generated = compileToC(source, "integer-widths.zs");
-  assert.match(generated, /static uint16_t plus\(uint16_t value\)/);
+  assert.match(generated, /static uint16_t _z_function_plus\(uint16_t value\)/);
   assert.match(generated, /const uint16_t result = z_checked_add_u16\(value, 3\);/);
   assert.match(generated, /return 4294967295U;/);
   assert.match(generated, /return 18446744073709551615ULL;/);
@@ -4888,8 +4888,8 @@ test("runs floating-point values and typed bitwise option masks", () => {
   const artifact = compileToNative(readFileSync(example, "utf8"), example);
   assert.equal(artifact.language, "c");
   assert.deepEqual(artifact.frameworks, []);
-  assert.match(artifact.source, /static float twice\(float value\)/);
-  assert.match(artifact.source, /static double negate\(double value\)/);
+  assert.match(artifact.source, /static float _z_function_twice\(float value\)/);
+  assert.match(artifact.source, /static double _z_function_negate\(double value\)/);
   assert.match(artifact.source, /const float width = 800\.0F;/);
   assert.match(artifact.source, /const ZCoordinate windowArea = z_area\(800\.0, 600\.0\);/);
   assert.match(artifact.source, /const uintptr_t styleMask = \(\(titled \| 2ULL\) \| 8ULL\);/);

@@ -168,7 +168,7 @@ function inspectObjC(in path: String): i32 throws String {
           const handler = view module.objectiveCParameters[
             method.parameterStart
           ];
-          if (handler.nativeType != "id") return 98;
+          if (handler.nativeType != "id<ZRegistrationHandler>") return 98;
           if (handler.typeName != "__z_objc:nonnull:id") return 105;
           if (handler.protocolCount != 1) return 99;
           if (

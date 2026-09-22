@@ -204,7 +204,7 @@ hostToolchainTest("preserves native subclass syntax while requiring ABI evidence
   });
   assert.equal(resolution.status, 1, resolution.stderr);
   assert.match(resolution.stderr, /Z0814/);
-  assert.match(resolution.stderr, /native stored fields currently support owned String, scalars, plain native value records, and strong imported Objective-C references/);
+  assert.match(resolution.stderr, /native stored fields currently support owned String, scalars, plain native value records, strong imported Objective-C references, and Weak<T> or Option<Weak<T>>/);
   const directory = mkdtempSync("/tmp/z-subclass-parser-");
   try {
     const vocabulary = resolve(directory, "main.zs");
@@ -395,7 +395,7 @@ test("keeps raw native bodies opaque across native lexer and parser parity", () 
   const authoritativeExpressions = native.stdout.match(
     /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
-  assert.equal(observedExpressions, "6");
+  assert.equal(observedExpressions, "7");
   assert.equal(authoritativeExpressions, observedExpressions);
 
   const rawEmissionDirectory = mkdtempSync("/tmp/z-native-raw-emission-");
@@ -413,10 +413,10 @@ test("keeps raw native bodies opaque across native lexer and parser parity", () 
     { encoding: "utf8" },
   );
   assert.equal(emission.status, 0, emission.stderr);
-  assert.match(emission.stdout, /int32_t add\(int32_t left, int32_t right\)[\s\S]*return left \+ right;/);
+  assert.match(emission.stdout, /int32_t _z_function_\d+_add\(int32_t left, int32_t right\)[\s\S]*return left \+ right;/);
   assert.doesNotMatch(
     emission.stdout,
-    /int32_t add\(int32_t left, int32_t right\) \{\s*\(void\)left;\s*\(void\)right;\s*\}/,
+    /int32_t _z_function_\d+_add\(int32_t left, int32_t right\) \{\s*\(void\)left;\s*\(void\)right;\s*\}/,
   );
 
   const directory = mkdtempSync("/tmp/z-native-contextual-raw-");
@@ -1034,11 +1034,11 @@ test("preserves multi-owner optional parameter views through native semantics an
   );
   assert.match(
     emission.stdout,
-    /return &\(\(\*Z___z_Array_Document_at\(&\(\(\*active\)\.documents\), index\)\)\);/,
+    /return &\(\(\(\(Z___z_Array_Document_ConstData\)\(\(\*active\)\.documents\)\.data\)\[z_stage1_bounds_index\(index, \(\(\*active\)\.documents\)\.length\)\]\)\);/,
   );
   assert.match(
     emission.stdout,
-    /return &\(\(\*Z___z_Array_Document_at\(&\(\(\*archive\)\.documents\), index\)\)\);/,
+    /return &\(\(\(\(Z___z_Array_Document_ConstData\)\(\(\*archive\)\.documents\)\.data\)\[z_stage1_bounds_index\(index, \(\(\*archive\)\.documents\)\.length\)\]\)\);/,
   );
 
   const directory = mkdtempSync("/tmp/z-native-parameter-optional-view-");
@@ -1384,11 +1384,11 @@ test("materializes concrete generic value structs through native ownership", () 
   );
   assert.match(
     moduleEmission.stdout,
-    /Z___z_mono_[A-Za-z0-9_]+ makePair\(int32_t first, int32_t second\)/,
+    /Z___z_mono_[A-Za-z0-9_]+ _z_function_\d+_makePair\(int32_t first, int32_t second\)/,
   );
   assert.match(
     moduleEmission.stdout,
-    /int32_t total\(Z___z_mono_[A-Za-z0-9_]+ const \*pair\)/,
+    /int32_t _z_function_\d+_total\(Z___z_mono_[A-Za-z0-9_]+ const \*pair\)/,
   );
   assert.match(
     moduleEmission.stdout,
@@ -1678,7 +1678,7 @@ test("lowers early try closures and transfers cleanup-bearing match payloads onc
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(
     emission.stdout,
-    /static void z_stage1_callable_run_\d+_call\([\s\S]*if \(\(\*value\) != 42\)/,
+    /static void z_stage1_callable__z_function_\d+_run_\d+_call\([\s\S]*if \(\(\*value\) != 42\)/,
   );
   assert.match(
     emission.stdout,
@@ -1729,7 +1729,7 @@ test("transfers nested TaskControl ownership through matches and Map storage onc
   );
   assert.match(
     emission.stdout,
-    /Z___z_Map_3_u64Request_set\(&\(requests\), 1, \(_z_stage1_live_request = false, request\)\);/,
+    /Z___z_Map_3_u64Request_set\(&\(requests\), UINT64_C\(1\), \(_z_stage1_live_request = false, request\)\);/,
   );
 
   const directory = mkdtempSync("/tmp/z-native-task-control-owned-match-");
@@ -1771,7 +1771,7 @@ test("executes one scheduler-yield suspension in an imported async function", ()
     assert.equal(emission.status, 0, emission.stderr);
     assert.match(
       emission.stdout,
-      /frame->result = loadValue\(frame->argument0\);/,
+      /frame->result = _z_function_\d+_loadValue\(frame->argument0\);/,
     );
     assert.match(emission.stdout, /if \(task->cancellation_requested\)/);
     assert.match(
@@ -1979,7 +1979,7 @@ test("keeps typed worker try propagation inside the worker result context", () =
     assert.equal(emission.status, 0, emission.stderr);
     assert.doesNotMatch(
       emission.stdout,
-      /\.payload\.success = loadText\(/,
+      /\.payload\.success = _z_function_\d+_loadText\(/,
     );
     assert.doesNotMatch(
       emission.stdout,
@@ -2319,9 +2319,9 @@ test("selects an immediate method result before a dynamic child path", () => {
     assert.equal(emission.status, 0, emission.stderr);
     assert.match(
       emission.stdout,
-      /if \(\(!enabled\) \|\| \(separator == 0\)\) \{[\s\S]*frame->result = Z_STRING_LITERAL\("disabled"\);[\s\S]*task->completed = true;[\s\S]*return;/,
+      /if \(\(!enabled\) \|\| \(separator == UINT64_C\(0\)\)\) \{[\s\S]*frame->result = Z_STRING_LITERAL\("disabled"\);[\s\S]*task->completed = true;[\s\S]*return;/,
     );
-    assert.match(emission.stdout, /size_t separator = 0;/);
+    assert.match(emission.stdout, /size_t separator = UINT64_C\(0\);/);
     assert.doesNotMatch(emission.stdout, /frame->separator/);
     assert.match(emission.stdout, /while \(\(separator </);
     assert.match(emission.stdout, /frame->child\.task->waiter = task;/);
@@ -3038,8 +3038,8 @@ test("executes non-throwing class constructors in fixed-point output", () => {
     emission.stdout,
     /Z_Window \*Z_Window_new\(Z_String title, Z_Weak manager\)/,
   );
-  assert.match(emission.stdout, /self->title = _z_stage1_assignment_/);
-  assert.match(emission.stdout, /self->manager = _z_stage1_assignment_/);
+  assert.match(emission.stdout, /Z_String \*_z_stage1_assignment_slot_(\d+) = &\(self->title\);[\s\S]*\*_z_stage1_assignment_slot_\1 = _z_stage1_assignment_\1;/);
+  assert.match(emission.stdout, /Z_Weak \*_z_stage1_assignment_slot_(\d+) = &\(self->manager\);[\s\S]*\*_z_stage1_assignment_slot_\1 = _z_stage1_assignment_\1;/);
   assert.match(
     emission.stdout,
     /Z_Window \* __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.success;/,
@@ -3457,18 +3457,18 @@ test("specializes demand-driven generic free functions natively", () => {
       assert.doesNotMatch(emission.stdout, /identity<i32>|preserve<String>/);
       if (index === 0) {
         const i32IdentityDefinitions = emission.stdout.match(
-          /int32_t identity__Function_[A-Za-z0-9_]+\(int32_t value\) \{/g,
+          /int32_t _z_function_\d+_identity__Function_[A-Za-z0-9_]+\(int32_t value\) \{/g,
         ) ?? [];
         assert.equal(i32IdentityDefinitions.length, 1);
         assert.match(
           emission.stdout,
-          /Z___z_Result_String_GenericFunctionError require__Function_[A-Za-z0-9_]+\(Z_String value, bool fail\)/,
+          /Z___z_Result_String_GenericFunctionError _z_function_\d+_require__Function_[A-Za-z0-9_]+\(Z_String value, bool fail\)/,
         );
         assert.match(emission.stdout, /Z_String_deinit\(&value\)/);
       } else {
         assert.match(
           emission.stdout,
-          /__z_module_[0-9]+_identity__Function_[A-Za-z0-9_]+/,
+          /_z_function_[0-9]+_identity__Function_[A-Za-z0-9_]+/,
         );
       }
 
@@ -3810,7 +3810,7 @@ test("composes native Array destructuring, zero-copy rest, and Slice parameters"
   );
   assert.match(
     emission.stdout,
-    /int32_t addFirstTwo\(Z___z_Slice_i32 values\)/,
+    /int32_t _z_function_\d+_addFirstTwo\(Z___z_Slice_i32 values\)/,
   );
   assert.match(
     emission.stdout,
@@ -3887,9 +3887,9 @@ test("keeps native inferred binding evidence inside its declaration scope", () =
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(
     emission.stdout,
-    /size_t inspectRecords\(Z___z_Array_Record const \*records\)/,
+    /size_t _z_function_\d+_inspectRecords\(Z___z_Array_Record const \*records\)/,
   );
-  assert.match(emission.stdout, /return takeLength\(&\(\(\*records\)\)\);/);
+  assert.match(emission.stdout, /return _z_function_\d+_takeLength\(&\(\(\*records\)\)\);/);
   assert.doesNotMatch(emission.stdout, /takeLength\(\(\*records\)\)/);
 
   const directory = mkdtempSync("/tmp/z-native-parameter-scope-");
@@ -4093,8 +4093,8 @@ test("emits and runs the first program directly from the native Z AST", () => {
     { encoding: "utf8" },
   );
   assert.equal(emission.status, 0, emission.stderr);
-  assert.match(emission.stdout, /int32_t add\(int32_t a, int32_t b\);/);
-  assert.match(emission.stdout, /const int32_t answer = add\(20, 22\);/);
+  assert.match(emission.stdout, /int32_t _z_function_\d+_add\(int32_t a, int32_t b\);/);
+  assert.match(emission.stdout, /const int32_t answer = _z_function_\d+_add\(20, 22\);/);
 
   const directory = mkdtempSync("/tmp/z-self-host-emit-");
   const executable = resolve(directory, "program");
@@ -4194,7 +4194,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(transitiveTypeEmission.status, 0, transitiveTypeEmission.stderr);
   assert.match(
     transitiveTypeEmission.stdout,
-    /int32_t readValue\(Z_Wrapper const \*wrapper\).*?_z_stage1_match_payload_\d+_\d+\.value/s,
+    /int32_t _z_function_\d+_readValue\(Z_Wrapper const \*wrapper\).*?_z_stage1_match_payload_\d+_\d+\.value/s,
   );
   const transitiveTypeExecutable = resolve(directory, "transitive-types");
   const transitiveTypeCompilation = spawnSync(
@@ -4222,7 +4222,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(matchTryEmission.status, 0, matchTryEmission.stderr);
   assert.match(
     matchTryEmission.stdout,
-    /case Z___z_Option_i32Tag_some:.*?return readValue\(_z_stage1_match_payload_\d+_\d+\);/s,
+    /case Z___z_Option_i32Tag_some:.*?return _z_function_\d+_readValue\(_z_stage1_match_payload_\d+_\d+\);/s,
   );
   const matchTryExecutable = resolve(directory, "match-try");
   const matchTryCompilation = spawnSync(
@@ -4250,19 +4250,19 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(moduleEmission.status, 0, moduleEmission.stderr);
   assert.match(
     moduleEmission.stdout,
-    /typedef struct Z_Point.*?int32_t add\(int32_t first, int32_t second\);.*?Z_Point makePoint\(int32_t x, int32_t y\);.*?int32_t sum\(Z_Point point\);.*?int32_t main\(void\);/s,
+    /typedef struct Z_Point.*?int32_t _z_function_\d+_add\(int32_t first, int32_t second\);.*?Z_Point _z_function_\d+_makePoint\(int32_t x, int32_t y\);.*?int32_t _z_function_\d+_sum\(Z_Point point\);.*?int32_t main\(void\);/s,
   );
   assert.match(
     moduleEmission.stdout,
-    /typedef struct Z_Session \{.*?Z_Resource resource;.*?static __attribute__\(\(unused\)\) void Z_Session_deinit\(Z_Session \*self\) \{.*?Z_Resource_deinit\(&self->resource\);.*?int32_t resourceId\(Z_Session session\) \{.*?Z_Session_deinit\(&session\);/s,
+    /typedef struct Z_Session \{.*?Z_Resource resource;.*?static __attribute__\(\(unused\)\) void Z_Session_deinit\(Z_Session \*self\) \{.*?Z_Resource_deinit\(&self->resource\);.*?int32_t _z_function_\d+_resourceId\(Z_Session session\) \{.*?Z_Session_deinit\(&session\);/s,
   );
   assert.match(
     moduleEmission.stdout,
-    /typedef struct Z_ResourceState \{.*?Z_Resource ready;.*?static __attribute__\(\(unused\)\) void Z_ResourceState_deinit\(Z_ResourceState \*self\) \{.*?Z_Resource_deinit\(&self->payload\.ready\);.*?int32_t stateId\(Z_ResourceState value\) \{.*?case Z_ResourceStateTag_ready:.*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);/s,
+    /typedef struct Z_ResourceState \{.*?Z_Resource ready;.*?static __attribute__\(\(unused\)\) void Z_ResourceState_deinit\(Z_ResourceState \*self\) \{.*?Z_Resource_deinit\(&self->payload\.ready\);.*?int32_t _z_function_\d+_stateId\(Z_ResourceState value\) \{.*?case Z_ResourceStateTag_ready:.*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);/s,
   );
   assert.match(
     moduleEmission.stdout,
-    /int32_t main\(void\) \{.*?Z_Point point = makePoint\(20, 20\);.*?Z_Point directPoint = \(Z_Point\)\{\.x = 1, \.y = 1\};.*?Z_Resource resource = makeResource\(0\);.*?Z_Session session = \(Z_Session\)\{\.resource = resource\};.*?Z_ResourceState current = makeState\(0\);.*?Z_ResourceState direct = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_ready, \.payload\.ready = makeResource\(0\)\};.*?Z_ResourceState empty = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_empty\};/s,
+    /int32_t main\(void\) \{.*?Z_Point point = _z_function_\d+_makePoint\(20, 20\);.*?Z_Point directPoint = \(Z_Point\)\{\.x = 1, \.y = 1\};.*?Z_Resource resource = _z_function_\d+_makeResource\(0\);.*?Z_Session session = \(Z_Session\)\{\.resource = resource\};.*?Z_ResourceState current = _z_function_\d+_makeState\(0\);.*?Z_ResourceState direct = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_ready, \.payload\.ready = _z_function_\d+_makeResource\(0\)\};.*?Z_ResourceState empty = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_empty\};/s,
   );
   assert.equal(
     moduleEmission.stdout.match(/Z_Resource_deinit\(&self->resource\);/g)?.length,
@@ -4309,7 +4309,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(collisionEmission.status, 0, collisionEmission.stderr);
   assert.equal(
     collisionEmission.stdout.match(
-      /int32_t __z_module_\d+_helper\(int32_t value\)/g,
+      /int32_t _z_function_\d+_helper\(int32_t value\)/g,
     )?.length,
     4,
   );
@@ -4424,11 +4424,16 @@ test("emits and runs the first program directly from the native Z AST", () => {
     [cli, "self-host-emit", exportedCollisionMain],
     { encoding: "utf8" },
   );
-  assert.notEqual(exportedCollisionEmission.status, 0);
-  assert.match(
-    exportedCollisionEmission.stderr,
-    /native module emission requires collision-safe function identity for duplicate/,
-  );
+  assert.equal(exportedCollisionEmission.status, 0, exportedCollisionEmission.stderr);
+  const exportedCollisionExecutable = resolve(directory, "exported-collision-modules");
+  const exportedCollisionCompilation = spawnSync("clang", [
+    "-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", exportedCollisionExecutable,
+  ], { encoding: "utf8", input: exportedCollisionEmission.stdout, timeout: 30_000, killSignal: "SIGKILL" });
+  assert.equal(exportedCollisionCompilation.status, 0, exportedCollisionCompilation.stderr);
+  const exportedCollisionExecution = spawnSync(exportedCollisionExecutable, [], {
+    encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL",
+  });
+  assert.equal(exportedCollisionExecution.status, 42, exportedCollisionExecution.stderr);
 
   const exportedTypeCollisionA = resolve(
     directory,
@@ -4510,27 +4515,27 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(nativeIntegerEmission.status, 0, nativeIntegerEmission.stderr);
   assert.match(
     nativeIntegerEmission.stdout,
-    /size_t addSize\(size_t value\).*?z_stage1_checked_add_usize\(value, (?:2|UINT64_C\(2\))\)/s,
+    /size_t _z_function_\d+_addSize\(size_t value\).*?z_stage1_checked_add_usize\(value, (?:2|UINT64_C\(2\))\)/s,
   );
   assert.match(
     nativeIntegerEmission.stdout,
-    /uint8_t doubleByte\(uint8_t value\).*?z_stage1_checked_multiply_u8\(value, 2\)/s,
+    /uint8_t _z_function_\d+_doubleByte\(uint8_t value\).*?z_stage1_checked_multiply_u8\(value, 2\)/s,
   );
   assert.match(
     nativeIntegerEmission.stdout,
-    /size_t halveSize\(size_t value\).*?z_stage1_checked_divide_usize\(value, (?:2|UINT64_C\(2\))\)/s,
+    /size_t _z_function_\d+_halveSize\(size_t value\).*?z_stage1_checked_divide_usize\(value, (?:2|UINT64_C\(2\))\)/s,
   );
   assert.match(
     nativeIntegerEmission.stdout,
-    /uint8_t remainderByte\(uint8_t value\).*?z_stage1_checked_remainder_u8\(value, 5\)/s,
+    /uint8_t _z_function_\d+_remainderByte\(uint8_t value\).*?z_stage1_checked_remainder_u8\(value, 5\)/s,
   );
   assert.match(
     nativeIntegerEmission.stdout,
-    /int32_t halveSigned\(int32_t value\).*?z_stage1_checked_divide_i32\(value, 2\)/s,
+    /int32_t _z_function_\d+_halveSigned\(int32_t value\).*?z_stage1_checked_divide_i32\(value, 2\)/s,
   );
   assert.match(
     nativeIntegerEmission.stdout,
-    /typedef struct Z___z_Array_i32 \{.*?void \*data;.*?size_t length;.*?size_t capacity;.*?static __attribute__\(\(unused\)\) void Z___z_Array_i32_deinit\(Z___z_Array_i32 \*self\).*?size_t discard\(Z___z_Array_i32 values\).*?Z___z_Array_i32_deinit\(&values\);/s,
+    /typedef struct Z___z_Array_i32 \{.*?void \*data;.*?size_t length;.*?size_t capacity;.*?static __attribute__\(\(unused\)\) void Z___z_Array_i32_deinit\(Z___z_Array_i32 \*self\).*?size_t _z_function_\d+_discard\(Z___z_Array_i32 values\).*?Z___z_Array_i32_deinit\(&values\);/s,
   );
   const nativeIntegerExecutable = resolve(directory, "native-integers");
   const nativeIntegerCompilation = spawnSync(
@@ -4585,7 +4590,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(nativeStringEmission.status, 0, nativeStringEmission.stderr);
   assert.match(
     nativeStringEmission.stdout,
-    /Z_String inspect\(Z_String value\)|size_t inspect\(Z_String value\)/,
+    /Z_String _z_function_\d+_inspect\(Z_String value\)|size_t _z_function_\d+_inspect\(Z_String value\)/,
   );
   assert.match(nativeStringEmission.stdout, /z_string_copy_bytes\(value, (?:1|UINT64_C\(1\)), (?:4|UINT64_C\(4\))\)/);
   assert.match(nativeStringEmission.stdout, /z_string_equal\(middle, Z_STRING_LITERAL\("ell"\)\)/);
@@ -4594,19 +4599,19 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(nativeStringEmission.stdout, /Z_String_deinit\(&value\)/);
   assert.match(
     nativeStringEmission.stdout,
-    /size_t borrowedLength\(Z_String const \*value\).*?\(\(\*value\)\)\.length/s,
+    /size_t _z_function_\d+_borrowedLength\(Z_String const \*value\).*?\(\(\*value\)\)\.length/s,
   );
   assert.match(
     nativeStringEmission.stdout,
-    /void initialize\(size_t \*value\).*?\(\*value\) = (?:20|UINT64_C\(20\));/s,
+    /void _z_function_\d+_initialize\(size_t \*value\).*?\(\*value\) = (?:20|UINT64_C\(20\));/s,
   );
   assert.match(
     nativeStringEmission.stdout,
-    /void increment\(size_t \*value\).*?\(\*value\) = z_stage1_checked_add_usize\(\(\*value\), (?:2|UINT64_C\(2\))\);/s,
+    /void _z_function_\d+_increment\(size_t \*value\).*?\(\*value\) = z_stage1_checked_add_usize\(\(\*value\), (?:2|UINT64_C\(2\))\);/s,
   );
   assert.match(
     nativeStringEmission.stdout,
-    /borrowedLength\(&\(Z_STRING_LITERAL\("ok"\)\)\)/,
+    /_z_function_\d+_borrowedLength\(&\(Z_STRING_LITERAL\("ok"\)\)\)/,
   );
   assert.match(nativeStringEmission.stdout, /z_text_buffer_append\(&\(output\), Z_STRING_LITERAL\("he"\)\)/);
   assert.match(nativeStringEmission.stdout, /z_text_buffer_append_bytes\(&\(output\), Z_STRING_LITERAL\("llo!"\), (?:0|UINT64_C\(0\)), (?:1|UINT64_C\(1\))\)/);
@@ -4760,7 +4765,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /inspect\(Z___z_Option_i32 option\).*?switch \(_z_stage1_match_\d+\.tag\)/s,
+    /_z_function_\d+_inspect\(Z___z_Option_i32 option\).*?switch \(_z_stage1_match_\d+\.tag\)/s,
   );
   assert.match(
     optionEmission.stdout,
@@ -4772,7 +4777,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /discardResource\(void\).*?__attribute__\(\(unused\)\) Z___z_Option_Resource held = resource\(0\);.*?Z___z_Option_Resource_deinit\(&held\);/s,
+    /discardResource\(void\).*?__attribute__\(\(unused\)\) Z___z_Option_Resource held = _z_function_\d+_resource\(0\);.*?Z___z_Option_Resource_deinit\(&held\);/s,
   );
   assert.match(
     optionEmission.stdout,
@@ -4796,7 +4801,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /userId\(Z___z_Option_User const \*option\).*?\(\*option\)\.payload\.some.*?return _z_stage1_match_payload_/s,
+    /userId\(Z___z_Option_User const \*option\).*?const Z___z_Option_User \* const _z_stage1_match_\d+ = &\(\(\*option\)\);.*?_z_stage1_match_\d+->payload\.some.*?return _z_stage1_match_payload_/s,
   );
   assert.doesNotMatch(optionEmission.stdout, /Option\.(?:some|none)/);
   const optionExecutable = resolve(directory, "option");
@@ -4830,7 +4835,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     resultEmission.stdout,
-    /Z___z_Result_i32_Problem result = relay\(shouldFail\);.*?case Z___z_Result_i32_ProblemTag_success:.*?case Z___z_Result_i32_ProblemTag_failure:/s,
+    /Z___z_Result_i32_Problem result = _z_function_\d+_relay\(shouldFail\);.*?case Z___z_Result_i32_ProblemTag_success:.*?case Z___z_Result_i32_ProblemTag_failure:/s,
   );
   assert.match(
     resultEmission.stdout,
@@ -4842,15 +4847,15 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     resultEmission.stdout,
-    /discardResult\(void\).*?__attribute__\(\(unused\)\) Z___z_Result_Resource_Problem result = loadResource\(false\);.*?Z___z_Result_Resource_Problem_deinit\(&result\);/s,
+    /discardResult\(void\).*?__attribute__\(\(unused\)\) Z___z_Result_Resource_Problem result = _z_function_\d+_loadResource\(false\);.*?Z___z_Result_Resource_Problem_deinit\(&result\);/s,
   );
   assert.match(
     resultEmission.stdout,
-    /relay\(bool shouldFail\).*?_z_stage1_return_\d+ = load\(shouldFail\);\n  Z_Resource_deinit\(&audit\);\n  return _z_stage1_return_\d+;/s,
+    /_z_function_\d+_relay\(bool shouldFail\).*?_z_stage1_return_\d+ = _z_function_\d+_load\(shouldFail\);\n  Z_Resource_deinit\(&audit\);\n  return _z_stage1_return_\d+;/s,
   );
   assert.match(
     resultEmission.stdout,
-    /adjusted\(bool shouldFail\).*?_z_stage1_try_\d+ = load\(shouldFail\);.*?if \(_z_stage1_try_\d+\.tag == Z___z_Result_i32_ProblemTag_failure\).*?Z_Resource_deinit\(&audit\);\n    return _z_stage1_failure_\d+;.*?value = _z_stage1_try_\d+\.payload\.success;/s,
+    /adjusted\(bool shouldFail\).*?_z_stage1_try_\d+ = _z_function_\d+_load\(shouldFail\);.*?if \(_z_stage1_try_\d+\.tag == Z___z_Result_i32_ProblemTag_failure\).*?Z_Resource_deinit\(&audit\);\n    return _z_stage1_failure_\d+;.*?value = _z_stage1_try_\d+\.payload\.success;/s,
   );
   assert.match(
     resultEmission.stdout,
@@ -4862,7 +4867,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     resultEmission.stdout,
-    /relayVoid\(bool shouldFail\).*?_z_stage1_try_\d+ = validate\(shouldFail\);.*?if \(_z_stage1_try_\d+\.tag == Z___z_Result_void_ProblemTag_failure\).*?Z_Resource_deinit\(&audit\);\n    return _z_stage1_failure_\d+;.*?Z___z_Result_void_Problem _z_stage1_return_\d+ = .*?Z_Resource_deinit\(&audit\);/s,
+    /relayVoid\(bool shouldFail\).*?_z_stage1_try_\d+ = _z_function_\d+_validate\(shouldFail\);.*?if \(_z_stage1_try_\d+\.tag == Z___z_Result_void_ProblemTag_failure\).*?Z_Resource_deinit\(&audit\);\n    return _z_stage1_failure_\d+;.*?Z___z_Result_void_Problem _z_stage1_return_\d+ = .*?Z_Resource_deinit\(&audit\);/s,
   );
   const resultExecutable = resolve(directory, "result");
   const resultCompilation = spawnSync(
@@ -4898,18 +4903,11 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspect\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?case Z_ResourceStateTag_ready: \{\n      Z_Resource __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.ready;.*?_z_stage1_return_\d+ = _z_stage1_match_payload_\d+_\d+\.id;\n      Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);\n      if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);\n      return/s,
+    /_z_function_\d+_inspect\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?case Z_ResourceStateTag_ready: \{\n      Z_Resource __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.ready;.*?_z_stage1_return_\d+ = _z_stage1_match_payload_\d+_\d+\.id;\n      Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);\n      if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);\n      return/s,
   );
-  const inspectStart = ownedEnumEmission.stdout.indexOf(
-    "int32_t inspect(Z_ResourceState state) {",
-  );
-  const inspectDefinition = ownedEnumEmission.stdout.slice(
-    inspectStart,
-    ownedEnumEmission.stdout.indexOf(
-      "int32_t inspectValue(Z_ResourceState state)",
-      inspectStart,
-    ),
-  );
+  const inspectDefinition = ownedEnumEmission.stdout.match(
+    /int32_t _z_function_\d+_inspect\(Z_ResourceState state\) \{[^]*?\n\}/,
+  )?.[0] ?? "";
   assert.doesNotMatch(
     inspectDefinition,
     /^\s*Z_ResourceState_deinit\(&state\)/m,
@@ -4930,16 +4928,9 @@ test("emits and runs the first program directly from the native Z AST", () => {
     ownedEnumEmission.stdout,
     /selectResource\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;.*?case Z_ResourceStateTag_ready: \{\n      Z_Resource __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.ready;\n      bool _z_stage1_live__z_stage1_match_payload_\d+_\d+ = true;\n      Z_Resource _z_stage1_return_\d+ = \(_z_stage1_live__z_stage1_match_payload_\d+_\d+ = false, _z_stage1_match_payload_\d+_\d+\);\n      if \(_z_stage1_live__z_stage1_match_payload_\d+_\d+\) Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);\n      if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);\n      return _z_stage1_return_\d+;/s,
   );
-  const ownedLocalStart = ownedEnumEmission.stdout.indexOf(
-    "int32_t inspectOwnedLocal(void) {",
-  );
-  const ownedLocalDefinition = ownedEnumEmission.stdout.slice(
-    ownedLocalStart,
-    ownedEnumEmission.stdout.indexOf(
-      "Z_ResourceState makeState(int32_t z_id)",
-      ownedLocalStart,
-    ),
-  );
+  const ownedLocalDefinition = ownedEnumEmission.stdout.match(
+    /int32_t _z_function_\d+_inspectOwnedLocal\(void\) \{[^]*?\n\}/,
+  )?.[0] ?? "";
   assert.match(
     ownedLocalDefinition,
     /Z_Resource selected;[\s\S]*selected = \(_z_stage1_live__z_stage1_match_payload_\d+_\d+ = false, _z_stage1_match_payload_\d+_\d+\);[\s\S]*Z_Resource_deinit\(&selected\);/,
@@ -4950,7 +4941,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectCall\(void\) \{\n  Z_ResourceState _z_stage1_match_\d+ = makeState\(42\);\n  switch \(_z_stage1_match_\d+\.tag\)/,
+    /inspectCall\(void\) \{\n  Z_ResourceState _z_stage1_match_\d+ = _z_function_\d+_makeState\(42\);\n  switch \(_z_stage1_match_\d+\.tag\)/,
   );
   assert.match(
     ownedEnumEmission.stdout,
@@ -5006,7 +4997,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
     { encoding: "utf8" },
   );
   assert.equal(moveEmission.status, 0, moveEmission.stderr);
-  assert.match(moveEmission.stdout, /int32_t relay\(Z_Resource resource\) \{\n  \(void\)resource;\n  return inspect\(resource\);\n\}/);
+  assert.match(moveEmission.stdout, /int32_t _z_function_\d+_relay\(Z_Resource resource\) \{\n  \(void\)resource;\n  return _z_function_\d+_inspect\(resource\);\n\}/);
   const moveExecutable = resolve(directory, "move");
   const moveCompilation = spawnSync(
     "clang",
@@ -5030,7 +5021,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     localCleanupEmission.stdout,
-    /moveLocal\(void\) \{\n  __attribute__\(\(unused\)\) Z_Resource resource = .*?;\n  return inspect\(resource\);\n\}/s,
+    /moveLocal\(void\) \{\n  __attribute__\(\(unused\)\) Z_Resource resource = .*?;\n  return _z_function_\d+_inspect\(resource\);\n\}/s,
   );
   const localCleanupExecutable = resolve(directory, "local-cleanup");
   const localCleanupCompilation = spawnSync(
@@ -5074,7 +5065,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     cleanupFlowEmission.stdout,
-    /replaceOwner\(int32_t next, bool replace\).*?_z_stage1_assignment_\d+ = \(Z_Resource\)\{\.id = z_stage1_checked_add_i32\(resource\.id, next\)\};\n    Z_Resource_deinit\(&resource\);\n    resource = _z_stage1_assignment_\d+;.*?Z_Resource_deinit\(&resource\);/s,
+    /replaceOwner\(int32_t next, bool replace\).*?_z_stage1_assignment_(\d+) = \(Z_Resource\)\{\.id = z_stage1_checked_add_i32\(resource\.id, next\)\};\n    Z_Resource \*_z_stage1_assignment_slot_\1 = &\(resource\);\n    Z_Resource_deinit\(_z_stage1_assignment_slot_\1\);\n    \*_z_stage1_assignment_slot_\1 = _z_stage1_assignment_\1;.*?Z_Resource_deinit\(&resource\);/s,
   );
   assert.match(
     cleanupFlowEmission.stdout,
@@ -5082,7 +5073,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     cleanupFlowEmission.stdout,
-    /static __attribute__\(\(unused\)\) void Z_AuditedEnvelope_deinit\(Z_AuditedEnvelope \*self\) \{\n  \(void\)self;\n  __attribute__\(\(unused\)\) Z_Resource audit = \(Z_Resource\)\{\.id = self->resource\.id\};\n  record\(audit\.id\);\n  Z_Resource_deinit\(&audit\);\n  Z_Resource_deinit\(&self->resource\);\n\}/,
+    /static __attribute__\(\(unused\)\) void Z_AuditedEnvelope_deinit\(Z_AuditedEnvelope \*self\) \{\n  \(void\)self;\n  __attribute__\(\(unused\)\) Z_Resource audit = \(Z_Resource\)\{\.id = self->resource\.id\};\n  _z_function_\d+_record\(audit\.id\);\n  Z_Resource_deinit\(&audit\);\n  Z_Resource_deinit\(&self->resource\);\n\}/,
   );
   assert.match(
     cleanupFlowEmission.stdout,
@@ -5143,7 +5134,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(loopTransferEmission.status, 0, loopTransferEmission.stderr);
   assert.match(
     loopTransferEmission.stdout,
-    /inspect\(Z_Resource resource, int32_t limit\).*?bool _z_stage1_live_resource = true;.*?\(_z_stage1_live_resource = false, resource\).*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);/s,
+    /_z_function_\d+_inspect\(Z_Resource resource, int32_t limit\).*?bool _z_stage1_live_resource = true;.*?\(_z_stage1_live_resource = false, resource\).*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);/s,
   );
   const loopTransferExecutable = resolve(directory, "loop-transfer");
   const loopTransferCompilation = spawnSync(
@@ -5423,7 +5414,7 @@ test("keeps ordinary native Z functions out of the host link namespace", () => {
     assert.equal(emission.status, 0, emission.stderr);
     assert.match(
       emission.stdout,
-      /static __attribute__\(\(unused\)\) int32_t advance\(void\)/,
+      /static __attribute__\(\(unused\)\) int32_t _z_function_\d+_advance\(void\)/,
     );
 
     const generated = resolve(directory, "generated.c");
@@ -5577,11 +5568,11 @@ hostToolchainTest("lowers lexical Objective-C pools without closure allocation n
     assert.equal(emission.status, 0, emission.stderr);
     assert.match(
       emission.stdout,
-      /z_stage1_objc_pool_pooledValue_\d+\(const bool \*shouldFail\) \{\n  @autoreleasepool \{/,
+      /z_stage1_objc_pool__z_function_\d+_pooledValue_\d+\(const bool \*shouldFail\) \{\n  @autoreleasepool \{/,
     );
     assert.match(
       emission.stdout,
-      /return z_stage1_objc_pool_pooledValue_\d+\(&\(shouldFail\)\);/,
+      /return z_stage1_objc_pool__z_function_\d+_pooledValue_\d+\(&\(shouldFail\)\);/,
     );
     assert.doesNotMatch(emission.stdout, /malloc\(sizeof\([^\n]*objc_pool/);
     assert.doesNotMatch(emission.stdout, /_Block_copy|Z_ObjCClosureBox/);
@@ -7036,7 +7027,7 @@ test("returns scalar, owned, and typed-error values through native thread.main p
     assert.match(structuredMatchEmission.stdout, /size_t arm_0;/);
     assert.equal(
       structuredMatchEmission.stdout.match(
-        /context->match_subject = chooseDirection\(direction\)/g,
+        /context->match_subject = _z_function_\d+_chooseDirection\(direction\)/g,
       )?.length,
       3,
     );
@@ -7288,7 +7279,7 @@ test("returns scalar, owned, and typed-error values through native thread.main p
     for (const [fixture, diagnostic] of [
       [
         "self-host-emit-thread-main-control-flow-suspension-invalid.zs",
-        /does not yet preserve control flow across suspension/,
+        /native worker-to-main timer segments with early return or error propagation require completion forwarding/,
       ],
       [
         "self-host-emit-thread-main-uninitialized-local-invalid.zs",
@@ -7709,7 +7700,7 @@ test("allocates and reversely cleans Arena values through the native frontend", 
   assert.doesNotMatch(managedEmission.stdout, /Z___z_Array_i32_deinit\(&values\)/);
   assert.match(
     managedEmission.stdout,
-    /void finish\(Z_Arena region\) \{\n  \(void\)region;\n  Z_Arena_deinit\(&region\);/,
+    /void _z_function_\d+_finish\(Z_Arena region\) \{\n  \(void\)region;\n  Z_Arena_deinit\(&region\);/,
   );
   assert.match(managedEmission.stdout, /finish\(scratch\);/);
   assert.doesNotMatch(managedEmission.stdout, /Z_Arena_deinit\(&scratch\)/);
@@ -10100,17 +10091,9 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   const objcRuntimeStub = resolve(directory, "objc-runtime-stub.h");
   writeFileSync(
     objcRuntimeStub,
-    [
-      "#ifndef nil",
-      "#define nil ((id)0)",
-      "#endif",
-      "__attribute__((objc_root_class))",
-      "@interface NSObject",
-      "+ (instancetype)alloc;",
-      "- (instancetype)init;",
-      "@end",
-      "",
-    ].join("\n"),
+    // Use the SDK identity: async output may also include libdispatch, whose
+    // OS-object declarations import NSObject themselves.
+    '#import <Foundation/NSObject.h>\n',
   );
   const objcRegistrationCompilation = spawnSync(
     "clang",
@@ -10796,8 +10779,8 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   assert.equal(driverEmission.status, 0, driverEmission.stderr);
-  assert.match(driverEmission.stdout, /Z___z_Result_void_String loadModule\(/);
-  assert.match(driverEmission.stdout, /Z___z_Result_String_String emitModulesC\(/);
+  assert.match(driverEmission.stdout, /Z___z_Result_void_String _z_function_\d+_loadModule\(/);
+  assert.match(driverEmission.stdout, /Z___z_Result_String_String _z_function_\d+_emitModulesC\(/);
   assert.match(driverEmission.stdout, /z_stage1_fs_lock\(/);
   assert.match(driverEmission.stdout, /z_stage1_fs_replace\(/);
   assert.match(driverEmission.stdout, /Z_FsLock_deinit\(&\(cacheLock\)\)/);
@@ -14732,14 +14715,14 @@ test("lowers the complete native frontend graph to C", () => {
     { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   assert.equal(emission.status, 0, emission.stderr);
-  assert.match(emission.stdout, /void appendCStringLiteral\(Z_String \*output, Z_String const \*value\);/);
+  assert.match(emission.stdout, /void _z_function_\d+_appendCStringLiteral\(Z_String \*output, Z_String const \*value\);/);
   assert.match(
     emission.stdout,
-    /Z___z_Result_String_String emitLoweredC\(Z_LoweredProgram const \*program, Z_String const \*embeddedRuntimeName, Z_String const \*runtimeInitializerName, bool runtimeInitializerRequiresMain\);/,
+    /Z___z_Result_String_String _z_function_\d+_emitLoweredC\(Z_LoweredProgram const \*program, Z_String const \*embeddedRuntimeName, Z_String const \*runtimeInitializerName, bool runtimeInitializerRequiresMain\);/,
   );
   assert.match(
     emission.stdout,
-    /Z___z_Result_Stage1ModuleGraphResult_String resolveModuleGraphPhase\(Z_String const \*entryPath, Z_String const \*batch\);/,
+    /Z___z_Result_Stage1ModuleGraphResult_String _z_function_\d+_resolveModuleGraphPhase\(Z_String const \*entryPath, Z_String const \*batch\);/,
   );
   assert.match(
     emission.stdout,
@@ -14816,17 +14799,17 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
   assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 3 inferred local binding contracts/);
   // Includes the two String-valued arms of the audit conditional, separately
   // from its boolean condition at the same starting source position.
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 31 expression type contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 33 expression type contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ inferred local binding stage-0 Z resolutions/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 31 expression stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 33 expression stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ function, \d+ method, and \d+ constructor native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ aggregate, \d+ field, and \d+ enum-variant native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ explicit type-use native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 3 inferred local binding native-authoritative contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 31 expression native-authoritative contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 33 expression native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(4 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 
@@ -19137,7 +19120,7 @@ test("preserves thread.main callable placement through native resolution and emi
   assert.doesNotMatch(emission.stdout, /__atomic_(?:add|sub)_fetch\(&environment->_z_refcount/);
   assert.match(
     emission.stdout,
-    /Z_Controller \* const stored = Z_Controller_retain\(\(\*Z___z_Array_Controller_at/,
+    /Z_Controller \* const stored = Z_Controller_retain\(\(\(\(Z___z_Array_Controller_ConstData\)\(controllers\)\.data\)\[z_stage1_bounds_index\(0, \(controllers\)\.length\)\]\)\);/,
   );
   assert.match(emission.stdout, /Z_Controller_release\(items\[self->length\]\)/);
 
@@ -19381,7 +19364,7 @@ test("preserves weak-reference construction and upgrade effects natively", () =>
   )?.[1];
   assert.equal(observedBindings, "11");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "82");
+  assert.equal(observedExpressions, "85");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 

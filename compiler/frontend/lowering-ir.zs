@@ -77,6 +77,7 @@ import {
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
+import { callableIdentifierLocation } from "./semantic-evidence.zs";
 import {
   collectionMethodSignature,
   numericBitsType,
@@ -381,6 +382,9 @@ export struct LoweredExpression {
   // Resolve this against the containing function's source module after all
   // module/specialization names are settled; a bare target name is ambiguous.
   callTargetOffset: usize = 0;
+  // A contextually typed named callback still needs its module-local alias
+  // resolved, even though there is no source call expression at this use.
+  namedFunctionReference: boolean = false;
   captureBindingOffsets: Array<usize> = Array<usize>();
   captureTypes: Array<LoweredType> = Array<LoweredType>();
   moveSpreadOverrides: Array<LoweredField> = Array<LoweredField>();
@@ -517,6 +521,8 @@ export struct LoweredFunction {
   nativeObjCClass: String = "";
   nativeObjCEntry: Option<ModuleObjCSubclassEntry> = Option<ModuleObjCSubclassEntry>.none;
   name: String;
+  // Source identity for build-configured entry hooks, independent of C naming.
+  entryDeclarationName: String = "";
   testName: String;
   sourcePath: String;
   nativeCExportName: String;
@@ -18721,18 +18727,15 @@ function lowerExpressionExpected(
       }
       none => {}
     }
-    let target = copy bindingName;
-    match (importedCallTarget(program, target)) {
-      some(imported) => target = move imported;
-      none => {}
-    }
-    return pushExpression(
+    const callable = pushExpression(
       inout output,
       LoweredExpressionKind.directFunctionValue,
-      target,
+      bindingName,
       Array<usize>(),
       Array<String>(move expectedCallableIdentity)
     );
+    output[callable].namedFunctionReference = true;
+    return callable;
   }
   const callableTypeName = moduleCallableAliasTarget(
     program,
@@ -28792,6 +28795,7 @@ function lowerDeinitializer(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
+  in sourcePath: String,
   in ownerName: String,
   in body: StatementArena
 ): LoweredFunction throws String {
@@ -28847,7 +28851,7 @@ function lowerDeinitializer(
   return LoweredFunction({
     name: `${ownerName}.deinit`,
     testName: "",
-    sourcePath: "",
+    sourcePath: copy sourcePath,
     nativeCExportName: "",
     compilerIntrinsic: "",
     compilerIntrinsicType: Option<LoweredType>.none,
@@ -29215,85 +29219,47 @@ function containsName(in names: Array<String>, in name: String): boolean {
   return false;
 }
 
-function collisionSafePrivateFunctionNames(
+function nativeCExportNamesInGraph(
   in parsed: Array<ParsedModule>,
-  in graph: ModuleGraph,
   includeTests: boolean
 ): Array<String> {
   let names = Array<String>();
-  let foreignNames = Set<String>();
-  let includesNativeHeaders = false;
-  for (const module of parsed) {
-    for (const imported of module.program.imports) {
-      if (stringEndsWithBytes(imported.header, ".h")
-        || stringEndsWithBytes(imported.header, ".hh")
-        || stringEndsWithBytes(imported.header, ".hpp")) includesNativeHeaders = true;
-    }
-  }
-  for (const module of graph.modules) {
-    for (const symbol of module.symbols) {
-      if (symbol.foreignHeader.byteLength == 0) continue;
-      match (in symbol.functionSignature) {
-        some(_) => foreignNames.add(copy symbol.importedName);
-        none => {}
-      }
-    }
-    for (const resolution of module.semanticEvidence.callResolutions) {
-      if (resolution.kind == "foreign") foreignNames.add(copy resolution.targetName);
-    }
-  }
+  let seen = Set<String>();
+  // Explicit C exports use separate public wrappers and implementation names.
+  // All ordinary Z functions get compiler-owned names, without inspecting the
+  // native header namespace or scanning the whole graph for each call.
   for (const module of parsed) {
     for (const declaration of module.program.functions) {
       if (declaration.testDeclaration && !includeTests) continue;
-      if (containsName(names, declaration.name)) continue;
-      // Called native symbols are known precisely. Async bridges additionally
-      // need protection from uncalled declarations/raw-only header symbols:
-      // unlike Stage 0, native emission keeps a synchronous facade for them.
-      if (foreignNames.has(declaration.name) || (includesNativeHeaders && declaration.asynchronous)) {
-        names.push(copy declaration.name);
-        continue;
-      }
-      let count: usize = 0;
-      let exportedCount: usize = 0;
-      for (const candidateModule of parsed) {
-        for (const candidate of candidateModule.program.functions) {
-          if (candidate.testDeclaration && !includeTests) continue;
-          if (candidate.name != declaration.name) continue;
-          count = count + 1;
-          if (functionIsExported(
-            candidateModule.program,
-            candidate.name
-          )) exportedCount = exportedCount + 1;
-        }
-      }
-      if (count > 1 && exportedCount <= 1) {
-        names.push(declaration.name.copyBytes(
-          0,
-          declaration.name.byteLength
-        ));
-      }
+      if (!declaration.nativeCExport) continue;
+      if (seen.has(declaration.name)) continue;
+      seen.add(copy declaration.name);
+      names.push(copy declaration.name);
     }
   }
   return names;
 }
 
-function privateFunctionNeedsMangle(
+function functionNeedsNativeNamespace(
   in program: Program,
   in collisionNames: Array<String>,
   moduleIndex: usize,
   entryIndex: usize,
   in name: String
 ): boolean {
-  if (!containsName(collisionNames, name)) return false;
-  if (functionIsExported(program, name)) return false;
+  if (containsName(collisionNames, name)) {
+    for (const declaration of program.functions) {
+      if (declaration.name == name && declaration.nativeCExport) return false;
+    }
+  }
   return moduleIndex != entryIndex || name != "main";
 }
 
-function emittedPrivateFunctionName(
+function emittedModuleFunctionName(
   moduleIndex: usize,
   in name: String
 ): String {
-  return `__z_module_${moduleIndex}_${name}`;
+  return `_z_function_${moduleIndex}_${name}`;
 }
 
 function emittedNativeCExportImplementationName(
@@ -29382,7 +29348,7 @@ function emittedPrivateTypeName(
   return `module_${moduleIndex}_${name}`;
 }
 
-function rewritePrivateCallTargets(
+function rewriteModuleCallTargets(
   in program: Program,
   in collisionNames: Array<String>,
   moduleIndex: usize,
@@ -29399,7 +29365,7 @@ function rewritePrivateCallTargets(
       for (const declaration of program.functions) {
         if (
           declaration.name == lowered.expressions[index].value
-          && privateFunctionNeedsMangle(
+          && functionNeedsNativeNamespace(
             program,
             collisionNames,
             moduleIndex,
@@ -29407,10 +29373,11 @@ function rewritePrivateCallTargets(
             declaration.name
           )
         ) {
-          lowered.expressions[index].value = emittedPrivateFunctionName(
+          lowered.expressions[index].value = emittedModuleFunctionName(
             moduleIndex,
             declaration.name
           );
+          lowered.expressions[index].namedFunctionReference = false;
         }
       }
     }
@@ -29433,7 +29400,7 @@ function rewritePrivateCallTargets(
                 genericTarget
               )
             )
-            && privateFunctionNeedsMangle(
+            && functionNeedsNativeNamespace(
               program,
               collisionNames,
               moduleIndex,
@@ -29445,7 +29412,7 @@ function rewritePrivateCallTargets(
               declaration.name.byteLength,
               lowered.expressions[callee].value.byteLength
             );
-            const privateName = emittedPrivateFunctionName(
+            const privateName = emittedModuleFunctionName(
               moduleIndex,
               declaration.name
             );
@@ -29468,7 +29435,8 @@ function rewriteCheckedCallTargets(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph,
   in collisionNames: Array<String>,
-  inout functions: Array<LoweredFunction>
+  inout functions: Array<LoweredFunction>,
+  inout structs: Array<LoweredStruct>
 ): void throws String {
   let sourceModules = Map<String, usize>();
   let moduleIndex: usize = 0;
@@ -29478,58 +29446,118 @@ function rewriteCheckedCallTargets(
   }
   let functionIndex: usize = 0;
   while (functionIndex < functions.length) {
-    const sourceModule = sourceModules.get(functions[functionIndex].sourcePath);
-    let expressionIndex: usize = 0;
-    while (expressionIndex < functions[functionIndex].expressions.length) {
-      const offset = functions[functionIndex].expressions[expressionIndex].callTargetOffset;
-      if (offset == 0) {
-        expressionIndex = expressionIndex + 1;
-        continue;
+    try rewriteCheckedFunctionCallTargets(parsed, graph, collisionNames,
+      sourceModules, inout functions, functionIndex);
+    functionIndex = functionIndex + 1;
+  }
+  let structIndex: usize = 0;
+  while (structIndex < structs.length) {
+    let initializer = Option<LoweredFunction>.none;
+    match (in structs[structIndex].initializer) {
+      some(body) => {
+        let resolved = Array<LoweredFunction>(copy body);
+        try rewriteCheckedFunctionCallTargets(parsed, graph, collisionNames,
+          sourceModules, inout resolved, 0);
+        initializer = resolved.pop();
       }
+      none => {}
+    }
+    structs[structIndex].initializer = move initializer;
+    let deinitializer = Option<LoweredFunction>.none;
+    match (in structs[structIndex].deinitializer) {
+      some(body) => {
+        let resolved = Array<LoweredFunction>(copy body);
+        try rewriteCheckedFunctionCallTargets(parsed, graph, collisionNames,
+          sourceModules, inout resolved, 0);
+        deinitializer = resolved.pop();
+      }
+      none => {}
+    }
+    structs[structIndex].deinitializer = move deinitializer;
+    structIndex = structIndex + 1;
+  }
+}
+
+function rewriteCheckedFunctionCallTargets(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in collisionNames: Array<String>,
+  in sourceModules: Map<String, usize>,
+  inout functions: Array<LoweredFunction>,
+  functionIndex: usize
+): void throws String {
+  const sourceModule = sourceModules.get(functions[functionIndex].sourcePath);
+  let expressionIndex: usize = 0;
+  while (expressionIndex < functions[functionIndex].expressions.length) {
+    if (functions[functionIndex].expressions[expressionIndex].namedFunctionReference) {
       const owner = match (in sourceModule) {
         some(value) => value;
-        none => throw "native checked call lost its source module";
+        none => throw "native named callable lost its source module";
       };
-      const evidence = view graph.modules[owner].semanticEvidence;
-      const resolutionIndex = callResolutionIndexForOffset(evidence, offset - 1);
-      if (resolutionIndex >= evidence.callResolutions.length) {
-        throw "native checked call lost its semantic resolution";
-      }
-      const resolution = view evidence.callResolutions[resolutionIndex];
-      const targetModule = resolution.targetModuleIndex;
-      const targetSymbol = resolution.targetSymbolIndex;
-      if (
-        targetModule >= parsed.length
-        || targetModule >= graph.modules.length
-        || targetSymbol >= graph.modules[targetModule].symbols.length
-      ) throw "native checked call lost its target module/symbol identity";
-      const symbol = view graph.modules[targetModule].symbols[targetSymbol];
-      if (
-        symbol.kind != ModuleSymbolKind.functionSymbol
-        || symbol.name != resolution.targetName
-      ) throw `native checked call target identity mismatch for ${resolution.targetName}`;
-      const target = view functions[functionIndex].expressions[expressionIndex].value;
-      const specializedPrefix = `${resolution.targetName}__Function_`;
-      if (
-        target != resolution.targetName
-        && !stringStartsWith(target, specializedPrefix)
-      ) throw `native checked call spelling changed before identity resolution: ${target}`;
-      // Retain the specialization suffix, but obtain the base name solely
-      // from the checked target declaration, never the caller's imports or
-      // another same-named function in the output graph.
-      const suffix = target.copyBytes(resolution.targetName.byteLength, target.byteLength);
-      let emittedName = copy symbol.name;
-      if (symbol.nativeCExport) {
-        emittedName = emittedNativeCExportImplementationName(targetModule, symbol.name);
-      } else if (privateFunctionNeedsMangle(
-        parsed[targetModule].program, collisionNames, targetModule, graph.entry, symbol.name
-      )) {
-        emittedName = emittedPrivateFunctionName(targetModule, symbol.name);
-      }
-      functions[functionIndex].expressions[expressionIndex].value = `${emittedName}${suffix}`;
+      const location = match (callableIdentifierLocation(graph.modules, owner,
+        functions[functionIndex].expressions[expressionIndex].value)) {
+        some(value) => value;
+        none => throw "native named callable lost its checked declaration";
+      };
+      const symbol = view graph.modules[location.moduleIndex].symbols[location.symbolIndex];
+      functions[functionIndex].expressions[expressionIndex].value = symbol.nativeCExport
+        ? emittedNativeCExportImplementationName(location.moduleIndex, symbol.name)
+        : symbol.kind == ModuleSymbolKind.functionSymbol
+          ? functionNeedsNativeNamespace(parsed[location.moduleIndex].program,
+              collisionNames, location.moduleIndex, graph.entry, symbol.name)
+            ? emittedModuleFunctionName(location.moduleIndex, symbol.name)
+            : copy symbol.name
+          : copy symbol.importedName;
       expressionIndex = expressionIndex + 1;
+      continue;
     }
-    functionIndex = functionIndex + 1;
+    const offset = functions[functionIndex].expressions[expressionIndex].callTargetOffset;
+    if (offset == 0) {
+      expressionIndex = expressionIndex + 1;
+      continue;
+    }
+    const owner = match (in sourceModule) {
+      some(value) => value;
+      none => throw "native checked call lost its source module";
+    };
+    const evidence = view graph.modules[owner].semanticEvidence;
+    const resolutionIndex = callResolutionIndexForOffset(evidence, offset - 1);
+    if (resolutionIndex >= evidence.callResolutions.length) {
+      throw "native checked call lost its semantic resolution";
+    }
+    const resolution = view evidence.callResolutions[resolutionIndex];
+    const targetModule = resolution.targetModuleIndex;
+    const targetSymbol = resolution.targetSymbolIndex;
+    if (
+      targetModule >= parsed.length
+      || targetModule >= graph.modules.length
+      || targetSymbol >= graph.modules[targetModule].symbols.length
+    ) throw "native checked call lost its target module/symbol identity";
+    const symbol = view graph.modules[targetModule].symbols[targetSymbol];
+    if (
+      symbol.kind != ModuleSymbolKind.functionSymbol
+      || symbol.name != resolution.targetName
+    ) throw `native checked call target identity mismatch for ${resolution.targetName}`;
+    const target = view functions[functionIndex].expressions[expressionIndex].value;
+    const specializedPrefix = `${resolution.targetName}__Function_`;
+    if (
+      target != resolution.targetName
+      && !stringStartsWith(target, specializedPrefix)
+    ) throw `native checked call spelling changed before identity resolution: ${target}`;
+    // Retain the specialization suffix, but obtain the base name solely
+    // from the checked target declaration, never the caller's imports or
+    // another same-named function in the output graph.
+    const suffix = target.copyBytes(resolution.targetName.byteLength, target.byteLength);
+    let emittedName = copy symbol.name;
+    if (symbol.nativeCExport) {
+      emittedName = emittedNativeCExportImplementationName(targetModule, symbol.name);
+    } else if (functionNeedsNativeNamespace(
+      parsed[targetModule].program, collisionNames, targetModule, graph.entry, symbol.name
+    )) {
+      emittedName = emittedModuleFunctionName(targetModule, symbol.name);
+    }
+    functions[functionIndex].expressions[expressionIndex].value = `${emittedName}${suffix}`;
+    expressionIndex = expressionIndex + 1;
   }
 }
 
@@ -33102,7 +33130,7 @@ function appendLoweredProgram(
   in genericMethodUses: Array<LoweredGenericMethodUse>,
   in genericFunctionUses: Array<LoweredGenericFunctionUse>,
   in evidence: ModuleSemanticEvidence,
-  in privateFunctionCollisionNames: Array<String>,
+  in nativeCExportNames: Array<String>,
   in privateTypeCollisionNames: Array<String>,
   moduleIndex: usize,
   entryIndex: usize,
@@ -33398,6 +33426,8 @@ function appendLoweredProgram(
             enums,
             inout loweredInitializer
           );
+          rewriteModuleCallTargets(program, nativeCExportNames,
+            moduleIndex, entryIndex, inout loweredInitializer);
           initializer = Option.some(move loweredInitializer);
         }
         none => {}
@@ -33410,11 +33440,14 @@ function appendLoweredProgram(
           program,
           importedTypes,
           evidence,
+          sourcePath,
           aggregate.name,
           source.body
         );
         body.name = `Z_${emittedName}___deinitializer`;
         annotateObjectiveCEnumPayloadsInFunction(enums, inout body);
+        rewriteModuleCallTargets(program, nativeCExportNames,
+          moduleIndex, entryIndex, inout body);
         deinitializer = Option.some(move body);
       }
       none => {}
@@ -33649,9 +33682,9 @@ function appendLoweredProgram(
           enums,
           inout loweredInitializer
         );
-        rewritePrivateCallTargets(
+        rewriteModuleCallTargets(
           program,
-          privateFunctionCollisionNames,
+          nativeCExportNames,
           moduleIndex,
           entryIndex,
           inout loweredInitializer
@@ -33692,6 +33725,7 @@ function appendLoweredProgram(
           program,
           methodImportedTypes,
           evidence,
+          sourcePath,
           aggregate.name,
           source.body
         );
@@ -33700,9 +33734,9 @@ function appendLoweredProgram(
           enums,
           inout loweredDeinitializer
         );
-        rewritePrivateCallTargets(
+        rewriteModuleCallTargets(
           program,
-          privateFunctionCollisionNames,
+          nativeCExportNames,
           moduleIndex,
           entryIndex,
           inout loweredDeinitializer
@@ -33738,9 +33772,9 @@ function appendLoweredProgram(
             target,
             field
           );
-          rewritePrivateCallTargets(
+          rewriteModuleCallTargets(
             program,
-            privateFunctionCollisionNames,
+            nativeCExportNames,
             moduleIndex,
             entryIndex,
             inout loweredDefault
@@ -33797,9 +33831,9 @@ function appendLoweredProgram(
       };
       loweredMethod.name = userMethodTarget(use.emittedName, method.name, "");
       loweredMethod.nativeCExportName = "";
-      rewritePrivateCallTargets(
+      rewriteModuleCallTargets(
         program,
-        privateFunctionCollisionNames,
+        nativeCExportNames,
         moduleIndex,
         entryIndex,
         inout loweredMethod
@@ -33833,9 +33867,9 @@ function appendLoweredProgram(
             target,
             field
           );
-          rewritePrivateCallTargets(
+          rewriteModuleCallTargets(
             program,
-            privateFunctionCollisionNames,
+            nativeCExportNames,
             moduleIndex,
             entryIndex,
             inout loweredDefault
@@ -33870,7 +33904,7 @@ function appendLoweredProgram(
             body.nativeObjCClass = copy emittedName;
             body.nativeObjCEntry = Option.some(copy plan.initializer);
             body.compilerIntrinsic = "objcInitializer";
-            rewritePrivateCallTargets(program, privateFunctionCollisionNames,
+            rewriteModuleCallTargets(program, nativeCExportNames,
               moduleIndex, entryIndex, inout body);
             functions.push(move body);
           }
@@ -33878,7 +33912,7 @@ function appendLoweredProgram(
         }
         match (in aggregate.deinitializer) {
           some(source) => {
-            let body = try lowerDeinitializer(program, importedTypes, evidence, aggregate.name, source.body);
+            let body = try lowerDeinitializer(program, importedTypes, evidence, sourcePath, aggregate.name, source.body);
             body.name = `${emittedName}___deinitializer`;
             body.receiverType = Option.some(LoweredType({ kind: LoweredTypeKind.foreignObjCType, name: copy emittedName }));
             body.receiverMode = LoweredParameterMode.input;
@@ -33887,7 +33921,7 @@ function appendLoweredProgram(
             body.nativeObjCEntry = Option.some(ModuleObjCSubclassEntry({ sourceIndex: 0,
               offset: source.offset, sourceName: "deinit", selector: "dealloc", nativeReturnType: "void",
               nativeParameterTypes: Array<String>(), parameterNames: Array<String>() }));
-            rewritePrivateCallTargets(program, privateFunctionCollisionNames, moduleIndex, entryIndex, inout body);
+            rewriteModuleCallTargets(program, nativeCExportNames, moduleIndex, entryIndex, inout body);
             functions.push(move body);
           }
           none => {}
@@ -33955,9 +33989,9 @@ function appendLoweredProgram(
         }
         none => {}
       }
-      rewritePrivateCallTargets(
+      rewriteModuleCallTargets(
         program,
-        privateFunctionCollisionNames,
+        nativeCExportNames,
         moduleIndex,
         entryIndex,
         inout loweredMethod
@@ -34092,9 +34126,9 @@ function appendLoweredProgram(
       };
       loweredMethod.name = userMethodTarget(ownerEmittedName, method.name, suffix);
       loweredMethod.nativeCExportName = "";
-      rewritePrivateCallTargets(
+      rewriteModuleCallTargets(
         program,
-        privateFunctionCollisionNames,
+        nativeCExportNames,
         moduleIndex,
         entryIndex,
         inout loweredMethod
@@ -34118,7 +34152,7 @@ function appendLoweredProgram(
     ) continue;
     if (
       containsLoweredFunction(functions, declaration.name)
-      && !containsName(privateFunctionCollisionNames, declaration.name)
+      && !containsName(nativeCExportNames, declaration.name)
     ) {
       throw `native module emission requires collision-safe function identity for ${declaration.name}`;
     }
@@ -34143,9 +34177,12 @@ function appendLoweredProgram(
         throw `function ${functionName}: ${message}`;
       }
     };
-    rewritePrivateCallTargets(
+    if (moduleIndex == entryIndex) {
+      loweredFunction.entryDeclarationName = copy declaration.name;
+    }
+    rewriteModuleCallTargets(
       program,
-      privateFunctionCollisionNames,
+      nativeCExportNames,
       moduleIndex,
       entryIndex,
       inout loweredFunction
@@ -34155,14 +34192,14 @@ function appendLoweredProgram(
         moduleIndex,
         declaration.name
       );
-    } else if (privateFunctionNeedsMangle(
+    } else if (functionNeedsNativeNamespace(
       program,
-      privateFunctionCollisionNames,
+      nativeCExportNames,
       moduleIndex,
       entryIndex,
       declaration.name
     )) {
-      loweredFunction.name = emittedPrivateFunctionName(
+      loweredFunction.name = emittedModuleFunctionName(
         moduleIndex,
         declaration.name
       );
@@ -34233,21 +34270,21 @@ function appendLoweredProgram(
       use,
       inout loweredFunction
     );
-    rewritePrivateCallTargets(
+    rewriteModuleCallTargets(
       program,
-      privateFunctionCollisionNames,
+      nativeCExportNames,
       moduleIndex,
       entryIndex,
       inout loweredFunction
     );
-    const baseName = privateFunctionNeedsMangle(
+    const baseName = functionNeedsNativeNamespace(
       program,
-      privateFunctionCollisionNames,
+      nativeCExportNames,
       moduleIndex,
       entryIndex,
       declaration.name
     )
-      ? emittedPrivateFunctionName(moduleIndex, declaration.name)
+      ? emittedModuleFunctionName(moduleIndex, declaration.name)
       : declaration.name.copyBytes(0, declaration.name.byteLength);
     loweredFunction.name = `${baseName}${suffix}`;
     loweredFunction.nativeCExportName = "";
@@ -34262,7 +34299,7 @@ function appendDeferredGenericMethod(
   in genericStructUses: Array<LoweredGenericStructUse>,
   in use: LoweredGenericMethodUse,
   in evidence: ModuleSemanticEvidence,
-  in privateFunctionCollisionNames: Array<String>,
+  in nativeCExportNames: Array<String>,
   in privateTypeCollisionNames: Array<String>,
   moduleIndex: usize,
   entryIndex: usize,
@@ -34398,9 +34435,9 @@ function appendDeferredGenericMethod(
     };
     loweredMethod.name = userMethodTarget(ownerEmittedName, method.name, suffix);
     loweredMethod.nativeCExportName = "";
-    rewritePrivateCallTargets(
+    rewriteModuleCallTargets(
       program,
-      privateFunctionCollisionNames,
+      nativeCExportNames,
       moduleIndex,
       entryIndex,
       inout loweredMethod
@@ -34417,7 +34454,7 @@ function appendDeferredGenericFunction(
   in importedTypes: Array<LoweredImportedType>,
   in use: LoweredGenericFunctionUse,
   in evidence: ModuleSemanticEvidence,
-  in privateFunctionCollisionNames: Array<String>,
+  in nativeCExportNames: Array<String>,
   moduleIndex: usize,
   entryIndex: usize,
   inout fixedArrays: Array<LoweredFixedArray>,
@@ -34490,21 +34527,21 @@ function appendDeferredGenericFunction(
     use,
     inout loweredFunction
   );
-  rewritePrivateCallTargets(
+  rewriteModuleCallTargets(
     program,
-    privateFunctionCollisionNames,
+    nativeCExportNames,
     moduleIndex,
     entryIndex,
     inout loweredFunction
   );
-  const baseName = privateFunctionNeedsMangle(
+  const baseName = functionNeedsNativeNamespace(
     program,
-    privateFunctionCollisionNames,
+    nativeCExportNames,
     moduleIndex,
     entryIndex,
     declaration.name
   )
-    ? emittedPrivateFunctionName(moduleIndex, declaration.name)
+    ? emittedModuleFunctionName(moduleIndex, declaration.name)
     : declaration.name.copyBytes(0, declaration.name.byteLength);
   loweredFunction.name = `${baseName}${suffix}`;
   loweredFunction.nativeCExportName = "";
@@ -34615,7 +34652,10 @@ function lowerProgramUnchecked(
   let objectiveCRegistrations = Array<LoweredObjCRegistration>();
   let embeddedBytes = Array<LoweredEmbeddedBytes>();
   let importedTypes = Array<LoweredImportedType>();
-  const privateCollisionNames = Array<String>();
+  let nativeCExportNames = Array<String>();
+  for (const declaration of program.functions) {
+    if (declaration.nativeCExport) nativeCExportNames.push(copy declaration.name);
+  }
   const privateTypeCollisionNames = Array<String>();
   const genericStructUses = Array<LoweredGenericStructUse>();
   const genericMethodUses = Array<LoweredGenericMethodUse>();
@@ -34628,7 +34668,7 @@ function lowerProgramUnchecked(
     genericMethodUses,
     genericFunctionUses,
     evidence,
-    privateCollisionNames,
+    nativeCExportNames,
     privateTypeCollisionNames,
     0,
     0,
@@ -34829,9 +34869,8 @@ function lowerModulesIncludingTests(
   let objectiveCAdapterFactories = Array<LoweredObjCAdapterFactory>();
   let objectiveCRegistrations = Array<LoweredObjCRegistration>();
   let embeddedBytes = Array<LoweredEmbeddedBytes>();
-  const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(
+  const nativeCExportNames = nativeCExportNamesInGraph(
     parsed,
-    graph,
     includeTests
   );
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
@@ -34938,7 +34977,7 @@ function lowerModulesIncludingTests(
       deferredGenericMethodUses,
       deferredGenericFunctionUses,
       graph.modules[moduleIndex].semanticEvidence,
-      privateFunctionCollisionNames,
+      nativeCExportNames,
       privateTypeCollisionNames,
       moduleIndex,
       entryIndex,
@@ -35053,7 +35092,7 @@ function lowerModulesIncludingTests(
         genericStructUses,
         use,
         graph.modules[genericOwnerModuleIndex].semanticEvidence,
-        privateFunctionCollisionNames,
+        nativeCExportNames,
         privateTypeCollisionNames,
         genericOwnerModuleIndex,
         entryIndex,
@@ -35127,7 +35166,7 @@ function lowerModulesIncludingTests(
         importedTypes,
         use,
         graph.modules[genericOwnerModuleIndex].semanticEvidence,
-        privateFunctionCollisionNames,
+        nativeCExportNames,
         genericOwnerModuleIndex,
         entryIndex,
         inout fixedArrays,
@@ -35146,7 +35185,7 @@ function lowerModulesIncludingTests(
       }
     }
   }
-  try rewriteCheckedCallTargets(parsed, graph, privateFunctionCollisionNames, inout functions);
+  try rewriteCheckedCallTargets(parsed, graph, nativeCExportNames, inout functions, inout structs);
   rewriteNativeCExportCallTargets(inout functions);
   annotateObjectiveCEnumPayloads(enums, inout functions);
   return LoweredProgram({

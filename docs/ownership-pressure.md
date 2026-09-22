@@ -10137,7 +10137,7 @@ The integration exposed two Stage 0 emission defects, now covered by regressions
   projected, and forwarded borrows now use the same ABI as inferred borrows;
   both emitters execute the regression with strict Clang and UBSan.
 
-Remaining fixture friction is recorded rather than disguised as implemented:
+Further fixture pressure separates remaining limitations from corrected defects:
 
 - `NSArray<id<NSPasteboardWriting>>` is not yet an imported parameter shape.
   Pasteboard setup uses a test-only raw helper; production reads ordinary checked
@@ -10146,10 +10146,24 @@ Remaining fixture friction is recorded rather than disguised as implemented:
   tier. Borrowed interpolated arguments now pass the focused filesystem and
   ordinary-function regression: temporary storage survives the call and is
   cleaned afterward, rather than taking a C rvalue's address.
-- Emission of an ordinary function named `write` can collide with the POSIX
-  declaration introduced by filesystem support. The native runtime regression
-  also exposed this with `pause`. Protecting Z function identities from header
-  symbols in both emitters needs a separate regression and fix.
+- Ordinary function names such as `write` and `pause` collided with POSIX
+  declarations introduced by filesystem support. Both emitters now put Z
+  functions in a compiler-owned native namespace, including module exports and
+  uncalled helpers. Calls, callable adapters, and callback pointers retain the
+  checked Z function identity; imported C names and explicit `export c` public
+  names remain unchanged. Runtime regressions cover synchronous and async
+  callers, recursion, function values, constructor/default/destructor bodies,
+  and a same-named native header function. Imported callbacks retain their
+  module-local alias until declaration resolution; embedding initialization
+  hooks retain their entry-module source identity instead of depending on a C
+  spelling. Fixed-point bootstrap and C/C++ library consumers exercise these
+  internal naming boundaries.
+
+The broader native parity run also caught an ownership-checker regression:
+an unbound `task operation()` statement was mistaken for a discarded owned
+value. The enclosing structured scope owns and joins that child. The native
+checker now recognizes that transfer while continuing to reject ordinary
+discarded owned values; this changes no task syntax or lifetime contract.
 
 Related-window drop inheritance remains a framework API decision.
 

@@ -12865,8 +12865,15 @@ function inferStatement(
         );
         if (expressionType == "__z_never") return false;
         if (kind == StatementKind.expressionStatement) {
+          // A task statement transfers the child to the enclosing structured
+          // scope. It does not discard the child's lifetime or skip its join.
+          let scopeOwnsTask = false;
+          match (in expression.tree) {
+            some(tree) => scopeOwnsTask = tree.nodes[tree.root].kind == ExpressionKind.spawnExpression;
+            none => {}
+          }
           let visiting = Array<String>();
-          if (typeRequiresOwnedBinding(modules, moduleIndex, expressionType, visiting)) {
+          if (!scopeOwnsTask && typeRequiresOwnedBinding(modules, moduleIndex, expressionType, visiting)) {
             // A checked superclass initializer transfers its result into this;
             // the constructor's expression statement does not discard it.
             let initializesReceiver = false;

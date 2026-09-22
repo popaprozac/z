@@ -79,7 +79,7 @@ hostToolchainTest("compares class identity without consuming owners and cleans c
       const outputs = [compileToNative(source, input).source, command(oracle, [temporary, input], undefined, 30_000)];
       for (const output of outputs) {
         // Named borrowed references need no ownership wrappers.
-        const sameBody = output.match(/\bsame\([^;{}]*?\)\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+        const sameBody = output.match(/\b_z_function_(?:\d+_)?same\([^;{}]*?\)\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
         assert.match(sameBody, /left\)? == \(?\*?right/);
         assert.doesNotMatch(sameBody, /_retain\(|_release\(/);
         const generated = resolve(temporary, "main.c");

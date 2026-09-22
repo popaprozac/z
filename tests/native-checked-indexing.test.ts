@@ -72,8 +72,8 @@ hostToolchainTest("native checked subscripts preserve effects, storage, and boun
       if (mode === "self-host-emit") {
         assert.match(emitted.stdout, /_ConstData\)\(program\)->data\)\[z_stage1_bounds_index\(index, \(program\)->length\)\]/);
         assert.match(emitted.stdout, /_Data\)\(self->registers\)\.data\)\[z_stage1_bounds_index/);
-        assert.match(emitted.stdout, /_at_mut\(&\(values\), next\(/);
-        assert.match(emitted.stdout, /_at_mut\(&\(\(\*Z_.*_at_mut\(&\(rows\), next\(/);
+        assert.match(emitted.stdout, /_at_mut\(&\(values\), _z_function_\d+_next\(/);
+        assert.match(emitted.stdout, /_at_mut\(&\(\(\*Z_.*_at_mut\(&\(rows\), _z_function_\d+_next\(/);
       }
       // Intercept abort only in this harness: out-of-range tests exit with a
       // distinct code instead of creating OS crash reports. Guards are intact.

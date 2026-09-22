@@ -1937,7 +1937,7 @@ function buildSelfHostedNativeLibrary(
   mkdirSync(cacheDirectory, { recursive: true });
   const sourcePath = join(cacheDirectory, `${outputStem}.c`);
   const libraryPath = join(cacheDirectory, `${outputStem}${nativeLibraryExtension()}`);
-  writeFileSync(sourcePath, `${source}\n${wrapper}`);
+  writeFileSync(sourcePath, `${source}\n${bindStage1WrapperFunctions(wrapper, source)}`);
 
   const compilerArguments = [
     "-std=c11",
@@ -1968,7 +1968,7 @@ function buildNativeLibrary(inputPath: string, artifact: NativeArtifact, outputS
   mkdirSync(cacheDirectory, { recursive: true });
   const sourcePath = join(cacheDirectory, `${outputStem}.${nativeExtension(artifact.language)}`);
   const libraryPath = join(cacheDirectory, `${outputStem}${nativeLibraryExtension()}`);
-  writeFileSync(sourcePath, `${artifact.source}\n${stage1ParserLibraryWrapper()}`);
+  writeFileSync(sourcePath, `${artifact.source}\n${bindStage1WrapperFunctions(stage1ParserLibraryWrapper(), artifact.source)}`);
 
   const compiler = nativeCompiler(artifact.language);
   const compilerArguments = [
@@ -1999,6 +1999,22 @@ function nativeLibraryExtension(): string {
   if (process.platform === "darwin") return ".dylib";
   if (process.platform === "win32") return ".dll";
   return ".so";
+}
+
+// This private bootstrap adapter is appended to either emitter's C output.
+// Resolve its entry-module helpers from that artifact rather than treating Z
+// source names as C ABI names. The public z_stage1_* entries remain unchanged.
+function bindStage1WrapperFunctions(wrapper: string, source: string): string {
+  const names = new Map<string, string>();
+  return wrapper.replace(/\bstage1[A-Z][A-Za-z0-9_]*(?=\s*\()/g, (name) => {
+    if (!names.has(name)) {
+      const candidates = new Set([...source.matchAll(new RegExp(`\\b(_z_function_(?:[0-9]+_)?${name})\\(`, "g"))]
+        .map((match) => match[1]!));
+      if (candidates.size !== 1) throw new Error(`bootstrap adapter cannot resolve the emitted Z function ${name}`);
+      names.set(name, [...candidates][0]!);
+    }
+    return names.get(name)!;
+  });
 }
 
 function stage1StringLibraryWrapper(): string {

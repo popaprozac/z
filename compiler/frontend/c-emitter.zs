@@ -21026,7 +21026,7 @@ function appendEmbeddedRuntimeDefinitions(
   if (initializerName.byteLength > 0) {
     let index: usize = 0;
     while (index < program.functions.length) {
-      if (program.functions[index].name == initializerName) {
+      if (program.functions[index].entryDeclarationName == initializerName) {
         initializerIndex = index;
         break;
       }

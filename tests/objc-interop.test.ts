@@ -289,8 +289,8 @@ hostToolchainTest("prefers an Objective-C class over a legacy protocol with the 
   const source = readFileSync(fileName, "utf8");
   const artifact = compileToNative(source, fileName);
 
-  assert.match(artifact.source, /static NSMenuItem \* createMenuItem\(void\)/);
-  assert.match(artifact.source, /NSMenuItem \* const item = createMenuItem\(\);/);
+  assert.match(artifact.source, /static NSMenuItem \* _z_function_createMenuItem\(void\)/);
+  assert.match(artifact.source, /NSMenuItem \* const item = _z_function_createMenuItem\(\);/);
   assert.match(artifact.source, /\[item setTitle:z_nsstring_from_string\(\(definition\)\.title\)\]/);
 
   const nativeCheck = spawnSync(
@@ -519,8 +519,8 @@ hostToolchainTest("narrows nullable Objective-C references before member access"
   `;
   const annotatedArtifact = compileToNative(annotated, fileName);
   assert.deepEqual(diagnostics(annotated, fileName), []);
-  assert.match(annotatedArtifact.source, /static int32_t inspect\(NSWindow \*window\)/);
-  assert.match(annotatedArtifact.source, /static NSWindow \* noWindow\(void\)/);
+  assert.match(annotatedArtifact.source, /static int32_t _z_function_inspect\(NSWindow \*window\)/);
+  assert.match(annotatedArtifact.source, /static NSWindow \* _z_function_noWindow\(void\)/);
   assert.match(annotatedArtifact.source, /NSWindow \*\s*window;/);
   assert.match(annotatedArtifact.source, /Z_WindowSlot_new\(NULL\)/);
   assert.match(annotatedArtifact.source, /return NULL;/);
@@ -757,7 +757,7 @@ hostToolchainTest("builds the interactive Z Notes AppKit and sqlite3 application
   assert.match(artifact.source, /@interface ZObjCProtocolAdapter_[A-Za-z0-9_]+NotesTableController : NSObject <NSTableViewDataSource, NSTableViewDelegate>/);
   assert.match(artifact.source, /\[object setDataSource:_z_adapter_0\]/);
   assert.match(artifact.source, /\[object setDelegate:_z_adapter_0\]/);
-  assert.match(artifact.source, /ZObjCBinding \* const tableBinding = bindNotesTable\(/);
+  assert.match(artifact.source, /ZObjCBinding \* const tableBinding = _z_function_bindNotesTable\(/);
   assert.match(artifact.source, /ZObjCBinding \* const _z_return_\d+ = z_objc_bind_/);
   assert.match(artifact.source, /z_checked_convert_usize_to_isize/);
   assert.match(artifact.source, /z_checked_convert_isize_to_usize/);
@@ -770,7 +770,7 @@ hostToolchainTest("builds the interactive Z Notes AppKit and sqlite3 application
   assert.match(artifact.source, /saveNoteToPath\(/);
   assert.match(artifact.source, /z_task_scope_join\(frame->value_updates, &frame->task, false\)/);
   assert.match(artifact.source, /z_async_start___z_executor_main_/);
-  assert.match(artifact.source, /frame->result = runApplication\(/);
+  assert.match(artifact.source, /frame->result = _z_function_runApplication\(/);
   assert.match(artifact.source, /z_async_release_SaveStatusPresenter_on_executor/);
   assert.match(
     artifact.source,
@@ -1241,7 +1241,7 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
     }
   `;
   assert.equal(diagnostics(forwarded, "view-forward.zs").length, 0);
-  assert.match(compileToC(forwarded, "view-forward.zs"), /return inspect\(item\);/);
+  assert.match(compileToC(forwarded, "view-forward.zs"), /return _z_function_inspect\(item\);/);
 
   const ownedForward = forwarded.replace("function inspect(in item: Item)", "function inspect(item: Item)");
   const forwardDiagnostic = diagnostics(ownedForward, "view-owned-forward.zs")[0];

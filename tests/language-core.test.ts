@@ -948,7 +948,7 @@ test("infers primitive local types for C emission", () => {
     }
   `;
   const generated = compileToC(source, "inference.zs");
-  assert.match(generated, /const int32_t value = answer\(\);/);
+  assert.match(generated, /const int32_t value = _z_function_answer\(\);/);
 });
 
 test("compiles boolean expressions and path-complete if statements", () => {
@@ -3781,12 +3781,12 @@ test("borrows native parameters immutably and mutably", () => {
   assert.equal(result.stdout, "counter=16 literal=7 resource=42\ndrop=42\n");
 
   const generated = compileToC(readFileSync(example, "utf8"), example);
-  assert.match(generated, /static int32_t read\(const Z_Counter \*counter\)/);
-  assert.match(generated, /static void add\(Z_Counter \*counter, int32_t amount\)/);
-  assert.match(generated, /static int32_t inspect\(const Z_Resource \*resource\)/);
+  assert.match(generated, /static int32_t _z_function_read\(const Z_Counter \*counter\)/);
+  assert.match(generated, /static void _z_function_add\(Z_Counter \*counter, int32_t amount\)/);
+  assert.match(generated, /static int32_t _z_function_inspect\(const Z_Resource \*resource\)/);
   assert.match(generated, /add\(counter, 2\);/);
   assert.match(generated, /add\(self, 1\);/);
-  assert.match(generated, /read\(&\(counter\)\)/);
+  assert.match(generated, /_z_function_read\(&\(counter\)\)/);
   assert.doesNotMatch(generated, /Z_Resource_deinit\(&\(\*resource\)\)/);
 });
 
@@ -3868,7 +3868,7 @@ test("borrows disjoint fixed-layout value-struct fields independently", () => {
   const generated = compileToC(source, example);
   assert.match(generated, /adjust\(&\(\(point\)\.x\), &\(\(point\)\.y\)\);/);
   assert.match(generated, /difference\(&\(\(point\)\.x\), &\(\(point\)\.y\)\)/);
-  assert.match(generated, /increment\(&\(\(\(alias\)->stats\)\.visits\)\)/);
+  assert.match(generated, /_z_function_increment\(&\(\(\(alias\)->stats\)\.visits\)\)/);
 
   const duplicate = source.replace(
     "adjust(inout point.x, inout point.y);",
@@ -4180,12 +4180,12 @@ test("initializes native out parameters with flow-sensitive checking", () => {
   );
 
   const generated = compileToC(readFileSync(example, "utf8"), example);
-  assert.match(generated, /static void divide\(int32_t value, int32_t divisor, int32_t \*quotient, int32_t \*remainder\)/);
+  assert.match(generated, /static void _z_function_divide\(int32_t value, int32_t divisor, int32_t \*quotient, int32_t \*remainder\)/);
   assert.match(generated, /int32_t quotient;\n\s+int32_t remainder;/);
-  assert.match(generated, /divide\(17, 5, &\(quotient\), &\(remainder\)\);/);
-  assert.match(generated, /const int32_t _z_out_result_\d+ = initializeWithStatus\(&\(statusValue\)\);\n\s+const int32_t status = _z_out_result_\d+;/);
+  assert.match(generated, /_z_function_divide\(17, 5, &\(quotient\), &\(remainder\)\);/);
+  assert.match(generated, /const int32_t _z_out_result_\d+ = _z_function_initializeWithStatus\(&\(statusValue\)\);\n\s+const int32_t status = _z_out_result_\d+;/);
   assert.match(generated, /Z_Resource resource;\n\s+bool (_z_live_resource_\d+) = false;/);
-  assert.match(generated, /if \(_z_live_resource_\d+\) Z_Resource_deinit\(&\(resource\)\);\n\s+_z_live_resource_\d+ = false;\n\s+makeResource\(40, &\(resource\)\);\n\s+_z_live_resource_\d+ = true;/);
+  assert.match(generated, /if \(_z_live_resource_\d+\) Z_Resource_deinit\(&\(resource\)\);\n\s+_z_live_resource_\d+ = false;\n\s+_z_function_makeResource\(40, &\(resource\)\);\n\s+_z_live_resource_\d+ = true;/);
 
   const readBeforeInitialization = `
     function main(): i32 {
@@ -4373,7 +4373,7 @@ test("type-checks assignments and replaces cleanup-bearing values safely", () =>
   assert.equal(result.stdout, "make=2\ndrop=1\nlive=5\ndrop=10\nholder=20\ndrop=20\ndrop=5\n");
 
   const generated = compileToC(readFileSync(example, "utf8"), example);
-  assert.match(generated, /_z_replacement_\d+ = make\(2\);\n\s+Z_Resource \*(_z_assignment_slot_\d+) = &\(resource\);\n\s+if \(_z_live_resource_\d+\) Z_Resource_deinit\(&\(\(\*\1\)\)\);/);
+  assert.match(generated, /_z_replacement_\d+ = _z_function_make\(2\);\n\s+Z_Resource \*(_z_assignment_slot_\d+) = &\(resource\);\n\s+if \(_z_live_resource_\d+\) Z_Resource_deinit\(&\(\(\*\1\)\)\);/);
   assert.match(generated, /_z_replacement_\d+ = Z_Resource_bumped\(\(_z_live_resource_\d+ = false, resource\), 3\);/);
   assert.match(generated, /\(\*_z_assignment_slot_\d+\) = _z_replacement_\d+;\n\s+_z_live_resource_\d+ = true;/);
   assert.match(generated, /Z_Resource \*(_z_assignment_slot_\d+) = &\(\(holder\)\.resource\);\n\s+Z_Resource_deinit\(&\(\(\*\1\)\)\);\n\s+\(\*\1\) = _z_replacement_\d+;/);
@@ -4388,8 +4388,8 @@ test("runs ARC classes with shared identity and one final deinit", () => {
   const generated = compileToC(readFileSync(example, "utf8"), example);
   assert.match(generated, /struct Z_Counter \{\n\s+size_t _z_refcount;/);
   assert.match(generated, /Z_Counter \* const second = Z_Counter_retain\(first\);/);
-  assert.match(generated, /static int32_t inspect\(const Z_Counter \*counter\)/);
-  assert.match(generated, /inspect\(third\)/);
+  assert.match(generated, /static int32_t _z_function_inspect\(const Z_Counter \*counter\)/);
+  assert.match(generated, /_z_function_inspect\(third\)/);
   assert.match(generated, /static void Z_Counter_release\(Z_Counter \*value\)/);
   assert.match(generated, /if \(value->_z_refcount == 0\) \{[\s\S]*if \(weak != NULL\) weak->value = NULL;[\s\S]*Z_Counter_deinit\(value\);[\s\S]*free\(value\);/);
 });
@@ -4690,7 +4690,7 @@ test("reborrows an inout ARC parameter as an immutable class handle", () => {
     }
   `;
   const generated = compileToC(source, "inout-class-reborrow.zs");
-  assert.match(generated, /return read\(\(\*store\)\);/);
+  assert.match(generated, /return _z_function_read\(\(\*store\)\);/);
 
   const directory = mkdtempSync("/tmp/z-inout-class-reborrow-");
   const fileName = resolve(directory, "main.zs");
