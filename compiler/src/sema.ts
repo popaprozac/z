@@ -16885,11 +16885,15 @@ function mergeOwnershipStates(
     }
     const objectTypes = values.map((value) => foreignObject(value, state));
     const firstObject = objectTypes[0];
-    if (firstObject && objectTypes.every((object) => object?.className === firstObject.className)) {
+    // Identical native types need no widening. In particular id<P> has no
+    // className: rebuilding it as unqualified id would discard its protocol
+    // proof even when every continuing path preserves the same borrowed value.
+    const sameObjectType = values.every((value) => underlyingType(value) === type);
+    if (firstObject && !sameObjectType && objectTypes.every((object) => object?.className === firstObject.className)) {
       const nullable = objectTypes.some((object) => object!.nullable);
       const publicType = firstObject.typeName.replace(/^__z_objc:(?:nullable|nonnull):/, "");
       type = nullable ? `__z_objc:nullable:${publicType}` : firstObject.className ? publicType : objcObjectTypeName;
-    } else if (firstObject && objectTypes.every((object) => Boolean(object))) {
+    } else if (firstObject && !sameObjectType && objectTypes.every((object) => Boolean(object))) {
       // A class proof from only one continuing branch is not a proof after
       // the merge. Preserve the enclosing type rather than the first arm's
       // narrower class (which could make an unchecked NSString conversion).

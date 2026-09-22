@@ -10203,6 +10203,14 @@ therefore fail in Clang. Semantic ABI metadata now retains `id<P>` for these
 borrowed references. Cross-namespace forwarding and a scalar getter are checked
 and executed under both emitters; unrelated protocol parameters remain rejected.
 
+Related-window integration then exposed a flow-join regression in Stage 0:
+an early-return guard rebuilt an unchanged `id<P>` local as unqualified `id`
+because both have no concrete Objective-C class name. The next ordinary Z call
+lost its protocol proof. Ownership joins now keep identical native types intact;
+only genuinely different continuing types require widening. Guarded forwarding,
+loop/branch joins, native scalar getters, and unrelated-protocol rejection are
+regressions. No runtime check or wrapper is added.
+
 The broader AppKit checks also caught the hybrid source-only resolver rejecting
 setters through immutable native object bindings before Clang metadata arrived.
 That pass now defers unresolved receiver identity to the metadata-backed check.

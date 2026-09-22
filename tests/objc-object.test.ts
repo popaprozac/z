@@ -53,7 +53,7 @@ hostToolchainTest("names erased native Objective-C identity without boxing or lo
   if (process.platform !== "darwin") return;
   assert.deepEqual(diagnostics(source, fixture), []);
   const emitted = compileToNative(source, fixture).source;
-  assert.match(emitted, /id identity\(id value\)/);
+  assert.match(emitted, /id _z_function_identity\(id value\)/);
   assert.doesNotMatch(emitted, /NSObject \*.*\bvalue\b/);
   assert.deepEqual(diagnostics(aliased, fixture), []);
   assert.deepEqual(diagnostics(modular, fixture), []);

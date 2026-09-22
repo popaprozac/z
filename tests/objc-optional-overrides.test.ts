@@ -21,14 +21,18 @@ import first from "objc-optional-overrides.h";
 import second from "objc-optional-overrides.h";
 import { thread } from "std/thread";
 function value(in sender: first.ZDropInfo): i32 on thread.main { return sender.value; }
-function forward(in sender: second.ZDropInfo): i32 on thread.main { return value(in sender); }
+function forward(in sender: second.ZDropInfo): i32 on thread.main {
+  if (sender.value == 0) return 0;
+  return value(in sender);
+}
 function main(): i32 { return 0; }
 `;
   const artifact = compileToNative(source, fixture);
   assert.match(artifact.source, /value\(id<ZDropInfo> sender\)/);
   command("clang", ["-x", "objective-c", "-fobjc-arc", "-fblocks", "-Wall", "-Wextra", "-Werror",
     "-I", fixtures, "-fsyntax-only", "-"], artifact.source);
-  const different = source.replace("in sender: second.ZDropInfo", "in sender: second.ZOptionalCallbacks");
+  const different = source.replace("in sender: second.ZDropInfo", "in sender: second.ZOptionalCallbacks")
+    .replace("  if (sender.value == 0) return 0;\n", "");
   assert.throws(() => compileToNative(different, fixture), /expected.*ZDropInfo.*found.*ZOptionalCallbacks/);
 }, 60_000);
 

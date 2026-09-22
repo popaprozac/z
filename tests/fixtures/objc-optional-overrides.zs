@@ -3,6 +3,16 @@ import { thread } from "std/thread";
 import objc from "std/objc";
 
 function readDropValue(in info: native.ZDropInfo): i32 on thread.main {
+  if (info.value < 0) return -1;
+  let total = 0;
+  let index = 0;
+  while (index < 2) {
+    if (index == 0) { total = total + info.value; }
+    else { total = total - info.value; }
+    index = index + 1;
+  }
+  // The protocol proof survives early-return, loop, and two-way branch joins.
+  if (total != 0) return -1;
   return info.value;
 }
 
@@ -14,6 +24,7 @@ class Destination extends native.ZCallbackDestination on thread.main {
     const caption = info.caption;
     const position = info.position;
     if (caption.length != 5 || position.x != 3 || position.y != 4) return -1;
+    if (readDropValue(in info) != value) return -4;
     const forwarded = objc.optionalCall(super.optionalInfo(info));
     match (in forwarded) { some(result) => { if (result != value) return -2; } none => return -3; }
     return value + 7;
