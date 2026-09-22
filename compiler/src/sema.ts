@@ -1195,6 +1195,16 @@ export function analyze(
     }
     for (const protocol of module.protocols.values()) {
       foreignProtocols.set(protocol.typeName, protocol);
+      // Borrowed protocol parameters are Objective-C object identities, but
+      // erasing their qualifier to id lets Clang choose an unrelated selector
+      // signature (including an object return for a checked scalar getter).
+      const typeName = objcProtocolTypeName(protocol.typeName);
+      foreignNamedTypes.set(typeName, {
+        kind: "object", exportName: protocol.exportName, namespacePath: [],
+        qualifiedName: protocol.protocolName, typeName,
+        cName: `id<${protocol.protocolName}>`, className: null,
+        metadata: protocol.metadata,
+      });
     }
     if (module.framework) frameworks.add(module.framework);
     if (module.objectiveC) objectiveC = true;

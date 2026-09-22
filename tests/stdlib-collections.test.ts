@@ -234,6 +234,8 @@ test("preserves the value ABI of explicit standard-library borrows", () => {
         const contents = \`borrowed \${description}\`;
         try fs.writeText(in path, in contents);
         try writeBorrowedPath(in path, in contents);
+        try writeBorrowedPath(path, \`borrowed \${description}\`);
+        try fs.writeText(\`\${directory}/written.txt\`, contents);
         if (!exists(inout path)) return 1;
         const location = Location({ path: copy path });
         const text = try fs.readText(in location.path);

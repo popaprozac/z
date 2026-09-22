@@ -12358,8 +12358,8 @@ function generateCallArgument(expression: Expression, context: GenerationContext
   const objectiveCIn = (
     context.semanticInfo.foreignNamedTypes.get(argumentType)?.kind === "object"
     || argumentType.startsWith("__z_objc:")
-    // Borrowed protocol existentials use `id`, just like their parameter ABI.
-    // Inferred `in` calls must match explicit `in`, not take an `id *` address.
+    // Borrowed protocol existentials use id<P>, just like their parameter ABI.
+    // Inferred `in` calls must match explicit `in`, not take an id<P> * address.
     || Boolean(parseObjCProtocolType(argumentType))
   );
   return (foreignIn && !objectiveCIn)

@@ -1400,7 +1400,37 @@ export function inferGenericCalls(
             };
           }
         }
-        const args = expression.arguments.map((item) => rewriteExpression(item, environment));
+        // Ordinary checked calls provide context before nested generic values
+        // are rewritten. Otherwise Option.some(Option.none) is rejected before
+        // semantic analysis can supply the parameter's concrete payload type.
+        let argumentTypes: readonly (string | null)[] = [];
+        if (expression.callee.kind === "identifier") {
+          const local = environment.get(expression.callee.name);
+          const callable = local ? parseFunctionType(local) : null;
+          const target = local ? null : functions.get(expression.callee.name);
+          argumentTypes = callable?.parameters.map((parameter) => parameter.type)
+            ?? target?.parameters.map((parameter) => parameter.type.name) ?? [];
+        } else if (expression.callee.kind === "member") {
+          const member = expression.callee;
+          const receiver = rewriteExpression(member.object, environment);
+          const owner = receiver.type ? aggregate(receiver.type) : null;
+          const method = owner?.declaration.methods.find((candidate) => (
+            !candidate.static && candidate.name === member.property
+          ));
+          if (owner && method && !method.typeParameters?.length) {
+            argumentTypes = method.parameters.map((parameter) => substituteType(parameter.type.name, owner.substitutions));
+          }
+          if (member.object.kind === "identifier") {
+            const qualifier = parseGenericType(member.object.name);
+            const contextual = expectedType ? parseGenericType(expectedType) : null;
+            if ((qualifier?.base ?? member.object.name) === "Option"
+                && member.property === "some") {
+              argumentTypes = [qualifier?.arguments[0]
+                ?? (contextual?.base === "Option" ? contextual.arguments[0] : null)];
+            }
+          }
+        }
+        const args = expression.arguments.map((item, index) => rewriteExpression(item, environment, argumentTypes[index] ?? null));
         const callee = rewriteExpression(expression.callee, environment);
         if (callee.expression.kind === "member") {
           const arenaReceiver = rewriteExpression(callee.expression.object, environment);

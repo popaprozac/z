@@ -20,11 +20,12 @@ hostToolchainTest("preserves Objective-C protocol identity across imported names
 import first from "objc-optional-overrides.h";
 import second from "objc-optional-overrides.h";
 import { thread } from "std/thread";
-function value(in sender: first.ZDropInfo): i32 on thread.main { return 35; }
+function value(in sender: first.ZDropInfo): i32 on thread.main { return sender.value; }
 function forward(in sender: second.ZDropInfo): i32 on thread.main { return value(in sender); }
 function main(): i32 { return 0; }
 `;
   const artifact = compileToNative(source, fixture);
+  assert.match(artifact.source, /value\(id<ZDropInfo> sender\)/);
   command("clang", ["-x", "objective-c", "-fobjc-arc", "-fblocks", "-Wall", "-Wextra", "-Werror",
     "-I", fixtures, "-fsyntax-only", "-"], artifact.source);
   const different = source.replace("in sender: second.ZDropInfo", "in sender: second.ZOptionalCallbacks");
@@ -75,10 +76,10 @@ hostToolchainTest("checks optional inherited Objective-C callbacks without promi
     for (const [name, candidate, expected] of [
       ["missing override", source.replace("override function accept", "function accept"), /requires.*override/],
       ["wrong result", source.replace('i32 as "acceptInfo:"', 'boolean as "acceptInfo:"'), /returns/],
-      ["wrong parameter", source.replace("in info: native.ZDropInfo", "in info: native.ZCallbackBase"), /parameter.*expects/],
+      ["wrong parameter", source.replace("override function accept(in info: native.ZDropInfo", "override function accept(in info: native.ZCallbackBase"), /parameter.*expects/],
       ["unimplemented super", source.replace("return value + 7;", "return super.acceptInfo(info);"), /no method|superclass call must resolve/],
       ["unimplemented ordinary call", source.replace("return 0;", "return target.missingValue();"), /no method|unknown method|cannot resolve/],
-      ["unimplemented getter", source.replace("const value = info.value;", "const value = info.missing;"), /no field|no .*property|no member|cannot resolve|unknown/],
+      ["unimplemented getter", source.replace("return info.value;", "return info.missing;"), /no field|no .*property|no member|cannot resolve|unknown/],
       ["ordinary optional target", source.replace("super.missingIncrement(native.z_callback_argument())", "this.optionalValue()"), /requires one direct synchronous super/],
       ["optional argument type", source.replace("super.missingIncrement(native.z_callback_argument())", "super.missingIncrement(true)"), /expects|expected|matching|argument/],
       ["conditional initializer", source.replace("super.init();", "objc.optionalCall(super.init());"), /constructor must begin|constructor.*super|first.*super|initialize/],

@@ -199,6 +199,7 @@ import {
   transparentTypeName,
   typeSatisfiesTrait,
   inferredTypeSymbolLocation,
+  isUnresolvedExternalType,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import {
@@ -12423,6 +12424,16 @@ function inferStatement(
                   inout bindings, inout evidence
                 );
                 importedObjectReceiver = isNativeObjectiveCObjectType(modules, moduleIndex, receiverType);
+                // The hybrid source-only graph has no Clang type metadata.
+                // Defer this identity-vs-value decision to its Stage 0 check,
+                // but never exempt a known native record or a Z value type.
+                if (!importedObjectReceiver) {
+                  match (inferredTypeSymbolLocation(modules, moduleIndex, receiverType)) {
+                    some(_) => {}
+                    none => importedObjectReceiver = receiverType.byteLength == 0
+                      || isUnresolvedExternalType(modules, moduleIndex, receiverType);
+                  }
+                }
               }
               if (tree.nodes[root].kind != ExpressionKind.identifierExpression
                 && !valueBindingIsMutable(bindings, mutationRoot)

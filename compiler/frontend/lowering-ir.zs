@@ -18438,6 +18438,14 @@ function lowerExpressionExpected(
   in expectedTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  // Preserve destination context through transparent aliases, just as type
+  // lowering does. Cycles have already been rejected by semantic analysis.
+  match (localTypeAliasTarget(program, expectedTypeName)) {
+    some(target) => return try lowerExpressionExpected(
+      program, importedTypes, evidence, tree, index, target, inout output
+    );
+    none => {}
+  }
   if (isIntegerTypeName(expectedTypeName) || expectedTypeName == "f32"
     || expectedTypeName == "f64" || expectedTypeName == "boolean") {
     match (loweringExpressionTypeName(program, evidence, tree, index)) {

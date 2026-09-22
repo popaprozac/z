@@ -2,11 +2,15 @@ import native from "objc-optional-overrides.h";
 import { thread } from "std/thread";
 import objc from "std/objc";
 
+function readDropValue(in info: native.ZDropInfo): i32 on thread.main {
+  return info.value;
+}
+
 class Destination extends native.ZCallbackDestination on thread.main {
   constructor() { super.init(); }
 
   override function accept(in info: native.ZDropInfo): i32 as "acceptInfo:" {
-    const value = info.value;
+    const value = readDropValue(in info);
     const caption = info.caption;
     const position = info.position;
     if (caption.length != 5 || position.x != 3 || position.y != 4) return -1;

@@ -35,6 +35,9 @@ hostToolchainTest("keeps class and instance Objective-C properties distinct thro
   const temporary = mkdtempSync("/tmp/z-objc-property-scopes-");
   try {
     const source = readFileSync(fixture, "utf8");
+    // The hybrid checker sees source types before Clang metadata is attached.
+    // It must defer native setter identity, not reject const object handles.
+    command(process.execPath, [cli, "check", fixture, "--native-frontend"], undefined, 180_000);
     const seed = command(process.execPath, [cli, "self-host-emit",
       resolve(fixtures, "self-host-objc-subclass-execution.zs")], undefined, 180_000);
     const oracle = resolve(temporary, "emitter");
@@ -52,6 +55,8 @@ hostToolchainTest("keeps class and instance Objective-C properties distinct thro
       ["missing", source.replace("shared.writableValue = 61", "shared.missing = 61"), "no field"],
       ["slot", source.replace("owner.object.writableValue = 72", "owner.object = object"), "immutable binding"],
       ["nested-readonly", source.replace("owner.object.writableValue = 72", "owner.object.value = 72"), "readonly field"],
+      ["record-storage", source.replace("const instanceValue: i32 = base.value;",
+        "const span = base.span; span.location = 0; const instanceValue: i32 = base.value;"), "immutable binding"],
       ["nullable-true-arm", source.replace("object == null ? -1 : object.value", "object == null ? object.value : -1"), "nullable receiver"],
       ["nullable-false-arm", source.replace("object != null ? object.value : -2", "object != null ? -2 : object.value"), "nullable receiver"],
       ["nullable-after-join", source.replace("return object != null ? object.value : -2;",

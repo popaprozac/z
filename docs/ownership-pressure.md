@@ -10143,11 +10143,13 @@ Remaining fixture friction is recorded rather than disguised as implemented:
   Pasteboard setup uses a test-only raw helper; production reads ordinary checked
   pasteboard APIs without a native shim.
 - Explicit borrowing of indexed storage still requires a named value in this
-  tier. Native emission of a borrowed interpolated temporary also needs its own
-  materialized storage rather than taking a C rvalue's address.
-- Direct Stage 0 C emission of an ordinary function named `write` can collide
-  with the POSIX declaration introduced by filesystem support. Native symbol
-  hygiene needs a separate regression and fix.
+  tier. Borrowed interpolated arguments now pass the focused filesystem and
+  ordinary-function regression: temporary storage survives the call and is
+  cleaned afterward, rather than taking a C rvalue's address.
+- Emission of an ordinary function named `write` can collide with the POSIX
+  declaration introduced by filesystem support. The native runtime regression
+  also exposed this with `pause`. Protecting Z function identities from header
+  symbols in both emitters needs a separate regression and fix.
 
 Related-window drop inheritance remains a framework API decision.
 
@@ -10173,17 +10175,26 @@ arguments now compare their checked native protocol identity; unrelated
 protocols remain rejected. This does not add protocol storage, subtyping, or a
 new runtime wrapper.
 
-Additional contextual enum edges remain separate follow-ups: a transparent
-Option alias as the expected argument type, and a context-only `Option.none`
-nested inside an ownership-bearing payload. These need parity regressions before
-being treated as general contextual-construction support.
+The contextual enum regression now also covers transparent Option aliases and
+context-only `Option.none` nested inside an ownership-bearing payload. Stage 0
+must propagate ordinary-call parameter types before rewriting nested generic
+constructors; native lowering must resolve the transparent destination alias
+before choosing the Option representation. Both emitters execute these shapes
+with weak-reference cleanup checks, not just parser acceptance.
 
 The alias-identity fixture also exposed separate emission pressure: an ordinary
-Stage 0 function's protocol parameter is emitted as unqualified `id`. Calling a
-scalar getter whose selector conflicts with Foundation object getters can
-therefore fail in Clang. Keeping `id<P>` on those parameter declarations needs
-its own focused codegen/ABI regression; the identity fix does not claim to solve
-that dispatch issue.
+Stage 0 function's protocol parameter was emitted as unqualified `id`. Calling a
+scalar getter whose selector conflicts with Foundation object getters could
+therefore fail in Clang. Semantic ABI metadata now retains `id<P>` for these
+borrowed references. Cross-namespace forwarding and a scalar getter are checked
+and executed under both emitters; unrelated protocol parameters remain rejected.
+
+The broader AppKit checks also caught the hybrid source-only resolver rejecting
+setters through immutable native object bindings before Clang metadata arrived.
+That pass now defers unresolved receiver identity to the metadata-backed check.
+Known value records and stored slots remain immutable, and readonly native
+properties remain rejected. The regression exercises both the hybrid check and
+the independently imported native graph.
 
 ### Unknown ARC provenance is still nominally typed
 

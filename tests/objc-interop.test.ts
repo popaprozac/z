@@ -747,7 +747,7 @@ hostToolchainTest("builds the interactive Z Notes AppKit and sqlite3 application
   assert.match(artifact.source, /\[_z_control setAction:@selector\(z_invoke:\)\]/);
   assert.match(artifact.source, /ZObjCConnection \* const addNoteConnection = z_objc_connect\(/);
   assert.match(artifact.source, /\[content addSubview:statusLabel\]/);
-  assert.match(artifact.source, /\[statusLabel setStringValue:z_nsstring_from_string/);
+  assert.match(artifact.source, /\[statusLabel setStringValue:z_nsstring_from_owned_string\(_z_string_\d+\)\]/);
   assert.match(artifact.source, /\[\[NSTableView alloc\] initWithFrame/);
   assert.match(artifact.source, /\[\[NSScrollView alloc\] initWithFrame/);
   assert.match(artifact.source, /\[notesScroll setHasVerticalScroller:true\]/);
@@ -2658,7 +2658,7 @@ test("dispatches through borrowed Objective-C protocol existential callback valu
     function main(): i32 { return 0; }
   `;
   const artifact = compileToNative(source, fileName);
-  assert.match(artifact.source, /- \(void\)webView:\(WKWebView \*\)webView startURLSchemeTask:\(id\)urlSchemeTask/);
+  assert.match(artifact.source, /- \(void\)webView:\(WKWebView \*\)webView startURLSchemeTask:\(id<WKURLSchemeTask>\)urlSchemeTask/);
   assert.match(artifact.source, /\[urlSchemeTask didFinish\]/);
   assert.match(artifact.source, /forwardTask\(urlSchemeTask\)/);
   assert.doesNotMatch(artifact.source, /(?:forwardTask|finishTask)\(&/);

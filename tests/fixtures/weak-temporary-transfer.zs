@@ -39,6 +39,14 @@ function takeNested(reference: Option<Option<Weak<Item>>>): i32 {
   };
 }
 
+type OptionalObserver = Option<Weak<Item>>;
+function takeAliased(reference: OptionalObserver): i32 {
+  return takeOptional(reference);
+}
+struct ObserverReader {
+  function read(reference: OptionalObserver): i32 { return takeOptional(reference); }
+}
+
 function main(): i32 {
   const item = new Item({ value: 42 });
   const transferred = relay(take(weak item));
@@ -53,5 +61,12 @@ function main(): i32 {
   if (takeOptional(Option.some(weak item)) != 42) return 6;
   if (takeOptional(Option.some(named)) != 42) return 7;
   if (takeNested(Option.some(Option.some(weak item))) != 42) return 8;
+  if (takeNested(Option.some(Option.none)) != -1) return 9;
+  if (takeAliased(Option.some(weak item)) != 42) return 10;
+  if (takeAliased(Option.none) != -1) return 11;
+  const reader = ObserverReader();
+  if (reader.read(Option.none) != -1) return 12;
+  const callbackReader: (reference: OptionalObserver) => i32 = takeAliased;
+  if (callbackReader(Option.none) != -1) return 13;
   return 0;
 }
