@@ -216,3 +216,48 @@ hostToolchainTest("numeric literals execute with lexer parser and native emitter
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 300_000);
+
+hostToolchainTest("fixed-array literals take their element type from the destination in both compilers", () => {
+  const input = resolve(projectRoot, "tests/fixtures/typed-fixed-array-literals.zs");
+  const checked = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
+    encoding: "utf8", timeout: 120_000,
+  });
+  assert.equal(checked.status, 0, checked.stderr);
+  const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+  });
+  assert.equal(native.status, 0, native.stderr);
+  const directory = mkdtempSync("/tmp/z-typed-fixed-array-literals-");
+  try {
+    for (const [tier, generated] of [["stage0", compileToC(readFileSync(input, "utf8"), input)], ["native", native.stdout]]) {
+      for (const optimization of ["-O0", "-O2"]) {
+        const executable = resolve(directory, tier + optimization);
+        const built = spawnSync("clang", ["-x", "c", "-std=c11", optimization, "-Wall", "-Wextra", "-Werror",
+          "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+          encoding: "utf8", input: generated, timeout: 30_000,
+        });
+        assert.equal(built.status, 0, `${tier}: ${built.stderr}`);
+        const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+        assert.equal(run.status, 0, `${tier}${optimization}: ${run.stderr}`);
+      }
+    }
+    const rejected: [string, RegExp][] = [
+      ["const bytes: u8[2] = [1, 256];", /integer literal 256 does not fit u8/],
+      ["const grid: u8[1][2] = [[1, -1]];", /integer literal -1 does not fit u8/],
+      ["const bytes: u8[2] = [1, 2, 3];", /expected u8\[2\], found u8\[3\]/],
+    ];
+    for (const [body, message] of rejected) {
+      const source = `function main(): i32 { ${body} return 0; }`;
+      assert.throws(() => compileToC(source, "typed-fixed-array-invalid.zs"), message);
+      const file = resolve(directory, "invalid.zs");
+      writeFileSync(file, source);
+      const resolved = spawnSync(process.execPath, [cli, "self-host-resolve", file], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(resolved.status, 1, `${body}\n${resolved.stderr}`);
+      assert.match(resolved.stderr, message);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);

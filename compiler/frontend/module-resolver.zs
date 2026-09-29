@@ -220,6 +220,7 @@ import {
   qualifiedTypeBase,
   qualifiedTypeMember,
   stringStartsWith,
+  fixedArrayShape,
 } from "./semantic-type-shapes.zs";
 import {
   typeHasMainExecutorLifecycle,
@@ -7549,6 +7550,31 @@ function inferExpressionNodeType(
   }
   if (kind == ExpressionKind.arrayExpression) {
     if (children.length == 0) return "";
+    // A destination such as `const bytes: u8[3]` types every element, so
+    // literals take the element type as they would for a scalar binding. A
+    // length mismatch is then reported against the destination's type.
+    const arrayContext = contextualExpectedType(bindings, tree, index);
+    if (arrayContext.byteLength > 0) {
+      const arrayDestination = transparentTypeName(modules, moduleIndex, arrayContext);
+      match (fixedArrayShape(arrayDestination)) {
+        some(expectedShape) => {
+          for (const child of children) {
+            const candidate = try inferExpressionNodeTypeExpected(module, modules, moduleIndex, arena, tree,
+              child, expectedShape.elementType, inout bindings, inout evidence);
+            try requireSettledExpressionType(module, tree, child, candidate);
+            if (candidate.byteLength == 0) return "";
+            try requireExpressionType(module, modules, moduleIndex, tree, child, expectedShape.elementType, candidate);
+            if (typeIsClassReference(module, modules, moduleIndex, expectedShape.elementType)) {
+              try invalidateLocallyContainedClassNode(module, tree, child, inout bindings);
+            }
+            try consumeOwnedExpressionNode(module, modules, moduleIndex, tree, child,
+              expectedShape.elementType, false, inout bindings);
+          }
+          return `${expectedShape.elementType}[${children.length}]`;
+        }
+        none => {}
+      }
+    }
     let elementType = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], elementType);
     if (elementType.byteLength == 0) return "";
