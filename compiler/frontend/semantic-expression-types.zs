@@ -238,6 +238,27 @@ export function nativeBorrowedCallbackType(
   }
 }
 
+function isSliceTypeName(in name: String): boolean {
+  return match (genericTypeShape(name)) {
+    some(generic) => generic.base == "Slice";
+    none => false;
+  };
+}
+
+// A local, or a field or element path rooted in one.
+function isNamedStorageNode(in tree: ExpressionTree, index: usize): boolean {
+  const kind = tree.nodes[index].kind;
+  if (kind == ExpressionKind.identifierExpression) return true;
+  if (
+    (kind == ExpressionKind.memberExpression || kind == ExpressionKind.indexExpression)
+    && tree.nodes[index].children.length > 0
+  ) {
+    const owner = tree.nodes[index].children[0];
+    return isNamedStorageNode(tree, owner);
+  }
+  return false;
+}
+
 function compatibleSliceTypes(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -514,7 +535,17 @@ export function requireExpressionType(
     && tree.nodes[index].kind == ExpressionKind.stringExpression
   ) return;
   if (actual == "null" && isNullableTypeName(expected)) return;
-  if (compatibleSliceTypes(modules, moduleIndex, expected, actual)) return;
+  if (compatibleSliceTypes(modules, moduleIndex, expected, actual)) {
+    // The Slice borrows the array's own storage for the call, so there must
+    // be stored storage to borrow; a temporary array has none.
+    const sliceSource = transparentTypeName(modules, moduleIndex, actual);
+    if (!isSliceTypeName(sliceSource) && !isNamedStorageNode(tree, index)) {
+      throw moduleResolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+        "an array-to-Slice borrow requires stored array storage",
+        tree.nodes[index].line, tree.nodes[index].column);
+    }
+    return;
+  }
   if (stringStartsWith(expected, "view ")) {
     const target = expected.copyBytes(5, expected.byteLength);
     const kind = tree.nodes[index].kind;

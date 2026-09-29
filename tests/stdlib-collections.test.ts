@@ -1505,6 +1505,30 @@ test("keeps Slice values non-escaping until lifetime contracts exist", () => {
   assert.throws(() => compileToC(local, "slice-local.zs"), /Slice values cannot be stored in local bindings yet/);
 });
 
+test("borrows only stored arrays as Slice arguments in both semantic frontends", () => {
+  const accepted = resolve(projectRoot, "tests/fixtures/slice-argument-storage.zs");
+  const checked = spawnSync(process.execPath, [cli, "check", accepted, "--native-frontend"], {
+    encoding: "utf8", timeout: 120_000,
+  });
+  assert.equal(checked.status, 0, checked.stderr);
+  const directory = mkdtempSync("/tmp/z-slice-argument-storage-");
+  try {
+    for (const call of ["total(Array<u8>(2))", "rows([1, 2])", "rows(Array<i32>(1)) + 1"]) {
+      const source = `function total(values: Slice<u8>): usize { return values.length; }
+        function rows(values: Slice<i32>): usize { return values.length; }
+        function main(): i32 { const n = ${call}; return 0; }`;
+      assert.throws(() => compileToC(source, "slice-temporary.zs"), /array-to-Slice borrow requires stored array storage/);
+      const input = resolve(directory, "main.zs");
+      writeFileSync(input, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(native.status, 1, `${call}\n${native.stderr}`);
+      assert.match(native.stderr, /array-to-Slice borrow requires stored array storage/);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
 test("checks Slice capabilities, element types, and overlapping borrows", () => {
   const readOnlyMutation = `
     function mutate(values: Slice<i32>): void { values[0] = 1; }
@@ -2650,35 +2674,31 @@ test("Array.append grows storage at most once for the whole run", () => {
 }, 300_000);
 
 test("checks Array.append element types, storage, arity, and call loans", () => {
-  // [body, Stage 0 message, rejected by the native resolver]
-  const cases: [string, RegExp, boolean][] = [
-    ["let values = Array<u8>(1); values.append(values);", /overlapping inout and in uses of "values"/, true],
-    ["let holder = Holder({ bytes: Array<u8>(1), other: Array<u8>(2) }); holder.bytes.append(holder.bytes);", /overlapping inout and in uses of "holder\.bytes"/, true],
-    ["const values = Array<u8>(1); const more = Array<u8>(2); values.append(more);", /requires addressable let storage/, true],
-    ["let values = Array<u8>(1); const frozen = values.freeze(); const more = Array<u8>(2); frozen.append(more);", /readonly Array has no mutating method "append"/, true],
-    ["let names = Array<String>(\"a\"); const more = Array<String>(\"b\"); names.append(more);", /requires a cleanup-free element type, found String/, true],
-    ["let values = Array<u8>(1, 2); const first = view values[0]; const more = Array<u8>(3); values.append(more); console.log(first);", /cannot mutate "values" while view "first" is live/, true],
-    ["let values = Array<u8>(1, 2); const more = Array<u8>(3); for (const value of values) { values.append(more); }", /cannot structurally mutate Array "values" while for\.\.\.of is borrowing it/, true],
-    ["let values = Array<u8>(1); const more = Array<i32>(2); values.append(more);", /expected Slice<u8>, found Array<i32>/, true],
-    ["let values = Array<u8>(1); values.append();", /expects 1 argument/, true],
-    ["let values = Array<u8>(1); const more = Array<u8>(2); values.append(more, more);", /expects 1 argument/, true],
-    // The native resolver does not yet reject a temporary passed to any Slice
-    // parameter; Stage 0 remains the authority for this shape.
-    ["let values = Array<u8>(1); values.append(Array<u8>(2));", /array-to-Slice borrow requires stored array storage/, false],
+  const cases: [string, RegExp][] = [
+    ["let values = Array<u8>(1); values.append(values);", /overlapping inout and in uses of "values"/],
+    ["let holder = Holder({ bytes: Array<u8>(1), other: Array<u8>(2) }); holder.bytes.append(holder.bytes);", /overlapping inout and in uses of "holder\.bytes"/],
+    ["const values = Array<u8>(1); const more = Array<u8>(2); values.append(more);", /requires addressable let storage/],
+    ["let values = Array<u8>(1); const frozen = values.freeze(); const more = Array<u8>(2); frozen.append(more);", /readonly Array has no mutating method "append"/],
+    ["let names = Array<String>(\"a\"); const more = Array<String>(\"b\"); names.append(more);", /requires a cleanup-free element type, found String/],
+    ["let values = Array<u8>(1, 2); const first = view values[0]; const more = Array<u8>(3); values.append(more); console.log(first);", /cannot mutate "values" while view "first" is live/],
+    ["let values = Array<u8>(1, 2); const more = Array<u8>(3); for (const value of values) { values.append(more); }", /cannot structurally mutate Array "values" while for\.\.\.of is borrowing it/],
+    ["let values = Array<u8>(1); const more = Array<i32>(2); values.append(more);", /expected Slice<u8>, found Array<i32>/],
+    ["let values = Array<u8>(1); values.append();", /expects 1 argument/],
+    ["let values = Array<u8>(1); const more = Array<u8>(2); values.append(more, more);", /expects 1 argument/],
+    ["let values = Array<u8>(1); values.append(Array<u8>(2));", /array-to-Slice borrow requires stored array storage/],
   ];
   const directory = mkdtempSync("/tmp/z-array-append-invalid-");
   try {
-    for (const [body, message, nativeRejects] of cases) {
+    for (const [body, message] of cases) {
       const source = `import console from "std/console"; struct Holder { bytes: Array<u8>; other: Array<u8>; } function main(): i32 { ${body} return 0; }`;
       assert.throws(() => compileToC(source, "array-append-invalid.zs"), message);
-      if (!nativeRejects) continue;
       const input = resolve(directory, "invalid.zs");
       writeFileSync(input, source);
       const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
         encoding: "utf8", timeout: 120_000,
       });
       assert.equal(native.status, 1, `${body}\n${native.stderr}`);
-      assert.match(native.stderr, /overlapping|addressable|readonly|cleanup-free|view|borrowing|expected Slice|argument/);
+      assert.match(native.stderr, /overlapping|addressable|readonly|cleanup-free|view|borrowing|expected Slice|argument|stored array storage/);
     }
     const disjoint = `struct Holder { bytes: Array<u8>; other: Array<u8>; } function main(): i32 { let holder = Holder({ bytes: Array<u8>(1), other: Array<u8>(2) }); holder.bytes.append(holder.other); return holder.bytes.length == 2 ? 0 : 1; }`;
     compileToC(disjoint, "array-append-disjoint.zs");
