@@ -480,6 +480,7 @@ export type SemanticInfo = {
   readonly integerOperations: ReadonlyMap<number, IntegerOperation>;
   readonly numericConversions: ReadonlyMap<number, NumericConversion>;
   readonly dynamicArrayPushTypes: ReadonlySet<string>;
+  readonly dynamicArrayAppendTypes: ReadonlySet<string>;
   readonly arenaCreateCalls: ReadonlyMap<number, string>;
   readonly arenaResetCalls: ReadonlySet<number>;
   readonly memoryReplaceBindings: ReadonlySet<string>;
@@ -663,6 +664,7 @@ type AnalysisState = {
   readonly integerOperations: Map<number, IntegerOperation>;
   readonly numericConversions: Map<number, NumericConversion>;
   readonly dynamicArrayPushTypes: Set<string>;
+  readonly dynamicArrayAppendTypes: Set<string>;
   readonly unboundStoredViewContainerInitializers: Set<number>;
   readonly arenaCreateCalls: Map<number, string>;
   readonly arenaResetCalls: Set<number>;
@@ -1356,6 +1358,7 @@ export function analyze(
     integerOperations: new Map(),
     numericConversions: new Map(),
     dynamicArrayPushTypes: new Set(),
+    dynamicArrayAppendTypes: new Set(),
     unboundStoredViewContainerInitializers: new Set(),
     arenaCreateCalls: new Map(),
     arenaResetCalls: new Set(),
@@ -13521,6 +13524,7 @@ function inferExpressionInner(
             && expression.callee.property !== "clear"
             && expression.callee.property !== "freeze"
             && expression.callee.property !== "reserveCapacity"
+            && expression.callee.property !== "append"
           ) {
             throw new DiagnosticError(fileName, expression.callee.location, `Array has no method ${JSON.stringify(expression.callee.property)}`);
           }
@@ -13544,6 +13548,7 @@ function inferExpressionInner(
           const clearing = expression.callee.property === "clear";
           const popping = expression.callee.property === "pop";
           const reserving = expression.callee.property === "reserveCapacity";
+          const appending = expression.callee.property === "append";
           const expectedArguments = clearing || popping ? 0 : 1;
           if (expression.arguments.length !== expectedArguments) {
             throw new DiagnosticError(
@@ -13601,6 +13606,57 @@ function inferExpressionInner(
             const capacity = expression.arguments[0];
             const actual = inferExpression(capacity, locals, globals, structs, enums, fileName, state, false, "usize");
             requireAssignable("usize", actual, capacity, fileName, structs, enums, state);
+            return "void";
+          }
+          if (appending) {
+            // A run of elements copied in one step: one capacity check and a
+            // block copy, so the first tier admits only cleanup-free elements.
+            const elementType = dynamic.elementType;
+            if (!isCleanupFreeElementType(elementType, structs, enums, state)) {
+              throw new DiagnosticError(fileName, expression.callee.location, `Array.append requires a cleanup-free element type, found ${displayAssignableType(elementType, state)}`, {
+                length: "append".length,
+                notes: ["append copies elements as a block; an element that owns storage needs its own copy"],
+                helps: ["push each element with an explicit copy"],
+              });
+            }
+            const argument = expression.arguments[0];
+            const target = sliceTypeName(elementType);
+            const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state, false, target);
+            const actualArray = parseFixedArrayType(String(actual)) ?? parseDynamicArrayType(String(actual));
+            if (actualArray && actualArray.elementType === elementType) {
+              if (!isNamedStorageExpression(argument)) {
+                throw new DiagnosticError(fileName, argument.location, "an array-to-Slice borrow requires stored array storage");
+              }
+              state.sliceConversions.set(argument.location.offset, { sourceType: String(actual), targetType: target });
+            } else if (elementType === "u8" && isStaticBytesType(String(actual))) {
+              state.sliceConversions.set(argument.location.offset, { sourceType: staticBytesTypeName, targetType: target });
+            } else {
+              requireAssignable(target, actual, argument, fileName, structs, enums, state);
+            }
+            // The receiver is borrowed inout and the elements in for the call,
+            // through the same loan check as any other call.
+            const receiverPath = directFieldStoragePath(expression.callee.object);
+            const argumentPath = directFieldStoragePath(argument);
+            if (receiverPath && argumentPath) {
+              const callLoans: AccessLoanSet = new Map();
+              registerAccessLoan(callLoans, {
+                root: receiverPath.root,
+                fields: receiverPath.fields,
+                aliasIdentities: classAliasIdentitiesForRoot(receiverPath.root, state),
+                capability: "inout",
+                lifetime: { kind: "call" },
+                location: expression.callee.object.location,
+              });
+              registerCheckedCallLoan(callLoans, {
+                root: argumentPath.root,
+                fields: argumentPath.fields,
+                aliasIdentities: classAliasIdentitiesForRoot(argumentPath.root, state),
+                capability: "in",
+                lifetime: { kind: "call" },
+                location: argument.location,
+              }, fileName);
+            }
+            state.dynamicArrayAppendTypes.add(String(receiverValueType));
             return "void";
           }
           if (popping) {
@@ -17670,6 +17726,20 @@ function sameLocalStates(left: Map<string, ValueType>, right: Map<string, ValueT
     if (right.get(name) !== type) return false;
   }
   return true;
+}
+
+// Array.append copies a run of elements as bytes, so its first tier admits
+// only cleanup-free elements: no owned storage, ARC identity, stored view,
+// or native value whose relocation Z cannot prove.
+function isCleanupFreeElementType(
+  type: ValueType,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  state: AnalysisState,
+): boolean {
+  return !hasOwnershipType(type, structs, enums, state)
+    && !containsStoredViewType(String(type), structs, enums)
+    && !containsForeignValueStorage(type, structs, enums, state.foreignNamedTypes);
 }
 
 function hasCleanupType(

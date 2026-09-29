@@ -10818,6 +10818,34 @@ function inferExpressionNodeType(
                 module, modules, moduleIndex, tree, receiverIndex, evidence, true
               );
             }
+            if (methodName == "append") {
+              // The first tier copies elements as a block, so only
+              // cleanup-free element types are accepted.
+              const appendOwnerType = sourceCollectionTypeName(in ownerType);
+              match (genericTypeShape(appendOwnerType)) {
+                some(arrayShape) => {
+                  if (arrayShape.base == "Array" && arrayShape.arguments.length == 1) {
+                    const elementType = arrayShape.arguments[0].copyBytes(0, arrayShape.arguments[0].byteLength);
+                    const visiting = Array<String>();
+                    if (
+                      typeHasCleanup(modules, moduleIndex, elementType, visiting)
+                      || typeMovesOnOwnedUse(modules, moduleIndex, elementType)
+                      || typeContainsStoredView(modules, moduleIndex, elementType, visiting)
+                      || typeContainsForeignValueStorage(modules, moduleIndex, elementType, visiting)
+                    ) {
+                      throw resolutionError(
+                        ModuleResolveErrorKind.typeMismatch,
+                        module.path,
+                        `Array.append requires a cleanup-free element type, found ${elementType}`,
+                        tree.nodes[calleeIndex].line,
+                        tree.nodes[calleeIndex].column
+                      );
+                    }
+                  }
+                }
+                none => {}
+              }
+            }
             const substitutions = Array<NativeValueBinding>();
             const argumentNodes = callArgumentNodes(children);
             const callType = try inferSignatureCallType(

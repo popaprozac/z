@@ -2404,6 +2404,30 @@ intermediate growth allocations; it does not eliminate allocations inside the
 elements or create valid indices beyond `length`. `T[N]` and `Slice<T>` do not
 have capacity reservation methods.
 
+`append(items: Slice<T>): void` copies a run of elements onto the end in one
+step. Any argument that converts to `Slice<T>` works: a stored `Array<T>`, a
+fixed `T[N]`, a `Slice<T>` parameter, or `embed.StaticBytes` for `u8`:
+
+```z
+let output = Array<u8>.withCapacity(64);
+const header: u8[2] = [0x7B, 0x22];
+output.append(header);
+output.append(body); // body: Array<u8> or Slice<u8>
+```
+
+The first tier requires a cleanup-free element type: numbers, `boolean`, and
+value structs, enums, and fixed arrays built only from those. An element that
+owns storage, holds ARC identity or a stored view, or embeds native value
+storage is rejected; push each element with an explicit copy instead. The
+receiver needs addressable mutable `let` storage, as for `push`, and the call
+borrows the receiver `inout` and the elements `in` through the ordinary call
+loan check. Appending an Array to itself, or to storage it contains, is
+therefore rejected at compile time rather than detected at run time.
+
+Cost: one capacity check, at most one growth of the buffer, and one block copy
+of the elements. An empty argument does nothing. Capacity-size overflow and
+allocation failure trap as for `push`.
+
 `Array<T>` supports move-only native C++ values. `push(value)` transfers the
 element into the buffer. Growth allocates native storage, move-constructs each
 live element into the new allocation, destroys the old elements, and releases

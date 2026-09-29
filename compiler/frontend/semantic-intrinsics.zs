@@ -502,6 +502,10 @@ export function collectionMethodSignature(
       parameterModes.push("value");
       parameterTypes.push("usize");
       returnType = "void";
+    } else if (!readonlyCollection && methodName == "append") {
+      parameterModes.push("value");
+      parameterTypes.push(`Slice<${elementType}>`);
+      returnType = "void";
     } else if (!readonlyCollection && methodName == "pop") {
       returnType = `Option<${elementType}>`;
     } else if (!readonlyCollection && methodName == "freeze") {
@@ -659,6 +663,7 @@ export function collectionMethodMutates(
   return match (genericTypeShape(ownerType)) {
     some(generic) => generic.base == "Array"
       ? methodName == "push" || methodName == "clear" || methodName == "pop" || methodName == "reserveCapacity"
+        || methodName == "append"
       : generic.base == "Map"
       ? methodName == "set"
         || methodName == "remove"

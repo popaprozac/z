@@ -1176,6 +1176,11 @@ Both operations check allocation-size arithmetic and trap on allocation failure,
 as ordinary growth does. Reserving an existing Array requires exclusive mutable storage; it does
 not make a live view compatible with potential relocation. Uninitialized capacity
 is inaccessible and contributes no element construction or destruction.
+`append(items: Slice<T>): void` copies a run of cleanup-free elements onto the
+end with one capacity check and one block copy; the receiver's `inout` loan and
+the elements' `in` loan meet in the ordinary call checker, so self-append is a
+compile-time error rather than a runtime alias test. Element types that own
+storage wait for an explicit per-element copy design.
 `Array<T>` carries its allocation, initialized length, and capacity as one
 move-only value. `push` requires addressable `let` storage, checks capacity
 arithmetic, grows geometrically, and transfers or copies the element according

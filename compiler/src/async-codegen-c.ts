@@ -8092,6 +8092,12 @@ function emitFrameExpressionInner(
           const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
           return `Z_DynamicArray_${asyncNativeSymbolPart(writableTypeName(receiverType))}_reserveCapacity(&(${receiver}), ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
         }
+        if (parseDynamicArrayType(receiverType) && expression.callee.property === "append") {
+          const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+          const value = emitFrameExpression(expression.arguments[0], plan, fileName);
+          const argument = emitFrameSliceConversion(expression.arguments[0], value, plan, fileName) ?? value;
+          return `Z_DynamicArray_${asyncNativeSymbolPart(writableTypeName(receiverType))}_append(&(${receiver}), ${argument})`;
+        }
         if (parseDynamicArrayType(receiverType) && expression.callee.property === "push") {
           const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
           const argument = emitFrameExpression(expression.arguments[0], plan, fileName);

@@ -2182,6 +2182,12 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       if (!dynamic.readonly && word.text === "reserveCapacity") {
         return markdownHover("reserveCapacity(minimumCapacity: usize): void\n// ensures minimum total capacity; preserves length and elements; may reallocate; requires exclusive mutable storage", source, word.start, word.end);
       }
+      if (!dynamic.readonly && word.text === "append") {
+        return markdownHover(
+          `append(items: Slice<${displayType(dynamic.elementType, context.typeDisplayNames)}>): void\n// copies the elements to the end in one step; cleanup-free elements only; may reallocate; requires exclusive mutable storage`,
+          source, word.start, word.end,
+        );
+      }
       if (!dynamic.readonly && word.text === "freeze") {
         return markdownHover(
           `freeze(): readonly Array<${displayType(dynamic.elementType, context.typeDisplayNames)}>  // consumes without copying`,
@@ -6156,6 +6162,11 @@ function memberCompletions(
           kind: completionKinds.method,
           detail: "reserveCapacity(minimumCapacity: usize): void  // minimum total capacity; length unchanged; may reallocate",
           insertText: "reserveCapacity()",
+        }, {
+          label: "append",
+          kind: completionKinds.method,
+          detail: `append(items: Slice<${displayType(dynamic.elementType, context.typeDisplayNames)}>): void  // copies the elements in one step; may reallocate`,
+          insertText: "append()",
         }, {
           label: "freeze",
           kind: completionKinds.method,

@@ -5416,6 +5416,19 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.arrayAppend) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received a malformed Array.append";
+    }
+    output.append(`Z_${declaration.expressions[index].value}_append(&(`);
+    const receiver = declaration.expressions[index].children[0];
+    const items = declaration.expressions[index].children[1];
+    try appendExpression(inout output, declaration, receiver);
+    output.append("), ");
+    try appendExpression(inout output, declaration, items);
+    output.append(")");
+    return;
+  }
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.arrayWithCapacity
   ) {
@@ -26481,6 +26494,17 @@ function emitLoweredC(
     output.append(`static inline __attribute__((unused)) Z_${declaration.name} Z_${declaration.name}_withCapacity(size_t minimumCapacity) {\n`);
     output.append(`  Z_${declaration.name} result = { .data = NULL, .length = 0, .capacity = 0 };\n`);
     output.append(`  Z_${declaration.name}_reserveCapacity(&result, minimumCapacity);\n  return result;\n}\n\n`);
+    if (!objectiveCElements) {
+      // Array.append: the checker admits only cleanup-free elements and keeps
+      // the source out of the receiver's storage, so one copy suffices.
+      output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_append(Z_${declaration.name} *self, Z_${declaration.sliceName} items) {\n`);
+      output.append("  if (items.length == 0) return;\n");
+      output.append("  if (items.length > SIZE_MAX - self->length) abort();\n");
+      output.append(`  Z_${declaration.name}_reserveCapacity(self, self->length + items.length);\n`);
+      output.append(`  memcpy((${elementType} *)self->data + self->length, items.data, items.length * sizeof(${elementType}));\n`);
+      output.append("  self->length += items.length;\n");
+      output.append("}\n\n");
+    }
     output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_push(Z_${declaration.name} *self, ${elementType} value) {\n`);
     output.append("  if (self->length == self->capacity) {\n");
     output.append("    if (self->length == SIZE_MAX) abort();\n");

@@ -458,7 +458,8 @@ export function generateC(
     includedHeaders.add("stdio.h");
   }
   if (usesString || [...semanticInfo.numericConversions.values()].some(conversion => conversion.bitReinterpretation)
-    || [...semanticInfo.integerOperations.values()].some(operation => operation.kind === "wrappingShiftLeft")) {
+    || [...semanticInfo.integerOperations.values()].some(operation => operation.kind === "wrappingShiftLeft")
+    || semanticInfo.dynamicArrayAppendTypes.size > 0) {
     lines.push("#include <string.h>");
     includedHeaders.add("string.h");
   }
@@ -861,11 +862,14 @@ export function generateC(
   for (const closure of closures.filter((candidate) => candidate.captures.length > 0)) {
     lines.push(generateClosureEnvironmentDefinition(closure, structs, enums, semanticInfo), "");
   }
-  for (const type of new Set([...dynamicArrayTypes, ...dynamicArrayPushTypes])) {
+  for (const type of new Set([...dynamicArrayTypes, ...dynamicArrayPushTypes, ...semanticInfo.dynamicArrayAppendTypes])) {
     lines.push(generateDynamicArrayReserveCapacity(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const type of dynamicArrayPushTypes) {
     lines.push(generateDynamicArrayPush(type, structs, enums, semanticInfo.foreignNamedTypes), "");
+  }
+  for (const type of semanticInfo.dynamicArrayAppendTypes) {
+    lines.push(generateDynamicArrayAppend(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const declaration of program.structs) {
     if (hasSemanticCleanupType(declaration.name, structs, enums, semanticInfo)) {
@@ -5177,6 +5181,28 @@ function generateDynamicArrayPush(
     ? "std::construct_at(&self->data[self->length], std::move(value));"
     : "self->data[self->length] = value;"}
   self->length += 1;
+}`;
+}
+
+// Array.append for a cleanup-free element type: one capacity check and one
+// block copy. The checker's call loans keep the source out of the receiver's
+// storage, so growth cannot free the elements being copied.
+function generateDynamicArrayAppend(
+  name: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const dynamic = parseDynamicArrayType(name)!;
+  const arrayType = dynamicArrayName(name);
+  const elementType = mapType(dynamic.elementType, structs, enums, foreignNamedTypes);
+  const sliceType = mapType(sliceTypeName(dynamic.elementType), structs, enums, foreignNamedTypes);
+  return `static Z_UNUSED_FUNCTION void ${arrayType}_append(${arrayType} *self, ${sliceType} items) {
+  if (items.length == 0) return;
+  if (items.length > SIZE_MAX - self->length) abort();
+  ${arrayType}_reserveCapacity(self, self->length + items.length);
+  memcpy(self->data + self->length, items.data, items.length * sizeof(${elementType}));
+  self->length += items.length;
 }`;
 }
 
@@ -12091,6 +12117,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           }
           if (expression.callee.property === "reserveCapacity") {
             return `${dynamicArrayName(receiverValueType)}_reserveCapacity(&(${receiver}), ${generateExpression(expression.arguments[0], context)})`;
+          }
+          if (expression.callee.property === "append") {
+            return `${dynamicArrayName(receiverValueType)}_append(&(${receiver}), ${generateCallArgument(expression.arguments[0], context)})`;
           }
           const argument = generateCallArgument(expression.arguments[0], context);
           return `${dynamicArrayPushName(receiverValueType)}(&(${receiver}), ${argument})`;

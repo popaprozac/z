@@ -3602,20 +3602,20 @@ test("rejects unknown dynamic Array methods in both semantic frontends", () => {
   const input = resolve(directory, "main.zs");
   const sources = [
     `function main(): i32 {
-      let values = Array<i32>(); values.append(1); return 0;
+      let values = Array<i32>(); values.unshift(1); return 0;
     }`,
     `class Collection {
       values: Array<i32>;
-      function add(inout this): void { this.values.append(1); }
+      function add(inout this): void { this.values.unshift(1); }
     }`,
     `type Values = Array<i32>;
-    function add(inout values: Values): void { values.append(1); }`,
+    function add(inout values: Values): void { values.unshift(1); }`,
     `import { Values } from "./model.zs";
-    function add(inout values: Values): void { values.append(1); }`,
-    `function inspect(in values: readonly Array<i32>): void { values.append(1); }`,
+    function add(inout values: Values): void { values.unshift(1); }`,
+    `function inspect(in values: readonly Array<i32>): void { values.unshift(1); }`,
     `struct Holder { values: Array<i32>; }
     function inspect(in holder: Holder): void {
-      const observed = view holder.values; observed.append(1);
+      const observed = view holder.values; observed.unshift(1);
     }`,
   ];
   try {
@@ -3629,7 +3629,7 @@ test("rejects unknown dynamic Array methods in both semantic frontends", () => {
           encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
         });
         assert.equal(result.status, 1, `${command}\n${source}\n${result.stderr}`);
-        assert.match(result.stderr, /Array has no method "append"/);
+        assert.match(result.stderr, /Array has no method "unshift"/);
       }
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }

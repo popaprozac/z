@@ -61,6 +61,19 @@ allocation failure trap just as they do during normal `push` growth.
 This avoids intermediate growth allocations, not allocations made by the
 elements themselves. Ordinary `push` already grows the buffer geometrically.
 
+Copy a run of elements onto the end in one step with `append`:
+
+```z
+let output = Array<u8>.withCapacity(64);
+output.append(header); // header: u8[N], Array<u8>, or Slice<u8>
+```
+
+`append` takes anything that converts to `Slice<T>`. Its element type must be
+cleanup-free (numbers, booleans, and plain value structs, enums, and fixed
+arrays of them); push elements that own storage one at a time with an explicit
+copy. Appending an array to itself is a compile-time error, because the call
+borrows the source while it may grow the receiver.
+
 `values.clear()` destroys every live element immediately in reverse order and
 sets `length` to zero. The backing allocation and `capacity` remain available
 for later `push` calls. Clearing requires mutable `let` storage and is rejected
@@ -245,7 +258,8 @@ There is no element copy, retain pass, or implicit thaw.
 
 :::note[Cost model]
 Fixed arrays are inline. `Array<T>` may allocate and move elements when it
-grows. `Slice<T>` and local rest views are two-word borrowed descriptors. Maps
+grows. `append` performs one capacity check, at most one growth, and one block
+copy. `Slice<T>` and local rest views are two-word borrowed descriptors. Maps
 and sets own hash buckets; lookup is expected constant time but may compare or
 hash user values. Safe indexing remains bounds-checked.
 :::

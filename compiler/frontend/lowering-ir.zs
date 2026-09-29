@@ -349,6 +349,7 @@ export enum LoweredExpressionKind {
   arrayPop,
   arrayWithCapacity,
   arrayReserveCapacity,
+  arrayAppend,
   mapEmpty,
   mapLength,
   mapHas,
@@ -11393,6 +11394,217 @@ function lowerExpression(
   );
 }
 
+// A parameter type with local aliases resolved to their target.
+function resolvedLocalTypeAlias(in program: Program, in typeName: String): String {
+  let resolved = typeName.copyBytes(0, typeName.byteLength);
+  let depth: usize = 0;
+  while (depth < program.typeAliases.length) {
+    match (localTypeAliasTarget(program, resolved)) {
+      some(target) => resolved = move target;
+      none => break;
+    }
+    depth = depth + 1;
+  }
+  return resolved;
+}
+
+// A value passed where a Slice is expected: a stored Array, fixed array, or
+// embedded bytes of the same element type is borrowed as a Slice for the
+// call. Any other value is returned unchanged.
+function lowerSliceArgument(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  argumentInput: usize,
+  in expectedTypeName: String,
+  value: usize,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  let lowered = value;
+  match (genericTypeShape(expectedTypeName)) {
+    some(expected) => {
+      if (
+        expected.base == "Slice"
+        && expected.arguments.length == 1
+      ) {
+        match (evidenceResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput
+        )) {
+          some(actualTypeName) => {
+            let actualStorageTypeName = actualTypeName.copyBytes(
+              0,
+              actualTypeName.byteLength
+            );
+            let actualAliasDepth: usize = 0;
+            while (actualAliasDepth < program.typeAliases.length) {
+              match (localTypeAliasTarget(program, actualStorageTypeName)) {
+                some(target) => actualStorageTypeName = move target;
+                none => break;
+              }
+              actualAliasDepth = actualAliasDepth + 1;
+            }
+            let alreadyViewed = false;
+            if (
+              stringStartsWith(actualStorageTypeName, "view ")
+              && actualStorageTypeName.byteLength > 5
+            ) {
+              alreadyViewed = true;
+              actualStorageTypeName = actualStorageTypeName.copyBytes(
+                5,
+                actualStorageTypeName.byteLength
+              );
+            }
+            match (genericTypeShape(actualStorageTypeName)) {
+              some(actual) => {
+                let matchingElements = false;
+                if (
+                  actual.base == "Array"
+                  && actual.arguments.length == 1
+                ) {
+                  const actualElement = try lowerModuleTypeName(
+                    program,
+                    importedTypes,
+                    actual.arguments[0]
+                  );
+                  const expectedElement = try lowerModuleTypeName(
+                    program,
+                    importedTypes,
+                    expected.arguments[0]
+                  );
+                  matchingElements = loweredTypeIdentity(actualElement)
+                    == loweredTypeIdentity(expectedElement);
+                }
+                if (
+                  actual.base == "Array"
+                  && actual.arguments.length == 1
+                  && matchingElements
+                ) {
+                  const arrayType = try lowerModuleTypeName(
+                    program,
+                    importedTypes,
+                    actualStorageTypeName
+                  );
+                  let source = lowered;
+                  if (!alreadyViewed) {
+                    let viewChildren = Array<usize>();
+                    viewChildren.push(lowered);
+                    source = pushExpression(
+                      inout output,
+                      LoweredExpressionKind.viewProjection,
+                      arrayType.name,
+                      move viewChildren,
+                      Array<String>()
+                    );
+                  }
+                  const zero = pushExpression(
+                    inout output,
+                    LoweredExpressionKind.integerValue,
+                    "0",
+                    Array<usize>(),
+                    Array<String>()
+                  );
+                  let sliceChildren = Array<usize>();
+                  sliceChildren.push(source);
+                  sliceChildren.push(zero);
+                  lowered = pushExpression(
+                    inout output,
+                    LoweredExpressionKind.arraySlice,
+                    arrayType.name,
+                    move sliceChildren,
+                    Array<String>()
+                  );
+                }
+              }
+              none => {}
+            }
+            if (
+              actualStorageTypeName == "embed.StaticBytes"
+              && expected.arguments[0] == "u8"
+            ) {
+              const sliceType = try lowerModuleTypeName(
+                program,
+                importedTypes,
+                expectedTypeName
+              );
+              let sliceChildren = Array<usize>();
+              sliceChildren.push(lowered);
+              lowered = pushExpression(
+                inout output,
+                LoweredExpressionKind.staticBytesSlice,
+                sliceType.name,
+                move sliceChildren,
+                Array<String>()
+              );
+            }
+            match (fixedArrayShape(actualStorageTypeName)) {
+              some(actual) => {
+                const actualElement = try lowerModuleTypeName(
+                  program,
+                  importedTypes,
+                  actual.elementType
+                );
+                const expectedElement = try lowerModuleTypeName(
+                  program,
+                  importedTypes,
+                  expected.arguments[0]
+                );
+                if (
+                  loweredTypeIdentity(actualElement)
+                    == loweredTypeIdentity(expectedElement)
+                ) {
+                  const arrayType = try lowerModuleTypeName(
+                    program,
+                    importedTypes,
+                    actualStorageTypeName
+                  );
+                  let source = lowered;
+                  if (!alreadyViewed) {
+                    let viewChildren = Array<usize>();
+                    viewChildren.push(lowered);
+                    source = pushExpression(
+                      inout output,
+                      LoweredExpressionKind.viewProjection,
+                      arrayType.name,
+                      move viewChildren,
+                      Array<String>()
+                    );
+                  }
+                  const zero = pushExpression(
+                    inout output,
+                    LoweredExpressionKind.integerValue,
+                    "0",
+                    Array<usize>(),
+                    Array<String>()
+                  );
+                  let sliceChildren = Array<usize>();
+                  sliceChildren.push(source);
+                  sliceChildren.push(zero);
+                  lowered = pushExpression(
+                    inout output,
+                    LoweredExpressionKind.arraySlice,
+                    arrayType.name,
+                    move sliceChildren,
+                    Array<String>()
+                  );
+                }
+              }
+              none => {}
+            }
+          }
+          none => {}
+        }
+      }
+    }
+    none => {}
+  }
+  return lowered;
+}
+
 function lowerExpressionContextual(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -15291,7 +15503,8 @@ function lowerExpressionContextual(
     }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
-      && (tree.nodes[calleeInput].value == "push" || tree.nodes[calleeInput].value == "reserveCapacity")
+      && (tree.nodes[calleeInput].value == "push" || tree.nodes[calleeInput].value == "reserveCapacity"
+        || tree.nodes[calleeInput].value == "append")
       && tree.nodes[calleeInput].children.length == 1
       && tree.nodes[index].children.length == 2
     ) {
@@ -15319,6 +15532,18 @@ function lowerExpressionContextual(
                 argumentInput, "usize", inout output);
               return pushExpression(inout output, LoweredExpressionKind.arrayReserveCapacity,
                 receiverType.name, Array<usize>(receiver, capacity), Array<String>());
+            }
+            if (tree.nodes[calleeInput].value == "append") {
+              // The elements are borrowed as a Slice for the call, exactly
+              // as for a Slice parameter of an ordinary function.
+              const elementIdentity = receiverType.name.copyBytes(10, receiverType.name.byteLength);
+              const sliceTypeName = `Slice<${elementIdentity}>`;
+              const items = try lowerExpression(program, importedTypes, evidence, tree,
+                argumentInput, inout output);
+              const slice = try lowerSliceArgument(program, importedTypes, evidence, tree,
+                argumentInput, sliceTypeName, items, inout output);
+              return pushExpression(inout output, LoweredExpressionKind.arrayAppend,
+                receiverType.name, Array<usize>(receiver, slice), Array<String>());
             }
             const argument = try lowerExpression(
               program,
@@ -16710,6 +16935,11 @@ function lowerExpressionContextual(
           argumentInput,
           inout output
         );
+        if (parameterTypes.length >= argument) {
+          const expectedTypeName = resolvedLocalTypeAlias(program, parameterTypes[argument - 1]);
+          value = try lowerSliceArgument(program, importedTypes, evidence, tree,
+            argumentInput, expectedTypeName, value, inout output);
+        }
         if (
           parameterModes.length >= argument
           && parameterModes[argument - 1] == "value"
@@ -17040,202 +17270,13 @@ function lowerExpressionContextual(
         inout output
       );
       if (parameterTypes.length >= argument) {
-        let expectedTypeName = parameterTypes[argument - 1].copyBytes(
-          0,
-          parameterTypes[argument - 1].byteLength
-        );
-        let expectedAliasDepth: usize = 0;
-        while (expectedAliasDepth < program.typeAliases.length) {
-          match (localTypeAliasTarget(program, expectedTypeName)) {
-            some(target) => expectedTypeName = move target;
-            none => break;
-          }
-          expectedAliasDepth = expectedAliasDepth + 1;
-        }
+        const expectedTypeName = resolvedLocalTypeAlias(program, parameterTypes[argument - 1]);
         if (output[value].kind == LoweredExpressionKind.localValue
           && output[value].labels.length == 0) {
           output[value].labels.push(copy expectedTypeName);
         }
-        match (genericTypeShape(expectedTypeName)) {
-          some(expected) => {
-            if (
-              expected.base == "Slice"
-              && expected.arguments.length == 1
-            ) {
-              match (evidenceResolvedExpressionTypeName(
-                program,
-                importedTypes,
-                evidence,
-                tree,
-                argumentInput
-              )) {
-                some(actualTypeName) => {
-                  let actualStorageTypeName = actualTypeName.copyBytes(
-                    0,
-                    actualTypeName.byteLength
-                  );
-                  let actualAliasDepth: usize = 0;
-                  while (actualAliasDepth < program.typeAliases.length) {
-                    match (localTypeAliasTarget(program, actualStorageTypeName)) {
-                      some(target) => actualStorageTypeName = move target;
-                      none => break;
-                    }
-                    actualAliasDepth = actualAliasDepth + 1;
-                  }
-                  let alreadyViewed = false;
-                  if (
-                    stringStartsWith(actualStorageTypeName, "view ")
-                    && actualStorageTypeName.byteLength > 5
-                  ) {
-                    alreadyViewed = true;
-                    actualStorageTypeName = actualStorageTypeName.copyBytes(
-                      5,
-                      actualStorageTypeName.byteLength
-                    );
-                  }
-                  match (genericTypeShape(actualStorageTypeName)) {
-                    some(actual) => {
-                      let matchingElements = false;
-                      if (
-                        actual.base == "Array"
-                        && actual.arguments.length == 1
-                      ) {
-                        const actualElement = try lowerModuleTypeName(
-                          program,
-                          importedTypes,
-                          actual.arguments[0]
-                        );
-                        const expectedElement = try lowerModuleTypeName(
-                          program,
-                          importedTypes,
-                          expected.arguments[0]
-                        );
-                        matchingElements = loweredTypeIdentity(actualElement)
-                          == loweredTypeIdentity(expectedElement);
-                      }
-                      if (
-                        actual.base == "Array"
-                        && actual.arguments.length == 1
-                        && matchingElements
-                      ) {
-                        const arrayType = try lowerModuleTypeName(
-                          program,
-                          importedTypes,
-                          actualStorageTypeName
-                        );
-                        let source = value;
-                        if (!alreadyViewed) {
-                          let viewChildren = Array<usize>();
-                          viewChildren.push(value);
-                          source = pushExpression(
-                            inout output,
-                            LoweredExpressionKind.viewProjection,
-                            arrayType.name,
-                            move viewChildren,
-                            Array<String>()
-                          );
-                        }
-                        const zero = pushExpression(
-                          inout output,
-                          LoweredExpressionKind.integerValue,
-                          "0",
-                          Array<usize>(),
-                          Array<String>()
-                        );
-                        let sliceChildren = Array<usize>();
-                        sliceChildren.push(source);
-                        sliceChildren.push(zero);
-                        value = pushExpression(
-                          inout output,
-                          LoweredExpressionKind.arraySlice,
-                          arrayType.name,
-                          move sliceChildren,
-                          Array<String>()
-                        );
-                      }
-                    }
-                    none => {}
-                  }
-                  if (
-                    actualStorageTypeName == "embed.StaticBytes"
-                    && expected.arguments[0] == "u8"
-                  ) {
-                    const sliceType = try lowerModuleTypeName(
-                      program,
-                      importedTypes,
-                      expectedTypeName
-                    );
-                    let sliceChildren = Array<usize>();
-                    sliceChildren.push(value);
-                    value = pushExpression(
-                      inout output,
-                      LoweredExpressionKind.staticBytesSlice,
-                      sliceType.name,
-                      move sliceChildren,
-                      Array<String>()
-                    );
-                  }
-                  match (fixedArrayShape(actualStorageTypeName)) {
-                    some(actual) => {
-                      const actualElement = try lowerModuleTypeName(
-                        program,
-                        importedTypes,
-                        actual.elementType
-                      );
-                      const expectedElement = try lowerModuleTypeName(
-                        program,
-                        importedTypes,
-                        expected.arguments[0]
-                      );
-                      if (
-                        loweredTypeIdentity(actualElement)
-                          == loweredTypeIdentity(expectedElement)
-                      ) {
-                        const arrayType = try lowerModuleTypeName(
-                          program,
-                          importedTypes,
-                          actualStorageTypeName
-                        );
-                        let source = value;
-                        if (!alreadyViewed) {
-                          let viewChildren = Array<usize>();
-                          viewChildren.push(value);
-                          source = pushExpression(
-                            inout output,
-                            LoweredExpressionKind.viewProjection,
-                            arrayType.name,
-                            move viewChildren,
-                            Array<String>()
-                          );
-                        }
-                        const zero = pushExpression(
-                          inout output,
-                          LoweredExpressionKind.integerValue,
-                          "0",
-                          Array<usize>(),
-                          Array<String>()
-                        );
-                        let sliceChildren = Array<usize>();
-                        sliceChildren.push(source);
-                        sliceChildren.push(zero);
-                        value = pushExpression(
-                          inout output,
-                          LoweredExpressionKind.arraySlice,
-                          arrayType.name,
-                          move sliceChildren,
-                          Array<String>()
-                        );
-                      }
-                    }
-                    none => {}
-                  }
-                }
-                none => {}
-              }
-            }
-          }
-          none => {}
-        }
+        value = try lowerSliceArgument(program, importedTypes, evidence, tree,
+          argumentInput, expectedTypeName, value, inout output);
       }
       if (
         parameterModes.length >= argument
