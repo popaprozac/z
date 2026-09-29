@@ -483,9 +483,10 @@ preserving mutable state between invocations. Scope-aware discovery keeps nested
 parameters separate. Both emitters have exact-cleanup and allocation-balance
 regressions; borrowed reads, mutation, nested forwarding, and parent-parameter
 probes assert zero allocations. Direct Array-method mutation capture inference and
-addressable move-only resource captures remain separate boundaries. Stage 0 inline
-callback argument preparation in nested conditional/loop expressions remains
-limited; native non-owning callback evaluation has independent executable coverage.
+addressable move-only resource captures remain separate boundaries. Both
+emitters evaluate an inline callback or other call-scoped temporary in the right
+operand of `||`/`&&` only when that operand runs, and in a `while` condition on
+every iteration, with zero allocations for non-owning callbacks.
 Asynchronous native block callables remain staged work. Borrowed expression and block environments in async enclosing
 functions explicitly reject until suspension-stable environment storage is proven.
 

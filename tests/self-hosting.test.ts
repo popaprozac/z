@@ -3597,6 +3597,55 @@ test("materializes populated Array temporaries for native call-scoped borrows", 
   }
 }, 240_000);
 
+test("scopes borrowed temporaries to short-circuit operands and loop conditions in both compilers", () => {
+  const input = resolve(projectRoot, "tests/fixtures/short-circuit-borrowed-temporaries.zs");
+  // A skipped right operand makes no temporary and runs no call; a loop
+  // condition makes its temporaries again on every iteration.
+  const expected = [
+    "or taken", "evaluated 2", "or right", "named r1", "evaluated 1", "named n22", "both",
+    "evaluated 2", "evaluated 2", "evaluated 2", "named m00", "named m11", "n=3 m=2", "",
+  ].join("\n");
+  const stage0 = compileToC(readFileSync(input, "utf8"), input);
+  const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+  });
+  assert.equal(native.status, 0, native.stderr);
+  const directory = mkdtempSync("/tmp/z-short-circuit-temporaries-");
+  try {
+    for (const [tier, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+      for (const optimization of ["-O0", "-O2"]) {
+        const executable = resolve(directory, tier + optimization);
+        const built = spawnSync("clang", ["-x", "c", "-std=c11", optimization, "-Wall", "-Wextra", "-Werror",
+          "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+          encoding: "utf8", input: generated, timeout: 30_000,
+        });
+        assert.equal(built.status, 0, `${tier}: ${built.stderr}`);
+        const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+        assert.equal(run.status, 0, `${tier}${optimization}: ${run.stderr}`);
+        assert.equal(run.stdout, expected, `${tier}${optimization}`);
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
+test("emits the String runtime when String appears only inside another type", () => {
+  const source = `function empty(in values: Array<String>): boolean { return values.length == 0; }
+    function main(): i32 { return empty(Array<String>()) ? 0 : 1; }`;
+  const directory = mkdtempSync("/tmp/z-string-runtime-nested-");
+  try {
+    const executable = resolve(directory, "program");
+    const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable], {
+      encoding: "utf8", input: compileToC(source, "nested-string.zs"), timeout: 30_000,
+    });
+    assert.equal(built.status, 0, built.stderr);
+    assert.equal(spawnSync(executable, [], { encoding: "utf8" }).status, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("rejects unknown dynamic Array methods in both semantic frontends", () => {
   const directory = mkdtempSync("/tmp/z-native-array-methods-");
   const input = resolve(directory, "main.zs");

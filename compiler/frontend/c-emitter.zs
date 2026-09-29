@@ -6046,12 +6046,15 @@ function appendExpression(
     }
     const left = declaration.expressions[index].children[0];
     const right = declaration.expressions[index].children[1];
+    const shortCircuit = isShortCircuitOperation(declaration, index);
     output.append("(");
-    try appendExpression(inout output, declaration, left);
+    if (shortCircuit) try appendScopedBoolean(inout output, declaration, left);
+    else try appendExpression(inout output, declaration, left);
     output.append(" ");
     output.append(declaration.expressions[index].value);
     output.append(" ");
-    try appendExpression(inout output, declaration, right);
+    if (shortCircuit) try appendScopedBoolean(inout output, declaration, right);
+    else try appendExpression(inout output, declaration, right);
     output.append(")");
     return;
   }
@@ -7522,11 +7525,23 @@ function isInlineBorrowedCallableTemporary(
     && declaration.expressions[initializer].labels[1] != "move";
 }
 
+// `a || b` and `a && b` scope each operand's borrowed temporaries to that
+// operand, so the right one is made and destroyed only when it runs.
+function isShortCircuitOperation(
+  in declaration: LoweredFunction,
+  index: usize
+): boolean {
+  return declaration.expressions[index].kind == LoweredExpressionKind.binaryOperation
+    && (declaration.expressions[index].value == "||"
+      || declaration.expressions[index].value == "&&");
+}
+
 function containsBorrowedTemporary(
   in declaration: LoweredFunction,
   index: usize
 ): boolean {
   if (isInlineBorrowedCallableTemporary(declaration, index)) return false;
+  if (isShortCircuitOperation(declaration, index)) return false;
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.closureValue
@@ -7548,6 +7563,7 @@ function appendBorrowedTemporaryInitializers(
   depth: usize
 ): void throws String {
   if (isInlineBorrowedCallableTemporary(declaration, index)) return;
+  if (isShortCircuitOperation(declaration, index)) return;
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.closureValue
@@ -7602,6 +7618,7 @@ function appendBorrowedTemporaryCleanups(
   depth: usize
 ): void {
   if (isInlineBorrowedCallableTemporary(declaration, index)) return;
+  if (isShortCircuitOperation(declaration, index)) return;
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.closureValue
@@ -7650,11 +7667,38 @@ function appendBranch(
   try appendStatement(inout output, declaration, index, depth);
 }
 
+// A boolean whose borrowed temporaries are made, used, and destroyed where
+// it is evaluated: a branch or loop condition, which has no statement of its
+// own to host them, or one operand of `||` or `&&`.
+function appendScopedBoolean(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  index: usize
+): void throws String {
+  if (!containsBorrowedTemporary(declaration, index)) {
+    try appendExpression(inout output, declaration, index);
+    return;
+  }
+  output.append("({\n");
+  try appendBorrowedTemporaryInitializers(inout output, declaration, index, 1);
+  output.append(`  const bool _z_stage1_scoped_${index} = `);
+  try appendExpression(inout output, declaration, index);
+  output.append(";\n");
+  appendBorrowedTemporaryCleanups(inout output, declaration, index, 1);
+  output.append(`  _z_stage1_scoped_${index};\n})`);
+}
+
 function appendCondition(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
   index: usize
 ): void throws String {
+  if (containsBorrowedTemporary(declaration, index)) {
+    output.append("(");
+    try appendScopedBoolean(inout output, declaration, index);
+    output.append(")");
+    return;
+  }
   const alreadyGrouped =
     declaration.expressions[index].kind == LoweredExpressionKind.unaryOperation
     || declaration.expressions[index].kind == LoweredExpressionKind.binaryOperation

@@ -949,9 +949,9 @@ test("native inline borrowed callbacks preserve conditional and loop evaluation"
   try {
     const input = resolve(directory, "main.zs");
     writeFileSync(input, source);
-    // Stage 0's nested conditional/while argument-preparation gap is independent of
-    // native callback storage. Keep it explicit until that emitter is extended.
-    assert.throws(() => compileToC(source, input), /closure must be lowered from its const binding/);
+    // Both compilers evaluate a skipped operand's callback not at all and a
+    // loop condition's callback once per iteration, without allocating.
+    execute(compileToC(source, input), "", 0);
     const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
       encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
     });

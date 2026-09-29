@@ -117,9 +117,10 @@ production or compatibility-sensitive use.
   tests cover both compiler paths, including zero heap allocations for the
   borrowed reads, mutation, nested forwarding, and parent-parameter probes.
   Async block return lowering, direct Array-method mutation capture inference,
-  and addressable move-only resource captures remain staged. Stage 0 inline callbacks
-  in nested conditional/loop expressions still lack argument preparation; the
-  corresponding native non-owning form has separate execution tests. Borrowed environments in
+  and addressable move-only resource captures remain staged. Inline callbacks and
+  other call-scoped temporaries in the right operand of `||`/`&&` run only when
+  that operand runs, and loop conditions build them per iteration, in both
+  compilers. Borrowed environments in
   async enclosing functions reject until suspension-stable storage is proven.
   Ordinary object destructuring rejects root or nested inline custom cleanup
   in both semantic frontends, including aliased and generic payloads; supported

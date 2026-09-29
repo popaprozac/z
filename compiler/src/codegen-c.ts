@@ -4253,11 +4253,18 @@ function programUsesIndex(program: Program): boolean {
   return found;
 }
 
+// Whether a type name has String or TextBuffer anywhere in it, including as
+// an element or argument (`Array<String>`, `__z_dynamic_array:String`).
+// Emitting the String runtime without need costs only unused helpers.
+function typeNameMentionsString(name: string): boolean {
+  return /(^|[^A-Za-z0-9_.])(String|TextBuffer)($|[^A-Za-z0-9_])/.test(name);
+}
+
 function programUsesString(program: Program, semanticInfo: SemanticInfo): boolean {
   if ([...semanticInfo.standardTypeBindings.values()].includes("TextBuffer")) return true;
   if (
     [...semanticInfo.expressionTypes.values(), ...semanticInfo.bindingTypes.values()]
-      .some((type) => type === "String" || type === "TextBuffer")
+      .some((type) => typeNameMentionsString(String(type)))
   ) return true;
   let found = false;
   const visit = (value: unknown, directConsoleTemplate = false): void => {
@@ -4267,7 +4274,11 @@ function programUsesString(program: Program, semanticInfo: SemanticInfo): boolea
       return;
     }
     const node = value as Partial<Expression> & { readonly name?: string };
-    if (node.kind === "string" || (node.kind === "template" && !directConsoleTemplate) || node.name === "String" || node.name === "TextBuffer") {
+    if (
+      node.kind === "string"
+      || (node.kind === "template" && !directConsoleTemplate)
+      || (typeof node.name === "string" && typeNameMentionsString(node.name))
+    ) {
       found = true;
       return;
     }
@@ -8116,6 +8127,12 @@ function generateWhile(statement: Extract<Statement, { kind: "while" }>, context
   }
   if (frame.usedContinue) body = withLoopContinueLabel(body, frame.continueLabel);
   const breakLabel = frame.usedBreak ? `\n${frame.breakLabel}: ;` : "";
+  if (requiresStatementValue(statement.condition, context)) {
+    // A condition with statements of its own (a temporary with cleanup, a
+    // template) runs at the top of every iteration, `continue` included.
+    const condition = generateDirectValue(statement.condition, context, (value) => `if (!${controlCondition(value)}) break;`);
+    return `while (true) {\n${condition}\n${body}\n}${breakLabel}`;
+  }
   return `while ${controlCondition(generateExpression(statement.condition, context))} ${body}${breakLabel}`;
 }
 
@@ -8583,6 +8600,13 @@ function generateDirectValue(
   }
   if (
     expression.kind === "binary"
+    && (expression.operator === "||" || expression.operator === "&&")
+    && requiresStatementValue(expression.right, context)
+  ) {
+    return generateShortCircuitValue(expression, context, consumeValue);
+  }
+  if (
+    expression.kind === "binary"
     && (
       requiresStatementValue(expression.left, context)
       || requiresStatementValue(expression.right, context)
@@ -8705,6 +8729,25 @@ function conditionalConditionContext(expression: Extract<Expression, { kind: "co
     objcStringsToZ: withoutOffset(info.objcStringsToZ),
     swiftStringsToZ: withoutOffset(info.swiftStringsToZ),
   } };
+}
+
+// `a || b` or `a && b` whose right operand needs statements of its own: the
+// right operand, its temporaries, and their cleanup run only when the left
+// operand does not decide the result.
+function generateShortCircuitValue(
+  expression: Extract<Expression, { kind: "binary" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+): string {
+  const result = `_z_short_circuit_${context.valueCounter.value++}`;
+  return [
+    `bool ${result};`,
+    generateDirectValue(expression.left, context, (value) => `${result} = ${value};`),
+    `if (${expression.operator === "||" ? "!" : ""}${result}) {`,
+    generateDirectValue(expression.right, context, (value) => `${result} = ${value};`),
+    "}",
+    consumeValue(result, context),
+  ].join("\n");
 }
 
 function generateLoweredCompositeValue(
