@@ -1054,3 +1054,29 @@ capture both compiler and application-output identities. Remaining targets are
 frontend analysis/copying, SDK-cold import work, source-versus-asset invalidation,
 and dev/release artifact separation; a 36–38-second genuine rebuild is progress,
 not the final DX target.
+
+## Array.append in the ZJS engine — 2026-09-30
+
+`Array.append` (58920354) and call-scoped `values.slice(start, end)`
+(a1a73eef) were added for the ZJS JavaScript engine, whose string storage
+was copied one `push` per byte: every push checks capacity, and a push into
+an array reached through a field reloads the array's length and data after
+each byte. ZJS commit `1d9110b` replaced those loops. Cycles on an Apple
+M-series machine, median over eight placements of the engine's dispatch
+loop (ZJS `z/bench/speed/placements.py`), engine unchanged versus using
+append, both built by Stage 0:
+
+| Kernel | Change | Placement range |
+| --- | --- | --- |
+| kilobyte concatenations and joins (`long-strings`) | -69.9% | -71.5..-68.3% |
+| string building from 1–11 byte pieces (`strings`) | +0.1% | -3.4..+2.3% |
+| the other ten kernels | -1.4..+0.8% | each range spans zero |
+
+The first emitted helper called `memcpy` and `reserveCapacity` for every
+append. For the `strings` kernel's few-byte appends that made building
++3.7% (range -0.1..+6.8%) against the per-byte loops it replaced. Checking
+capacity inline alone did not help (+3.4%); copying runs of 16 or fewer
+elements with a loop did (-0.3%), and kept the long-run gain (-68.3%).
+Both emitters generate that shape since a642cafe. The engine's static
+library grew 4 KiB (0.4%) with the inlined short copies. Raw figures:
+ZJS `z/bench/speed/results/2026-09-30-append.json`.
