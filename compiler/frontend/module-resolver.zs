@@ -140,6 +140,7 @@ import {
   parameterizedTypeName,
   requireGenericConstraints,
   settledContextualType,
+  typeMentionsParameter,
 } from "./semantic-generic-inference.zs";
 import {
   consumeOwnedExpressionNode,
@@ -4670,7 +4671,22 @@ function inferSignatureCallType(
       && tree.nodes[nodeIndex].value == "none" && tree.nodes[nodeIndex].children.length == 1) {
       const qualifier = tree.nodes[nodeIndex].children[0];
       const qualifierBinding = valueBindingType(bindings, "Option");
-      if (tree.nodes[qualifier].kind == ExpressionKind.identifierExpression
+      // A named function's or instance method's concrete `Option<T>`
+      // parameter is the context, as in Stage 0; a callable value, a static
+      // method, or an unsettled type parameter supplies none yet.
+      let parameterContext = callKind == "function" || callKind == "method";
+      if (parameterContext) {
+        const parameterType = transparentTypeName(modules, moduleIndex, signature.parameterTypes[argumentIndex]);
+        match (genericTypeShape(parameterType)) {
+          some(shape) => parameterContext = shape.base == "Option" && shape.arguments.length == 1;
+          none => parameterContext = false;
+        }
+        for (const unsettled of valueTypeParameters) {
+          if (typeMentionsParameter(parameterType, unsettled)) parameterContext = false;
+        }
+      }
+      if (!parameterContext
+        && tree.nodes[qualifier].kind == ExpressionKind.identifierExpression
         && tree.nodes[qualifier].value == "Option"
         && qualifierBinding.byteLength == 0
         && moduleSymbolIndex(modules[moduleIndex], "Option") >= modules[moduleIndex].symbols.length) {

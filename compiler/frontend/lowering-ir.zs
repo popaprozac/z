@@ -17221,8 +17221,16 @@ function lowerExpressionContextual(
       // including named functions and nested Option construction. Borrowed
       // places already have checked storage: contextual value conversion can
       // retain a callable or load a view, losing the place needed by the loan.
+      // `Option.none` is a value that takes its type from the parameter, not
+      // a stored place, even though it is spelled as a member access.
+      const contextualNone = tree.nodes[argumentInput].kind == ExpressionKind.memberExpression
+        && tree.nodes[argumentInput].value == "none"
+        && tree.nodes[argumentInput].children.length == 1
+        && tree.nodes[tree.nodes[argumentInput].children[0]].kind == ExpressionKind.identifierExpression
+        && tree.nodes[tree.nodes[argumentInput].children[0]].value == "Option";
       const borrowedPlace = parameterModes.length >= argument
         && parameterModes[argument - 1] != "value"
+        && !contextualNone
         && expressionBorrowsStoredReference(tree, argumentInput);
       if (parameterTypes.length >= argument && !borrowedPlace) value = try lowerExpressionExpected(
         program,

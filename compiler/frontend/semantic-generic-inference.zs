@@ -28,7 +28,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { ExpressionTree } from "./parser.zs";
 
-function typeMentionsParameter(in name: String, in parameter: String): boolean {
+export function typeMentionsParameter(in name: String, in parameter: String): boolean {
   if (name == parameter) return true;
   const nullableTarget = nullableTargetType(name);
   if (nullableTarget.byteLength > 0) {

@@ -55,6 +55,8 @@ test("keeps imported explicit closure errors distinct from same-named local type
 for (const [fixture, message, line] of [
   ["class-field-match", /match must be the direct value/, 4],
   ["struct-field-match", /match must be the direct value/, 4],
+  // A named function's or instance method's `Option<T>` parameter supplies
+  // this context (see below); a callable value's parameter does not yet.
   ["borrowed-contextual-none", /Option\.none requires a contextual Option<T> type/, 5],
 ] as const) {
   test(`rejects ${fixture} during native resolution, before C emission`, () => {
@@ -73,3 +75,23 @@ for (const [fixture, message, line] of [
     }
   }, 240_000);
 }
+
+test("borrows Option.none typed by a function or method parameter in both compilers", () => {
+  const input = resolve(projectRoot, "tests/fixtures/contextual-none-argument.zs");
+  const resolved = native("self-host-resolve", input);
+  assert.equal(resolved.status, 0, resolved.stderr);
+  const emitted = native("self-host-emit", input);
+  assert.equal(emitted.status, 0, emitted.stderr);
+  const directory = mkdtempSync("/tmp/z-contextual-none-argument-");
+  try {
+    for (const [tier, generated] of [["stage0", compileToC(readFileSync(input, "utf8"), input)], ["native", emitted.stdout]]) {
+      const executable = resolve(directory, tier);
+      const built = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
+        "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        encoding: "utf8", input: generated, timeout: 30_000,
+      });
+      assert.equal(built.status, 0, `${tier}: ${built.stderr}`);
+      assert.equal(spawnSync(executable, [], { encoding: "utf8" }).status, 0, tier);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
