@@ -2956,7 +2956,7 @@ test("stores one value many times in one step across both compilers and async fr
     for (const name of ["array-append-repeated", "array-append-repeated-async"]) {
       const input = resolve(projectRoot, `tests/fixtures/${name}.zs`);
       const stage0 = compileToC(readFileSync(input, "utf8"), input);
-      assert.match(stage0, /_appendRepeated\([^)]*\*self, [^)]*value, uintptr_t count\) \{\s+if \(count == 0\) return;/);
+      assert.match(stage0, /Z_INLINE_ALWAYS void \w+_appendRepeated\([^)]*\*self, [^)]*value, uintptr_t count\) \{\s+if \(count == 0\) return;/);
       const checked = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
         encoding: "utf8", timeout: 120_000,
       });
@@ -3033,6 +3033,7 @@ test("Array.appendRepeated grows storage at most once and makes no library fill 
       // A run of sixteen or fewer is a switch of plain stores; only the
       // longer form is a loop the C compiler may replace.
       assert.match(generated, /case 16: target\[15\] = value;[\s\S]*case 1: target\[0\] = value; break;\s+default: for \(/, tier);
+      assert.match(generated, /(Z_INLINE_ALWAYS|always_inline\)\)) void \w+_appendRepeated\(/, tier);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 300_000);

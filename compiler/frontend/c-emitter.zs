@@ -26642,8 +26642,9 @@ function emitLoweredC(
       // Array.appendRepeated: one capacity check, then the value stored
       // count times. A short run is straight stores, since a C compiler
       // turns a fill loop into a library call that costs more than the few
-      // stores it replaces.
-      output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_appendRepeated(Z_${declaration.name} *self, ${elementType} value, size_t count) {\n`);
+      // stores it replaces. Always inlined: out of line, the call costs a
+      // short run more than its stores do.
+      output.append(`static inline __attribute__((unused, always_inline)) void Z_${declaration.name}_appendRepeated(Z_${declaration.name} *self, ${elementType} value, size_t count) {\n`);
       output.append("  if (count == 0) return;\n");
       output.append("  if (count > SIZE_MAX - self->length) abort();\n");
       output.append(`  if (self->length + count > self->capacity) Z_${declaration.name}_reserveCapacity(self, self->length + count);\n`);

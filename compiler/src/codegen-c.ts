@@ -409,8 +409,10 @@ export function generateC(
     "#include <stdlib.h>",
     "#if defined(__GNUC__) || defined(__clang__)",
     "#define Z_UNUSED_FUNCTION __attribute__((unused))",
+    "#define Z_INLINE_ALWAYS inline __attribute__((always_inline))",
     "#else",
     "#define Z_UNUSED_FUNCTION",
+    "#define Z_INLINE_ALWAYS inline",
     "#endif",
   );
   if (usesNativeMove) {
@@ -5256,6 +5258,9 @@ function generateDynamicArrayAppend(
 // then the value stored count times. A short run is straight stores, since a
 // C compiler turns a fill loop into a library call that costs more than the
 // few stores it replaces; a longer run is a loop it may vectorize or call out.
+// The helper is always inlined: left to its own judgement the C compiler
+// keeps a helper with several callers out of line, and the call costs a short
+// run more than its stores do. A constant count folds to those stores alone.
 function generateDynamicArrayAppendRepeated(
   name: string,
   structs: Map<string, StructDeclaration>,
@@ -5265,7 +5270,7 @@ function generateDynamicArrayAppendRepeated(
   const dynamic = parseDynamicArrayType(name)!;
   const arrayType = dynamicArrayName(name);
   const elementType = mapType(dynamic.elementType, structs, enums, foreignNamedTypes);
-  return `static Z_UNUSED_FUNCTION void ${arrayType}_appendRepeated(${arrayType} *self, ${elementType} value, uintptr_t count) {
+  return `static Z_UNUSED_FUNCTION Z_INLINE_ALWAYS void ${arrayType}_appendRepeated(${arrayType} *self, ${elementType} value, uintptr_t count) {
   if (count == 0) return;
   if (count > SIZE_MAX - self->length) abort();
   if (self->length + count > self->capacity) ${arrayType}_reserveCapacity(self, self->length + count);
