@@ -1080,3 +1080,22 @@ elements with a loop did (-0.3%), and kept the long-run gain (-68.3%).
 Both emitters generate that shape since a642cafe. The engine's static
 library grew 4 KiB (0.4%) with the inlined short copies. Raw figures:
 ZJS `z/bench/speed/results/2026-09-30-append.json`.
+
+## Unchecked element access in the ZJS engine — 2026-09-30
+
+Before `uncheckedAt`/`uncheckedSet` (0a8cd641) were designed, the ZJS engine
+measured what checked indexing costs it by rebuilding its generated C with
+checks removed, in cycles over eight placements: every one of its 1,527
+checked index sites unchecked moved eleven of twelve kernels -5% to -14%;
+only the register file's 42 and the instruction fetch's 26, both inside
+bounds a frame's entry establishes, gave calls -7.8%, properties -6.9%,
+arrays -6.8%, closures -5.5%.
+
+ZJS commit `84d2a9f` then used the new methods at 16 source sites (its
+register accessors and the dispatch loop's fetches). Against the same
+generated C with those checks kept: properties -6.8%, calls -5.9%,
+polymorphic -4.7%, closures -4.2%, arrays -3.5%, helpers -3.4%, maps
+-2.7%, the rest within noise. test262 (53,330 tests) passed unchanged both
+built for release and built without NDEBUG, where every one of those
+accesses still checks. Raw figures: ZJS
+`z/bench/speed/results/2026-09-30-bounds.json` and `2026-09-30-unchecked.json`.
