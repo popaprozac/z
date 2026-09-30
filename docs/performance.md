@@ -1111,3 +1111,29 @@ polymorphic -4.6%, the control's figures with 14 cold register and code
 accesses still checked. test262 again passed unchanged both ways, and the
 engine library shrank 4 KiB. Raw figures:
 `z/bench/speed/results/2026-09-30-call-paths.json`.
+
+## Repeated-value fills in the ZJS engine — 2026-09-30
+
+`Array.appendRepeated` (f3f104f2, inlined since 1d726234) replaced the
+engine's push loops for one value: every cell's slots, slot growth, hash and
+table indexes, grow-to-index attribute arrays, and zero fills, with the
+register stack's growth moved into one out-of-line method. ZJS commit
+`0b76e06`, against the engine before it, in cycles over eight placements:
+arrays -5.8%, allocation -3.7%, calls -1.9%, closures -1.8%, maps -1.4%, the
+rest within noise. test262 (53,330 tests) unchanged; the library grew 1 KiB.
+
+The lowering decided the result, in both directions:
+
+- As a plain fill loop, clang turns a short run into a `memset_pattern16`
+  call. For a cell's few slots that call costs more than the pushes it
+  replaced: closures +4.3% in a control that hand-edited only the
+  allocator. Runs of sixteen or fewer are therefore a switch of plain
+  stores.
+- Left to clang's judgement, the helper stayed out of line once it had
+  three callers, and the call cost closures +3.7%/+4.5%. Forced inline, the
+  same fifteen call sites cost 80 bytes of binary, since a constant count
+  folds to its stores.
+- An inline limit of eight stores kept arrays but lost most of the
+  allocation gain (-0.4%/-1.6%), so it stays at sixteen.
+
+Raw figures: ZJS `z/bench/speed/results/2026-09-30-fill.json`.
