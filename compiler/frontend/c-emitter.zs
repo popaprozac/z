@@ -26562,12 +26562,17 @@ function emitLoweredC(
     output.append(`  Z_${declaration.name}_reserveCapacity(&result, minimumCapacity);\n  return result;\n}\n\n`);
     if (!objectiveCElements) {
       // Array.append: the checker admits only cleanup-free elements and keeps
-      // the source out of the receiver's storage, so one copy suffices.
+      // the source out of the receiver's storage, so one copy suffices. A
+      // short run is copied inline, where a memcpy call costs more.
       output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_append(Z_${declaration.name} *self, Z_${declaration.sliceName} items) {\n`);
       output.append("  if (items.length == 0) return;\n");
       output.append("  if (items.length > SIZE_MAX - self->length) abort();\n");
-      output.append(`  Z_${declaration.name}_reserveCapacity(self, self->length + items.length);\n`);
-      output.append(`  memcpy((${elementType} *)self->data + self->length, items.data, items.length * sizeof(${elementType}));\n`);
+      output.append(`  if (self->length + items.length > self->capacity) Z_${declaration.name}_reserveCapacity(self, self->length + items.length);\n`);
+      output.append("  if (items.length <= 16) {\n");
+      output.append(`    for (size_t index = 0; index < items.length; index += 1) ((${elementType} *)self->data)[self->length + index] = ((${elementType} *)items.data)[index];\n`);
+      output.append("  } else {\n");
+      output.append(`    memcpy((${elementType} *)self->data + self->length, items.data, items.length * sizeof(${elementType}));\n`);
+      output.append("  }\n");
       output.append("  self->length += items.length;\n");
       output.append("}\n\n");
     }

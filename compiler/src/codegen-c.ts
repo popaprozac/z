@@ -5208,7 +5208,8 @@ function generateDynamicArrayPush(
 
 // Array.append for a cleanup-free element type: one capacity check and one
 // block copy. The checker's call loans keep the source out of the receiver's
-// storage, so growth cannot free the elements being copied.
+// storage, so growth cannot free the elements being copied. A short run is
+// copied inline: for a few elements a memcpy call costs more than the copy.
 function generateDynamicArrayAppend(
   name: string,
   structs: Map<string, StructDeclaration>,
@@ -5222,8 +5223,12 @@ function generateDynamicArrayAppend(
   return `static Z_UNUSED_FUNCTION void ${arrayType}_append(${arrayType} *self, ${sliceType} items) {
   if (items.length == 0) return;
   if (items.length > SIZE_MAX - self->length) abort();
-  ${arrayType}_reserveCapacity(self, self->length + items.length);
-  memcpy(self->data + self->length, items.data, items.length * sizeof(${elementType}));
+  if (self->length + items.length > self->capacity) ${arrayType}_reserveCapacity(self, self->length + items.length);
+  if (items.length <= 16) {
+    for (uintptr_t index = 0; index < items.length; index += 1) self->data[self->length + index] = items.data[index];
+  } else {
+    memcpy(self->data + self->length, items.data, items.length * sizeof(${elementType}));
+  }
   self->length += items.length;
 }`;
 }
