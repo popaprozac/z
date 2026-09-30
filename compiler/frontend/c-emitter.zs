@@ -5416,6 +5416,22 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.sliceRange) {
+    if (declaration.expressions[index].children.length != 3) {
+      throw "native C emission received a malformed Slice range";
+    }
+    output.append(`Z_${declaration.expressions[index].value}_range(`);
+    const source = declaration.expressions[index].children[0];
+    const start = declaration.expressions[index].children[1];
+    const end = declaration.expressions[index].children[2];
+    try appendExpression(inout output, declaration, source);
+    output.append(", ");
+    try appendExpression(inout output, declaration, start);
+    output.append(", ");
+    try appendExpression(inout output, declaration, end);
+    output.append(")");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.arrayAppend) {
     if (declaration.expressions[index].children.length != 2) {
       throw "native C emission received a malformed Array.append";
@@ -26295,6 +26311,12 @@ function emitLoweredC(
     const elementType = try cType(declaration.elementType);
     const objectiveCElements = declaration.elementType.kind
       == LoweredTypeKind.foreignObjCType;
+    // `values.slice(start, end)`: start <= end <= length, or a trap.
+    output.append(`static inline __attribute__((unused)) Z_${declaration.name} Z_${declaration.name}_range(Z_${declaration.name} items, size_t start, size_t end) {\n`);
+    output.append("  if (start > end || end > items.length) abort();\n");
+    output.append(`  return (Z_${declaration.name}){ items.data == NULL ? NULL : (void *)&((${elementType}`);
+    if (objectiveCElements) output.append(" __strong");
+    output.append(" *)items.data)[start], end - start };\n}\n\n");
     output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
     if (objectiveCElements) output.append(" const __strong *Z_");

@@ -470,6 +470,7 @@ export type SemanticInfo = {
   readonly arrayDestructures: ReadonlyMap<number, ArrayDestructurePlan>;
   readonly objectDestructureTypes: ReadonlyMap<number, string>;
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
+  readonly sliceRanges: ReadonlyMap<number, SliceRange>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
   readonly foreignStatusCalls: ReadonlyMap<number, ForeignStatusCallInfo>;
@@ -653,6 +654,8 @@ type AnalysisState = {
   readonly unsafeUnverifiedBindings: Set<string>;
   readonly unsafeLocalBindingScopes: Set<string>[];
   readonly sliceConversions: Map<number, { readonly sourceType: string; readonly targetType: string }>;
+  readonly sliceRanges: Map<number, SliceRange>;
+  readonly sliceRangeArguments: Set<number>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
   readonly foreignStatusCalls: Map<number, ForeignStatusCallInfo>;
@@ -909,6 +912,13 @@ function requireDestructuredFieldVisibility(
     requireMemberVisibility(field.visibility, "field", field.name, declaration, field.location, useLocation, fileName, state);
   }
 }
+
+// `values.slice(start, end)`: a checked sub-range of contiguous storage,
+// borrowed as a Slice for the one call it is passed to.
+export type SliceRange = {
+  readonly sourceType: string;
+  readonly elementType: string;
+};
 
 type AccessLoan = {
   readonly root: string;
@@ -1347,6 +1357,8 @@ export function analyze(
     unsafeUnverifiedBindings: new Set(),
     unsafeLocalBindingScopes: [],
     sliceConversions: new Map(),
+    sliceRanges: new Map(),
+    sliceRangeArguments: new Set(),
     foreignTypes,
     foreignCallTypes: new Map(),
     foreignStatusCalls: new Map(),
@@ -13515,6 +13527,38 @@ function inferExpressionInner(
           state.integerOperations.set(expression.location.offset, { kind: integerMethod, type: integerReceiverType });
           return integerReceiverType;
         }
+        const rangeSource = expression.callee.property === "slice"
+          ? sliceRangeSource(receiverValueType)
+          : null;
+        if (rangeSource) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.arguments.length !== 2) {
+            throw new DiagnosticError(fileName, expression.location, `"slice" expects 2 arguments, received ${expression.arguments.length}`);
+          }
+          if (!state.sliceRangeArguments.has(expression.location.offset)) {
+            throw new DiagnosticError(fileName, expression.callee.location, "values.slice(start, end) borrows only for one call; pass it directly as a Slice argument", {
+              length: "slice".length,
+              notes: ["the Slice borrows the underlying storage until that call returns, so it cannot be stored or returned"],
+              helps: ["pass the range straight to a function or method parameter of type Slice<T>"],
+            });
+          }
+          if (state.activeFunction?.async) {
+            throw new DiagnosticError(fileName, expression.callee.location, "values.slice(start, end) is not yet available in async functions", {
+              code: "Z0700",
+              length: "slice".length,
+              helps: ["take the range in a synchronous helper function"],
+            });
+          }
+          if (!isNamedStorageExpression(expression.callee.object)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "values.slice(start, end) requires stored array or Slice storage");
+          }
+          for (const bound of expression.arguments) {
+            const actual = inferExpression(bound, locals, globals, structs, enums, fileName, state, false, "usize");
+            requireAssignable("usize", actual, bound, fileName, structs, enums, state);
+          }
+          state.sliceRanges.set(expression.location.offset, rangeSource);
+          return sliceTypeName(rangeSource.elementType);
+        }
         const dynamic = parseDynamicArrayType(receiverValueType);
         if (dynamic) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -13621,6 +13665,7 @@ function inferExpressionInner(
             }
             const argument = expression.arguments[0];
             const target = sliceTypeName(elementType);
+            if (sliceRangeCall(argument)) state.sliceRangeArguments.add(argument.location.offset);
             const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state, false, target);
             const actualArray = parseFixedArrayType(String(actual)) ?? parseDynamicArrayType(String(actual));
             if (actualArray && actualArray.elementType === elementType) {
@@ -13636,7 +13681,7 @@ function inferExpressionInner(
             // The receiver is borrowed inout and the elements in for the call,
             // through the same loan check as any other call.
             const receiverPath = directFieldStoragePath(expression.callee.object);
-            const argumentPath = directFieldStoragePath(argument);
+            const argumentPath = directFieldStoragePath(sliceRangeCall(argument)?.callee.object ?? argument);
             if (receiverPath && argumentPath) {
               const callLoans: AccessLoanSet = new Map();
               registerAccessLoan(callLoans, {
@@ -14646,7 +14691,9 @@ function checkArguments(
     const parameter = target.parameters[index];
     const useMode = parseSliceType(parameter.type.name) && parameter.mode === "value" ? "in" : parameter.mode;
     const argument = args[index];
-    const storage = directFieldStoragePath(argument);
+    // A Slice range borrows its receiver's storage for the call.
+    const range = parseSliceType(parameter.type.name) ? sliceRangeCall(argument) : null;
+    const storage = directFieldStoragePath(range?.callee.object ?? argument);
     if (!storage) continue;
     const projectedAliases = aggregateClassAliasIdentitiesForPath(
       storage.root,
@@ -15061,6 +15108,9 @@ function checkArguments(
         recordAsyncSpawnBorrow(borrowedRoot, argument.location, "in", asyncContext.spawnOffset!, fileName, state);
       }
       continue;
+    }
+    if (parseSliceType(parameter.type.name) && sliceRangeCall(argument)) {
+      state.sliceRangeArguments.add(argument.location.offset);
     }
     let actual = inferExpression(argument, locals, globals, structs, enums, fileName, state, false, parameter.type.name);
     actual = contextualCStringLiteral(parameter.type.name, argument, state) ?? actual;
@@ -16557,6 +16607,27 @@ function rejectForeignOwnedMove(
     expression.location,
     "passing an owned Z value to an untyped foreign function requires imported ownership metadata",
   );
+}
+
+// A call spelled `values.slice(start, end)`, a candidate Slice range.
+function sliceRangeCall(expression: Expression): (Extract<Expression, { kind: "call" }> & {
+  readonly callee: Extract<Expression, { kind: "member" }>;
+}) | null {
+  if (expression.kind !== "call" || expression.callee.kind !== "member") return null;
+  if (expression.callee.property !== "slice" || expression.callee.optional) return null;
+  return expression as Extract<Expression, { kind: "call" }> & { readonly callee: Extract<Expression, { kind: "member" }> };
+}
+
+// The storage a Slice range can borrow: a fixed or growable array, including
+// a readonly one, or another Slice.
+function sliceRangeSource(type: string): SliceRange | null {
+  const fixed = parseFixedArrayType(type);
+  if (fixed) return { sourceType: type, elementType: fixed.elementType };
+  const dynamic = parseDynamicArrayType(type);
+  if (dynamic) return { sourceType: type, elementType: dynamic.elementType };
+  const slice = parseSliceType(type);
+  if (slice) return { sourceType: type, elementType: slice.elementType };
+  return null;
 }
 
 function isNamedStorageExpression(expression: Expression): boolean {

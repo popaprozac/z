@@ -2363,6 +2363,29 @@ The Slice descriptor is two words and performs no allocation or cleanup. It is
 tied to the named source owner, cannot escape, and prevents moves or
 reallocating mutation until its last use.
 
+`values.slice(start, end)` borrows the half-open element range `[start, end)`
+of a stored fixed array, `Array<T>`, readonly Array, or `Slice<T>` as a
+`Slice<T>` for exactly one call. It may appear only directly as an argument
+whose parameter is a by-value `Slice<T>` (including `Array.append`), so it
+never needs a stored lifetime:
+
+```z
+function checksum(bytes: Slice<u8>): u32 { ... }
+
+const header = checksum(packet.slice(0, 12));
+output.append(source.slice(origin, origin + length));
+```
+
+Both bounds are `usize`. The range traps unless `start <= end <= length`;
+`values.slice(values.length, values.length)` is a valid empty range. The call
+borrows the receiver's storage `in` through the ordinary call-loan check, so
+`values.append(values.slice(0, 1))` is a compile-time overlap error. Binding,
+returning, or storing a range, chaining `.slice` on a range, and ranges in async
+functions are rejected in this first tier.
+
+Cost: one bounds comparison pair and a two-word descriptor; no allocation or
+copy.
+
 `Array<T>()` constructs an empty growable array. Values may be supplied directly
 without a sequence of `push` calls:
 

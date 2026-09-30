@@ -35,6 +35,7 @@ import type {
   OptionalChainPlan,
   RawExpressionPlan,
   SemanticInfo,
+  SliceRange,
   StructSpreadPlan,
   ForeignUnionMatchPlan,
 } from "./sema.ts";
@@ -769,6 +770,14 @@ export function generateC(
   for (const type of sliceTypes) {
     const slice = parseSliceType(type)!;
     lines.push(`struct ${sliceName(type)} {\n  ${mapType(slice.elementType, structs, enums, semanticInfo.foreignNamedTypes)} *data;\n  uintptr_t length;\n};`, "");
+  }
+  // A checked sub-range of a Slice: start <= end <= length, or a trap.
+  for (const type of new Set([...semanticInfo.sliceRanges.values()].map((range) => sliceTypeName(range.elementType)))) {
+    const name = mapType(type, structs, enums, semanticInfo.foreignNamedTypes);
+    lines.push(`static Z_UNUSED_FUNCTION ${name} ${name}_range(${name} items, uintptr_t start, uintptr_t end) {
+  if (start > end || end > items.length) abort();
+  return (${name}){ .data = items.data == NULL ? NULL : items.data + start, .length = end - start };
+}`, "");
   }
   if (usesObjCDataCopy) {
     lines.push(generateObjCDataCopyRuntime(
@@ -3201,6 +3210,8 @@ function collectSliceTypes(program: Program, semanticInfo: SemanticInfo): string
   for (const type of semanticInfo.expressionTypes.values()) add(type);
   for (const type of semanticInfo.bindingTypes.values()) add(type);
   for (const conversion of semanticInfo.sliceConversions.values()) add(conversion.targetType);
+  for (const range of semanticInfo.sliceRanges.values()) add(sliceTypeName(range.elementType));
+  for (const type of semanticInfo.dynamicArrayAppendTypes) add(sliceTypeName(parseDynamicArrayType(type)!.elementType));
   for (const name of semanticInfo.standardFunctionReferences.values()) {
     const signature = standardFunctionSignature(name);
     for (const parameter of signature.parameters) add(parameter.type);
@@ -12358,6 +12369,25 @@ function capabilityStorageTargetExpression(expression: Expression): Expression |
   return { ...expression, object: owner };
 }
 
+// `values.slice(start, end)` passed as a Slice argument: the receiver's
+// storage as a Slice, narrowed by the checked range helper.
+function generateSliceRange(
+  receiver: Expression,
+  bounds: readonly Expression[],
+  range: SliceRange,
+  context: GenerationContext,
+): string {
+  const target = mapType(sliceTypeName(range.elementType), context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+  const value = receiver.kind === "argumentReference"
+    ? generateStoredValue(receiver.name, context)
+    : generateExpression(receiver, context);
+  const fixed = parseFixedArrayType(range.sourceType);
+  const source = parseSliceType(range.sourceType)
+    ? value
+    : `(${target}){ .data = ${fixed ? `(void *)(${value}).data` : `(${value}).data`}, .length = ${fixed ? String(fixed.length) : `(${value}).length`} }`;
+  return `${target}_range(${source}, ${generateExpression(bounds[0], context)}, ${generateExpression(bounds[1], context)})`;
+}
+
 function generateCallArgument(expression: Expression, context: GenerationContext): string {
   const callbackTarget = context.semanticInfo.foreignCallbackTargets.get(expression.location.offset);
   if (callbackTarget) return cFunctionName(callbackTarget);
@@ -12365,6 +12395,10 @@ function generateCallArgument(expression: Expression, context: GenerationContext
     if (expression.kind === "string") return cStringLiteral(expression.value);
     const value = generateExpression(expression, context);
     return `((${value}).data != NULL ? (${value}).data : "")`;
+  }
+  const range = context.semanticInfo.sliceRanges.get(expression.location.offset);
+  if (range && expression.kind === "call" && expression.callee.kind === "member") {
+    return generateSliceRange(expression.callee.object, expression.arguments, range, context);
   }
   const conversion = context.semanticInfo.sliceConversions.get(expression.location.offset);
   if (conversion) {

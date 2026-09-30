@@ -1144,7 +1144,10 @@ follow ordinary move rules.
 ordinary spelling: a compatible fixed or growable array converts to a slice for
 one call. Array-rest destructuring may additionally create a compiler-proven
 local subslice through `const [...rest] = view values`; that binding carries its
-named owner and cannot escape. Arbitrary Slice locals, returns, aggregate/enum
+named owner and cannot escape. A call-scoped range `values.slice(start, end)`
+may be passed directly as a Slice argument; it borrows `[start, end)` of its
+receiver through the ordinary call loan and traps unless
+`start <= end <= length`. Arbitrary Slice locals, returns, aggregate/enum
 storage, and captures remain rejected. This keeps source lifetime obvious
 without requiring a source-level lifetime name.
 
@@ -1255,7 +1258,7 @@ an explicit `copyBytes` remains the operation that produces an owned String.
 This is intrinsic composition over the existing owner loan, not a general
 stored-borrow or lifetime mechanism. The
 first slice intentionally omits removal, reservation, fallible allocation,
-escaping slices, subslices, stored class-owned views, and general lifetime
+escaping slices, stored subslices, stored class-owned views, and general lifetime
 parameters.
 Allocation failure currently traps. `T[]` remains unassigned until those
 broader contracts are proven.

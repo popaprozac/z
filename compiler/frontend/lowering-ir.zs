@@ -350,6 +350,7 @@ export enum LoweredExpressionKind {
   arrayWithCapacity,
   arrayReserveCapacity,
   arrayAppend,
+  sliceRange,
   mapEmpty,
   mapLength,
   mapHas,
@@ -15496,6 +15497,52 @@ function lowerExpressionContextual(
               children,
               Array<String>()
             );
+          }
+        }
+        none => {}
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].value == "slice"
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[index].children.length == 3
+    ) {
+      // `values.slice(start, end)`: the receiver's storage as a Slice,
+      // narrowed by the emitted checked range helper.
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+        some(receiverTypeName) => {
+          let ownerName = sourceCollectionTypeName(in receiverTypeName);
+          if (stringStartsWith(ownerName, "view ")) ownerName = ownerName.copyBytes(5, ownerName.byteLength);
+          if (stringStartsWith(ownerName, "readonly ")) ownerName = ownerName.copyBytes(9, ownerName.byteLength);
+          let rangeElement = "";
+          match (fixedArrayShape(ownerName)) {
+            some(shape) => rangeElement = copy shape.elementType;
+            none => match (genericTypeShape(ownerName)) {
+              some(shape) => {
+                if ((shape.base == "Array" || shape.base == "Slice") && shape.arguments.length == 1) {
+                  rangeElement = copy shape.arguments[0];
+                }
+              }
+              none => {}
+            }
+          }
+          const rangeTypeName = `Slice<${rangeElement}>`;
+          const rangeType = try lowerModuleTypeName(program, importedTypes, rangeTypeName);
+          if (rangeElement.byteLength > 0 && rangeType.kind == LoweredTypeKind.sliceType) {
+            const receiver = try lowerExpression(program, importedTypes, evidence, tree,
+              receiverInput, inout output);
+            const source = try lowerSliceArgument(program, importedTypes, evidence, tree,
+              receiverInput, rangeTypeName, receiver, inout output);
+            const startInput = tree.nodes[index].children[1];
+            const endInput = tree.nodes[index].children[2];
+            const start = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+              startInput, "usize", inout output);
+            const end = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+              endInput, "usize", inout output);
+            return pushExpression(inout output, LoweredExpressionKind.sliceRange,
+              rangeType.name, Array<usize>(source, start, end), Array<String>());
           }
         }
         none => {}

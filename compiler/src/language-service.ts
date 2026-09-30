@@ -2155,6 +2155,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (resolved?.kind === "array" && word.text === "length") {
       return markdownHover(`length: usize  // ${displayType(resolved.type, context.typeDisplayNames)}`, source, word.start, word.end);
     }
+    const rangeElement = resolved?.kind === "array" ? sliceRangeElementType(resolved.type) : null;
+    if (rangeElement !== null && word.text === "slice") {
+      return markdownHover(
+        `slice(start: usize, end: usize): Slice<${displayType(rangeElement, context.typeDisplayNames)}>\n// borrows [start, end) for one call; pass it directly as a Slice argument; traps unless start <= end <= length`,
+        source, word.start, word.end,
+      );
+    }
     if (resolved?.kind === "arrayFactory" && word.text === "withCapacity") {
       return markdownHover(`withCapacity(minimumCapacity: usize): Array<${resolved.elementType}>\n// reserves at least this many elements; length starts at zero`, source, word.start, word.end);
     }
@@ -6136,6 +6143,15 @@ function memberCompletions(
   }
   if (resolved?.kind === "array") {
     const items: CompletionItem[] = [{ label: "length", kind: completionKinds.property, detail: "usize" }];
+    const rangeElement = sliceRangeElementType(resolved.type);
+    if (rangeElement !== null) {
+      items.push({
+        label: "slice",
+        kind: completionKinds.method,
+        detail: `slice(start: usize, end: usize): Slice<${displayType(rangeElement, context.typeDisplayNames)}>  // borrowed for one call`,
+        insertText: "slice()",
+      });
+    }
     const dynamic = parseDynamicArrayType(resolved.type);
     if (dynamic) {
       items.push(
@@ -9835,6 +9851,15 @@ function uniqueCompletions(items: CompletionItem[]): CompletionItem[] {
     seen.add(key);
     return true;
   });
+}
+
+// The element type a `values.slice(start, end)` range borrows, or null for
+// storage that has no ranges.
+function sliceRangeElementType(type: string): string | null {
+  return parseFixedArrayType(type)?.elementType
+    ?? parseDynamicArrayType(type)?.elementType
+    ?? parseSliceType(type)?.elementType
+    ?? null;
 }
 
 function filterCompletions(items: CompletionItem[], prefix: string, limit: number): CompletionItem[] {

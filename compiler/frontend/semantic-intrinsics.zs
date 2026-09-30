@@ -4,6 +4,7 @@ import { transparentTypeName } from "./semantic-type-identities.zs";
 import { typeHasCleanup } from "./semantic-type-ownership.zs";
 import {
   arrayElementType,
+  fixedArrayShape,
   genericTypeShape,
   isIntegerTypeName,
   nativeFunctionSignature,
@@ -442,6 +443,44 @@ export function collectionMethodSignature(
         invalidatesParameters: Array<usize>(),
         invalidatesLifetimes: Array<String>(),
         returnType: "void",
+        errorType: "",
+      }));
+    }
+  }
+  if (methodName == "slice") {
+    // `values.slice(start, end)`: a Slice of fixed, growable, or Slice
+    // storage, borrowed for one call.
+    let rangeElement = "";
+    match (fixedArrayShape(collectionOwnerType)) {
+      some(shape) => rangeElement = copy shape.elementType;
+      none => match (genericTypeShape(collectionOwnerType)) {
+        some(shape) => {
+          if ((shape.base == "Array" || shape.base == "Slice") && shape.arguments.length == 1) {
+            rangeElement = copy shape.arguments[0];
+          }
+        }
+        none => {}
+      }
+    }
+    if (rangeElement.byteLength > 0) {
+      let rangeModes = Array<String>();
+      rangeModes.push("value");
+      rangeModes.push("value");
+      let rangeTypes = Array<String>();
+      rangeTypes.push("usize");
+      rangeTypes.push("usize");
+      return Option.some(ModuleFunctionSignature({
+        asynchronous: false,
+        executorAffinity: "",
+        threadContract: "",
+        typeParameters: Array<String>(),
+        typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+        parameterModes: rangeModes,
+        parameterTypes: rangeTypes,
+        viewParameter: Option<usize>.none,
+        invalidatesParameters: Array<usize>(),
+        invalidatesLifetimes: Array<String>(),
+        returnType: `Slice<${rangeElement}>`,
         errorType: "",
       }));
     }

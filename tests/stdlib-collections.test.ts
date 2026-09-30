@@ -1529,6 +1529,101 @@ test("borrows only stored arrays as Slice arguments in both semantic frontends",
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 300_000);
 
+test("borrows checked sub-ranges with values.slice(start, end) in both compilers", () => {
+  const input = resolve(projectRoot, "tests/fixtures/slice-range.zs");
+  const stage0 = compileToC(readFileSync(input, "utf8"), input);
+  const checked = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
+    encoding: "utf8", timeout: 120_000,
+  });
+  assert.equal(checked.status, 0, checked.stderr);
+  const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+  });
+  assert.equal(native.status, 0, native.stderr);
+  const directory = mkdtempSync("/tmp/z-slice-range-");
+  try {
+    const run = (tier: string, generated: string, optimization: string) => {
+      const executable = resolve(directory, tier + optimization);
+      const built = spawnSync("clang", ["-x", "c", "-std=c11", optimization, "-Wall", "-Wextra", "-Werror",
+        "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        encoding: "utf8", input: generated, timeout: 30_000,
+      });
+      assert.equal(built.status, 0, `${tier}: ${built.stderr}`);
+      return spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+    };
+    for (const [tier, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+      for (const optimization of ["-O0", "-O2"]) {
+        const result = run(tier, generated, optimization);
+        assert.equal(result.status, 0, `${tier}${optimization}: ${result.stderr}`);
+      }
+    }
+    // start <= end <= length, or a trap; an empty range at the end is valid.
+    for (const [bounds, status] of [["1, 5", null], ["2, 1", null], ["3, 3", 0], ["0, 3", 3]] as const) {
+      const source = `function total(values: Slice<i32>): usize { return values.length; }
+        function main(): i32 { const values = Array<i32>(1, 2, 3); return i32(total(values.slice(${bounds}))); }`;
+      const file = resolve(directory, "bounds.zs");
+      writeFileSync(file, source);
+      const emitted = spawnSync(process.execPath, [cli, "self-host-emit", file], {
+        encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(emitted.status, 0, emitted.stderr);
+      for (const [tier, generated] of [["stage0", compileToC(source, file)], ["native", emitted.stdout]]) {
+        const result = run(`bounds-${tier}`, generated, "-O2");
+        if (status === null) assert.equal(result.signal, "SIGABRT", `${tier} slice(${bounds})`);
+        else assert.equal(result.status, status, `${tier} slice(${bounds})`);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("checks values.slice(start, end) position, storage, bounds types, and call loans", () => {
+  const cases: [string, RegExp][] = [
+    ["let values = Array<i32>(1, 2); values.append(values.slice(0, 1));", /overlapping inout and in uses of "values"/],
+    ["const values = Array<i32>(1, 2); const part = values.slice(0, 1);", /borrows only for one call; pass it directly as a Slice argument/],
+    ["const values = Array<i32>(1, 2); const n = count(values.slice(0, 1));", /borrows only for one call/],
+    ["const values = Array<i32>(1, 2); const n = total(values.slice(0, 1).slice(0, 1));", /borrows only for one call/],
+    ["const values = Array<i32>(1, 2); const n = total(values.slice(0));", /slice.* expects 2 argument/],
+    ["const values = Array<i32>(1, 2); const n = total(values.slice(-1, 1));", /integer literal -1 does not fit usize/],
+    ["const values = Array<i32>(1, 2); const n = total(values.slice(true, 1));", /expected usize, found boolean/],
+    ["const n = total(Array<i32>(1).slice(0, 1));", /requires stored array or Slice storage/],
+    ["const values = Array<u8>(1, 2); const n = total(values.slice(0, 1));", /expected Slice<i32>, found Slice<u8>/],
+  ];
+  const directory = mkdtempSync("/tmp/z-slice-range-invalid-");
+  try {
+    const prefix = `function total(values: Slice<i32>): usize { return values.length; }
+      function count(values: Array<i32>): usize { return values.length; }`;
+    for (const [body, message] of cases) {
+      const source = `${prefix} function main(): i32 { ${body} return 0; }`;
+      assert.throws(() => compileToC(source, "slice-range-invalid.zs"), message);
+      const input = resolve(directory, "invalid.zs");
+      writeFileSync(input, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], { encoding: "utf8", timeout: 120_000 });
+      assert.equal(native.status, 1, `${body}\n${native.stderr}`);
+      assert.match(native.stderr, message);
+    }
+    const asynchronous = `${prefix} async function later(values: Array<i32>): usize { return total(values.slice(0, 1)); }
+      function main(): i32 { return 0; }`;
+    assert.throws(() => compileToC(asynchronous, "slice-range-async.zs"), /Z0700.*not yet available in async functions|not yet available in async functions/);
+    const input = resolve(directory, "async.zs");
+    writeFileSync(input, asynchronous);
+    const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], { encoding: "utf8", timeout: 120_000 });
+    assert.equal(native.status, 1, native.stderr);
+    assert.match(native.stderr, /not yet available in async functions/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("surfaces values.slice(start, end) in hover and completion", () => {
+  for (const declaration of ["const values = Array<u8>(1);", "const values: u8[2] = [1, 2];"]) {
+    const source = `function total(values: Slice<u8>): usize { return values.length; }
+      function main(): i32 { ${declaration} const n = total(values.slice(0, 1)); return 0; }`;
+    const offset = source.lastIndexOf("slice(");
+    assert.match(hover(source, "slice-range-hover.zs", offset)?.contents.value ?? "", /slice\(start: usize, end: usize\): Slice</);
+    if (declaration.includes("Array<u8>")) {
+      assert.ok(completions(source, "slice-range-hover.zs", offset + "slice".length).some((entry) => entry.label === "slice"));
+    }
+  }
+});
+
 test("checks Slice capabilities, element types, and overlapping borrows", () => {
   const readOnlyMutation = `
     function mutate(values: Slice<i32>): void { values[0] = 1; }

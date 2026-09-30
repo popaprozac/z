@@ -1293,6 +1293,27 @@ function markClosureCaptureMutation(
   }
 }
 
+// A call spelled `values.slice(start, end)` passed directly where a Slice
+// parameter expects it: the one position a Slice range may appear.
+function sliceRangeArgumentBindingName(offset: usize): String {
+  return `__z_native_slice_range:${offset}`;
+}
+
+// The receiver of a call spelled `values.slice(start, end)`.
+function sliceRangeReceiverNode(in tree: ExpressionTree, index: usize): Option<usize> {
+  if (tree.nodes[index].kind != ExpressionKind.callExpression || tree.nodes[index].children.length == 0) {
+    return Option<usize>.none;
+  }
+  const callee = tree.nodes[index].children[0];
+  if (
+    tree.nodes[callee].kind != ExpressionKind.memberExpression
+    || tree.nodes[callee].value != "slice"
+    || tree.nodes[callee].optionalAccess
+    || tree.nodes[callee].children.length != 1
+  ) return Option<usize>.none;
+  return Option.some(tree.nodes[callee].children[0]);
+}
+
 function contextualExpectedBindingName(offset: usize): String {
   return `__z_native_contextual_expected:${offset}`;
 }
@@ -4536,7 +4557,14 @@ function inferSignatureCallType(
   }
   let accessIndex: usize = 0;
   while (accessIndex < argumentCount) {
-    const nodeIndex = argumentNodes[accessIndex];
+    let nodeIndex = argumentNodes[accessIndex];
+    // A Slice range borrows its receiver's storage for the call.
+    if (stringStartsWith(signature.parameterTypes[accessIndex], "Slice<")) {
+      match (sliceRangeReceiverNode(tree, nodeIndex)) {
+        some(receiver) => nodeIndex = receiver;
+        none => {}
+      }
+    }
     const root = expressionStorageRootName(tree, nodeIndex);
     let capability = signature.parameterModes[accessIndex].copyBytes(
       0,
@@ -4912,6 +4940,15 @@ function inferSignatureCallType(
           if (captureEvidence.byteLength == 0) {
             addValueBinding(inout bindings, captureEvidenceName, "in");
           }
+        }
+      }
+      if (stringStartsWith(signature.parameterTypes[argumentIndex], "Slice<")) {
+        match (sliceRangeReceiverNode(tree, inferredNode)) {
+          some(_) => {
+            const rangeMarker = sliceRangeArgumentBindingName(tree.nodes[inferredNode].offset);
+            addValueBinding(inout bindings, rangeMarker, "argument");
+          }
+          none => {}
         }
       }
       const argumentType = try inferExpressionNodeTypeExpected(
@@ -10859,6 +10896,41 @@ function inferExpressionNodeType(
               try requireWritableAssignmentAncestors(
                 module, modules, moduleIndex, tree, receiverIndex, evidence, true
               );
+            }
+            if (methodName == "slice" && stringStartsWith(effectiveSignature.returnType, "Slice<")) {
+              const rangeMarker = sliceRangeArgumentBindingName(tree.nodes[index].offset);
+              const rangePosition = valueBindingType(bindings, rangeMarker);
+              if (rangePosition.byteLength == 0) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "values.slice(start, end) borrows only for one call; pass it directly as a Slice argument",
+                  tree.nodes[calleeIndex].line,
+                  tree.nodes[calleeIndex].column
+                );
+              }
+              const rangeAsyncContext = valueBindingType(bindings, "__z_native_async_context");
+              if (rangeAsyncContext.byteLength > 0) {
+                throw codedModuleResolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  "Z0700",
+                  module.path,
+                  "values.slice(start, end) is not yet available in async functions",
+                  tree.nodes[calleeIndex].line,
+                  tree.nodes[calleeIndex].column,
+                  5
+                );
+              }
+              const rangeRoot = expressionStorageRootName(tree, receiverIndex);
+              if (rangeRoot.byteLength == 0) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "values.slice(start, end) requires stored array or Slice storage",
+                  tree.nodes[receiverIndex].line,
+                  tree.nodes[receiverIndex].column
+                );
+              }
             }
             if (methodName == "append") {
               // The first tier copies elements as a block, so only

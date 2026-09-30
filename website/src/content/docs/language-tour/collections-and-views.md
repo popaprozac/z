@@ -153,6 +153,17 @@ Slice parameters are already borrowed, so they do not add a redundant `in`.
 `inout values: Slice<T>` grants mutable access to the borrowed elements while
 still preventing the slice from escaping its backing owner.
 
+Borrow part of an array with `slice(start, end)`, directly as a Slice
+argument:
+
+```z
+const middle = sum(dynamic.slice(1, 2));
+```
+
+The range `[start, end)` is checked (it traps unless
+`start <= end <= length`) and lasts only for that call, so it cannot be bound,
+returned, or stored.
+
 Rest destructuring can create a local slice without allocation:
 
 ```z
@@ -259,7 +270,7 @@ There is no element copy, retain pass, or implicit thaw.
 :::note[Cost model]
 Fixed arrays are inline. `Array<T>` may allocate and move elements when it
 grows. `append` performs one capacity check, at most one growth, and one block
-copy. `Slice<T>` and local rest views are two-word borrowed descriptors. Maps
+copy. `slice(start, end)` is one bounds check and a two-word descriptor. `Slice<T>` and local rest views are two-word borrowed descriptors. Maps
 and sets own hash buckets; lookup is expected constant time but may compare or
 hash user values. Safe indexing remains bounds-checked.
 :::
