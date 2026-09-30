@@ -1,6 +1,6 @@
 import {
   assert, cli, compileToC, mkdtempSync, projectRoot, readFileSync,
-  resolve, rmSync, spawnSync, test, writeFileSync,
+  resolve, rmSync, spawnSync, test, writeFileSync, bindGeneratedNames, yieldFrameName
 } from "./support/bootstrap.ts";
 
 const fixture = resolve(projectRoot, "tests/fixtures/self-host-emit-async-yield-frame.zs");
@@ -19,7 +19,7 @@ function parameterEmission(): string { return cachedParameterEmission ??= emit(p
 function nativeYieldStart(source: string, name: string): string {
   // Imported headers can require private bridge mangling. Harnesses inspect
   // generated storage, but must not treat its module-qualified name as an ABI.
-  const frame = new RegExp(`typedef struct (_z_stage1_yield_(?:__z_module_\\d+_)?${name}) \\{`).exec(source)?.[1];
+  const frame = yieldFrameName(source, name);
   assert.ok(frame, `Missing frame for ${name}`);
   return `${frame}_start`;
 }
@@ -29,7 +29,7 @@ function execute(source: string, expected: string, flags: string[] = []): void {
     const executable = resolve(directory, "program");
     const compilation = spawnSync("clang", [
       "-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", ...flags, "-", "-o", executable,
-    ], { encoding: "utf8", input: source, timeout: 30_000, killSignal: "SIGKILL" });
+    ], { encoding: "utf8", input: bindGeneratedNames(source), timeout: 30_000, killSignal: "SIGKILL" });
     assert.equal(compilation.status, 0, compilation.stderr || String(compilation.error));
     const run = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
     assert.equal(run.status, 0, run.stderr || String(run.error ?? run.signal));

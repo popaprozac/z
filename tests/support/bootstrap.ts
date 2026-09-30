@@ -90,6 +90,8 @@ export {
   existsSync,
   formatDiagnostic,
   hostToolchainTest,
+  bindGeneratedNames,
+  yieldFrameName,
   hover,
   isProcessOutputOverflowError,
   mergeApiNotes,
@@ -130,6 +132,38 @@ if (process.platform === "darwin") {
   );
   mkdirSync(process.env.CLANG_MODULE_CACHE_PATH, { recursive: true });
   mkdirSync(process.env.SWIFT_MODULECACHE_PATH, { recursive: true });
+}
+
+// Generated function and yield-frame names are private identities, not a
+// native ABI: a function is emitted as `_z_function_<name>` (Stage 0) or
+// `_z_function_<index>_<name>` (native), and its yield frame is named after
+// that identity (`_z_stage1_yield__z_function_0_listen`). Harness C written
+// against source names is bound to the identities the generated C declares.
+function yieldFrameName(source: string, name: string): string | undefined {
+  const pattern = new RegExp(`typedef struct (_z_stage1_yield_(?:_?_z_(?:module|function)_\\d+_)*${name}) \\{`);
+  return pattern.exec(source)?.[1];
+}
+
+// Frame references (`_z_stage1_yield_listen_start`, `_z_stage1_yield_listen *`)
+// are bound anywhere. Calls of Z functions by source name (`launch()`) are
+// bound only in the hand-written harness after the last `#undef main`.
+function bindGeneratedNames(text: string): string {
+  const frames = new Map<string, string>();
+  for (const match of text.matchAll(/typedef struct (_z_stage1_yield_(?:_?_z_(?:module|function)_\d+_)*([A-Za-z][A-Za-z0-9]*)) \{/g)) {
+    frames.set(match[2], match[1]);
+  }
+  const bound = text.replace(/\b_z_stage1_yield_([A-Za-z][A-Za-z0-9]*)/g, (whole, name: string) => frames.get(name) ?? whole);
+  const split = bound.lastIndexOf("\n#undef main");
+  if (split < 0) return bound;
+  const functions = new Map<string, string>();
+  for (const match of bound.slice(0, split).matchAll(/\b(_z_function_(?:\d+_)?([A-Za-z][A-Za-z0-9]*))\(/g)) {
+    functions.set(match[2], match[1]);
+  }
+  const harness = bound.slice(split).replace(
+    /(?<![\w.>])([A-Za-z][A-Za-z0-9]*)(?=\()/g,
+    (whole, name: string) => functions.get(name) ?? whole,
+  );
+  return bound.slice(0, split) + harness;
 }
 
 function hostToolchainTest(

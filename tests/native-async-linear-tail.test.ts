@@ -315,7 +315,8 @@ test("composes native-thread joins independently of TaskScope and through main-b
 
 test("keeps a cold or externally waiting native join alive until worker completion", () => {
   let source = emitThreadJoin();
-  const helper = source.match(/static Z_Task_String (z_stage1_thread_spawn_startup_\d+)\(void\);/)?.[1];
+  // The worker helper is named after its function's generated identity.
+  const helper = source.match(/static Z_Task_String (z_stage1_thread_spawn_(?:_?_z_(?:module|function)_\d+_)*startup_\d+)\(void\);/)?.[1];
   assert.ok(helper);
   const body = `static Z_String ${helper}_body(Z_Task_StringStorage *_z_stage1_task_storage) {`;
   assert.ok(source.includes(body));

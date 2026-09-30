@@ -274,7 +274,9 @@ test("native header builds preserve checked identities for imported internal asy
       return a + b + firstResult() + secondResult() + firstTag(5) + secondTag(5) + localResult - 126;
     }
   `, "", (source) => {
-    assert.match(source, /__z_module_\d+_listen/);
+    // Each module's `listen` keeps its own generated function identity.
+    const identities = new Set([...source.matchAll(/\b_z_function_\d+_listen\b/g)].map((match) => match[0]));
+    assert.equal(identities.size, 2);
     return source;
   }, Object.fromEntries([
     ["z.json", JSON.stringify({

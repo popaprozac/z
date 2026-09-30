@@ -1,6 +1,6 @@
 import {
   assert, compileToNative, hostToolchainTest, mkdtempSync, projectRoot,
-  readFileSync, resolve, rmSync, spawnSync, writeFileSync,
+  readFileSync, resolve, rmSync, spawnSync, writeFileSync, bindGeneratedNames, yieldFrameName
 } from "./support/bootstrap.ts";
 
 function command(executable: string, args: string[], input?: string, timeout = 30_000) {
@@ -20,7 +20,7 @@ function command(executable: string, args: string[], input?: string, timeout = 3
 function execute(source: string, binary: string, expected: string): void {
   command("clang", ["-x", "objective-c", "-std=c11", "-fobjc-arc", "-framework", "Foundation",
     "-Wall", "-Wextra", "-Werror", "-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all",
-    "-", "-o", binary], source);
+    "-", "-o", binary], bindGeneratedNames(source));
   assert.equal(command(binary, [], undefined, 5_000), expected);
 }
 
@@ -198,15 +198,7 @@ int main(void) {
 }`;
     // Bridge names are private generated identities, not a native ABI. Resolve
     // the frame names after header-aware mangling rather than pinning module IDs.
-    const nativeHarness = harness.replace(
-      /\b_z_stage1_yield_(listenMoved|listenDirect|listenOwner|joinNative|matchNative|listen)(_start)?\b/g,
-      (_match, name: string, suffix: string | undefined) => {
-        const frame = new RegExp(`typedef struct (_z_stage1_yield_(?:__z_module_\\d+_)?${name}) \\{`).exec(source)?.[1];
-        assert.ok(frame, `Missing frame for ${name}`);
-        return frame + (suffix ?? "");
-      },
-    );
-    execute(`#define main z_fixture_main\n${source}\n#undef main\n${nativeHarness}`, resolve(directory, "cancellation-ubsan"),
+    execute(`#define main z_fixture_main\n${source}\n#undef main\n${harness}`, resolve(directory, "cancellation-ubsan"),
       expected.repeat(3) + "released endpoint\nreleased lease\n".repeat(3));
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 600_000);

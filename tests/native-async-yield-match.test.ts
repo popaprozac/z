@@ -1,6 +1,6 @@
 import {
   assert, cli, compileToC, mkdtempSync, projectRoot, readFileSync,
-  resolve, rmSync, spawnSync, test, writeFileSync,
+  resolve, rmSync, spawnSync, test, writeFileSync, bindGeneratedNames, yieldFrameName
 } from "./support/bootstrap.ts";
 
 const fixture = resolve(projectRoot, "tests/fixtures/async-yield-match.zs");
@@ -27,7 +27,7 @@ function execute(source: string, expected: string): void {
     const binary = resolve(directory, "probe");
     const compiled = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
       "-O1", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", binary],
-      { input: source, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+      { input: bindGeneratedNames(source), encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
     assert.equal(compiled.status, 0, compiled.stderr);
     const run = spawnSync(binary, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
     assert.equal(run.status, 0, run.stderr || `${run.error}\n${run.stdout}`);
