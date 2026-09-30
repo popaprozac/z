@@ -1099,3 +1099,15 @@ polymorphic -4.7%, closures -4.2%, arrays -3.5%, helpers -3.4%, maps
 built for release and built without NDEBUG, where every one of those
 accesses still checks. Raw figures: ZJS
 `z/bench/speed/results/2026-09-30-bounds.json` and `2026-09-30-unchecked.json`.
+
+ZJS commit `a3a0960` extended the methods to 37 more sites: the call paths'
+argument copies and frame register setup, through two stack accessors, and
+the leaf interpreter's fetches. Each write follows the stack's growth past
+its index in the same function; each read takes a frame's register or a
+value placed after such a growth. On top of the 16 sites: arrays -2.6%,
+calls -2.4%, closures -1.9%. All 53 against the same generated C with their
+checks kept: calls -8.4%, properties -7.2%, arrays -5.7%, closures -5.4%,
+polymorphic -4.6%, the control's figures with 14 cold register and code
+accesses still checked. test262 again passed unchanged both ways, and the
+engine library shrank 4 KiB. Raw figures:
+`z/bench/speed/results/2026-09-30-call-paths.json`.
