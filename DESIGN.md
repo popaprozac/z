@@ -1191,6 +1191,10 @@ end with one capacity check and one block copy; the receiver's `inout` loan and
 the elements' `in` loan meet in the ordinary call checker, so self-append is a
 compile-time error rather than a runtime alias test. Element types that own
 storage wait for an explicit per-element copy design.
+`appendRepeated(value: T, count: usize): void` stores one cleanup-free value
+`count` times onto the end with one capacity check: the form a zeroed table or
+a run of empty slots takes. It only adds elements; there is no resize that
+also truncates.
 `Array<T>` carries its allocation, initialized length, and capacity as one
 move-only value. `push` requires addressable `let` storage, checks capacity
 arithmetic, grows geometrically, and transfers or copies the element according

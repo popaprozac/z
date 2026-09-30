@@ -74,6 +74,16 @@ arrays of them); push elements that own storage one at a time with an explicit
 copy. Appending an array to itself is a compile-time error, because the call
 borrows the source while it may grow the receiver.
 
+Store one value many times with `appendRepeated`:
+
+```z
+let buckets = Array<u32>.withCapacity(size);
+buckets.appendRepeated(0, size);
+```
+
+It takes the value and a `usize` count, has the same cleanup-free element rule
+as `append`, and only ever adds elements.
+
 Indexing is always checked. Where a program has already proven an index in
 bounds, `uncheckedAt` and `uncheckedSet` inside `unsafe` skip the check in
 release builds; see [unsafe native calls](/interop/unsafe-native-calls/).
@@ -274,7 +284,7 @@ There is no element copy, retain pass, or implicit thaw.
 :::note[Cost model]
 Fixed arrays are inline. `Array<T>` may allocate and move elements when it
 grows. `append` performs one capacity check, at most one growth, and one block
-copy. `slice(start, end)` is one bounds check and a two-word descriptor. `Slice<T>` and local rest views are two-word borrowed descriptors. Maps
+copy; `appendRepeated` the same check and growth, then one store per element. `slice(start, end)` is one bounds check and a two-word descriptor. `Slice<T>` and local rest views are two-word borrowed descriptors. Maps
 and sets own hash buckets; lookup is expected constant time but may compare or
 hash user values. Safe indexing remains bounds-checked.
 :::

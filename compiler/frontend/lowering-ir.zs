@@ -350,6 +350,7 @@ export enum LoweredExpressionKind {
   arrayWithCapacity,
   arrayReserveCapacity,
   arrayAppend,
+  arrayAppendRepeated,
   sliceRange,
   uncheckedStore,
   mapEmpty,
@@ -15597,6 +15598,36 @@ function lowerExpressionContextual(
               endInput, "usize", inout output);
             return pushExpression(inout output, LoweredExpressionKind.sliceRange,
               rangeType.name, Array<usize>(source, start, end), Array<String>());
+          }
+        }
+        none => {}
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].value == "appendRepeated"
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[index].children.length == 3
+    ) {
+      // `values.appendRepeated(value, count)`: the value and the count are
+      // evaluated once, then the emitted helper grows and fills.
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+        some(receiverTypeName) => {
+          const receiverType = try lowerModuleTypeName(program, importedTypes, receiverTypeName);
+          if (receiverType.kind == LoweredTypeKind.arrayType) {
+            const receiver = try lowerExpression(program, importedTypes, evidence, tree,
+              receiverInput, inout output);
+            markMutableStorage(inout output, receiver);
+            const elementTypeName = receiverType.name.copyBytes(10, receiverType.name.byteLength);
+            const valueInput = tree.nodes[index].children[1];
+            const countInput = tree.nodes[index].children[2];
+            const value = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+              valueInput, elementTypeName, inout output);
+            const count = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+              countInput, "usize", inout output);
+            return pushExpression(inout output, LoweredExpressionKind.arrayAppendRepeated,
+              receiverType.name, Array<usize>(receiver, value, count), Array<String>());
           }
         }
         none => {}

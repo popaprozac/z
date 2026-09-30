@@ -5468,6 +5468,22 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.arrayAppendRepeated) {
+    if (declaration.expressions[index].children.length != 3) {
+      throw "native C emission received a malformed Array.appendRepeated";
+    }
+    output.append(`Z_${declaration.expressions[index].value}_appendRepeated(&(`);
+    const receiver = declaration.expressions[index].children[0];
+    const value = declaration.expressions[index].children[1];
+    const count = declaration.expressions[index].children[2];
+    try appendExpression(inout output, declaration, receiver);
+    output.append("), ");
+    try appendExpression(inout output, declaration, value);
+    output.append(", ");
+    try appendExpression(inout output, declaration, count);
+    output.append(")");
+    return;
+  }
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.arrayWithCapacity
   ) {
@@ -26622,6 +26638,26 @@ function emitLoweredC(
       output.append(`    memcpy((${elementType} *)self->data + self->length, items.data, items.length * sizeof(${elementType}));\n`);
       output.append("  }\n");
       output.append("  self->length += items.length;\n");
+      output.append("}\n\n");
+      // Array.appendRepeated: one capacity check, then the value stored
+      // count times. A short run is straight stores, since a C compiler
+      // turns a fill loop into a library call that costs more than the few
+      // stores it replaces.
+      output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_appendRepeated(Z_${declaration.name} *self, ${elementType} value, size_t count) {\n`);
+      output.append("  if (count == 0) return;\n");
+      output.append("  if (count > SIZE_MAX - self->length) abort();\n");
+      output.append(`  if (self->length + count > self->capacity) Z_${declaration.name}_reserveCapacity(self, self->length + count);\n`);
+      output.append(`  ${elementType} *target = (${elementType} *)self->data + self->length;\n`);
+      output.append("  switch (count) {\n");
+      let shortCount: usize = 16;
+      while (shortCount > 1) {
+        output.append(`    case ${shortCount}: target[${shortCount - 1}] = value; /* fallthrough */\n`);
+        shortCount = shortCount - 1;
+      }
+      output.append("    case 1: target[0] = value; break;\n");
+      output.append("    default: for (size_t index = 0; index < count; index += 1) target[index] = value;\n");
+      output.append("  }\n");
+      output.append("  self->length += count;\n");
       output.append("}\n\n");
     }
     output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_push(Z_${declaration.name} *self, ${elementType} value) {\n`);

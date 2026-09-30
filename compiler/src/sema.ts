@@ -483,6 +483,7 @@ export type SemanticInfo = {
   readonly numericConversions: ReadonlyMap<number, NumericConversion>;
   readonly dynamicArrayPushTypes: ReadonlySet<string>;
   readonly dynamicArrayAppendTypes: ReadonlySet<string>;
+  readonly dynamicArrayAppendRepeatedTypes: ReadonlySet<string>;
   readonly arenaCreateCalls: ReadonlyMap<number, string>;
   readonly arenaResetCalls: ReadonlySet<number>;
   readonly memoryReplaceBindings: ReadonlySet<string>;
@@ -670,6 +671,7 @@ type AnalysisState = {
   readonly numericConversions: Map<number, NumericConversion>;
   readonly dynamicArrayPushTypes: Set<string>;
   readonly dynamicArrayAppendTypes: Set<string>;
+  readonly dynamicArrayAppendRepeatedTypes: Set<string>;
   readonly unboundStoredViewContainerInitializers: Set<number>;
   readonly arenaCreateCalls: Map<number, string>;
   readonly arenaResetCalls: Set<number>;
@@ -1383,6 +1385,7 @@ export function analyze(
     numericConversions: new Map(),
     dynamicArrayPushTypes: new Set(),
     dynamicArrayAppendTypes: new Set(),
+    dynamicArrayAppendRepeatedTypes: new Set(),
     unboundStoredViewContainerInitializers: new Set(),
     arenaCreateCalls: new Map(),
     arenaResetCalls: new Set(),
@@ -13636,6 +13639,7 @@ function inferExpressionInner(
             && expression.callee.property !== "freeze"
             && expression.callee.property !== "reserveCapacity"
             && expression.callee.property !== "append"
+            && expression.callee.property !== "appendRepeated"
           ) {
             throw new DiagnosticError(fileName, expression.callee.location, `Array has no method ${JSON.stringify(expression.callee.property)}`);
           }
@@ -13660,7 +13664,8 @@ function inferExpressionInner(
           const popping = expression.callee.property === "pop";
           const reserving = expression.callee.property === "reserveCapacity";
           const appending = expression.callee.property === "append";
-          const expectedArguments = clearing || popping ? 0 : 1;
+          const repeating = expression.callee.property === "appendRepeated";
+          const expectedArguments = clearing || popping ? 0 : repeating ? 2 : 1;
           if (expression.arguments.length !== expectedArguments) {
             throw new DiagnosticError(
               fileName,
@@ -13769,6 +13774,26 @@ function inferExpressionInner(
               }, fileName);
             }
             state.dynamicArrayAppendTypes.add(String(receiverValueType));
+            return "void";
+          }
+          if (repeating) {
+            // One value stored `count` times: one capacity check and a fill,
+            // so the first tier admits only cleanup-free elements, as append does.
+            const elementType = dynamic.elementType;
+            if (!isCleanupFreeElementType(elementType, structs, enums, state)) {
+              throw new DiagnosticError(fileName, expression.callee.location, `Array.appendRepeated requires a cleanup-free element type, found ${displayAssignableType(elementType, state)}`, {
+                length: "appendRepeated".length,
+                notes: ["appendRepeated stores one value many times; an element that owns storage needs its own copy"],
+                helps: ["push each element with an explicit copy"],
+              });
+            }
+            const value = expression.arguments[0];
+            const actualValue = inferExpression(value, locals, globals, structs, enums, fileName, state, false, elementType);
+            requireAssignable(elementType, actualValue, value, fileName, structs, enums, state);
+            const count = expression.arguments[1];
+            const actualCount = inferExpression(count, locals, globals, structs, enums, fileName, state, false, "usize");
+            requireAssignable("usize", actualCount, count, fileName, structs, enums, state);
+            state.dynamicArrayAppendRepeatedTypes.add(String(receiverValueType));
             return "void";
           }
           if (popping) {

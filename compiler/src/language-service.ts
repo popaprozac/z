@@ -2205,6 +2205,12 @@ export function hover(source: string, fileName: string, offset: number): Hover |
           source, word.start, word.end,
         );
       }
+      if (!dynamic.readonly && word.text === "appendRepeated") {
+        return markdownHover(
+          `appendRepeated(value: ${displayType(dynamic.elementType, context.typeDisplayNames)}, count: usize): void\n// stores the value count times at the end in one step; cleanup-free elements only; may reallocate; requires exclusive mutable storage`,
+          source, word.start, word.end,
+        );
+      }
       if (!dynamic.readonly && word.text === "freeze") {
         return markdownHover(
           `freeze(): readonly Array<${displayType(dynamic.elementType, context.typeDisplayNames)}>  // consumes without copying`,
@@ -6210,6 +6216,11 @@ function memberCompletions(
           kind: completionKinds.method,
           detail: `append(items: Slice<${displayType(dynamic.elementType, context.typeDisplayNames)}>): void  // copies the elements in one step; may reallocate`,
           insertText: "append()",
+        }, {
+          label: "appendRepeated",
+          kind: completionKinds.method,
+          detail: `appendRepeated(value: ${displayType(dynamic.elementType, context.typeDisplayNames)}, count: usize): void  // stores the value count times in one step; may reallocate`,
+          insertText: "appendRepeated()",
         }, {
           label: "freeze",
           kind: completionKinds.method,

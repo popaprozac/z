@@ -887,7 +887,7 @@ export function generateC(
   for (const closure of closures.filter((candidate) => candidate.captures.length > 0)) {
     lines.push(generateClosureEnvironmentDefinition(closure, structs, enums, semanticInfo), "");
   }
-  for (const type of new Set([...dynamicArrayTypes, ...dynamicArrayPushTypes, ...semanticInfo.dynamicArrayAppendTypes])) {
+  for (const type of new Set([...dynamicArrayTypes, ...dynamicArrayPushTypes, ...semanticInfo.dynamicArrayAppendTypes, ...semanticInfo.dynamicArrayAppendRepeatedTypes])) {
     lines.push(generateDynamicArrayReserveCapacity(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const type of dynamicArrayPushTypes) {
@@ -895,6 +895,9 @@ export function generateC(
   }
   for (const type of semanticInfo.dynamicArrayAppendTypes) {
     lines.push(generateDynamicArrayAppend(type, structs, enums, semanticInfo.foreignNamedTypes), "");
+  }
+  for (const type of semanticInfo.dynamicArrayAppendRepeatedTypes) {
+    lines.push(generateDynamicArrayAppendRepeated(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const declaration of program.structs) {
     if (hasSemanticCleanupType(declaration.name, structs, enums, semanticInfo)) {
@@ -5248,6 +5251,40 @@ function generateDynamicArrayAppend(
   self->length += items.length;
 }`;
 }
+
+// Array.appendRepeated for a cleanup-free element type: one capacity check,
+// then the value stored count times. A short run is straight stores, since a
+// C compiler turns a fill loop into a library call that costs more than the
+// few stores it replaces; a longer run is a loop it may vectorize or call out.
+function generateDynamicArrayAppendRepeated(
+  name: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const dynamic = parseDynamicArrayType(name)!;
+  const arrayType = dynamicArrayName(name);
+  const elementType = mapType(dynamic.elementType, structs, enums, foreignNamedTypes);
+  return `static Z_UNUSED_FUNCTION void ${arrayType}_appendRepeated(${arrayType} *self, ${elementType} value, uintptr_t count) {
+  if (count == 0) return;
+  if (count > SIZE_MAX - self->length) abort();
+  if (self->length + count > self->capacity) ${arrayType}_reserveCapacity(self, self->length + count);
+  ${elementType} *target = self->data + self->length;
+  switch (count) {
+${dynamicArrayShortFillCases}
+    case 1: target[0] = value; break;
+    default: for (uintptr_t index = 0; index < count; index += 1) target[index] = value;
+  }
+  self->length += count;
+}`;
+}
+
+// The stores of a run of sixteen or fewer, entered at its count and falling
+// through to the first element, which the caller's last case stores.
+const dynamicArrayShortFillCases = Array.from(
+  { length: 15 },
+  (_, offset) => `    case ${16 - offset}: target[${15 - offset}] = value; /* fallthrough */`,
+).join("\n");
 
 function generateDynamicArrayPop(
   name: string,
@@ -12220,6 +12257,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           }
           if (expression.callee.property === "append") {
             return `${dynamicArrayName(receiverValueType)}_append(&(${receiver}), ${generateCallArgument(expression.arguments[0], context)})`;
+          }
+          if (expression.callee.property === "appendRepeated") {
+            return `${dynamicArrayName(receiverValueType)}_appendRepeated(&(${receiver}), ${generateCallArgument(expression.arguments[0], context)}, ${generateExpression(expression.arguments[1], context)})`;
           }
           const argument = generateCallArgument(expression.arguments[0], context);
           return `${dynamicArrayPushName(receiverValueType)}(&(${receiver}), ${argument})`;

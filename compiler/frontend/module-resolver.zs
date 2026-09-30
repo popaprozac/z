@@ -5708,9 +5708,9 @@ function requireIntrinsicArrayMethodRules(
       );
     }
   }
-  if (methodName == "append") {
-    // The first tier copies elements as a block, so only
-    // cleanup-free element types are accepted.
+  if (methodName == "append" || methodName == "appendRepeated") {
+    // The first tier copies elements as a block, or stores one value many
+    // times, so only cleanup-free element types are accepted.
     const appendOwnerType = sourceCollectionTypeName(in ownerType);
     match (genericTypeShape(appendOwnerType)) {
       some(arrayShape) => {
@@ -5726,7 +5726,7 @@ function requireIntrinsicArrayMethodRules(
             throw resolutionError(
               ModuleResolveErrorKind.typeMismatch,
               module.path,
-              `Array.append requires a cleanup-free element type, found ${elementType}`,
+              `Array.${methodName} requires a cleanup-free element type, found ${elementType}`,
               tree.nodes[calleeIndex].line,
               tree.nodes[calleeIndex].column
             );

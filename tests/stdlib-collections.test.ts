@@ -2950,6 +2950,129 @@ test("surfaces Array.append in hover and completion", () => {
   assert.ok(completions(source, "array-append-hover.zs", offset + "append".length).some((entry) => entry.label === "append"));
 });
 
+test("stores one value many times in one step across both compilers and async frames", () => {
+  const directory = mkdtempSync("/tmp/z-array-append-repeated-");
+  try {
+    for (const name of ["array-append-repeated", "array-append-repeated-async"]) {
+      const input = resolve(projectRoot, `tests/fixtures/${name}.zs`);
+      const stage0 = compileToC(readFileSync(input, "utf8"), input);
+      assert.match(stage0, /_appendRepeated\([^)]*\*self, [^)]*value, uintptr_t count\) \{\s+if \(count == 0\) return;/);
+      const checked = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(checked.status, 0, checked.stderr);
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(native.status, 0, native.stderr);
+      for (const [tier, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+        for (const optimization of ["-O0", "-O2"]) {
+          const executable = resolve(directory, `${name}-${tier}${optimization}`);
+          const built = spawnSync("clang", ["-x", "c", "-std=c11", optimization,
+            "-Wall", "-Wextra", "-Werror", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+            encoding: "utf8", input: generated, timeout: 30_000,
+          });
+          assert.equal(built.status, 0, built.stderr);
+          const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+          assert.equal(run.status, 0, `${name} ${tier}${optimization}: ${run.stderr}`);
+          assert.equal(run.stdout, "");
+        }
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("Array.appendRepeated grows storage at most once and makes no library fill for a short run", () => {
+  const directory = mkdtempSync("/tmp/z-array-append-repeated-allocations-");
+  const instrumentation = `
+    #include <stdlib.h>
+    #include <stdio.h>
+    static unsigned allocation_calls;
+    static void *counted_realloc(void *pointer, size_t bytes) {
+      allocation_calls += 1;
+      return realloc(pointer, bytes);
+    }
+    #define realloc counted_realloc
+    #define main measured_main
+  `;
+  const wrapper = `
+    #undef main
+    int main(void) {
+      int result = measured_main();
+      printf("%u\\n", allocation_calls);
+      return result;
+    }
+  `;
+  try {
+    const input = resolve(directory, "main.zs");
+    // One growth for the whole run, none for the short run that fits.
+    const source = `function main(): i32 {
+      let words = Array<u64>();
+      words.appendRepeated(9221120237041090561, 1024);
+      words.appendRepeated(7, 0);
+      let few = Array<u64>.withCapacity(16);
+      few.appendRepeated(9221120237041090561, few.capacity - 3);
+      return words.length == 1024 && words[1023] == 9221120237041090561 && few.length == 13 && few[12] == words[0] ? 0 : 1;
+    }`;
+    writeFileSync(input, source);
+    const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr);
+    for (const [tier, generated] of [["stage0", compileToC(source, input)], ["native", native.stdout]]) {
+      const executable = resolve(directory, tier);
+      const entryWrapper = /main\(int argc, char \*\*argv\)/.test(generated)
+        ? wrapper.replace("measured_main()", "measured_main(0, NULL)") : wrapper;
+      const built = spawnSync("clang", ["-x", "c", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-", "-o", executable], {
+        encoding: "utf8", input: instrumentation + generated + entryWrapper, timeout: 30_000,
+      });
+      assert.equal(built.status, 0, built.stderr);
+      const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(Number(run.stdout), 2, tier);
+      // A run of sixteen or fewer is a switch of plain stores; only the
+      // longer form is a loop the C compiler may replace.
+      assert.match(generated, /case 16: target\[15\] = value;[\s\S]*case 1: target\[0\] = value; break;\s+default: for \(/, tier);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("checks Array.appendRepeated element types, storage, arity, and argument types", () => {
+  const cases: [string, RegExp][] = [
+    ["const values = Array<u8>(1); values.appendRepeated(2, 3);", /requires addressable let storage/],
+    ["let values = Array<u8>(1); const frozen = values.freeze(); frozen.appendRepeated(2, 3);", /readonly Array has no mutating method "appendRepeated"/],
+    ["let names = Array<String>(\"a\"); names.appendRepeated(\"b\", 2);", /Array\.appendRepeated requires a cleanup-free element type, found String/],
+    ["let values = Array<u8>(1, 2); const first = view values[0]; values.appendRepeated(3, 2); console.log(first);", /cannot mutate "values" while view "first" is live/],
+    ["let values = Array<u8>(1, 2); for (const value of values) { values.appendRepeated(value, 2); }", /cannot structurally mutate Array "values" while for\.\.\.of is borrowing it/],
+    ["let values = Array<u8>(1); values.appendRepeated(true, 2);", /expected u8, found boolean/],
+    ["let values = Array<u8>(1); values.appendRepeated(2, true);", /expected usize, found boolean/],
+    ["let values = Array<u8>(1); const count: i32 = 2; values.appendRepeated(2, count);", /expected usize, found i32/],
+    ["let values = Array<u8>(1); values.appendRepeated(2);", /expects 2 arguments, received 1/],
+    ["let values = Array<u8>(1); values.appendRepeated(2, 3, 4);", /expects 2 arguments, received 3/],
+  ];
+  const directory = mkdtempSync("/tmp/z-array-append-repeated-invalid-");
+  try {
+    for (const [body, message] of cases) {
+      const source = `import console from "std/console"; function main(): i32 { ${body} return 0; }`;
+      assert.throws(() => compileToC(source, "array-append-repeated-invalid.zs"), message);
+      const input = resolve(directory, "invalid.zs");
+      writeFileSync(input, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(native.status, 1, `${body}\n${native.stderr}`);
+      assert.match(native.stderr, /addressable|readonly|cleanup-free|view|expected u8|expected usize|argument/);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("surfaces Array.appendRepeated in hover and completion", () => {
+  const source = "function main(): i32 { let values = Array<u8>(); values.appendRepeated(7, 3); return 0; }";
+  const offset = source.indexOf("appendRepeated");
+  assert.match(hover(source, "array-append-repeated-hover.zs", offset)?.contents.value ?? "", /appendRepeated\(value: u8, count: usize\): void/);
+  assert.ok(completions(source, "array-append-repeated-hover.zs", offset + "appendRepeated".length).some((entry) => entry.label === "appendRepeated"));
+});
+
 test("pops the last Array element by ownership transfer and retains capacity", () => {
   const input = resolve(projectRoot, "tests/fixtures/array-pop.zs");
   const directory = mkdtempSync("/tmp/z-array-pop-");

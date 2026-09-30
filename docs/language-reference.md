@@ -2479,6 +2479,28 @@ Cost: one capacity check, at most one growth of the buffer, and one block copy
 of the elements. An empty argument does nothing. Capacity-size overflow and
 allocation failure trap as for `push`.
 
+`appendRepeated(value: T, count: usize): void` stores one value `count` times
+onto the end in one step: a zeroed table, a run of empty slots, or the missing
+tail up to an index.
+
+```z
+let buckets = Array<u32>.withCapacity(size);
+buckets.appendRepeated(0, size);
+
+// Grow to hold `index`, filling what is missing.
+if (flags.length <= index) flags.appendRepeated(DEFAULT, index + 1 - flags.length);
+```
+
+It has the same first tier as `append`: a cleanup-free element type, and
+addressable mutable `let` storage for the receiver. `value` is an ordinary
+by-value argument of the element type and `count` a `usize`. The method only
+adds elements; it never shortens the Array.
+
+Cost: one capacity check, at most one growth of the buffer, and `count`
+stores. A run of sixteen or fewer is stored inline; a longer one is a fill loop
+the C compiler may vectorize or hand to its library. A count of zero does
+nothing. Capacity-size overflow and allocation failure trap as for `push`.
+
 `Array<T>` supports move-only native C++ values. `push(value)` transfers the
 element into the buffer. Growth allocates native storage, move-constructs each
 live element into the new allocation, destroys the old elements, and releases
