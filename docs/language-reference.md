@@ -2394,6 +2394,26 @@ functions are rejected in this first tier.
 Cost: one bounds comparison pair and a two-word descriptor; no allocation or
 copy.
 
+Inside `unsafe`, an element whose index the program has already bounded can be
+read and written without the per-access check:
+
+```z
+function reg(index: u8): Value {
+  // Frame entry established base + registerCount <= registers.length.
+  return unsafe { select this.registers.uncheckedAt(this.base + usize(index)); };
+}
+```
+
+`uncheckedAt(index: usize): T` works on a stored fixed array, `Array<T>`,
+readonly Array, or `Slice<T>`; `uncheckedSet(index: usize, value: T): void` on
+mutable fixed-array or `Array<T>` storage, under the same rules as element
+assignment. Both require an enclosing `unsafe` block and a cleanup-free element
+type. The program asserts `index < length`: a debug build checks it and traps
+as ordinary indexing does, while a release build (`--release`, which defines
+`NDEBUG`) skips the check, so a wrong assertion there is undefined behavior.
+Outside `unsafe` both methods are errors; ordinary `values[index]` is always
+checked.
+
 `Array<T>()` constructs an empty growable array. Values may be supplied directly
 without a sequence of `push` calls:
 

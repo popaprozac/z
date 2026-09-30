@@ -5603,6 +5603,141 @@ function contextualizeNumericOperands(
   }
 }
 
+// The checks Z adds to an intrinsic Array or Slice method beyond its
+// signature: `uncheckedAt`/`uncheckedSet` inside `unsafe` on cleanup-free
+// elements, `slice` only as a direct Slice argument, and `append` of
+// cleanup-free elements. Kept out of the expression walk, whose stack frame
+// every nested expression pays for.
+function requireIntrinsicArrayMethodRules(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  receiverIndex: usize,
+  index: usize,
+  in methodName: String,
+  in ownerType: String,
+  in effectiveSignature: ModuleFunctionSignature,
+  in bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  if (
+    (methodName == "uncheckedAt" || methodName == "uncheckedSet")
+    && effectiveSignature.parameterTypes.length > 0
+    && effectiveSignature.parameterTypes[0] == "usize"
+  ) {
+    const accessUnsafeContext = valueBindingType(bindings, "__z_native_unsafe_context");
+    if (accessUnsafeContext.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `values.${methodName} skips the bounds check and requires an unsafe block`,
+        tree.nodes[calleeIndex].line,
+        tree.nodes[calleeIndex].column
+      );
+    }
+    const accessOwner = sourceCollectionTypeName(in ownerType);
+    const accessElement = arrayElementType(accessOwner);
+    const accessVisiting = Array<String>();
+    if (
+      typeHasCleanup(modules, moduleIndex, accessElement, accessVisiting)
+      || typeMovesOnOwnedUse(modules, moduleIndex, accessElement)
+      || typeContainsStoredView(modules, moduleIndex, accessElement, accessVisiting)
+      || typeContainsForeignValueStorage(modules, moduleIndex, accessElement, accessVisiting)
+    ) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `values.${methodName} requires a cleanup-free element type, found ${accessElement}`,
+        tree.nodes[calleeIndex].line,
+        tree.nodes[calleeIndex].column
+      );
+    }
+    const accessRoot = expressionStorageRootName(tree, receiverIndex);
+    if (accessRoot.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `values.${methodName} requires stored array or Slice storage`,
+        tree.nodes[receiverIndex].line,
+        tree.nodes[receiverIndex].column
+      );
+    }
+    if (methodName == "uncheckedSet" && stringStartsWith(accessOwner, "Slice<")) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "values.uncheckedSet requires Array or fixed-array storage",
+        tree.nodes[calleeIndex].line,
+        tree.nodes[calleeIndex].column
+      );
+    }
+  }
+  if (methodName == "slice" && stringStartsWith(effectiveSignature.returnType, "Slice<")) {
+    const rangeMarker = sliceRangeArgumentBindingName(tree.nodes[index].offset);
+    const rangePosition = valueBindingType(bindings, rangeMarker);
+    if (rangePosition.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "values.slice(start, end) borrows only for one call; pass it directly as a Slice argument",
+        tree.nodes[calleeIndex].line,
+        tree.nodes[calleeIndex].column
+      );
+    }
+    const rangeAsyncContext = valueBindingType(bindings, "__z_native_async_context");
+    if (rangeAsyncContext.byteLength > 0) {
+      throw codedModuleResolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        "Z0700",
+        module.path,
+        "values.slice(start, end) is not yet available in async functions",
+        tree.nodes[calleeIndex].line,
+        tree.nodes[calleeIndex].column,
+        5
+      );
+    }
+    const rangeRoot = expressionStorageRootName(tree, receiverIndex);
+    if (rangeRoot.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "values.slice(start, end) requires stored array or Slice storage",
+        tree.nodes[receiverIndex].line,
+        tree.nodes[receiverIndex].column
+      );
+    }
+  }
+  if (methodName == "append") {
+    // The first tier copies elements as a block, so only
+    // cleanup-free element types are accepted.
+    const appendOwnerType = sourceCollectionTypeName(in ownerType);
+    match (genericTypeShape(appendOwnerType)) {
+      some(arrayShape) => {
+        if (arrayShape.base == "Array" && arrayShape.arguments.length == 1) {
+          const elementType = arrayShape.arguments[0].copyBytes(0, arrayShape.arguments[0].byteLength);
+          const visiting = Array<String>();
+          if (
+            typeHasCleanup(modules, moduleIndex, elementType, visiting)
+            || typeMovesOnOwnedUse(modules, moduleIndex, elementType)
+            || typeContainsStoredView(modules, moduleIndex, elementType, visiting)
+            || typeContainsForeignValueStorage(modules, moduleIndex, elementType, visiting)
+          ) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `Array.append requires a cleanup-free element type, found ${elementType}`,
+              tree.nodes[calleeIndex].line,
+              tree.nodes[calleeIndex].column
+            );
+          }
+        }
+      }
+      none => {}
+    }
+  }
+}
+
 function inferExpressionNodeType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -7215,6 +7350,7 @@ function inferExpressionNodeType(
       "__z_native_unsafe_union_access",
       "true"
     );
+    addValueBinding(inout unsafeBindings, "__z_native_unsafe_context", "true");
     const unsafeBindingIndex = unsafeBindings.length;
     const expectedType = contextualExpectedType(bindings, tree, index);
     const result = try inferMatchArmStatementType(
@@ -10901,69 +11037,8 @@ function inferExpressionNodeType(
                 module, modules, moduleIndex, tree, receiverIndex, evidence, true
               );
             }
-            if (methodName == "slice" && stringStartsWith(effectiveSignature.returnType, "Slice<")) {
-              const rangeMarker = sliceRangeArgumentBindingName(tree.nodes[index].offset);
-              const rangePosition = valueBindingType(bindings, rangeMarker);
-              if (rangePosition.byteLength == 0) {
-                throw resolutionError(
-                  ModuleResolveErrorKind.typeMismatch,
-                  module.path,
-                  "values.slice(start, end) borrows only for one call; pass it directly as a Slice argument",
-                  tree.nodes[calleeIndex].line,
-                  tree.nodes[calleeIndex].column
-                );
-              }
-              const rangeAsyncContext = valueBindingType(bindings, "__z_native_async_context");
-              if (rangeAsyncContext.byteLength > 0) {
-                throw codedModuleResolutionError(
-                  ModuleResolveErrorKind.typeMismatch,
-                  "Z0700",
-                  module.path,
-                  "values.slice(start, end) is not yet available in async functions",
-                  tree.nodes[calleeIndex].line,
-                  tree.nodes[calleeIndex].column,
-                  5
-                );
-              }
-              const rangeRoot = expressionStorageRootName(tree, receiverIndex);
-              if (rangeRoot.byteLength == 0) {
-                throw resolutionError(
-                  ModuleResolveErrorKind.typeMismatch,
-                  module.path,
-                  "values.slice(start, end) requires stored array or Slice storage",
-                  tree.nodes[receiverIndex].line,
-                  tree.nodes[receiverIndex].column
-                );
-              }
-            }
-            if (methodName == "append") {
-              // The first tier copies elements as a block, so only
-              // cleanup-free element types are accepted.
-              const appendOwnerType = sourceCollectionTypeName(in ownerType);
-              match (genericTypeShape(appendOwnerType)) {
-                some(arrayShape) => {
-                  if (arrayShape.base == "Array" && arrayShape.arguments.length == 1) {
-                    const elementType = arrayShape.arguments[0].copyBytes(0, arrayShape.arguments[0].byteLength);
-                    const visiting = Array<String>();
-                    if (
-                      typeHasCleanup(modules, moduleIndex, elementType, visiting)
-                      || typeMovesOnOwnedUse(modules, moduleIndex, elementType)
-                      || typeContainsStoredView(modules, moduleIndex, elementType, visiting)
-                      || typeContainsForeignValueStorage(modules, moduleIndex, elementType, visiting)
-                    ) {
-                      throw resolutionError(
-                        ModuleResolveErrorKind.typeMismatch,
-                        module.path,
-                        `Array.append requires a cleanup-free element type, found ${elementType}`,
-                        tree.nodes[calleeIndex].line,
-                        tree.nodes[calleeIndex].column
-                      );
-                    }
-                  }
-                }
-                none => {}
-              }
-            }
+            try requireIntrinsicArrayMethodRules(module, modules, moduleIndex, tree, calleeIndex,
+              receiverIndex, index, methodName, ownerType, effectiveSignature, bindings);
             const substitutions = Array<NativeValueBinding>();
             const argumentNodes = callArgumentNodes(children);
             const callType = try inferSignatureCallType(
@@ -13466,6 +13541,9 @@ function inferStatement(
     return scopeContinues;
   }
   let nestedBindings = copyValueBindings(bindings);
+  if (kind == StatementKind.unsafeStatement) {
+    addValueBinding(inout nestedBindings, "__z_native_unsafe_context", "true");
+  }
   const nestedContinues = try inferStatementSequence(
     module,
     modules,

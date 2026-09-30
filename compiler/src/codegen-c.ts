@@ -36,6 +36,7 @@ import type {
   RawExpressionPlan,
   SemanticInfo,
   SliceRange,
+  UncheckedAccess,
   StructSpreadPlan,
   ForeignUnionMatchPlan,
 } from "./sema.ts";
@@ -491,6 +492,21 @@ export function generateC(
       "",
       "static Z_UNUSED_FUNCTION inline uintptr_t z_bounds_index(uintptr_t index, uintptr_t length) {",
       "  if (index >= length) abort();",
+      "  return index;",
+      "}",
+    );
+  }
+  if (semanticInfo.uncheckedAccesses.size > 0) {
+    lines.push(
+      "",
+      "// An index the program asserts is in bounds: checked in a debug build,",
+      "// trusted in a release build (NDEBUG).",
+      "static Z_UNUSED_FUNCTION inline uintptr_t z_unchecked_index(uintptr_t index, uintptr_t length) {",
+      "#ifdef NDEBUG",
+      "  (void)length;",
+      "#else",
+      "  if (index >= length) abort();",
+      "#endif",
       "  return index;",
       "}",
     );
@@ -11242,6 +11258,27 @@ function generateRawExpressionCall(
     : call;
 }
 
+// `values.uncheckedAt(index)` and `values.uncheckedSet(index, value)`: the
+// element access `values[index]` makes, through `z_unchecked_index`, which
+// checks the bound only in a build without NDEBUG.
+function generateUncheckedAccess(
+  receiver: Expression,
+  args: readonly Expression[],
+  access: UncheckedAccess,
+  context: GenerationContext,
+): string {
+  const fixed = parseFixedArrayType(access.sourceType);
+  const receiverType = inferExpressionType(receiver, context);
+  const view = parseViewType(receiverType);
+  const owner = access.kind === "set"
+    ? generateAssignmentTarget(receiver, context)
+    : generateExpression(receiver, context);
+  const storage = view ? `(*(${owner}))` : `(${owner})`;
+  const length = fixed ? String(fixed.length) : `${storage}.length`;
+  const element = `${storage}.data[z_unchecked_index((uintptr_t)(${generateExpression(args[0], context)}), ${length})]`;
+  return access.kind === "at" ? `(${element})` : `(${element} = ${generateExpression(args[1], context)})`;
+}
+
 function generateExpressionInner(expression: Expression, context: GenerationContext): string {
   switch (expression.kind) {
     case "number":
@@ -11724,6 +11761,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return maybeRetainClass(expression, value, context);
     }
     case "call": {
+      const unchecked = context.semanticInfo.uncheckedAccesses.get(expression.location.offset);
+      if (unchecked && expression.callee.kind === "member") {
+        return generateUncheckedAccess(expression.callee.object, expression.arguments, unchecked, context);
+      }
       if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier"
         && parseDynamicArrayType(expression.callee.object.name) && expression.callee.property === "withCapacity") {
         return `${dynamicArrayName(expression.callee.object.name)}_withCapacity(${generateExpression(expression.arguments[0], context)})`;
@@ -13715,6 +13756,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return owner?.fields.find((field) => field.name === expression.property)?.type.name ?? "i32";
     }
     case "call": {
+      const unchecked = context.semanticInfo.uncheckedAccesses.get(expression.location.offset);
+      if (unchecked) return unchecked.kind === "at" ? unchecked.elementType : "void";
       const standard = context.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
       if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier"
         && parseDynamicArrayType(expression.callee.object.name) && expression.callee.property === "withCapacity") {

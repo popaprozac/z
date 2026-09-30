@@ -2156,6 +2156,16 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       return markdownHover(`length: usize  // ${displayType(resolved.type, context.typeDisplayNames)}`, source, word.start, word.end);
     }
     const rangeElement = resolved?.kind === "array" ? sliceRangeElementType(resolved.type) : null;
+    if (rangeElement !== null && (word.text === "uncheckedAt" || word.text === "uncheckedSet")) {
+      const element = displayType(rangeElement, context.typeDisplayNames);
+      const signature = word.text === "uncheckedAt"
+        ? `uncheckedAt(index: usize): ${element}`
+        : `uncheckedSet(index: usize, value: ${element}): void`;
+      return markdownHover(
+        `${signature}\n// inside unsafe: the program asserts index < length; checked in a debug build, not in a release build`,
+        source, word.start, word.end,
+      );
+    }
     if (rangeElement !== null && word.text === "slice") {
       return markdownHover(
         `slice(start: usize, end: usize): Slice<${displayType(rangeElement, context.typeDisplayNames)}>\n// borrows [start, end) for one call; pass it directly as a Slice argument; traps unless start <= end <= length`,
@@ -6147,6 +6157,21 @@ function memberCompletions(
     const items: CompletionItem[] = [{ label: "length", kind: completionKinds.property, detail: "usize" }];
     const rangeElement = sliceRangeElementType(resolved.type);
     if (rangeElement !== null) {
+      const element = displayType(rangeElement, context.typeDisplayNames);
+      items.push({
+        label: "uncheckedAt",
+        kind: completionKinds.method,
+        detail: `uncheckedAt(index: usize): ${element}  // inside unsafe; checked only in debug builds`,
+        insertText: "uncheckedAt()",
+      });
+      if (!parseSliceType(resolved.type) && !parseDynamicArrayType(resolved.type)?.readonly) {
+        items.push({
+          label: "uncheckedSet",
+          kind: completionKinds.method,
+          detail: `uncheckedSet(index: usize, value: ${element}): void  // inside unsafe; checked only in debug builds`,
+          insertText: "uncheckedSet()",
+        });
+      }
       items.push({
         label: "slice",
         kind: completionKinds.method,

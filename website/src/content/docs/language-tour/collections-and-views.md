@@ -74,6 +74,10 @@ arrays of them); push elements that own storage one at a time with an explicit
 copy. Appending an array to itself is a compile-time error, because the call
 borrows the source while it may grow the receiver.
 
+Indexing is always checked. Where a program has already proven an index in
+bounds, `uncheckedAt` and `uncheckedSet` inside `unsafe` skip the check in
+release builds; see [unsafe native calls](/interop/unsafe-native-calls/).
+
 `values.clear()` destroys every live element immediately in reverse order and
 sets `length` to zero. The backing allocation and `capacity` remain available
 for later `push` calls. Clearing requires mutable `let` storage and is rejected

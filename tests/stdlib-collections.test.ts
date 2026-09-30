@@ -1670,6 +1670,98 @@ test("call loans keep the field path before an element index in both compilers",
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 300_000);
 
+test("accesses elements with an asserted bound inside unsafe in both compilers", () => {
+  const input = resolve(projectRoot, "tests/fixtures/unchecked-access.zs");
+  const stage0 = compileToC(readFileSync(input, "utf8"), input);
+  assert.match(stage0, /#ifdef NDEBUG[\s\S]*z_unchecked_index/);
+  const checked = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
+    encoding: "utf8", timeout: 120_000,
+  });
+  assert.equal(checked.status, 0, checked.stderr);
+  const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+  });
+  assert.equal(native.status, 0, native.stderr);
+  assert.match(native.stdout, /_at_mut_assumed\(/);
+  const directory = mkdtempSync("/tmp/z-unchecked-access-");
+  try {
+    const build = (name: string, generated: string, flags: readonly string[]) => {
+      const executable = resolve(directory, name);
+      const built = spawnSync("clang", ["-x", "c", "-std=c11", ...flags, "-Wall", "-Wextra", "-Werror",
+        "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        encoding: "utf8", input: generated, timeout: 30_000,
+      });
+      assert.equal(built.status, 0, `${name}: ${built.stderr}`);
+      return spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+    };
+    for (const [tier, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+      for (const [mode, flags] of [["debug", ["-O0"]], ["release", ["-O2", "-DNDEBUG"]]] as const) {
+        const run = build(`${tier}-${mode}`, generated, flags);
+        assert.equal(run.status, 0, `${tier} ${mode}: ${run.stderr}`);
+      }
+    }
+    // A debug build still checks the asserted bound.
+    const outOfRange = `function main(): i32 {
+      const values = Array<i32>(1, 2);
+      const item = unsafe { select values.uncheckedAt(5); };
+      return item;
+    }`;
+    const file = resolve(directory, "out-of-range.zs");
+    writeFileSync(file, outOfRange);
+    const emitted = spawnSync(process.execPath, [cli, "self-host-emit", file], {
+      encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(emitted.status, 0, emitted.stderr);
+    for (const [tier, generated] of [["stage0", compileToC(outOfRange, file)], ["native", emitted.stdout]]) {
+      assert.equal(build(`trap-${tier}`, generated, ["-O0"]).signal, "SIGABRT", tier);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("checks unchecked element access for unsafe, element types, storage, and arguments", () => {
+  const cases: [string, RegExp][] = [
+    ["const values = Array<i32>(1); const item = values.uncheckedAt(0);", /uncheckedAt skips the bounds check and requires an unsafe block/],
+    ["const names = Array<String>(\"a\"); const item = unsafe { select names.uncheckedAt(0); };", /requires a cleanup-free element type, found String/],
+    ["const item = unsafe { select Array<i32>(1).uncheckedAt(0); };", /requires stored array or Slice storage/],
+    ["let values = Array<i32>(1); const frozen = values.freeze(); unsafe { frozen.uncheckedSet(0, 2); }", /readonly (Array|collection) has no mutating method "uncheckedSet"/],
+    ["const values = Array<i32>(1); unsafe { values.uncheckedSet(0, 2); }", /uncheckedSet"? requires addressable let storage/],
+    ["let values = Array<i32>(1); const item = unsafe { select values.uncheckedAt(true); };", /expected usize, found boolean/],
+    ["let values = Array<i32>(1); unsafe { values.uncheckedSet(0, true); }", /expected i32, found boolean/],
+    ["let values = Array<i32>(1); const item = unsafe { select values.uncheckedAt(0, 1); };", /uncheckedAt"? expects 1 argument/],
+  ];
+  const directory = mkdtempSync("/tmp/z-unchecked-access-invalid-");
+  try {
+    for (const [body, message] of cases) {
+      const source = `function main(): i32 { ${body} return 0; }`;
+      assert.throws(() => compileToC(source, "unchecked-access-invalid.zs"), message);
+      const input = resolve(directory, "invalid.zs");
+      writeFileSync(input, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], { encoding: "utf8", timeout: 120_000 });
+      assert.equal(native.status, 1, `${body}\n${native.stderr}`);
+      assert.match(native.stderr, message);
+    }
+    const slice = `function touch(values: Slice<i32>): void { unsafe { values.uncheckedSet(0, 1); } }
+      function main(): i32 { return 0; }`;
+    assert.throws(() => compileToC(slice, "unchecked-slice-set.zs"), /uncheckedSet requires Array or fixed-array storage/);
+    // Stage 0 only: the native resolver does not yet enforce live views for
+    // mutations inside nested blocks, unsafe or not.
+    assert.throws(() => compileToC(`function main(): i32 {
+      let values = Array<i32>(1, 2);
+      const first = view values[0];
+      unsafe { values.uncheckedSet(1, 3); }
+      const copy = first;
+      return 0;
+    }`, "unchecked-view.zs"), /cannot mutate "values" while view "first" is live/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("surfaces unchecked element access in hover and completion", () => {
+  const source = "function main(): i32 { let values = Array<u8>(1); const item = unsafe { select values.uncheckedAt(0); }; return 0; }";
+  const offset = source.indexOf("uncheckedAt");
+  assert.match(hover(source, "unchecked-hover.zs", offset)?.contents.value ?? "", /uncheckedAt\(index: usize\): u8[\s\S]*debug build/);
+  assert.ok(completions(source, "unchecked-hover.zs", offset + "uncheckedAt".length).some((entry) => entry.label === "uncheckedAt"));
+});
+
 test("checks Slice capabilities, element types, and overlapping borrows", () => {
   const readOnlyMutation = `
     function mutate(values: Slice<i32>): void { values[0] = 1; }

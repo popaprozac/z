@@ -471,6 +471,7 @@ export type SemanticInfo = {
   readonly objectDestructureTypes: ReadonlyMap<number, string>;
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly sliceRanges: ReadonlyMap<number, SliceRange>;
+  readonly uncheckedAccesses: ReadonlyMap<number, UncheckedAccess>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
   readonly foreignStatusCalls: ReadonlyMap<number, ForeignStatusCallInfo>;
@@ -656,6 +657,7 @@ type AnalysisState = {
   readonly sliceConversions: Map<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly sliceRanges: Map<number, SliceRange>;
   readonly sliceRangeArguments: Set<number>;
+  readonly uncheckedAccesses: Map<number, UncheckedAccess>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
   readonly foreignStatusCalls: Map<number, ForeignStatusCallInfo>;
@@ -916,6 +918,15 @@ function requireDestructuredFieldVisibility(
 // `values.slice(start, end)`: a checked sub-range of contiguous storage,
 // borrowed as a Slice for the one call it is passed to.
 export type SliceRange = {
+  readonly sourceType: string;
+  readonly elementType: string;
+};
+
+// `values.uncheckedAt(index)` / `values.uncheckedSet(index, value)` inside
+// `unsafe`: an element access whose bounds the program has established. A
+// debug build still checks it; a release build does not.
+export type UncheckedAccess = {
+  readonly kind: "at" | "set";
   readonly sourceType: string;
   readonly elementType: string;
 };
@@ -1359,6 +1370,7 @@ export function analyze(
     sliceConversions: new Map(),
     sliceRanges: new Map(),
     sliceRangeArguments: new Set(),
+    uncheckedAccesses: new Map(),
     foreignTypes,
     foreignCallTypes: new Map(),
     foreignStatusCalls: new Map(),
@@ -13558,6 +13570,61 @@ function inferExpressionInner(
           }
           state.sliceRanges.set(expression.location.offset, rangeSource);
           return sliceTypeName(rangeSource.elementType);
+        }
+        const uncheckedSource = expression.callee.property === "uncheckedAt" || expression.callee.property === "uncheckedSet"
+          ? sliceRangeSource(receiverValueType)
+          : null;
+        if (uncheckedSource) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          const method = expression.callee.property;
+          const setting = method === "uncheckedSet";
+          const expected = setting ? 2 : 1;
+          if (expression.arguments.length !== expected) {
+            throw new DiagnosticError(fileName, expression.location, `${JSON.stringify(method)} expects ${expected} argument${expected === 1 ? "" : "s"}, received ${expression.arguments.length}`);
+          }
+          if (state.unsafeDepth === 0) {
+            throw new DiagnosticError(fileName, expression.callee.location, `values.${method} skips the bounds check and requires an unsafe block`, {
+              length: method.length,
+              notes: ["a release build trusts that the index is below the length; a debug build still checks it"],
+              helps: ["establish the index's bound, then access the element inside `unsafe { ... }`, or index with `values[index]`"],
+            });
+          }
+          if (!isCleanupFreeElementType(uncheckedSource.elementType, structs, enums, state)) {
+            throw new DiagnosticError(fileName, expression.callee.location, `values.${method} requires a cleanup-free element type, found ${displayAssignableType(uncheckedSource.elementType, state)}`, {
+              length: method.length,
+              helps: ["index with `values[index]`"],
+            });
+          }
+          if (!isNamedStorageExpression(expression.callee.object)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, `values.${method} requires stored array or Slice storage`);
+          }
+          const indexType = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state, false, "usize");
+          requireAssignable("usize", indexType, expression.arguments[0], fileName, structs, enums, state);
+          if (setting) {
+            if (parseSliceType(uncheckedSource.sourceType)) {
+              throw new DiagnosticError(fileName, expression.callee.location, "values.uncheckedSet requires Array or fixed-array storage", { length: method.length });
+            }
+            if (parseDynamicArrayType(uncheckedSource.sourceType)?.readonly) {
+              throw new DiagnosticError(fileName, expression.callee.location, `readonly Array has no mutating method "uncheckedSet"`, { code: "Z0207", length: method.length });
+            }
+            const root = storageRoot(expression.callee.object);
+            const stored = root ? locals.get(root.name) : null;
+            if (!root || !stored || !isMutableBinding(stored)) {
+              throw new DiagnosticError(fileName, expression.callee.object.location, "values.uncheckedSet requires addressable let storage");
+            }
+            rejectOwnerMutationWhileViewed(
+              root.name, expression.callee.location, fileName, state, "mutate",
+              ownedMutationFieldPath(expression.callee.object, locals, structs, state),
+            );
+            const valueType = inferExpression(expression.arguments[1], locals, globals, structs, enums, fileName, state, false, uncheckedSource.elementType);
+            requireAssignable(uncheckedSource.elementType, valueType, expression.arguments[1], fileName, structs, enums, state);
+          }
+          state.uncheckedAccesses.set(expression.location.offset, {
+            kind: setting ? "set" : "at",
+            sourceType: uncheckedSource.sourceType,
+            elementType: uncheckedSource.elementType,
+          });
+          return setting ? "void" : uncheckedSource.elementType;
         }
         const dynamic = parseDynamicArrayType(receiverValueType);
         if (dynamic) {

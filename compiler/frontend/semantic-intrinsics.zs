@@ -447,6 +447,46 @@ export function collectionMethodSignature(
       }));
     }
   }
+  if (methodName == "uncheckedAt" || methodName == "uncheckedSet") {
+    // An element access whose bounds the program established, inside
+    // `unsafe`: checked in a debug build, trusted in a release build.
+    let accessElement = "";
+    match (fixedArrayShape(collectionOwnerType)) {
+      some(shape) => accessElement = copy shape.elementType;
+      none => match (genericTypeShape(collectionOwnerType)) {
+        some(shape) => {
+          if ((shape.base == "Array" || shape.base == "Slice") && shape.arguments.length == 1) {
+            accessElement = copy shape.arguments[0];
+          }
+        }
+        none => {}
+      }
+    }
+    if (accessElement.byteLength > 0) {
+      let accessModes = Array<String>();
+      accessModes.push("value");
+      let accessTypes = Array<String>();
+      accessTypes.push("usize");
+      if (methodName == "uncheckedSet") {
+        accessModes.push("value");
+        accessTypes.push(copy accessElement);
+      }
+      return Option.some(ModuleFunctionSignature({
+        asynchronous: false,
+        executorAffinity: "",
+        threadContract: "",
+        typeParameters: Array<String>(),
+        typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+        parameterModes: accessModes,
+        parameterTypes: accessTypes,
+        viewParameter: Option<usize>.none,
+        invalidatesParameters: Array<usize>(),
+        invalidatesLifetimes: Array<String>(),
+        returnType: methodName == "uncheckedAt" ? accessElement : "void",
+        errorType: "",
+      }));
+    }
+  }
   if (methodName == "slice") {
     // `values.slice(start, end)`: a Slice of fixed, growable, or Slice
     // storage, borrowed for one call.
@@ -693,6 +733,10 @@ export function collectionMethodMutates(
   in ownerType: String,
   in methodName: String
 ): boolean {
+  match (fixedArrayShape(ownerType)) {
+    some(_) => return methodName == "uncheckedSet";
+    none => {}
+  }
   if (ownerType == "TextBuffer") {
     return methodName == "append"
       || methodName == "appendBytes"
@@ -702,7 +746,7 @@ export function collectionMethodMutates(
   return match (genericTypeShape(ownerType)) {
     some(generic) => generic.base == "Array"
       ? methodName == "push" || methodName == "clear" || methodName == "pop" || methodName == "reserveCapacity"
-        || methodName == "append"
+        || methodName == "append" || methodName == "uncheckedSet"
       : generic.base == "Map"
       ? methodName == "set"
         || methodName == "remove"

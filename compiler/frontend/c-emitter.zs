@@ -5356,6 +5356,16 @@ function appendExpression(
     if (mutable && viewReceiver) {
       throw "native C emission cannot mutate through a view Array";
     }
+    if (labelsContain(declaration.expressions[index].labels, "assumed")) {
+      output.append(`(*Z_${declaration.expressions[index].value}`);
+      output.append(mutable ? "_at_mut_assumed(" : "_at_assumed(");
+      if (!viewReceiver) output.append("&(");
+      try appendExpression(inout output, declaration, receiver);
+      output.append(viewReceiver ? ", " : "), ");
+      try appendExpression(inout output, declaration, offset);
+      output.append("))");
+      return;
+    }
     if (
       stringStartsWith(declaration.expressions[index].value, "__z_Array_")
       && !boundsProven
@@ -5413,6 +5423,19 @@ function appendExpression(
     try appendExpression(inout output, declaration, receiver);
     output.append("), ");
     try appendExpression(inout output, declaration, value);
+    output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.uncheckedStore) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received a malformed unchecked store";
+    }
+    const element = declaration.expressions[index].children[0];
+    const stored = declaration.expressions[index].children[1];
+    output.append("(");
+    try appendExpression(inout output, declaration, element);
+    output.append(" = ");
+    try appendExpression(inout output, declaration, stored);
     output.append(")");
     return;
   }
@@ -7702,6 +7725,28 @@ function appendScopedBoolean(
   output.append(";\n");
   appendBorrowedTemporaryCleanups(inout output, declaration, index, 1);
   output.append(`  _z_stage1_scoped_${index};\n})`);
+}
+
+// `values.uncheckedAt` and `uncheckedSet`: the element's address with its
+// bound checked only in a build without NDEBUG. `pointerData` says the
+// storage is a `void *data` pointer rather than an inline array.
+function appendAssumedAccessors(
+  inout output: TextBuffer,
+  in name: String,
+  in elementType: String,
+  objectiveCElements: boolean,
+  in bound: String,
+  pointerData: boolean
+): void {
+  const strong = objectiveCElements ? " __strong" : "";
+  const element = pointerData ? `((${elementType}${strong} *)self->data)[index]` : "self->data[index]";
+  const check = `#ifndef NDEBUG\n  if (index >= ${bound}) abort();\n#endif\n`;
+  output.append(`static inline __attribute__((unused)) ${elementType} const${strong} *Z_${name}_at_assumed(const Z_${name} *self, size_t index) {\n`);
+  output.append(check);
+  output.append(`  return &(${element});\n}\n\n`);
+  output.append(`static inline __attribute__((unused)) ${elementType}${strong} *Z_${name}_at_mut_assumed(Z_${name} *self, size_t index) {\n`);
+  output.append(check);
+  output.append(`  return &(${element});\n}\n\n`);
 }
 
 function appendCondition(
@@ -26344,6 +26389,7 @@ function emitLoweredC(
     if (objectiveCElements) output.append(" __strong *)self->data)[index];\n");
     else output.append(" *)self->data)[index];\n");
     output.append("}\n\n");
+    appendAssumedAccessors(inout output, declaration.name, elementType, objectiveCElements, "self->length", true);
     output.append("static inline __attribute__((unused)) Z_");
     output.append(declaration.name);
     output.append(" Z_");
@@ -26402,6 +26448,7 @@ function emitLoweredC(
     output.append("  if (index >= ");
     output.append(declaration.length);
     output.append(") abort();\n  return &(self->data[index]);\n}\n\n");
+    appendAssumedAccessors(inout output, declaration.name, elementType, false, declaration.length, false);
   }
   for (const declaration of program.arrays) {
     const elementType = try cType(declaration.elementType);
@@ -26519,6 +26566,7 @@ function emitLoweredC(
     if (objectiveCElements) output.append(" __strong *)self->data)[index];\n");
     else output.append(" *)self->data)[index];\n");
     output.append("}\n\n");
+    appendAssumedAccessors(inout output, declaration.name, elementType, objectiveCElements, "self->length", true);
     output.append("static inline __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_reserveCapacity(Z_");

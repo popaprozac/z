@@ -89,6 +89,25 @@ Prefer a `.zd` `discriminant` contract when the relationship is reusable. It
 can make `match (in event)` exhaustive and keep inactive or pointer-bearing
 members inaccessible at every call site.
 
+## Element access with an asserted bound
+
+`unsafe` also covers one Z-only proof: an index already known to be in
+bounds.
+
+```z
+let registers = Array<i32>(0, 0, 0, 0);
+unsafe {
+  registers.uncheckedSet(2, 42);
+}
+const value = unsafe { select registers.uncheckedAt(2); };
+```
+
+`uncheckedAt` and `uncheckedSet` skip the bounds check in a release build and
+keep it in a debug build, so tests still catch a wrong assertion. They accept
+only cleanup-free elements. Use them where an invariant established once (a
+window validated at entry, a loop bound) makes every per-access check
+redundant, and keep `values[index]` everywhere else.
+
 ## When `unsafe` is the right tier
 
 Use `unsafe` when all of these are true:

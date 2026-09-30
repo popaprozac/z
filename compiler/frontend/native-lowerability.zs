@@ -2209,6 +2209,44 @@ function validateNativeExpression(
   }
 }
 
+// An unsafe statement whose body is only `values.uncheckedSet(index, value)`
+// calls: a store native lowering executes as an ordinary block, since it
+// needs none of the native-pointer operations other unsafe bodies may use.
+function nativeUncheckedStoreBlock(
+  in body: StatementArena,
+  index: usize
+): boolean {
+  if (body.nodes[index].children.length != 1) return false;
+  const block = body.nodes[index].children[0];
+  if (
+    body.nodes[block].kind != StatementKind.blockStatement
+    || body.nodes[block].children.length == 0
+  ) return false;
+  for (const child of body.nodes[block].children) {
+    if (body.nodes[child].kind != StatementKind.expressionStatement) return false;
+    let store = false;
+    match (in body.nodes[child].expression) {
+      some(expression) => match (in expression.tree) {
+        some(tree) => {
+          const root = tree.root;
+          if (
+            tree.nodes[root].kind == ExpressionKind.callExpression
+            && tree.nodes[root].children.length == 3
+          ) {
+            const callee = tree.nodes[root].children[0];
+            store = tree.nodes[callee].kind == ExpressionKind.memberExpression
+              && tree.nodes[callee].value == "uncheckedSet";
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+    if (!store) return false;
+  }
+  return true;
+}
+
 function nativeCallableTaskScopeCandidate(
   in body: StatementArena,
   index: usize
@@ -2331,7 +2369,10 @@ function validateNativeBody(
         );
       }
     }
-    if (statement.kind == StatementKind.unsafeStatement) {
+    if (
+      statement.kind == StatementKind.unsafeStatement
+      && !nativeUncheckedStoreBlock(body, statementIndex)
+    ) {
       throw loweringBoundary(
         path,
         "Z1000",

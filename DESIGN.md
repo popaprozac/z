@@ -1133,9 +1133,13 @@ literals use `[a, b, c]`, indexing uses `values[index]`, and `.length` produces
 through its elements. Nested arrays and arrays inside structs retain value
 semantics.
 
-Safe indexing performs a bounds check and traps on failure. A future explicitly
-unsafe indexing operation may remove that check when the programmer assumes the
-proof obligation. Ordinary optimization should eliminate checks proven
+Safe indexing performs a bounds check and traps on failure. Inside `unsafe`,
+`values.uncheckedAt(index)` and `values.uncheckedSet(index, value)` access a
+cleanup-free element whose bound the programmer has established, such as an
+interpreter's register window validated once at frame entry: a debug build
+still checks and traps, a release build trusts the assertion. The spelling is
+a method rather than unchecked `[]` so that only the accesses the proof covers
+lose their check. Ordinary optimization should eliminate checks proven
 redundant by loop and range analysis.
 
 Cleanup-bearing arrays own every initialized element and destroy them in reverse

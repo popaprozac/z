@@ -351,6 +351,7 @@ export enum LoweredExpressionKind {
   arrayReserveCapacity,
   arrayAppend,
   sliceRange,
+  uncheckedStore,
   mapEmpty,
   mapLength,
   mapHas,
@@ -6376,7 +6377,10 @@ function statementFallsThrough(in arena: StatementArena, index: usize): boolean 
     || arena.nodes[index].kind == StatementKind.breakStatement
     || arena.nodes[index].kind == StatementKind.continueStatement
   ) return false;
-  if (arena.nodes[index].kind == StatementKind.blockStatement) {
+  if (
+    arena.nodes[index].kind == StatementKind.blockStatement
+    || arena.nodes[index].kind == StatementKind.unsafeStatement
+  ) {
     let children = Array<usize>();
     for (const child of arena.nodes[index].children) {
       children.push(child);
@@ -7003,7 +7007,10 @@ function planCleanupStatement(
     }
     return;
   }
-  if (arena.nodes[sourceIndex].kind == StatementKind.blockStatement) {
+  if (
+    arena.nodes[sourceIndex].kind == StatementKind.blockStatement
+    || arena.nodes[sourceIndex].kind == StatementKind.unsafeStatement
+  ) {
     let sourceChildren = Array<usize>();
     for (const child of arena.nodes[sourceIndex].children) {
       sourceChildren.push(child);
@@ -15497,6 +15504,53 @@ function lowerExpressionContextual(
               children,
               Array<String>()
             );
+          }
+        }
+        none => {}
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && (
+        (tree.nodes[calleeInput].value == "uncheckedAt" && tree.nodes[index].children.length == 2)
+        || (tree.nodes[calleeInput].value == "uncheckedSet" && tree.nodes[index].children.length == 3)
+      )
+      && tree.nodes[calleeInput].children.length == 1
+    ) {
+      // `values.uncheckedAt(index)` is the element access `values[index]`
+      // with an assumed bound; `uncheckedSet` stores through the same access.
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+        some(receiverTypeName) => {
+          let accessTypeName = receiverTypeName.copyBytes(0, receiverTypeName.byteLength);
+          let accessView = false;
+          if (stringStartsWith(accessTypeName, "view ")) {
+            accessTypeName = accessTypeName.copyBytes(5, accessTypeName.byteLength);
+            accessView = true;
+          }
+          const accessType = try lowerModuleTypeName(program, importedTypes, accessTypeName);
+          if (
+            accessType.kind == LoweredTypeKind.arrayType
+            || accessType.kind == LoweredTypeKind.fixedArrayType
+            || accessType.kind == LoweredTypeKind.sliceType
+          ) {
+            const receiver = try lowerExpression(program, importedTypes, evidence, tree,
+              receiverInput, inout output);
+            const offsetInput = tree.nodes[index].children[1];
+            const offset = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+              offsetInput, "usize", inout output);
+            let accessLabels = Array<String>();
+            if (accessView) accessLabels.push("view");
+            accessLabels.push("assumed");
+            const element = pushExpression(inout output, LoweredExpressionKind.arrayIndex,
+              accessType.name, Array<usize>(receiver, offset), accessLabels);
+            if (tree.nodes[calleeInput].value == "uncheckedAt") return element;
+            markMutableStorage(inout output, element);
+            const valueInput = tree.nodes[index].children[2];
+            const value = try lowerExpression(program, importedTypes, evidence, tree,
+              valueInput, inout output);
+            return pushExpression(inout output, LoweredExpressionKind.uncheckedStore,
+              "", Array<usize>(element, value), Array<String>());
           }
         }
         none => {}
@@ -26255,6 +26309,7 @@ function lowerStatementCore(
   } else if (
     arena.nodes[index].kind == StatementKind.blockStatement
     || arena.nodes[index].kind == StatementKind.asyncScopeStatement
+    || arena.nodes[index].kind == StatementKind.unsafeStatement
   ) {
     kind = LoweredStatementKind.blockStatement;
   } else if (arena.nodes[index].kind == StatementKind.ifStatement) {
