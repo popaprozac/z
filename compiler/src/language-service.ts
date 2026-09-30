@@ -3127,7 +3127,9 @@ function matchSubjectBefore(source: string, beforeObjectOffset: number): string 
 function declaredBindingType(source: string, name: string, offset: number): string | null {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const before = source.slice(0, offset);
-  const annotations = [...before.matchAll(new RegExp(`\\b${escaped}\\s*:\\s*([A-Za-z_][A-Za-z0-9_.]*(?:<[^;=(){}]+>)?)`, "g"))];
+  // A fixed-array suffix (`u8[2]`) is part of the type: without it an
+  // annotated array would read as its element type.
+  const annotations = [...before.matchAll(new RegExp(`\\b${escaped}\\s*:\\s*([A-Za-z_][A-Za-z0-9_.]*(?:<[^;=(){}]+>)?(?:\\s*\\[[^\\]\\n]*\\])*)`, "g"))];
   const annotated = annotations.at(-1)?.[1]?.trim();
   if (annotated) return annotated;
   const constructions = [...before.matchAll(new RegExp(

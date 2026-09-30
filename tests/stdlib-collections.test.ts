@@ -1618,9 +1618,12 @@ test("surfaces values.slice(start, end) in hover and completion", () => {
       function main(): i32 { ${declaration} const n = total(values.slice(0, 1)); return 0; }`;
     const offset = source.lastIndexOf("slice(");
     assert.match(hover(source, "slice-range-hover.zs", offset)?.contents.value ?? "", /slice\(start: usize, end: usize\): Slice</);
-    if (declaration.includes("Array<u8>")) {
-      assert.ok(completions(source, "slice-range-hover.zs", offset + "slice".length).some((entry) => entry.label === "slice"));
-    }
+    assert.ok(completions(source, "slice-range-hover.zs", offset + "slice".length).some((entry) => entry.label === "slice"));
+    // Completing right after the dot, where the source does not parse yet.
+    const partial = `function main(): i32 { ${declaration} const n = values.; return 0; }`;
+    const labels = completions(partial, "slice-range-partial.zs", partial.indexOf(".;") + 1).map((entry) => entry.label);
+    assert.ok(labels.includes("length") && labels.includes("slice"), `${declaration}: ${labels.join(",")}`);
+    assert.ok(!labels.includes("wrappingAdd"), declaration);
   }
 });
 
