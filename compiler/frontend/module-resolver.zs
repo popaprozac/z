@@ -13626,6 +13626,10 @@ function inferStatementSequence(
   while (position < indices.length) {
     releaseUnusedViewBindings(arena, indices, position, 0, inout bindings);
     const index = indices[position];
+    // A view this sequence uses after the statement stays live through it,
+    // including inside the blocks it nests, whose own sequences see only
+    // their statements.
+    const heldViews = holdViewsUsedAfter(arena, indices, position + 1, inout bindings);
     const continues = try inferStatement(
       module,
       modules,
@@ -13636,10 +13640,43 @@ function inferStatementSequence(
       inout evidence,
       expectedReturn
     );
+    for (const held of heldViews) {
+      if (held < bindings.length) bindings[held].viewLoopLive = false;
+    }
     if (!continues) return false;
     position = position + 1;
   }
   return true;
+}
+
+function holdViewsUsedAfter(
+  in arena: StatementArena,
+  in indices: Array<usize>,
+  first: usize,
+  inout bindings: Array<NativeValueBinding>
+): Array<usize> {
+  let held = Array<usize>();
+  let bindingIndex: usize = 0;
+  while (bindingIndex < bindings.length) {
+    if (
+      bindings[bindingIndex].viewOwner.byteLength > 0
+      && bindings[bindingIndex].viewLive
+      && !bindings[bindingIndex].viewLoopLive
+    ) {
+      let usedAfter = false;
+      let remaining = first;
+      while (remaining < indices.length && !usedAfter) {
+        usedAfter = statementUsesBinding(arena, indices[remaining], bindings[bindingIndex].name);
+        remaining = remaining + 1;
+      }
+      if (usedAfter) {
+        bindings[bindingIndex].viewLoopLive = true;
+        held.push(bindingIndex);
+      }
+    }
+    bindingIndex = bindingIndex + 1;
+  }
+  return held;
 }
 
 function preserveLoopViewBindings(

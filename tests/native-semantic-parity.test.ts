@@ -312,3 +312,33 @@ test("does not consume the borrowed deinitializer receiver", () => {
     function main(): i32 { const owner = Owner({ value: "owned" }); return 0; }
   `, /borrowed/);
 }, 240_000);
+
+test("keeps a view live through nested blocks when it is used after them", () => {
+  const prefix = "function inspect(in value: i32): i32 { return value; }\nfunction main(): i32 {\n  let values = Array<i32>(1, 2);\n  let flag = true;\n  const first = view values[0];\n";
+  for (const block of [
+    "{ values.push(3); }",
+    "unsafe { values.uncheckedSet(1, 3); }",
+    "if (flag) { values.push(3); }",
+    "while (flag) { values.push(3); flag = false; }",
+  ]) {
+    rejects(`${prefix}  ${block}\n  const seen = inspect(first);\n  return 0;\n}`,
+      /cannot mutate "values" while view "first" is live/, undefined, ["self-host-resolve"]);
+  }
+  // A view whose last use comes first, or lies inside the block, is released.
+  const directory = mkdtempSync("/tmp/z-native-nested-views-");
+  try {
+    for (const body of [
+      "const seen = inspect(first); { values.push(3); }",
+      "{ const seen = inspect(first); } values.push(3);",
+      "if (flag) { const seen = inspect(first); } values.push(3);",
+    ]) {
+      const source = `${prefix}  ${body}\n  return 0;\n}`;
+      const input = resolve(directory, "main.zs");
+      writeFileSync(input, source);
+      check(source, input);
+      const result = native("self-host-resolve", input);
+      assert.equal(result.status, 0, `${body}\n${result.stderr}`);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+

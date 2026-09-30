@@ -1743,15 +1743,20 @@ test("checks unchecked element access for unsafe, element types, storage, and ar
     const slice = `function touch(values: Slice<i32>): void { unsafe { values.uncheckedSet(0, 1); } }
       function main(): i32 { return 0; }`;
     assert.throws(() => compileToC(slice, "unchecked-slice-set.zs"), /uncheckedSet requires Array or fixed-array storage/);
-    // Stage 0 only: the native resolver does not yet enforce live views for
-    // mutations inside nested blocks, unsafe or not.
-    assert.throws(() => compileToC(`function main(): i32 {
-      let values = Array<i32>(1, 2);
-      const first = view values[0];
-      unsafe { values.uncheckedSet(1, 3); }
-      const copy = first;
-      return 0;
-    }`, "unchecked-view.zs"), /cannot mutate "values" while view "first" is live/);
+    const viewed = `function inspect(in value: i32): i32 { return value; }
+      function main(): i32 {
+        let values = Array<i32>(1, 2);
+        const first = view values[0];
+        unsafe { values.uncheckedSet(1, 3); }
+        const seen = inspect(first);
+        return 0;
+      }`;
+    assert.throws(() => compileToC(viewed, "unchecked-view.zs"), /cannot mutate "values" while view "first" is live/);
+    const viewedInput = resolve(directory, "viewed.zs");
+    writeFileSync(viewedInput, viewed);
+    const viewedNative = spawnSync(process.execPath, [cli, "self-host-resolve", viewedInput], { encoding: "utf8", timeout: 120_000 });
+    assert.equal(viewedNative.status, 1, viewedNative.stderr);
+    assert.match(viewedNative.stderr, /cannot mutate "values" while view "first" is live/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 300_000);
 
