@@ -4498,7 +4498,11 @@ function inferSignatureCallType(
       && tree.nodes[calleeIndex].children.length == 1
     ) {
       const receiverNode = tree.nodes[calleeIndex].children[0];
-      receiverPath = expressionDirectFieldPath(tree, receiverNode);
+      // An element receiver keeps the fixed field prefix before its index, as
+      // an element argument does below.
+      receiverPath = tree.nodes[receiverNode].kind == ExpressionKind.indexExpression
+        ? expressionOwnedMutationPath(module, modules, moduleIndex, tree, receiverNode, bindings, false)
+        : expressionDirectFieldPath(tree, receiverNode);
       const projectedIdentity = directAggregateClassAliasNodeIdentity(
         tree,
         receiverNode,

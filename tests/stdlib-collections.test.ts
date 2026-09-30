@@ -1624,6 +1624,49 @@ test("surfaces values.slice(start, end) in hover and completion", () => {
   }
 });
 
+test("call loans keep the field path before an element index in both compilers", () => {
+  const input = resolve(projectRoot, "tests/fixtures/call-loan-paths.zs");
+  const checked = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
+    encoding: "utf8", timeout: 120_000,
+  });
+  assert.equal(checked.status, 0, checked.stderr);
+  const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+  });
+  assert.equal(native.status, 0, native.stderr);
+  const directory = mkdtempSync("/tmp/z-call-loan-paths-");
+  try {
+    for (const [tier, generated] of [["stage0", compileToC(readFileSync(input, "utf8"), input)], ["native", native.stdout]]) {
+      const executable = resolve(directory, tier);
+      const built = spawnSync("clang", ["-x", "c", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+        "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        encoding: "utf8", input: generated, timeout: 30_000,
+      });
+      assert.equal(built.status, 0, `${tier}: ${built.stderr}`);
+      assert.equal(spawnSync(executable, [], { encoding: "utf8" }).status, 0, tier);
+    }
+    // Elements of one collection still overlap, and so does self-append.
+    for (const [body, path] of [
+      ["this.strings[first].append(this.strings[second].slice(0, 1));", "this\\.strings"],
+      ["this.small.append(this.small.slice(0, 1));", "this\\.small"],
+    ] as const) {
+      const source = `struct Heap {
+        strings: Array<Array<u8>>;
+        small: Array<u8>;
+        function probe(inout this, first: usize, second: usize): void { ${body} }
+      }
+      function main(): i32 { return 0; }`;
+      const message = new RegExp(`overlapping inout and in uses of "${path}" in one call are not allowed`);
+      assert.throws(() => compileToC(source, "call-loan-overlap.zs"), message);
+      const file = resolve(directory, "overlap.zs");
+      writeFileSync(file, source);
+      const resolved = spawnSync(process.execPath, [cli, "self-host-resolve", file], { encoding: "utf8", timeout: 120_000 });
+      assert.equal(resolved.status, 1, `${body}\n${resolved.stderr}`);
+      assert.match(resolved.stderr, message);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
 test("checks Slice capabilities, element types, and overlapping borrows", () => {
   const readOnlyMutation = `
     function mutate(values: Slice<i32>): void { values[0] = 1; }

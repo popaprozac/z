@@ -269,6 +269,9 @@ uninitialized and write-only, becomes readable after assignment, and must be
 initialized along every successful return path. Uninitialized typed `let`
 bindings use the same flow-sensitive analysis. Multiple `in` uses may share one
 root in a call; uses involving writable access or ownership must not overlap it.
+Overlap follows fixed field paths, and an element path keeps the field prefix
+before its first index: sibling fields are disjoint, while elements of one
+collection conservatively overlap.
 
 These rules are one loan system, not separate synchronous and asynchronous
 ownership models. Each active access is identified by its root storage,

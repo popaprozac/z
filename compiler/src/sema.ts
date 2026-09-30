@@ -13680,8 +13680,8 @@ function inferExpressionInner(
             }
             // The receiver is borrowed inout and the elements in for the call,
             // through the same loan check as any other call.
-            const receiverPath = directFieldStoragePath(expression.callee.object);
-            const argumentPath = directFieldStoragePath(sliceRangeCall(argument)?.callee.object ?? argument);
+            const receiverPath = callStoragePath(expression.callee.object, locals, structs, state);
+            const argumentPath = callStoragePath(sliceRangeCall(argument)?.callee.object ?? argument, locals, structs, state);
             if (receiverPath && argumentPath) {
               const callLoans: AccessLoanSet = new Map();
               registerAccessLoan(callLoans, {
@@ -14207,7 +14207,11 @@ function inferExpressionInner(
           mutableReceiverRoot
             ? {
                 name: mutableReceiverRoot.name,
-                fields: [],
+                // A class method mutates a shared identity another field may
+                // alias; only a value receiver's field path is its storage.
+                fields: declaration.kind === "class"
+                  ? []
+                  : callStoragePath(expression.callee.object, locals, structs, state)?.fields ?? [],
                 mode: "inout",
               }
             : consumingReceiverRoot
@@ -14693,7 +14697,7 @@ function checkArguments(
     const argument = args[index];
     // A Slice range borrows its receiver's storage for the call.
     const range = parseSliceType(parameter.type.name) ? sliceRangeCall(argument) : null;
-    const storage = directFieldStoragePath(range?.callee.object ?? argument);
+    const storage = callStoragePath(range?.callee.object ?? argument, locals, structs, state);
     if (!storage) continue;
     const projectedAliases = aggregateClassAliasIdentitiesForPath(
       storage.root,
@@ -16666,6 +16670,23 @@ function capabilityStoragePath(expression: Expression): CapabilityStoragePath | 
       object: owner.target,
     },
   };
+}
+
+// The storage a call argument or receiver borrows: a local, or a field path
+// rooted in one. An element path keeps the fixed field prefix before its
+// first index, as view loans do: elements of one collection overlap, but a
+// sibling field does not.
+function callStoragePath(
+  expression: Expression,
+  locals: ReadonlyMap<string, ValueType>,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  state: AnalysisState,
+): { readonly root: string; readonly fields: readonly string[] } | null {
+  const direct = directFieldStoragePath(expression);
+  if (!direct) return null;
+  const target = capabilityStoragePath(expression)?.target ?? expression;
+  if (target.kind !== "index") return direct;
+  return { root: direct.root, fields: ownedMutationFieldPath(target, locals, structs, state) };
 }
 
 function directFieldStoragePath(expression: Expression): {

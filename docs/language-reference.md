@@ -1354,6 +1354,14 @@ borrows still require named, address-stable storage, and `inout`/`out` still
 require explicit mutable caller storage. Other cleanup-bearing temporary shapes
 must currently be bound before borrowing.
 
+Within one call, uses of the same storage must not overlap unless all are
+read-only (`in`) or ordinary copies. Overlap follows the field path: `inout
+state.counter` and `in state.limit` are disjoint, and an element of a
+collection keeps the field path before its first index, so
+`this.strings[target].append(this.small.slice(0, count))` is accepted while two
+elements of one collection (`this.strings[a]` and `this.strings[b]`) still
+overlap, since their indexes are not compared.
+
 For ARC classes, `inout` applies to the shared object identity rather than only
 to one variable spelling. Direct aliases are tracked without a runtime check:
 
