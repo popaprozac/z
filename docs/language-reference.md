@@ -1354,13 +1354,37 @@ borrows still require named, address-stable storage, and `inout`/`out` still
 require explicit mutable caller storage. Other cleanup-bearing temporary shapes
 must currently be bound before borrowing.
 
-Within one call, uses of the same storage must not overlap unless all are
-read-only (`in`) or ordinary copies. Overlap follows the field path: `inout
-state.counter` and `in state.limit` are disjoint, and an element of a
-collection keeps the field path before its first index, so
-`this.strings[target].append(this.small.slice(0, count))` is accepted while two
-elements of one collection (`this.strings[a]` and `this.strings[b]`) still
-overlap, since their indexes are not compared.
+Within one call, borrows and moves of the same storage must not overlap unless
+all are read-only (`in`). A by-value argument that copies takes no part in
+this: the copy of a cleanup-free value (a number, a `boolean`, or a value
+struct, enum, `Option`, or fixed array built only from those) is complete before
+the callee runs, so it cannot observe or disturb a borrow of the storage it was
+read from.
+
+```z
+values.push(values[0]);             // the element is copied, then pushed
+flags.appendRepeated(OFF, wanted - flags.length);
+counter.add(counter.step);          // inout receiver, copied field
+raise(inout account, account.rate); // inout argument, copied field
+```
+
+A by-value argument that moves (its type has cleanup), that shares ARC identity
+(a class reference), or that carries a stored view keeps its loan, and
+overlapping it with an `in`, `inout`, `out`, or `move` use of the same storage
+is rejected: `resource.merge(resource)`, `node.children.push(node)`. Bind an
+explicit `copy` first when an independent value is what the call needs. The
+rule is the same for the built-in collection methods as for methods and
+functions declared in Z. Inside a generic function a value whose type is a type
+parameter is not known to copy, so it keeps its loan.
+
+Overlap follows the field path: `inout state.counter` and `in state.limit` are
+disjoint, and an element of a collection keeps the field path before its first
+index, so `this.strings[target].append(this.small.slice(0, count))` is accepted
+while two elements of one collection (`this.strings[a]` and `this.strings[b]`)
+still overlap, since their indexes are not compared.
+
+Cost: none. The check is compile-time only, and an accepted copy is the copy
+the by-value parameter already made.
 
 For ARC classes, `inout` applies to the shared object identity rather than only
 to one variable spelling. Direct aliases are tracked without a runtime check:

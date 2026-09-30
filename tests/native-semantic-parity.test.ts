@@ -209,7 +209,7 @@ test("validates imported and transitively demanded generic comparisons", () => {
 
 test("keeps overlapping indexed call loans exclusive", () => {
   rejects(`
-    function append(inout values: Array<i32>, value: i32): void { values.push(value); }
+    function append(inout values: Array<i32>, in value: i32): void { values.push(value); }
     struct Lists {
       next: Array<i32>;
       function invalid(inout this): void { append(inout this.next, this.next[0]); }

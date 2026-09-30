@@ -35,6 +35,19 @@ increment(inout counter);
 Immutable `in` is normally inferred at a call site. Writable `inout`, `out`,
 `move`, and `copy` remain explicit because they change storage or ownership.
 
+Within one call, two uses of the same storage may not overlap unless both are
+`in`. A plain copy is not such a use: a number, boolean, or plain value struct
+passed by value is copied before the callee runs.
+
+```z
+values.push(values[0]);             // copies the element, then pushes it
+add(inout counter, counter.count);  // the count is copied first
+```
+
+A value that moves or shares identity, such as a `String`, an `Array`, or a
+class reference, does overlap: `resource.merge(resource)` is a compile-time
+error.
+
 ## Replace initialized storage
 
 Use the selectively imported `replace` utility when the old owner must be

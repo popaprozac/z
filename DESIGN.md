@@ -259,6 +259,14 @@ are externally visible. Borrowed bindings cannot move into returns, owned
 parameters, or owning fields. Borrowed cleanup-bearing parameters do not run
 cleanup; their owner remains responsible.
 
+Call exclusivity is one rule for every call, built-in collection methods
+included: borrows and moves of the same storage must not overlap unless all are
+`in`. A by-value argument that copies is outside it. The copy of a
+cleanup-free value is complete before the callee runs, so
+`values.push(values[0])` and `counter.add(counter.step)` need no loan; a value
+that moves, shares ARC identity, or carries a view keeps one. A type parameter
+not yet settled is not known to copy.
+
 The bootstrap requires `inout` to name direct initialized mutable storage.
 Immutable borrows accept stored expressions and non-cleanup struct literals.
 A synchronous `in` call may also borrow an inline `Array<T>(...)`: the compiler

@@ -15932,6 +15932,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
     "struct Resource {\n"
       + "  id: i32;\n"
       + "  function merge(inout this, other: Resource): void {}\n"
+      + "  deinit {}\n"
       + "}\n"
       + "function invalid(): void {\n"
       + "  let resource = Resource({ id: 1 });\n"

@@ -1670,6 +1670,94 @@ test("call loans keep the field path before an element index in both compilers",
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 300_000);
 
+test("a by-value copy takes no call loan in both compilers and async frames", () => {
+  const directory = mkdtempSync("/tmp/z-call-copy-loans-");
+  try {
+    for (const name of ["call-copy-loans", "call-copy-loans-async"]) {
+      const input = resolve(projectRoot, `tests/fixtures/${name}.zs`);
+      const stage0 = compileToC(readFileSync(input, "utf8"), input);
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(native.status, 0, native.stderr);
+      for (const [tier, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+        for (const optimization of ["-O0", "-O2"]) {
+          const executable = resolve(directory, `${name}-${tier}${optimization}`);
+          const built = spawnSync("clang", ["-x", "c", "-std=c11", optimization,
+            "-Wall", "-Wextra", "-Werror", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+            encoding: "utf8", input: generated, timeout: 30_000,
+          });
+          assert.equal(built.status, 0, `${name} ${tier}${optimization}: ${built.stderr}`);
+          const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+          assert.equal(run.status, 0, `${name} ${tier}${optimization}: ${run.stderr}`);
+        }
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("a value that moves, shares ARC identity, or is borrowed keeps its call loan in both compilers", () => {
+  const declarations = `import { Map, Set } from "std/collections";
+    struct Box { items: Array<u32>; names: Array<String>; title: String;
+      function rename(inout this, title: String): void { this.title = title; }
+    }
+    struct Resource { value: i32; function merge(inout this, other: Resource): void {} deinit {} }
+    struct Wrap<T> { item: T; }
+    class Node { children: Array<Node>; weight: u32;
+      function adopt(inout this, child: Node): void { this.children.push(child); }
+    }
+    function take(title: String, inout box: Box): void { box.title = title; }
+    function mix<T>(inout target: Wrap<T>, value: T): void { target.item = value; }
+    function keep<T>(inout slot: T, value: T): void { slot = value; }`;
+  const box = `let box = Box({ items: Array<u32>(7), names: Array<String>(), title: "t" });`;
+  const node = `let node = new Node({ children: Array<Node>(), weight: 1 });`;
+  const cases: [string, RegExp][] = [
+    [`let resource = Resource({ value: 1 }); resource.merge(resource);`, /overlapping inout and value uses of "resource" in one call are not allowed/],
+    [`let resource = Resource({ value: 1 }); keep(inout resource, resource);`, /overlapping inout and value uses of "resource" in one call are not allowed/],
+    [`${box} box.rename(box.title);`, /overlapping inout and value uses of "box" and "box\.title" in one call are not allowed/],
+    [`${box} take(box.title, inout box);`, /overlapping value and inout uses of "box\.title" and "box" in one call are not allowed/],
+    [`let wrap = Wrap<String>({ item: "a" }); mix(inout wrap, wrap.item);`, /overlapping inout and value uses of "wrap" and "wrap\.item" in one call are not allowed/],
+    [`${node} node.adopt(node);`, /overlapping inout and value uses of "node" in one call are not allowed/],
+    [`${node} const alias = node; node.adopt(alias);`, /overlapping inout and value uses of ARC aliases "node" and "alias" in one call are not allowed/],
+    [`${node} node.children.push(node);`, /overlapping inout and value uses of "node\.children" and "node" in one call are not allowed/],
+    [`${node} const alias = node; node.children.push(alias);`, /overlapping inout and value uses of ARC aliases "node" and "alias" in one call are not allowed/],
+    [`let names = Array<String>("a"); names.push(names[0]);`, /overlapping inout and value uses of "names" in one call are not allowed/],
+    [`let lists = Array<Array<u32>>(); lists.push(lists);`, /overlapping inout and value uses of "lists" in one call are not allowed/],
+    [`let map = Map<usize, u32>(); map.delete(map.length);`, /overlapping inout and in uses of "map" and "map\.length" in one call are not allowed/],
+    [`let seen = Set<usize>(); seen.remove(seen.length);`, /overlapping inout and in uses of "seen" and "seen\.length" in one call are not allowed/],
+  ];
+  const directory = mkdtempSync("/tmp/z-call-move-loans-");
+  try {
+    for (const [body, message] of cases) {
+      const source = `${declarations}\nfunction main(): i32 { ${body} return 0; }`;
+      assert.throws(() => compileToC(source, "call-move-loans.zs"), message, body);
+      const input = resolve(directory, "invalid.zs");
+      writeFileSync(input, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(native.status, 1, `${body}\n${native.stderr}`);
+      assert.match(native.stderr, message, body);
+    }
+    // An explicit copy of a moving value is an expression of its own, not a
+    // use of the storage, and a sibling field never overlapped.
+    for (const body of [
+      `let names = Array<String>("a"); names.push(copy names[0]);`,
+      `${box} box.items.push(box.items[0]); box.names.push(copy box.title);`,
+      `${node} let other = new Node({ children: Array<Node>(), weight: 2 }); node.children.push(other); node.adopt(new Node({ children: Array<Node>(), weight: node.weight }));`,
+    ]) {
+      const source = `${declarations}\nfunction main(): i32 { ${body} return 0; }`;
+      compileToC(source, "call-move-loans-valid.zs");
+      const input = resolve(directory, "valid.zs");
+      writeFileSync(input, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(native.status, 0, `${body}\n${native.stderr}`);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
 test("accesses elements with an asserted bound inside unsafe in both compilers", () => {
   const input = resolve(projectRoot, "tests/fixtures/unchecked-access.zs");
   const stage0 = compileToC(readFileSync(input, "utf8"), input);

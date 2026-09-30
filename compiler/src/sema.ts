@@ -13200,6 +13200,15 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.location, `${JSON.stringify(method)} expects ${expectedArguments} argument(s), received ${expression.arguments.length}`);
           }
           const key = expression.arguments[0];
+          if (mutable) {
+            checkCollectionMutatorLoans(expression.callee.object, method === "set"
+              ? [
+                { argument: key, mode: "value", type: map.keyType },
+                { argument: expression.arguments[1], mode: "value", type: map.valueType },
+              ]
+              : [{ argument: key, mode: "in", type: map.keyType }],
+            locals, structs, enums, fileName, state);
+          }
           const actualKey = inferExpression(key, locals, globals, structs, enums, fileName, state);
           requireAssignable(map.keyType, actualKey, key, fileName, structs, enums, state);
           if (method === "has" || method === "delete") return "boolean";
@@ -13334,6 +13343,11 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.location, `${JSON.stringify(method)} expects 1 argument, received ${expression.arguments.length}`);
           }
           const value = expression.arguments[0];
+          if (mutable) {
+            checkCollectionMutatorLoans(expression.callee.object, [{
+              argument: value, mode: method === "add" ? "value" : "in", type: set.elementType,
+            }], locals, structs, enums, fileName, state);
+          }
           const actual = inferExpression(value, locals, globals, structs, enums, fileName, state);
           requireAssignable(set.elementType, actual, value, fileName, structs, enums, state);
           if (method === "add") {
@@ -13803,6 +13817,9 @@ function inferExpressionInner(
             }
             return ensureOptionalChainEnum(dynamic.elementType, expression.location, enums, state);
           }
+          checkCollectionMutatorLoans(expression.callee.object, [{
+            argument: expression.arguments[0], mode: "value", type: dynamic.elementType,
+          }], locals, structs, enums, fileName, state);
           const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
           requireAssignable(dynamic.elementType, actual, expression.arguments[0], fileName, structs, enums, state);
           if (structs.get(String(underlyingType(dynamic.elementType)))?.kind === "class") {
@@ -14741,6 +14758,80 @@ function inferContextualObjectExpression(
   return actual;
 }
 
+// The call loan of one argument. A by-value argument of a cleanup-free type
+// takes none: the copy is complete before the callee runs, so it cannot
+// overlap a borrow of the same storage. A value that moves, shares ARC
+// identity, or carries a view keeps its loan, as every borrow does.
+function registerArgumentCallLoan(
+  callLoans: AccessLoanSet,
+  argument: Expression,
+  mode: AccessCapability,
+  type: ValueType,
+  locals: Map<string, ValueType>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const slice = parseSliceType(String(type));
+  const useMode = slice && mode === "value" ? "in" : mode;
+  // A Slice range borrows its receiver's storage for the call.
+  const range = slice ? sliceRangeCall(argument) : null;
+  const storage = callStoragePath(range?.callee.object ?? argument, locals, structs, state);
+  if (!storage) return;
+  if (useMode === "value" && isCleanupFreeElementType(type, structs, enums, state)) return;
+  const projectedAliases = aggregateClassAliasIdentitiesForPath(
+    storage.root,
+    storage.fields,
+    state,
+  );
+  registerCheckedCallLoan(callLoans, {
+    root: projectedAliases
+      ? [storage.root, ...storage.fields].join(".")
+      : storage.root,
+    fields: projectedAliases ? [] : storage.fields,
+    aliasIdentities: projectedAliases
+      ?? classAliasIdentitiesForRoot(storage.root, state),
+    capability: useMode,
+    lifetime: { kind: "call" },
+    location: argument.location,
+  }, fileName);
+}
+
+// A built-in collection mutator borrows its receiver inout and takes its
+// arguments as a method declared in Z would, through the same loan check.
+function checkCollectionMutatorLoans(
+  receiver: Expression,
+  parameters: readonly {
+    readonly argument: Expression;
+    readonly mode: "value" | "in";
+    readonly type: ValueType;
+  }[],
+  locals: Map<string, ValueType>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const storage = callStoragePath(receiver, locals, structs, state);
+  if (!storage) return;
+  const callLoans: AccessLoanSet = new Map();
+  const projectedAliases = aggregateClassAliasIdentitiesForPath(storage.root, storage.fields, state);
+  registerAccessLoan(callLoans, {
+    root: projectedAliases ? [storage.root, ...storage.fields].join(".") : storage.root,
+    fields: projectedAliases ? [] : storage.fields,
+    aliasIdentities: projectedAliases ?? classAliasIdentitiesForRoot(storage.root, state),
+    capability: "inout",
+    lifetime: { kind: "call" },
+    location: receiver.location,
+  });
+  for (const parameter of parameters) {
+    registerArgumentCallLoan(
+      callLoans, parameter.argument, parameter.mode, parameter.type, locals, structs, enums, fileName, state,
+    );
+  }
+}
+
 function checkArguments(
   target: FunctionDeclaration,
   args: Expression[],
@@ -14785,28 +14876,9 @@ function checkArguments(
   }
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
-    const useMode = parseSliceType(parameter.type.name) && parameter.mode === "value" ? "in" : parameter.mode;
-    const argument = args[index];
-    // A Slice range borrows its receiver's storage for the call.
-    const range = parseSliceType(parameter.type.name) ? sliceRangeCall(argument) : null;
-    const storage = callStoragePath(range?.callee.object ?? argument, locals, structs, state);
-    if (!storage) continue;
-    const projectedAliases = aggregateClassAliasIdentitiesForPath(
-      storage.root,
-      storage.fields,
-      state,
+    registerArgumentCallLoan(
+      callLoans, args[index], parameter.mode, parameter.type.name, locals, structs, enums, fileName, state,
     );
-    registerCheckedCallLoan(callLoans, {
-      root: projectedAliases
-        ? [storage.root, ...storage.fields].join(".")
-        : storage.root,
-      fields: projectedAliases ? [] : storage.fields,
-      aliasIdentities: projectedAliases
-        ?? classAliasIdentitiesForRoot(storage.root, state),
-      capability: useMode,
-      lifetime: { kind: "call" },
-      location: argument.location,
-    }, fileName);
   }
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];

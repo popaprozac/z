@@ -4440,6 +4440,135 @@ function declaredCallableTypeParameterCount(
   return fallback;
 }
 
+// The static type of an argument written as a storage path: a binding, its
+// fields, and the elements of an Array, a Slice, or a fixed array. Empty when
+// the path leaves those shapes.
+function storagePathTypeName(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): String {
+  const kind = tree.nodes[index].kind;
+  if (
+    kind == ExpressionKind.identifierExpression
+    || kind == ExpressionKind.argumentBindingExpression
+  ) {
+    const name = identifierLookupName(tree.nodes[index].value);
+    return valueBindingType(bindings, name);
+  }
+  if (tree.nodes[index].children.length == 0) return "";
+  const objectIndex = tree.nodes[index].children[0];
+  if (kind == ExpressionKind.argumentReferenceExpression) {
+    return storagePathTypeName(modules, moduleIndex, tree, objectIndex, bindings);
+  }
+  if (kind != ExpressionKind.memberExpression && kind != ExpressionKind.indexExpression) return "";
+  let owner = storagePathTypeName(modules, moduleIndex, tree, objectIndex, bindings);
+  if (owner.byteLength == 0) return "";
+  owner = transparentTypeName(modules, moduleIndex, owner);
+  if (stringStartsWith(owner, "view ")) owner = owner.copyBytes(5, owner.byteLength);
+  if (stringStartsWith(owner, "readonly ")) owner = owner.copyBytes(9, owner.byteLength);
+  owner = transparentTypeName(modules, moduleIndex, owner);
+  let collection = owner == "String";
+  match (fixedArrayShape(owner)) {
+    some(shape) => {
+      if (kind == ExpressionKind.indexExpression) return copy shape.elementType;
+      collection = true;
+    }
+    none => {}
+  }
+  match (genericTypeShape(owner)) {
+    some(shape) => {
+      if ((shape.base == "Array" || shape.base == "Slice") && shape.arguments.length == 1) {
+        if (kind == ExpressionKind.indexExpression) return copy shape.arguments[0];
+        collection = true;
+      }
+      if (shape.base == "Map" || shape.base == "Set") collection = true;
+    }
+    none => {}
+  }
+  if (kind == ExpressionKind.indexExpression) return "";
+  const member = identifierLookupName(tree.nodes[index].value);
+  if (collection) {
+    if (member == "length" || member == "capacity" || member == "byteLength") return "usize";
+    return "";
+  }
+  match (aggregateFieldShape(modules, moduleIndex, owner, member)) {
+    some(field) => return copy field.typeName;
+    none => {}
+  }
+  return "";
+}
+
+// Every name in the type is a scalar or a declared type. A type parameter
+// not yet settled proves nothing about cleanup, so it is not a copy.
+function typeNameIsSettled(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  const nullableTarget = nullableTargetType(typeName);
+  if (nullableTarget.byteLength > 0) return typeNameIsSettled(modules, moduleIndex, nullableTarget);
+  if (stringStartsWith(typeName, "readonly ")) {
+    const target = typeName.copyBytes(9, typeName.byteLength);
+    return typeNameIsSettled(modules, moduleIndex, target);
+  }
+  const transparent = transparentTypeName(modules, moduleIndex, typeName);
+  if (transparent != typeName) return typeNameIsSettled(modules, moduleIndex, transparent);
+  if (isNumericTypeName(typeName) || typeName == "boolean") return true;
+  match (fixedArrayShape(typeName)) {
+    some(shape) => return typeNameIsSettled(modules, moduleIndex, shape.elementType);
+    none => {}
+  }
+  match (genericTypeShape(typeName)) {
+    some(shape) => {
+      for (const argument of shape.arguments) {
+        if (!typeNameIsSettled(modules, moduleIndex, argument)) return false;
+      }
+      if (shape.base == "Option" || shape.base == "Result") return true;
+    }
+    none => {}
+  }
+  return match (inferredTypeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(_) => true;
+    none => false;
+  };
+}
+
+// Whether a by-value argument copies. The copy is complete before the callee
+// runs, so the call takes no loan on its storage; a value that moves, shares
+// ARC identity, or carries a view keeps its loan, as every borrow does.
+function valueArgumentCopies(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  nodeIndex: usize,
+  in bindings: Array<NativeValueBinding>,
+  in signature: ModuleFunctionSignature,
+  in receiverSubstitutions: Array<NativeValueBinding>,
+  parameterIndex: usize
+): boolean {
+  // A generic owner's parameters are settled by the receiver's type.
+  let typeName = substituteGenericType(signature.parameterTypes[parameterIndex], receiverSubstitutions);
+  for (const parameter of signature.typeParameters) {
+    if (typeMentionsParameter(typeName, parameter)) {
+      // The parameter's type is not settled yet: the argument's own is.
+      typeName = storagePathTypeName(modules, moduleIndex, tree, nodeIndex, bindings);
+      break;
+    }
+  }
+  if (typeName.byteLength == 0) return false;
+  const visiting = Array<String>();
+  if (
+    typeHasCleanup(modules, moduleIndex, typeName, visiting)
+    || typeMovesOnOwnedUse(modules, moduleIndex, typeName)
+    || typeContainsStoredView(modules, moduleIndex, typeName, visiting)
+    || typeContainsForeignValueStorage(modules, moduleIndex, typeName, visiting)
+  ) return false;
+  return typeNameIsSettled(modules, moduleIndex, typeName);
+}
+
 function inferSignatureCallType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -4578,6 +4707,14 @@ function inferSignatureCallType(
       capability == "value"
       && stringStartsWith(signature.parameterTypes[accessIndex], "Slice<")
     ) capability = "in";
+    if (
+      capability == "value" && root.byteLength > 0
+      && valueArgumentCopies(modules, moduleIndex, tree, nodeIndex, bindings, signature,
+        initialSubstitutions, accessIndex)
+    ) {
+      accessIndex = accessIndex + 1;
+      continue;
+    }
     let accessIdentity = valueBindingClassAlias(bindings, root);
     // Indexing a value-owned collection reads that collection, not every
     // sibling field of its aggregate. Reuse the typed storage proof: dynamic
