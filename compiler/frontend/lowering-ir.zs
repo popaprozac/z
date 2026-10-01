@@ -93,7 +93,7 @@ import fs from "std/fs";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
-import { checkGenericInstance } from "./module-resolver.zs";
+import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
@@ -35032,6 +35032,12 @@ function validateGenericDemandExpressions(
       if (aggregate.name != use.ownerName) continue;
       const ownerArguments = ownerSpelledArguments(graph, use.consumerModuleIndex, use.ownerModuleIndex, use.typeArguments);
       const ownerType = genericInstanceOwnerType(aggregate.name, ownerArguments);
+      const lifecycle = attempt checkGenericAggregateInstance(parsed[use.ownerModuleIndex], graph.modules,
+        use.ownerModuleIndex, aggregate, ownerType, use.typeParameters, ownerArguments);
+      match (lifecycle) {
+        success(_) => {}
+        failure(error) => throw genericDemandError(error, aggregate.name, use.typeParameters, ownerArguments);
+      }
       for (const method of aggregate.methods) {
         if (method.typeParameters.length > 0) continue;
         const instance = attempt checkGenericInstance(parsed[use.ownerModuleIndex], graph.modules,

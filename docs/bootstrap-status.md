@@ -1043,15 +1043,16 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    operators.
    The native resolver checks a generic body once with its type parameters
    standing for plain values, then again for each demanded instance of a
-   generic function or method: a copy of the declaration with every type
+   generic function, method, constructor, or deinit: a copy of the declaration with every type
    parameter replaced by the instance's type argument (rebased into the
    declaring module) is checked as an ordinary declaration into evidence of
    its own, so moves, borrows, copies, and cleanup-free rules meet the real
    types and native rejects what Stage 0 rejects per instance, naming the
    specialization. Still pending: lowering an instance from that evidence
-   rather than the shared body's, checking generic constructors and deinits
-   per instance, and relaxing the definition-time rejections that only
-   happen because a type parameter is unsettled. Native also keeps checking
+   rather than the shared body's (no miscompile has been found: lowering
+   already takes ownership operations from the concrete type), and relaxing
+   the definition-time rejections that only happen because a type parameter
+   is unsettled. Native also keeps checking
    uncalled generic bodies for errors that hold for every type argument,
    which Stage 0 never checks.
    A 155-root executable-example sweep found five false native diagnostics where

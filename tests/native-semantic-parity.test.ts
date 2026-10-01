@@ -407,5 +407,37 @@ test("checks each generic instance with its concrete types in both compilers", (
     }
   `, /cannot move an ownership-bearing field or element out of its owner/,
     /cannot move an ownership-bearing field or element out of its owner \(in specialization (both|Pair)<T = String>\)/, ["self-host-emit"]);
+  // A generic class constructor and a generic deinit are checked per instance too.
+  rejects(`
+    class Keeper<T> {
+      first: T;
+      second: T;
+      constructor(value: T) {
+        this.first = value;
+        this.second = value;
+      }
+    }
+    function main(): i32 {
+      const numbers = new Keeper<u32>(7);
+      const text: String = "owned";
+      const texts = new Keeper<String>(text);
+      return numbers.first + numbers.second == 14 ? 0 : 1;
+    }
+  `, /use of moved value "value"/, /use of moved value "value" \(in specialization Keeper<T = String>\)/, ["self-host-emit"]);
+  rejects(`
+    struct Holder<T> {
+      item: T;
+      log: Array<T>;
+      deinit {
+        this.log.push(this.item);
+      }
+    }
+    function main(): i32 {
+      const numbers = Holder<u32>({ item: 1, log: Array<u32>() });
+      const texts = Holder<String>({ item: "owned", log: Array<String>() });
+      return 0;
+    }
+  `, /cannot move an ownership-bearing field or element out of its owner/,
+    /cannot move an ownership-bearing field or element out of its owner \(in specialization Holder<T = String>\)/, ["self-host-emit"]);
 }, 240_000);
 

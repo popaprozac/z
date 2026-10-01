@@ -82,7 +82,11 @@ import {
   throwingGeneratorHandleType,
 } from "./semantic-intrinsics.zs";
 import { NativeStandardCallShape, nativeStandardCall } from "./semantic-standard-library.zs";
-import { substituteFunctionDeclaration } from "./semantic-generic-instances.zs";
+import {
+  substituteConstructorDeclaration,
+  substituteDeinitDeclaration,
+  substituteFunctionDeclaration,
+} from "./semantic-generic-instances.zs";
 import { checkedNativeSuperclassHandoff } from "./semantic-objc-handoffs.zs";
 import {
   NativeInitializationState,
@@ -274,6 +278,7 @@ import {
   AggregateDeclaration,
   ArrayBindingKind,
   ConstructorDeclaration,
+  DeinitDeclaration,
   Declaration,
   DeclarationKind,
   EnumDeclaration,
@@ -14028,6 +14033,159 @@ function inferFunctionExpressions(
   );
 }
 
+// An aggregate's constructor body, with `this` of type `ownerType`: the
+// aggregate itself, or one instance of a generic aggregate.
+function inferAggregateConstructor(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in aggregate: AggregateDeclaration,
+  in initializer: ConstructorDeclaration,
+  in ownerType: String,
+  in typeParameters: Array<TypeParameter>,
+  inout evidence: ModuleSemanticEvidence
+): void throws ModuleResolveError {
+  let bindings = functionValueBindings(initializer.parameters);
+  addValueBinding(inout bindings, "__z_native_function_name", "constructor");
+  addValueBinding(inout bindings, "__z_native_return_type", "void");
+  match (in initializer.errorType) {
+    some(error) => addValueBinding(inout bindings, "__z_native_error_type", error.name);
+    none => {}
+  }
+  addMutableValueBinding(inout bindings, "this", ownerType);
+  if (aggregate.kind == DeclarationKind.classDeclaration) {
+    setValueBindingClassAlias(
+      inout bindings,
+      "this",
+      localClassAliasIdentity(initializer.offset)
+    );
+  }
+  addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
+  addValueBinding(inout bindings, "__z_native_constructor_type", aggregate.name);
+  let lifecycleExecutorAffinity = aggregate.executorAffinity.copyBytes(
+    0,
+    aggregate.executorAffinity.byteLength
+  );
+  if (lifecycleExecutorAffinity.byteLength == 0) {
+    for (const field of aggregate.fields) {
+      if (field.executorAffinity == "thread.main") {
+        lifecycleExecutorAffinity = "thread.main";
+      }
+    }
+  }
+  if (lifecycleExecutorAffinity == "thread.main") {
+    addValueBinding(
+      inout bindings,
+      "__z_native_executor_context",
+      "thread.main"
+    );
+  }
+  addTypeParameterBindings(inout bindings, typeParameters);
+  try inferStatementSequence(
+    module,
+    modules,
+    moduleIndex,
+    initializer.body,
+    initializer.body.roots,
+    inout bindings,
+    inout evidence,
+    "void"
+  );
+  try requireInitializedOutputParameters(
+    module,
+    initializer.line,
+    initializer.column,
+    bindings
+  );
+}
+
+// An aggregate's deinit body, with `this` of type `ownerType`.
+function inferAggregateDeinit(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in aggregate: AggregateDeclaration,
+  in deinitializer: DeinitDeclaration,
+  in ownerType: String,
+  in typeParameters: Array<TypeParameter>,
+  inout evidence: ModuleSemanticEvidence
+): void throws ModuleResolveError {
+  let bindings = Array<NativeValueBinding>();
+  addValueBinding(inout bindings, "__z_native_function_name", "deinit");
+  addValueBinding(inout bindings, "__z_native_return_type", "void");
+  // Teardown exclusively borrows initialized storage; it does not own
+  // a receiver value that may be moved out of the deinitializer.
+  addBorrowedValueBinding(inout bindings, "this", ownerType, true);
+  if (aggregate.kind == DeclarationKind.classDeclaration) {
+    setValueBindingClassAlias(
+      inout bindings,
+      "this",
+      localClassAliasIdentity(deinitializer.offset)
+    );
+  }
+  addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
+  let lifecycleExecutorAffinity = aggregate.executorAffinity.copyBytes(
+    0,
+    aggregate.executorAffinity.byteLength
+  );
+  if (lifecycleExecutorAffinity.byteLength == 0) {
+    for (const field of aggregate.fields) {
+      if (field.executorAffinity == "thread.main") {
+        lifecycleExecutorAffinity = "thread.main";
+      }
+    }
+  }
+  if (lifecycleExecutorAffinity == "thread.main") {
+    addValueBinding(
+      inout bindings,
+      "__z_native_executor_context",
+      "thread.main"
+    );
+  }
+  addTypeParameterBindings(inout bindings, typeParameters);
+  try inferStatementSequence(
+    module,
+    modules,
+    moduleIndex,
+    deinitializer.body,
+    deinitializer.body.roots,
+    inout bindings,
+    inout evidence,
+    "void"
+  );
+}
+
+// One instance of a generic aggregate's constructor and deinit, checked with
+// its type arguments as the ordinary bodies they become.
+export function checkGenericAggregateInstance(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in aggregate: AggregateDeclaration,
+  in ownerType: String,
+  in parameters: Array<String>,
+  in arguments: Array<String>
+): ModuleSemanticEvidence throws ModuleResolveError {
+  let evidence = emptySemanticEvidence();
+  match (in aggregate.constructorDeclaration) {
+    some(initializer) => {
+      const instance = substituteConstructorDeclaration(initializer, parameters, arguments);
+      try inferAggregateConstructor(module, modules, moduleIndex, aggregate, instance, ownerType,
+        Array<TypeParameter>(), inout evidence);
+    }
+    none => {}
+  }
+  match (in aggregate.deinitializer) {
+    some(deinitializer) => {
+      const instance = substituteDeinitDeclaration(deinitializer, parameters, arguments);
+      try inferAggregateDeinit(module, modules, moduleIndex, aggregate, instance, ownerType,
+        Array<TypeParameter>(), inout evidence);
+    }
+    none => {}
+  }
+  return evidence;
+}
+
 // One concrete instance of a generic function or method, checked as the
 // ordinary declaration it becomes, into evidence of its own: the generic body
 // was checked once with its type parameters standing for plain values, and
@@ -14093,60 +14251,8 @@ function validateExpressionTypesAndLocals(
   for (const aggregate of module.program.aggregates) {
     match (in aggregate.nativeBase) { some(_) => continue; none => {} }
     match (in aggregate.constructorDeclaration) {
-      some(initializer) => {
-        let bindings = functionValueBindings(initializer.parameters);
-        addValueBinding(inout bindings, "__z_native_function_name", "constructor");
-        addValueBinding(inout bindings, "__z_native_return_type", "void");
-        match (in initializer.errorType) {
-          some(error) => addValueBinding(inout bindings, "__z_native_error_type", error.name);
-          none => {}
-        }
-        addMutableValueBinding(inout bindings, "this", aggregate.name);
-        if (aggregate.kind == DeclarationKind.classDeclaration) {
-          setValueBindingClassAlias(
-            inout bindings,
-            "this",
-            localClassAliasIdentity(initializer.offset)
-          );
-        }
-        addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
-        addValueBinding(inout bindings, "__z_native_constructor_type", aggregate.name);
-        let lifecycleExecutorAffinity = aggregate.executorAffinity.copyBytes(
-          0,
-          aggregate.executorAffinity.byteLength
-        );
-        if (lifecycleExecutorAffinity.byteLength == 0) {
-          for (const field of aggregate.fields) {
-            if (field.executorAffinity == "thread.main") {
-              lifecycleExecutorAffinity = "thread.main";
-            }
-          }
-        }
-        if (lifecycleExecutorAffinity == "thread.main") {
-          addValueBinding(
-            inout bindings,
-            "__z_native_executor_context",
-            "thread.main"
-          );
-        }
-        addTypeParameterBindings(inout bindings, aggregate.typeParameters);
-        try inferStatementSequence(
-          module,
-          modules,
-          moduleIndex,
-          initializer.body,
-          initializer.body.roots,
-          inout bindings,
-          inout evidence,
-          "void"
-        );
-        try requireInitializedOutputParameters(
-          module,
-          initializer.line,
-          initializer.column,
-          bindings
-        );
-      }
+      some(initializer) => try inferAggregateConstructor(module, modules, moduleIndex, aggregate, initializer,
+        aggregate.name, aggregate.typeParameters, inout evidence);
       none => {}
     }
     for (const method of aggregate.methods) {
@@ -14162,51 +14268,8 @@ function validateExpressionTypesAndLocals(
       );
     }
     match (in aggregate.deinitializer) {
-      some(deinitializer) => {
-        let bindings = Array<NativeValueBinding>();
-        addValueBinding(inout bindings, "__z_native_function_name", "deinit");
-        addValueBinding(inout bindings, "__z_native_return_type", "void");
-        // Teardown exclusively borrows initialized storage; it does not own
-        // a receiver value that may be moved out of the deinitializer.
-        addBorrowedValueBinding(inout bindings, "this", aggregate.name, true);
-        if (aggregate.kind == DeclarationKind.classDeclaration) {
-          setValueBindingClassAlias(
-            inout bindings,
-            "this",
-            localClassAliasIdentity(deinitializer.offset)
-          );
-        }
-        addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
-        let lifecycleExecutorAffinity = aggregate.executorAffinity.copyBytes(
-          0,
-          aggregate.executorAffinity.byteLength
-        );
-        if (lifecycleExecutorAffinity.byteLength == 0) {
-          for (const field of aggregate.fields) {
-            if (field.executorAffinity == "thread.main") {
-              lifecycleExecutorAffinity = "thread.main";
-            }
-          }
-        }
-        if (lifecycleExecutorAffinity == "thread.main") {
-          addValueBinding(
-            inout bindings,
-            "__z_native_executor_context",
-            "thread.main"
-          );
-        }
-        addTypeParameterBindings(inout bindings, aggregate.typeParameters);
-        try inferStatementSequence(
-          module,
-          modules,
-          moduleIndex,
-          deinitializer.body,
-          deinitializer.body.roots,
-          inout bindings,
-          inout evidence,
-          "void"
-        );
-      }
+      some(deinitializer) => try inferAggregateDeinit(module, modules, moduleIndex, aggregate, deinitializer,
+        aggregate.name, aggregate.typeParameters, inout evidence);
       none => {}
     }
   }

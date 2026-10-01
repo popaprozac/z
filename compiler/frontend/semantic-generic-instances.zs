@@ -4,10 +4,13 @@
 // real types, as DESIGN.md's monomorphize-before-checking model asks.
 import { TextBuffer } from "std/text";
 import {
+  ConstructorDeclaration,
+  DeinitDeclaration,
   ExpressionKind,
   ExpressionSyntax,
   ExpressionTree,
   FunctionDeclaration,
+  Parameter,
   StatementArena,
   TypeParameter,
   TypeReference,
@@ -169,3 +172,43 @@ export function substituteFunctionDeclaration(
   substituted.body = substituteStatementArena(declaration.body, parameters, arguments);
   return substituted;
 }
+
+function substituteParameters(
+  in declared: Array<Parameter>,
+  in parameters: Array<String>,
+  in arguments: Array<String>
+): Array<Parameter> {
+  let substituted = copy declared;
+  let index: usize = 0;
+  while (index < substituted.length) {
+    substituted[index].type = substituteTypeReference(declared[index].type, parameters, arguments);
+    index = index + 1;
+  }
+  return substituted;
+}
+
+export function substituteConstructorDeclaration(
+  in initializer: ConstructorDeclaration,
+  in parameters: Array<String>,
+  in arguments: Array<String>
+): ConstructorDeclaration {
+  let substituted = copy initializer;
+  substituted.parameters = substituteParameters(initializer.parameters, parameters, arguments);
+  match (in initializer.errorType) {
+    some(error) => substituted.errorType = Option.some(substituteTypeReference(error, parameters, arguments));
+    none => {}
+  }
+  substituted.body = substituteStatementArena(initializer.body, parameters, arguments);
+  return substituted;
+}
+
+export function substituteDeinitDeclaration(
+  in deinitializer: DeinitDeclaration,
+  in parameters: Array<String>,
+  in arguments: Array<String>
+): DeinitDeclaration {
+  let substituted = copy deinitializer;
+  substituted.body = substituteStatementArena(deinitializer.body, parameters, arguments);
+  return substituted;
+}
+
