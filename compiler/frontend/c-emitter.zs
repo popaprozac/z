@@ -9337,7 +9337,8 @@ function appendStatement(
     output.append(position);
     output.append(" += 1) {\n");
     appendIndent(inout output, depth + 1);
-    output.append("const ");
+    // A loop may count elements without reading its binding.
+    output.append("__attribute__((unused)) const ");
     output.append(elementType);
     output.append(" ");
     appendCBindingName(inout output, declaration.statements[index].name);

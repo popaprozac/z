@@ -3167,6 +3167,90 @@ test("surfaces Array.appendRepeated in hover and completion", () => {
   assert.ok(completions(source, "array-append-repeated-hover.zs", offset + "appendRepeated".length).some((entry) => entry.label === "appendRepeated"));
 });
 
+test("compiles loops whose binding is never read with every warning an error in both compilers", () => {
+  const directory = mkdtempSync("/tmp/z-unused-for-binding-");
+  // Native iterates Arrays and fixed arrays; Stage 0 also Slices, Maps, Sets, and record destructuring.
+  const shared = `
+    function countNames(items: Array<String>): usize {
+      let count: usize = 0;
+      for (const item of items) { count = count + 1; }
+      return count;
+    }
+    function countNumbers(items: Array<u32>): usize {
+      let count: usize = 0;
+      for (const item of items) { count = count + 1; }
+      return count;
+    }
+    function countFixed(items: u8[3]): usize {
+      let count: usize = 0;
+      for (const item of items) { count = count + 1; }
+      return count;
+    }`;
+  const stage0Only = `
+    import { Map, Set } from "std/collections";
+    struct Point { x: i32; y: i32; }
+    function countSlice(items: Slice<u32>): usize {
+      let count: usize = 0;
+      for (const item of items) { count = count + 1; }
+      return count;
+    }
+    function countPoints(points: Array<Point>): usize {
+      let count: usize = 0;
+      for (const { x, y } of points) { count = count + 1; }
+      return count;
+    }
+    function countKeys(table: Map<u32, String>): usize {
+      let count: usize = 0;
+      for (const entry of table) { count = count + 1; }
+      return count;
+    }
+    function countMembers(members: Set<u32>): usize {
+      let count: usize = 0;
+      for (const member of members) { count = count + 1; }
+      return count;
+    }`;
+  const sharedMain = `
+    const names = Array<String>("a", "b");
+    const numbers = Array<u32>(1, 2, 3);
+    const fixed: u8[3] = [1, 2, 3];
+    if (countNames(names) + countNumbers(numbers) + countFixed(fixed) != 8) return 1;`;
+  const stage0Main = `
+    const slice = Array<u32>(4, 5);
+    const points = Array<Point>(Point({ x: 1, y: 2 }));
+    let table = Map<u32, String>();
+    table.set(1, "one");
+    let members = Set<u32>();
+    members.add(7);
+    if (countSlice(slice) + countPoints(points) + countKeys(table) + countMembers(members) != 5) return 2;`;
+  try {
+    const programs: [string, string, boolean][] = [
+      ["shared", `${shared}\nfunction main(): i32 { ${sharedMain} return 0; }`, true],
+      ["stage0", `${stage0Only}\n${shared}\nfunction main(): i32 { ${sharedMain} ${stage0Main} return 0; }`, false],
+    ];
+    for (const [name, source, native] of programs) {
+      const input = resolve(directory, `${name}.zs`);
+      writeFileSync(input, source);
+      const tiers: [string, string][] = [["stage0", compileToC(source, input)]];
+      if (native) {
+        const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+          encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+        });
+        assert.equal(emitted.status, 0, emitted.stderr);
+        tiers.push(["native", emitted.stdout]);
+      }
+      for (const [tier, generated] of tiers) {
+        const executable = resolve(directory, `${name}-${tier}`);
+        const built = spawnSync("clang", ["-x", "c", "-std=c11", "-O0", "-Wall", "-Wextra", "-Werror", "-", "-o", executable], {
+          encoding: "utf8", input: generated, timeout: 30_000,
+        });
+        assert.equal(built.status, 0, `${name} ${tier}: ${built.stderr}`);
+        const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+        assert.equal(run.status, 0, `${name} ${tier}: ${run.stderr}`);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
 test("pops the last Array element by ownership transfer and retains capacity", () => {
   const input = resolve(projectRoot, "tests/fixtures/array-pop.zs");
   const directory = mkdtempSync("/tmp/z-array-pop-");

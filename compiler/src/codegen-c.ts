@@ -8450,6 +8450,8 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
     context.loopStack.pop();
   }
   const bindingDeclarations: string[] = [];
+  // A loop may count elements without reading them; each binding is marked
+  // used, as every other local is.
   if (statement.binding && !context.generatorFrame) {
     const elementType = mapType(collection.elementType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
     bindingDeclarations.push(borrowedElement
@@ -8457,6 +8459,7 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
         ? `${elementType} const ${cBindingName(statement.binding)} = ${item};`
         : `const ${elementType} *${cBindingName(statement.binding)} = &(${item});`
       : `${generateLocalDeclaration(collection.elementType, statement.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${item};`);
+    bindingDeclarations.push(`(void)${cBindingName(statement.binding)};`);
   }
   for (const binding of context.generatorFrame ? [] : statement.objectBindings ?? []) {
     const field = elementOwner!.fields.find((candidate) => candidate.name === binding.fieldName)!;
@@ -8469,6 +8472,7 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
         ? `${fieldType} const ${cBindingName(binding.bindingName)} = ${fieldValue};`
         : `const ${fieldType} *${cBindingName(binding.bindingName)} = &(${fieldValue});`
       : `${generateLocalDeclaration(field.type.name, binding.bindingName, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${fieldValue};`);
+    bindingDeclarations.push(`(void)${cBindingName(binding.bindingName)};`);
   }
   const bindings = context.generatorFrame ? persistentBindings : bindingDeclarations;
   body = body.replace("{\n", `{\n${bindings.map((line) => `  ${line}`).join("\n")}\n`);
