@@ -82,6 +82,7 @@ import {
   throwingGeneratorHandleType,
 } from "./semantic-intrinsics.zs";
 import { NativeStandardCallShape, nativeStandardCall } from "./semantic-standard-library.zs";
+import { substituteFunctionDeclaration } from "./semantic-generic-instances.zs";
 import { checkedNativeSuperclassHandoff } from "./semantic-objc-handoffs.zs";
 import {
   NativeInitializationState,
@@ -14025,6 +14026,27 @@ function inferFunctionExpressions(
     declaration.column,
     bindings
   );
+}
+
+// One concrete instance of a generic function or method, checked as the
+// ordinary declaration it becomes, into evidence of its own: the generic body
+// was checked once with its type parameters standing for plain values, and
+// this is where its moves, borrows, and copies meet the instance's types.
+export function checkGenericInstance(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in declaration: FunctionDeclaration,
+  in ownerType: String,
+  in ownerExecutorAffinity: String,
+  in parameters: Array<String>,
+  in arguments: Array<String>
+): ModuleSemanticEvidence throws ModuleResolveError {
+  const instance = substituteFunctionDeclaration(declaration, parameters, arguments);
+  let evidence = emptySemanticEvidence();
+  try inferFunctionExpressions(module, modules, moduleIndex, instance, ownerType, ownerExecutorAffinity,
+    Array<TypeParameter>(), inout evidence);
+  return evidence;
 }
 
 function validateExpressionTypesAndLocals(

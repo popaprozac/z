@@ -1041,16 +1041,17 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    specialization; native specialization must replace this narrow deferral
    before Stage 1 can become the sole authority for unconstrained generic
    operators.
-   The native resolver checks a generic body once, with its type parameters
-   standing for plain values, and does not yet check it again per concrete
-   instance as DESIGN.md requires; its cleanup, move, borrow, copy, ARC, and
-   thread rules therefore never see an instance's real types, and an instance
-   whose type argument has cleanup can be accepted where Stage 0 rejects it:
-   a by-value `T` used twice, or `Array.append` of `T` elements, compiles to
-   a double free for `T = String`. Per-instance checking is the planned fix;
-   a refusal of every such instance was measured and set aside, since it also
-   disabled std JSON codecs, trait adapters over classes, generic ARC classes,
-   and generic deinit, whose bodies only borrow `T`. Native also keeps checking
+   The native resolver checks a generic body once with its type parameters
+   standing for plain values, then again for each demanded instance of a
+   generic function or method: a copy of the declaration with every type
+   parameter replaced by the instance's type argument (rebased into the
+   declaring module) is checked as an ordinary declaration into evidence of
+   its own, so moves, borrows, copies, and cleanup-free rules meet the real
+   types and native rejects what Stage 0 rejects per instance, naming the
+   specialization. Still pending: lowering an instance from that evidence
+   rather than the shared body's, checking generic constructors and deinits
+   per instance, and relaxing the definition-time rejections that only
+   happen because a type parameter is unsettled. Native also keeps checking
    uncalled generic bodies for errors that hold for every type argument,
    which Stage 0 never checks.
    A 155-root executable-example sweep found five false native diagnostics where

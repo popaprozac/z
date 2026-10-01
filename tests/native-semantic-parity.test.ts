@@ -118,7 +118,7 @@ test("checks dependent literal ranges and concrete parameter types at specializa
   for (const [type, literal, message] of [
     ["u8", "300", /literal 300.*u8.*specialization/],
     ["u8", "-1", /literal -1.*u8.*specialization/],
-    ["String", "36", /numeric type.*String.*specialization/],
+    ["String", "36", /(numeric type.*String|expected String, found i32).*specialization/],
   ] as const) {
     for (const body of [
       `let values = Array<T>(); values.push(${literal});`,
@@ -362,3 +362,50 @@ test("native console formats numbers, booleans, and Strings and marks other valu
     assert.match(resolved.stderr, /error\[Z1000\]: console formatting of "Point" is not executable in the native compiler yet; numbers, booleans, and Strings are supported/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
+
+test("checks each generic instance with its concrete types in both compilers", () => {
+  // A by-value T used twice moves it twice once T has cleanup.
+  rejects(`
+    function twice<T>(value: T): Array<T> {
+      let items = Array<T>();
+      items.push(value);
+      items.push(value);
+      return items;
+    }
+    function main(): i32 {
+      const numbers = twice(7);
+      const text: String = "owned";
+      const texts = twice(text);
+      return numbers.length == texts.length ? 0 : 1;
+    }
+  `, /use of moved value "value"/, /use of moved value "value" \(in specialization twice<T = String>\)/, ["self-host-emit"]);
+  // A block copy needs cleanup-free elements.
+  rejects(`
+    function appendAll<T>(inout target: Array<T>, items: Slice<T>): void { target.append(items); }
+    function main(): i32 {
+      let names = Array<String>("a");
+      const more = Array<String>("b");
+      appendAll(inout names, more);
+      return 0;
+    }
+  `, /Array\.append requires a cleanup-free element type, found String/,
+    /Array\.append requires a cleanup-free element type, found String \(in specialization appendAll<T = String>\)/, ["self-host-emit"]);
+  // A method of a generic aggregate is checked with its receiver's arguments.
+  rejects(`
+    struct Pair<T> {
+      left: T;
+      right: T;
+      function both(): Array<T> {
+        let items = Array<T>();
+        items.push(this.left);
+        return items;
+      }
+    }
+    function main(): i32 {
+      const pair = Pair<String>({ left: "a", right: "b" });
+      return pair.both().length == 1 ? 0 : 1;
+    }
+  `, /cannot move an ownership-bearing field or element out of its owner/,
+    /cannot move an ownership-bearing field or element out of its owner \(in specialization (both|Pair)<T = String>\)/, ["self-host-emit"]);
+}, 240_000);
+

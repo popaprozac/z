@@ -2,6 +2,7 @@ import {
   NativeInitializationState,
   NativeOwnershipState,
   NativeValueBinding,
+  addValueBinding,
   arenaBundleMoveIsAllowed,
   expressionCopiesObjectiveCString,
   liveViewBindingForOwner,
@@ -16,9 +17,9 @@ import {
   isKnownMatchVariant,
   typeExpressionName,
 } from "./semantic-member-lookups.zs";
-import { typeMovesOnOwnedUse } from "./semantic-type-ownership.zs";
+import { substituteGenericType, typeMovesOnOwnedUse } from "./semantic-type-ownership.zs";
 import { typeSymbolLocation, transparentTypeName } from "./semantic-type-identities.zs";
-import { nativeFunctionSignature, stringStartsWith } from "./semantic-type-shapes.zs";
+import { genericTypeShape, nativeFunctionSignature, stringStartsWith } from "./semantic-type-shapes.zs";
 import {
   ModuleResolveError,
   ModuleResolveErrorKind,
@@ -201,19 +202,32 @@ export function consumeOwnedExpressionNode(
             match (in symbol.typeSignature) {
               some(signature) => {
                 if (!signature.customDeinit) {
+                  // A generic receiver's fields have its type arguments.
+                  let substitutions = Array<NativeValueBinding>();
+                  match (genericTypeShape(receiverType)) {
+                    some(shape) => {
+                      let parameter: usize = 0;
+                      while (parameter < signature.typeParameters.length && parameter < shape.arguments.length) {
+                        addValueBinding(inout substitutions, signature.typeParameters[parameter], shape.arguments[parameter]);
+                        parameter = parameter + 1;
+                      }
+                    }
+                    none => {}
+                  }
                   let foundField = false;
                   let otherOwnedField = false;
                   for (const field of signature.fields) {
+                    const fieldType = substituteGenericType(field.typeName, substitutions);
                     if (field.name == tree.nodes[index].value) {
                       foundField = typeMovesOnOwnedUse(
                         modules,
                         location.moduleIndex,
-                        field.typeName
+                        fieldType
                       );
                     } else if (typeMovesOnOwnedUse(
                       modules,
                       location.moduleIndex,
-                      field.typeName
+                      fieldType
                     )) {
                       otherOwnedField = true;
                     }

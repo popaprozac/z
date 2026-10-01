@@ -34,6 +34,7 @@ import {
   moduleSymbolIndex,
 } from "./module-symbols.zs";
 import {
+  ModuleResolveError,
   ModuleGraph,
   ModuleCallResolution,
   ModuleForeignArgument,
@@ -92,6 +93,7 @@ import fs from "std/fs";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
+import { checkGenericInstance } from "./module-resolver.zs";
 import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
@@ -34965,14 +34967,80 @@ function collectGenericDemands(in parsed: Array<ParsedModule>, in graph: ModuleG
   return LoweredGenericDemands({ structs, methods, functions });
 }
 
+// A diagnostic from checking one instance, naming the instance it came from:
+// the position is in the generic body every instance shares.
+function genericDemandError(
+  in error: ModuleResolveError,
+  in callableName: String,
+  in parameters: Array<String>,
+  in arguments: Array<String>
+): String {
+  let message = TextBuffer();
+  message.append(error.message);
+  message.append(" (in specialization ");
+  message.append(callableName);
+  message.append("<");
+  let index: usize = 0;
+  while (index < parameters.length && index < arguments.length) {
+    if (index > 0) message.append(", ");
+    message.append(parameters[index]);
+    message.append(" = ");
+    message.append(arguments[index]);
+    index = index + 1;
+  }
+  message.append(">)");
+  const text = message.finish();
+  if (error.code.byteLength > 0) return `${error.path}:${error.line}:${error.column}: error[${error.code}]: ${text}`;
+  return `${error.path}:${error.line}:${error.column}: error: ${text}`;
+}
+
+// A demand's type arguments, spelled where the generic is declared: a type
+// of the consumer's own resolves in the owner's module by its identity.
+function ownerSpelledArguments(
+  in graph: ModuleGraph,
+  consumerModuleIndex: usize,
+  ownerModuleIndex: usize,
+  in arguments: Array<String>
+): Array<String> {
+  let spelled = Array<String>();
+  for (const argument of arguments) {
+    spelled.push(rebaseTypeName(graph.modules, consumerModuleIndex, ownerModuleIndex, argument));
+  }
+  return spelled;
+}
+
+// The receiver type of a generic aggregate's instance, `Box<String>`.
+function genericInstanceOwnerType(in name: String, in arguments: Array<String>): String {
+  let owner = TextBuffer();
+  owner.append(name);
+  owner.append("<");
+  let index: usize = 0;
+  while (index < arguments.length) {
+    if (index > 0) owner.append(", ");
+    owner.append(arguments[index]);
+    index = index + 1;
+  }
+  owner.append(">");
+  return owner.finish();
+}
+
 function validateGenericDemandExpressions(
   in parsed: Array<ParsedModule>, in graph: ModuleGraph, in demands: LoweredGenericDemands
 ): void throws String {
   for (const use of demands.structs) {
     for (const aggregate of parsed[use.ownerModuleIndex].program.aggregates) {
       if (aggregate.name != use.ownerName) continue;
+      const ownerArguments = ownerSpelledArguments(graph, use.consumerModuleIndex, use.ownerModuleIndex, use.typeArguments);
+      const ownerType = genericInstanceOwnerType(aggregate.name, ownerArguments);
       for (const method of aggregate.methods) {
         if (method.typeParameters.length > 0) continue;
+        const instance = attempt checkGenericInstance(parsed[use.ownerModuleIndex], graph.modules,
+          use.ownerModuleIndex, method, ownerType, aggregate.executorAffinity, use.typeParameters,
+          ownerArguments);
+        match (instance) {
+          success(_) => {}
+          failure(error) => throw genericDemandError(error, aggregate.name, use.typeParameters, use.typeArguments);
+        }
         const result = attempt validateSpecializedExpressions(parsed[use.ownerModuleIndex], graph.modules,
           use.ownerModuleIndex, method, use.typeParameters, use.typeArguments,
           use.typeArgumentModules, use.typeArgumentSymbols);
@@ -34986,6 +35054,13 @@ function validateGenericDemandExpressions(
   for (const use of demands.functions) {
     for (const declaration of parsed[use.ownerModuleIndex].program.functions) {
       if (declaration.name != use.name) continue;
+      const ownerArguments = ownerSpelledArguments(graph, use.consumerModuleIndex, use.ownerModuleIndex, use.typeArguments);
+      const instance = attempt checkGenericInstance(parsed[use.ownerModuleIndex], graph.modules,
+        use.ownerModuleIndex, declaration, "", "", use.typeParameters, ownerArguments);
+      match (instance) {
+        success(_) => {}
+        failure(error) => throw genericDemandError(error, declaration.name, use.typeParameters, use.typeArguments);
+      }
       const result = attempt validateSpecializedExpressions(parsed[use.ownerModuleIndex], graph.modules,
         use.ownerModuleIndex, declaration, use.typeParameters, use.typeArguments,
         use.typeArgumentModules, use.typeArgumentSymbols);
@@ -35003,6 +35078,21 @@ function validateGenericDemandExpressions(
         let parameters = Array<String>();
         for (const parameter of aggregate.typeParameters) { parameters.push(copy parameter.name); }
         for (const parameter of method.typeParameters) { parameters.push(copy parameter.name); }
+        const allArguments = ownerSpelledArguments(graph, use.consumerModuleIndex, use.ownerModuleIndex, use.allTypeArguments);
+        let ownerArguments = Array<String>();
+        let ownerIndex: usize = 0;
+        while (ownerIndex < aggregate.typeParameters.length && ownerIndex < allArguments.length) {
+          ownerArguments.push(copy allArguments[ownerIndex]);
+          ownerIndex = ownerIndex + 1;
+        }
+        const ownerType = ownerArguments.length > 0
+          ? genericInstanceOwnerType(aggregate.name, ownerArguments) : copy aggregate.name;
+        const instance = attempt checkGenericInstance(parsed[use.ownerModuleIndex], graph.modules,
+          use.ownerModuleIndex, method, ownerType, aggregate.executorAffinity, parameters, allArguments);
+        match (instance) {
+          success(_) => {}
+          failure(error) => throw genericDemandError(error, method.name, parameters, use.allTypeArguments);
+        }
         const result = attempt validateSpecializedExpressions(parsed[use.ownerModuleIndex], graph.modules,
           use.ownerModuleIndex, method, parameters, use.allTypeArguments,
           use.typeArgumentModules, use.typeArgumentSymbols);
