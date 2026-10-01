@@ -4880,6 +4880,64 @@ function stableIndexOperand(
   return false;
 }
 
+function isConsoleCall(in declaration: LoweredFunction, index: usize): boolean {
+  const callee = declaration.expressions[index].children[0];
+  return declaration.expressions[callee].kind == LoweredExpressionKind.localValue
+    && (
+      declaration.expressions[callee].value == "console.log"
+      || declaration.expressions[callee].value == "console.write"
+      || declaration.expressions[callee].value == "console.error"
+      || declaration.expressions[callee].value == "console.debug"
+    );
+}
+
+// console.log, write, error, and debug as Stage 0 prints them: each argument
+// in turn, one space between, then a newline unless writing, then a flush.
+// The callee's labels name each argument's format; a String is read through
+// its borrow, a number or boolean by value.
+function appendConsoleCall(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  index: usize
+): void throws String {
+  const callee = declaration.expressions[index].children[0];
+  const method = declaration.expressions[callee].value.copyBytes(8, declaration.expressions[callee].value.byteLength);
+  const stream = method == "log" || method == "write" ? "stdout" : "stderr";
+  if (declaration.expressions[callee].labels.length + 1 != declaration.expressions[index].children.length) {
+    throw "native C emission received a console call without argument formats";
+  }
+  output.append("({ ");
+  let argument: usize = 1;
+  while (argument < declaration.expressions[index].children.length) {
+    if (argument > 1) output.append(`fputc(' ', ${stream}); `);
+    const value = declaration.expressions[index].children[argument];
+    const format = view declaration.expressions[callee].labels[argument - 1];
+    const borrowedView = declaration.expressions[index].labels.length >= argument
+      && declaration.expressions[index].labels[argument - 1] == "view";
+    if (format == "string") {
+      output.append("{ const Z_String *z_console_text = ");
+      if (!borrowedView) output.append("&(");
+      try appendExpression(inout output, declaration, value);
+      if (!borrowedView) output.append(")");
+      output.append(`; if (z_console_text->length > 0) fwrite(z_console_text->data, 1, z_console_text->length, ${stream}); } `);
+    } else {
+      if (format == "signed") output.append(`fprintf(${stream}, "%lld", (long long)(`);
+      else if (format == "unsigned") output.append(`fprintf(${stream}, "%llu", (unsigned long long)(`);
+      else if (format == "float") output.append(`fprintf(${stream}, "%g", (double)(`);
+      else if (format == "boolean") output.append("fputs((");
+      else throw "native C emission received an unknown console format";
+      if (borrowedView) output.append("*(");
+      try appendExpression(inout output, declaration, value);
+      if (borrowedView) output.append(")");
+      if (format == "boolean") output.append(`) ? "true" : "false", ${stream}); `);
+      else output.append(")); ");
+    }
+    argument = argument + 1;
+  }
+  if (method != "write") output.append(`fputc('\\n', ${stream}); `);
+  output.append(`fflush(${stream}); })`);
+}
+
 function appendExpression(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -6726,6 +6784,10 @@ function appendExpression(
   if (declaration.expressions[index].kind == LoweredExpressionKind.directCall) {
     if (declaration.expressions[index].children.length == 0) {
       throw "native C emission received a malformed direct call";
+    }
+    if (isConsoleCall(declaration, index)) {
+      try appendConsoleCall(inout output, declaration, index);
+      return;
     }
     const foreignCString = declaration.expressions[index].value
       == "foreignCString";

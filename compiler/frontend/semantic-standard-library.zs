@@ -217,8 +217,11 @@ function processCall(in memberName: String): Option<NativeStandardCallShape> {
   return Option<NativeStandardCallShape>.none;
 }
 
+// Each argument is borrowed for the call and keeps its own type, which the
+// resolver then checks is a number, a boolean, or a String.
 function consoleCall(
-  in memberName: String
+  in memberName: String,
+  argumentCount: usize
 ): Option<NativeStandardCallShape> {
   if (
     memberName != "log"
@@ -228,16 +231,24 @@ function consoleCall(
   ) return Option<NativeStandardCallShape>.none;
   let parameterModes = Array<String>();
   let parameterTypes = Array<String>();
-  parameterModes.push("in");
-  parameterTypes.push("String");
+  let typeParameters = Array<String>();
+  let argument: usize = 0;
+  while (argument < argumentCount) {
+    parameterModes.push("in");
+    parameterTypes.push(`__z_console_${argument}`);
+    typeParameters.push(`__z_console_${argument}`);
+    argument = argument + 1;
+  }
+  let signature = standardSignature(
+    move parameterModes,
+    move parameterTypes,
+    "void",
+    ""
+  );
+  signature.typeParameters = move typeParameters;
   return Option.some(NativeStandardCallShape({
     name: `console.${memberName}`,
-    signature: standardSignature(
-      move parameterModes,
-      move parameterTypes,
-      "void",
-      ""
-    ),
+    signature: move signature,
   }));
 }
 
@@ -309,9 +320,6 @@ export function nativeStandardCall(
   if (header == "std/math") {
     return mathCall(memberName, argumentType, argumentCount);
   }
-  if (
-    header == "std/console"
-    && argumentCount == 1
-  ) return consoleCall(memberName);
+  if (header == "std/console") return consoleCall(memberName, argumentCount);
   return Option<NativeStandardCallShape>.none;
 }

@@ -8465,6 +8465,42 @@ function parameterModeName(mode: ParameterMode): String {
   return "value";
 }
 
+// The format of each console argument, by the type the resolver recorded
+// for it: a number, a boolean, or a String, which an untyped argument was
+// before console took other values.
+function labelConsoleFormats(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  callee: usize,
+  in parameterTypes: Array<String>,
+  inout output: Array<LoweredExpression>
+): void throws String {
+  let argument: usize = 1;
+  while (argument < tree.nodes[index].children.length) {
+    // The call's parameter types are the arguments' own, substituted.
+    let valueType = "";
+    if (argument <= parameterTypes.length && !stringStartsWith(parameterTypes[argument - 1], "__z_console_")) {
+      valueType = copy parameterTypes[argument - 1];
+    } else match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, tree.nodes[index].children[argument])) {
+      some(resolved) => valueType = move resolved;
+      none => {}
+    }
+    if (stringStartsWith(valueType, "view ")) valueType = valueType.copyBytes(5, valueType.byteLength);
+    valueType = resolvedLocalTypeAlias(program, valueType);
+    if (valueType == "boolean") output[callee].labels.push("boolean");
+    else if (valueType == "f32" || valueType == "f64") output[callee].labels.push("float");
+    else if (valueType == "u8" || valueType == "u16" || valueType == "u32" || valueType == "u64" || valueType == "usize") {
+      output[callee].labels.push("unsigned");
+    } else if (valueType == "i8" || valueType == "i16" || valueType == "i32" || valueType == "i64" || valueType == "isize") {
+      output[callee].labels.push("signed");
+    } else output[callee].labels.push("string");
+    argument = argument + 1;
+  }
+}
+
 function resolvedCallParameterModes(
   in program: Program,
   in evidence: ModuleSemanticEvidence,
@@ -17322,6 +17358,9 @@ function lowerExpressionContextual(
       tree,
       index
     );
+    if (stringStartsWith(standardTarget, "console.")) {
+      try labelConsoleFormats(program, importedTypes, evidence, tree, index, callee, parameterTypes, inout output);
+    }
     let callLabels = Array<String>();
     for (const mode of parameterModes) {
       callLabels.push(mode.copyBytes(0, mode.byteLength));

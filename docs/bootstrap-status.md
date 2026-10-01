@@ -1572,7 +1572,10 @@ Continue focused self-hosting work in this order:
    include directories and deployment target.
    Swift preparation, broader foreign declarations, cross-platform target
    selection, manifest-selected/custom profiles, richer diagnostics,
-   general console formatting,
+   general console formatting beyond numbers, booleans, and Strings (the
+   native compiler takes any number of those, printed as Stage 0 prints them;
+   arrays, records, classes, enums, Options, and native objects are its Z1000
+   boundary),
    native-library cache identities, and complete production options remain.
    Automatic first-tier foreign discovery now invokes `z-foreign-adapter` and
    optionally loads an adjacent `.zd`. Header-derived declarations do not need

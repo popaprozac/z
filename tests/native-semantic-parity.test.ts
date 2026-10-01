@@ -38,6 +38,7 @@ for (const [fixture, expected] of [
   ["named-callable-arguments", "released\nok\n"],
   ["callable-receiver-borrows", "ok\n"],
   ["rebound-unused-locals", "1\n2\nok\n"],
+  ["console-formatting", "4\n-12 2.5 0.125 true 9\nname: zjs box 18446744073709551615\n5 -24 false -128 64\ntemplate 4 and zjs\ntemplate 4 4\nno newline 4 zjs\n1e+21 0.1 -0 100 0.333333\nfirst first\nsecond second\nsecond\n3 4 7\nround 0 0\nround 1 10\nround 2 20\nshown 7\n"],
 ]) {
   test(`executes ${fixture} with Stage 0 and native semantics`, () => {
     const input = resolve(projectRoot, `tests/fixtures/native-semantic-parity/${fixture}.zs`);
@@ -342,3 +343,21 @@ test("keeps a view live through nested blocks when it is used after them", () =>
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("native console formats numbers, booleans, and Strings and marks other values as its tier boundary", () => {
+  const directory = mkdtempSync("/tmp/z-native-console-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const source = `import console from "std/console";
+      struct Point { x: i32; y: i32; }
+      function main(): i32 {
+        const point = Point({ x: 1, y: 2 });
+        console.log("point", point);
+        return 0;
+      }`;
+    writeFileSync(input, source);
+    check(source, input);
+    const resolved = native("self-host-resolve", input);
+    assert.equal(resolved.status, 1, resolved.stdout);
+    assert.match(resolved.stderr, /error\[Z1000\]: console formatting of "Point" is not executable in the native compiler yet; numbers, booleans, and Strings are supported/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);

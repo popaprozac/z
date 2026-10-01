@@ -81,7 +81,7 @@ import {
   collectionHasCapacity,
   throwingGeneratorHandleType,
 } from "./semantic-intrinsics.zs";
-import { nativeStandardCall } from "./semantic-standard-library.zs";
+import { NativeStandardCallShape, nativeStandardCall } from "./semantic-standard-library.zs";
 import { checkedNativeSuperclassHandoff } from "./semantic-objc-handoffs.zs";
 import {
   NativeInitializationState,
@@ -4438,6 +4438,145 @@ function declaredCallableTypeParameterCount(
     none => {}
   }
   return fallback;
+}
+
+// A standard-library call, checked as any call is; console arguments are
+// then held to the values the native compiler formats.
+function inferStandardCallType(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  callIndex: usize,
+  in argumentNodes: Array<usize>,
+  inout bindings: Array<NativeValueBinding>,
+  in receiverRoot: String,
+  in receiverMode: String,
+  in functionName: String,
+  in signature: ModuleFunctionSignature,
+  in initialSubstitutions: Array<NativeValueBinding>,
+  targetModuleIndex: usize,
+  targetSymbolIndex: usize,
+  in callKind: String,
+  inout evidence: ModuleSemanticEvidence
+): String throws ModuleResolveError {
+  const result = try inferSignatureCallType(module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+    argumentNodes, inout bindings, receiverRoot, receiverMode, functionName, signature, initialSubstitutions,
+    targetModuleIndex, targetSymbolIndex, callKind, inout evidence);
+  if (stringStartsWith(functionName, "console.")) {
+    // The call's recorded parameter types are its arguments' own types.
+    const found = evidence.callResolutionIndices.get(tree.nodes[callIndex].offset);
+    const resolutionIndex: usize = match (in found) {
+      some(foundIndex) => foundIndex;
+      none => evidence.callResolutions.length;
+    };
+    if (resolutionIndex < evidence.callResolutions.length) {
+      let argument: usize = 0;
+      while (
+        argument < argumentNodes.length
+        && argument < evidence.callResolutions[resolutionIndex].parameterTypes.length
+      ) {
+        const parameterType = copy evidence.callResolutions[resolutionIndex].parameterTypes[argument];
+        try requireNativeConsoleFormattable(module, modules, moduleIndex, tree, argumentNodes[argument], parameterType);
+        argument = argument + 1;
+      }
+    }
+  }
+  return result;
+}
+
+// The checked shape of a standard-library call. math.trunc takes its
+// parameter type from its argument; console methods take any number of
+// arguments, each borrowed for the call with its own type.
+function standardCallShape(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  in children: Array<usize>,
+  in namespaceName: String,
+  in memberName: String,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): Option<NativeStandardCallShape> throws ModuleResolveError {
+  let standardArgumentType = "";
+  if (
+    memberName == "trunc"
+    && importedStandardNamespace(
+      module,
+      namespaceName,
+      "std/math"
+    )
+  ) {
+    const mathArguments = callArgumentNodes(children);
+    if (mathArguments.length != 1) {
+      throw genericCallError(
+        module,
+        tree,
+        calleeIndex,
+        `math.trunc expects 1 argument, received ${mathArguments.length}`
+      );
+    }
+    standardArgumentType = try inferExpressionNodeType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      mathArguments[0],
+      inout bindings,
+      inout evidence
+    );
+    if (
+      standardArgumentType != "f32"
+      && standardArgumentType != "f64"
+    ) throw genericCallError(
+      module,
+      tree,
+      mathArguments[0],
+      `math.trunc requires f32 or f64, found ${standardArgumentType}`
+    );
+  }
+  return nativeStandardCall(
+    module.program,
+    namespaceName,
+    memberName,
+    children.length - 1,
+    standardArgumentType
+  );
+}
+
+// The values the native compiler formats for console: numbers, booleans,
+// and Strings, as Stage 0 prints them. Stage 0 also formats arrays,
+// records, classes, enums, and Options; those are not native yet. An
+// argument the resolver did not type is formatted as the String it was
+// before console took other values.
+function requireNativeConsoleFormattable(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  argument: usize,
+  in argumentType: String
+): void throws ModuleResolveError {
+  if (argumentType.byteLength == 0 || stringStartsWith(argumentType, "__z_console_")) return;
+  let valueType = copy argumentType;
+  if (stringStartsWith(valueType, "view ")) valueType = valueType.copyBytes(5, valueType.byteLength);
+  valueType = transparentTypeName(modules, moduleIndex, valueType);
+  if (isNumericTypeName(valueType) || valueType == "boolean" || valueType == "String") return;
+  throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    "Z1000",
+    module.path,
+    `console formatting of "${argumentType}" is not executable in the native compiler yet; numbers, booleans, and Strings are supported`,
+    tree.nodes[argument].line,
+    tree.nodes[argument].column,
+    1
+  );
 }
 
 // The static type of an argument written as a storage path: a binding, its
@@ -10004,50 +10143,18 @@ function inferExpressionNodeType(
             signature.returnType.byteLength
           );
         }
-        let standardArgumentType = "";
-        if (
-          memberName == "trunc"
-          && importedStandardNamespace(
-            module,
-            namespaceName,
-            "std/math"
-          )
-        ) {
-          const mathArguments = callArgumentNodes(children);
-          if (mathArguments.length != 1) {
-            throw genericCallError(
-              module,
-              tree,
-              calleeIndex,
-              `math.trunc expects 1 argument, received ${mathArguments.length}`
-            );
-          }
-          standardArgumentType = try inferExpressionNodeType(
-            module,
-            modules,
-            moduleIndex,
-            arena,
-            tree,
-            mathArguments[0],
-            inout bindings,
-            inout evidence
-          );
-          if (
-            standardArgumentType != "f32"
-            && standardArgumentType != "f64"
-          ) throw genericCallError(
-            module,
-            tree,
-            mathArguments[0],
-            `math.trunc requires f32 or f64, found ${standardArgumentType}`
-          );
-        }
-        match (nativeStandardCall(
-          module.program,
+        match (try standardCallShape(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          calleeIndex,
+          children,
           namespaceName,
           memberName,
-          children.length - 1,
-          standardArgumentType
+          inout bindings,
+          inout evidence
         )) {
           some(standard) => {
             const namespaceSymbol = moduleSymbolIndex(
@@ -10062,7 +10169,7 @@ function inferExpressionNodeType(
               const substitutions = Array<NativeValueBinding>();
               const argumentNodes = callArgumentNodes(children);
               const resolutionKind = namespaceName == "String" ? "intrinsic" : "standard";
-              return try inferSignatureCallType(
+              return try inferStandardCallType(
                 module,
                 modules,
                 moduleIndex,
