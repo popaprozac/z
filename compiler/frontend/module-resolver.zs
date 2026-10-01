@@ -177,6 +177,7 @@ import {
   hasKnownAggregate,
   isForeignUnionType,
   isActiveTypeParameter,
+  typeMentionsActiveTypeParameter,
   isKnownMatchVariant,
   matchShape,
   matchVariantIndex,
@@ -4704,6 +4705,9 @@ function valueArgumentCopies(
     }
   }
   if (typeName.byteLength == 0) return false;
+  // A type parameter of the body being checked is settled per instance,
+  // and each instance is checked again with its real type.
+  if (typeMentionsActiveTypeParameter(bindings, typeName)) return true;
   const visiting = Array<String>();
   if (
     typeHasCleanup(modules, moduleIndex, typeName, visiting)

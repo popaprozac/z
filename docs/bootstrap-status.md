@@ -79,7 +79,7 @@ Strict Clang warnings stay enabled; this adds no runtime conversion.
 | --- | --- | --- |
 | Moves and deterministic `deinit` | Implemented | Flow-sensitive cleanup across return, throw, loops, and matches |
 | Explicit `copy` / `move` expressions | Implemented foundation | Readable contextual prefix keywords; `copy` supports cleanup-free values, owned String, recursively copyable Z structs/enums/arrays, and `.zd`-proven native copies, while `move` transfers unique whole-binding owners and diagnoses later source use; custom copy hooks and direct container-element extraction remain separate design work |
-| `in` / `inout` / `out` | Implemented synchronous projected-field tier | Explicit declaration and call-site capabilities. Stage 0 and native call contracts accept direct `in`/`inout` paths through fixed-layout value-struct fields, permit disjoint siblings, and reject repeated or parent/child overlap; native C passes field addresses directly. Synchronous Z ARC `out` initializes fresh storage, destroys displaced references, supports repeated writes and forwarding, and revives cleanup after `move` in both emitters, including conditionally evaluated calls and callback-local storage. `out` remains whole-binding, while ARC fields and mutable method receivers, dynamic indexes, projected Slice conversion, and suspension remain conservative. Both semantic frontends additionally permit a direct field view to coexist with disjoint sibling mutation. A by-value argument of a cleanup-free type takes no call loan in either frontend, for built-in collection methods as for declared functions, so `values.push(values[0])` is accepted; a value that moves, shares ARC identity, or carries a view keeps its loan. Inside a generic body the native frontend keeps the loan for a value of an unsettled type parameter, where Stage 0 decides per instantiation. |
+| `in` / `inout` / `out` | Implemented synchronous projected-field tier | Explicit declaration and call-site capabilities. Stage 0 and native call contracts accept direct `in`/`inout` paths through fixed-layout value-struct fields, permit disjoint siblings, and reject repeated or parent/child overlap; native C passes field addresses directly. Synchronous Z ARC `out` initializes fresh storage, destroys displaced references, supports repeated writes and forwarding, and revives cleanup after `move` in both emitters, including conditionally evaluated calls and callback-local storage. `out` remains whole-binding, while ARC fields and mutable method receivers, dynamic indexes, projected Slice conversion, and suspension remain conservative. Both semantic frontends additionally permit a direct field view to coexist with disjoint sibling mutation. A by-value argument of a cleanup-free type takes no call loan in either frontend, for built-in collection methods as for declared functions, so `values.push(values[0])` is accepted; a value that moves, shares ARC identity, or carries a view keeps its loan. Inside a generic body both frontends decide per instance, with the type arguments settled. |
 | Unified loan checker | Implemented foundation | Call-, task-, receiver-view-, and Arena-region lifetimes share one root/capability/lifetime representation and conflict matrix; cross-thread loans remain to integrate |
 | Fixed arrays | Implemented | Checked indexing and reverse element cleanup |
 | `Array<T>` | Implemented | Empty `Array<T>()` and source-ordered populated `Array<T>(...)` construction, growable owned storage, move-aware elements, checked indexing, reverse destruction, O(1) capacity-retaining `pop(): Option<T>` ownership transfer, `clear()` with immediate reverse element cleanup, and consuming zero-copy `freeze(): readonly Array<T>` publication. `withCapacity(usize)` and `reserveCapacity(usize)` reserve minimum total element capacity without changing length; both frontends implement generic aliases and supported async-frame storage while preserving exclusive loans, ARC identity, and Arena provenance. `append(Slice<T>)` copies a run of cleanup-free elements with one capacity check and one block copy in both frontends, including methods, generics, aliases, and async frames; `appendRepeated(T, usize)` stores one cleanup-free value that many times with one capacity check in both frontends, across the same surfaces; its receiver and argument loans use the ordinary call check. Native lowering includes inferred `capacity` access and retains ARC class identity when an indexed element becomes an owned local. Popped view-bearing elements keep Arena provenance, and owned popped values survive supported async suspension. Populated construction directly inside suspended async frames remains a later lowering slice |
@@ -1048,11 +1048,17 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    declaring module) is checked as an ordinary declaration into evidence of
    its own, so moves, borrows, copies, and cleanup-free rules meet the real
    types and native rejects what Stage 0 rejects per instance, naming the
-   specialization. Still pending: lowering an instance from that evidence
-   rather than the shared body's (no miscompile has been found: lowering
-   already takes ownership operations from the concrete type), and relaxing
-   the definition-time rejections that only happen because a type parameter
-   is unsettled. Native also keeps checking
+   specialization. These instance checks run whenever native checks a
+   program (`check --native-frontend`, `self-host-resolve`), not only when it
+   emits one. The call-loan rule defers to them: inside a generic body a
+   value of a type parameter takes no loan at definition, and each instance
+   decides with its real type. Still pending: lowering an instance from that
+   evidence rather than the shared body's (no miscompile has been found:
+   lowering already takes ownership operations from the concrete type), and
+   the other definition-time rejections that only happen because a type
+   parameter is unsettled (`Channel.bounded`, `OnceLifetime` in
+   `thread.spawn`, `Once.initialize`, and explicit `copy` of a type
+   parameter). Native also keeps checking
    uncalled generic bodies for errors that hold for every type argument,
    which Stage 0 never checks.
    A 155-root executable-example sweep found five false native diagnostics where

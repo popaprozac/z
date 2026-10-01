@@ -1033,6 +1033,40 @@ function typeParameterConstraintTraits(
   return constraints;
 }
 
+// Whether `typeName` names a type parameter of the body being checked: a
+// decision that depends on it is made per instance, where it is concrete.
+export function typeMentionsActiveTypeParameter(
+  in bindings: Array<NativeValueBinding>,
+  in typeName: String
+): boolean {
+  const prefix = "__z_native_type_parameter:";
+  for (const binding of bindings) {
+    if (binding.name.byteLength <= prefix.byteLength) continue;
+    if (binding.name.copyBytes(0, prefix.byteLength) != prefix) continue;
+    const parameter = binding.name.copyBytes(prefix.byteLength, binding.name.byteLength);
+    if (typeTextMentionsName(typeName, parameter)) return true;
+  }
+  return false;
+}
+
+// Whether `name` occurs in `text` as a whole type name.
+function typeTextMentionsName(in text: String, in name: String): boolean {
+  if (name.byteLength == 0 || text.byteLength < name.byteLength) return false;
+  let start: usize = 0;
+  while (start + name.byteLength <= text.byteLength) {
+    const end = start + name.byteLength;
+    if (text.copyBytes(start, end) == name
+      && (start == 0 || !isTypeNameTextByte(text.byteAt(start - 1)))
+      && (end == text.byteLength || !isTypeNameTextByte(text.byteAt(end)))) return true;
+    start = start + 1;
+  }
+  return false;
+}
+
+function isTypeNameTextByte(byte: u8): boolean {
+  return (byte >= 97 && byte <= 122) || (byte >= 65 && byte <= 90) || (byte >= 48 && byte <= 57) || byte == 95;
+}
+
 export function isActiveTypeParameter(
   in bindings: Array<NativeValueBinding>,
   in parameter: String

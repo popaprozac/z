@@ -1374,8 +1374,9 @@ overlapping it with an `in`, `inout`, `out`, or `move` use of the same storage
 is rejected: `resource.merge(resource)`, `node.children.push(node)`. Bind an
 explicit `copy` first when an independent value is what the call needs. The
 rule is the same for the built-in collection methods as for methods and
-functions declared in Z. Inside a generic function a value whose type is a type
-parameter is not known to copy, so it keeps its loan.
+functions declared in Z. Inside a generic function the rule is applied to each
+instance with its type arguments settled: a value of a type parameter is a copy
+in an instance where that type copies.
 
 Overlap follows the field path: `inout state.counter` and `in state.limit` are
 disjoint, and an element of a collection keeps the field path before its first

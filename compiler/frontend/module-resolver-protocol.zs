@@ -13,8 +13,10 @@ import {
   ModuleSymbol,
   ResolvedModule,
 } from "./semantic-model.zs";
-import { resolveModules } from "./module-resolver.zs";
-import { moduleSymbolKindName } from "./module-symbols.zs";
+import { resolveParsedModuleBatch } from "./module-resolver.zs";
+import { parseModuleSources } from "./module-graph.zs";
+import { checkGenericDemandInstances } from "./lowering-ir.zs";
+import { ParsedModuleBatch, moduleSymbolKindName } from "./module-symbols.zs";
 import { appendHexText, appendHexUsize } from "./parser-protocol.zs";
 
 export struct Stage1ModuleGraphResult {
@@ -638,12 +640,32 @@ export function renderResolvedModuleGraph(in graph: ModuleGraph): String {
   return output.finish();
 }
 
+// The resolved graph, with every demanded generic instance checked with its
+// concrete types too, as it is before emission.
+function resolveCheckedModules(
+  in sources: Array<ModuleSource>,
+  in entryPath: String
+): ModuleGraph throws ModuleResolveError {
+  const parsedBatch = try parseModuleSources(sources);
+  return try resolveCheckedModuleBatch(in parsedBatch, entryPath);
+}
+
+function resolveCheckedModuleBatch(
+  in parsedBatch: ParsedModuleBatch,
+  in entryPath: String
+): ModuleGraph throws ModuleResolveError {
+  const graph = try resolveParsedModuleBatch(in parsedBatch, entryPath);
+  const parsed = parsedBatch.modules;
+  try checkGenericDemandInstances(in parsed, graph);
+  return graph;
+}
+
 export function resolveModuleGraphPhase(
   in entryPath: String,
   in batch: String
 ): Stage1ModuleGraphResult throws String {
   const sources = try decodeModuleSources(batch);
-  const outcome = attempt resolveModules(sources, entryPath);
+  const outcome = attempt resolveCheckedModules(sources, entryPath);
   const graph = match (outcome) {
     success(graph) => graph;
     failure(error) => throw resolverMessage(error);

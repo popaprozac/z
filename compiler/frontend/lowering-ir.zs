@@ -34,6 +34,8 @@ import {
   moduleSymbolIndex,
 } from "./module-symbols.zs";
 import {
+  ModuleResolveErrorKind,
+  moduleResolutionError,
   ModuleResolveError,
   ModuleGraph,
   ModuleCallResolution,
@@ -34974,7 +34976,7 @@ function genericDemandError(
   in callableName: String,
   in parameters: Array<String>,
   in arguments: Array<String>
-): String {
+): ModuleResolveError {
   let message = TextBuffer();
   message.append(error.message);
   message.append(" (in specialization ");
@@ -34989,9 +34991,15 @@ function genericDemandError(
     index = index + 1;
   }
   message.append(">)");
-  const text = message.finish();
-  if (error.code.byteLength > 0) return `${error.path}:${error.line}:${error.column}: error[${error.code}]: ${text}`;
-  return `${error.path}:${error.line}:${error.column}: error: ${text}`;
+  let annotated = copy error;
+  annotated.message = message.finish();
+  return annotated;
+}
+
+// A source diagnostic as the lowering phase reports one.
+function genericDemandMessage(in error: ModuleResolveError): String {
+  if (error.code.byteLength > 0) return `${error.path}:${error.line}:${error.column}: error[${error.code}]: ${error.message}`;
+  return `${error.path}:${error.line}:${error.column}: error: ${error.message}`;
 }
 
 // A demand's type arguments, spelled where the generic is declared: a type
@@ -35026,7 +35034,7 @@ function genericInstanceOwnerType(in name: String, in arguments: Array<String>):
 
 function validateGenericDemandExpressions(
   in parsed: Array<ParsedModule>, in graph: ModuleGraph, in demands: LoweredGenericDemands
-): void throws String {
+): void throws ModuleResolveError {
   for (const use of demands.structs) {
     for (const aggregate of parsed[use.ownerModuleIndex].program.aggregates) {
       if (aggregate.name != use.ownerName) continue;
@@ -35052,7 +35060,7 @@ function validateGenericDemandExpressions(
           use.typeArgumentModules, use.typeArgumentSymbols);
         match (result) {
           success => {}
-          failure(error) => throw `${error.path}:${error.line}:${error.column}: error: ${error.message}`;
+          failure(error) => throw error;
         }
       }
     }
@@ -35072,7 +35080,7 @@ function validateGenericDemandExpressions(
         use.typeArgumentModules, use.typeArgumentSymbols);
       match (result) {
         success => {}
-        failure(error) => throw `${error.path}:${error.line}:${error.column}: error: ${error.message}`;
+        failure(error) => throw error;
       }
     }
   }
@@ -35104,11 +35112,28 @@ function validateGenericDemandExpressions(
           use.typeArgumentModules, use.typeArgumentSymbols);
         match (result) {
           success => {}
-          failure(error) => throw `${error.path}:${error.line}:${error.column}: error: ${error.message}`;
+          failure(error) => throw error;
         }
       }
     }
   }
+}
+
+// Every demanded generic instance, checked with its concrete types: what a
+// program is held to whether it is only checked or also emitted.
+export function checkGenericDemandInstances(
+  in parsed: Array<ParsedModule>, in graph: ModuleGraph
+): void throws ModuleResolveError {
+  const demandsOutcome = attempt collectGenericDemands(parsed, graph);
+  const demands = match (demandsOutcome) {
+    success(value) => value;
+    failure(message) => {
+      const failure = internalBackendFailure("native specialization", message);
+      const path = parsed.length > 0 ? copy parsed[0].path : "";
+      throw moduleResolutionError(ModuleResolveErrorKind.unsupportedLowering, path, failure, 1, 1);
+    }
+  };
+  try validateGenericDemandExpressions(parsed, graph, demands);
 }
 
 function lowerCheckedModules(
@@ -35121,7 +35146,11 @@ function lowerCheckedModules(
   };
   // A failed concrete constraint is a source error, not an internal backend
   // failure. Validate before lowering and reuse this same closed demand graph.
-  try validateGenericDemandExpressions(parsed, graph, demands);
+  const validated = attempt validateGenericDemandExpressions(parsed, graph, demands);
+  match (validated) {
+    success => {}
+    failure(error) => throw genericDemandMessage(error);
+  }
   const outcome = attempt lowerModulesIncludingTests(parsed, graph, includeTests, demands);
   return match (outcome) {
     success(lowered) => lowered;

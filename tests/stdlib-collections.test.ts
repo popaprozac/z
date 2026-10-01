@@ -1708,7 +1708,9 @@ test("a value that moves, shares ARC identity, or is borrowed keeps its call loa
     }
     function take(title: String, inout box: Box): void { box.title = title; }
     function mix<T>(inout target: Wrap<T>, value: T): void { target.item = value; }
-    function keep<T>(inout slot: T, value: T): void { slot = value; }`;
+    function keep<T>(inout slot: T, value: T): void { slot = value; }
+    function put<T>(inout target: Wrap<T>, value: T): void { target.item = value; }
+    function twice<T>(inout target: Wrap<T>): void { put(inout target, target.item); }`;
   const box = `let box = Box({ items: Array<u32>(7), names: Array<String>(), title: "t" });`;
   const node = `let node = new Node({ children: Array<Node>(), weight: 1 });`;
   const cases: [string, RegExp][] = [
@@ -1725,6 +1727,8 @@ test("a value that moves, shares ARC identity, or is borrowed keeps its call loa
     [`let lists = Array<Array<u32>>(); lists.push(lists);`, /overlapping inout and value uses of "lists" in one call are not allowed/],
     [`let map = Map<usize, u32>(); map.delete(map.length);`, /overlapping inout and in uses of "map" and "map\.length" in one call are not allowed/],
     [`let seen = Set<usize>(); seen.remove(seen.length);`, /overlapping inout and in uses of "seen" and "seen\.length" in one call are not allowed/],
+    // In a generic body the rule meets each instance's type.
+    [`let wrap = Wrap<String>({ item: "a" }); twice(inout wrap);`, /overlapping inout and value uses of "target" and "target\.item" in one call are not allowed/],
   ];
   const directory = mkdtempSync("/tmp/z-call-move-loans-");
   try {
@@ -1745,6 +1749,7 @@ test("a value that moves, shares ARC identity, or is borrowed keeps its call loa
       `let names = Array<String>("a"); names.push(copy names[0]);`,
       `${box} box.items.push(box.items[0]); box.names.push(copy box.title);`,
       `${node} let other = new Node({ children: Array<Node>(), weight: 2 }); node.children.push(other); node.adopt(new Node({ children: Array<Node>(), weight: node.weight }));`,
+      `let wrap = Wrap<u32>({ item: 1 }); twice(inout wrap);`,
     ]) {
       const source = `${declarations}\nfunction main(): i32 { ${body} return 0; }`;
       compileToC(source, "call-move-loans-valid.zs");
