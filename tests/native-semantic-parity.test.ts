@@ -41,6 +41,7 @@ for (const [fixture, expected] of [
   ["generic-plain-instances", "ok\n"],
   ["optimization-marks", "counter 20\n"],
   ["generic-instance-shapes", "ok\n"],
+  ["borrowed-argument-storage", "67\n"],
   ["console-formatting", "4\n-12 2.5 0.125 true 9\nname: zjs box 18446744073709551615\n5 -24 false -128 64\ntemplate 4 and zjs\ntemplate 4 4\nno newline 4 zjs\n1e+21 0.1 -0 100 0.333333\nfirst first\nsecond second\nsecond\n3 4 7\nround 0 0\nround 1 10\nround 2 20\nshown 7\n"],
 ]) {
   test(`executes ${fixture} with Stage 0 and native semantics`, () => {
@@ -496,3 +497,40 @@ test("holds each generic instance's explicit copies to what native lowering copi
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
+test("holds in arguments to stored values and the temporaries a call can lend", () => {
+  const prelude = `
+    struct Named { name: String; }
+    class Holder { readonly value: u32; constructor(in value: u32) { this.value = value; } }
+    struct Counter { total: u32; function add(in amount: u32): u32 { return this.total + amount; } }
+    function four(): u32 { return 4; }
+    function show<T>(in value: T): void {}
+    function take(in value: u32): u32 { return value; }
+    function takeNamed(in value: Named): usize { return value.name.byteLength; }
+  `;
+  const stored = (name: string) => new RegExp(`borrowed argument to "${name}" must be stored or a struct literal`);
+  const cases: [string, RegExp, RegExp?][] = [
+    ["const result = take(x + 1);", stored("take")],
+    ["const result = take(four());", stored("take")],
+    ["const result = counter.add(2);", stored("add")],
+    ["const holder = new Holder(3);", stored("constructor")],
+    ["show(x + 1);", stored("__z_mono_show_u32"), stored("show")],
+    ["const size = takeNamed(Named({ name: \"abc\" }));", /a cleanup-bearing borrowed temporary must be bound before the call/],
+  ];
+  const program = (statement: string) => `${prelude}
+    function main(): i32 {
+      const x: u32 = 4;
+      const counter = Counter({ total: 1 });
+      ${statement}
+      return 0;
+    }
+  `;
+  // A literal lent to a call once reached C as the address of an rvalue.
+  rejects(program("const result = take(7);"), stored("take"));
+  for (const [statement, stage0Message, nativeMessage] of cases) {
+    rejects(program(statement), stage0Message, nativeMessage ?? stage0Message, ["self-host-resolve"]);
+  }
+  rejects(`${prelude}
+    function apply(handler: (in value: u32) => u32): u32 { return handler(7); }
+    function main(): i32 { return 0; }
+  `, stored("handler"), stored("handler"), ["self-host-resolve"]);
+}, 240_000);

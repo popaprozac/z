@@ -4938,6 +4938,40 @@ function appendConsoleCall(
   output.append(`fflush(${stream}); })`);
 }
 
+// The address of a borrowed value. A plain enum case is a C constant with no
+// storage, so it is held in a compound literal for the borrow.
+function appendAddressOf(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  value: usize
+): void throws String {
+  const enumCase = declaration.expressions[value].kind == LoweredExpressionKind.enumValue
+    && declaration.expressions[value].labels.length == 1
+    && !isNicheViewOption(declaration.expressions[value].value);
+  if (enumCase) {
+    output.append("&((Z_");
+    output.append(declaration.expressions[value].value);
+    output.append("){");
+    try appendExpression(inout output, declaration, value);
+    output.append("})");
+    return;
+  }
+  output.append("&(");
+  try appendExpression(inout output, declaration, value);
+  output.append(")");
+}
+
+// One call argument; a borrowed one passes the address of its storage.
+function appendCallArgument(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  value: usize,
+  borrowed: boolean
+): void throws String {
+  if (borrowed) try appendAddressOf(inout output, declaration, value);
+  else try appendExpression(inout output, declaration, value);
+}
+
 function appendExpression(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -6113,10 +6147,8 @@ function appendExpression(
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received a malformed view projection";
     }
-    output.append("&(");
     const operand = declaration.expressions[index].children[0];
-    try appendExpression(inout output, declaration, operand);
-    output.append(")");
+    try appendAddressOf(inout output, declaration, operand);
     return;
   }
   if (
@@ -6515,9 +6547,7 @@ function appendExpression(
           || declaration.expressions[index].labels[labelIndex] == "inout"
           || declaration.expressions[index].labels[labelIndex] == "out"
         );
-      if (borrowed) output.append("&(");
-      try appendExpression(inout output, declaration, value);
-      if (borrowed) output.append(")");
+      try appendCallArgument(inout output, declaration, value, borrowed);
       argument = argument + 1;
     }
     output.append(")");
@@ -6904,23 +6934,13 @@ function appendExpression(
     while (argument < declaration.expressions[index].children.length) {
       if (argument > 1) output.append(", ");
       const value = declaration.expressions[index].children[argument];
-      if (
-        declaration.expressions[index].labels.length >= argument
+      const borrowed = declaration.expressions[index].labels.length >= argument
         && (
           declaration.expressions[index].labels[argument - 1] == "in"
           || declaration.expressions[index].labels[argument - 1] == "inout"
           || declaration.expressions[index].labels[argument - 1] == "out"
-        )
-      ) output.append("&(");
-      try appendExpression(inout output, declaration, value);
-      if (
-        declaration.expressions[index].labels.length >= argument
-        && (
-          declaration.expressions[index].labels[argument - 1] == "in"
-          || declaration.expressions[index].labels[argument - 1] == "inout"
-          || declaration.expressions[index].labels[argument - 1] == "out"
-        )
-      ) output.append(")");
+        );
+      try appendCallArgument(inout output, declaration, value, borrowed);
       argument = argument + 1;
     }
     output.append(")");
@@ -6945,10 +6965,8 @@ function appendExpression(
           || declaration.expressions[index].labels[argument - 1] == "inout"
           || declaration.expressions[index].labels[argument - 1] == "out"
         );
-      if (borrowed) output.append("&(");
       const value = declaration.expressions[index].children[argument];
-      try appendExpression(inout output, declaration, value);
-      if (borrowed) output.append(")");
+      try appendCallArgument(inout output, declaration, value, borrowed);
       argument = argument + 1;
     }
     output.append(")");
@@ -7008,16 +7026,10 @@ function appendExpression(
             || declaration.expressions[method].labels[labelIndex]
               == "out"
         );
-        if (borrowed) output.append("&(");
         const methodValue = declaration.expressions[method].children[
           methodArgument
         ];
-        try appendExpression(
-          inout output,
-          declaration,
-          methodValue
-        );
-        if (borrowed) output.append(")");
+        try appendCallArgument(inout output, declaration, methodValue, borrowed);
         methodArgument = methodArgument + 1;
       }
       output.append(")");
@@ -7039,14 +7051,8 @@ function appendExpression(
           || declaration.expressions[index].labels[argument - 1] == "inout"
           || declaration.expressions[index].labels[argument - 1] == "out"
       );
-      if (borrowed) output.append("&(");
       const value = declaration.expressions[index].children[argument];
-      try appendExpression(
-        inout output,
-        declaration,
-        value
-      );
-      if (borrowed) output.append(")");
+      try appendCallArgument(inout output, declaration, value, borrowed);
       argument = argument + 1;
     }
     output.append(")");
@@ -7069,14 +7075,8 @@ function appendExpression(
           || declaration.expressions[index].labels[field + 1] == "inout"
           || declaration.expressions[index].labels[field + 1] == "out"
         );
-      if (borrowed) output.append("&(");
       const value = declaration.expressions[index].children[field];
-      try appendExpression(
-        inout output,
-        declaration,
-        value
-      );
-      if (borrowed) output.append(")");
+      try appendCallArgument(inout output, declaration, value, borrowed);
       field = field + 1;
     }
     output.append(")");

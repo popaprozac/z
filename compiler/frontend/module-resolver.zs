@@ -4719,6 +4719,114 @@ function valueArgumentCopies(
   return typeNameIsSettled(modules, moduleIndex, typeName);
 }
 
+// The name a call's diagnostics give its target: `add` for `Counter.add`.
+function callTargetDisplayName(in functionName: String): String {
+  let index = functionName.byteLength;
+  while (index > 0) {
+    if (functionName.byteAt(index - 1) == 46) return functionName.copyBytes(index, functionName.byteLength);
+    index = index - 1;
+  }
+  return copy functionName;
+}
+
+// A call of a struct or class by name with one object literal: `Pair({ ... })`.
+function aggregateTemporaryCall(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  nodeIndex: usize
+): boolean {
+  if (tree.nodes[nodeIndex].kind != ExpressionKind.callExpression) return false;
+  if (tree.nodes[nodeIndex].children.length != 2) return false;
+  const callee = tree.nodes[nodeIndex].children[0];
+  const argument = tree.nodes[nodeIndex].children[1];
+  if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) return false;
+  if (tree.nodes[argument].kind != ExpressionKind.objectExpression) return false;
+  return match (typeSymbolLocation(modules, moduleIndex, tree.nodes[callee].value)) {
+    some(location) => modules[location.moduleIndex].symbols[location.symbolIndex].kind == ModuleSymbolKind.structSymbol
+      || modules[location.moduleIndex].symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol;
+    none => false;
+  };
+}
+
+// An `in` argument of a Z-declared callable is storage the caller lends for
+// the call: a named binding or a path into one, or a value the call holds
+// for its duration, which is a string, a template, a `try` result, an
+// `Array<T>(...)`, a closure, or a struct literal whose type needs no cleanup.
+function requireStoredBorrowedArgument(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  nodeIndex: usize,
+  in argumentType: String,
+  in functionName: String
+): void throws ModuleResolveError {
+  const kind = tree.nodes[nodeIndex].kind;
+  const root = expressionStorageRootName(tree, nodeIndex);
+  if (
+    root.byteLength > 0
+    || kind == ExpressionKind.closureExpression
+    || kind == ExpressionKind.stringExpression
+    || kind == ExpressionKind.templateExpression
+    || kind == ExpressionKind.templateTextExpression
+    || kind == ExpressionKind.tryExpression
+  ) return;
+  if (kind == ExpressionKind.callExpression && tree.nodes[nodeIndex].children.length > 0) {
+    const callee = tree.nodes[nodeIndex].children[0];
+    if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
+      match (genericTypeShape(tree.nodes[callee].value)) {
+        some(shape) => {
+          if (shape.base == "Array") return;
+        }
+        none => {}
+      }
+    }
+  }
+  if (aggregateTemporaryCall(modules, moduleIndex, tree, nodeIndex)) {
+    let visiting = Array<String>();
+    if (
+      typeHasCleanup(modules, moduleIndex, argumentType, visiting)
+      || typeMovesOnOwnedUse(modules, moduleIndex, argumentType)
+    ) throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "a cleanup-bearing borrowed temporary must be bound before the call",
+      tree.nodes[nodeIndex].line,
+      tree.nodes[nodeIndex].column
+    );
+    return;
+  }
+  const target = callTargetDisplayName(functionName);
+  throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `borrowed argument to "${target}" must be stored or a struct literal`,
+    tree.nodes[nodeIndex].line,
+    tree.nodes[nodeIndex].column
+  );
+}
+
+// The `in` arguments of a call through a function value.
+function requireStoredBorrowedArguments(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  in argumentNodes: Array<usize>,
+  in signature: ModuleFunctionSignature,
+  in functionName: String
+): void throws ModuleResolveError {
+  let index: usize = 0;
+  while (index < argumentNodes.length && index < signature.parameterModes.length) {
+    if (signature.parameterModes[index] == "in") {
+      try requireStoredBorrowedArgument(module, modules, moduleIndex, tree, argumentNodes[index],
+        signature.parameterTypes[index], functionName);
+    }
+    index = index + 1;
+  }
+}
+
 function inferSignatureCallType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -5253,6 +5361,16 @@ function inferSignatureCallType(
         inout bindings,
         inout evidence
       );
+      // Z declarations only: a foreign callee's `in` is its own contract.
+      if (
+        mode == "in"
+        && (callKind == "function" || callKind == "method" || callKind == "staticMethod" || callKind == "constructor")
+        && !(targetModuleIndex < modules.length
+          && targetSymbolIndex < modules[targetModuleIndex].symbols.length
+          && modules[targetModuleIndex].symbols[targetSymbolIndex].foreignHeader.byteLength > 0)
+      ) {
+        try requireStoredBorrowedArgument(module, modules, moduleIndex, tree, nodeIndex, argumentType, functionName);
+      }
       if (mode == "in" && stringStartsWith(argumentType, "__z_native_function:borrowed ")) {
         let proven = false;
         for (const parameter of signature.nonEscapingParameters) {
@@ -9064,6 +9182,7 @@ function inferExpressionNodeType(
           recordExpressionResolution(modules, moduleIndex, tree, calleeIndex, callableLocalType, inout evidence);
           const substitutions = Array<NativeValueBinding>();
           const arguments = callArgumentNodes(children);
+          try requireStoredBorrowedArguments(module, modules, moduleIndex, tree, arguments, signature, lookup);
           return try inferSignatureCallType(
             module,
             modules,
@@ -11790,6 +11909,8 @@ function inferExpressionNodeType(
                   recordExpressionResolution(modules, moduleIndex, tree, calleeIndex, callableFieldType, inout evidence);
                   const substitutions = Array<NativeValueBinding>();
                   const argumentNodes = callArgumentNodes(children);
+                  try requireStoredBorrowedArguments(module, modules, moduleIndex, tree, argumentNodes, signature,
+                    field.name);
                   const callType = try inferSignatureCallType(
                     module,
                     modules,

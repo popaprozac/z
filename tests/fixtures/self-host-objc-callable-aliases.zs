@@ -18,8 +18,9 @@ function emit(in directory: String): String throws String {
   for (const file of files) {
     const path = `${directory}/${file}`;
     const source = try fs.readText(path);
-    const parsed = match (attempt parseModule(ModuleSource({ path: copy path, source,
-      packageSpecifiers: Array<String>(), targetPlatform: "macos", targetMinimumVersion: "14.0" }))) {
+    const moduleSource = ModuleSource({ path: copy path, source,
+      packageSpecifiers: Array<String>(), targetPlatform: "macos", targetMinimumVersion: "14.0" });
+    const parsed = match (attempt parseModule(moduleSource)) {
       success(value) => value;
       failure(error) => throw copy error.message;
     };
