@@ -516,7 +516,7 @@ test("holds in arguments to stored values and the temporaries a call can lend", 
     ["const result = take(four());", stored("take")],
     ["const result = counter.add(2);", stored("add")],
     ["const holder = new Holder(3);", stored("constructor")],
-    ["show(x + 1);", stored("__z_mono_show_u32"), stored("show")],
+    ["show(x + 1);", stored("show")],
     ["const size = takeNamed(Named({ name: \"abc\" }));", /a cleanup-bearing borrowed temporary must be bound before the call/],
   ];
   const program = (statement: string) => `${prelude}
@@ -637,4 +637,23 @@ test("reports block-bodied thread captures native cannot transfer as Z1000", () 
       assert.doesNotMatch(emitted.stderr, /internal compiler error/);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("names imported and generic call targets by their source names", () => {
+  const library = `
+    export function take(in value: u32): u32 { return value; }
+    export function show<T>(in value: T): void {}
+    export function pairUp(out first: u32, out second: u32): void { first = 1; second = 2; }
+  `;
+  const cases: [string, string, RegExp][] = [
+    ["take", "const value = take(7);", /borrowed argument to "take" must be stored or a struct literal/],
+    ["show", "const x: u32 = 4; show(x + 1);", /borrowed argument to "show" must be stored or a struct literal/],
+    ["take", "const value = take(7, 8);", /(?:"take"|: take) expects 1 argument\(s\), received 2/],
+    ["pairUp", "let a: u32 = 0; let b: u32 = 0; pairUp(a, out b);",
+      /"pairUp" requires out <mutable binding> for parameter 1/],
+  ];
+  for (const [name, body, message] of cases) {
+    rejects(`import { ${name} } from "./lib.zs";
+      function main(): i32 { ${body} return 0; }`, message, message, ["self-host-resolve"], { "lib.zs": library });
+  }
 }, 240_000);

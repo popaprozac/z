@@ -2528,7 +2528,7 @@ function validateOptimizationMark(declaration: FunctionDeclaration, method: bool
   if (optimization.mark !== "inline") return;
   const selfCall = directSelfCall(declaration, method);
   if (selfCall) {
-    throw new DiagnosticError(selfCall.fileName ?? fileName, selfCall, `inline function ${JSON.stringify(declaration.genericOriginName ?? declaration.name)} cannot call itself`, {
+    throw new DiagnosticError(selfCall.fileName ?? fileName, selfCall, `inline function ${JSON.stringify(sourceCallableName(declaration))} cannot call itself`, {
       labels: [{ location, message: "declared inline here", length: optimization.mark.length }],
       notes: ["a function that calls itself would have to be inlined into itself"],
       helps: ["remove `inline`, or move the recursive part into a helper the inline function calls"],
@@ -14883,6 +14883,14 @@ function checkCollectionMutatorLoans(
   }
 }
 
+// The name a diagnostic gives a call target: its source spelling, not the
+// module-linked or specialized symbol (`show`, not `__z_mono_show_u32`).
+function sourceCallableName(target: FunctionDeclaration): string {
+  return (target.genericOriginName ?? target.name)
+    .replace(/^__z_module_\d+_(?:import_)?/, "")
+    .replace(/^__z_c_impl_\d+_/, "");
+}
+
 function checkArguments(
   target: FunctionDeclaration,
   args: Expression[],
@@ -14903,7 +14911,7 @@ function checkArguments(
     throw new DiagnosticError(
       fileName,
       location,
-      `${JSON.stringify(target.name)} expects ${target.parameters.length} argument(s), received ${args.length}`,
+      `${JSON.stringify(sourceCallableName(target))} expects ${target.parameters.length} argument(s), received ${args.length}`,
     );
   }
   const callLoans: AccessLoanSet = new Map();
@@ -14968,7 +14976,7 @@ function checkArguments(
         throw new DiagnosticError(
           fileName,
           argument.location,
-          `${JSON.stringify(target.name)} requires out <mutable binding> for parameter ${index + 1}`,
+          `${JSON.stringify(sourceCallableName(target))} requires out <mutable binding> for parameter ${index + 1}`,
           {
             code: "Z0302",
             length: argument.kind === "identifier" ? argument.name.length : 1,
@@ -15007,7 +15015,7 @@ function checkArguments(
         throw new DiagnosticError(fileName, argument.location, `child-task output borrow of ${JSON.stringify(bindingName)} is not supported`, {
           code: "Z0704",
           notes: ["direct await suspends the caller until initialization finishes; a child-task output would leave caller storage concurrently observable"],
-          helps: [`use \`await ${target.name}(out ${bindingName})\`, or return an owned result from the child task`],
+          helps: [`use \`await ${sourceCallableName(target)}(out ${bindingName})\`, or return an owned result from the child task`],
         });
       }
       continue;
@@ -15018,7 +15026,7 @@ function checkArguments(
         throw new DiagnosticError(
           fileName,
           argument.location,
-          `${JSON.stringify(target.name)} requires inout <mutable binding> for parameter ${index + 1}`,
+          `${JSON.stringify(sourceCallableName(target))} requires inout <mutable binding> for parameter ${index + 1}`,
           {
             code: "Z0301",
             length: argument.kind === "identifier" ? argument.name.length : 1,
@@ -15145,7 +15153,7 @@ function checkArguments(
         throw new DiagnosticError(
           fileName,
           argument.location,
-          `${JSON.stringify(target.name)} expects an owned value, not an explicit in borrow`,
+          `${JSON.stringify(sourceCallableName(target))} expects an owned value, not an explicit in borrow`,
           {
             code: "Z0300",
             helps: [`pass \`${[capabilityPath.root, ...capabilityPath.fields].join(".")}\` directly to transfer ownership`],
@@ -15197,7 +15205,7 @@ function checkArguments(
           return symbol?.kind === "function" ? symbol.declaration : null;
         })) {
           throw new DiagnosticError(fileName, argument.location,
-            `borrowed callback cannot enter ${JSON.stringify(target.name)} without a proven non-escaping parameter`, {
+            `borrowed callback cannot enter ${JSON.stringify(sourceCallableName(target))} without a proven non-escaping parameter`, {
               code: "Z0212",
               notes: ["an in parameter may retain an owned function value; in alone does not prove a stack-backed callback stays within the call"],
               helps: ["use a move closure with an owned environment, or keep the helper limited to synchronous invocation and proven borrowed forwarding"],
@@ -15275,7 +15283,7 @@ function checkArguments(
         throw new DiagnosticError(
           fileName,
           argument.location,
-          `borrowed argument to ${JSON.stringify(target.name)} must be stored or a struct literal`,
+          `borrowed argument to ${JSON.stringify(sourceCallableName(target))} must be stored or a struct literal`,
         );
       }
       const actual = inferExpression(borrowedArgument, locals, globals, structs, enums, fileName, state);

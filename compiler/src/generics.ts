@@ -938,6 +938,7 @@ export function materializeGenerics(
     const concrete = transform({
       ...template,
       name,
+      genericOriginName: template.name,
       typeParameters: [],
       typeParameterConstraints: [],
       compilerIntrinsic: template.compilerIntrinsic
