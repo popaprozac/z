@@ -2407,7 +2407,8 @@ function inferContextualObjectExpressionNode(
       }
     }
     if (spreadMode == "move") {
-      if (!typeMovesOnOwnedUse(modules, moduleIndex, sourceType)) {
+      // A type naming a type parameter waits for each instance.
+      if (!typeMentionsActiveTypeParameter(bindings, sourceType) && !typeMovesOnOwnedUse(modules, moduleIndex, sourceType)) {
         throw resolutionError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
@@ -7306,7 +7307,7 @@ function inferExpressionNodeType(
       index,
       value,
       operand,
-      isActiveTypeParameter(bindings, operand)
+      typeMentionsActiveTypeParameter(bindings, operand)
     );
     if (value == "view" && result.byteLength > 0) {
       const operandIndex = children[0];
@@ -9936,6 +9937,7 @@ function inferExpressionNodeType(
               match (genericTypeShape(actualCaptureType)) {
                 some(generic) => {
                   if (generic.base == "OnceLifetime"
+                    && !typeMentionsActiveTypeParameter(bindings, actualCaptureType)
                     && !typeIsThreadTransferable(modules, moduleIndex, actualCaptureType)) {
                     throw resolutionError(
                       ModuleResolveErrorKind.typeMismatch, module.path,
@@ -10425,11 +10427,11 @@ function inferExpressionNodeType(
                   tree.nodes[capacity].column
                 );
                 const payload = view channel.arguments[0];
-                if (!typeIsThreadTransferable(
-                  modules,
-                  moduleIndex,
-                  payload
-                )) throw resolutionError(
+                // A type parameter waits for each instance, checked with its own type.
+                if (
+                  !typeMentionsActiveTypeParameter(bindings, payload)
+                  && !typeIsThreadTransferable(modules, moduleIndex, payload)
+                ) throw resolutionError(
                   ModuleResolveErrorKind.typeMismatch,
                   module.path,
                   `Channel message type ${payload} is not transferable across threads`,

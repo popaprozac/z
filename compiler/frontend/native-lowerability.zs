@@ -11,6 +11,7 @@ import {
   StatementArena,
   StatementKind,
   TypeNameReference,
+  TypeParameter,
   TypeReference,
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
@@ -27,12 +28,14 @@ import {
 import { typeHasCleanup, typeIsThreadTransferable } from "./semantic-type-ownership.zs";
 import { channelTypeKind } from "./channel-shapes.zs";
 import { transparentTypeName, typeSymbolLocation } from "./semantic-type-identities.zs";
+import { typeMentionsParameter } from "./semantic-generic-inference.zs";
 import { aggregateFieldShape } from "./semantic-member-lookups.zs";
 import { collectionHasLength } from "./semantic-intrinsics.zs";
 import {
   ModuleGraph,
   ModuleResolveError,
   ModuleResolveErrorKind,
+  ModuleSemanticEvidence,
   ModuleSymbolKind,
   codedModuleResolutionError,
 } from "./semantic-model.zs";
@@ -1462,6 +1465,86 @@ function parsedModuleIndexForGraphModule(
   return modules.length;
 }
 
+// The type one instance's evidence recorded for an expression.
+function instanceExpressionType(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  for (const resolution of evidence.expressionResolutions) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+    ) return copy resolution.typeName;
+  }
+  if (tree.nodes[index].kind != ExpressionKind.identifierExpression) return "";
+  let selectedOffset: usize = 0;
+  let selectedType = "";
+  for (const binding of evidence.bindingResolutions) {
+    if (
+      binding.name == tree.nodes[index].value
+      && binding.offset < tree.nodes[index].offset
+      && (selectedType.byteLength == 0 || binding.offset >= selectedOffset)
+    ) {
+      selectedOffset = binding.offset;
+      selectedType = copy binding.typeName;
+    }
+  }
+  return selectedType;
+}
+
+function requireInstanceExpressionCopies(
+  in path: String,
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in syntax: Option<ExpressionSyntax>,
+  in evidence: ModuleSemanticEvidence
+): void throws ModuleResolveError {
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        let index: usize = 0;
+        while (index < tree.nodes.length) {
+          const node = view tree.nodes[index];
+          if (
+            node.kind == ExpressionKind.unaryExpression
+            && node.value == "copy"
+            && node.children.length == 1
+            && !expressionIsStructSpreadCapability(tree, index)
+          ) {
+            const operandType = instanceExpressionType(evidence, tree, node.children[0]);
+            if (operandType.byteLength > 0 && !nativeExplicitCopyTypeSupported(graph, moduleIndex, operandType)) {
+              throw loweringBoundary(path, "Z1000",
+                `explicit copy of "${operandType}" is not executable in the native compiler yet`,
+                node.line, node.column, 4);
+            }
+          }
+          index = index + 1;
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+}
+
+// The explicit copies in one instance of a generic body, held with the
+// instance's own types to what the native compiler copies: at definition a
+// type parameter waited for this.
+export function requireNativeInstanceCopies(
+  in path: String,
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in body: StatementArena,
+  in evidence: ModuleSemanticEvidence
+): void throws ModuleResolveError {
+  for (const statement of body.nodes) {
+    try requireInstanceExpressionCopies(path, graph, moduleIndex, statement.expression, evidence);
+    try requireInstanceExpressionCopies(path, graph, moduleIndex, statement.secondExpression, evidence);
+  }
+}
+
 function resolvedExpressionType(
   in graph: ModuleGraph,
   moduleIndex: usize,
@@ -1804,6 +1887,25 @@ function expressionIsTailPlacement(
   return false;
 }
 
+// The type parameters of the declarations a body belongs to.
+function declaredTypeParameterNames(
+  in outer: Array<String>,
+  in declared: Array<TypeParameter>
+): Array<String> {
+  let names = copy outer;
+  for (const parameter of declared) {
+    names.push(copy parameter.name);
+  }
+  return names;
+}
+
+function typeMentionsAnyParameter(in typeName: String, in typeParameters: Array<String>): boolean {
+  for (const parameter of typeParameters) {
+    if (typeMentionsParameter(typeName, parameter)) return true;
+  }
+  return false;
+}
+
 function validateNativeExpressionTree(
   in path: String,
   moduleIndex: usize,
@@ -1811,7 +1913,8 @@ function validateNativeExpressionTree(
   in graph: ModuleGraph,
   in tree: ExpressionTree,
   tailPosition: boolean,
-  allowNonTailPlacedAsyncCall: boolean
+  allowNonTailPlacedAsyncCall: boolean,
+  in typeParameters: Array<String>
 ): void throws ModuleResolveError {
   const treeRoot = tree.root;
   let index: usize = 0;
@@ -1905,8 +2008,11 @@ function validateNativeExpressionTree(
         tree,
         operand
       );
+      // A type naming a type parameter waits for each instance, checked
+      // with its own type.
       if (
         operandType.byteLength > 0
+        && !typeMentionsAnyParameter(operandType, typeParameters)
         && !nativeExplicitCopyTypeSupported(
           graph,
           moduleIndex,
@@ -2186,7 +2292,8 @@ function validateNativeExpression(
   in graph: ModuleGraph,
   in expression: ExpressionSyntax,
   tailPosition: boolean,
-  allowNonTailPlacedAsyncCall: boolean
+  allowNonTailPlacedAsyncCall: boolean,
+  in typeParameters: Array<String>
 ): void throws ModuleResolveError {
   match (in expression.tree) {
     some(tree) => try validateNativeExpressionTree(
@@ -2196,7 +2303,8 @@ function validateNativeExpression(
       graph,
       tree,
       tailPosition,
-      allowNonTailPlacedAsyncCall
+      allowNonTailPlacedAsyncCall,
+      typeParameters
     );
     none => throw loweringBoundary(
       path,
@@ -2310,7 +2418,8 @@ function validateNativeBody(
   in graph: ModuleGraph,
   in body: StatementArena,
   asynchronous: boolean,
-  allowNonTailPlacedAsyncCall: boolean
+  allowNonTailPlacedAsyncCall: boolean,
+  in typeParameters: Array<String>
 ): void throws ModuleResolveError {
   let statementIndex: usize = 0;
   while (statementIndex < body.nodes.length) {
@@ -2327,7 +2436,8 @@ function validateNativeBody(
         graph,
         expression,
         statement.kind == StatementKind.returnStatement,
-        allowNonTailPlacedAsyncCall
+        allowNonTailPlacedAsyncCall,
+        typeParameters
       );
       none => {}
     }
@@ -2339,7 +2449,8 @@ function validateNativeBody(
         graph,
         expression,
         false,
-        allowNonTailPlacedAsyncCall
+        allowNonTailPlacedAsyncCall,
+        typeParameters
       );
       none => {}
     }
@@ -2625,7 +2736,8 @@ function validateNativeFunction(
   in modules: Array<ParsedModule>,
   in graph: ModuleGraph,
   in declaration: FunctionDeclaration,
-  in owner: String
+  in owner: String,
+  in ownerTypeParameters: Array<String>
 ): void throws ModuleResolveError {
   const firstTierSchedulerYield = functionHasFirstTierSchedulerYieldStorage(
     moduleIndex,
@@ -2885,6 +2997,7 @@ function validateNativeFunction(
       graph,
       declaration
     );
+  const typeParameters = declaredTypeParameterNames(ownerTypeParameters, declaration.typeParameters);
   try validateNativeBody(
     path,
     moduleIndex,
@@ -2892,7 +3005,8 @@ function validateNativeFunction(
     graph,
     declaration.body,
     asynchronous,
-    allowNonTailPlacedAsyncCall
+    allowNonTailPlacedAsyncCall,
+    typeParameters
   );
 }
 
@@ -2903,6 +3017,7 @@ function validateNativeAggregate(
   in graph: ModuleGraph,
   in aggregate: AggregateDeclaration
 ): void throws ModuleResolveError {
+  const typeParameters = declaredTypeParameterNames(Array<String>(), aggregate.typeParameters);
   let nativeSubclass = false;
   for (const plan of graph.modules[moduleIndex].semanticEvidence.objectiveCSubclasses) {
     if (plan.sourceName == aggregate.name) nativeSubclass = true;
@@ -2951,7 +3066,8 @@ function validateNativeAggregate(
         graph,
         initializer.body,
         false,
-        false
+        false,
+        typeParameters
       );
     }
     none => {}
@@ -2965,7 +3081,8 @@ function validateNativeAggregate(
       graph,
       field.defaultStatements,
       false,
-      false
+      false,
+      typeParameters
     );
   }
   for (const method of aggregate.methods) {
@@ -2975,7 +3092,8 @@ function validateNativeAggregate(
       modules,
       graph,
       method,
-      aggregate.name
+      aggregate.name,
+      typeParameters
     );
   }
   match (in aggregate.deinitializer) {
@@ -2986,7 +3104,8 @@ function validateNativeAggregate(
       graph,
       deinitializer.body,
       false,
-      false
+      false,
+      typeParameters
     );
     none => {}
   }
@@ -3057,7 +3176,8 @@ export function validateNativeLowerability(
         graph,
         declaration.initializer,
         false,
-        false
+        false,
+        Array<String>()
       );
     }
     for (const declaration of module.program.enums) {
@@ -3078,7 +3198,8 @@ export function validateNativeLowerability(
         modules,
         graph,
         declaration,
-        ""
+        "",
+        Array<String>()
       );
     }
     graphModuleIndex = graphModuleIndex + 1;

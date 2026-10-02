@@ -40,6 +40,7 @@ for (const [fixture, expected] of [
   ["rebound-unused-locals", "1\n2\nok\n"],
   ["generic-plain-instances", "ok\n"],
   ["optimization-marks", "counter 20\n"],
+  ["generic-instance-shapes", "ok\n"],
   ["console-formatting", "4\n-12 2.5 0.125 true 9\nname: zjs box 18446744073709551615\n5 -24 false -128 64\ntemplate 4 and zjs\ntemplate 4 4\nno newline 4 zjs\n1e+21 0.1 -0 100 0.333333\nfirst first\nsecond second\nsecond\n3 4 7\nround 0 0\nround 1 10\nround 2 20\nshown 7\n"],
 ]) {
   test(`executes ${fixture} with Stage 0 and native semantics`, () => {
@@ -467,5 +468,31 @@ test("places inline and cold functions in both compilers and rejects marks with 
   ] as const) {
     rejects(source, message);
   }
+}, 240_000);
+
+test("holds each generic instance's explicit copies to what native lowering copies", () => {
+  const directory = mkdtempSync("/tmp/z-native-instance-copy-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const source = `import { Map } from "std/collections";
+      function twin<T>(value: T): Array<T> {
+        let items = Array<T>();
+        items.push(copy value);
+        items.push(value);
+        return items;
+      }
+      function main(): i32 {
+        const numbers = twin(u32(1));
+        let table = Map<u32, u32>();
+        table.set(1, 2);
+        const tables = twin(table);
+        return numbers.length + tables.length == 4 ? 0 : 1;
+      }`;
+    writeFileSync(input, source);
+    check(source, input);
+    const emitted = native("self-host-emit", input);
+    assert.equal(emitted.status, 1, emitted.stdout);
+    assert.match(emitted.stderr, /error\[Z1000\]: explicit copy of "Map<u32, u32>" is not executable in the native compiler yet \(in specialization twin<T = Map<u32, u32>>\)/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 

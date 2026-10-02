@@ -1052,13 +1052,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    program (`check --native-frontend`, `self-host-resolve`), not only when it
    emits one. The call-loan rule defers to them: inside a generic body a
    value of a type parameter takes no loan at definition, and each instance
-   decides with its real type. Still pending: lowering an instance from that
-   evidence rather than the shared body's (no miscompile has been found:
-   lowering already takes ownership operations from the concrete type), and
-   the other definition-time rejections that only happen because a type
-   parameter is unsettled (`Channel.bounded`, `OnceLifetime` in
-   `thread.spawn`, `Once.initialize`, and explicit `copy` of a type
-   parameter). Native also keeps checking
+   decides with its real type, as do `Channel<T>.bounded`, an `OnceLifetime`
+   capture in `thread.spawn`, `move` of a type naming a type parameter, and an
+   explicit `copy` of one (each instance's copies are then held to what
+   native lowering can copy). Each instance of a generic function, method,
+   constructor, or deinit, including a plain method of a generic aggregate, is
+   lowered from its own evidence, with its module's for anything outside its
+   body, so an inferred construction such as `Box({ item: value })` or a
+   struct spread in a generic body names the instance's struct. A
+   `Once.initialize` on a type parameter keeps main-thread affinity. Native also keeps checking
    uncalled generic bodies for errors that hold for every type argument,
    which Stage 0 never checks.
    A 155-root executable-example sweep found five false native diagnostics where

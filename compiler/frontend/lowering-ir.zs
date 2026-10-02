@@ -80,7 +80,7 @@ import {
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
-import { callableIdentifierLocation } from "./semantic-evidence.zs";
+import { callableIdentifierLocation, emptySemanticEvidence } from "./semantic-evidence.zs";
 import {
   collectionMethodSignature,
   numericBitsType,
@@ -96,6 +96,7 @@ import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
+import { requireNativeInstanceCopies } from "./native-lowerability.zs";
 import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
@@ -974,6 +975,56 @@ struct LoweredGenericFunctionUse {
   typeArgumentIdentities: Array<String>;
   typeArgumentModules: Array<usize>;
   typeArgumentSymbols: Array<usize>;
+}
+
+// What each demanded instance's own check recorded, aligned with the demand
+// lists: an instance is lowered from its own types, not its generic body's.
+struct LoweredGenericInstanceEvidence {
+  functions: Array<ModuleSemanticEvidence>;
+  methods: Array<ModuleSemanticEvidence>;
+  structs: Array<LoweredStructInstanceEvidence>;
+}
+
+// One generic aggregate instance: its constructor and deinit checked
+// together, and each method by its position (generic methods are their own
+// demands, so their slots stay empty).
+struct LoweredStructInstanceEvidence {
+  checked: boolean;
+  lifecycle: ModuleSemanticEvidence;
+  methods: Array<ModuleSemanticEvidence>;
+}
+
+// An instance's evidence keeps its own records first and gains its module's
+// for whatever lies outside the instance's body: both are keyed by source
+// position, and the instance shares its generic body's positions.
+function appendModuleEvidence(
+  inout instance: ModuleSemanticEvidence,
+  in module: ModuleSemanticEvidence
+): void {
+  for (const resolution of module.callResolutions) {
+    if (instance.callResolutionIndices.has(resolution.offset)) continue;
+    instance.callResolutionIndices.set(resolution.offset, instance.callResolutions.length);
+    instance.callResolutions.push(copy resolution);
+  }
+  for (const resolution of module.expressionResolutions) {
+    if (instance.expressionResolutionIndices.has(resolution.offset)) continue;
+    instance.expressionResolutionIndices.set(resolution.offset, instance.expressionResolutions.length);
+    instance.expressionResolutions.push(copy resolution);
+  }
+  const instanceBindings = instance.bindingResolutions.length;
+  for (const binding of module.bindingResolutions) {
+    let present = false;
+    let index: usize = 0;
+    while (index < instanceBindings) {
+      if (instance.bindingResolutions[index].offset == binding.offset
+        && instance.bindingResolutions[index].name == binding.name) {
+        present = true;
+        break;
+      }
+      index = index + 1;
+    }
+    if (!present) instance.bindingResolutions.push(copy binding);
+  }
 }
 
 struct LoweredGenericDemands {
@@ -33350,6 +33401,70 @@ function collectProgramFunctionTypes(
   }
 }
 
+// A generic aggregate instance's constructor, deinit, or method, lowered from
+// that instance's own evidence when its check recorded one.
+function lowerInstanceConstructor(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in structInstances: Array<LoweredStructInstanceEvidence>,
+  useIndex: usize,
+  in moduleEvidence: ModuleSemanticEvidence,
+  in sourcePath: String,
+  in sourceOwnerName: String,
+  in emittedOwnerName: String,
+  in declaration: ConstructorDeclaration
+): LoweredFunction throws String {
+  if (useIndex < structInstances.length && structInstances[useIndex].checked) {
+    const instance = view structInstances[useIndex].lifecycle;
+    return try lowerConstructor(program, importedTypes, instance, sourcePath, sourceOwnerName, emittedOwnerName, declaration);
+  }
+  return try lowerConstructor(program, importedTypes, moduleEvidence, sourcePath, sourceOwnerName, emittedOwnerName, declaration);
+}
+
+function lowerInstanceDeinitializer(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in structInstances: Array<LoweredStructInstanceEvidence>,
+  useIndex: usize,
+  in moduleEvidence: ModuleSemanticEvidence,
+  in sourcePath: String,
+  in ownerName: String,
+  in body: StatementArena
+): LoweredFunction throws String {
+  if (useIndex < structInstances.length && structInstances[useIndex].checked) {
+    const instance = view structInstances[useIndex].lifecycle;
+    return try lowerDeinitializer(program, importedTypes, instance, sourcePath, ownerName, body);
+  }
+  return try lowerDeinitializer(program, importedTypes, moduleEvidence, sourcePath, ownerName, body);
+}
+
+function lowerInstanceMethod(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in structInstances: Array<LoweredStructInstanceEvidence>,
+  useIndex: usize,
+  methodIndex: usize,
+  in moduleEvidence: ModuleSemanticEvidence,
+  in declaration: FunctionDeclaration,
+  in semanticOwnerName: String,
+  in sourcePath: String,
+  in receiverName: String,
+  receiverKind: LoweredTypeKind,
+  receiverSourceMode: ReceiverMode
+): LoweredFunction throws String {
+  if (
+    useIndex < structInstances.length
+    && structInstances[useIndex].checked
+    && methodIndex < structInstances[useIndex].methods.length
+  ) {
+    const instance = view structInstances[useIndex].methods[methodIndex];
+    return try lowerFunction(program, importedTypes, instance, declaration, semanticOwnerName, sourcePath,
+      receiverName, receiverKind, receiverSourceMode);
+  }
+  return try lowerFunction(program, importedTypes, moduleEvidence, declaration, semanticOwnerName, sourcePath,
+    receiverName, receiverKind, receiverSourceMode);
+}
+
 function appendLoweredProgram(
   in program: Program,
   in sourcePath: String,
@@ -33357,6 +33472,7 @@ function appendLoweredProgram(
   in genericStructUses: Array<LoweredGenericStructUse>,
   in genericMethodUses: Array<LoweredGenericMethodUse>,
   in genericFunctionUses: Array<LoweredGenericFunctionUse>,
+  in structInstances: Array<LoweredStructInstanceEvidence>,
   in evidence: ModuleSemanticEvidence,
   in nativeCExportNames: Array<String>,
   in privateTypeCollisionNames: Array<String>,
@@ -33794,7 +33910,11 @@ function appendLoweredProgram(
     }
   }
 
-  for (const use of genericStructUses) {
+  let structUseIndex: usize = 0;
+  while (structUseIndex < genericStructUses.length) {
+    const use = view genericStructUses[structUseIndex];
+    const useIndex = structUseIndex;
+    structUseIndex = structUseIndex + 1;
     if (
       use.consumerModuleIndex != moduleIndex
       || use.ownerModuleIndex != moduleIndex
@@ -33897,9 +34017,11 @@ function appendLoweredProgram(
           inout enums,
           inout structs
         );
-        let loweredInitializer = try lowerConstructor(
+        let loweredInitializer = try lowerInstanceConstructor(
           program,
           methodImportedTypes,
+          structInstances,
+          useIndex,
           evidence,
           sourcePath,
           aggregate.name,
@@ -33949,9 +34071,11 @@ function appendLoweredProgram(
           inout enums,
           inout structs
         );
-        let loweredDeinitializer = try lowerDeinitializer(
+        let loweredDeinitializer = try lowerInstanceDeinitializer(
           program,
           methodImportedTypes,
+          structInstances,
+          useIndex,
           evidence,
           sourcePath,
           aggregate.name,
@@ -34012,7 +34136,10 @@ function appendLoweredProgram(
         none => {}
       }
     }
+    let methodIndex: usize = 0;
     for (const method of aggregate.methods) {
+      const methodPosition = methodIndex;
+      methodIndex = methodIndex + 1;
       if (method.typeParameters.length > 0) continue;
       try collectFunctionIntrinsicTypes(
         program,
@@ -34041,9 +34168,12 @@ function appendLoweredProgram(
         : aggregate.kind == DeclarationKind.classDeclaration
           ? LoweredTypeKind.classType
           : LoweredTypeKind.structType;
-      const loweredMethodOutcome = attempt lowerFunction(
+      const loweredMethodOutcome = attempt lowerInstanceMethod(
         program,
         methodImportedTypes,
+        structInstances,
+        useIndex,
+        methodPosition,
         evidence,
         method,
         ownerName,
@@ -34888,6 +35018,7 @@ function lowerProgramUnchecked(
   const genericStructUses = Array<LoweredGenericStructUse>();
   const genericMethodUses = Array<LoweredGenericMethodUse>();
   const genericFunctionUses = Array<LoweredGenericFunctionUse>();
+  const structInstances = Array<LoweredStructInstanceEvidence>();
   try appendLoweredProgram(
     program,
     "",
@@ -34895,6 +35026,7 @@ function lowerProgramUnchecked(
     genericStructUses,
     genericMethodUses,
     genericFunctionUses,
+    structInstances,
     evidence,
     nativeCExportNames,
     privateTypeCollisionNames,
@@ -35036,26 +35168,72 @@ function genericInstanceOwnerType(in name: String, in arguments: Array<String>):
 }
 
 function validateGenericDemandExpressions(
-  in parsed: Array<ParsedModule>, in graph: ModuleGraph, in demands: LoweredGenericDemands
+  in parsed: Array<ParsedModule>, in graph: ModuleGraph, in demands: LoweredGenericDemands,
+  inout instances: LoweredGenericInstanceEvidence
 ): void throws ModuleResolveError {
   for (const use of demands.structs) {
+    let structEvidence = LoweredStructInstanceEvidence({
+      checked: false,
+      lifecycle: emptySemanticEvidence(),
+      methods: Array<ModuleSemanticEvidence>(),
+    });
     for (const aggregate of parsed[use.ownerModuleIndex].program.aggregates) {
       if (aggregate.name != use.ownerName) continue;
+      structEvidence.checked = true;
       const ownerArguments = ownerSpelledArguments(graph, use.consumerModuleIndex, use.ownerModuleIndex, use.typeArguments);
       const ownerType = genericInstanceOwnerType(aggregate.name, ownerArguments);
       const lifecycle = attempt checkGenericAggregateInstance(parsed[use.ownerModuleIndex], graph.modules,
         use.ownerModuleIndex, aggregate, ownerType, use.typeParameters, ownerArguments);
       match (lifecycle) {
-        success(_) => {}
-        failure(error) => throw genericDemandError(error, aggregate.name, use.typeParameters, ownerArguments);
+        success(lifecycleEvidence) => {
+          match (in aggregate.constructorDeclaration) {
+            some(initializer) => {
+              const copies = attempt requireNativeInstanceCopies(parsed[use.ownerModuleIndex].path, graph,
+                use.ownerModuleIndex, initializer.body, lifecycleEvidence);
+              match (copies) {
+                success => {}
+                failure(error) => throw genericDemandError(error, aggregate.name, use.typeParameters, use.typeArguments);
+              }
+            }
+            none => {}
+          }
+          match (in aggregate.deinitializer) {
+            some(deinitializer) => {
+              const copies = attempt requireNativeInstanceCopies(parsed[use.ownerModuleIndex].path, graph,
+                use.ownerModuleIndex, deinitializer.body, lifecycleEvidence);
+              match (copies) {
+                success => {}
+                failure(error) => throw genericDemandError(error, aggregate.name, use.typeParameters, use.typeArguments);
+              }
+            }
+            none => {}
+          }
+          let merged = move lifecycleEvidence;
+          appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
+          structEvidence.lifecycle = move merged;
+        }
+        failure(error) => throw genericDemandError(error, aggregate.name, use.typeParameters, use.typeArguments);
       }
       for (const method of aggregate.methods) {
-        if (method.typeParameters.length > 0) continue;
+        if (method.typeParameters.length > 0) {
+          structEvidence.methods.push(emptySemanticEvidence());
+          continue;
+        }
         const instance = attempt checkGenericInstance(parsed[use.ownerModuleIndex], graph.modules,
           use.ownerModuleIndex, method, ownerType, aggregate.executorAffinity, use.typeParameters,
           ownerArguments);
         match (instance) {
-          success(_) => {}
+          success(instanceEvidence) => {
+            const copies = attempt requireNativeInstanceCopies(parsed[use.ownerModuleIndex].path, graph,
+              use.ownerModuleIndex, method.body, instanceEvidence);
+            match (copies) {
+              success => {}
+              failure(error) => throw genericDemandError(error, aggregate.name, use.typeParameters, use.typeArguments);
+            }
+            let merged = move instanceEvidence;
+            appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
+            structEvidence.methods.push(move merged);
+          }
           failure(error) => throw genericDemandError(error, aggregate.name, use.typeParameters, use.typeArguments);
         }
         const result = attempt validateSpecializedExpressions(parsed[use.ownerModuleIndex], graph.modules,
@@ -35067,15 +35245,27 @@ function validateGenericDemandExpressions(
         }
       }
     }
+    instances.structs.push(move structEvidence);
   }
   for (const use of demands.functions) {
+    let checkedEvidence = emptySemanticEvidence();
     for (const declaration of parsed[use.ownerModuleIndex].program.functions) {
       if (declaration.name != use.name) continue;
       const ownerArguments = ownerSpelledArguments(graph, use.consumerModuleIndex, use.ownerModuleIndex, use.typeArguments);
       const instance = attempt checkGenericInstance(parsed[use.ownerModuleIndex], graph.modules,
         use.ownerModuleIndex, declaration, "", "", use.typeParameters, ownerArguments);
       match (instance) {
-        success(_) => {}
+        success(instanceEvidence) => {
+          const copies = attempt requireNativeInstanceCopies(parsed[use.ownerModuleIndex].path, graph,
+            use.ownerModuleIndex, declaration.body, instanceEvidence);
+          match (copies) {
+            success => {}
+            failure(error) => throw genericDemandError(error, declaration.name, use.typeParameters, use.typeArguments);
+          }
+          let merged = move instanceEvidence;
+          appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
+          checkedEvidence = move merged;
+        }
         failure(error) => throw genericDemandError(error, declaration.name, use.typeParameters, use.typeArguments);
       }
       const result = attempt validateSpecializedExpressions(parsed[use.ownerModuleIndex], graph.modules,
@@ -35086,8 +35276,10 @@ function validateGenericDemandExpressions(
         failure(error) => throw error;
       }
     }
+    instances.functions.push(move checkedEvidence);
   }
   for (const use of demands.methods) {
+    let checkedEvidence = emptySemanticEvidence();
     for (const aggregate of parsed[use.ownerModuleIndex].program.aggregates) {
       if (aggregate.name != use.ownerName) continue;
       for (const method of aggregate.methods) {
@@ -35107,7 +35299,17 @@ function validateGenericDemandExpressions(
         const instance = attempt checkGenericInstance(parsed[use.ownerModuleIndex], graph.modules,
           use.ownerModuleIndex, method, ownerType, aggregate.executorAffinity, parameters, allArguments);
         match (instance) {
-          success(_) => {}
+          success(instanceEvidence) => {
+            const copies = attempt requireNativeInstanceCopies(parsed[use.ownerModuleIndex].path, graph,
+              use.ownerModuleIndex, method.body, instanceEvidence);
+            match (copies) {
+              success => {}
+              failure(error) => throw genericDemandError(error, method.name, parameters, use.allTypeArguments);
+            }
+            let merged = move instanceEvidence;
+            appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
+            checkedEvidence = move merged;
+          }
           failure(error) => throw genericDemandError(error, method.name, parameters, use.allTypeArguments);
         }
         const result = attempt validateSpecializedExpressions(parsed[use.ownerModuleIndex], graph.modules,
@@ -35119,6 +35321,7 @@ function validateGenericDemandExpressions(
         }
       }
     }
+    instances.methods.push(move checkedEvidence);
   }
 }
 
@@ -35127,6 +35330,11 @@ function validateGenericDemandExpressions(
 export function checkGenericDemandInstances(
   in parsed: Array<ParsedModule>, in graph: ModuleGraph
 ): void throws ModuleResolveError {
+  let instances = LoweredGenericInstanceEvidence({
+    functions: Array<ModuleSemanticEvidence>(),
+    methods: Array<ModuleSemanticEvidence>(),
+    structs: Array<LoweredStructInstanceEvidence>(),
+  });
   const demandsOutcome = attempt collectGenericDemands(parsed, graph);
   const demands = match (demandsOutcome) {
     success(value) => value;
@@ -35136,7 +35344,7 @@ export function checkGenericDemandInstances(
       throw moduleResolutionError(ModuleResolveErrorKind.unsupportedLowering, path, failure, 1, 1);
     }
   };
-  try validateGenericDemandExpressions(parsed, graph, demands);
+  try validateGenericDemandExpressions(parsed, graph, demands, inout instances);
 }
 
 function lowerCheckedModules(
@@ -35149,12 +35357,17 @@ function lowerCheckedModules(
   };
   // A failed concrete constraint is a source error, not an internal backend
   // failure. Validate before lowering and reuse this same closed demand graph.
-  const validated = attempt validateGenericDemandExpressions(parsed, graph, demands);
+  let instances = LoweredGenericInstanceEvidence({
+    functions: Array<ModuleSemanticEvidence>(),
+    methods: Array<ModuleSemanticEvidence>(),
+    structs: Array<LoweredStructInstanceEvidence>(),
+  });
+  const validated = attempt validateGenericDemandExpressions(parsed, graph, demands, inout instances);
   match (validated) {
     success => {}
     failure(error) => throw genericDemandMessage(error);
   }
-  const outcome = attempt lowerModulesIncludingTests(parsed, graph, includeTests, demands);
+  const outcome = attempt lowerModulesIncludingTests(parsed, graph, includeTests, demands, instances);
   return match (outcome) {
     success(lowered) => lowered;
     failure(message) => throw internalBackendFailure(
@@ -35175,7 +35388,8 @@ function lowerModulesIncludingTests(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph,
   includeTests: boolean,
-  in demands: LoweredGenericDemands
+  in demands: LoweredGenericDemands,
+  in instances: LoweredGenericInstanceEvidence
 ): LoweredProgram throws String {
   let alignedModuleIndex: usize = 0;
   let objectiveCSubclasses = Array<ModuleObjCSubclassPlan>();
@@ -35325,6 +35539,7 @@ function lowerModulesIncludingTests(
       genericStructUses,
       deferredGenericMethodUses,
       deferredGenericFunctionUses,
+      instances.structs,
       graph.modules[moduleIndex].semanticEvidence,
       nativeCExportNames,
       privateTypeCollisionNames,
@@ -35414,8 +35629,14 @@ function lowerModulesIncludingTests(
       failure(message) => throw
         `${parsed[genericOwnerModuleIndex].path}: generic method import lowering: ${message}`;
     };
-    for (const use of genericMethodUses) {
+    let methodUseIndex: usize = 0;
+    while (methodUseIndex < genericMethodUses.length) {
+      const use = view genericMethodUses[methodUseIndex];
+      const useIndex = methodUseIndex;
+      methodUseIndex = methodUseIndex + 1;
       if (use.ownerModuleIndex != genericOwnerModuleIndex) continue;
+      if (useIndex >= instances.methods.length) throw "native generic-method lowering lost its instance evidence";
+      const methodEvidence = view instances.methods[useIndex];
       try appendGenericDemandArgumentTypes(
         parsed,
         graph,
@@ -35440,7 +35661,7 @@ function lowerModulesIncludingTests(
         importedTypes,
         genericStructUses,
         use,
-        graph.modules[genericOwnerModuleIndex].semanticEvidence,
+        methodEvidence,
         nativeCExportNames,
         privateTypeCollisionNames,
         genericOwnerModuleIndex,
@@ -35489,8 +35710,14 @@ function lowerModulesIncludingTests(
       failure(message) => throw
         `${parsed[genericOwnerModuleIndex].path}: generic function import lowering: ${message}`;
     };
-    for (const use of genericFunctionUses) {
+    let functionUseIndex: usize = 0;
+    while (functionUseIndex < genericFunctionUses.length) {
+      const use = view genericFunctionUses[functionUseIndex];
+      const useIndex = functionUseIndex;
+      functionUseIndex = functionUseIndex + 1;
       if (use.ownerModuleIndex != genericOwnerModuleIndex) continue;
+      if (useIndex >= instances.functions.length) throw "native generic-function lowering lost its instance evidence";
+      const functionEvidence = view instances.functions[useIndex];
       try appendGenericDemandArgumentTypes(
         parsed,
         graph,
@@ -35514,7 +35741,7 @@ function lowerModulesIncludingTests(
         parsed[genericOwnerModuleIndex].path,
         importedTypes,
         use,
-        graph.modules[genericOwnerModuleIndex].semanticEvidence,
+        functionEvidence,
         nativeCExportNames,
         genericOwnerModuleIndex,
         entryIndex,
