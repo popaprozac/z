@@ -44,6 +44,7 @@ for (const [fixture, expected] of [
   ["borrowed-argument-storage", "67\n"],
   ["channel-local-class-payload", "3\n"],
   ["view-field-borrows", "8\n"],
+  ["thread-block-captures", "16\n"],
   ["console-formatting", "4\n-12 2.5 0.125 true 9\nname: zjs box 18446744073709551615\n5 -24 false -128 64\ntemplate 4 and zjs\ntemplate 4 4\nno newline 4 zjs\n1e+21 0.1 -0 100 0.333333\nfirst first\nsecond second\nsecond\n3 4 7\nround 0 0\nround 1 10\nround 2 20\nshown 7\n"],
 ]) {
   test(`executes ${fixture} with Stage 0 and native semantics`, () => {
@@ -602,4 +603,38 @@ test("checks a channel's message type where an endpoint crosses threads", () => 
       return 0;
     }
   `, /capture "holder" of type Holder cannot cross a native thread boundary/);
+}, 240_000);
+
+test("reports block-bodied thread captures native cannot transfer as Z1000", () => {
+  const directory = mkdtempSync("/tmp/z-native-thread-block-");
+  try {
+    const input = resolve(directory, "main.zs");
+    for (const [declaration, type] of [
+      ["const held = Holder({ sender: sender.sync() });", "Holder"],
+      ["let held = Array<SyncSender<u32>>(); held.push(sender.sync());", "Array<SyncSender<u32>>"],
+      ["const held: Option<SyncSender<u32>> = Option.some(sender.sync());", "Option<SyncSender<u32>>"],
+    ]) {
+      const source = `import { Channel, SyncSender } from "std/channel";
+        import { thread } from "std/thread";
+        struct Holder { sender: SyncSender<u32>; }
+        async function main(): i32 {
+          const { sender, receiver } = Channel<u32>.bounded(4);
+          ${declaration}
+          const worker = thread.spawn(move (): i32 => {
+            const moved = move held;
+            return 0;
+          });
+          const joined = await worker;
+          return 0;
+        }`;
+      writeFileSync(input, source);
+      check(source, input);
+      const emitted = native("self-host-emit", input);
+      assert.equal(emitted.status, 1, emitted.stdout);
+      assert.ok(emitted.stderr.includes(
+        `error[Z1000]: ownership-bearing thread.spawn capture "held" of type "${type}" is not executable in the native compiler yet`,
+      ), emitted.stderr);
+      assert.doesNotMatch(emitted.stderr, /internal compiler error/);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);

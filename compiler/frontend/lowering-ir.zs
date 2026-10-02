@@ -8890,8 +8890,10 @@ function collectMutexClosureCaptures(
     let declaredInside = false;
     let scanStatement = statementStart;
     while (scanStatement < statements.length) {
+      // A local or a for...of binding of the closure's own.
       if (
-        statements[scanStatement].kind == LoweredStatementKind.localStatement
+        (statements[scanStatement].kind == LoweredStatementKind.localStatement
+          || statements[scanStatement].kind == LoweredStatementKind.forStatement)
         && statements[scanStatement].name == captureName
       ) declaredInside = true;
       if (statements[scanStatement].kind == LoweredStatementKind.matchArmStatement) {
@@ -9083,8 +9085,10 @@ function collectThreadClosureCaptures(
     let declaredInside = false;
     let scanStatement = statementStart;
     while (scanStatement < statements.length) {
+      // A local or a for...of binding of the closure's own.
       if (
-        statements[scanStatement].kind == LoweredStatementKind.localStatement
+        (statements[scanStatement].kind == LoweredStatementKind.localStatement
+          || statements[scanStatement].kind == LoweredStatementKind.forStatement)
         && statements[scanStatement].name == captureName
       ) declaredInside = true;
       if (statements[scanStatement].kind == LoweredStatementKind.matchArmStatement) {

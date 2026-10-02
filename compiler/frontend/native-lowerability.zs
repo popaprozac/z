@@ -5,6 +5,7 @@ import {
   ExpressionSyntax,
   ExpressionTree,
   FunctionDeclaration,
+  Parameter,
   ParameterMode,
   Program,
   ReceiverMode,
@@ -1657,6 +1658,68 @@ function closureParameterNamed(
   return false;
 }
 
+// A value of `typeName` captured into a thread.spawn closure moves to the
+// worker thread; native lowering transfers Strings, task scopes, endpoints
+// and lifetimes it can share, and values without cleanup.
+function requireNativeThreadCaptureType(
+  in path: String,
+  moduleIndex: usize,
+  in graph: ModuleGraph,
+  in captureName: String,
+  in typeName: String,
+  line: usize,
+  column: usize
+): void throws ModuleResolveError {
+  const actualType = transparentTypeName(graph.modules, moduleIndex, typeName);
+  // An endpoint crosses only with a message type that can; an optional one
+  // is an ownership-bearing Option.
+  const optionalTarget = nullableTargetType(actualType);
+  const channelEndpoint = optionalTarget.byteLength == 0 && (
+    stringStartsWith(actualType, "Sender<")
+    || stringStartsWith(actualType, "SyncSender<")
+    || stringStartsWith(actualType, "Receiver<")
+    || stringStartsWith(actualType, "SyncReceiver<")
+  ) && typeIsThreadTransferable(graph.modules, moduleIndex, actualType);
+  const sharedOnceLifetime = stringStartsWith(actualType, "OnceLifetime<")
+    && typeIsThreadTransferable(graph.modules, moduleIndex, actualType);
+  if (
+    typeName.byteLength > 0
+    && typeName != "String"
+    && typeName != "TextBuffer"
+    && typeName != "TaskScope"
+    && !channelEndpoint
+    && !sharedOnceLifetime
+    && moduleIndex < graph.modules.length
+  ) {
+    let visiting = Array<String>();
+    if (typeHasCleanup(
+      graph.modules,
+      moduleIndex,
+      typeName,
+      visiting
+    )) {
+      let sharedClassCandidate = false;
+      match (typeSymbolLocation(graph.modules, moduleIndex, typeName)) {
+        some(location) => sharedClassCandidate = graph.modules[location.moduleIndex]
+          .symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol;
+        none => {}
+      }
+      if (!sharedClassCandidate) {
+        let length = captureName.byteLength;
+        if (length == 0) length = 1;
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          `ownership-bearing thread.spawn capture "${captureName}" of type "${typeName}" is not executable in the native compiler yet`,
+          line,
+          column,
+          length
+        );
+      }
+    }
+  }
+}
+
 function validateNativeThreadCaptureExpression(
   in path: String,
   moduleIndex: usize,
@@ -1672,60 +1735,8 @@ function validateNativeThreadCaptureExpression(
     && !directCallee
     && !closureParameterNamed(tree, closureIndex, node.value)
   ) {
-    const captureName = node.value.copyBytes(0, node.value.byteLength);
-    const useOffset = node.offset;
-    const typeName = resolvedLocalBindingType(
-      graph,
-      moduleIndex,
-      captureName,
-      useOffset
-    );
-    const actualType = transparentTypeName(graph.modules, moduleIndex, typeName);
-    // An endpoint crosses only with a message type that can.
-    const channelEndpoint = (
-      stringStartsWith(actualType, "Sender<")
-      || stringStartsWith(actualType, "SyncSender<")
-      || stringStartsWith(actualType, "Receiver<")
-      || stringStartsWith(actualType, "SyncReceiver<")
-    ) && typeIsThreadTransferable(graph.modules, moduleIndex, actualType);
-    const sharedOnceLifetime = stringStartsWith(actualType, "OnceLifetime<")
-      && typeIsThreadTransferable(graph.modules, moduleIndex, actualType);
-    if (
-      typeName.byteLength > 0
-      && typeName != "String"
-      && typeName != "TextBuffer"
-      && typeName != "TaskScope"
-      && !channelEndpoint
-      && !sharedOnceLifetime
-      && moduleIndex < graph.modules.length
-    ) {
-      let visiting = Array<String>();
-      if (typeHasCleanup(
-        graph.modules,
-        moduleIndex,
-        typeName,
-        visiting
-      )) {
-        let sharedClassCandidate = false;
-        match (typeSymbolLocation(graph.modules, moduleIndex, typeName)) {
-          some(location) => sharedClassCandidate = graph.modules[location.moduleIndex]
-            .symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol;
-          none => {}
-        }
-        if (!sharedClassCandidate) {
-          let length = captureName.byteLength;
-          if (length == 0) length = 1;
-          throw loweringBoundary(
-            path,
-            "Z1000",
-            `ownership-bearing thread.spawn capture "${captureName}" of type "${typeName}" is not executable in the native compiler yet`,
-            node.line,
-            node.column,
-            length
-          );
-        }
-      }
-    }
+    const typeName = resolvedLocalBindingType(graph, moduleIndex, node.value, node.offset);
+    try requireNativeThreadCaptureType(path, moduleIndex, graph, node.value, typeName, node.line, node.column);
   }
   let childIndex: usize = 0;
   while (childIndex < node.children.length) {
@@ -1740,6 +1751,195 @@ function validateNativeThreadCaptureExpression(
       node.kind == ExpressionKind.callExpression && childIndex == 0
     );
     childIndex = childIndex + 1;
+  }
+}
+
+// The enclosing declaration of a block-bodied thread closure: its first
+// offset, its parameters, and the closure's own first offset.
+struct ThreadBlockScope {
+  start: usize;
+  parameters: Array<Parameter>;
+  closureOffset: usize;
+}
+
+// The type a name used inside a block-bodied thread closure carries across:
+// that of the binding it names, a parameter, an annotated declaration, or an
+// inferred one, when that binding comes before the closure; "" for the
+// closure's own locals or for a name that binds nothing there.
+function threadBlockCaptureType(
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in body: StatementArena,
+  in enclosing: ThreadBlockScope,
+  in name: String,
+  useOffset: usize
+): String {
+  if (moduleIndex >= graph.modules.length) return "";
+  let found = false;
+  let selectedOffset: usize = 0;
+  let selectedType = "";
+  for (const parameter of enclosing.parameters) {
+    if (parameter.name == name) {
+      found = true;
+      selectedOffset = parameter.offset;
+      selectedType = copy parameter.type.name;
+    }
+  }
+  for (const statement of body.nodes) {
+    if (statement.name != name || statement.nameOffset < enclosing.start || statement.nameOffset >= useOffset) continue;
+    if (found && statement.nameOffset < selectedOffset) continue;
+    match (in statement.typeAnnotation) {
+      some(annotation) => {
+        found = true;
+        selectedOffset = statement.nameOffset;
+        selectedType = copy annotation.name;
+      }
+      none => {}
+    }
+  }
+  for (const binding of graph.modules[moduleIndex].semanticEvidence.bindingResolutions) {
+    if (
+      binding.name == name
+      && binding.offset >= enclosing.start
+      && binding.offset < useOffset
+      && (!found || binding.offset >= selectedOffset)
+    ) {
+      found = true;
+      selectedOffset = binding.offset;
+      selectedType = copy binding.typeName;
+    }
+  }
+  if (!found || selectedOffset >= enclosing.closureOffset) return "";
+  return selectedType;
+}
+
+// The block-bodied closure the call at `index` hands to `thread.spawn`, or
+// past the end of the tree.
+function threadSpawnBlockClosure(in tree: ExpressionTree, index: usize): usize {
+  const none = tree.nodes.length;
+  if (tree.nodes[index].kind != ExpressionKind.callExpression || tree.nodes[index].children.length != 2) return none;
+  const callee = tree.nodes[index].children[0];
+  if (
+    tree.nodes[callee].kind != ExpressionKind.memberExpression
+    || tree.nodes[callee].value != "spawn"
+    || tree.nodes[callee].children.length != 1
+  ) return none;
+  const receiver = tree.nodes[callee].children[0];
+  if (tree.nodes[receiver].kind != ExpressionKind.identifierExpression || tree.nodes[receiver].value != "thread") return none;
+  const closure = tree.nodes[index].children[1];
+  if (
+    tree.nodes[closure].kind != ExpressionKind.closureExpression
+    || tree.nodes[closure].labels.length < 3
+    || tree.nodes[closure].labels[2] != "block"
+  ) return none;
+  return closure;
+}
+
+function validateThreadBlockSyntaxCaptures(
+  in path: String,
+  moduleIndex: usize,
+  in graph: ModuleGraph,
+  in body: StatementArena,
+  in enclosing: ThreadBlockScope,
+  in syntax: Option<ExpressionSyntax>
+): void throws ModuleResolveError {
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        // A called name is a function, not a value that crosses.
+        let callees = Array<boolean>();
+        callees.appendRepeated(false, tree.nodes.length);
+        for (const node of tree.nodes) {
+          if (node.kind == ExpressionKind.callExpression && node.children.length > 0) {
+            callees[node.children[0]] = true;
+          }
+        }
+        let index: usize = 0;
+        while (index < tree.nodes.length) {
+          const node = view tree.nodes[index];
+          if (node.kind == ExpressionKind.identifierExpression && !callees[index]) {
+            const typeName = threadBlockCaptureType(graph, moduleIndex, body, enclosing, node.value, node.offset);
+            if (typeName.byteLength > 0) {
+              try requireNativeThreadCaptureType(path, moduleIndex, graph, node.value, typeName, node.line,
+                node.column);
+            }
+          }
+          for (const statement of node.statements) {
+            try validateThreadBlockStatementCaptures(path, moduleIndex, graph, body, enclosing, statement);
+          }
+          index = index + 1;
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+}
+
+function validateThreadBlockStatementCaptures(
+  in path: String,
+  moduleIndex: usize,
+  in graph: ModuleGraph,
+  in body: StatementArena,
+  in enclosing: ThreadBlockScope,
+  index: usize
+): void throws ModuleResolveError {
+  const statement = view body.nodes[index];
+  try validateThreadBlockSyntaxCaptures(path, moduleIndex, graph, body, enclosing, statement.expression);
+  try validateThreadBlockSyntaxCaptures(path, moduleIndex, graph, body, enclosing, statement.secondExpression);
+  for (const child of statement.children) {
+    try validateThreadBlockStatementCaptures(path, moduleIndex, graph, body, enclosing, child);
+  }
+}
+
+// What a block-bodied thread.spawn closure uses from outside it crosses to
+// the worker thread, held to what native lowering transfers, as an
+// expression body's captures are.
+function validateNativeThreadBlockCaptures(
+  in path: String,
+  moduleIndex: usize,
+  in graph: ModuleGraph,
+  in body: StatementArena,
+  scopeStart: usize,
+  in parameters: Array<Parameter>
+): void throws ModuleResolveError {
+  for (const statement of body.nodes) {
+    try validateThreadSpawnBlocks(path, moduleIndex, graph, body, scopeStart, parameters, statement.expression);
+    try validateThreadSpawnBlocks(path, moduleIndex, graph, body, scopeStart, parameters, statement.secondExpression);
+  }
+}
+
+function validateThreadSpawnBlocks(
+  in path: String,
+  moduleIndex: usize,
+  in graph: ModuleGraph,
+  in body: StatementArena,
+  scopeStart: usize,
+  in parameters: Array<Parameter>,
+  in syntax: Option<ExpressionSyntax>
+): void throws ModuleResolveError {
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        let index: usize = 0;
+        while (index < tree.nodes.length) {
+          const closure = threadSpawnBlockClosure(tree, index);
+          if (closure < tree.nodes.length) {
+            const enclosing = ThreadBlockScope({
+              start: scopeStart,
+              parameters: copy parameters,
+              closureOffset: tree.nodes[closure].offset,
+            });
+            for (const statement of tree.nodes[closure].statements) {
+              try validateThreadBlockStatementCaptures(path, moduleIndex, graph, body, enclosing, statement);
+            }
+          }
+          index = index + 1;
+        }
+      }
+      none => {}
+    }
+    none => {}
   }
 }
 
@@ -2422,8 +2622,11 @@ function validateNativeBody(
   in body: StatementArena,
   asynchronous: boolean,
   allowNonTailPlacedAsyncCall: boolean,
-  in typeParameters: Array<String>
+  in typeParameters: Array<String>,
+  scopeStart: usize,
+  in parameters: Array<Parameter>
 ): void throws ModuleResolveError {
+  try validateNativeThreadBlockCaptures(path, moduleIndex, graph, body, scopeStart, parameters);
   let statementIndex: usize = 0;
   while (statementIndex < body.nodes.length) {
     const statement = view body.nodes[statementIndex];
@@ -3009,7 +3212,9 @@ function validateNativeFunction(
     declaration.body,
     asynchronous,
     allowNonTailPlacedAsyncCall,
-    typeParameters
+    typeParameters,
+    declaration.offset,
+    declaration.parameters
   );
 }
 
@@ -3070,7 +3275,9 @@ function validateNativeAggregate(
         initializer.body,
         false,
         false,
-        typeParameters
+        typeParameters,
+        initializer.offset,
+        initializer.parameters
       );
     }
     none => {}
@@ -3085,7 +3292,9 @@ function validateNativeAggregate(
       field.defaultStatements,
       false,
       false,
-      typeParameters
+      typeParameters,
+      0,
+      Array<Parameter>()
     );
   }
   for (const method of aggregate.methods) {
@@ -3108,7 +3317,9 @@ function validateNativeAggregate(
       deinitializer.body,
       false,
       false,
-      typeParameters
+      typeParameters,
+      deinitializer.offset,
+      Array<Parameter>()
     );
     none => {}
   }
