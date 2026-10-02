@@ -4827,6 +4827,35 @@ function requireStoredBorrowedArguments(
   }
 }
 
+// A value of a scalar, String, declared aggregate or enum, or standard
+// collection type, which no call can target.
+function localValueIsNotCallable(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  if (isNumericTypeName(typeName) || typeName == "boolean" || typeName == "String") return true;
+  match (genericTypeShape(typeName)) {
+    some(shape) => {
+      if (
+        shape.base == "Array" || shape.base == "Map" || shape.base == "Set"
+        || shape.base == "Option" || shape.base == "Result"
+      ) return true;
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      const kind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
+      return kind == ModuleSymbolKind.structSymbol
+        || kind == ModuleSymbolKind.classSymbol
+        || kind == ModuleSymbolKind.enumSymbol;
+    }
+    none => {}
+  }
+  return false;
+}
+
 function inferSignatureCallType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -9206,9 +9235,18 @@ function inferExpressionNodeType(
         }
         none => {}
       }
-      // A lexical value shadows a same-named module function. Its callability
-      // remains unresolved until native value/function-type checking is complete.
+      // A lexical value shadows a same-named module function. A scalar,
+      // String, aggregate, enum, or collection value is not callable, as in
+      // Stage 0; other callability remains unresolved until native
+      // value/function-type checking is complete.
       if (localType.byteLength > 0) {
+        if (localValueIsNotCallable(modules, moduleIndex, callableLocalType)) throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `"${lookup}" is not callable`,
+          tree.nodes[calleeIndex].line,
+          tree.nodes[calleeIndex].column
+        );
         try inferUnclassifiedCallArguments(
           module,
           modules,

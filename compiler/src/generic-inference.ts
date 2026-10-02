@@ -1164,7 +1164,11 @@ export function inferGenericCalls(
         }
         if (expression.callee.kind === "identifier") {
           const explicit = parseGenericType(expression.callee.name);
-          const template = genericFunctions.get(explicit?.base ?? expression.callee.name);
+          // A local of the same name shadows a generic function as it does an
+          // ordinary one; semantic analysis then checks the local's call.
+          const template = explicit || !environment.has(expression.callee.name)
+            ? genericFunctions.get(explicit?.base ?? expression.callee.name)
+            : undefined;
           if (template) {
             if (template.parameters.length !== expression.arguments.length) {
               throw new DiagnosticError(

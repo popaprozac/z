@@ -534,3 +534,37 @@ test("holds in arguments to stored values and the temporaries a call can lend", 
     function main(): i32 { return 0; }
   `, stored("handler"), stored("handler"), ["self-host-resolve"]);
 }, 240_000);
+
+test("rejects calling a local value that shadows a function", () => {
+  for (const signature of ["(value: u32): u32", "<T>(value: T): T"]) {
+    rejects(`
+      struct Pair { left: u32; right: u32; }
+      function pair${signature} { return value; }
+      function main(): i32 {
+        const pair = Pair({ left: 3, right: 4 });
+        const next = pair(u32(5));
+        return 0;
+      }
+    `, /"pair" is not callable/, /"pair" is not callable/, ["self-host-resolve"]);
+  }
+}, 240_000);
+
+test("reports an explicit Map copy native cannot lower as Z1000", () => {
+  const directory = mkdtempSync("/tmp/z-native-map-copy-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const source = `import { Map } from "std/collections";
+      function main(): i32 {
+        let table = Map<u32, u32>();
+        table.set(1, 2);
+        const copied = copy table;
+        return copied.length == 1 ? 0 : 1;
+      }`;
+    writeFileSync(input, source);
+    check(source, input);
+    const emitted = native("self-host-emit", input);
+    assert.equal(emitted.status, 1, emitted.stdout);
+    assert.match(emitted.stderr, /error\[Z1000\]: explicit copy of "Map<u32, u32>" is not executable in the native compiler yet/);
+    assert.doesNotMatch(emitted.stderr, /internal compiler error/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
