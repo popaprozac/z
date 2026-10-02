@@ -1137,3 +1137,30 @@ The lowering decided the result, in both directions:
   allocation gain (-0.4%/-1.6%), so it stays at sixteen.
 
 Raw figures: ZJS `z/bench/speed/results/2026-09-30-fill.json`.
+
+## Inline and cold functions in the ZJS engine — 2026-10-02
+
+`inline function` and `cold function` (46fa78ca) came after inference fell
+short. Routing every compiler trap in the engine's generated C through one
+`cold`, `noinline` function moved no kernel beyond noise: a C compiler
+already treats a call that never returns as unlikely. Forcing the engine's
+arithmetic and frame helpers inline did move them, because its dispatch loop
+is a caller too large for clang to inline into by its own judgement.
+
+ZJS commit `7ef13c3` marks five helpers `inline` (numericAdd, numericSub,
+int32OrDouble, enterCallable, openFrame). Against the engine before, in
+cycles over eight placements: calls -3.2%, helpers -3.6%, properties -3.4%,
+polymorphic -1.4%, the rest within noise; text +3.8 KB (0.5%); test262
+unchanged.
+
+`cold` found no use there yet, and the reasons are worth keeping:
+
+- The write barrier's slow half is called on every store into an old cell
+  and returns early when the cell is already listed. Marked cold (with
+  `noinline` and `minsize`) it made allocation 7% slower: cold means rarely
+  run, not "the second half of a branch".
+- Register-stack growth marked cold changed no kernel, added 384 bytes, and
+  pushed `__TEXT` across a 16 KiB page.
+
+Raw figures: ZJS `z/bench/speed/results/2026-10-02-inline.json`.
+
