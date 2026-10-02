@@ -238,6 +238,7 @@ import {
   substituteGenericType,
   typeContainsForeignValueStorage,
   typeContainsNativeObjCStorage,
+  typeHoldsUntransferableEndpoint,
   typeContainsStoredView,
   typeContainsSlice,
   typeHasCleanup,
@@ -10106,6 +10107,15 @@ function inferExpressionNodeType(
                 none => {}
               }
               const visiting = Array<String>();
+              // An endpoint carries its messages to the other thread.
+              if (
+                !typeMentionsActiveTypeParameter(bindings, captureType)
+                && typeHoldsUntransferableEndpoint(modules, moduleIndex, captureType, visiting)
+              ) throw codedModuleResolutionError(
+                ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+                `capture "${capture}" of type ${captureType} cannot cross a native thread boundary yet`,
+                tree.nodes[argument].line, tree.nodes[argument].column, 1
+              );
               if (typeContainsNativeObjCStorage(modules, moduleIndex, captureType, visiting)) {
                 throw resolutionError(
                   ModuleResolveErrorKind.typeMismatch, module.path,
@@ -10583,18 +10593,9 @@ function inferExpressionNodeType(
                   tree.nodes[capacity].line,
                   tree.nodes[capacity].column
                 );
+                // Any message type may make a channel. One that cannot cross
+                // threads is checked where an endpoint would carry it across.
                 const payload = view channel.arguments[0];
-                // A type parameter waits for each instance, checked with its own type.
-                if (
-                  !typeMentionsActiveTypeParameter(bindings, payload)
-                  && !typeIsThreadTransferable(modules, moduleIndex, payload)
-                ) throw resolutionError(
-                  ModuleResolveErrorKind.typeMismatch,
-                  module.path,
-                  `Channel message type ${payload} is not transferable across threads`,
-                  tree.nodes[receiverIndex].line,
-                  tree.nodes[receiverIndex].column
-                );
                 return `Channel.Endpoints<${payload}>`;
               }
             }

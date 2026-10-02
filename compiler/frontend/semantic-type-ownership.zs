@@ -888,6 +888,78 @@ export function typeContainsNativeObjCStorage(
   return false;
 }
 
+// Whether a value of the type holds a channel endpoint, inline or in a
+// collection, aggregate field, or enum payload, whose message type cannot
+// cross threads: taking it to another thread would carry those messages.
+export function typeHoldsUntransferableEndpoint(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  const actual = transparentTypeName(modules, moduleIndex, typeName);
+  const nullable = nullableTargetType(actual);
+  if (nullable.byteLength > 0) return typeHoldsUntransferableEndpoint(modules, moduleIndex, nullable, visiting);
+  if (stringStartsWith(actual, "readonly ")) {
+    const target = actual.copyBytes(9, actual.byteLength);
+    return typeHoldsUntransferableEndpoint(modules, moduleIndex, target, visiting);
+  }
+  match (fixedArrayShape(actual)) {
+    some(array) => return typeHoldsUntransferableEndpoint(modules, moduleIndex, array.elementType, visiting);
+    none => {}
+  }
+  let arguments = Array<String>();
+  match (genericTypeShape(actual)) {
+    some(generic) => {
+      if (generic.base == "Sender" || generic.base == "SyncSender"
+        || generic.base == "Receiver" || generic.base == "SyncReceiver") {
+        return !typeIsThreadTransferable(modules, moduleIndex, actual);
+      }
+      if (generic.base == "Array" || generic.base == "Map" || generic.base == "Set"
+        || generic.base == "Option" || generic.base == "Result") {
+        for (const argument of generic.arguments) {
+          if (typeHoldsUntransferableEndpoint(modules, moduleIndex, argument, visiting)) return true;
+        }
+        return false;
+      }
+      for (const argument of generic.arguments) {
+        arguments.push(copy argument);
+      }
+    }
+    none => {}
+  }
+  const location = match (inferredTypeSymbolLocation(modules, moduleIndex, actual)) {
+    some(value) => value;
+    none => return false;
+  };
+  const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+  // A Z ARC class crosses threads by its own shareability proof.
+  if (symbol.kind == ModuleSymbolKind.classSymbol) return false;
+  const identity = semanticTypeIdentity(modules, moduleIndex, actual);
+  if (containsString(visiting, identity)) return false;
+  let nextVisiting = copyStrings(visiting);
+  nextVisiting.push(identity);
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      let substitutions = Array<NativeValueBinding>();
+      let parameter: usize = 0;
+      while (parameter < signature.typeParameters.length && parameter < arguments.length) {
+        const argument = rebaseTypeName(modules, moduleIndex, location.moduleIndex, arguments[parameter]);
+        addValueBinding(inout substitutions, signature.typeParameters[parameter], argument);
+        parameter = parameter + 1;
+      }
+      for (const field of signature.fields) {
+        const fieldType = substituteGenericType(field.typeName, substitutions);
+        if (typeHoldsUntransferableEndpoint(modules, location.moduleIndex, fieldType, nextVisiting)) return true;
+      }
+      for (const variant of signature.variants) {
+        const payload = substituteGenericType(variant.payloadType, substitutions);
+        if (payload.byteLength > 0 && typeHoldsUntransferableEndpoint(modules, location.moduleIndex, payload, nextVisiting)) return true;
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 // Native Objective-C references retain shared identity on ordinary value use.
 // That cleanup obligation is not unique ownership that `move value` can take.
 export function typeIsNativeObjCReference(

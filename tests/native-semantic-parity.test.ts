@@ -42,6 +42,7 @@ for (const [fixture, expected] of [
   ["optimization-marks", "counter 20\n"],
   ["generic-instance-shapes", "ok\n"],
   ["borrowed-argument-storage", "67\n"],
+  ["channel-local-class-payload", "3\n"],
   ["console-formatting", "4\n-12 2.5 0.125 true 9\nname: zjs box 18446744073709551615\n5 -24 false -128 64\ntemplate 4 and zjs\ntemplate 4 4\nno newline 4 zjs\n1e+21 0.1 -0 100 0.333333\nfirst first\nsecond second\nsecond\n3 4 7\nround 0 0\nround 1 10\nround 2 20\nshown 7\n"],
 ]) {
   test(`executes ${fixture} with Stage 0 and native semantics`, () => {
@@ -567,4 +568,37 @@ test("reports an explicit Map copy native cannot lower as Z1000", () => {
     assert.match(emitted.stderr, /error\[Z1000\]: explicit copy of "Map<u32, u32>" is not executable in the native compiler yet/);
     assert.doesNotMatch(emitted.stderr, /internal compiler error/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("checks a channel's message type where an endpoint crosses threads", () => {
+  rejects(`
+    import { Channel } from "std/channel";
+    import { thread } from "std/thread";
+    class Node { weight: u32; }
+    async function main(): i32 {
+      const { sender, receiver } = Channel<Node>.bounded(4);
+      const syncSender = sender.sync();
+      const worker = thread.spawn(move (): i32 => {
+        const outcome = attempt syncSender.send(new Node({ weight: 3 }));
+        return 0;
+      });
+      const syncReceiver = receiver.sync();
+      const next = syncReceiver.receive();
+      const joined = await worker;
+      return 0;
+    }
+  `, /capture "syncSender" of type SyncSender<Node> cannot cross a native thread boundary/);
+  rejects(`
+    import { Channel, SyncSender } from "std/channel";
+    import { thread } from "std/thread";
+    class Node { weight: u32; }
+    struct Holder { sender: SyncSender<Node>; }
+    async function main(): i32 {
+      const { sender, receiver } = Channel<Node>.bounded(4);
+      const holder = Holder({ sender: sender.sync() });
+      const worker = thread.spawn(move (): i32 => { const held = move holder; return 0; });
+      const joined = await worker;
+      return 0;
+    }
+  `, /capture "holder" of type Holder cannot cross a native thread boundary/);
 }, 240_000);

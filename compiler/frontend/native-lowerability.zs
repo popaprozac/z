@@ -1681,10 +1681,13 @@ function validateNativeThreadCaptureExpression(
       useOffset
     );
     const actualType = transparentTypeName(graph.modules, moduleIndex, typeName);
-    const channelEndpoint = stringStartsWith(actualType, "Sender<")
+    // An endpoint crosses only with a message type that can.
+    const channelEndpoint = (
+      stringStartsWith(actualType, "Sender<")
       || stringStartsWith(actualType, "SyncSender<")
       || stringStartsWith(actualType, "Receiver<")
-      || stringStartsWith(actualType, "SyncReceiver<");
+      || stringStartsWith(actualType, "SyncReceiver<")
+    ) && typeIsThreadTransferable(graph.modules, moduleIndex, actualType);
     const sharedOnceLifetime = stringStartsWith(actualType, "OnceLifetime<")
       && typeIsThreadTransferable(graph.modules, moduleIndex, actualType);
     if (
