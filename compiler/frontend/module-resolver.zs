@@ -14211,6 +14211,70 @@ export function checkGenericInstance(
   return evidence;
 }
 
+// `inline function` and `cold function` place a Z body; a declaration with no
+// Z body of its own, or one C calls by name, has nothing for them to place. An
+// inline function cannot call itself: it would have to be inlined into itself.
+function requireOptimizationMarkRules(
+  in module: ParsedModule,
+  in declaration: FunctionDeclaration,
+  method: boolean
+): void throws ModuleResolveError {
+  if (declaration.optimization.byteLength == 0) return;
+  const mark = copy declaration.optimization;
+  const line = declaration.optimizationLine;
+  const column = declaration.optimizationColumn;
+  if (!method && declaration.name == "main") {
+    throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `\`main\` cannot be ${mark}`, line, column);
+  }
+  if (declaration.nativeCExport) {
+    throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+      `a C-exported function cannot be ${mark}; C calls it by its symbol`, line, column);
+  }
+  if (declaration.rawLanguage.byteLength > 0) {
+    throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+      `a raw native body cannot be ${mark}; it has no Z body to place`, line, column);
+  }
+  if (mark != "inline") return;
+  for (const statement of declaration.body.nodes) {
+    try rejectInlineSelfCall(module, declaration, method, statement.expression);
+    try rejectInlineSelfCall(module, declaration, method, statement.secondExpression);
+  }
+}
+
+// A call of the function by its own name, or of the method through `this`.
+function rejectInlineSelfCall(
+  in module: ParsedModule,
+  in declaration: FunctionDeclaration,
+  method: boolean,
+  in syntax: Option<ExpressionSyntax>
+): void throws ModuleResolveError {
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        for (const node of tree.nodes) {
+          if (node.kind != ExpressionKind.callExpression || node.children.length == 0) continue;
+          const callee = view tree.nodes[node.children[0]];
+          let selfCall = false;
+          if (!method && callee.kind == ExpressionKind.identifierExpression) {
+            const calleeName = identifierLookupName(callee.value);
+            selfCall = calleeName == declaration.name;
+          }
+          if (method && callee.kind == ExpressionKind.memberExpression && callee.children.length == 1) {
+            const receiver = view tree.nodes[callee.children[0]];
+            const calleeName = identifierLookupName(callee.value);
+            selfCall = calleeName == declaration.name
+              && receiver.kind == ExpressionKind.identifierExpression && receiver.value == "this";
+          }
+          if (selfCall) throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path,
+            `inline function "${declaration.name}" cannot call itself`, callee.line, callee.column);
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+}
+
 function validateExpressionTypesAndLocals(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -14241,6 +14305,7 @@ function validateExpressionTypesAndLocals(
   }
   const noTypeParameters = Array<TypeParameter>();
   for (const declaration of module.program.functions) {
+    try requireOptimizationMarkRules(module, declaration, false);
     try inferFunctionExpressions(
       module,
       modules,
@@ -14260,6 +14325,7 @@ function validateExpressionTypesAndLocals(
       none => {}
     }
     for (const method of aggregate.methods) {
+      try requireOptimizationMarkRules(module, method, true);
       try inferFunctionExpressions(
         module,
         modules,

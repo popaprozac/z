@@ -39,6 +39,7 @@ for (const [fixture, expected] of [
   ["callable-receiver-borrows", "ok\n"],
   ["rebound-unused-locals", "1\n2\nok\n"],
   ["generic-plain-instances", "ok\n"],
+  ["optimization-marks", "counter 20\n"],
   ["console-formatting", "4\n-12 2.5 0.125 true 9\nname: zjs box 18446744073709551615\n5 -24 false -128 64\ntemplate 4 and zjs\ntemplate 4 4\nno newline 4 zjs\n1e+21 0.1 -0 100 0.333333\nfirst first\nsecond second\nsecond\n3 4 7\nround 0 0\nround 1 10\nround 2 20\nshown 7\n"],
 ]) {
   test(`executes ${fixture} with Stage 0 and native semantics`, () => {
@@ -439,5 +440,32 @@ test("checks each generic instance with its concrete types in both compilers", (
     }
   `, /cannot move an ownership-bearing field or element out of its owner/,
     /cannot move an ownership-bearing field or element out of its owner \(in specialization Holder<T = String>\)/, ["self-host-emit"]);
+}, 240_000);
+
+test("places inline and cold functions in both compilers and rejects marks with nothing to place", () => {
+  const input = resolve(projectRoot, "tests/fixtures/native-semantic-parity/optimization-marks.zs");
+  const stage0 = compileToC(readFileSync(input, "utf8"), input);
+  assert.match(stage0, /static Z_INLINE_ALWAYS int32_t _z_function_add\(/);
+  assert.match(stage0, /static Z_COLD_FUNCTION int32_t _z_function_fail\(/);
+  assert.match(stage0, /#define Z_COLD_FUNCTION __attribute__\(\(cold, noinline, minsize\)\)/);
+  const emitted = native("self-host-emit", input);
+  assert.equal(emitted.status, 0, emitted.stderr);
+  assert.match(emitted.stdout, /inline __attribute__\(\(always_inline\)\) int32_t _z_function_\d+_add\(/);
+  assert.match(emitted.stdout, /Z_COLD_FUNCTION int32_t _z_function_\d+_fail\(/);
+  for (const [source, message] of [
+    [`inline function fact(n: i32): i32 { return n <= 1 ? 1 : n * fact(n - 1); }
+      function main(): i32 { return fact(3) == 6 ? 0 : 1; }`, /inline function "fact" cannot call itself/],
+    [`struct Walker { depth: i32; inline function walk(n: i32): i32 { return n == 0 ? 0 : this.walk(n - 1); } }
+      function main(): i32 { const walker = Walker({ depth: 0 }); return walker.walk(2); }`, /inline function "walk" cannot call itself/],
+    [`inline async function later(): i32 { return 1; }
+      function main(): i32 { return 0; }`, /`inline` cannot modify an async function/],
+    [`inline cold function both(): i32 { return 1; }
+      function main(): i32 { return both() - 1; }`, /a function cannot be both `inline` and `cold`/],
+    ["inline function main(): i32 { return 0; }", /`main` cannot be inline/],
+    [`export c inline function answer(): i32 { return 42; }
+      function main(): i32 { return 0; }`, /a C-exported function cannot be inline; C calls it by its symbol/],
+  ] as const) {
+    rejects(source, message);
+  }
 }, 240_000);
 

@@ -1135,6 +1135,25 @@ export function parse(tokens: Token[], fileName: string): Program {
     return { kind: "block" as const, statements: [statement], location: statement.location };
   }
 
+  // `inline` and `cold` are keywords only directly before `function`.
+  const startsOptimizationMark = (): boolean => at("identifier")
+    && (peek().text === "inline" || peek().text === "cold")
+    && (tokens[current + 1]?.kind === "function" || tokens[current + 1]?.kind === "async"
+      || (tokens[current + 1]?.kind === "identifier"
+        && (tokens[current + 1]?.text === "inline" || tokens[current + 1]?.text === "cold")));
+  const parseOptimizationMark = (): FunctionDeclaration["optimization"] => {
+    if (!startsOptimizationMark()) return undefined;
+    const token = take();
+    const mark = token.text as "inline" | "cold";
+    if (at("async")) {
+      throw new DiagnosticError(fileName, token.location, `\`${mark}\` cannot modify an async function`);
+    }
+    if (at("identifier")) {
+      throw new DiagnosticError(fileName, token.location, "a function cannot be both `inline` and `cold`");
+    }
+    return { mark, location: token.location };
+  };
+
   const parseFunction = (signatureOnly = false, isAsync = false): FunctionDeclaration => {
     const start = expect("function", "`function`").location;
     const name = expect("identifier", "a function name").text;
@@ -1287,12 +1306,19 @@ export function parse(tokens: Token[], fileName: string): Program {
         ? (take(), true)
         : false;
       const isStatic = match("static");
+      const optimization = parseOptimizationMark();
       const isAsync = match("async");
       if (at("function")) {
         if (fieldReadonly) {
           throw new DiagnosticError(fileName, previous().location, "`readonly` applies to stored fields, not methods");
         }
-        methods.push({ ...parseFunction(false, isAsync), static: isStatic, visibility, ...(isOverride ? { override: true } : {}) });
+        methods.push({
+          ...parseFunction(false, isAsync),
+          static: isStatic,
+          visibility,
+          ...(isOverride ? { override: true } : {}),
+          ...(optimization ? { optimization } : {}),
+        });
         continue;
       }
       if (isOverride) {
@@ -1538,7 +1564,7 @@ export function parse(tokens: Token[], fileName: string): Program {
         throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` cannot modify a test declaration");
       }
       functions.push(parseTest());
-    } else if (at("function") || at("async")) {
+    } else if (at("function") || at("async") || startsOptimizationMark()) {
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       if (nativeCToken && !exportToken && !internalToken) {
         throw new DiagnosticError(fileName, nativeCToken.location, "a C ABI function must use `export c function`");
@@ -1546,8 +1572,10 @@ export function parse(tokens: Token[], fileName: string): Program {
       if (nativeCToken && internalToken) {
         throw new DiagnosticError(fileName, internalToken.location, "a C ABI function cannot be internal; C symbols are public ABI contracts");
       }
+      const optimization = parseOptimizationMark();
       const isAsync = match("async");
-      const parsed = parseFunction(false, isAsync);
+      const parsedFunction = parseFunction(false, isAsync);
+      const parsed = optimization ? { ...parsedFunction, optimization } : parsedFunction;
       const declaration = nativeCToken
         ? {
             ...parsed,

@@ -2142,6 +2142,7 @@ export function analyze(
     for (const method of declaration.methods) {
       validateExecutorAffinity(method.executorAffinity, method.location, globals, fileName);
       validateCallableThreadContract(method, globals, fileName, true);
+      validateOptimizationMark(method, true, fileName);
     }
     if (declaration.deinitializer?.threadContract) {
       validateCallableThreadContract(deinitializerFunction(declaration), globals, fileName, false);
@@ -2179,6 +2180,7 @@ export function analyze(
     }
     validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName, state);
     validateNativeExport(declaration, structs, enums, fileName);
+    validateOptimizationMark(declaration, false, fileName);
     const returnedView = parseReceiverViewReturnType(
       declaration.returnType.name,
     );
@@ -2505,6 +2507,55 @@ function validateNativeLayouts(
       }
     }
   }
+}
+
+// `inline function` and `cold function` place a Z body; a declaration with no
+// Z body of its own, or one C calls by name, has nothing for them to place. An
+// inline function cannot call itself: it would have to be inlined into itself.
+function validateOptimizationMark(declaration: FunctionDeclaration, method: boolean, fileName: string): void {
+  const optimization = declaration.optimization;
+  if (!optimization) return;
+  const location = optimization.location;
+  const reject = (summary: string, help?: string): never => {
+    throw new DiagnosticError(location.fileName ?? fileName, location, summary, {
+      length: optimization.mark.length,
+      helps: help ? [help] : undefined,
+    });
+  };
+  if (!method && declaration.name === "main") reject(`\`main\` cannot be ${optimization.mark}`);
+  if (declaration.nativeExport) reject(`a C-exported function cannot be ${optimization.mark}; C calls it by its symbol`);
+  if (declaration.rawBody) reject(`a raw native body cannot be ${optimization.mark}; it has no Z body to place`);
+  if (optimization.mark !== "inline") return;
+  const selfCall = directSelfCall(declaration, method);
+  if (selfCall) {
+    throw new DiagnosticError(selfCall.fileName ?? fileName, selfCall, `inline function ${JSON.stringify(declaration.genericOriginName ?? declaration.name)} cannot call itself`, {
+      labels: [{ location, message: "declared inline here", length: optimization.mark.length }],
+      notes: ["a function that calls itself would have to be inlined into itself"],
+      helps: ["remove `inline`, or move the recursive part into a helper the inline function calls"],
+    });
+  }
+}
+
+// A call of the function by its own name, or of the method through `this`.
+function directSelfCall(declaration: FunctionDeclaration, method: boolean): SourceLocation | null {
+  let found: SourceLocation | null = null;
+  const visit = (node: unknown): void => {
+    if (found || !node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    const candidate = node as Partial<Expression> & { callee?: Expression };
+    if (candidate.kind === "call" && candidate.callee) {
+      const callee = candidate.callee;
+      if (!method && callee.kind === "identifier" && callee.name === declaration.name) found = callee.location;
+      if (method && callee.kind === "member" && callee.property === declaration.name
+        && callee.object.kind === "identifier" && callee.object.name === "this") found = callee.location;
+    }
+    for (const value of Object.values(node)) visit(value);
+  };
+  visit(declaration.body);
+  return found;
 }
 
 function validateNativeExport(

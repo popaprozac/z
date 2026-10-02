@@ -238,6 +238,15 @@ scoped effects such as unsafe operations, executor affinity, or allocator
 selection. Any sugar must still lower to the same receiver capability in method
 and trait signatures.
 
+Code placement does not wait for that form. `inline function` (inlined into
+every caller, never on a function that calls itself) and `cold function` (out
+of line, apart, optimized for size) are contextual keywords in the modifier
+position of `async`, `static`, and `override`, keywords only directly before
+`function`. They were added after measurement showed that marking trap paths
+cold changes nothing, since a C compiler already treats a call that never
+returns as unlikely, while an interpreter's dispatch loop is a caller too large
+for any compiler to inline into by its own judgement.
+
 Native parameters are owned/by-value by default: copyable values copy and
 cleanup-bearing values move. Borrowing is the non-default declaration:
 

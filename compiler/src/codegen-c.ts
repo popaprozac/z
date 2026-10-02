@@ -414,6 +414,13 @@ export function generateC(
     "#define Z_UNUSED_FUNCTION",
     "#define Z_INLINE_ALWAYS inline",
     "#endif",
+    "#if defined(__clang__)",
+    "#define Z_COLD_FUNCTION __attribute__((cold, noinline, minsize))",
+    "#elif defined(__GNUC__)",
+    "#define Z_COLD_FUNCTION __attribute__((cold, noinline, optimize(\"Os\")))",
+    "#else",
+    "#define Z_COLD_FUNCTION",
+    "#endif",
   );
   if (usesNativeMove) {
     lines.push("#include <utility>");
@@ -7379,8 +7386,11 @@ function generateFunctionSignature(
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
   closure?: ClosureInfo,
 ): string {
+  const placement = declaration.optimization?.mark === "inline"
+    ? "Z_INLINE_ALWAYS "
+    : declaration.optimization?.mark === "cold" ? "Z_COLD_FUNCTION " : "";
   const storage = receiver || declaration.name !== "main"
-    ? "Z_UNUSED_FUNCTION static "
+    ? `Z_UNUSED_FUNCTION static ${placement}`
     : "";
   const name = receiver ? methodName(receiver.name, declaration.name) : cFunctionName(declaration.name);
   const parameters = declaration.parameters.map((parameter) => {

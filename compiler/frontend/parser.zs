@@ -227,6 +227,11 @@ export struct FunctionDeclaration {
   asynchronous: boolean;
   staticMethod: boolean;
   overrideMethod: boolean = false;
+  // `inline` (inlined into every caller) or `cold` (kept out of line, placed
+  // apart, optimized for size), with the mark's position for diagnostics.
+  optimization: String = "";
+  optimizationLine: usize = 0;
+  optimizationColumn: usize = 0;
   visibility: Visibility;
   typeParameters: Array<TypeParameter>;
   receiverMode: ReceiverMode;
@@ -473,6 +478,30 @@ function parameterModeName(mode: ParameterMode): String {
     inputOutput => "inout ";
     output => "out ";
   };
+}
+
+// `inline` and `cold` are keywords only directly before `function`: the
+// mark taken, or an empty token when the next words are something else.
+function takeOptimizationMark(in tokens: Array<Token>, inout current: usize): Token throws ParserError {
+  const none = Token({ kind: TokenKind.identifier, text: "", offset: 0, line: 0, column: 0 });
+  if (current + 1 >= tokens.length || tokens[current].kind != TokenKind.identifier) return none;
+  if (tokens[current].text != "inline" && tokens[current].text != "cold") return none;
+  const next = tokens[current + 1].kind;
+  const markFollows = next == TokenKind.identifier
+    && (tokens[current + 1].text == "inline" || tokens[current + 1].text == "cold");
+  if (next != TokenKind.functionKeyword && next != TokenKind.asyncKeyword && !markFollows) return none;
+  const mark = copy tokens[current];
+  current = current + 1;
+  if (next == TokenKind.asyncKeyword) throw fail(mark, `\`${mark.text}\` cannot modify an async function`);
+  if (markFollows) throw fail(mark, "a function cannot be both `inline` and `cold`");
+  return mark;
+}
+
+function applyOptimizationMark(inout declaration: FunctionDeclaration, in mark: Token): void {
+  if (mark.text.byteLength == 0) return;
+  declaration.optimization = copy mark.text;
+  declaration.optimizationLine = mark.line;
+  declaration.optimizationColumn = mark.column;
 }
 
 function isPositiveInteger(in text: String): boolean {
@@ -3561,11 +3590,13 @@ function parseAggregateDeclaration(
       isOverride = true;
     }
     const isStatic = takeIf(tokens, inout current, TokenKind.staticKeyword);
+    const optimization = try takeOptimizationMark(tokens, inout current);
     const asynchronous = takeIf(tokens, inout current, TokenKind.asyncKeyword);
     if (tokens[current].kind == TokenKind.functionKeyword) {
       if (fieldReadonly) throw fail(tokens[current], "`readonly` applies to stored fields, not methods");
       let method = try parseFunctionDeclaration(tokens, inout current, false, asynchronous, isStatic, visibility, false);
       method.overrideMethod = isOverride;
+      applyOptimizationMark(inout method, optimization);
       methods.push(method);
       continue;
     }
@@ -3803,6 +3834,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       current = current + 1;
     }
 
+    const optimization = try takeOptimizationMark(tokens, inout current);
     let asynchronous = false;
     if (tokens[current].kind == TokenKind.asyncKeyword) {
       asynchronous = true;
@@ -3923,7 +3955,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       functions.push(functionDeclaration);
     } else if (kind == TokenKind.functionKeyword) {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
-      const functionDeclaration = try parseFunctionDeclaration(
+      let functionDeclaration = try parseFunctionDeclaration(
         tokens,
         inout current,
         nativeCExport,
@@ -3932,6 +3964,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         Visibility.publicVisibility,
         false
       );
+      applyOptimizationMark(inout functionDeclaration, optimization);
       const declaration = Declaration({
         kind: DeclarationKind.functionDeclaration,
         name: functionDeclaration.name.copyBytes(0, functionDeclaration.name.byteLength),

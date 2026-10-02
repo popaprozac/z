@@ -9434,6 +9434,8 @@ function appendFunctionSignature(
   else if (declaration.name != "main") {
     output.append("static __attribute__((unused)) ");
   }
+  if (declaration.optimization == "inline") output.append("inline __attribute__((always_inline)) ");
+  else if (declaration.optimization == "cold") output.append("Z_COLD_FUNCTION ");
   output.append(returnType);
   output.append(" ");
   if (throwingMain) output.append("z_stage1_main_result");
@@ -25645,6 +25647,8 @@ function emitLoweredC(
     output.append("#import <Foundation/Foundation.h>\n");
   }
   output.append("#ifndef Z_API\n#define Z_API\n#endif\n");
+  // `cold function`: out of line, placed apart, optimized for size.
+  output.append("#if defined(__clang__)\n#define Z_COLD_FUNCTION __attribute__((cold, noinline, minsize))\n#elif defined(__GNUC__)\n#define Z_COLD_FUNCTION __attribute__((cold, noinline, optimize(\"Os\")))\n#else\n#define Z_COLD_FUNCTION\n#endif\n");
   for (const header of program.foreignHeaders) {
     output.append("#include \"");
     output.append(header);

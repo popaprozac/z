@@ -162,6 +162,11 @@ export type FunctionDeclaration = {
   };
   readonly async?: boolean;
   readonly static?: boolean;
+  /**
+   * `inline function` must be inlined into every caller; `cold function` runs
+   * rarely and is kept out of line, placed apart, and optimized for size.
+   */
+  readonly optimization?: { readonly mark: "inline" | "cold"; readonly location: SourceLocation };
   /** Explicit native superclass override, checked against its selector. */
   readonly override?: boolean;
   readonly visibility?: "public" | "internal" | "private";

@@ -534,6 +534,8 @@ export struct LoweredFunction {
   testName: String;
   sourcePath: String;
   nativeCExportName: String;
+  // `inline` or `cold`, from the declaration.
+  optimization: String = "";
   compilerIntrinsic: String = "";
   compilerIntrinsicType: Option<LoweredType> = Option<LoweredType>.none;
   rawLanguage: String = "";
@@ -28984,6 +28986,7 @@ function lowerFunction(
     nativeCExportName: declaration.nativeCExport
       ? declaration.name.copyBytes(0, declaration.name.byteLength)
       : "",
+    optimization: copy declaration.optimization,
     compilerIntrinsic: "",
     compilerIntrinsicType: Option<LoweredType>.none,
     rawLanguage: declaration.rawLanguage.copyBytes(

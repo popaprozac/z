@@ -141,3 +141,23 @@ payload's own type still determines copying, retaining, or cleanup cost.
 :::
 
 Next: [Enums and matching](/language-tour/enums-and-matching/).
+
+## Place hot and cold code
+
+Mark a small function every hot path calls `inline`, and one that runs rarely
+`cold`:
+
+```z
+inline function clamp(value: i32, low: i32, high: i32): i32 {
+  return value < low ? low : value > high ? high : value;
+}
+
+cold function reportFailure(code: i32): void {
+  console.error("failed with", code);
+}
+```
+
+An `inline` function is copied into every caller, so it cannot call itself;
+a `cold` function stays out of line and is optimized for size. Both are
+keywords only directly before `function`, and neither changes what the code
+does.

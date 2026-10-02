@@ -2114,6 +2114,34 @@ completes as `void`; any other status is preserved as the failure value.
 exception. Owned `out` storage becomes cleanup-active immediately after the
 native call and is therefore destroyed even if that call returns failure.
 
+### Inline and cold functions
+
+`inline` and `cold` mark where a function's code goes. They are keywords
+only directly before `function` (after `export`, `static`, or `override`), so
+they remain ordinary names everywhere else.
+
+```z
+inline function numericAdd(a: Value, b: Value): Value { ... }
+
+struct Runtime {
+  cold function growRegisters(inout this, top: usize): void { ... }
+}
+```
+
+- `inline function` is inlined into every caller. A function that calls
+  itself, by name or through `this`, cannot be inline.
+- `cold function` runs rarely: it stays out of line, apart from the hot code,
+  and is optimized for size rather than speed.
+
+Neither applies to `main`, an `export c` function, a raw native body, or an
+async function, and one function takes at most one of them. They change only
+where code goes, never what it does.
+
+Cost: `inline` trades size at each call site for the call it removes; `cold`
+trades the function's own speed for size and keeps its callers compact. The C
+compiler is told directly (`always_inline`; `cold`, `noinline`, and
+`minsize`).
+
 ## Enums and matching
 
 Enums may be finite values or carry one typed payload per variant. Construction
