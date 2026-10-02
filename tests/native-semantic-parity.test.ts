@@ -43,6 +43,7 @@ for (const [fixture, expected] of [
   ["generic-instance-shapes", "ok\n"],
   ["borrowed-argument-storage", "67\n"],
   ["channel-local-class-payload", "3\n"],
+  ["view-field-borrows", "8\n"],
   ["console-formatting", "4\n-12 2.5 0.125 true 9\nname: zjs box 18446744073709551615\n5 -24 false -128 64\ntemplate 4 and zjs\ntemplate 4 4\nno newline 4 zjs\n1e+21 0.1 -0 100 0.333333\nfirst first\nsecond second\nsecond\n3 4 7\nround 0 0\nround 1 10\nround 2 20\nshown 7\n"],
 ]) {
   test(`executes ${fixture} with Stage 0 and native semantics`, () => {

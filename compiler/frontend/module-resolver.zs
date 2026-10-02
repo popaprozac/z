@@ -7392,11 +7392,17 @@ function inferExpressionNodeType(
             fieldViewVisiting
           )
         ) {
-          const receiverOwner = storedViewOwnerForExpression(
+          let receiverOwner = storedViewOwnerForExpression(
             bindings,
             tree,
             children[0]
           );
+          // A local Arena bundle owns the storage its view fields point into.
+          if (receiverOwner.byteLength == 0 && tree.nodes[children[0]].kind == ExpressionKind.identifierExpression) {
+            const bundle = identifierLookupName(tree.nodes[children[0]].value);
+            const bundleType = valueBindingType(bindings, bundle);
+            if (typeIsArenaOwnerBundle(modules, moduleIndex, bundleType)) receiverOwner = bundle;
+          }
           if (receiverOwner.byteLength == 0) {
             throw resolutionError(
               ModuleResolveErrorKind.typeMismatch,

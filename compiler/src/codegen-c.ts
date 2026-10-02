@@ -12530,11 +12530,12 @@ function generateCallArgument(expression: Expression, context: GenerationContext
     : null;
   if (capabilityTarget) {
     const value = generateExpression(capabilityTarget, context);
+    const targetType = inferExpressionType(capabilityTarget, context);
     // A projected `in` argument follows the same ABI as a direct binding:
-    // reference identities are already pointers, while value borrows and
-    // writable capabilities pass the address of their storage.
+    // reference identities and views are already pointers, while value
+    // borrows and writable capabilities pass the address of their storage.
     return nativeAccess === "in"
-      && inParameterUsesStoredValue(inferExpressionType(capabilityTarget, context), context)
+      && (inParameterUsesStoredValue(targetType, context) || parseViewType(targetType))
       ? value
       : `&(${value})`;
   }

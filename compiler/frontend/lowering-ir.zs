@@ -17220,6 +17220,25 @@ function lowerExpressionContextual(
           && output[value].labels.length > 0
           && stringStartsWith(output[value].labels[0], "view ")
         ) argumentMode = "view";
+        // An explicit `in path` lends what the path names, which may be a view.
+        if (
+          argumentMode == "in"
+          && tree.nodes[argumentInput].kind == ExpressionKind.argumentReferenceExpression
+          && tree.nodes[argumentInput].children.length == 1
+        ) {
+          match (evidenceResolvedExpressionTypeName(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            tree.nodes[argumentInput].children[0]
+          )) {
+            some(argumentType) => {
+              if (stringStartsWith(argumentType, "view ")) argumentMode = "view";
+            }
+            none => {}
+          }
+        }
         labels.push(move argumentMode);
         argument = argument + 1;
       }
@@ -17615,12 +17634,17 @@ function lowerExpressionContextual(
         callLabels.length >= argument
         && callLabels[argument - 1] == "in"
       ) {
+        // An explicit `in path` lends what the path names, which may be a view.
+        const borrowedInput = tree.nodes[argumentInput].kind == ExpressionKind.argumentReferenceExpression
+          && tree.nodes[argumentInput].children.length == 1
+          ? tree.nodes[argumentInput].children[0]
+          : argumentInput;
         match (evidenceResolvedExpressionTypeName(
           program,
           importedTypes,
           evidence,
           tree,
-          argumentInput
+          borrowedInput
         )) {
           some(argumentType) => {
             if (stringStartsWith(argumentType, "view ")) {
