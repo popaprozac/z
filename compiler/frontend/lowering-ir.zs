@@ -14188,18 +14188,22 @@ function lowerExpressionContextual(
         success(type) => type.kind == LoweredTypeKind.arrayType;
         failure(_) => false;
       };
-      if (arrayFactory) match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, index)) {
-        some(typeName) => {
-          const type = try lowerModuleTypeName(program, importedTypes, typeName);
-          if (type.kind == LoweredTypeKind.arrayType) {
-            const capacityInput = tree.nodes[index].children[1];
-            const capacity = try lowerExpressionExpected(program, importedTypes, evidence, tree,
-              capacityInput, "usize", inout output);
-            return pushExpression(inout output, LoweredExpressionKind.arrayWithCapacity,
-              type.name, Array<usize>(capacity), Array<String>());
-          }
+      if (arrayFactory) {
+        // The factory returns the Array type its receiver names; a call with
+        // no recorded type, such as an object literal's field, uses that.
+        let typeName = "";
+        match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, index)) {
+          some(recorded) => typeName = move recorded;
+          none => typeName = copy tree.nodes[receiverInput].value;
         }
-        none => {}
+        const type = try lowerModuleTypeName(program, importedTypes, typeName);
+        if (type.kind == LoweredTypeKind.arrayType) {
+          const capacityInput = tree.nodes[index].children[1];
+          const capacity = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+            capacityInput, "usize", inout output);
+          return pushExpression(inout output, LoweredExpressionKind.arrayWithCapacity,
+            type.name, Array<usize>(capacity), Array<String>());
+        }
       }
     }
     if (tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
