@@ -3907,6 +3907,13 @@ function loweredTypeForIdentity(
       name: identity.copyBytes(0, identity.byteLength),
     });
   }
+  // A function value, such as one a lock callback or a worker captures.
+  for (const declaration of program.functionTypes) {
+    if (declaration.name == identity) return LoweredType({
+      kind: LoweredTypeKind.functionType,
+      name: identity.copyBytes(0, identity.byteLength),
+    });
+  }
   throw `native C emission cannot resolve intrinsic type identity ${identity}`;
 }
 
