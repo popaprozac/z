@@ -47,6 +47,7 @@ for (const [fixture, expected] of [
   ["thread-block-captures", "16\n"],
   ["lock-callback-function-value", "11\n"],
   ["array-capacity-field", "true 1 true true\n"],
+  ["console-closure-argument", "3\nheld 4 after 6\n"],
   ["console-formatting", "4\n-12 2.5 0.125 true 9\nname: zjs box 18446744073709551615\n5 -24 false -128 64\ntemplate 4 and zjs\ntemplate 4 4\nno newline 4 zjs\n1e+21 0.1 -0 100 0.333333\nfirst first\nsecond second\nsecond\n3 4 7\nround 0 0\nround 1 10\nround 2 20\nshown 7\n"],
 ]) {
   test(`executes ${fixture} with Stage 0 and native semantics`, () => {

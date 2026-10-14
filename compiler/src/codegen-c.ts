@@ -7892,10 +7892,15 @@ function generateConsoleCall(
   return lines.join("\n");
 }
 
+// A console argument is produced the way a statement's value is, so one
+// that needs statements of its own, such as a call taking a closure, is
+// lowered before it is rendered.
 function generateConsoleExpression(expression: Expression, stream: "stdout" | "stderr", context: GenerationContext): string[] {
   const type = context.semanticInfo.expressionTypes.get(expression.location.offset) ?? inferExpressionType(expression, context);
   if (hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
-    return renderConsoleValue(generateExpression(expression, context), type, stream, context);
+    return [generateDirectValue(expression, context, (value, valueContext) => (
+      renderConsoleValue(value, type, stream, valueContext).join("\n")
+    ))];
   }
   const temporary = `_z_console_${context.valueCounter.value++}`;
   if (type === "null") return [`fputs("null", ${stream});`];
@@ -7907,10 +7912,10 @@ function generateConsoleExpression(expression: Expression, stream: "stdout" | "s
     context.enums,
     context.semanticInfo.foreignNamedTypes,
   );
-  return [
-    `${declaration} = ${generateExpression(expression, context)};`,
-    ...renderConsoleValue(temporary, type, stream, context),
-  ];
+  return [generateDirectValue(expression, context, (value, valueContext) => [
+    `${declaration} = ${value};`,
+    ...renderConsoleValue(temporary, type, stream, valueContext),
+  ].join("\n"))];
 }
 
 function renderConsoleValue(
