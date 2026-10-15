@@ -261,6 +261,7 @@ import {
   ModuleForeignUnionMatch,
   ModuleForeignUnionMatchVariant,
   ModuleGraph,
+  ModuleMatchSubjectType,
   ModuleObjCProtocolMethodResolution,
   ModuleObjCAdapterResolution,
   ModuleObjCRegistrationResolution,
@@ -289,6 +290,7 @@ import {
   ExpressionTree,
   FunctionDeclaration,
   ParameterMode,
+  ReceiverMode,
   StatementArena,
   StatementKind,
   TraitDeclaration,
@@ -2919,6 +2921,15 @@ function inferMatchExpressionNodeType(
     }
     return "";
   }
+  let payloads = shape.foreignUnion;
+  for (const variant of shape.variants) {
+    if (variant.payloadType.byteLength > 0) payloads = true;
+  }
+  evidence.matchSubjectTypes.push(ModuleMatchSubjectType({
+    offset: tree.nodes[index].offset,
+    typeName: copy subjectType,
+    payloads,
+  }));
   if (shape.foreignUnion) {
     if (tree.nodes[index].value != "in") {
       throw matchError(
@@ -14379,6 +14390,359 @@ export function checkGenericInstance(
   return evidence;
 }
 
+// `dispatch while` (docs/dispatch-loop-design.md): the C emitter may lower the
+// loop into one handler per arm of its match, chained by tail calls. The rules
+// keep that a change of placement only, the same as Stage 0 checks them: the
+// loop leaves its function only by `break`, and what it carries from one
+// instruction to the next is plain data.
+function requireDispatchLoopRules(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in declaration: FunctionDeclaration,
+  in evidence: ModuleSemanticEvidence
+): void throws ModuleResolveError {
+  let index: usize = 0;
+  while (index < declaration.body.nodes.length) {
+    if (declaration.body.nodes[index].dispatchLine > 0) {
+      try requireDispatchLoop(module, modules, moduleIndex, declaration, evidence, index);
+    }
+    index = index + 1;
+  }
+}
+
+// Every statement under the one at `index`, itself included: through blocks
+// and branches, and through the statements an expression holds (match arms,
+// unsafe and closure bodies).
+function collectNestedStatements(in body: StatementArena, index: usize, inout found: Array<usize>): void {
+  found.push(index);
+  for (const child of body.nodes[index].children) {
+    collectNestedStatements(body, child, inout found);
+  }
+  collectExpressionStatements(body, body.nodes[index].expression, inout found);
+  collectExpressionStatements(body, body.nodes[index].secondExpression, inout found);
+}
+
+function collectExpressionStatements(
+  in body: StatementArena,
+  in syntax: Option<ExpressionSyntax>,
+  inout found: Array<usize>
+): void {
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        for (const node of tree.nodes) {
+          for (const statement of node.statements) {
+            collectNestedStatements(body, statement, inout found);
+          }
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+}
+
+// Whether the statement at `index` sits in a closure's body.
+function statementInClosure(in body: StatementArena, index: usize): boolean {
+  for (const statement of body.nodes) {
+    if (closureHoldsStatement(body, statement.expression, index)) return true;
+    if (closureHoldsStatement(body, statement.secondExpression, index)) return true;
+  }
+  return false;
+}
+
+function closureHoldsStatement(in body: StatementArena, in syntax: Option<ExpressionSyntax>, index: usize): boolean {
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        for (const node of tree.nodes) {
+          if (node.kind != ExpressionKind.closureExpression) continue;
+          let inside = Array<usize>();
+          for (const child of node.statements) {
+            collectNestedStatements(body, child, inout inside);
+          }
+          for (const candidate of inside) {
+            if (candidate == index) return true;
+          }
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+  return false;
+}
+
+function dispatchLoopError(in module: ParsedModule, in summary: String, line: usize, column: usize): ModuleResolveError {
+  return resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `dispatch loop: ${summary}`, line, column);
+}
+
+// What a construct inside the loop that it cannot lower is, or "".
+function dispatchExpressionRejection(in syntax: Option<ExpressionSyntax>): String {
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        for (const node of tree.nodes) {
+          if (node.kind == ExpressionKind.tryExpression) return "a failure cannot propagate out of a dispatch loop";
+          if (
+            node.kind == ExpressionKind.awaitExpression
+            || node.kind == ExpressionKind.spawnExpression
+            || node.kind == ExpressionKind.executorPlacementExpression
+          ) return "a dispatch loop cannot suspend or start tasks";
+          if (node.kind == ExpressionKind.closureExpression) return "a closure cannot be created in a dispatch loop";
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+  return "";
+}
+
+// The type of `name` where the loop at `loopOffset` begins: a parameter's, or
+// that of the latest binding declared before the loop; "" when none is.
+function dispatchCarriedType(
+  in declaration: FunctionDeclaration,
+  in evidence: ModuleSemanticEvidence,
+  in name: String,
+  loopOffset: usize
+): String {
+  let found = false;
+  let selectedOffset: usize = 0;
+  let selectedType = "";
+  for (const parameter of declaration.parameters) {
+    if (parameter.name == name) {
+      found = true;
+      selectedOffset = parameter.offset;
+      selectedType = copy parameter.type.name;
+    }
+  }
+  for (const statement of declaration.body.nodes) {
+    if (statement.name != name || statement.nameOffset >= loopOffset) continue;
+    if (found && statement.nameOffset < selectedOffset) continue;
+    match (in statement.typeAnnotation) {
+      some(annotation) => {
+        found = true;
+        selectedOffset = statement.nameOffset;
+        selectedType = copy annotation.name;
+      }
+      none => {}
+    }
+  }
+  for (const binding of evidence.bindingResolutions) {
+    if (binding.name == name && binding.offset < loopOffset && (!found || binding.offset >= selectedOffset)) {
+      found = true;
+      selectedOffset = binding.offset;
+      selectedType = copy binding.typeName;
+    }
+  }
+  return selectedType;
+}
+
+function dispatchPlainData(in modules: Array<ResolvedModule>, moduleIndex: usize, in typeName: String): boolean {
+  let visiting = Array<String>();
+  return !typeHasCleanup(modules, moduleIndex, typeName, visiting)
+    && !stringStartsWith(typeName, "[")
+    && !stringStartsWith(typeName, "view ")
+    && !stringStartsWith(typeName, "Slice<");
+}
+
+function requireDispatchLoop(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in declaration: FunctionDeclaration,
+  in evidence: ModuleSemanticEvidence,
+  loopIndex: usize
+): void throws ModuleResolveError {
+  const body = view declaration.body;
+  const loop = view body.nodes[loopIndex];
+  const line = loop.dispatchLine;
+  const column = loop.dispatchColumn;
+  if (
+    declaration.asynchronous
+    || stringStartsWith(declaration.returnType.name, "Generator<")
+    || stringStartsWith(declaration.returnType.name, "AsyncGenerator<")
+  ) {
+    throw dispatchLoopError(module, "a dispatch loop cannot be in an async or generator function", line, column);
+  }
+  if (statementInClosure(body, loopIndex)) {
+    throw dispatchLoopError(module, "a dispatch loop cannot be in a closure", line, column);
+  }
+  let conditionTrue = false;
+  match (in loop.expression) {
+    some(condition) => match (in condition.tree) {
+      some(tree) => conditionTrue = tree.nodes[tree.root].kind == ExpressionKind.booleanExpression
+        && tree.nodes[tree.root].value == "true";
+      none => {}
+    }
+    none => {}
+  }
+  if (!conditionTrue) throw dispatchLoopError(module, "the condition must be `true`", line, column);
+  const block = loop.children[0];
+  const statements = copyIndices(body.nodes[block].children);
+  let matchPosition = statements.length;
+  let position: usize = 0;
+  while (position < statements.length) {
+    if (body.nodes[statements[position]].kind == StatementKind.matchStatement) {
+      matchPosition = position;
+      break;
+    }
+    position = position + 1;
+  }
+  if (matchPosition == statements.length) {
+    throw dispatchLoopError(module, "the body needs a `match`, whose arms become the handlers", line, column);
+  }
+  position = 0;
+  while (position < matchPosition) {
+    const kind = body.nodes[statements[position]].kind;
+    if (
+      kind != StatementKind.variableStatement
+      && kind != StatementKind.assignmentStatement
+      && kind != StatementKind.expressionStatement
+    ) {
+      throw dispatchLoopError(module, "only declarations, assignments, and expressions may come before the `match`",
+        body.nodes[statements[position]].line, body.nodes[statements[position]].column);
+    }
+    position = position + 1;
+  }
+  position = matchPosition + 1;
+  while (position < statements.length) {
+    if (body.nodes[statements[position]].kind == StatementKind.matchStatement) {
+      throw dispatchLoopError(module, "the body has one `match` at its top level",
+        body.nodes[statements[position]].line, body.nodes[statements[position]].column);
+    }
+    position = position + 1;
+  }
+  let inside = Array<usize>();
+  collectNestedStatements(body, block, inout inside);
+  for (const index of inside) {
+    const statement = view body.nodes[index];
+    if (statement.kind == StatementKind.returnStatement) {
+      throw dispatchLoopError(module, "`return` cannot leave a dispatch loop", statement.line, statement.column);
+    }
+    if (statement.kind == StatementKind.throwStatement) {
+      throw dispatchLoopError(module, "`throw` cannot leave a dispatch loop", statement.line, statement.column);
+    }
+    if (statement.kind == StatementKind.yieldStatement || statement.kind == StatementKind.asyncScopeStatement) {
+      throw dispatchLoopError(module, "a dispatch loop cannot suspend or start tasks", statement.line, statement.column);
+    }
+    if (statement.kind == StatementKind.forAwaitStatement || statement.kind == StatementKind.forTryAwaitStatement) {
+      throw dispatchLoopError(module, "a dispatch loop cannot suspend, or let a failure propagate out of it",
+        statement.line, statement.column);
+    }
+    if (statement.kind == StatementKind.whileStatement && statement.dispatchLine > 0) {
+      throw dispatchLoopError(module, "dispatch loops cannot nest", statement.dispatchLine, statement.dispatchColumn);
+    }
+    let rejection = dispatchExpressionRejection(statement.expression);
+    if (rejection.byteLength == 0) rejection = dispatchExpressionRejection(statement.secondExpression);
+    if (rejection.byteLength > 0) throw dispatchLoopError(module, rejection, statement.line, statement.column);
+  }
+  // The subject's enum, as the match analysis recorded it.
+  const matchStatement = view body.nodes[statements[matchPosition]];
+  let subjectPlain = false;
+  match (in matchStatement.expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = view tree.nodes[tree.root];
+        for (const subject of evidence.matchSubjectTypes) {
+          if (subject.offset == root.offset) subjectPlain = !subject.payloads && root.value != "in";
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+  if (!subjectPlain) {
+    throw dispatchLoopError(module, "the `match` subject must be an enum without payloads",
+      matchStatement.line, matchStatement.column);
+  }
+  // The prefix's locals go to the next handler.
+  position = 0;
+  while (position < matchPosition) {
+    const statement = view body.nodes[statements[position]];
+    if (statement.kind == StatementKind.variableStatement) {
+      const typeName = dispatchCarriedType(declaration, evidence, statement.name, statement.nameOffset + 1);
+      if (typeName.byteLength > 0 && !dispatchPlainData(modules, moduleIndex, typeName)) {
+        throw dispatchLoopError(module,
+          `"${statement.name}" is carried to the next handler and must be plain data, not ${typeName}`,
+          statement.nameLine, statement.nameColumn);
+      }
+    }
+    position = position + 1;
+  }
+  // Every local from before the loop that the loop uses travels with it.
+  let declaredInside = Array<String>();
+  for (const index of inside) {
+    if (body.nodes[index].name.byteLength > 0) declaredInside.push(copy body.nodes[index].name);
+  }
+  let checked = Array<String>();
+  for (const index of inside) {
+    try requireDispatchCarriedSyntax(module, modules, moduleIndex, declaration, evidence, loop.offset,
+      body.nodes[index].expression, declaredInside, inout checked);
+    try requireDispatchCarriedSyntax(module, modules, moduleIndex, declaration, evidence, loop.offset,
+      body.nodes[index].secondExpression, declaredInside, inout checked);
+  }
+}
+
+// The names one expression uses from before the loop, each checked once.
+function requireDispatchCarriedSyntax(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in declaration: FunctionDeclaration,
+  in evidence: ModuleSemanticEvidence,
+  loopOffset: usize,
+  in syntax: Option<ExpressionSyntax>,
+  in declaredInside: Array<String>,
+  inout checked: Array<String>
+): void throws ModuleResolveError {
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        let callees = Array<boolean>();
+        callees.appendRepeated(false, tree.nodes.length);
+        for (const node of tree.nodes) {
+          if (node.kind == ExpressionKind.callExpression && node.children.length > 0) callees[node.children[0]] = true;
+        }
+        let nodeIndex: usize = 0;
+        while (nodeIndex < tree.nodes.length) {
+          const node = view tree.nodes[nodeIndex];
+          const callee = callees[nodeIndex];
+          nodeIndex = nodeIndex + 1;
+          if (node.kind != ExpressionKind.identifierExpression || callee) continue;
+          if (containsString(checked, node.value) || containsString(declaredInside, node.value)) continue;
+          checked.push(copy node.value);
+          if (node.value == "this") {
+            if (declaration.receiverMode == ReceiverMode.move) {
+              throw dispatchLoopError(module, "a receiver taken with `move this` cannot be carried through the loop",
+                node.line, node.column);
+            }
+            continue;
+          }
+          for (const parameter of declaration.parameters) {
+            if (parameter.name != node.value || parameter.mode == ParameterMode.value) continue;
+            let mode = "in";
+            if (parameter.mode == ParameterMode.inputOutput) mode = "inout";
+            if (parameter.mode == ParameterMode.output) mode = "out";
+            throw dispatchLoopError(module,
+              `parameter "${node.value}" is \`${mode}\`; the handlers carry only values`, node.line, node.column);
+          }
+          const typeName = dispatchCarriedType(declaration, evidence, node.value, loopOffset);
+          if (typeName.byteLength > 0 && !dispatchPlainData(modules, moduleIndex, typeName)) {
+            throw dispatchLoopError(module,
+              `"${node.value}" is carried through the loop and must be plain data, not ${typeName}`,
+              node.line, node.column);
+          }
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+}
+
 // `inline function` and `cold function` place a Z body; a declaration with no
 // Z body of its own, or one C calls by name, has nothing for them to place. An
 // inline function cannot call itself: it would have to be inlined into itself.
@@ -14484,6 +14848,7 @@ function validateExpressionTypesAndLocals(
       noTypeParameters,
       inout evidence
     );
+    try requireDispatchLoopRules(module, modules, moduleIndex, declaration, evidence);
   }
   for (const aggregate of module.program.aggregates) {
     match (in aggregate.nativeBase) { some(_) => continue; none => {} }
@@ -14504,6 +14869,7 @@ function validateExpressionTypesAndLocals(
         aggregate.typeParameters,
         inout evidence
       );
+      try requireDispatchLoopRules(module, modules, moduleIndex, method, evidence);
     }
     match (in aggregate.deinitializer) {
       some(deinitializer) => try inferAggregateDeinit(module, modules, moduleIndex, aggregate, deinitializer,

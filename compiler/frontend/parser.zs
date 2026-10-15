@@ -212,6 +212,10 @@ export struct Statement {
   offset: usize;
   line: usize;
   column: usize;
+  // `dispatch while`: where the mark is, or line 0 for an ordinary loop
+  // (docs/dispatch-loop-design.md).
+  dispatchLine: usize = 0;
+  dispatchColumn: usize = 0;
 }
 
 export struct StatementArena {
@@ -2754,6 +2758,25 @@ function parseProjectedStatement(
   inout nodes: Array<Statement>
 ): Option<usize> throws ParserError {
   const kind = tokens[current].kind;
+  // `dispatch` is a keyword only directly before a statement `while`.
+  if (
+    kind == TokenKind.identifier
+    && tokens[current].text == "dispatch"
+    && current + 1 < tokens.length
+    && tokens[current + 1].kind == TokenKind.whileKeyword
+  ) {
+    const mark = snapshot(tokens[current]);
+    current = current + 1;
+    const parsed = try parseProjectedStatement(tokens, inout current, inout nodes);
+    match (parsed) {
+      some(index) => {
+        nodes[index].dispatchLine = mark.line;
+        nodes[index].dispatchColumn = mark.column;
+      }
+      none => {}
+    }
+    return parsed;
+  }
   if (startsExecutorPlacement(tokens, current)) {
     const startIndex = current;
     const start = snapshot(tokens[current]);

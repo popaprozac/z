@@ -9,13 +9,13 @@ function native(command: "self-host-resolve" | "self-host-emit", input: string) 
   });
 }
 
-function execute(source: string, expected: string): void {
+function execute(source: string, expected: string, flags: readonly string[] = []): void {
   const directory = mkdtempSync("/tmp/z-native-semantic-execute-");
   try {
     for (const optimization of ["-O0", "-O2"]) {
       const executable = resolve(directory, "program");
       const compiled = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
-        optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        optimization, "-fsanitize=undefined", "-fno-sanitize-recover=all", ...flags, "-", "-o", executable], {
         input: source, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
       });
       assert.equal(compiled.status, 0, compiled.stderr || String(compiled.error));
@@ -40,6 +40,7 @@ for (const [fixture, expected] of [
   ["rebound-unused-locals", "1\n2\nok\n"],
   ["generic-plain-instances", "ok\n"],
   ["optimization-marks", "counter 20\n"],
+  ["dispatch-loop", "acc 55\nsteps 35 shown 1\nresult 55\nsteps 7 shown 0\nlimited -2\nsum 55 2\n"],
   ["generic-instance-shapes", "ok\n"],
   ["borrowed-argument-storage", "67\n"],
   ["channel-local-class-payload", "3\n"],
@@ -448,6 +449,53 @@ test("checks each generic instance with its concrete types in both compilers", (
     }
   `, /cannot move an ownership-bearing field or element out of its owner/,
     /cannot move an ownership-bearing field or element out of its owner \(in specialization Holder<T = String>\)/, ["self-host-emit"]);
+}, 240_000);
+
+test("lowers a dispatch loop into tail-called handlers and rejects loops it cannot lower", () => {
+  const input = resolve(projectRoot, "tests/fixtures/native-semantic-parity/dispatch-loop.zs");
+  const stage0 = compileToC(readFileSync(input, "utf8"), input);
+  assert.match(stage0, /__attribute__\(\(musttail\)\) return _z_dispatch_Z_Machine_run_\d+_table\[/);
+  assert.match(stage0, /#if Z_DISPATCH_THREADED\n/);
+  // A C compiler without the attributes gets the ordinary loop, same output.
+  execute(stage0, "acc 55\nsteps 35 shown 1\nresult 55\nsteps 7 shown 0\nlimited -2\nsum 55 2\n", ["-DZ_DISPATCH_THREADED=0"]);
+  const machine = (loop: string, enumeration = "enum Op { a, b }", before = "", extra = ""): string => `
+    ${enumeration}
+    struct M {
+      ops: Array<Op>;
+      function run(inout this): i32 {
+        let i: usize = 0;
+        ${before}
+        ${loop}
+        return 0;
+      }
+    }
+    ${extra}
+    function main(): i32 { let m = M({ ops: Array<Op>() }); m.ops.push(Op.b); return m.run(); }`;
+  const ordinary = (arms: string, prefix = "const op = this.ops[i];\ni = i + 1;"): string => `dispatch while (true) {
+    ${prefix}
+    match (op) {
+      ${arms}
+    }
+  }`;
+  for (const [source, message] of [
+    [machine(`dispatch while (i < 3) { const op = this.ops[i]; match (op) { a => { continue; } b => { break; } } }`),
+      /dispatch loop: the condition must be `true`/],
+    [machine(ordinary("a => { continue; }\nb => { return 1; }")), /dispatch loop: `return` cannot leave a dispatch loop/],
+    [machine(`dispatch while (true) { i = i + 1; if (i > 3) { break; } }`),
+      /dispatch loop: the body needs a `match`, whose arms become the handlers/],
+    [machine(ordinary("a => { continue; }\nb => { break; }", "const op = this.ops[i];\nif (i > 3) { break; }")),
+      /dispatch loop: only declarations, assignments, and expressions may come before the `match`/],
+    [machine(ordinary("a => { const f = (): i32 => 1; continue; }\nb => { break; }")),
+      /dispatch loop: a closure cannot be created in a dispatch loop/],
+    [machine(ordinary("a(value) => { continue; }\nb => { break; }"), "enum Op { a i32, b }"),
+      /dispatch loop: the `match` subject must be an enum without payloads/],
+    [machine(ordinary("a => { const n = name.byteLength; continue; }\nb => { break; }"), undefined, `let name: String = "z";`),
+      /dispatch loop: "name" is carried through the loop and must be plain data, not String/],
+    [machine(ordinary(`a => { dispatch while (true) { const inner = this.ops[0]; match (inner) { a => { break; } b => { break; } } } continue; }
+      b => { break; }`)), /dispatch loop: dispatch loops cannot nest/],
+  ] as const) {
+    rejects(source, message);
+  }
 }, 240_000);
 
 test("places inline and cold functions in both compilers and rejects marks with nothing to place", () => {

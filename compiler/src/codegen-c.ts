@@ -39,7 +39,9 @@ import type {
   UncheckedAccess,
   StructSpreadPlan,
   ForeignUnionMatchPlan,
+  DispatchLoopPlan,
 } from "./sema.ts";
+import { collectPlacementCaptures } from "./placement-captures.ts";
 import {
   parsePointerTypeName,
   type ForeignBlockType,
@@ -129,6 +131,17 @@ type GenerationContext = {
     readonly liveFlags: Map<string, string>;
     readonly stateCounter: { value: number };
   };
+  // Where a `dispatch while` in this function puts its handlers: C at file
+  // scope, emitted before the function.
+  readonly dispatch?: DispatchGeneration;
+  // Inside a dispatch handler, the locals that live in the loop's record.
+  readonly dispatchStorage?: ReadonlyMap<string, string>;
+};
+
+type DispatchGeneration = {
+  readonly functionName: string;
+  readonly receiverParameter: string | null;
+  readonly hoisted: string[];
 };
 
 type CleanupLocal = {
@@ -144,6 +157,8 @@ type LoopGenerationFrame = {
   readonly cleanupDepth: number;
   usedBreak: boolean;
   usedContinue: boolean;
+  // A dispatch handler leaves by a tail call or a return, not a jump.
+  readonly transfer?: (kind: "break" | "continue") => string;
 };
 
 type ValueSelectionGenerationFrame = {
@@ -7082,6 +7097,13 @@ function generateFunction(
     expressionOverrides: new Map(),
     objectTypeOverrides: new Map(),
     semanticInfo,
+    dispatch: receiver?.nativeBase || nativeMethod ? undefined : {
+      functionName: receiver ? methodName(receiver.name, declaration.name) : cFunctionName(declaration.name),
+      receiverParameter: instanceReceiver
+        ? receiverParameters(declaration, instanceReceiver, structs, enums, semanticInfo.foreignNamedTypes)[0]
+        : null,
+      hoisted: [],
+    },
   };
   if (declaration.compilerIntrinsic?.kind === "jsonDecode") {
     return generateDerivedJsonDecode(declaration, context);
@@ -7151,10 +7173,11 @@ function generateFunction(
   const closure = semanticInfo.closures.get(declaration.location.offset);
   const signature = nativeMethod?.signature ?? generateFunctionSignature(declaration, structs, enums, receiver, semanticInfo.foreignNamedTypes,
     closure?.declaration.name === declaration.name ? closure : undefined);
+  const hoisted = context.dispatch?.hoisted.length ? `${context.dispatch.hoisted.join("\n\n")}\n\n` : "";
   if (!receiver && declaration.name === "main" && semanticInfo.objectiveC) {
-    return `${signature} {\n  @autoreleasepool {\n${indent(body, 2)}\n  }\n}`;
+    return `${hoisted}${signature} {\n  @autoreleasepool {\n${indent(body, 2)}\n  }\n}`;
   }
-  return `${signature} {\n${body}\n}`;
+  return `${hoisted}${signature} {\n${body}\n}`;
 }
 
 function rawExpressionHelperName(offset: number): string {
@@ -7427,21 +7450,27 @@ function generateFunctionSignature(
     parameters.push("int argc", "char **argv");
   }
   if (receiver && !declaration.static) {
-    if (receiver.nativeBase) {
-      parameters.unshift(`${mapType(receiver.name, structs, enums, foreignNamedTypes)} self`, "_z_native_subclass_access_guard *_z_native_subclass_parent_loan");
-    } else if (receiver.kind === "class") {
-      const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
-      parameters.unshift(`${receiverConst}${structName(receiver.name)} *self`);
-    } else if (declaration.receiverMode === "move") parameters.unshift(`${structName(receiver.name)} self`);
-    else {
-      const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
-      parameters.unshift(`${receiverConst}${structName(receiver.name)} *self`);
-    }
+    parameters.unshift(...receiverParameters(declaration, receiver, structs, enums, foreignNamedTypes));
   }
   const returnName = declaration.errorType && !isGeneratorFunction(declaration)
     ? resultTypeName(declaration.returnType.name, declaration.errorType.name)
     : declaration.returnType.name;
   return `${storage}${mapType(returnName, structs, enums, foreignNamedTypes)} ${name}(${parameters.join(", ") || "void"})`;
+}
+
+function receiverParameters(
+  declaration: FunctionDeclaration,
+  receiver: StructDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string[] {
+  if (receiver.nativeBase) {
+    return [`${mapType(receiver.name, structs, enums, foreignNamedTypes)} self`, "_z_native_subclass_access_guard *_z_native_subclass_parent_loan"];
+  }
+  if (receiver.kind !== "class" && declaration.receiverMode === "move") return [`${structName(receiver.name)} self`];
+  const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
+  return [`${receiverConst}${structName(receiver.name)} *self`];
 }
 
 function generateStatement(statement: Statement, context: GenerationContext): string {
@@ -8199,6 +8228,8 @@ function withLoopContinueLabel(body: string, label: string): string {
 }
 
 function generateWhile(statement: Extract<Statement, { kind: "while" }>, context: GenerationContext): string {
+  const plan = statement.dispatch ? context.semanticInfo.dispatchLoops?.get(statement.location.offset) : undefined;
+  if (plan && context.dispatch && !context.generatorFrame) return generateDispatchWhile(statement, plan, context.dispatch, context);
   const index = context.loopCounter.value++;
   const frame: LoopGenerationFrame = {
     breakLabel: `_z_loop_break_${index}`,
@@ -8223,6 +8254,257 @@ function generateWhile(statement: Extract<Statement, { kind: "while" }>, context
     return `while (true) {\n${condition}\n${body}\n}${breakLabel}`;
   }
   return `while ${controlCondition(generateExpression(statement.condition, context))} ${body}${breakLabel}`;
+}
+
+// How many arguments a handler takes. AArch64's preserve_none passes the first
+// nine in x20-x28, which the helpers a handler calls preserve; past them an
+// argument would have to be saved around every such call.
+const dispatchArgumentBudget = 9;
+
+// Locals the loop sets only on its way out: each assignment is followed, in
+// its own statement list and with only straight-line statements between, by a
+// `break` of the dispatch loop. Every handler then sees the value they had
+// when the loop began, so they stay in the record and travel in no argument.
+// Any other way of changing one (an `inout` argument, a field, a method call
+// on it) disqualifies it.
+function dispatchExitOnlyLocals(body: readonly Statement[], candidates: ReadonlySet<string>): Set<string> {
+  const assigned = new Set<string>();
+  const disqualified = new Set<string>();
+  const root = (expression: Expression): string | null => {
+    let current = expression;
+    while (current.kind === "member" || current.kind === "index") current = current.object;
+    return current.kind === "identifier" && candidates.has(current.name) ? current.name : null;
+  };
+  const visitList = (items: readonly Statement[], loopDepth: number): void => {
+    items.forEach((item, index) => {
+      if (item.kind === "assignment") {
+        const name = root(item.target);
+        if (name) {
+          let next = index + 1;
+          while (next < items.length && (items[next].kind === "assignment" || items[next].kind === "expressionStatement")) next += 1;
+          if (item.target.kind === "identifier" && loopDepth === 0 && items[next]?.kind === "break") assigned.add(name);
+          else disqualified.add(name);
+        }
+        visit(item.expression, loopDepth);
+        return;
+      }
+      visit(item, loopDepth);
+    });
+  };
+  const visit = (node: unknown, loopDepth: number): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, loopDepth);
+      return;
+    }
+    const value = node as { readonly kind?: string };
+    if (value.kind === "argumentReference") {
+      const reference = value as Extract<Expression, { kind: "argumentReference" }>;
+      if (reference.access !== "in" && candidates.has(reference.name)) disqualified.add(reference.name);
+    }
+    if (value.kind === "call") {
+      const callee = (value as Extract<Expression, { kind: "call" }>).callee;
+      const name = callee.kind === "member" ? root(callee.object) : null;
+      if (name) disqualified.add(name);
+    }
+    const depth = value.kind === "while" || value.kind === "for" || value.kind === "whileExpression" || value.kind === "forExpression"
+      ? loopDepth + 1
+      : loopDepth;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "location") continue;
+      if (key === "statements" && Array.isArray(child)) visitList(child as Statement[], depth);
+      else visit(child, depth);
+    }
+  };
+  visitList(body, 0);
+  return new Set([...assigned].filter((name) => !disqualified.has(name)));
+}
+
+const dispatchGuard = `#ifndef Z_DISPATCH_THREADED
+#  if defined(__clang__) && defined(__has_attribute) && (defined(__aarch64__) || defined(__x86_64__))
+#    if __has_attribute(musttail) && __has_attribute(preserve_none)
+#      define Z_DISPATCH_THREADED 1
+#    endif
+#  endif
+#endif
+#ifndef Z_DISPATCH_THREADED
+#  define Z_DISPATCH_THREADED 0
+#endif`;
+
+// `dispatch while` (docs/dispatch-loop-design.md). Each arm of the loop's
+// match becomes a handler of its own; a handler ends by running the loop's
+// prefix and tail-calling the next instruction's handler through a table,
+// and leaves the loop by returning to the function, which copies back what
+// the handlers carried. The ordinary loop stays beside it for C compilers
+// without `musttail` and `preserve_none`.
+function generateDispatchWhile(
+  statement: Extract<Statement, { kind: "while" }>,
+  plan: DispatchLoopPlan,
+  dispatch: DispatchGeneration,
+  context: GenerationContext,
+): string {
+  const plain = generateWhile({ ...statement, dispatch: undefined }, context);
+  const name = `_z_dispatch_${dispatch.functionName}_${context.loopCounter.value++}`;
+  const statements = statement.body.statements;
+  const matchIndex = statements.findIndex((item) => item.kind === "match");
+  const prefix = statements.slice(0, matchIndex);
+  const match = statements[matchIndex] as Extract<Statement, { kind: "match" }>;
+  const suffix = statements.slice(matchIndex + 1);
+  const enumDeclaration = context.enums.get(plan.subject)!;
+  const foreign = context.semanticInfo.foreignNamedTypes;
+  const declare = (type: string, local: string): string => (
+    generateLocalDeclaration(type, local, true, context.structs, context.enums, foreign)
+  );
+  const declaredInPrefix = prefix.flatMap((item) => (
+    item.kind === "variable" ? [{ name: item.name, type: context.semanticInfo.bindingTypes.get(item.nameLocation.offset)! }] : []
+  ));
+  // Which carried locals each part of the loop uses, to rank them for the
+  // argument registers and to load from the record only what a handler reads.
+  const carriedNames = new Set(plan.carried.map((local) => local.name));
+  const uses = (body: Statement[]): Set<string> => new Set(collectPlacementCaptures(
+    { kind: "block", statements: body, location: statement.location },
+    carriedNames,
+  ).map((use) => use.name));
+  const prefixUses = uses([...prefix, { kind: "expressionStatement", expression: match.expression, location: match.location }]);
+  const armUses = match.arms.map((arm) => uses([arm.body]));
+  // A prefix local goes to the next handler only when its arms or the suffix
+  // use it; the match subject alone is spent picking the handler.
+  const laterNames = new Set(declaredInPrefix.map((local) => local.name));
+  const laterUses = new Set(collectPlacementCaptures(
+    { kind: "block", statements: [...match.arms.map((arm) => arm.body), ...suffix], location: statement.location },
+    laterNames,
+  ).map((use) => use.name));
+  const prefixLocals = declaredInPrefix.filter((local) => laterUses.has(local.name));
+  const exitOnly = dispatchExitOnlyLocals(statements, carriedNames);
+  // A register goes to a local the prefix or the suffix uses, to one an
+  // instruction hands on to the next (assigned, and not only on the way out),
+  // and to one a quarter of the arms read; the rest are loaded where used.
+  const suffixUses = uses(suffix);
+  const assigned = new Set(collectPlacementCaptures(statement.body, carriedNames)
+    .filter((use) => use.mutated)
+    .map((use) => use.name));
+  const armCount = (local: string): number => armUses.filter((used) => used.has(local)).length;
+  const rank = (local: string): number => (prefixUses.has(local) || suffixUses.has(local) ? 1000 : 0)
+    + (assigned.has(local) ? 100 : 0)
+    + armCount(local);
+  const ranked = [...plan.carried]
+    .filter((local) => !exitOnly.has(local.name))
+    .filter((local) => rank(local.name) >= 100 || armCount(local.name) * 4 >= match.arms.length)
+    .sort((left, right) => rank(right.name) - rank(left.name));
+  const registerCount = Math.max(0, dispatchArgumentBudget - (dispatch.receiverParameter ? 1 : 0) - prefixLocals.length - 1);
+  const inRegisters = ranked.slice(0, registerCount);
+  const inRecord = plan.carried.filter((local) => !inRegisters.includes(local));
+  const record = "_z_dispatch_record";
+  const parameters = [
+    ...(dispatch.receiverParameter ? [dispatch.receiverParameter] : []),
+    ...prefixLocals.map((local) => declare(local.type, local.name)),
+    ...inRegisters.map((local) => declare(local.type, local.name)),
+    `struct ${name}_record *${record}`,
+  ];
+  const arguments_ = (recordValue: string): string => [
+    ...(dispatch.receiverParameter ? ["self"] : []),
+    ...prefixLocals.map((local) => cBindingName(local.name)),
+    ...inRegisters.map((local) => cBindingName(local.name)),
+    recordValue,
+  ].join(", ");
+  // The prefix, fresh at each use, then the call through the table.
+  const advance = (base: GenerationContext, finish: (call: string) => string): string => {
+    const scope: GenerationContext = {
+      ...base,
+      localTypes: new Map(base.localTypes),
+      liveFlags: new Map(base.liveFlags),
+      cleanupScopes: [...base.cleanupScopes, []],
+    };
+    const lines = prefix.map((item) => {
+      const generated = generateStatement(item, scope);
+      recordVariableType(item, scope);
+      return generated;
+    });
+    lines.push(generateDirectValue(match.expression, scope, (value) => finish(`${name}_table[(${value}).tag]`)));
+    return `{\n${indent(lines.join("\n"), 2)}\n}`;
+  };
+
+  const handlers: string[] = [];
+  const table: string[] = [];
+  const wildcard = match.arms.findIndex((arm) => arm.variantName === "_");
+  for (const variant of enumDeclaration.variants) {
+    const arm = match.arms.findIndex((candidate) => candidate.variantName === variant.name);
+    const handler = arm >= 0 ? arm : wildcard;
+    table.push(`[${variantTag(plan.subject, variant.name)}] = ${name}_${handler}`);
+  }
+  // A handler reads and writes the record's locals where they are; those in
+  // its arguments go back to the record when the loop is left.
+  const dispatchStorage = new Map(inRecord.map((local) => [local.name, `(${record}->${cBindingName(local.name)})`]));
+  const storeBack = inRegisters
+    .filter((local) => local.mutable)
+    .map((local) => `${record}->${cBindingName(local.name)} = ${cBindingName(local.name)};`);
+  match.arms.forEach((arm, armIndex) => {
+    const handlerTypes = new Map(context.localTypes);
+    for (const local of prefixLocals) handlerTypes.set(local.name, local.type);
+    const handlerContext: GenerationContext = {
+      ...context,
+      localTypes: handlerTypes,
+      liveFlags: new Map(context.liveFlags),
+      cleanupScopes: [...context.cleanupScopes, []],
+      dispatchStorage,
+    };
+    const next = (): string => advance(handlerContext, (callee) => (
+      `__attribute__((musttail)) return ${callee}(${arguments_(record)});`
+    ));
+    const leave = (): string => `{\n${indent([...storeBack, "return;"].join("\n"), 2)}\n}`;
+    context.loopStack.push({
+      breakLabel: `${name}_break`,
+      continueLabel: `${name}_continue`,
+      cleanupDepth: context.cleanupScopes.length,
+      usedBreak: false,
+      usedContinue: false,
+      transfer: (kind) => (kind === "break" ? leave() : next()),
+    });
+    let body: string;
+    try {
+      const armContext: GenerationContext = {
+        ...handlerContext,
+        localTypes: new Map(handlerContext.localTypes),
+        liveFlags: new Map(handlerContext.liveFlags),
+        cleanupScopes: [...handlerContext.cleanupScopes, []],
+      };
+      const lines = [generateStatement(arm.body, armContext)];
+      if (!statementTerminates(arm.body)) {
+        lines.push(generateCleanup([armContext.cleanupScopes.at(-1)!], armContext));
+        lines.push(generateBlock(suffix, handlerContext));
+        if (!statementListTerminates(suffix)) lines.push(next());
+      }
+      body = lines.filter(Boolean).join("\n");
+    } finally {
+      context.loopStack.pop();
+    }
+    const head = [...(dispatch.receiverParameter ? ["self"] : []), ...prefixLocals.map((local) => cBindingName(local.name)),
+      ...inRegisters.map((local) => cBindingName(local.name)), record].map((local) => `(void)${local};`);
+    handlers.push(`__attribute__((preserve_none)) static void ${name}_${armIndex}(${parameters.join(", ")}) {\n${indent([...head, body].join("\n"), 2)}\n}`);
+  });
+  const fields = plan.carried.map((local) => `  ${declare(local.type, local.name)};`);
+  dispatch.hoisted.push([
+    dispatchGuard,
+    "#if Z_DISPATCH_THREADED",
+    `struct ${name}_record {\n${fields.length ? fields.join("\n") : "  char unused;"}\n};`,
+    `typedef __attribute__((preserve_none)) void (*${name}_handler)(${parameters.join(", ")});`,
+    ...match.arms.map((_, armIndex) => `__attribute__((preserve_none)) static void ${name}_${armIndex}(${parameters.join(", ")});`),
+    `__attribute__((unused)) static const ${name}_handler ${name}_table[] = {\n  ${table.join(",\n  ")},\n};`,
+    ...handlers,
+    "#endif",
+  ].join("\n"));
+
+  const recordValue = `${record}_value`;
+  const entry = [
+    `struct ${name}_record ${recordValue};`,
+    advance(context, (callee) => [
+      ...plan.carried.map((local) => `${recordValue}.${cBindingName(local.name)} = ${cBindingName(local.name)};`),
+      `${callee}(${arguments_(`&${recordValue}`)});`,
+    ].join("\n")),
+    ...plan.carried.filter((local) => local.mutable)
+      .map((local) => `${cBindingName(local.name)} = ${recordValue}.${cBindingName(local.name)};`),
+  ];
+  return `#if Z_DISPATCH_THREADED\n{\n${indent(entry.join("\n"), 2)}\n}\n#else\n${plain}\n#endif`;
 }
 
 function generateObjectDestructure(
@@ -8633,8 +8915,10 @@ function generateLoopTransfer(kind: "break" | "continue", context: GenerationCon
   const cleanup = generateCleanup(context.cleanupScopes.slice(frame.cleanupDepth), context);
   if (kind === "break") frame.usedBreak = true;
   else frame.usedContinue = true;
-  const target = kind === "break" ? frame.breakLabel : frame.continueLabel;
-  return cleanup ? `${cleanup}\ngoto ${target};` : `goto ${target};`;
+  const target = frame.transfer
+    ? frame.transfer(kind)
+    : `goto ${kind === "break" ? frame.breakLabel : frame.continueLabel};`;
+  return cleanup ? `${cleanup}\n${target}` : target;
 }
 
 function generateIf(statement: Extract<Statement, { kind: "if" }>, context: GenerationContext): string {
@@ -9825,6 +10109,8 @@ function generateStoredValue(name: string, context: GenerationContext): string {
     if (context.receiver?.kind === "class") return "self";
     return context.owner.receiverMode === "move" ? "self" : "(*self)";
   }
+  const dispatchStorage = context.dispatchStorage?.get(name);
+  if (dispatchStorage) return dispatchStorage;
   const generatorStorage = context.generatorFrame?.storage.get(name);
   if (generatorStorage) return generatorStorage;
   const emittedName = cBindingName(name);
@@ -11469,6 +11755,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         if (!liveFlag) throw new Error("missing ownership flag for moved receiver `this`");
         return `(${liveFlag} = false, ${value})`;
       }
+      const dispatchStorage = context.dispatchStorage?.get(expression.name);
+      if (dispatchStorage) return dispatchStorage;
       const generatorStorage = context.generatorFrame?.storage.get(expression.name);
       if (generatorStorage) {
         if (context.semanticInfo.movedExpressions.has(expression.location.offset)) {

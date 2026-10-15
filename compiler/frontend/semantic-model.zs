@@ -82,12 +82,21 @@ export struct ResolvedModule {
   semanticEvidence: ModuleSemanticEvidence;
 }
 
+// The type a match's subject has, by the match's offset, and whether any of
+// its variants carries a payload (`dispatch while` needs one without).
+export struct ModuleMatchSubjectType {
+  offset: usize;
+  typeName: String;
+  payloads: boolean;
+}
+
 export struct ModuleSemanticEvidence {
   callResolutions: Array<ModuleCallResolution>;
   // Derived lookup state; callResolutions remains the protocol truth.
   callResolutionIndices: Map<usize, usize> = Map<usize, usize>();
   bindingResolutions: Array<ModuleBindingResolution>;
   expressionResolutions: Array<ModuleExpressionResolution>;
+  matchSubjectTypes: Array<ModuleMatchSubjectType> = Array<ModuleMatchSubjectType>();
   // Derived lookup state; expressionResolutions remains the protocol truth.
   expressionResolutionIndices: Map<usize, usize> = Map<usize, usize>();
   // Borrowing is determined in the lexical scope, including closure parameters

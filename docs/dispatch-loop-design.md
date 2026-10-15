@@ -3,9 +3,10 @@
 Status: agreed with Zach on 2026-10-15. Z lowers an interpreter's loop
 into handlers chained by tail calls, rather than adding a general tail
 call. The spelling is `dispatch while`. Carried owned locals are
-rejected. The emitted C carries both forms under a guard. **Not
-implemented.** The source examples below are the agreed form; they do not
-compile today.
+rejected. The emitted C carries both forms under a guard.
+**Implemented** on 2026-10-15. Stage 0 lowers the loop. The native
+frontend checks the same rules with the same messages and emits the
+ordinary loop, which the mark permits; its lowering is the remaining step.
 
 ## Why
 
@@ -82,9 +83,10 @@ all at the body's top level:
 - No `await` or `yield` in the loop, and the loop is not inside a
   generator or async function.
 
-Anything else is a coded diagnostic at the mark ("dispatch loop: ..."),
-never a silent fallback to the switch. An author who asked for the
-lowering should know when they did not get it.
+Anything else is a diagnostic at the mark ("dispatch loop: ..."), never
+a silent fallback to the switch. An author who asked for the lowering
+should know when they did not get it. Like `inline` and `cold`, the
+diagnostics are not coded.
 
 ## Lowering
 
@@ -111,9 +113,29 @@ For a C compiler with `musttail` and `preserve_none`:
 6. The enclosing function enters the chain with one ordinary call to the
    first instruction's handler.
 
-Locals the arms only read go in the arguments too, up to the register
-budget. Past that budget they go in the exit record, reached through its
-pointer.
+Which carried locals ride in arguments decides the speed, as ZJS
+measured:
+
+- At most nine arguments in all, receiver and record included.
+  AArch64's `preserve_none` passes the first nine in x20-x28, which the
+  helpers a handler calls preserve. Past them, every handler saves and
+  reloads the rest around each call. The first version passed twelve,
+  and was 6% slower than the hand-written prototype on calls and on
+  properties.
+- A prefix local is passed only when an arm or the suffix uses it. The
+  match subject alone is spent picking the handler.
+- A register goes first to a local the prefix or suffix uses. Next comes
+  one that an instruction hands on to the next: assigned in the loop, and
+  not only on the way out. Last comes one that a quarter of the arms read.
+- A local set only on the way out stays in the record. Each of its
+  assignments is followed, in its own statement list with only
+  straight-line statements between, by a `break`. Every handler then sees
+  its value from the loop's start. In ZJS these are the thrown value and
+  the result.
+- A handler reads and writes the record's locals in place, through the
+  record pointer. Copying them in on entry and out on the way to the next
+  handler cost a load and a store per instruction. Clang must assume that
+  helper calls change the record, so it cannot remove those copies.
 
 ## Portability
 
@@ -157,9 +179,9 @@ the same under either form.
 
 ## Acceptance
 
-- Both compilers: the mark parses as a contextual keyword, the shape rules
-  have coded diagnostics with fixtures, and generated C matches across
-  Stage 0 and native.
+- Both compilers: the mark parses as a contextual keyword, and the shape
+  rules have the same diagnostics, with tests in
+  `tests/native-semantic-parity.test.ts`.
 - A fixture interpreter (an enum, a loop, ten arms, `break`, `return`, `_`)
   gives the same output with and without the mark, under clang and under
   the fallback guard.
@@ -176,3 +198,25 @@ the same under either form.
   checks), `lowering-ir.zs`, and `c-emitter.zs` (loop emission).
 - `docs/language-reference.md`: a section beside "Inline and cold
   functions"; `docs/diagnostics.md`: the new codes.
+
+## Measured (2026-10-15)
+
+ZJS marked its loop. It also changed its arms so that the error flags are
+set only right before a `break`; the switch build of that change is level
+against the old engine. Over eight placements and three runs, against the
+unmarked engine:
+
+| Kernel | Change |
+|---|---|
+| calls | -8.6 to -9.4% |
+| helpers | -8.1 to -8.8% |
+| closures | -6.3 to -7.3% |
+| allocation | -3.8 to -4.8% |
+| properties | -3.7 to -3.9% |
+| strings | -3.2 to -4.6% |
+| arrays, maps | -2% |
+| json, regexp, polymorphic | level to -1.5% |
+
+The lowering matches the hand-written prototype within noise, at the same
+16 KiB of text.
+

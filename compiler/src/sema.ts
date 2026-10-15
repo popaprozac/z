@@ -452,6 +452,13 @@ export type ForeignUnionMatchPlan = {
   readonly fallback: string;
 };
 
+// A `dispatch while` loop's locals from outside it, in order of first use:
+// the handlers carry them (docs/dispatch-loop-design.md).
+export type DispatchLoopPlan = {
+  readonly subject: string;
+  readonly carried: readonly { readonly name: string; readonly type: string; readonly mutable: boolean }[];
+};
+
 export type SemanticInfo = {
   readonly warnings: readonly DiagnosticError[];
   readonly functionCallResolutions: readonly SemanticFunctionCallResolution[];
@@ -472,6 +479,7 @@ export type SemanticInfo = {
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly sliceRanges: ReadonlyMap<number, SliceRange>;
   readonly uncheckedAccesses: ReadonlyMap<number, UncheckedAccess>;
+  readonly dispatchLoops?: ReadonlyMap<number, DispatchLoopPlan>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
   readonly foreignStatusCalls: ReadonlyMap<number, ForeignStatusCallInfo>;
@@ -659,6 +667,7 @@ type AnalysisState = {
   readonly sliceRanges: Map<number, SliceRange>;
   readonly sliceRangeArguments: Set<number>;
   readonly uncheckedAccesses: Map<number, UncheckedAccess>;
+  readonly dispatchLoops: Map<number, DispatchLoopPlan>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
   readonly foreignStatusCalls: Map<number, ForeignStatusCallInfo>;
@@ -802,6 +811,10 @@ type AnalysisState = {
   asyncScopeDepth: number;
   asyncLoopDepth: number;
   readonly asyncLoopScopeFloors: number[];
+  // Closure bodies being analyzed; a dispatch loop cannot be inside one.
+  closureBodyDepth: number;
+  // The enum each match statement's subject has, by statement offset.
+  readonly matchSubjectTypes: Map<number, string>;
   activeFunction: FunctionDeclaration | null;
   activeReceiver: string | null;
 };
@@ -1373,6 +1386,7 @@ export function analyze(
     sliceRanges: new Map(),
     sliceRangeArguments: new Set(),
     uncheckedAccesses: new Map(),
+    dispatchLoops: new Map(),
     foreignTypes,
     foreignCallTypes: new Map(),
     foreignStatusCalls: new Map(),
@@ -1492,6 +1506,8 @@ export function analyze(
     asyncScopeDepth: 0,
     asyncLoopDepth: 0,
     asyncLoopScopeFloors: [],
+    closureBodyDepth: 0,
+    matchSubjectTypes: new Map(),
     activeFunction: null,
     activeReceiver: null,
   };
@@ -2534,6 +2550,151 @@ function validateOptimizationMark(declaration: FunctionDeclaration, method: bool
       helps: ["remove `inline`, or move the recursive part into a helper the inline function calls"],
     });
   }
+}
+
+// `dispatch while` (docs/dispatch-loop-design.md): the C emitter lowers the
+// loop into one handler per arm of its match, chained by tail calls. The rules
+// keep that a change of placement only: the loop leaves its function only by
+// `break`, and what it carries from one instruction to the next is plain data.
+function validateDispatchLoopShape(
+  statement: Extract<Statement, { kind: "while" }>,
+  owner: FunctionDeclaration,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const mark = statement.dispatch!;
+  const reject = (location: SourceLocation, summary: string, help?: string): never => {
+    throw new DiagnosticError(location.fileName ?? fileName, location, `dispatch loop: ${summary}`, {
+      length: location === mark ? "dispatch".length : undefined,
+      labels: location === mark ? undefined : [{ location: mark, message: "dispatch loop marked here", length: "dispatch".length }],
+      helps: help ? [help] : undefined,
+    });
+  };
+  if (owner.async || isGeneratorFunction(owner) || isAsyncGeneratorFunction(owner)) {
+    reject(mark, "a dispatch loop cannot be in an async or generator function");
+  }
+  if (state.closureBodyDepth > 0) reject(mark, "a dispatch loop cannot be in a closure");
+  if (statement.condition.kind !== "boolean" || !statement.condition.value) {
+    reject(statement.condition.location, "the condition must be `true`", "leave the loop with `break`");
+  }
+  const body = statement.body.statements;
+  const matchIndex = body.findIndex((item) => item.kind === "match");
+  if (matchIndex < 0) {
+    reject(mark, "the body needs a `match`, whose arms become the handlers");
+  }
+  for (const item of body.slice(0, matchIndex)) {
+    if (item.kind !== "variable" && item.kind !== "assignment" && item.kind !== "expressionStatement") {
+      reject(item.location, "only declarations, assignments, and expressions may come before the `match`");
+    }
+  }
+  const second = body.slice(matchIndex + 1).find((item) => item.kind === "match");
+  if (second) reject(second.location, "the body has one `match` at its top level");
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    const value = node as { readonly kind?: string; readonly location: SourceLocation };
+    switch (value.kind) {
+      case "return":
+        reject(value.location, "`return` cannot leave a dispatch loop", "keep the result in a local, `break`, and return after the loop");
+        break;
+      case "throw":
+        reject(value.location, "`throw` cannot leave a dispatch loop", "keep the error in a local, `break`, and throw after the loop");
+        break;
+      case "try":
+        reject(value.location, "a failure cannot propagate out of a dispatch loop", "handle it inside the loop with `attempt`");
+        break;
+      case "await":
+      case "yield":
+      case "spawn":
+      case "asyncScope":
+      case "executorPlacement":
+        reject(value.location, "a dispatch loop cannot suspend or start tasks");
+        break;
+      case "closure":
+        reject(value.location, "a closure cannot be created in a dispatch loop", "make it a function or a method");
+        break;
+      case "raw":
+        reject(value.location, "raw native code cannot be in a dispatch loop", "call a function that holds it");
+        break;
+      case "for": {
+        const loop = value as Extract<Statement, { kind: "for" }>;
+        if (loop.asynchronous || loop.errorMode === "try") {
+          reject(value.location, "a dispatch loop cannot suspend, or let a failure propagate out of it");
+        }
+        break;
+      }
+      case "while":
+        if (value !== statement && (value as Extract<Statement, { kind: "while" }>).dispatch) {
+          reject((value as Extract<Statement, { kind: "while" }>).dispatch!, "dispatch loops cannot nest");
+        }
+        break;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (key !== "location") visit(child);
+    }
+  };
+  visit(statement.body);
+}
+
+// What the handlers carry: every local from outside the loop that it uses
+// travels in their arguments, and every local before the `match` travels to
+// the next handler, so each must be plain data the handlers can copy.
+function validateDispatchLoopTypes(
+  statement: Extract<Statement, { kind: "while" }>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const mark = statement.dispatch!;
+  const reject = (location: SourceLocation, summary: string, help?: string): never => {
+    throw new DiagnosticError(location.fileName ?? fileName, location, `dispatch loop: ${summary}`, {
+      labels: [{ location: mark, message: "dispatch loop marked here", length: "dispatch".length }],
+      helps: help ? [help] : undefined,
+    });
+  };
+  const plain = (type: string): boolean => !hasCleanupType(type, structs, enums, state.foreignTypes)
+    && !parseFixedArrayType(type)
+    && !isBorrowedBinding(type);
+  const body = statement.body.statements;
+  const matchIndex = body.findIndex((item) => item.kind === "match");
+  const match = body[matchIndex] as Extract<Statement, { kind: "match" }>;
+  const subjectType = state.matchSubjectTypes.get(match.location.offset);
+  const subject = subjectType ? enums.get(subjectType) : undefined;
+  if (!subject || match.mode === "in" || subject.variants.some((variant) => variant.payload)) {
+    reject(match.expression.location, "the `match` subject must be an enum without payloads", "its tag picks the handler");
+  }
+  for (const item of body.slice(0, matchIndex)) {
+    if (item.kind !== "variable") continue;
+    const type = state.bindingTypes.get(item.nameLocation.offset);
+    if (type && !plain(String(underlyingType(type)))) {
+      reject(item.nameLocation, `${JSON.stringify(item.name)} is carried to the next handler and must be plain data, not ${String(underlyingType(type))}`);
+    }
+  }
+  const carried: { name: string; type: string; mutable: boolean }[] = [];
+  for (const use of collectPlacementCaptures(statement.body, new Set(locals.keys()))) {
+    if (use.name === "this") {
+      if (owner.receiverMode === "move") {
+        reject(use.location, "a receiver taken with `move this` cannot be carried through the loop");
+      }
+      continue;
+    }
+    const parameter = owner.parameters.find((candidate) => candidate.name === use.name);
+    if (parameter && parameter.mode !== "value") {
+      reject(use.location, `parameter ${JSON.stringify(use.name)} is \`${parameter.mode}\`; the handlers carry only values`, "copy it into a local before the loop");
+    }
+    const type = String(underlyingType(locals.get(use.name)!));
+    if (!plain(type) || isBorrowedBinding(locals.get(use.name)!)) {
+      reject(use.location, `${JSON.stringify(use.name)} is carried through the loop and must be plain data, not ${type}`, "keep owned values and views outside the loop, or reach them through `this`");
+    }
+    carried.push({ name: use.name, type, mutable: isMutableBinding(locals.get(use.name)!) });
+  }
+  state.dispatchLoops.set(statement.location.offset, { subject: subjectType!, carried });
 }
 
 // A call of the function by its own name, or of the method through `this`.
@@ -5875,6 +6036,7 @@ function analyzeStatement(
       return;
     }
     case "while": {
+      if (statement.dispatch) validateDispatchLoopShape(statement, owner, fileName, state);
       state.asyncLoopDepth += 1;
       state.asyncLoopScopeFloors.push(state.asyncScopeDepth);
       try {
@@ -5883,6 +6045,7 @@ function analyzeStatement(
         state.asyncLoopScopeFloors.pop();
         state.asyncLoopDepth -= 1;
       }
+      if (statement.dispatch) validateDispatchLoopTypes(statement, owner, locals, structs, enums, fileName, state);
       return;
     }
     case "for": {
@@ -5947,6 +6110,7 @@ function analyzeStatement(
       if (!declaration) {
         throw new DiagnosticError(fileName, statement.expression.location, `match requires an enum value, found ${subjectType}`);
       }
+      state.matchSubjectTypes.set(statement.location.offset, subjectType);
       const candidateRoot = storageRoot(statement.expression);
       const candidateRootType = candidateRoot ? locals.get(candidateRoot.name) : null;
       if (foreignUnion && statement.mode !== "in") {
@@ -6675,6 +6839,7 @@ function inferClosureExpression(
       ? "main"
       : null;
   if (nativeThreadBody) state.nativeThreadBodyDepth += 1;
+  state.closureBodyDepth += 1;
   try {
     if (expression.body.kind === "block") {
       body = expression.body.statements;
@@ -6704,6 +6869,7 @@ function inferClosureExpression(
       body = [{ kind: "return", expression: expression.body, location: expression.body.location }];
     }
   } finally {
+    state.closureBodyDepth -= 1;
     if (nativeThreadBody) state.nativeThreadBodyDepth -= 1;
     state.regionLoopDepth = previousRegionLoopDepth;
     state.executorContext = previousExecutorContext;

@@ -2142,6 +2142,61 @@ trades the function's own speed for size and keeps its callers compact. The C
 compiler is told directly (`always_inline`; `cold`, `noinline`, and
 `minsize`).
 
+### Dispatch loops
+
+`dispatch while` marks an interpreter's loop, so its instructions can each be
+compiled on their own. `dispatch` is a keyword only directly before a
+statement `while`, so it stays an ordinary name everywhere else.
+
+```z
+dispatch while (true) {
+  const inst = this.code[ip];
+  ip = ip + 1;
+  match (inst.op) {
+    load => {
+      this.regs[usize(inst.a)] = inst.b;
+      continue;
+    }
+    halt => {
+      result = this.regs[0];
+      break;
+    }
+    _ => {}
+  }
+  if (steps >= limit) break;
+}
+```
+
+The loop means exactly what it would mean without the mark. Like `inline` and
+`cold`, the mark changes where code goes, never what it does. The body is a
+prefix, one `match`, and a suffix:
+
+- The prefix is declarations, assignments, and expressions. It runs before
+  every instruction.
+- The `match` subject is an enum without payloads.
+- The suffix runs after an arm that falls off its end.
+
+The loop's condition is `true`. It is left only by `break`: `return`,
+`throw`, a `try` that propagates, `await`, `yield`, tasks, closures, and
+nested dispatch loops are rejected inside it. A dispatch loop cannot be in an
+async or generator function or in a closure. Locals from before the loop that
+it uses, and locals its prefix declares, must be plain data: no cleanup, no
+views, no fixed arrays. Parameters it uses must be values, and the receiver
+cannot be `move this`. Owned values stay outside the loop or behind `this`.
+
+Cost: where the C compiler has `musttail` and `preserve_none` (clang on
+AArch64 and x86-64), each arm becomes a function of its own. At its
+`continue`, or when it falls off its end, it runs the prefix and jumps to the
+next instruction's function through a table. Dispatching an instruction is
+then two loads and an indirect jump, with no frame and no stack growth. Each
+arm gets its own register allocation, so code in one arm cannot slow another.
+Locals the instructions hand on to each other travel in registers, up to
+nine arguments in all. The others, and those set only on the way out of the
+loop, stay in a record in the function's frame. Leaving the loop writes them
+back once. Other C compilers get the ordinary loop. `Z_DISPATCH_THREADED=0`
+asks for the ordinary loop. Size: about a prologue and one dispatch sequence
+per arm.
+
 ## Enums and matching
 
 Enums may be finite values or carry one typed payload per variant. Construction

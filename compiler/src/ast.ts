@@ -346,6 +346,9 @@ export type WhileStatement = {
   readonly condition: Expression;
   readonly body: BlockStatement;
   readonly location: SourceLocation;
+  // `dispatch while`: the loop is lowered into handlers chained by tail
+  // calls (docs/dispatch-loop-design.md). It means the same as without.
+  readonly dispatch?: SourceLocation;
 };
 
 export type ForStatement = {

@@ -954,13 +954,19 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       return { kind: "if", condition, thenBranch, elseBranch, location: ifToken.location };
     }
+    // `dispatch` is a keyword only directly before a statement `while`.
+    const dispatchToken = at("identifier") && peek().text === "dispatch" && tokens[current + 1]?.kind === "while"
+      ? take()
+      : null;
     if (match("while")) {
       const whileToken = previous();
       expect("leftParen", "`(`");
       const condition = parseExpression();
       expect("rightParen", "`)`");
       const body = parseRequiredBlock("a `while` body");
-      return { kind: "while", condition, body, location: whileToken.location };
+      return dispatchToken
+        ? { kind: "while", condition, body, location: whileToken.location, dispatch: dispatchToken.location }
+        : { kind: "while", condition, body, location: whileToken.location };
     }
     const tryForToken = at("try") && tokens[current + 1]?.kind === "for" ? take() : null;
     if (match("for")) {
