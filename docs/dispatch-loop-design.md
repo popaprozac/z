@@ -4,9 +4,9 @@ Status: agreed with Zach on 2026-10-15. Z lowers an interpreter's loop
 into handlers chained by tail calls, rather than adding a general tail
 call. The spelling is `dispatch while`. Carried owned locals are
 rejected. The emitted C carries both forms under a guard.
-**Implemented** on 2026-10-15. Stage 0 lowers the loop. The native
-frontend checks the same rules with the same messages and emits the
-ordinary loop, which the mark permits; its lowering is the remaining step.
+**Implemented** on 2026-10-15 in both compilers: the same rules and
+messages, and the same lowering. The native C emitter picks the same
+arguments as Stage 0 (`compiler/frontend/c-emitter.zs`, `dispatchPlan`).
 
 ## Why
 
@@ -195,7 +195,10 @@ the same under either form.
   and `cold`), `ast.ts`, the shape checks, and `codegen-c.ts` (the `while`
   emission).
 - Native: `compiler/frontend/parser.zs`, `module-resolver.zs` (shape
-  checks), `lowering-ir.zs`, and `c-emitter.zs` (loop emission).
+  checks), `lowering-ir.zs` (the loop's `dispatch` label), and
+  `c-emitter.zs`. The emitter writes each handler from a copy of the
+  function that names the loop, so the existing `break`, `continue`, and
+  local-name paths become the jump, the exit, and the record access.
 - `docs/language-reference.md`: a section beside "Inline and cold
   functions"; `docs/diagnostics.md`: the new codes.
 

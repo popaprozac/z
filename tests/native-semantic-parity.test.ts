@@ -457,7 +457,12 @@ test("lowers a dispatch loop into tail-called handlers and rejects loops it cann
   assert.match(stage0, /__attribute__\(\(musttail\)\) return _z_dispatch_Z_Machine_run_\d+_table\[/);
   assert.match(stage0, /#if Z_DISPATCH_THREADED\n/);
   // A C compiler without the attributes gets the ordinary loop, same output.
-  execute(stage0, "acc 55\nsteps 35 shown 1\nresult 55\nsteps 7 shown 0\nlimited -2\nsum 55 2\n", ["-DZ_DISPATCH_THREADED=0"]);
+  const expected = "acc 55\nsteps 35 shown 1\nresult 55\nsteps 7 shown 0\nlimited -2\nsum 55 2\n";
+  execute(stage0, expected, ["-DZ_DISPATCH_THREADED=0"]);
+  const emitted = native("self-host-emit", input);
+  assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+  assert.match(emitted.stdout, /__attribute__\(\(musttail\)\) return _z_dispatch_Z_Machine_run_\d+_table\[/);
+  execute(emitted.stdout, expected, ["-DZ_DISPATCH_THREADED=0"]);
   const machine = (loop: string, enumeration = "enum Op { a, b }", before = "", extra = ""): string => `
     ${enumeration}
     struct M {

@@ -561,6 +561,18 @@ export struct LoweredFunction {
   fallthroughCleanups: Array<LoweredCleanup>;
   liveFlags: Array<LoweredLiveFlag>;
   asyncFrameBindings: Array<String> = Array<String>();
+  // C emission of `dispatch while` (docs/dispatch-loop-design.md). The
+  // function's own copy says its handlers were emitted before it; a
+  // handler's copy names its loop (plus one), the table its tail calls go
+  // through, what they pass, what goes back to the record when the loop is
+  // left, the locals that live in the record, and the loop's continues.
+  dispatchLowered: boolean = false;
+  dispatchLoop: usize = 0;
+  dispatchName: String = "";
+  dispatchArguments: Array<String> = Array<String>();
+  dispatchStoreBack: Array<String> = Array<String>();
+  dispatchRecordBindings: Array<String> = Array<String>();
+  dispatchContinues: Array<usize> = Array<usize>();
 }
 
 export struct LoweredForeignFunction {
@@ -27024,6 +27036,10 @@ function lowerStatementCore(
   let labels = Array<String>();
   if (arena.nodes[index].kind == StatementKind.asyncScopeStatement) {
     labels.push("async-scope");
+  }
+  // `dispatch while` (docs/dispatch-loop-design.md).
+  if (arena.nodes[index].kind == StatementKind.whileStatement && arena.nodes[index].dispatchLine > 0) {
+    labels.push("dispatch");
   }
   if (arena.nodes[index].kind == StatementKind.throwStatement) {
     labels.push("throw");

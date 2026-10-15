@@ -1555,6 +1555,15 @@ function appendAsyncFrameBindingName(
   in declaration: LoweredFunction,
   in name: String
 ): void {
+  // Inside a dispatch handler, a local the loop's record holds is used there.
+  for (const bound of declaration.dispatchRecordBindings) {
+    if (bound == name) {
+      output.append("(_z_dispatch_record->");
+      appendCBindingName(inout output, name);
+      output.append(")");
+      return;
+    }
+  }
   if (asyncFrameBinds(declaration, name)) {
     output.append("_z_stage1_frame_binding_");
   }
@@ -9267,6 +9276,8 @@ function appendStatement(
     throw "native C emission received a detached delay statement";
   }
   if (declaration.statements[index].kind == LoweredStatementKind.whileStatement) {
+    const threaded = declaration.dispatchLowered && isDispatchLoop(declaration, index);
+    if (threaded) try appendDispatchEntry(inout output, declaration, index, depth);
     appendIndent(inout output, depth);
     output.append("while ");
     match (in declaration.statements[index].expression) {
@@ -9283,6 +9294,7 @@ function appendStatement(
     output.append("}\n");
     appendIndent(inout output, depth);
     output.append(`_z_stage1_loop_exit_${index}: __attribute__((unused));\n`);
+    if (threaded) output.append("#endif\n");
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.forStatement) {
@@ -9395,6 +9407,25 @@ function appendStatement(
     || declaration.statements[index].kind == LoweredStatementKind.continueStatement
   ) {
     appendCleanups(inout output, declaration.statements[index].cleanups, depth);
+    // In a dispatch handler, the loop's own break leaves it and its own
+    // continue jumps to the next instruction's handler.
+    if (declaration.dispatchLoop > 0) {
+      if (
+        declaration.statements[index].kind == LoweredStatementKind.breakStatement
+        && declaration.statements[index].name == `_z_stage1_loop_exit_${declaration.dispatchLoop - 1}`
+      ) {
+        appendDispatchLeave(inout output, declaration, depth);
+        return;
+      }
+      if (declaration.statements[index].kind == LoweredStatementKind.continueStatement) {
+        for (const loopContinue of declaration.dispatchContinues) {
+          if (loopContinue == index) {
+            try appendDispatchNext(inout output, declaration, depth);
+            return;
+          }
+        }
+      }
+    }
     appendIndent(inout output, depth);
     if (declaration.statements[index].kind == LoweredStatementKind.breakStatement) {
       if (declaration.statements[index].name.byteLength > 0) {
@@ -11469,6 +11500,641 @@ function appendPersistentAsyncParentDriver(
   output.append("return result;\n}\n\n");
 }
 
+// `dispatch while` (docs/dispatch-loop-design.md): each arm of the loop's
+// match becomes a handler of its own. A handler ends by running the loop's
+// prefix and tail-calling the next instruction's handler through a table,
+// and leaves the loop by returning to the function, which copies back what
+// the handlers carried. The ordinary loop stays beside it for C compilers
+// without `musttail` and `preserve_none`.
+struct DispatchLocal {
+  name: String;
+  cType: String;
+  mutable: boolean;
+}
+
+struct DispatchPlan {
+  name: String;
+  prefix: Array<usize>;
+  matchIndex: usize;
+  suffix: Array<usize>;
+  subject: usize;
+  receiver: String;
+  passed: Array<DispatchLocal>;
+  registers: Array<DispatchLocal>;
+  carried: Array<DispatchLocal>;
+  inRecord: Array<String>;
+  continues: Array<usize>;
+}
+
+// AArch64's preserve_none passes the first nine arguments in x20-x28, which
+// the helpers a handler calls preserve.
+const dispatchArgumentBudget: usize = 9;
+
+const dispatchGuard = "#ifndef Z_DISPATCH_THREADED\n#  if defined(__clang__) && defined(__has_attribute) && (defined(__aarch64__) || defined(__x86_64__))\n#    if __has_attribute(musttail) && __has_attribute(preserve_none)\n#      define Z_DISPATCH_THREADED 1\n#    endif\n#  endif\n#endif\n#ifndef Z_DISPATCH_THREADED\n#  define Z_DISPATCH_THREADED 0\n#endif\n";
+
+function isDispatchLoop(in declaration: LoweredFunction, index: usize): boolean {
+  return declaration.statements[index].kind == LoweredStatementKind.whileStatement
+    && labelsContain(declaration.statements[index].labels, "dispatch");
+}
+
+// Every statement under the one at `index`, itself included, through
+// children and the statements expressions hold.
+function collectDispatchStatements(in declaration: LoweredFunction, index: usize, inout found: Array<usize>): void {
+  found.push(index);
+  for (const child of declaration.statements[index].children) {
+    collectDispatchStatements(declaration, child, inout found);
+  }
+  match (in declaration.statements[index].expression) {
+    some(expression) => collectDispatchExpressionStatements(declaration, expression, inout found);
+    none => {}
+  }
+  match (in declaration.statements[index].secondExpression) {
+    some(expression) => collectDispatchExpressionStatements(declaration, expression, inout found);
+    none => {}
+  }
+}
+
+function collectDispatchExpressionStatements(in declaration: LoweredFunction, index: usize, inout found: Array<usize>): void {
+  for (const statement of declaration.expressions[index].statements) {
+    collectDispatchStatements(declaration, statement, inout found);
+  }
+  for (const child of declaration.expressions[index].children) {
+    collectDispatchExpressionStatements(declaration, child, inout found);
+  }
+}
+
+// The local names an expression reads or writes, each once.
+function collectDispatchNames(in declaration: LoweredFunction, index: usize, inout names: Array<String>): void {
+  const expression = view declaration.expressions[index];
+  if (expression.kind == LoweredExpressionKind.localValue && !containsName(names, expression.value)) {
+    names.push(copy expression.value);
+  }
+  for (const child of expression.children) {
+    collectDispatchNames(declaration, child, inout names);
+  }
+}
+
+function dispatchStatementNames(in declaration: LoweredFunction, in statements: Array<usize>): Array<String> {
+  let names = Array<String>();
+  for (const index of statements) {
+    match (in declaration.statements[index].expression) {
+      some(expression) => collectDispatchNames(declaration, expression, inout names);
+      none => {}
+    }
+    match (in declaration.statements[index].secondExpression) {
+      some(expression) => collectDispatchNames(declaration, expression, inout names);
+      none => {}
+    }
+  }
+  return names;
+}
+
+function containsName(in names: Array<String>, in name: String): boolean {
+  for (const candidate of names) {
+    if (candidate == name) return true;
+  }
+  return false;
+}
+
+// The locals declared before the loop, in source order, up to it; the
+// latest of a name wins.
+function collectDispatchOuterLocals(
+  in declaration: LoweredFunction,
+  index: usize,
+  loop: usize,
+  inout locals: Array<DispatchLocal>
+): boolean throws String {
+  if (index == loop) return true;
+  const statement = view declaration.statements[index];
+  if (
+    (statement.kind == LoweredStatementKind.localStatement || statement.kind == LoweredStatementKind.forStatement)
+    && statement.name.byteLength > 0
+  ) {
+    match (in statement.type) {
+      some(type) => {
+        const cName = try cType(type);
+        let position: usize = 0;
+        while (position < locals.length) {
+          if (locals[position].name == statement.name) {
+            locals[position].cType = copy cName;
+            locals[position].mutable = statement.mutableBinding;
+            break;
+          }
+          position = position + 1;
+        }
+        if (position == locals.length) {
+          locals.push(DispatchLocal({ name: copy statement.name, cType: copy cName, mutable: statement.mutableBinding }));
+        }
+      }
+      none => {}
+    }
+  }
+  for (const child of statement.children) {
+    if (try collectDispatchOuterLocals(declaration, child, loop, inout locals)) return true;
+  }
+  return false;
+}
+
+// Whether a statement list ends in a jump, so nothing after it runs.
+function dispatchStatementEnds(in declaration: LoweredFunction, index: usize): boolean {
+  const statement = view declaration.statements[index];
+  if (
+    statement.kind == LoweredStatementKind.breakStatement
+    || statement.kind == LoweredStatementKind.continueStatement
+    || statement.kind == LoweredStatementKind.returnStatement
+  ) return true;
+  if (statement.kind == LoweredStatementKind.blockStatement) {
+    if (statement.children.length == 0) return false;
+    return dispatchStatementEnds(declaration, statement.children[statement.children.length - 1]);
+  }
+  return false;
+}
+
+function dispatchListEnds(in declaration: LoweredFunction, in statements: Array<usize>): boolean {
+  if (statements.length == 0) return false;
+  return dispatchStatementEnds(declaration, statements[statements.length - 1]);
+}
+
+// The `continue`s of the loop itself, not of a loop inside it.
+function collectDispatchContinues(in declaration: LoweredFunction, index: usize, inout found: Array<usize>): void {
+  const kind = declaration.statements[index].kind;
+  if (kind == LoweredStatementKind.whileStatement || kind == LoweredStatementKind.forStatement) return;
+  if (kind == LoweredStatementKind.continueStatement) {
+    found.push(index);
+    return;
+  }
+  for (const child of declaration.statements[index].children) {
+    collectDispatchContinues(declaration, child, inout found);
+  }
+}
+
+// Locals the loop sets only on its way out: every use is an assignment of
+// the whole local followed, in its own statement list and with only
+// straight-line statements between, by a `break` of this loop. Every
+// handler then sees their value from the loop's start, so they stay in the
+// record and travel in no argument.
+function dispatchExitOnly(
+  in declaration: LoweredFunction,
+  in inside: Array<usize>,
+  in exitLabel: String,
+  in name: String
+): boolean {
+  let qualifying: usize = 0;
+  for (const parent of inside) {
+    const children = view declaration.statements[parent].children;
+    let position: usize = 0;
+    while (position < children.length) {
+      const child = view declaration.statements[children[position]];
+      position = position + 1;
+      if (child.kind != LoweredStatementKind.assignmentStatement) continue;
+      let target: usize = 0;
+      let hasTarget = false;
+      match (in child.expression) {
+        some(found) => {
+          target = found;
+          hasTarget = true;
+        }
+        none => {}
+      }
+      if (!hasTarget) continue;
+      if (declaration.expressions[target].kind != LoweredExpressionKind.localValue
+        || declaration.expressions[target].value != name) continue;
+      let next = position;
+      while (next < children.length && (
+        declaration.statements[children[next]].kind == LoweredStatementKind.assignmentStatement
+        || declaration.statements[children[next]].kind == LoweredStatementKind.expressionStatement
+      )) {
+        next = next + 1;
+      }
+      if (next >= children.length) return false;
+      const ender = view declaration.statements[children[next]];
+      if (ender.kind != LoweredStatementKind.breakStatement || ender.name != exitLabel) return false;
+      qualifying = qualifying + 1;
+    }
+  }
+  if (qualifying == 0) return false;
+  let uses: usize = 0;
+  for (const index of inside) {
+    match (in declaration.statements[index].expression) {
+      some(expression) => uses = uses + dispatchNameUses(declaration, expression, name);
+      none => {}
+    }
+    match (in declaration.statements[index].secondExpression) {
+      some(expression) => uses = uses + dispatchNameUses(declaration, expression, name);
+      none => {}
+    }
+  }
+  return uses == qualifying;
+}
+
+function dispatchNameUses(in declaration: LoweredFunction, index: usize, in name: String): usize {
+  let uses: usize = 0;
+  if (declaration.expressions[index].kind == LoweredExpressionKind.localValue && declaration.expressions[index].value == name) {
+    uses = 1;
+  }
+  for (const child of declaration.expressions[index].children) {
+    uses = uses + dispatchNameUses(declaration, child, name);
+  }
+  return uses;
+}
+
+function dispatchPlan(in declaration: LoweredFunction, loop: usize): DispatchPlan throws String {
+  const body = declaration.statements[loop].children[0];
+  const statements = view declaration.statements[body].children;
+  let matchIndex = statements.length;
+  let position: usize = 0;
+  while (position < statements.length) {
+    if (declaration.statements[statements[position]].kind == LoweredStatementKind.matchStatement) {
+      matchIndex = position;
+      break;
+    }
+    position = position + 1;
+  }
+  if (matchIndex == statements.length) throw "native C emission received a dispatch loop without its match";
+  let prefix = Array<usize>();
+  let suffix = Array<usize>();
+  position = 0;
+  while (position < statements.length) {
+    if (position < matchIndex) prefix.push(statements[position]);
+    if (position > matchIndex) suffix.push(statements[position]);
+    position = position + 1;
+  }
+  const matchStatement = statements[matchIndex];
+  const subject = match (in declaration.statements[matchStatement].expression) {
+    some(found) => found;
+    none => throw "native C emission received a dispatch match without a subject";
+  };
+  let receiver = "";
+  match (in declaration.receiverType) {
+    some(type) => {
+      receiver = declaration.receiverMode == LoweredParameterMode.input
+        ? `const Z_${type.name} *self`
+        : declaration.receiverMode == LoweredParameterMode.value ? `Z_${type.name} self` : `Z_${type.name} *self`;
+    }
+    none => {}
+  }
+  // What the loop uses from before it.
+  let inside = Array<usize>();
+  collectDispatchStatements(declaration, body, inout inside);
+  let declaredInside = Array<String>();
+  for (const index of inside) {
+    if (declaration.statements[index].kind == LoweredStatementKind.localStatement) {
+      declaredInside.push(copy declaration.statements[index].name);
+    }
+  }
+  let outer = Array<DispatchLocal>();
+  for (const parameter of declaration.parameters) {
+    if (parameter.mode == LoweredParameterMode.value) {
+      outer.push(DispatchLocal({ name: copy parameter.name, cType: try cType(parameter.type), mutable: false }));
+    }
+  }
+  for (const root of declaration.roots) {
+    if (try collectDispatchOuterLocals(declaration, root, loop, inout outer)) break;
+  }
+  const used = dispatchStatementNames(declaration, inside);
+  let carried = Array<DispatchLocal>();
+  for (const name of used) {
+    if (containsName(declaredInside, name)) continue;
+    for (const local of outer) {
+      if (local.name == name) {
+        carried.push(DispatchLocal({ name: copy local.name, cType: copy local.cType, mutable: local.mutable }));
+        break;
+      }
+    }
+  }
+  // A prefix local goes to the next handler when an arm or the suffix uses it.
+  let later = Array<usize>();
+  for (const arm of declaration.statements[matchStatement].children) {
+    collectDispatchStatements(declaration, arm, inout later);
+  }
+  for (const index of suffix) {
+    collectDispatchStatements(declaration, index, inout later);
+  }
+  const laterNames = dispatchStatementNames(declaration, later);
+  let passed = Array<DispatchLocal>();
+  for (const index of prefix) {
+    const statement = view declaration.statements[index];
+    if (statement.kind != LoweredStatementKind.localStatement || !containsName(laterNames, statement.name)) continue;
+    match (in statement.type) {
+      some(type) => passed.push(DispatchLocal({ name: copy statement.name, cType: try cType(type), mutable: true }));
+      none => throw "native C emission received an untyped dispatch prefix local";
+    }
+  }
+  // A register goes to a local the prefix or the suffix uses, to one an
+  // instruction hands on to the next, and to one a quarter of the arms use.
+  let prefixAll = Array<usize>();
+  for (const index of prefix) {
+    collectDispatchStatements(declaration, index, inout prefixAll);
+  }
+  let edges = dispatchStatementNames(declaration, prefixAll);
+  let suffixAll = Array<usize>();
+  for (const index of suffix) {
+    collectDispatchStatements(declaration, index, inout suffixAll);
+  }
+  const suffixNames = dispatchStatementNames(declaration, suffixAll);
+  for (const name of suffixNames) {
+    if (!containsName(edges, name)) edges.push(copy name);
+  }
+  let armNames = Array<Array<String>>();
+  for (const arm of declaration.statements[matchStatement].children) {
+    let armStatements = Array<usize>();
+    collectDispatchStatements(declaration, arm, inout armStatements);
+    armNames.push(dispatchStatementNames(declaration, armStatements));
+  }
+  const exitLabel = `_z_stage1_loop_exit_${loop}`;
+  let ranks = Array<usize>();
+  let eligible = Array<boolean>();
+  for (const local of carried) {
+    let count: usize = 0;
+    for (const names of armNames) {
+      if (containsName(names, local.name)) count = count + 1;
+    }
+    let rank = count;
+    if (local.mutable) rank = rank + 100;
+    if (containsName(edges, local.name)) rank = rank + 1000;
+    ranks.push(rank);
+    eligible.push(!dispatchExitOnly(declaration, inside, exitLabel, local.name)
+      && (rank >= 100 || count * 4 >= armNames.length));
+  }
+  let reserved: usize = passed.length + 1;
+  if (receiver.byteLength > 0) reserved = reserved + 1;
+  let budget: usize = 0;
+  if (reserved < dispatchArgumentBudget) budget = dispatchArgumentBudget - reserved;
+  let registers = Array<DispatchLocal>();
+  let chosen = Array<boolean>();
+  chosen.appendRepeated(false, carried.length);
+  while (registers.length < budget) {
+    let best = carried.length;
+    let candidate: usize = 0;
+    while (candidate < carried.length) {
+      if (eligible[candidate] && !chosen[candidate] && (best == carried.length || ranks[candidate] > ranks[best])) {
+        best = candidate;
+      }
+      candidate = candidate + 1;
+    }
+    if (best == carried.length) break;
+    chosen[best] = true;
+    registers.push(DispatchLocal({ name: copy carried[best].name, cType: copy carried[best].cType, mutable: carried[best].mutable }));
+  }
+  let inRecord = Array<String>();
+  position = 0;
+  while (position < carried.length) {
+    if (!chosen[position]) inRecord.push(copy carried[position].name);
+    position = position + 1;
+  }
+  let continues = Array<usize>();
+  collectDispatchContinues(declaration, body, inout continues);
+  return DispatchPlan({
+    name: `_z_dispatch_${declaration.name}_${loop}`,
+    prefix,
+    matchIndex: matchStatement,
+    suffix,
+    subject,
+    receiver,
+    passed,
+    registers,
+    carried,
+    inRecord,
+    continues,
+  });
+}
+
+function dispatchParameters(in plan: DispatchPlan): String {
+  let text = TextBuffer();
+  let first = true;
+  if (plan.receiver.byteLength > 0) {
+    text.append(plan.receiver);
+    first = false;
+  }
+  for (const local of plan.passed) {
+    if (!first) text.append(", ");
+    first = false;
+    text.append(local.cType);
+    text.append(" ");
+    appendCBindingName(inout text, local.name);
+  }
+  for (const local of plan.registers) {
+    if (!first) text.append(", ");
+    first = false;
+    text.append(local.cType);
+    text.append(" ");
+    appendCBindingName(inout text, local.name);
+  }
+  if (!first) text.append(", ");
+  text.append(`struct ${plan.name}_record *_z_dispatch_record`);
+  return text.finish();
+}
+
+function dispatchArguments(in plan: DispatchPlan, in record: String): Array<String> {
+  let arguments = Array<String>();
+  if (plan.receiver.byteLength > 0) arguments.push("self");
+  for (const local of plan.passed) {
+    let name = TextBuffer();
+    appendCBindingName(inout name, local.name);
+    arguments.push(name.finish());
+  }
+  for (const local of plan.registers) {
+    let name = TextBuffer();
+    appendCBindingName(inout name, local.name);
+    arguments.push(name.finish());
+  }
+  arguments.push(copy record);
+  return arguments;
+}
+
+function appendDispatchCall(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  in name: String,
+  subject: usize,
+  in arguments: Array<String>
+): void throws String {
+  output.append(name);
+  output.append("_table[(");
+  try appendExpression(inout output, declaration, subject);
+  output.append(")](");
+  let first = true;
+  for (const argument of arguments) {
+    if (!first) output.append(", ");
+    first = false;
+    output.append(argument);
+  }
+  output.append(");\n");
+}
+
+// The loop's prefix, run again, then the jump to the next instruction.
+function appendDispatchNext(inout output: TextBuffer, in declaration: LoweredFunction, depth: usize): void throws String {
+  const loop = declaration.dispatchLoop - 1;
+  const body = declaration.statements[loop].children[0];
+  appendIndent(inout output, depth);
+  output.append("{\n");
+  let subject: usize = 0;
+  for (const index of declaration.statements[body].children) {
+    if (declaration.statements[index].kind == LoweredStatementKind.matchStatement) {
+      subject = match (in declaration.statements[index].expression) {
+        some(found) => found;
+        none => throw "native C emission received a dispatch match without a subject";
+      };
+      break;
+    }
+    try appendStatement(inout output, declaration, index, depth + 1);
+  }
+  appendIndent(inout output, depth + 1);
+  output.append("__attribute__((musttail)) return ");
+  try appendDispatchCall(inout output, declaration, declaration.dispatchName, subject, declaration.dispatchArguments);
+  appendIndent(inout output, depth);
+  output.append("}\n");
+}
+
+// Leaving the loop: what travelled in arguments goes back to the record.
+function appendDispatchLeave(inout output: TextBuffer, in declaration: LoweredFunction, depth: usize): void {
+  appendIndent(inout output, depth);
+  output.append("{\n");
+  for (const name of declaration.dispatchStoreBack) {
+    appendIndent(inout output, depth + 1);
+    output.append("_z_dispatch_record->");
+    appendCBindingName(inout output, name);
+    output.append(" = ");
+    appendCBindingName(inout output, name);
+    output.append(";\n");
+  }
+  appendIndent(inout output, depth + 1);
+  output.append("return;\n");
+  appendIndent(inout output, depth);
+  output.append("}\n");
+}
+
+function appendDispatchHandlers(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  loop: usize
+): void throws String {
+  const plan = try dispatchPlan(declaration, loop);
+  const parameters = dispatchParameters(plan);
+  output.append(dispatchGuard);
+  output.append("#if Z_DISPATCH_THREADED\n");
+  output.append(`struct ${plan.name}_record {\n`);
+  for (const local of plan.carried) {
+    output.append("  ");
+    output.append(local.cType);
+    output.append(" ");
+    appendCBindingName(inout output, local.name);
+    output.append(";\n");
+  }
+  if (plan.carried.length == 0) output.append("  char unused;\n");
+  output.append("};\n");
+  output.append(`typedef __attribute__((preserve_none)) void (*${plan.name}_handler)(${parameters});\n`);
+  const arms = view declaration.statements[plan.matchIndex].children;
+  let armIndex: usize = 0;
+  while (armIndex < arms.length) {
+    output.append(`__attribute__((preserve_none)) static void ${plan.name}_${armIndex}(${parameters});\n`);
+    armIndex = armIndex + 1;
+  }
+  const enumName = view declaration.statements[plan.matchIndex].name;
+  let wildcard = arms.length;
+  armIndex = 0;
+  while (armIndex < arms.length) {
+    if (declaration.statements[arms[armIndex]].name == "_") wildcard = armIndex;
+    armIndex = armIndex + 1;
+  }
+  output.append(`__attribute__((unused)) static const ${plan.name}_handler ${plan.name}_table[] = {\n`);
+  for (const enumeration of program.enums) {
+    if (enumeration.name != enumName) continue;
+    for (const variant of enumeration.variants) {
+      let handler = wildcard;
+      armIndex = 0;
+      while (armIndex < arms.length) {
+        if (declaration.statements[arms[armIndex]].name == variant.name) handler = armIndex;
+        armIndex = armIndex + 1;
+      }
+      if (handler == arms.length) throw "native C emission received a dispatch match missing a variant";
+      output.append(`  [Z_${enumName}_${variant.name}] = ${plan.name}_${handler},\n`);
+    }
+  }
+  output.append("};\n");
+  let handlerDeclaration = copy declaration;
+  handlerDeclaration.dispatchLowered = false;
+  handlerDeclaration.dispatchLoop = loop + 1;
+  handlerDeclaration.dispatchName = copy plan.name;
+  handlerDeclaration.dispatchArguments = dispatchArguments(plan, "_z_dispatch_record");
+  let storeBack = Array<String>();
+  for (const local of plan.registers) {
+    if (local.mutable) storeBack.push(copy local.name);
+  }
+  handlerDeclaration.dispatchStoreBack = storeBack;
+  handlerDeclaration.dispatchRecordBindings = copy plan.inRecord;
+  handlerDeclaration.dispatchContinues = copy plan.continues;
+  armIndex = 0;
+  while (armIndex < arms.length) {
+    output.append(`__attribute__((preserve_none)) static void ${plan.name}_${armIndex}(${parameters}) {\n`);
+    for (const argument of handlerDeclaration.dispatchArguments) {
+      output.append("  (void)");
+      output.append(argument);
+      output.append(";\n");
+    }
+    const arm = view declaration.statements[arms[armIndex]];
+    for (const child of arm.children) {
+      try appendStatement(inout output, handlerDeclaration, child, 1);
+    }
+    if (!dispatchListEnds(declaration, arm.children)) {
+      appendCleanups(inout output, arm.cleanups, 1);
+      for (const index of plan.suffix) {
+        try appendStatement(inout output, handlerDeclaration, index, 1);
+      }
+      if (!dispatchListEnds(declaration, plan.suffix)) try appendDispatchNext(inout output, handlerDeclaration, 1);
+    }
+    output.append("}\n");
+    armIndex = armIndex + 1;
+  }
+  output.append("#endif\n\n");
+}
+
+// The loop in its function: the first instruction's handler, called from
+// here, runs the loop, and what the handlers carried comes back.
+function appendDispatchEntry(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  loop: usize,
+  depth: usize
+): void throws String {
+  const plan = try dispatchPlan(declaration, loop);
+  output.append("#if Z_DISPATCH_THREADED\n");
+  appendIndent(inout output, depth);
+  output.append("{\n");
+  appendIndent(inout output, depth + 1);
+  output.append(`struct ${plan.name}_record _z_dispatch_record_value;\n`);
+  appendIndent(inout output, depth + 1);
+  output.append("{\n");
+  for (const index of plan.prefix) {
+    try appendStatement(inout output, declaration, index, depth + 2);
+  }
+  for (const local of plan.carried) {
+    appendIndent(inout output, depth + 2);
+    output.append("_z_dispatch_record_value.");
+    appendCBindingName(inout output, local.name);
+    output.append(" = ");
+    appendCBindingName(inout output, local.name);
+    output.append(";\n");
+  }
+  appendIndent(inout output, depth + 2);
+  const arguments = dispatchArguments(plan, "&_z_dispatch_record_value");
+  try appendDispatchCall(inout output, declaration, plan.name, plan.subject, arguments);
+  appendIndent(inout output, depth + 1);
+  output.append("}\n");
+  for (const local of plan.carried) {
+    if (!local.mutable) continue;
+    appendIndent(inout output, depth + 1);
+    appendCBindingName(inout output, local.name);
+    output.append(" = _z_dispatch_record_value.");
+    appendCBindingName(inout output, local.name);
+    output.append(";\n");
+  }
+  appendIndent(inout output, depth);
+  output.append("}\n");
+  output.append("#else\n");
+}
+
 function appendFunction(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -11519,6 +12185,18 @@ function appendFunction(
       return;
     }
     none => {}
+  }
+  // A dispatch loop's handlers come before its function.
+  let dispatching = false;
+  if (declaration.nativeObjCClass.byteLength == 0 && declaration.rawLanguage.byteLength == 0) {
+    let index: usize = 0;
+    while (index < declaration.statements.length) {
+      if (isDispatchLoop(declaration, index)) {
+        try appendDispatchHandlers(inout output, program, declaration, index);
+        dispatching = true;
+      }
+      index = index + 1;
+    }
   }
   try appendFunctionSignature(
     inout output,
@@ -11624,7 +12302,11 @@ function appendFunction(
       output.append(flag.constructorField ? " = false;\n" : " = true;\n");
     }
   }
-  try appendFunctionTail(inout output, declaration);
+  if (dispatching) {
+    let lowered = copy declaration;
+    lowered.dispatchLowered = true;
+    try appendFunctionTail(inout output, lowered);
+  } else try appendFunctionTail(inout output, declaration);
   if (declaration.compilerIntrinsic == "objcInitializer") output.append("  }\n  self->_z_native_subclass_ready = 1;\n  return self;\n");
   if (declaration.compilerIntrinsic == "objcDeinitializer") {
     output.append("  }\n");
