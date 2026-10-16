@@ -4587,7 +4587,27 @@ function requireNativeConsoleFormattable(
   let valueType = copy argumentType;
   if (stringStartsWith(valueType, "view ")) valueType = valueType.copyBytes(5, valueType.byteLength);
   valueType = transparentTypeName(modules, moduleIndex, valueType);
-  if (isNumericTypeName(valueType) || valueType == "boolean" || valueType == "String") return;
+  if (isNumericTypeName(valueType) || valueType == "boolean") return;
+  if (valueType == "String") {
+    // As in Stage 0, console borrows a String only from storage or a literal;
+    // a temporary has cleanup and no storage for the borrow.
+    const kind = tree.nodes[argument].kind;
+    const root = expressionStorageRootName(tree, argument);
+    if (
+      kind == ExpressionKind.stringExpression
+      || kind == ExpressionKind.templateExpression
+      || root.byteLength > 0
+    ) return;
+    throw codedModuleResolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      "Z0402",
+      module.path,
+      "console formatting of a cleanup-bearing temporary requires stored ownership",
+      tree.nodes[argument].line,
+      tree.nodes[argument].column,
+      1
+    );
+  }
   throw codedModuleResolutionError(
     ModuleResolveErrorKind.typeMismatch,
     "Z1000",
