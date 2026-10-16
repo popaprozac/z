@@ -29,6 +29,13 @@ function load(in path: String): String throws String {
 when arbitrary bytes are valid; it returns an owned `Array<u8>` without text
 decoding.
 
+`fs.writeText(path, contents)` and `fs.writeBytes(path, bytes)` borrow their
+arguments for the call, create or truncate the file, and copy the contents
+into it once; neither allocates beyond the C stdio stream that carries the OS
+write. `fs.writeBytes` takes an `Array<u8>` and writes it exactly, with no text
+encoding or added newline, so it is the write side of `fs.readBytes`. Both
+throw a typed `String` OS failure.
+
 ```z
 function stage(in sourcePath: String): void throws String {
   const source = try fs.readText(sourcePath);

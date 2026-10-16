@@ -13124,6 +13124,7 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
     || used.has("fs.lock")
     || used.has("fs.readText")
     || used.has("fs.writeText")
+    || used.has("fs.writeBytes")
     || used.has("fs.replace")
     || used.has("fs.createDirectories")
     || used.has("fs.realPath")
@@ -13299,6 +13300,28 @@ static ${lockResult} z_fs_lock(Z_String path) {
   }
   const char *data = contents.data != NULL ? contents.data : "";
   if (contents.length > 0 && fwrite(data, 1, (size_t)contents.length, file) != (size_t)contents.length) {
+    const int code = errno;
+    fclose(file);
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
+  }
+  if (fclose(file) != 0) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
+  }
+  return (${voidResult}){ .tag = ${voidSuccess} };
+}`);
+  }
+
+  if (used.has("fs.writeBytes")) {
+    sections.push(`static ${voidResult} z_fs_write_bytes(Z_String path, ${bytesArray} bytes) {
+  if (!z_standard_string_is_cstring(&path)) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error("path contains an embedded null byte") } };
+  }
+  const char *native_path = path.data != NULL ? path.data : "";
+  FILE *file = fopen(native_path, "wb");
+  if (file == NULL) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
+  }
+  if (bytes.length > 0 && fwrite(bytes.data, 1, (size_t)bytes.length, file) != (size_t)bytes.length) {
     const int code = errno;
     fclose(file);
     return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error(strerror(code)) } };

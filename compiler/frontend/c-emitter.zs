@@ -6862,6 +6862,11 @@ function appendExpression(
     else if (
       declaration.expressions[callee].kind
         == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "fs.writeBytes"
+    ) output.append("z_stage1_fs_write_bytes");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "fs.replace"
     ) output.append("z_stage1_fs_replace");
     else if (
@@ -24851,6 +24856,7 @@ function appendSystemStandardRuntime(
   const usesReadBytes = programUsesStandardCall(program, "fs.readBytes");
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
+  const usesWriteBytes = programUsesStandardCall(program, "fs.writeBytes");
   const usesReplace = programUsesStandardCall(program, "fs.replace");
   const usesExists = programUsesStandardCall(program, "fs.exists");
   const usesIsDirectory = programUsesStandardCall(program, "fs.isDirectory");
@@ -25011,6 +25017,24 @@ function appendSystemStandardRuntime(
     output.append("  const char *data = contents != NULL && contents->data != NULL ? contents->data : \"\";\n");
     output.append("  const size_t length = contents != NULL ? contents->length : 0;\n");
     output.append("  if (length > 0 && fwrite(data, 1, length, file) != length) {\n");
+    output.append("    const int code = errno;\n");
+    output.append("    fclose(file);\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  if (fclose(file) != 0) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_success };\n");
+    output.append("}\n\n");
+  }
+  if (usesWriteBytes) {
+    output.append("static __attribute__((unused)) Z___z_Result_void_String z_stage1_fs_write_bytes(const Z_String *path, const Z___z_Array_u8 *bytes) {\n");
+    output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("  }\n");
+    output.append("  const char *native_path = path->data != NULL ? path->data : \"\";\n");
+    output.append("  FILE *file = fopen(native_path, \"wb\");\n");
+    output.append("  if (file == NULL) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  const size_t length = bytes != NULL ? bytes->length : 0;\n");
+    output.append("  if (length > 0 && fwrite(bytes->data, 1, length, file) != length) {\n");
     output.append("    const int code = errno;\n");
     output.append("    fclose(file);\n");
     output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
@@ -26241,6 +26265,7 @@ function emitLoweredC(
   const usesReadBytes = programUsesStandardCall(program, "fs.readBytes");
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
+  const usesWriteBytes = programUsesStandardCall(program, "fs.writeBytes");
   const usesReplace = programUsesStandardCall(program, "fs.replace");
   const usesExists = programUsesStandardCall(program, "fs.exists");
   const usesIsDirectory = programUsesStandardCall(program, "fs.isDirectory");
@@ -26304,6 +26329,7 @@ function emitLoweredC(
     || usesReadBytes
     || usesReadText
     || usesWriteText
+    || usesWriteBytes
     || usesReplace
     || usesExists
     || usesIsDirectory
@@ -26358,6 +26384,7 @@ function emitLoweredC(
     || usesReadBytes
     || usesReadText
     || usesWriteText
+    || usesWriteBytes
     || usesReplace
     || usesCreateDirectories
     || usesRealPath

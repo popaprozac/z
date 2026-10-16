@@ -17293,6 +17293,7 @@ function lowerExpressionContextual(
           || target == "fs.readBytes"
           || target == "fs.readText"
           || target == "fs.writeText"
+          || target == "fs.writeBytes"
           || target == "fs.replace"
           || target == "fs.exists"
           || target == "fs.isDirectory"

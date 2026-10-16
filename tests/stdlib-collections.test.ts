@@ -268,6 +268,99 @@ test("preserves the value ABI of explicit standard-library borrows", () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
+test("writes arbitrary bytes exactly through fs.writeBytes in both compilers", () => {
+  const directory = mkdtempSync("/tmp/z-standard-write-bytes-");
+  try {
+    const fileName = resolve(directory, "main.zs");
+    const output = resolve(directory, "bytes.bin");
+    // NUL, 0xFF, an invalid two-byte UTF-8 sequence, a lone continuation
+    // byte, a newline (no text-mode translation), and a trailing NUL.
+    const expected = [0x00, 0xff, 0xc3, 0x28, 0x80, 0x0a, 0x41, 0x00];
+    const source = `
+      import console from "std/console";
+      import fs from "std/fs";
+      function writeBorrowed(in path: String, in bytes: Array<u8>): void throws String {
+        try fs.writeBytes(in path, in bytes);
+      }
+      function sameBytes(in left: Array<u8>, in right: Array<u8>): boolean {
+        if (left.length != right.length) return false;
+        let index: usize = 0;
+        while (index < left.length) {
+          if (left[index] != right[index]) return false;
+          index = index + 1;
+        }
+        return true;
+      }
+      function run(): i32 throws String {
+        const directory: String = ${JSON.stringify(directory)};
+        const path = \`\${directory}/bytes.bin\`;
+        const bytes = Array<u8>(${expected.join(", ")});
+        try fs.writeBytes(path, bytes);
+        const loaded = try fs.readBytes(path);
+        if (!sameBytes(in loaded, in bytes)) return 1;
+        const decoded = attempt fs.readText(path);
+        const rejectedAsText = match (decoded) {
+          success(_) => false;
+          failure(message) => message == "file is not valid UTF-8";
+        };
+        if (!rejectedAsText) return 2;
+        const longer = Array<u8>(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+        try writeBorrowed(in path, in longer);
+        const shorter = Array<u8>(255, 0);
+        try writeBorrowed(path, shorter);
+        const truncated = try fs.readBytes(path);
+        if (!sameBytes(in truncated, in shorter)) return 3;
+        const empty = Array<u8>();
+        try fs.writeBytes(path, empty);
+        const cleared = try fs.readBytes(path);
+        if (cleared.length != 0 || !fs.exists(path)) return 4;
+        const missing = attempt fs.writeBytes(\`\${directory}/missing/bytes.bin\`, bytes);
+        const missingFailed = match (missing) {
+          success => false;
+          failure(message) => {
+            console.log(message);
+            select true;
+          }
+        };
+        if (!missingFailed || fs.exists(\`\${directory}/missing\`)) return 5;
+        try fs.writeBytes(path, bytes);
+        return 0;
+      }
+      function main(): i32 {
+        return match (attempt run()) { success(code) => code; failure(_) => 6; };
+      }
+    `;
+    writeFileSync(fileName, source);
+    const stage0 = compileToC(source, fileName);
+    assert.match(stage0, /static Z_Result_void_String z_fs_write_bytes\(Z_String path, Z_DynamicArray_\S+ bytes\)/);
+    assert.match(stage0, /fopen\(native_path, "wb"\)/);
+    const native = spawnSync(process.execPath, [cli, "self-host-emit", fileName], {
+      encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+    });
+    assert.equal(native.status, 0, native.stderr || String(native.error));
+    assert.match(native.stdout, /z_stage1_fs_write_bytes\(const Z_String \*path, const Z___z_Array_u8 \*bytes\)/);
+    for (const [mode, generated] of [["stage0", stage0], ["native", native.stdout]] as const) {
+      rmSync(output, { force: true });
+      const executable = resolve(directory, mode);
+      const compilation = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
+        "-O2", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        input: generated, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+      });
+      assert.equal(compilation.status, 0, `${mode}: ${compilation.stderr}`);
+      const executed = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+      assert.equal(executed.status, 0, `${mode}: ${executed.stderr}`);
+      assert.equal(executed.stdout, "No such file or directory\n", mode);
+      assert.deepEqual([...readFileSync(output)], expected, mode);
+    }
+
+    const writeBytesOffset = source.indexOf("writeBytes(path") + 2;
+    assert.match(
+      hover(source, fileName, writeBytesOffset)?.contents.value ?? "",
+      /writeBytes\(in path: String, in bytes: Array<u8>\): void throws String/,
+    );
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 test("reads files, exposes program arguments, and runs child processes through standard modules", () => {
   const directory = mkdtempSync("/tmp/z-system-std-");
   const fileName = resolve(directory, "main.zs");

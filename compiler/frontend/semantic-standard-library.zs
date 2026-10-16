@@ -104,6 +104,21 @@ function fsCall(in memberName: String): Option<NativeStandardCallShape> {
       ),
     }));
   }
+  if (memberName == "writeBytes") {
+    parameterModes.push("in");
+    parameterTypes.push("String");
+    parameterModes.push("in");
+    parameterTypes.push("Array<u8>");
+    return Option.some(NativeStandardCallShape({
+      name: "fs.writeBytes",
+      signature: standardSignature(
+        move parameterModes,
+        move parameterTypes,
+        "void",
+        "String"
+      ),
+    }));
+  }
   if (memberName == "replace") {
     parameterModes.push("in");
     parameterTypes.push("String");

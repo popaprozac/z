@@ -3790,6 +3790,7 @@ function stage(in path: String): i32 throws String {
   const bytes = try fs.readBytes(path);
   try fs.createDirectories(".z-cache");
   try fs.writeText(".z-cache/input.zs", source);
+  try fs.writeBytes(".z-cache/input.bin", bytes);
   try fs.writeText(".z-cache/output.pending", source);
   try fs.replace(".z-cache/output.pending", ".z-cache/output.zs");
   cacheLock.unlock(); // optional early release; scope exit also releases it
@@ -3801,7 +3802,12 @@ function stage(in path: String): i32 throws String {
 
 `fs.readText(path)` returns an owned UTF-8 `String`; `fs.readBytes(path)`
 returns an owned `Array<u8>` without text decoding; `fs.writeText(path,
-contents)` borrows both strings for the call; `fs.exists(path)` performs a
+contents)` borrows both strings for the call; `fs.writeBytes(path, bytes)`
+borrows the path and an `Array<u8>` for the call and writes those bytes
+exactly, with no text encoding or added newline. Both writes create or
+truncate the file and copy the contents once into it; they allocate nothing
+beyond the C stdio stream that carries the OS write, except the owned `String`
+message of a typed OS failure; `fs.exists(path)` performs a
 non-throwing existence probe; and `fs.isDirectory(path)` distinguishes an
 existing directory from a file or missing path. `fs.createDirectories(path)`
 creates every missing parent, succeeds when the complete directory already
