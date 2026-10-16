@@ -288,6 +288,7 @@ import {
   ExpressionKind,
   ExpressionSyntax,
   ExpressionTree,
+  FieldDeclaration,
   FunctionDeclaration,
   ParameterMode,
   ReceiverMode,
@@ -14743,6 +14744,48 @@ function requireDispatchCarriedSyntax(
   }
 }
 
+// What a field's default value names at module level (a constant, say) is
+// recorded here, so lowering emits the same name a function body would. The
+// rest of the default is checked where the aggregate is built, in that
+// context (its executor, its bindings), not here. A generic aggregate's
+// defaults resolve with each instance.
+function recordFieldDefaultNames(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in field: FieldDeclaration,
+  inout evidence: ModuleSemanticEvidence
+): void {
+  match (in field.defaultValue) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        let index: usize = 0;
+        while (index < tree.nodes.length) {
+          if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
+            match (foreignValueSymbolLocation(modules, moduleIndex, tree, index)) {
+              some(location) => {
+                const targetName = valueSymbolTargetName(modules, location);
+                recordForeignValueResolution(
+                  modules,
+                  moduleIndex,
+                  tree,
+                  index,
+                  modules[location.moduleIndex].symbols[location.symbolIndex].valueType,
+                  targetName,
+                  inout evidence
+                );
+              }
+              none => {}
+            }
+          }
+          index = index + 1;
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+}
+
 // `inline function` and `cold function` place a Z body; a declaration with no
 // Z body of its own, or one C calls by name, has nothing for them to place. An
 // inline function cannot call itself: it would have to be inlined into itself.
@@ -14852,6 +14895,11 @@ function validateExpressionTypesAndLocals(
   }
   for (const aggregate of module.program.aggregates) {
     match (in aggregate.nativeBase) { some(_) => continue; none => {} }
+    if (aggregate.typeParameters.length == 0) {
+      for (const field of aggregate.fields) {
+        recordFieldDefaultNames(modules, moduleIndex, field, inout evidence);
+      }
+    }
     match (in aggregate.constructorDeclaration) {
       some(initializer) => try inferAggregateConstructor(module, modules, moduleIndex, aggregate, initializer,
         aggregate.name, aggregate.typeParameters, inout evidence);

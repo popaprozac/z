@@ -40,6 +40,7 @@ for (const [fixture, expected] of [
   ["rebound-unused-locals", "1\n2\nok\n"],
   ["generic-plain-instances", "ok\n"],
   ["optimization-marks", "counter 20\n"],
+  ["constant-field-default", "poll 4096 1024 7 1024 true\n"],
   ["dispatch-loop", "acc 55\nsteps 35 shown 1\nresult 55\nsteps 7 shown 0\nlimited -2\nsum 55 2\n"],
   ["generic-instance-shapes", "ok\n"],
   ["borrowed-argument-storage", "67\n"],
