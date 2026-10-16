@@ -20683,6 +20683,7 @@ function lowerValueDestination(
           some(declaration) => declaration;
           none => throw "native value-match try lowering requires an enclosing throwing function";
         };
+        const callStart = expressions.length;
         const call = try lowerExpression(
           program,
           importedTypes,
@@ -20690,6 +20691,18 @@ function lowerValueDestination(
           tree,
           attempted,
           inout expressions
+        );
+        try completeNativeClosureBlocks(
+          program,
+          importedTypes,
+          evidence,
+          arena,
+          ownerName,
+          context,
+          sourceStatementIndex,
+          callStart,
+          inout expressions,
+          inout statements
         );
         if (returnValue) {
           if (inner.name != outer.name) {
@@ -20779,6 +20792,7 @@ function lowerValueDestination(
     }
   }
   let value: usize = 0;
+  const valueStart = expressions.length;
   match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
@@ -20843,6 +20857,21 @@ function lowerValueDestination(
     }
     none => {}
   }
+  // An arm value is lowered outside lowerStatementWithResult, so block
+  // callables in it (a withLock callback, a block closure) need the same
+  // completion a statement value gets before the arm's exit is built.
+  try completeNativeClosureBlocks(
+    program,
+    importedTypes,
+    evidence,
+    arena,
+    ownerName,
+    context,
+    sourceStatementIndex,
+    valueStart,
+    inout expressions,
+    inout statements
+  );
   const loweredBody = statements.length;
   if (returnValue) {
     let returnedValue = value;

@@ -122,6 +122,12 @@ for (const [fixture, expected] of [
     + "released prepared\nreleased delivery\ncallback\nreleased error callback\n"
     + "released iteration 1\nreleased iteration 2\nreleased prepared\nreleased delivery\ndelivered\n"
     + "released iteration 1\nreleased iteration 2\nfirst 3\nsecond 3\nreleased prepared\nreleased delivery\ndelivered\n"],
+  // Block callbacks that are match-arm values: returned, bound, and selected
+  // through try, with callback-local owners and early exits.
+  ["match-arm-lock-callbacks.zs",
+    "released returned\nreleased returned\nreleased holder\n"
+    + "released attempt\nreleased arm\nreleased attempt\nreleased arm\n"
+    + "released closure\nreleased closure\ndone\n"],
 ] as const) {
   test(`owns invocation-local storage in ${fixture}`, () => {
     const input = resolve(projectRoot, "tests/fixtures", fixture);
