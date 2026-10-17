@@ -14744,11 +14744,12 @@ function requireDispatchCarriedSyntax(
   }
 }
 
-// What a field's default value names at module level (a constant, say) is
-// recorded here, so lowering emits the same name a function body would. The
-// rest of the default is checked where the aggregate is built, in that
-// context (its executor, its bindings), not here. A generic aggregate's
-// defaults resolve with each instance.
+// What a field's default value names at module level (a constant, or a
+// function it calls, the module's own or an imported one) is recorded here,
+// so lowering emits the same name a function body would. The rest of the
+// default is checked where the aggregate is built, in that context (its
+// executor, its bindings), not here. A generic aggregate's defaults resolve
+// with each instance, as a call of a generic function does.
 function recordFieldDefaultNames(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -14760,6 +14761,51 @@ function recordFieldDefaultNames(
       some(tree) => {
         let index: usize = 0;
         while (index < tree.nodes.length) {
+          if (
+            tree.nodes[index].kind == ExpressionKind.callExpression
+            && tree.nodes[index].children.length > 0
+            && tree.nodes[tree.nodes[index].children[0]].kind
+              == ExpressionKind.identifierExpression
+          ) {
+            const callee = tree.nodes[index].children[0];
+            match (callableSymbolLocation(modules, moduleIndex, tree, callee)) {
+              some(location) => {
+                const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+                match (in symbol.functionSignature) {
+                  some(signature) => {
+                    if (
+                      symbol.kind == ModuleSymbolKind.functionSymbol
+                      && signature.typeParameters.length == 0
+                    ) {
+                      const rebased = rebaseModuleFunctionSignature(
+                        modules,
+                        location.moduleIndex,
+                        moduleIndex,
+                        signature
+                      );
+                      recordCallResolution(
+                        tree,
+                        index,
+                        location.moduleIndex,
+                        location.symbolIndex,
+                        "function",
+                        symbol.name,
+                        rebased,
+                        0,
+                        Array<NativeValueBinding>(),
+                        "",
+                        rebased.returnType,
+                        rebased.errorType,
+                        inout evidence
+                      );
+                    }
+                  }
+                  none => {}
+                }
+              }
+              none => {}
+            }
+          }
           if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
             match (foreignValueSymbolLocation(modules, moduleIndex, tree, index)) {
               some(location) => {

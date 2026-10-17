@@ -41,6 +41,7 @@ for (const [fixture, expected] of [
   ["generic-plain-instances", "ok\n"],
   ["optimization-marks", "counter 20\n"],
   ["constant-field-default", "poll 4096 1024 7 1024 true\n"],
+  ["call-field-default", "7 2 3 1\n"],
   ["dispatch-loop", "acc 55\nsteps 35 shown 1\nresult 55\nsteps 7 shown 0\nlimited -2\nsum 55 2\n"],
   ["generic-instance-shapes", "ok\n"],
   ["borrowed-argument-storage", "67\n"],
