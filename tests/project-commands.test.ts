@@ -329,6 +329,13 @@ test("builds and runs executable projects with strict release and argument parsi
   assert.equal(unknown.status, 1);
   assert.match(unknown.stderr, /unknown run option "not-an-option"/);
 
+  // Flags after `--` reach the C compiler verbatim.
+  const rejectedFlag = invoke(["build", "--", "-fthis-flag-does-not-exist"], directory);
+  assert.notEqual(rejectedFlag.status, 0);
+  assert.match(rejectedFlag.stderr, /unknown argument/);
+  const acceptedFlag = invoke(["build", "--", "-DZ_EXTRA_FLAG_PROBE=1"], directory);
+  assert.equal(acceptedFlag.status, 0, acceptedFlag.stderr);
+
   const projectEmit = invoke(["emit", directory]);
   assert.equal(projectEmit.status, 0, projectEmit.stderr);
   const manifestEmit = invoke(["emit", resolve(directory, "z.json")]);

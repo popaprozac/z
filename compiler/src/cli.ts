@@ -1700,6 +1700,7 @@ function compileNativeArtifact(
   release: boolean,
   link: boolean,
   shared = false,
+  extraFlags: readonly string[] = [],
 ): void {
   const compiler = nativeCompiler(artifact.language);
   const compilerArguments = [
@@ -1730,6 +1731,7 @@ function compileNativeArtifact(
     "-I", dirname(inputPath),
     ...artifact.includeDirectories.flatMap((directory) => ["-I", directory]),
     ...(!link ? ["-c"] : []),
+    ...extraFlags,
     sourcePath,
     ...(link ? artifact.nativeLibraries : []),
     ...(link ? artifact.nativeLinkerArguments : []),
@@ -1750,9 +1752,14 @@ function buildProject(
   project: ProjectBuild,
   options: readonly string[],
 ): void {
-  const unexpected = options.filter((argument) => argument !== "--release");
+  const delimiter = options.indexOf("--");
+  const buildOptions = delimiter >= 0 ? options.slice(0, delimiter) : options;
+  // Flags after `--` reach the C compiler verbatim, so a sanitizer or coverage
+  // run can reuse this build instead of reassembling the clang command.
+  const extraFlags = delimiter >= 0 ? options.slice(delimiter + 1) : [];
+  const unexpected = buildOptions.filter((argument) => argument !== "--release");
   if (unexpected.length > 0) throw new Error(`unknown build option ${JSON.stringify(unexpected[0])}`);
-  const release = options.includes("--release");
+  const release = buildOptions.includes("--release");
   if (!project.targetConfigured) {
     throw new Error("z build requires a configured target; this manifest declares only a source library");
   }
@@ -1788,6 +1795,8 @@ function buildProject(
       executablePath,
       release,
       true,
+      false,
+      extraFlags,
     );
     console.log(`built ${executablePath}`);
     return;
@@ -1812,6 +1821,7 @@ function buildProject(
       release,
       true,
       true,
+      extraFlags,
     );
     writeFileSync(headerPath, artifact.header);
     console.log(`built ${libraryPath}`);
@@ -1831,6 +1841,8 @@ function buildProject(
     objectPath,
     release,
     false,
+    false,
+    extraFlags,
   );
 
   const archive = process.platform === "darwin"
@@ -4059,7 +4071,7 @@ function nativeLanguageFlags(language: NativeArtifact["language"]): string[] {
 }
 
 function usage(): void {
-  console.error("usage: z build [project-directory|z.json] [--release] [--generated file.zbuild.json]");
+  console.error("usage: z build [project-directory|z.json] [--release] [--generated file.zbuild.json] [-- compiler-flag...]");
   console.error("usage: z check [project-directory|z.json|file.zs] [--native-frontend] [--timings] [--generated file.zbuild.json]");
   console.error("       z test [project-directory|z.json|file.zs] [--generated file.zbuild.json]");
   console.error("       z emit [project-directory|z.json|file.zs] [--generated file.zbuild.json]");

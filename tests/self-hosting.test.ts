@@ -10882,6 +10882,24 @@ test("compiles a multi-module Z application through the standalone native driver
   const mixedRootHeader = readFileSync(resolve(sharedRootProject, "build/shared_root.h"), "utf8");
   assert.match(mixedRootHeader, /SHARED_ROOT_RUNTIME_REQUIRES_MAIN_THREAD 1/);
   assert.match(mixedRootHeader, /SHARED_ROOT_RUNTIME_REQUIRES_ENQUEUE_RELEASE 1/);
+  // Flags after `--` reach the C compiler and belong to the build cache key, so a
+  // flagged build neither reuses the plain artifact nor poisons the next plain one.
+  const rejectedFlagBuild = spawnSync(driver, ["build", sharedRootProject, "--", "-fthis-flag-does-not-exist"], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.notEqual(rejectedFlagBuild.status, 0);
+  assert.match(`${rejectedFlagBuild.stderr}${rejectedFlagBuild.stdout}`, /unknown argument/);
+  const flaggedBuild = spawnSync(driver, ["build", sharedRootProject, "--", "-DZ_EXTRA_FLAG_PROBE=1"], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(flaggedBuild.status, 0, flaggedBuild.stderr || String(flaggedBuild.error));
+  assert.doesNotMatch(flaggedBuild.stdout, /cache hit/);
+  const plainAfterFlagged = spawnSync(driver, ["build", sharedRootProject], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(plainAfterFlagged.status, 0, plainAfterFlagged.stderr || String(plainAfterFlagged.error));
+  assert.doesNotMatch(plainAfterFlagged.stdout, /cache hit/);
+
   const readonlyLengthFixture = resolve(projectRoot, "tests/fixtures/self-host-emit-readonly-collection-length.zs");
   for (const operation of ["check", "metadata", "run"]) {
     const result = spawnSync(driver, [operation, readonlyLengthFixture], {

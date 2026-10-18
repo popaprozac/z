@@ -641,11 +641,23 @@ function appendProjectLanguageArguments(
   arguments.push("-std=c11");
 }
 
+// Flags supplied after `--` on the command line reach the C compiler verbatim,
+// so a sanitizer or coverage run can reuse this build.
+function appendExtraCompilerArguments(
+  in extraFlags: Array<String>,
+  inout arguments: Array<String>
+): void {
+  for (const flag of extraFlags) {
+    arguments.push(copy flag);
+  }
+}
+
 function compileEmittedProject(
   in project: NativeProject,
   in emitted: String,
   in outputPath: String,
-  release: boolean
+  release: boolean,
+  in extraFlags: Array<String>
 ): i32 throws String {
   const extension = projectNativeSourceExtension(project);
   const cPath = `${outputPath}${extension}`;
@@ -666,6 +678,7 @@ function compileEmittedProject(
     project.config,
     inout compilerArguments
   );
+  appendExtraCompilerArguments(extraFlags, inout compilerArguments);
   compilerArguments.push("-o");
   compilerArguments.push(copy outputPath);
   return try process.run("clang", compilerArguments);
@@ -681,7 +694,8 @@ function buildLoadedProject(
     project,
     emitted,
     outputPath,
-    release
+    release,
+    Array<String>()
   );
   if (exitCode == 0) {
     console.log(`compiled ${project.modules.length} Z modules to ${outputPath}`);
@@ -713,7 +727,8 @@ function testProject(
     project,
     emitted,
     outputPath,
-    false
+    false,
+    Array<String>()
   );
   if (compilationExitCode != 0) return compilationExitCode;
   const arguments = Array<String>();
@@ -858,7 +873,8 @@ function configuredRuntimeInitializer(
 
 function buildStaticLibrary(
   in project: NativeProject,
-  release: boolean
+  release: boolean,
+  in extraFlags: Array<String>
 ): i32 throws String {
   if (!hasNativeCExport(project)) {
     throw "a static-library project must declare at least one `export c function`";
@@ -913,6 +929,7 @@ function buildStaticLibrary(
     project.config,
     inout compilerArguments
   );
+  appendExtraCompilerArguments(extraFlags, inout compilerArguments);
   compilerArguments.push("-c");
   compilerArguments.push(copy cPath);
   compilerArguments.push("-o");
@@ -963,7 +980,8 @@ function sharedLibraryPrefix(
 
 function buildSharedLibrary(
   in project: NativeProject,
-  release: boolean
+  release: boolean,
+  in extraFlags: Array<String>
 ): i32 throws String {
   if (!hasNativeCExport(project)) {
     throw "a shared-library project must declare at least one `export c function`";
@@ -1026,6 +1044,7 @@ function buildSharedLibrary(
     project.config,
     inout compilerArguments
   );
+  appendExtraCompilerArguments(extraFlags, inout compilerArguments);
   compilerArguments.push("-o");
   compilerArguments.push(copy libraryPath);
   const compilationExitCode = try process.run("clang", compilerArguments);
@@ -1038,7 +1057,8 @@ function buildSharedLibrary(
 
 function buildExecutableTarget(
   in project: NativeProject,
-  release: boolean
+  release: boolean,
+  in extraFlags: Array<String>
 ): i32 throws String {
   try validateExecutableEntry(project, true);
   const targetName = try requiredProjectTargetName(project);
@@ -1057,7 +1077,8 @@ function buildExecutableTarget(
     project,
     emitted,
     cachedOutputPath,
-    release
+    release,
+    extraFlags
   );
   if (exitCode != 0) return exitCode;
   try fs.replace(cachedOutputPath, outputPath);
@@ -1068,7 +1089,8 @@ function buildExecutableTarget(
 function buildManifestProject(
   in projectPath: String,
   release: boolean,
-  in generatedPath: Option<String>
+  in generatedPath: Option<String>,
+  in extraFlags: Array<String>
 ): i32 throws String {
   const input = try resolveCommandInput(projectPath);
   if (!input.projectMode) {
@@ -1093,7 +1115,13 @@ function buildManifestProject(
   try fs.createDirectories(cacheDirectory);
   const metadataPath = `${cacheDirectory}/${targetName}.build.meta`;
   const cacheLock = try fs.lock(`${cacheDirectory}/${targetName}.build.lock`);
-  const toolchainIdentity = try loadToolchainIdentity(cacheDirectory);
+  let toolchainIdentity = try loadToolchainIdentity(cacheDirectory);
+  // Extra compiler flags change the artifact, so they belong in the cache key.
+  // Folding them into the toolchain identity keeps the check and the recorded
+  // metadata consistent without widening the cache record.
+  for (const flag of extraFlags) {
+    toolchainIdentity = `${toolchainIdentity} ${flag}`;
+  }
   if (try buildCacheMatches(
     preliminaryConfig,
     canonicalEntry,
@@ -1122,11 +1150,11 @@ function buildManifestProject(
   }
   let exitCode = 0;
   if (project.config.targetKind == "executable") {
-    exitCode = try buildExecutableTarget(project, release);
+    exitCode = try buildExecutableTarget(project, release, extraFlags);
   } else if (project.config.targetKind == "static-library") {
-    exitCode = try buildStaticLibrary(project, release);
+    exitCode = try buildStaticLibrary(project, release, extraFlags);
   } else if (project.config.targetKind == "shared-library") {
-    exitCode = try buildSharedLibrary(project, release);
+    exitCode = try buildSharedLibrary(project, release, extraFlags);
   } else {
     throw `unsupported project target kind "${project.config.targetKind}"`;
   }
@@ -1724,7 +1752,8 @@ function runProject(
       project,
       emitted,
       pendingOutputPath,
-      release
+      release,
+      Array<String>()
     );
     if (compilationExitCode != 0) return compilationExitCode;
     try fs.replace(pendingCPath, cPath);
@@ -1922,6 +1951,7 @@ function main(): i32 {
     }
     let projectPath = ".";
     let release = false;
+    let extraFlags = Array<String>();
     let generatedPath = Option<String>.none;
     let generatedSeen = false;
     let projectSeen = false;
@@ -1956,6 +1986,14 @@ function main(): i32 {
         index = index + 2;
         continue;
       }
+      if (argument == "--") {
+        index = index + 1;
+        while (index < arguments.length) {
+          extraFlags.push(copy arguments[index]);
+          index = index + 1;
+        }
+        break;
+      }
       if (isOptionArgument(argument)) {
         console.error(`unknown build option ${argument}`);
         return 2;
@@ -1971,7 +2009,8 @@ function main(): i32 {
     const outcome = attempt buildManifestProject(
       projectPath,
       release,
-      generatedPath
+      generatedPath,
+      extraFlags
     );
     return reportOutcome(outcome);
   }
