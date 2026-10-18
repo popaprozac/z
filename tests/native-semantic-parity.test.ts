@@ -375,6 +375,35 @@ test("native console formats numbers, booleans, and Strings and marks other valu
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
+test("native console borrows Strings only from storage or literals, like Stage 0", () => {
+  const prefix = `import console from "std/console";
+    struct Holder { text: String; }
+    function make(): String { return "x"; }
+    function main(): i32 {
+      const name = make();
+      const holder = Holder({ text: make() });
+      const flag = true;
+      `;
+  const program = (argument: string) => `${prefix}console.log(${argument});\n      return 0;\n    }`;
+  // Native used to accept these and emit C that takes the address of an rvalue.
+  for (const argument of ["make()", "name, make()", "flag ? name : name"]) {
+    rejects(program(argument),
+      /console formatting of a cleanup-bearing temporary requires stored ownership/,
+      /error\[Z0402\]: console formatting of a cleanup-bearing temporary requires stored ownership/);
+  }
+  const directory = mkdtempSync("/tmp/z-native-console-storage-");
+  try {
+    for (const argument of ["name", "holder.text", '"literal"', "`${name}!`"]) {
+      const source = program(argument);
+      const input = resolve(directory, "main.zs");
+      writeFileSync(input, source);
+      check(source, input);
+      const result = native("self-host-resolve", input);
+      assert.equal(result.status, 0, `${argument}\n${result.stderr}`);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 test("checks each generic instance with its concrete types in both compilers", () => {
   // A by-value T used twice moves it twice once T has cleanup.
   rejects(`
