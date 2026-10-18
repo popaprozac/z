@@ -8687,6 +8687,9 @@ function requireConsoleFormattable(
   fileName: string,
   state: AnalysisState,
   visiting = new Set<string>(),
+  // A template part is consumed into the template's own buffer, so a temporary
+  // is fine there; only a value console borrows directly needs storage.
+  allowTemporary = false,
 ): void {
   const stored = String(underlyingType(type));
   const actual = parseViewType(stored)?.target ?? stored;
@@ -8696,7 +8699,8 @@ function requireConsoleFormattable(
       helps: ["call finish() and log the resulting String"],
     });
   }
-  if (hasOwnershipType(actual, structs, enums, state)
+  if (!allowTemporary
+    && hasOwnershipType(actual, structs, enums, state)
     && !isNamedStorageExpression(expression)
     && expression.kind !== "string") {
     throw new DiagnosticError(fileName, expression.location, "console formatting of a cleanup-bearing temporary requires stored ownership", {
@@ -9563,7 +9567,7 @@ function inferExpressionInner(
       for (const part of expression.parts) {
         if (part.kind !== "value") continue;
         const type = inferExpression(part.expression, locals, globals, structs, enums, fileName, state);
-        requireConsoleFormattable(type, part.expression, structs, enums, fileName, state);
+        requireConsoleFormattable(type, part.expression, structs, enums, fileName, state, undefined, true);
       }
       return "String";
     case "boolean":
@@ -11773,7 +11777,7 @@ function inferExpressionInner(
               for (const part of argument.parts) {
                 if (part.kind !== "value") continue;
                 const type = inferExpression(part.expression, locals, globals, structs, enums, fileName, state);
-                requireConsoleFormattable(type, part.expression, structs, enums, fileName, state);
+                requireConsoleFormattable(type, part.expression, structs, enums, fileName, state, undefined, true);
               }
               continue;
             }

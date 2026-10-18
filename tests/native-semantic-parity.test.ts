@@ -393,7 +393,7 @@ test("native console borrows Strings only from storage or literals, like Stage 0
   }
   const directory = mkdtempSync("/tmp/z-native-console-storage-");
   try {
-    for (const argument of ["name", "holder.text", '"literal"', "`${name}!`"]) {
+    for (const argument of ["name", "holder.text", '"literal"', "`${name}!`", "`${make()}`"]) {
       const source = program(argument);
       const input = resolve(directory, "main.zs");
       writeFileSync(input, source);
