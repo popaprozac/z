@@ -3630,6 +3630,42 @@ test("scopes borrowed temporaries to short-circuit operands and loop conditions 
   }
 }, 240_000);
 
+test("lends cleanup-bearing aggregate temporaries for one call in both compilers", () => {
+  const input = resolve(projectRoot, "tests/fixtures/borrowed-aggregate-temporaries.zs");
+  // Each fresh aggregate lent with `in` is destroyed exactly once, right after
+  // its call, on every call shape. A skipped operand or ternary branch
+  // creates no temporary and evaluates nothing.
+  const expected = [
+    "released call", "call 6", "released m6", "method 12", "released ctor", "ctor 4", "label 7",
+    "released discarded", "released cond", "released loop", "released loop", "released loop", "count 4",
+    "released else!", "pick 5", "evaluated 2", "pick text 6", "released ret1", "early 4",
+    "released good", "released bad", "good 4", "bad rejected", "",
+  ].join("\n");
+  const stage0 = compileToC(readFileSync(input, "utf8"), input);
+  const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+  });
+  assert.equal(native.status, 0, native.stderr);
+  const directory = mkdtempSync("/tmp/z-borrowed-aggregate-temporaries-");
+  try {
+    for (const [tier, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+      for (const optimization of ["-O0", "-O2"]) {
+        const executable = resolve(directory, tier + optimization);
+        const built = spawnSync("clang", ["-x", "c", "-std=c11", optimization, "-Wall", "-Wextra", "-Werror",
+          "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+          encoding: "utf8", input: generated, timeout: 30_000,
+        });
+        assert.equal(built.status, 0, `${tier}: ${built.stderr}`);
+        const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+        assert.equal(run.status, 0, `${tier}${optimization}: ${run.stderr}`);
+        assert.equal(run.stdout, expected, `${tier}${optimization}`);
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("emits the String runtime when String appears only inside another type", () => {
   const source = `function empty(in values: Array<String>): boolean { return values.length == 0; }
     function main(): i32 { return empty(Array<String>()) ? 0 : 1; }`;

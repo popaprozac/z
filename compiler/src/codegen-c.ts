@@ -9002,7 +9002,7 @@ function generateDirectValue(
       consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
     ));
   }
-  if (expression.kind === "new" && expression.arguments.some((argument) => requiresStatementValue(argument, context))) {
+  if (expression.kind === "new" && requiresStatementValue(expression, context)) {
     return generateLoweredAggregate(expression, expression.arguments, context, consumeValue, consumeTerminates);
   }
   if (expression.kind === "conditional" && requiresStatementValue(expression, context)) {
@@ -9211,10 +9211,14 @@ function requiresStatementValue(expression: Expression, context: GenerationConte
     return requiresStatementValue(expression.left, context)
       || requiresStatementValue(expression.right, context);
   }
-  if (expression.kind === "new") return expression.arguments.some((argument) => requiresStatementValue(argument, context));
+  if (expression.kind === "new") {
+    return expression.arguments.some((argument) => requiresStatementValue(argument, context)
+      || lendsCleanupBearingTemporary(argument, context));
+  }
   if (expression.kind === "call") {
     return context.semanticInfo.foreignStatusCalls.has(expression.location.offset)
-      || expression.arguments.some((argument) => requiresStatementValue(argument, context));
+      || expression.arguments.some((argument) => requiresStatementValue(argument, context)
+        || lendsCleanupBearingTemporary(argument, context));
   }
   if (expression.kind === "structExpression" || expression.kind === "objectExpression") {
     if (context.semanticInfo.structSpreads.has(expression.location.offset)) return true;
@@ -9478,19 +9482,22 @@ function generateDynamicArrayValue(
   return lines.join("\n");
 }
 
+// An `in` argument with no stable storage whose value needs cleanup must be
+// staged in a hidden owner and destroyed after the call.
+function lendsCleanupBearingTemporary(expression: Expression, context: GenerationContext): boolean {
+  return !context.expressionOverrides.has(expression.location.offset)
+    && context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in"
+    && expression.kind !== "string"
+    && !isStableStorageExpression(expression)
+    && hasCleanupType(temporaryValueType(expression, context), context.structs, context.enums, context.semanticInfo.foreignTypes);
+}
+
 function callArgumentNeedsLowering(expression: Expression, context: GenerationContext): boolean {
   if (context.expressionOverrides.has(expression.location.offset)) return false;
   if (context.semanticInfo.foreignCallbackTargets.has(expression.location.offset)) return false;
   if (expression.kind === "closure") return true;
   if (requiresStatementValue(expression, context)) return true;
-  const access = context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset);
-  const type = temporaryValueType(expression, context);
-  if (
-    access === "in"
-    && expression.kind !== "string"
-    && !isStableStorageExpression(expression)
-    && hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)
-  ) return true;
+  if (lendsCleanupBearingTemporary(expression, context)) return true;
   return context.semanticInfo.cstringConversions.has(expression.location.offset)
     && expression.kind !== "string"
     && !isStableStorageExpression(expression);
@@ -9784,6 +9791,9 @@ function generateLoweredAggregate(
   const lines: string[] = [];
   const overrides = new Map<number, string>();
   const ownedTemporaries: CleanupLocal[] = [];
+  // Constructor arguments lent with `in` stay the caller's: destroyed after
+  // construction instead of being transferred into the new object.
+  const borrowedTemporaries: CleanupLocal[] = [];
   const cleanupScope = context.cleanupScopes.at(-1);
   try {
     for (const valueExpression of values) {
@@ -9801,6 +9811,10 @@ function generateLoweredAggregate(
         liveFlag = nextLiveFlag(temporary, context.liveFlagCounter);
         const cleanup = { name: temporary, type, liveFlag };
         ownedTemporaries.push(cleanup);
+        if (
+          expression.kind === "new"
+          && context.semanticInfo.nativeArgumentAccesses.get(valueExpression.location.offset) === "in"
+        ) borrowedTemporaries.push(cleanup);
         cleanupScope?.push(cleanup);
         lines.push(`bool ${liveFlag} = false;`);
         lines.push(`(void)${liveFlag};`);
@@ -9814,9 +9828,30 @@ function generateLoweredAggregate(
     }
     const loweredContext = withExpressionOverrides(context, overrides);
     lines.push(generateDirectValue(expression, loweredContext, (value, valueContext) => {
-      const transfer = ownedTemporaries.map((temporary) => `${temporary.liveFlag} = false;`).join("\n");
-      const consumed = consumeValue(value, valueContext);
-      return transfer ? `${transfer}\n${consumed}` : consumed;
+      const transfer = ownedTemporaries
+        .filter((temporary) => !borrowedTemporaries.includes(temporary))
+        .map((temporary) => `${temporary.liveFlag} = false;`)
+        .join("\n");
+      if (borrowedTemporaries.length === 0) {
+        const consumed = consumeValue(value, valueContext);
+        return transfer ? `${transfer}\n${consumed}` : consumed;
+      }
+      const result = `_z_call_result_${context.valueCounter.value++}`;
+      const declaration = generateLocalDeclaration(
+        temporaryValueType(expression, loweredContext),
+        result,
+        false,
+        context.structs,
+        context.enums,
+        context.semanticInfo.foreignNamedTypes,
+      );
+      const cleanup = [...borrowedTemporaries]
+        .reverse()
+        .map((temporary) => `${generateValueCleanup(temporary.name, temporary.type, null, context)}\n${temporary.liveFlag} = false;`)
+        .join("\n");
+      return [transfer, `${declaration} = ${value};`, cleanup, consumeValue(result, valueContext)]
+        .filter((line) => line.length > 0)
+        .join("\n");
     }, consumeTerminates));
   } finally {
     for (let index = 0; index < ownedTemporaries.length; index += 1) cleanupScope?.pop();

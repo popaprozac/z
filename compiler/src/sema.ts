@@ -15409,8 +15409,11 @@ function checkArguments(
         && structs.has(argument.callee.name)
         && argument.arguments.length === 1
         && argument.arguments[0].kind === "objectExpression";
-      const frameMaterializedTemporary = callAsyncContext?.mode === "await"
-        && (argument.kind === "structExpression" || aggregateTemporary);
+      const freshAggregate = argument.kind === "structExpression" || aggregateTemporary;
+      const frameMaterializedTemporary = callAsyncContext?.mode === "await" && freshAggregate;
+      // A synchronous call holds a fresh aggregate in a hidden owner for the
+      // call only; an `in` borrow cannot outlive the call, so this is sound.
+      const callMaterializedTemporary = !target.async && freshAggregate;
       if (
         target.async
         && !isNamedStorageExpression(borrowedArgument)
@@ -15462,6 +15465,7 @@ function checkArguments(
         hasOwnershipType(borrowedActual, structs, enums, state)
         && !isNamedStorageExpression(borrowedArgument)
         && !frameMaterializedTemporary
+        && !callMaterializedTemporary
         && borrowedArgument.kind !== "dynamicArrayExpression"
         && argument.kind !== "template"
         && argument.kind !== "string"

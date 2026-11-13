@@ -7668,6 +7668,69 @@ function referenceIdentityOperandLabels(
   );
 }
 
+// An `in` argument with no addressable storage of its own: a template, an
+// Array, a cleanup-bearing struct literal, a closure, or a fresh weak handle.
+// The caller holds it in a hidden owner for the call and destroys it after,
+// including when the call throws.
+function lendTemporaryArgument(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in tree: ExpressionTree,
+  argumentInput: usize,
+  value: usize,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  if (tree.nodes[argumentInput].kind == ExpressionKind.templateExpression) {
+    return pushExpression(
+      inout output, LoweredExpressionKind.borrowedTemporary,
+      "String", Array<usize>(value), Array<String>()
+    );
+  }
+  if (
+    output[value].kind == LoweredExpressionKind.arrayEmpty
+    || output[value].kind == LoweredExpressionKind.arrayValue
+  ) {
+    const arrayType = output[value].value.copyBytes(0, output[value].value.byteLength);
+    return pushExpression(
+      inout output, LoweredExpressionKind.borrowedTemporary,
+      arrayType, Array<usize>(value), Array<String>()
+    );
+  }
+  if (output[value].kind == LoweredExpressionKind.structValue) {
+    const aggregateName = output[value].value.copyBytes(0, output[value].value.byteLength);
+    const aggregateType = match (attempt lowerModuleTypeName(program, importedTypes, aggregateName)) {
+      success(type) => type;
+      failure(message) => throw `${message} while lending ${aggregateName} at ${tree.nodes[argumentInput].line}:${tree.nodes[argumentInput].column}`;
+    };
+    if (!moduleTypeNeedsCleanup(program, importedTypes, aggregateType)) return value;
+    return pushExpression(
+      inout output, LoweredExpressionKind.borrowedTemporary,
+      aggregateName, Array<usize>(value), Array<String>()
+    );
+  }
+  if (
+    output[value].kind == LoweredExpressionKind.closureValue
+    && output[value].labels.length > 0
+  ) {
+    // A closure maker returns a value, not addressable C storage.
+    const closureType = output[value].labels[0].copyBytes(0, output[value].labels[0].byteLength);
+    return pushExpression(
+      inout output, LoweredExpressionKind.borrowedTemporary,
+      closureType, Array<usize>(value), Array<String>()
+    );
+  }
+  if (output[value].kind == LoweredExpressionKind.weakValue) {
+    // Only a borrowed parameter leaves a fresh handle owned by the caller.
+    // A value parameter takes ownership and performs its own cleanup;
+    // releasing it here as well can free the strong owner's weak control.
+    return pushExpression(
+      inout output, LoweredExpressionKind.borrowedTemporary,
+      "Weak", Array<usize>(value), Array<String>()
+    );
+  }
+  return value;
+}
+
 function wrapOwnedStorage(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -12338,6 +12401,9 @@ function lowerExpressionContextual(
             value,
             inout output
           );
+        }
+        if (parameterModes[argument] == "in") {
+          value = try lendTemporaryArgument(program, importedTypes, tree, argumentInput, value, inout output);
         }
         children.push(value);
         labels.push(parameterModes[argument].copyBytes(
@@ -17215,6 +17281,10 @@ function lowerExpressionContextual(
             || parameterModes[argument - 1] == "out"
           )
         ) markMutableStorage(inout output, value);
+        if (
+          parameterModes.length >= argument
+          && parameterModes[argument - 1] == "in"
+        ) value = try lendTemporaryArgument(program, importedTypes, tree, argumentInput, value, inout output);
         children.push(value);
         let argumentMode = parameterModes.length >= argument
           ? parameterModes[argument - 1].copyBytes(
@@ -17587,70 +17657,7 @@ function lowerExpressionContextual(
       if (
         parameterModes.length >= argument
         && parameterModes[argument - 1] == "in"
-        && tree.nodes[argumentInput].kind
-          == ExpressionKind.templateExpression
-      ) {
-        let temporaryChildren = Array<usize>();
-        temporaryChildren.push(value);
-        value = pushExpression(
-          inout output,
-          LoweredExpressionKind.borrowedTemporary,
-          "String",
-          temporaryChildren,
-          Array<String>()
-        );
-      }
-      if (
-        parameterModes.length >= argument
-        && parameterModes[argument - 1] == "in"
-        && (
-          output[value].kind == LoweredExpressionKind.arrayEmpty
-          || output[value].kind == LoweredExpressionKind.arrayValue
-        )
-      ) {
-        let temporaryChildren = Array<usize>();
-        temporaryChildren.push(value);
-        const temporaryType = output[value].value.copyBytes(
-          0,
-          output[value].value.byteLength
-        );
-        value = pushExpression(
-          inout output,
-          LoweredExpressionKind.borrowedTemporary,
-          temporaryType,
-          temporaryChildren,
-          Array<String>()
-        );
-      }
-      if (
-        parameterModes.length >= argument
-        && parameterModes[argument - 1] == "in"
-        && output[value].kind == LoweredExpressionKind.closureValue
-        && output[value].labels.length > 0
-      ) {
-        // A closure maker returns a value, not addressable C storage. Keep its
-        // owner alive for this call, then release it even when the call throws.
-        const temporaryType = output[value].labels[0].copyBytes(
-          0, output[value].labels[0].byteLength
-        );
-        let temporaryChildren = Array<usize>();
-        temporaryChildren.push(value);
-        value = pushExpression(
-          inout output, LoweredExpressionKind.borrowedTemporary,
-          temporaryType, temporaryChildren, Array<String>()
-        );
-      }
-      if (output[value].kind == LoweredExpressionKind.weakValue
-        && parameterModes.length >= argument
-        && parameterModes[argument - 1] == "in") {
-        // Only a borrowed parameter leaves a fresh handle owned by the caller.
-        // A value parameter takes ownership and performs its own cleanup;
-        // releasing it here as well can free the strong owner's weak control.
-        value = pushExpression(
-          inout output, LoweredExpressionKind.borrowedTemporary, "Weak",
-          Array<usize>(value), Array<String>()
-        );
-      }
+      ) value = try lendTemporaryArgument(program, importedTypes, tree, argumentInput, value, inout output);
       if (
         callLabels.length >= argument
         && callLabels[argument - 1] == "in"
