@@ -10240,7 +10240,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   assert.match(
     objcDirectEmission,
-    /\[owner removeHandlerForName: z_stage1_string_cstring\(/,
+    /\[owner removeHandlerForName: "zapp"\]/,
   );
   const objcDirectCompilation = spawnSync(
     "clang",
@@ -10960,6 +10960,58 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(contentHashRun.status, 0, contentHashRun.stderr);
+
+  // C variadic calls: promoted scalars, String and template text lent as
+  // cstrings, and fixed-array length, with Stage 0's output and diagnostics.
+  const variadicFixture = resolve(projectRoot, "tests/fixtures/native-variadic-calls.zs");
+  const variadicExpected = "plain\n3 1.5 0.5 1\nzed|literal|tmpl3\n7 -2147483647 4 4\nloop 0;loop 1;loop 2;\n";
+  const stage0Variadic = spawnSync(process.execPath, [cli, "run", variadicFixture], { encoding: "utf8" });
+  assert.equal(stage0Variadic.status, 0, stage0Variadic.stderr);
+  assert.equal(stage0Variadic.stdout, variadicExpected);
+  const variadicProgram = resolve(directory, "variadic");
+  const variadicBuild = spawnSync(driver, ["build", variadicFixture, variadicProgram], {
+    encoding: "utf8", env: foreignAdapterEnvironment, timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(variadicBuild.status, 0, variadicBuild.stderr);
+  // Each loop iteration's template temporary is destroyed exactly once.
+  const sanitizedVariadic = resolve(directory, "variadic-sanitized");
+  const sanitizedVariadicBuild = spawnSync("clang", [
+    "-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
+    "-fno-sanitize-recover=all", `${variadicProgram}.c`, "-o", sanitizedVariadic,
+  ], { encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
+  assert.equal(sanitizedVariadicBuild.status, 0, sanitizedVariadicBuild.stderr);
+  for (const program of [variadicProgram, sanitizedVariadic]) {
+    const run = spawnSync(program, [], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, variadicExpected);
+  }
+  const variadicRejections: [string, string][] = [
+    ["stdio.printf();", 'C function "printf" expects at least 1 argument(s), found 0'],
+    ['stdio.printf("%d", Point({ x: 1 }));', 'unsupported variadic argument type Point for C function "printf"'],
+    ['stdio.printf("%d", inout counter);', "inout is only valid for a classified imported C record-pointer parameter"],
+    ['stdio.printf("%lld", 5000000000);', "variadic integer literal 5000000000 does not fit default i32; bind it to an explicit integer type first"],
+  ];
+  const variadicRejection = resolve(directory, "variadic-rejection.zs");
+  for (const [statement, message] of variadicRejections) {
+    writeFileSync(variadicRejection, [
+      'import stdio from "stdio.h";',
+      "struct Point { x: i32; }",
+      "function main(): i32 {",
+      "  let counter: i32 = 1;",
+      `  ${statement}`,
+      "  return counter - 1;",
+      "}",
+      "",
+    ].join("\n"));
+    const stage0Rejection = spawnSync(process.execPath, [cli, "check", variadicRejection], { encoding: "utf8" });
+    const nativeRejection = spawnSync(driver, ["check", variadicRejection], {
+      encoding: "utf8", env: foreignAdapterEnvironment,
+    });
+    for (const [tier, result] of [["stage0", stage0Rejection], ["native", nativeRejection]] as const) {
+      assert.equal(result.status, 1, `${tier}: ${statement}`);
+      assert.ok(result.stderr.includes(`5:`) && result.stderr.includes(message), `${tier}: ${result.stderr}`);
+    }
+  }
 
   const internalProject = resolve(directory, "internal-project");
   const internalFramework = resolve(internalProject, "framework");
@@ -13293,7 +13345,8 @@ function main(): i32 {
   );
   assert.match(
     emittedHandleSource,
-    /z_owned_handle_matches_label\(owner, z_stage1_string_cstring\(Z_STRING_LITERAL\("value"\)\)\)/,
+    // A literal is already NUL-terminated static storage, passed as a C literal.
+    /z_owned_handle_matches_label\(owner, "value"\)/,
   );
   assert.match(
     emittedHandleSource,

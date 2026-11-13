@@ -129,6 +129,8 @@ export struct NativeForeignFunctionContract {
   borrowedFromParameter: Option<usize>;
   invalidatesParameters: Array<usize>;
   invalidatesLifetimes: Array<String>;
+  // A C variadic function: arguments past `parameters` follow C default promotion.
+  variadic: boolean = false;
 }
 
 export struct NativeForeignCallbackContract {
@@ -4712,7 +4714,6 @@ export function normalizeForeignContracts(
       || declaration.overloadCount != 1
     ) continue;
     const overload = view declarations.overloads[declaration.overloadStart];
-    if (overload.variadic) continue;
     let inferredParameters = Array<NativeForeignParameterContract>();
     let representable = true;
     let parameterIndex: usize = 0;
@@ -4777,6 +4778,7 @@ export function normalizeForeignContracts(
         borrowedFromParameter: Option<usize>.none,
         invalidatesParameters: Array<usize>(),
         invalidatesLifetimes: Array<String>(),
+        variadic: overload.variadic,
       }));
       failure(_) => {}
     }

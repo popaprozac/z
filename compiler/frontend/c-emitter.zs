@@ -5198,6 +5198,12 @@ function appendExpression(
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received a malformed cstring projection";
     }
+    const projected = declaration.expressions[index].children[0];
+    if (declaration.expressions[projected].kind == LoweredExpressionKind.stringValue) {
+      // A literal is already NUL-terminated static storage, as in Stage 0.
+      appendCStringLiteral(inout output, declaration.expressions[projected].value);
+      return;
+    }
     output.append("z_stage1_string_cstring(");
     const value = declaration.expressions[index].children[0];
     try appendExpression(inout output, declaration, value);

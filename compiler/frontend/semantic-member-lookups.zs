@@ -770,6 +770,7 @@ export function rebaseModuleFunctionSignature(
     typeParameterConstraints,
     parameterModes,
     parameterTypes,
+    variadic: signature.variadic,
     viewParameter: signature.viewParameter,
     viewParameters,
     classIdentitySource: signature.classIdentitySource.copyBytes(

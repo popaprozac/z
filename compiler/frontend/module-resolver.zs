@@ -163,7 +163,9 @@ import {
   nativeBorrowedCallbackType,
   requireExpressionSyntaxType,
   requireExpressionType,
+  verifiedForeignNumericUnderlyingType,
 } from "./semantic-expression-types.zs";
+import { integerLiteralFits } from "./numeric-literal.zs";
 import {
   NativeAggregateConstructionShape,
   NativeMatchShape,
@@ -4827,6 +4829,74 @@ function requireStoredBorrowedArgument(
   );
 }
 
+// An argument past a C variadic function's fixed parameters, as in Stage 0: a
+// number, boolean, or cstring passed by value after C default promotion, or a
+// String lent to the call as a cstring. An unannotated integer literal is i32.
+function inferCVariadicArgumentType(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  nodeIndex: usize,
+  in functionName: String,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): String throws ModuleResolveError {
+  const access = expressionCapabilityAccess(tree, nodeIndex);
+  if (access.byteLength > 0) throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `${access} is only valid for a classified imported C record-pointer parameter`,
+    tree.nodes[nodeIndex].line,
+    tree.nodes[nodeIndex].column
+  );
+  let expected = "";
+  if (isContextualNumericLiteral(tree, nodeIndex)) {
+    let literal = tree.nodes[nodeIndex].value.copyBytes(0, tree.nodes[nodeIndex].value.byteLength);
+    if (tree.nodes[nodeIndex].kind == ExpressionKind.unaryExpression) {
+      const operand = tree.nodes[nodeIndex].children[0];
+      literal = `${literal}${tree.nodes[operand].value}`;
+    }
+    let floating = false;
+    let byte: usize = 0;
+    while (byte < literal.byteLength) {
+      const code = literal.byteAt(byte);
+      if (code == 46 || code == 101 || code == 69) floating = true;
+      byte = byte + 1;
+    }
+    if (floating) expected = "f64";
+    else if (!integerLiteralFits(literal, "i32")) throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `variadic integer literal ${literal} does not fit default i32; bind it to an explicit integer type first`,
+      tree.nodes[nodeIndex].line,
+      tree.nodes[nodeIndex].column
+    );
+    else expected = "i32";
+  }
+  const argumentType = try inferExpressionNodeTypeExpected(
+    module, modules, moduleIndex, arena, tree, nodeIndex, expected,
+    inout bindings, inout evidence
+  );
+  const actual = transparentTypeName(modules, moduleIndex, argumentType);
+  const foreignNumeric = verifiedForeignNumericUnderlyingType(modules, moduleIndex, actual);
+  if (
+    isNumericTypeName(actual)
+    || actual == "boolean"
+    || actual == "cstring"
+    || actual == "String"
+    || foreignNumeric.byteLength > 0
+  ) return argumentType;
+  throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `unsupported variadic argument type ${argumentType} for C function "${functionName}"`,
+    tree.nodes[nodeIndex].line,
+    tree.nodes[nodeIndex].column
+  );
+}
+
 // The `in` arguments of a call through a function value.
 function requireStoredBorrowedArguments(
   in module: ParsedModule,
@@ -4912,12 +4982,24 @@ function inferSignatureCallType(
     `function "${functionName}"`
   );
   const argumentCount = argumentNodes.length;
-  if (signature.parameterTypes.length != argumentCount) {
+  if (
+    signature.variadic
+      ? argumentCount < signature.parameterTypes.length
+      : signature.parameterTypes.length != argumentCount
+  ) {
+    const expectation = signature.variadic ? "at least " : "";
+    if (callKind == "foreign") throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `C function "${functionName}" expects ${expectation}${signature.parameterTypes.length} argument(s), found ${argumentCount}`,
+      tree.nodes[callIndex].line,
+      tree.nodes[callIndex].column
+    );
     throw genericCallError(
       module,
       tree,
       calleeIndex,
-      `${functionName} expects ${signature.parameterTypes.length} argument(s), received ${argumentCount}`
+      `${functionName} expects ${expectation}${signature.parameterTypes.length} argument(s), received ${argumentCount}`
     );
   }
   let accesses = Array<NativeCallAccess>();
@@ -4996,7 +5078,8 @@ function inferSignatureCallType(
     );
   }
   let accessIndex: usize = 0;
-  while (accessIndex < argumentCount) {
+  // C variadic arguments past the fixed parameters are passed by value.
+  while (accessIndex < argumentCount && accessIndex < signature.parameterTypes.length) {
     let nodeIndex = argumentNodes[accessIndex];
     // A Slice range borrows its receiver's storage for the call.
     if (stringStartsWith(signature.parameterTypes[accessIndex], "Slice<")) {
@@ -5138,6 +5221,14 @@ function inferSignatureCallType(
   let argumentIndex: usize = 0;
   while (argumentIndex < argumentCount) {
     const nodeIndex = argumentNodes[argumentIndex];
+    if (argumentIndex >= signature.parameterTypes.length) {
+      argumentTypes.push(try inferCVariadicArgumentType(
+        module, modules, moduleIndex, arena, tree, nodeIndex, functionName,
+        inout bindings, inout evidence
+      ));
+      argumentIndex = argumentIndex + 1;
+      continue;
+    }
     const mode = signature.parameterModes[argumentIndex].copyBytes(
       0,
       signature.parameterModes[argumentIndex].byteLength
@@ -5573,7 +5664,10 @@ function inferSignatureCallType(
     bindings
   );
   let parameterIndex: usize = 0;
-  while (parameterIndex < argumentTypes.length) {
+  while (
+    parameterIndex < argumentTypes.length
+    && parameterIndex < signature.parameterTypes.length
+  ) {
     const expected = substituteGenericType(
       signature.parameterTypes[parameterIndex],
       substitutions
@@ -5673,7 +5767,10 @@ function inferSignatureCallType(
     }
   }
   parameterIndex = 0;
-  while (parameterIndex < argumentTypes.length) {
+  while (
+    parameterIndex < argumentTypes.length
+    && parameterIndex < signature.parameterModes.length
+  ) {
     if (signature.parameterModes[parameterIndex] == "out") {
       const nodeIndex = argumentNodes[parameterIndex];
       const bindingIndex = tree.nodes[nodeIndex].children[0];
@@ -7241,7 +7338,14 @@ function inferExpressionNodeType(
     );
     if (memberName == "length" || memberName == "capacity") {
       const lengthOwnerType = transparentTypeName(modules, moduleIndex, receiverValueType);
-      if (memberName == "length" ? collectionHasLength(lengthOwnerType) : collectionHasCapacity(lengthOwnerType)) {
+      let fixedLength = false;
+      if (memberName == "length") {
+        match (fixedArrayShape(lengthOwnerType)) {
+          some(_) => fixedLength = true;
+          none => {}
+        }
+      }
+      if (fixedLength || (memberName == "length" ? collectionHasLength(lengthOwnerType) : collectionHasCapacity(lengthOwnerType))) {
         recordExpressionResolution(
           modules,
           moduleIndex,

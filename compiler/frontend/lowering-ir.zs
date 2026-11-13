@@ -17723,6 +17723,35 @@ function lowerExpressionContextual(
         }
         callLabels[argument - 1] = "value";
       }
+      if (foreignTarget.byteLength > 0 && argument > parameterTypes.length) {
+        // A C variadic argument is passed by value; a String is lent to the
+        // call as a cstring, and a template's String is destroyed after it.
+        let lentText = tree.nodes[argumentInput].kind == ExpressionKind.stringExpression
+          || tree.nodes[argumentInput].kind == ExpressionKind.templateExpression;
+        match (evidenceResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput
+        )) {
+          some(argumentType) => {
+            if (argumentType == "String") lentText = true;
+          }
+          none => {}
+        }
+        if (lentText) {
+          value = try lendTemporaryArgument(program, importedTypes, tree, argumentInput, value, inout output);
+          value = pushExpression(
+            inout output,
+            LoweredExpressionKind.cstringProjection,
+            "cstring",
+            Array<usize>(value),
+            Array<String>()
+          );
+        }
+        callLabels.push("value");
+      }
       children.push(value);
       argument = argument + 1;
     }
@@ -17796,6 +17825,13 @@ function lowerExpressionContextual(
           0,
           nativeArgument.mode.byteLength
         ));
+      }
+      // C variadic arguments follow the planned fixed parameters unchanged.
+      let variadicArgument = parameterTypes.length + 1;
+      while (variadicArgument < children.length) {
+        nativeChildren.push(children[variadicArgument]);
+        nativeLabels.push("value");
+        variadicArgument = variadicArgument + 1;
       }
       children = move nativeChildren;
       callLabels = move nativeLabels;

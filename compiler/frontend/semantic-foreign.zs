@@ -734,6 +734,7 @@ function foreignFunctionSignature(
       contract.returnType
     ),
     errorType,
+    variadic: contract.variadic,
   });
 }
 

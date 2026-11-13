@@ -516,6 +516,8 @@ export struct ModuleFunctionSignature {
   typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
   parameterModes: Array<String>;
   parameterTypes: Array<String>;
+  // A C variadic function accepts promoted scalar or text arguments after these.
+  variadic: boolean = false;
   // A foreign view result borrows from this parameter when present.
   viewParameter: Option<usize>;
   // Z view returns may conservatively borrow from several immutable inputs.
