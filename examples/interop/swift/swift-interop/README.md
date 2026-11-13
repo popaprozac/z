@@ -16,7 +16,7 @@ is the canonical invocation.
 
 The manifest also carries `Foundation` into the final native link plan. Build
 products live under this example's ignored `.z-cache` directory and are rebuilt
-when `Counter.swift` or `z.json` changes.
+when `Counter.swift`, `z.json`, or the `swiftc --version` output changes.
 
 This compatibility tier exposes only Swift declarations representable to
 Objective-C. Native Swift module and Swift Package import remains a separate

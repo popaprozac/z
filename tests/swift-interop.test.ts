@@ -160,6 +160,12 @@ hostToolchainTest("builds a declared Swift target for ordinary CLI and editor wo
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "swift=42, value=42\n");
   assert.equal(statSync(generatedHeader).mtimeMs, 0);
+  // A toolchain upgrade invalidates the cached module even when sources are unchanged.
+  const compilerStamp = resolve(artifact.includeDirectories[0], "swiftc.version");
+  writeFileSync(compilerStamp, "older Swift toolchain\n");
+  prepareProject(example);
+  assert.ok(statSync(generatedLibrary).mtimeMs > libraryMtime);
+  assert.notEqual(readFileSync(compilerStamp, "utf8"), "older Swift toolchain\n");
   const addOffset = source.indexOf("add(1)") + 1;
   assert.match(hover(source, example, addOffset)?.contents.value ?? "", /add\(amount: i32\): i32/);
 
