@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ApiNotes } from "./foreign-api-notes.ts";
@@ -741,11 +741,16 @@ export function prepareProject(fileName: string): ProjectBuild {
   const library = resolve(buildDirectory, `lib${moduleName}.dylib`);
   const symbolGraphDirectory = resolve(buildDirectory, "symbol-graphs");
   const symbolGraph = resolve(symbolGraphDirectory, `${moduleName}.symbols.json`);
+  // Generated headers include the toolchain's stdlib overlay, so outputs from another swiftc are stale.
+  const compilerStamp = resolve(buildDirectory, "swiftc.version");
+  const compilerVersion = swiftCompilerVersion(fileName);
   const freshness = Math.max(statSync(manifestPath).mtimeMs, ...sources.map((source) => statSync(source).mtimeMs));
   const cached = buildCache.get(manifestPath);
   const outputsFresh = existsSync(header)
     && existsSync(library)
     && statSync(library).mtimeMs >= freshness
+    && existsSync(compilerStamp)
+    && readFileSync(compilerStamp, "utf8") === compilerVersion
     && (cxxInterop || (existsSync(symbolGraph) && statSync(symbolGraph).mtimeMs >= freshness));
   if (cached?.freshness === freshness && outputsFresh) return cached.build;
   if (!outputsFresh) {
@@ -796,6 +801,7 @@ export function prepareProject(fileName: string): ProjectBuild {
         throw projectDiagnostic(fileName, `could not inspect Swift module ${JSON.stringify(moduleName)} for executor metadata: ${detail}`);
       }
     }
+    writeFileSync(compilerStamp, compilerVersion);
   }
 
   const compatibilityHeader = `${moduleName}-Swift.${cxxInterop ? "hpp" : "h"}`;
@@ -897,6 +903,21 @@ function macosSdkPath(fileName: string): string {
     throw projectDiagnostic(fileName, `could not locate the macOS SDK for Swift interop: ${result.stderr.trim() || "xcrun failed"}`);
   }
   return result.stdout.trim();
+}
+
+let cachedSwiftCompilerVersion: string | undefined;
+
+function swiftCompilerVersion(fileName: string): string {
+  if (cachedSwiftCompilerVersion !== undefined) return cachedSwiftCompilerVersion;
+  const result = spawnSync("xcrun", ["swiftc", "--version"], { encoding: "utf8" });
+  if (result.error) {
+    throw projectDiagnostic(fileName, `could not inspect the Swift compiler version: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw projectDiagnostic(fileName, `could not inspect the Swift compiler version: ${result.stderr.trim() || "swiftc failed"}`);
+  }
+  cachedSwiftCompilerVersion = result.stdout;
+  return cachedSwiftCompilerVersion;
 }
 
 function swiftHostTargetTriple(fileName: string): string {
