@@ -1349,10 +1349,21 @@ const answer = sum(Array<i32>(20, 22));
 
 Z materializes one hidden owned Array, passes a read-only pointer for the call,
 and destroys that Array immediately after the result is secured. This is a
-call-scoped convenience, not an escaping borrow or ARC allocation. Async
-borrows still require named, address-stable storage, and `inout`/`out` still
-require explicit mutable caller storage. Other cleanup-bearing temporary shapes
-must currently be bound before borrowing.
+call-scoped convenience, not an escaping borrow or ARC allocation. Templates and
+struct literals get the same treatment, including struct literals that own
+cleanup:
+
+```z
+const size = measure(Options({ title: "Import", tags: Array<String>("json") }));
+```
+
+The temporary is destroyed exactly once after the call, including when the call
+throws. An operand that `&&`, `||`, or `?:` skips creates no temporary. This
+applies to function, method, and constructor calls and to calls through
+function values. A directly awaited call keeps the temporary in the task frame
+until the child completes; a hot `task` child still requires named,
+address-stable storage. `inout`/`out` still require explicit mutable caller
+storage.
 
 Within one call, borrows and moves of the same storage must not overlap unless
 all are read-only (`in`). A by-value argument that copies takes no part in

@@ -604,7 +604,6 @@ test("holds in arguments to stored values and the temporaries a call can lend", 
     ["const result = counter.add(2);", stored("add")],
     ["const holder = new Holder(3);", stored("constructor")],
     ["show(x + 1);", stored("show")],
-    ["const size = takeNamed(Named({ name: \"abc\" }));", /a cleanup-bearing borrowed temporary must be bound before the call/],
   ];
   const program = (statement: string) => `${prelude}
     function main(): i32 {

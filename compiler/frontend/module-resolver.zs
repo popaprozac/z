@@ -4785,14 +4785,14 @@ function aggregateTemporaryCall(
 // An `in` argument of a Z-declared callable is storage the caller lends for
 // the call: a named binding or a path into one, or a value the call holds
 // for its duration, which is a string, a template, a `try` result, an
-// `Array<T>(...)`, a closure, or a struct literal whose type needs no cleanup.
+// `Array<T>(...)`, a closure, or a struct literal. A cleanup-bearing literal is
+// held in a hidden owner and destroyed after the call.
 function requireStoredBorrowedArgument(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
   in tree: ExpressionTree,
   nodeIndex: usize,
-  in argumentType: String,
   in functionName: String
 ): void throws ModuleResolveError {
   const kind = tree.nodes[nodeIndex].kind;
@@ -4816,20 +4816,7 @@ function requireStoredBorrowedArgument(
       }
     }
   }
-  if (aggregateTemporaryCall(modules, moduleIndex, tree, nodeIndex)) {
-    let visiting = Array<String>();
-    if (
-      typeHasCleanup(modules, moduleIndex, argumentType, visiting)
-      || typeMovesOnOwnedUse(modules, moduleIndex, argumentType)
-    ) throw resolutionError(
-      ModuleResolveErrorKind.typeMismatch,
-      module.path,
-      "a cleanup-bearing borrowed temporary must be bound before the call",
-      tree.nodes[nodeIndex].line,
-      tree.nodes[nodeIndex].column
-    );
-    return;
-  }
+  if (aggregateTemporaryCall(modules, moduleIndex, tree, nodeIndex)) return;
   const target = callTargetDisplayName(functionName);
   throw resolutionError(
     ModuleResolveErrorKind.typeMismatch,
@@ -4854,7 +4841,7 @@ function requireStoredBorrowedArguments(
   while (index < argumentNodes.length && index < signature.parameterModes.length) {
     if (signature.parameterModes[index] == "in") {
       try requireStoredBorrowedArgument(module, modules, moduleIndex, tree, argumentNodes[index],
-        signature.parameterTypes[index], functionName);
+        functionName);
     }
     index = index + 1;
   }
@@ -5431,7 +5418,7 @@ function inferSignatureCallType(
           && targetSymbolIndex < modules[targetModuleIndex].symbols.length
           && modules[targetModuleIndex].symbols[targetSymbolIndex].foreignHeader.byteLength > 0)
       ) {
-        try requireStoredBorrowedArgument(module, modules, moduleIndex, tree, nodeIndex, argumentType, functionName);
+        try requireStoredBorrowedArgument(module, modules, moduleIndex, tree, nodeIndex, functionName);
       }
       if (mode == "in" && stringStartsWith(argumentType, "__z_native_function:borrowed ")) {
         let proven = false;
