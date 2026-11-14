@@ -26967,7 +26967,38 @@ function lowerStatementCore(
             type = Option.some(move assignmentType);
           }
           let loweredExpression: usize = 0;
-          if (expectedTypeName.byteLength > 0) {
+          if (tree.nodes[sourceRoot].kind == ExpressionKind.unsafeExpression) {
+            // An unsafe block's selected value, as for a variable's
+            // initializer and a returned value. First tier: a value that
+            // owns nothing, which is what the unchecked reads give. One
+            // that needs cleanup would need the ownership the selected
+            // expression has, which the block hides here: it is bound
+            // first, as a nested unsafe expression is.
+            let owning = expectedTypeName.byteLength == 0;
+            if (!owning) {
+              const assignedType = try lowerModuleTypeName(
+                program,
+                importedTypes,
+                expectedTypeName
+              );
+              owning = moduleTypeNeedsCleanup(
+                program,
+                importedTypes,
+                assignedType
+              );
+            }
+            if (owning) {
+              throw `native lowering does not support assigning an unsafe expression's value that needs cleanup at ${tree.nodes[sourceRoot].line}:${tree.nodes[sourceRoot].column} yet; bind the selected value first`;
+            }
+            loweredExpression = try lowerUnsafeSelectedExpression(
+              program,
+              importedTypes,
+              evidence,
+              arena,
+              source,
+              inout expressions
+            );
+          } else if (expectedTypeName.byteLength > 0) {
             loweredExpression = try lowerExpressionExpected(
               program,
               importedTypes,
