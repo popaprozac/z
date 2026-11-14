@@ -11013,6 +11013,42 @@ test("compiles a multi-module Z application through the standalone native driver
     }
   }
 
+  // Programs the parity census found broken natively now match Stage 0:
+  // destructor lifetimes, view results and captures, literal conversions,
+  // exported enum aliases, imported frameworks, and objc.connect closures.
+  const parityRuns = [
+    "tests/fixtures/native-ownership-lifetimes.zs",
+    "tests/fixtures/native-view-results.zs",
+    "tests/fixtures/native-numeric-conversion-literals.zs",
+    "tests/fixtures/native-exported-enum-alias/main.zs",
+    "tests/fixtures/self-host-imported-function-value",
+    "tests/fixtures/objc-class-protocol-collision.zs",
+    "tests/fixtures/objc-notification-main-callback.zs",
+    "tests/fixtures/objc-connection-array.zs",
+    "examples/language/ownership/consuming-methods.zs",
+    "examples/language/ownership/replacement.zs",
+    "examples/language/ownership/optional-views.zs",
+    "examples/language/ownership/parameter-views.zs",
+    "examples/interop/c/native-out.zs",
+    "examples/interop/c/deployment-target",
+  ];
+  for (const entry of parityRuns) {
+    const path = resolve(projectRoot, entry);
+    const stage0Run = spawnSync(process.execPath, [cli, "run", path], { encoding: "utf8", timeout: 120_000 });
+    assert.equal(stage0Run.status, 0, `${entry} stage0: ${stage0Run.stderr}`);
+    const nativeRun = spawnSync(driver, ["run", path], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(nativeRun.status, 0, `${entry} native: ${nativeRun.stderr}`);
+    assert.equal(nativeRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), stage0Run.stdout, entry);
+  }
+  // A void expression closure runs its body as a statement.
+  const voidClosureRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-void-expression-closure.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(voidClosureRun.status, 0, voidClosureRun.stderr);
+  assert.equal(voidClosureRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "applied\nannounced\n");
+
   const internalProject = resolve(directory, "internal-project");
   const internalFramework = resolve(internalProject, "framework");
   const internalApplication = resolve(internalProject, "application");

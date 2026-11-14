@@ -84,6 +84,43 @@ function rejects(source: string, stage0Message: RegExp, nativeMessage = stage0Me
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
+test("checks view results and numeric constant conversions in both compilers", () => {
+  const prelude = `
+    struct Doc { id: i32; title: String; }
+    struct Lib { docs: Array<Doc>; METHOD }
+  `;
+  const viewCases: [string, string, RegExp][] = [
+    ["function title(): view String { return this.docs[0].title; }", "",
+      /the first view tier requires a concrete Z struct target/],
+    ["function first(inout this): view Doc { return this.docs[0]; }", "",
+      /a view return requires a synchronous, non-throwing borrowed instance method/],
+    ["static function first(in lib: Lib): view Doc { return lib.docs[0]; }", "",
+      /a view return requires a synchronous, non-throwing borrowed instance method/],
+    ["", "async function pick(in lib: Lib): view Doc { return lib.docs[0]; }",
+      /a parameter-provenanced view result requires a synchronous, non-throwing Z function/],
+    ["", "function longest(in lib: Lib): view String { return lib.docs[0].title; }",
+      /the first parameter-view tier requires a concrete Z struct or borrowed native handle target/],
+  ];
+  for (const [method, declaration, message] of viewCases) {
+    rejects(`${prelude.replace("METHOD", method)}
+      ${declaration}
+      function main(): i32 { return 0; }
+    `, message, message, ["self-host-resolve"]);
+  }
+  // A literal takes the conversion's target type; a signed constant must fit it.
+  const conversionCases: [string, RegExp][] = [
+    ["u8(300)", /integer literal 300 does not fit u8/],
+    ["u64(-1)", /constant integer value -1 cannot convert to u64/],
+    ["i8(-200)", /constant integer value -200 cannot convert to i8/],
+  ];
+  for (const [conversion, message] of conversionCases) {
+    rejects(`function main(): i32 {
+      const value = ${conversion};
+      return 0;
+    }`, message, message, ["self-host-resolve"]);
+  }
+}, 240_000);
+
 test("keeps named callable signatures and executor contracts checked", () => {
   rejects(`
     function wrong(value: String): i32 { return 0; }

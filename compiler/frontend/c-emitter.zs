@@ -772,7 +772,11 @@ function callableCaptureCType(
 ): String throws String {
   const type = try cType(expression.captureTypes[index]);
   if (index < expression.closureCaptureModes.length) {
-    if (expression.closureCaptureModes[index] == "in") return `${type} const *`;
+    // A view capture stores the view's own pointer; an in capture stores an address.
+    if (
+      expression.closureCaptureModes[index] == "in"
+      || expression.closureCaptureModes[index] == "view"
+    ) return `${type} const *`;
     if (expression.closureCaptureModes[index] == "inout") return `${type} *`;
   }
   return type;
@@ -781,7 +785,9 @@ function callableCaptureCType(
 function callableOwnsObjectiveCCapture(in expression: LoweredExpression, index: usize): boolean {
   return expression.captureTypes[index].kind == LoweredTypeKind.foreignObjCType
     && (index >= expression.closureCaptureModes.length
-      || (expression.closureCaptureModes[index] != "in" && expression.closureCaptureModes[index] != "inout"));
+      || (expression.closureCaptureModes[index] != "in"
+        && expression.closureCaptureModes[index] != "inout"
+        && expression.closureCaptureModes[index] != "view"));
 }
 
 function appendCallableEnvironmentAllocation(inout output: TextBuffer, in expression: LoweredExpression): void {
@@ -2643,7 +2649,10 @@ function appendAsyncTailSynchronousMatch(
           && viewPayloadLoadsAsValue(type);
         const objectiveCPayload = type.kind
           == LoweredTypeKind.foreignObjCType;
-        const classPayload = objectiveCPayload || type.kind == LoweredTypeKind.classType;
+        const payloadType = try cType(type);
+        const classPayload = objectiveCPayload
+          || type.kind == LoweredTypeKind.classType
+          || cTypeIsPointer(payloadType);
         if (
           !arm.matchBindingNeedsCleanup
           && !nicheViewOption
@@ -2651,7 +2660,6 @@ function appendAsyncTailSynchronousMatch(
         ) {
           output.append("const ");
         }
-        const payloadType = try cType(type);
         output.append(payloadType);
         if (!arm.matchBindingNeedsCleanup && classPayload) {
           output.append(" const");
@@ -5069,7 +5077,10 @@ function appendExpression(
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.closureCaptureValue) {
     output.append("(");
-    if (declaration.expressions[index].labels[0] != "value") output.append("*");
+    if (
+      declaration.expressions[index].labels[0] != "value"
+      && declaration.expressions[index].labels[0] != "view"
+    ) output.append("*");
     output.append("_z_stage1_callable_environment->");
     appendCBindingName(inout output, declaration.expressions[index].value);
     output.append(")");
@@ -5126,7 +5137,8 @@ function appendExpression(
         const modeIndex = capture - (declaration.expressions[index].closureBlockBody
           ? usize(0) : usize(1));
         const pointer = modeIndex < declaration.expressions[index].closureCaptureModes.length
-          && declaration.expressions[index].closureCaptureModes[modeIndex] != "value";
+          && declaration.expressions[index].closureCaptureModes[modeIndex] != "value"
+          && declaration.expressions[index].closureCaptureModes[modeIndex] != "view";
         if (pointer) output.append("&(");
         try appendExpression(inout output, declaration, value);
         if (pointer) output.append(")");
@@ -6047,6 +6059,44 @@ function appendExpression(
       throw "native C emission received a malformed class output slot";
     }
     const operand = expression.children[0];
+    if (expression.labels.length > 1 && expression.labels[1] == "value") {
+      // A value `out` slot: destroy a live previous value, then the callee
+      // initializes it. Without a flag, only the function's own `out`
+      // parameter is known to arrive uninitialized.
+      let destroy = expression.value.byteLength > 0;
+      if (!destroy) {
+        destroy = true;
+        if (declaration.expressions[operand].kind == LoweredExpressionKind.parameterValue) {
+          for (const parameter of declaration.parameters) {
+            if (
+              parameter.name == declaration.expressions[operand].value
+              && parameter.mode == LoweredParameterMode.output
+            ) destroy = false;
+          }
+        }
+      }
+      output.append("*({ ");
+      if (destroy) {
+        if (expression.value.byteLength > 0) {
+          output.append("if (");
+          output.append(expression.value);
+          output.append(") ");
+        }
+        output.append("Z_");
+        output.append(expression.labels[0]);
+        output.append("_deinit(&(");
+        try appendExpression(inout output, declaration, operand);
+        output.append(")); ");
+      }
+      if (expression.value.byteLength > 0) {
+        output.append(expression.value);
+        output.append(" = true; ");
+      }
+      output.append("&(");
+      try appendExpression(inout output, declaration, operand);
+      output.append("); })");
+      return;
+    }
     // Keep this an lvalue: ordinary call lowering takes its address. Evaluation
     // stays inside the call's branch, including short-circuit expressions.
     output.append("*({ ");
@@ -7902,6 +7952,11 @@ function appendCondition(
   if (!alreadyGrouped) output.append(")");
 }
 
+// A C spelling that is itself a pointer, such as a runtime handle.
+function cTypeIsPointer(in type: String): boolean {
+  return type.byteLength > 0 && type.byteAt(type.byteLength - 1) == 42;
+}
+
 function testValueTargetType(in typeName: String): String {
   if (stringStartsWith(typeName, "view ") && typeName.byteLength > 5) {
     return typeName.copyBytes(5, typeName.byteLength);
@@ -8249,8 +8304,9 @@ function appendLocalStatementStorage(
     none => false;
   };
   const viewStorage = match (in declaration.statements[index].expression) {
-    some(initializer) => declaration.expressions[initializer].kind
-      == LoweredExpressionKind.viewProjection
+    some(initializer) => declaration.expressions[initializer].resultView
+      || declaration.expressions[initializer].kind
+        == LoweredExpressionKind.viewProjection
       || declaration.expressions[initializer].kind
         == LoweredExpressionKind.arenaCreate
       || (
@@ -8352,7 +8408,12 @@ function appendLocalStatementStorage(
     appendIndent(inout output, depth);
     output.append("bool ");
     appendCBindingName(inout output, declaration.statements[index].liveFlag);
-    output.append(" = true;\n");
+    // A local declared without a value is not live until assigned.
+    let declaredLive = true;
+    for (const label of declaration.statements[index].labels) {
+      if (label == "declared-without-value") declaredLive = false;
+    }
+    output.append(declaredLive ? " = true;\n" : " = false;\n");
     if (
       (
         declaration.asyncSuspension == "tail-await"
@@ -8764,10 +8825,16 @@ function appendEnumMatchArmStart(
           type.kind == LoweredTypeKind.classType
           || type.kind == LoweredTypeKind.foreignObjCType
         );
-      // A class is already a pointer. Borrowed payload bindings freeze the
-      // pointer slot, not its pointee, matching ordinary `in Class` parameters.
+      // A class or other handle is already a pointer. Borrowed payload
+      // bindings freeze the pointer slot, not its pointee, matching ordinary
+      // `in Class` parameters.
+      const payloadType = try cType(type);
       const constantClassPayload = !declaration.statements[arm].matchBindingNeedsCleanup
-        && (type.kind == LoweredTypeKind.classType || type.kind == LoweredTypeKind.foreignObjCType);
+        && (
+          type.kind == LoweredTypeKind.classType
+          || type.kind == LoweredTypeKind.foreignObjCType
+          || cTypeIsPointer(payloadType)
+        );
       if (
         !declaration.statements[arm].matchBindingNeedsCleanup
         && !nicheViewOption
@@ -8775,7 +8842,6 @@ function appendEnumMatchArmStart(
       ) {
         output.append("const ");
       }
-      const payloadType = try cType(type);
       output.append(payloadType);
       if (constantClassPayload) output.append(" const");
       if (
@@ -8999,6 +9065,7 @@ function appendStatement(
             some(type) => returnType = try cType(type);
             none => returnType = try cType(declaration.returnType);
           }
+          if (declaration.returnsView) returnType = `const ${returnType} *`;
           output.append(returnType);
           output.append(` _z_stage1_return_${index} = `);
           try appendExpression(inout output, declaration, expression);
@@ -9032,6 +9099,7 @@ function appendStatement(
         some(type) => returnType = try cType(type);
         none => returnType = try cType(declaration.returnType);
       }
+      if (declaration.returnsView) returnType = `const ${returnType} *`;
       output.append(returnType);
       output.append(` _z_stage1_return_${index} = `);
       try appendExpression(inout output, declaration, expression);
@@ -9493,7 +9561,8 @@ function appendFunctionSignature(
     }
     none => {}
   }
-  const returnType = try cType(declaration.returnType);
+  let returnType = try cType(declaration.returnType);
+  if (declaration.returnsView) returnType = `const ${returnType} *`;
   const throwingMain = isThrowingMain(declaration);
   let method = false;
   match (in declaration.receiverType) {
@@ -12733,7 +12802,7 @@ function appendCallableOwnerHelpers(
         candidate = candidate + 1;
       }
       if (functionTypeIndex >= program.functionTypes.length) {
-        throw "native callable helper could not resolve its function type";
+        throw `native callable helper could not resolve its function type ${expression.labels[0]}`;
       }
       const functionType = view program.functionTypes[functionTypeIndex];
       const noClosureParameterNames = Array<String>();
@@ -14686,6 +14755,9 @@ function appendCallableOwnerHelpers(
             output.append(functionType.returnType.name);
             output.append("Tag_success };\n");
           } else if (expression.closureReturnType == "void") output.append("  return;\n");
+        } else if (functionType.returnType.kind == LoweredTypeKind.voidType) {
+          // C forbids `return` with a value, even a void one, from a void function.
+          output.append("  ");
         } else {
           output.append("  return ");
         }

@@ -443,6 +443,16 @@ function loadProject(
       throw message;
     }
   }
+  // A framework header links its framework, as in Stage 0, so a single-file
+  // program importing <AppKit/AppKit.h> needs no manifest entry.
+  for (const foreignModule of foreignModules) {
+    if (foreignModule.contracts.framework.byteLength == 0) continue;
+    let listed = false;
+    for (const existing of config.linkFrameworks) {
+      if (existing == foreignModule.contracts.framework) listed = true;
+    }
+    if (!listed) config.linkFrameworks.push(copy foreignModule.contracts.framework);
+  }
   // Foreign imports are resolved relative to their declaring source module.
   // The emitted translation unit lives elsewhere, so final compilation needs
   // those same directories, including generated modules and a nested entry.

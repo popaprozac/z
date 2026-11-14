@@ -258,6 +258,8 @@ export struct NativeForeignObjCProtocolContract {
 
 export readonly class NativeForeignContractSet {
   moduleSpecifier: String;
+  // The framework that provides this header, linked when the header is imported.
+  framework: String;
   types: Array<NativeForeignTypeContract>;
   constants: Array<NativeForeignConstantContract>;
   functions: Array<NativeForeignFunctionContract>;
@@ -4791,11 +4793,17 @@ export function normalizeForeignContracts(
     declarations,
     contracts
   );
+  let framework = "";
+  match (in declarations.framework) {
+    some(name) => framework = name.copyBytes(0, name.byteLength);
+    none => {}
+  }
   return new NativeForeignContractSet({
     moduleSpecifier: contracts.moduleSpecifier.copyBytes(
       0,
       contracts.moduleSpecifier.byteLength
     ),
+    framework,
     types,
     constants,
     functions,

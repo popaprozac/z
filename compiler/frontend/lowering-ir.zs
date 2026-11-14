@@ -7,7 +7,7 @@
 
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { isContextualNumericOperand } from "./semantic-expression-types.zs";
+import { isContextualNumericLiteral, isContextualNumericOperand } from "./semantic-expression-types.zs";
 
 import {
   ArrayBindingKind,
@@ -420,6 +420,8 @@ export struct LoweredExpression {
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
+  // A call whose result is `view T`: a pointer to the borrowed value.
+  resultView: boolean = false;
 }
 
 export struct LoweredMainDelaySegment {
@@ -524,6 +526,8 @@ struct LoweredClosureCapture {
   uses: Array<usize> = Array<usize>();
   // A lexical parameter shadows declarations before its invocation scope.
   scopeStatementStart: usize = 0;
+  // The captured binding is itself a view: capture its pointer, not its address.
+  view: boolean = false;
 }
 
 export struct LoweredFunction {
@@ -554,6 +558,8 @@ export struct LoweredFunction {
   receiverMode: LoweredParameterMode;
   parameters: Array<LoweredParameter>;
   returnType: LoweredType;
+  // A `view T` result is returned as a pointer to the borrowed value.
+  returnsView: boolean = false;
   fallthroughExpression: Option<usize>;
   expressions: Array<LoweredExpression>;
   statements: Array<LoweredStatement>;
@@ -6246,6 +6252,8 @@ function statementMovesName(
 
 struct CleanupMoveIndex {
   movedNames: Set<String>;
+  // Locals assigned after their declaration; a move does not end their life.
+  reassignedNames: Set<String>;
   borrowedBridgeNames: Set<String>;
   movedThreadBindingOffsets: Array<usize>;
   hasControlFlow: boolean;
@@ -6331,6 +6339,7 @@ function cleanupMoveIndex(
   in statements: Array<LoweredStatement>
 ): CleanupMoveIndex {
   let movedNames = Set<String>();
+  let reassignedNames = Set<String>();
   let borrowedBridgeNames = Set<String>();
   let hasControlFlow = false;
   for (const statement of arena.nodes) {
@@ -6341,6 +6350,24 @@ function cleanupMoveIndex(
       statement,
       inout movedNames
     );
+    if (statement.kind == StatementKind.assignmentStatement) {
+      match (in statement.expression) {
+        some(target) => {
+          match (in target.tree) {
+            some(tree) => {
+              if (tree.nodes[tree.root].kind == ExpressionKind.identifierExpression) {
+                reassignedNames.add(tree.nodes[tree.root].value.copyBytes(
+                  0,
+                  tree.nodes[tree.root].value.byteLength
+                ));
+              }
+            }
+            none => {}
+          }
+        }
+        none => {}
+      }
+    }
     if (
       statement.kind == StatementKind.ifStatement
       || statement.kind == StatementKind.whileStatement
@@ -6414,14 +6441,19 @@ function cleanupMoveIndex(
   }
   return CleanupMoveIndex({
     movedNames: move movedNames,
+    reassignedNames: move reassignedNames,
     borrowedBridgeNames: move borrowedBridgeNames,
     movedThreadBindingOffsets: move movedThreadBindingOffsets,
     hasControlFlow,
   });
 }
 
+// A moved local needs a live flag unless its single straight-line move is
+// its last use. Reassignment revives it, so it must be tracked like control flow.
 function cleanupIndexNeedsGuard(in index: CleanupMoveIndex, in name: String): boolean {
-  return index.hasControlFlow || index.borrowedBridgeNames.has(name);
+  return index.hasControlFlow
+    || index.borrowedBridgeNames.has(name)
+    || index.reassignedNames.has(name);
 }
 
 function cleanupIndexMovesBinding(
@@ -7234,16 +7266,29 @@ function planCleanupSequence(
               bindingName,
               bindingOffset
             );
+            // `let x: T;` holds no value until assigned or written through
+            // `out`; its live flag starts false so nothing destroys garbage.
+            // A class slot is NULL until then, which release already accepts.
+            const declaredWithoutValue = match (in arena.nodes[sourceIndex].expression) {
+              some(_) => false;
+              none => ownedType.kind != LoweredTypeKind.classType;
+            };
             let guard = "";
             if (
-              moved
-              && (forceMoveLiveGuards || cleanupIndexNeedsGuard(moveIndex, bindingName))
+              declaredWithoutValue
+              || (moved
+                && (forceMoveLiveGuards || cleanupIndexNeedsGuard(moveIndex, bindingName)))
             ) {
               guard = ownerLiveFlag(arena.nodes[sourceIndex].name);
               statements[localIndex].liveFlag = guard.copyBytes(
                 0,
                 guard.byteLength
               );
+              // Only the source declaration says whether a value exists yet;
+              // a match or try initializer lowers to later assignments.
+              if (declaredWithoutValue) {
+                statements[localIndex].labels.push("declared-without-value");
+              }
               liveFlags.push(LoweredLiveFlag({
                 owner: arena.nodes[sourceIndex].name.copyBytes(
                   0,
@@ -7609,6 +7654,27 @@ function wrapImplicitOwnedTransfer(
     move children,
     Array<String>()
   );
+}
+
+// Returning a field of `this` moves it out only when the field owns cleanup.
+// A copied scalar leaves the receiver live, so a consuming method still
+// destroys it. An unresolved type keeps the conservative move.
+function returnedThisFieldNeedsTransfer(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, index)) {
+    some(typeName) => {
+      match (attempt lowerModuleTypeName(program, importedTypes, typeName)) {
+        success(type) => return moduleTypeNeedsCleanup(program, importedTypes, type);
+        failure(_) => return true;
+      }
+    }
+    none => return true;
+  }
 }
 
 function sourceExpressionRootsInThis(
@@ -9404,6 +9470,11 @@ function resolveCallableCaptures(
       captureIndex = captureIndex + 1;
     }
     if (exists) continue;
+    let viewBinding = false;
+    match (namedValueTypeName(program, evidence, ownerName, captureName, useOffset)) {
+      some(typeName) => viewBinding = isPointerViewTypeName(typeName);
+      none => {}
+    }
     let resolvedType = Option<LoweredType>.none;
     let mutableBinding = false;
     let priorStatement: usize = 0;
@@ -9434,10 +9505,11 @@ function resolveCallableCaptures(
     match (resolvedType) {
       some(type) => captures.push(LoweredClosureCapture({
         name: move captureName,
-        owned: moduleTypeNeedsCleanup(program, importedTypes, type),
+        owned: !viewBinding && moduleTypeNeedsCleanup(program, importedTypes, type),
         mutableBinding,
         uses: Array<usize>(index),
         type,
+        view: viewBinding,
       }));
       none => match (namedValueTypeName(
         program,
@@ -9477,10 +9549,11 @@ function resolveCallableCaptures(
           }
           captures.push(LoweredClosureCapture({
             name: move captureName,
-            owned: moduleTypeNeedsCleanup(program, importedTypes, type),
+            owned: !viewBinding && moduleTypeNeedsCleanup(program, importedTypes, type),
             mutableBinding,
             uses: Array<usize>(index),
             type,
+            view: viewBinding,
           }));
         }
         // Imported namespaces and direct compiler/runtime helpers are not
@@ -11786,7 +11859,57 @@ function lowerSliceArgument(
   return lowered;
 }
 
+// A `view T` of a Z value is represented by a pointer; a borrowed cstring is not.
+function isPointerViewTypeName(in typeName: String): boolean {
+  return stringStartsWith(typeName, "view ")
+    && !stringStartsWith(typeName, "view cstring");
+}
+
+// A view result is returned as a pointer only for a Z struct target, as in
+// Stage 0. A foreign record or handle view keeps its native value ABI.
+function isZStructViewTypeName(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in typeName: String
+): boolean {
+  if (!isPointerViewTypeName(typeName)) return false;
+  const target = typeName.copyBytes(5, typeName.byteLength);
+  return match (attempt lowerModuleTypeName(program, importedTypes, target)) {
+    success(type) => type.kind == LoweredTypeKind.structType;
+    failure(_) => false;
+  };
+}
+
 function lowerExpressionContextual(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in contextualTypeName: String,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const value = try lowerExpressionNode(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    index,
+    contextualTypeName,
+    inout output
+  );
+  if (tree.nodes[index].kind == ExpressionKind.callExpression) {
+    match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, index)) {
+      some(typeName) => {
+        if (isZStructViewTypeName(program, importedTypes, typeName)) output[value].resultView = true;
+      }
+      none => {}
+    }
+  }
+  return value;
+}
+
+function lowerExpressionNode(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
@@ -12140,6 +12263,18 @@ function lowerExpressionContextual(
           "",
           Array<usize>(lowered),
           Array<String>(copy type.name)
+        );
+      }
+      if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+        // `out` writes fresh storage: destroy a live previous value first.
+        let labels = Array<String>(copy type.name);
+        labels.push("value");
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.classOutputSlot,
+          "",
+          Array<usize>(lowered),
+          move labels
         );
       }
     }
@@ -15016,6 +15151,10 @@ function lowerExpressionContextual(
         0,
         tree.nodes[calleeInput].value.byteLength
       );
+      // A literal already typed by its target needs no conversion.
+      if (sourceType == targetType && isContextualNumericLiteral(tree, argumentInput)) {
+        return argument;
+      }
       const conversionSourceType = match (
         loweredIntegerSourceType(importedTypes, sourceType, targetType)
       ) {
@@ -17683,8 +17822,11 @@ function lowerExpressionContextual(
         }
         if (
           callLabels[argument - 1] == "in"
-          && output[value].labels.length > 0
-          && stringStartsWith(output[value].labels[0], "view ")
+          && (
+            output[value].resultView
+            || (output[value].labels.length > 0
+              && stringStartsWith(output[value].labels[0], "view "))
+          )
         ) callLabels[argument - 1] = "view";
       }
       if (
@@ -21875,7 +22017,7 @@ function completeNativeClosureBlocks(
           throw "native expression callable changed its lexical capture order";
         }
         const mode = ownsEnvironment || capture.type.kind == LoweredTypeKind.cstringType
-          ? "value" : capture.mutableBinding ? "inout" : "in";
+          ? "value" : capture.view ? "view" : capture.mutableBinding ? "inout" : "in";
         expressions[expressionIndex].closureCaptureModes.push(copy mode);
         for (const use of capture.uses) {
           expressions[use].kind = LoweredExpressionKind.closureCaptureValue;
@@ -22056,7 +22198,7 @@ function completeNativeClosureBlocks(
         expressions[expressionIndex].closureCaptureModes.push(
           expressions[expressionIndex].labels[1] == "move"
             || capture.type.kind == LoweredTypeKind.cstringType
-            ? "value" : capture.mutableBinding ? "inout" : "in"
+            ? "value" : capture.view ? "view" : capture.mutableBinding ? "inout" : "in"
         );
       }
       // Each invocation owns its locals, independently of the environment
@@ -26715,7 +26857,31 @@ function lowerStatementCore(
                 expectedTypeName,
                 inout expressions
               );
-              if (expectedTypeName.byteLength > 0) {
+              if (isZStructViewTypeName(program, importedTypes, expectedTypeName)) {
+                // A view result is the address of the borrowed place, as in
+                // Stage 0; a view value or view call is already that address.
+                let alreadyView = expressions[loweredValue].resultView
+                  || expressions[loweredValue].kind == LoweredExpressionKind.viewProjection;
+                match (evidenceResolvedExpressionTypeName(
+                  program,
+                  importedTypes,
+                  evidence,
+                  tree,
+                  root
+                )) {
+                  some(actualTypeName) => {
+                    if (isPointerViewTypeName(actualTypeName)) alreadyView = true;
+                  }
+                  none => {}
+                }
+                if (!alreadyView) loweredValue = pushExpression(
+                  inout expressions,
+                  LoweredExpressionKind.viewProjection,
+                  "",
+                  Array<usize>(loweredValue),
+                  Array<String>()
+                );
+              } else if (expectedTypeName.byteLength > 0) {
                 let storageTypeName = expectedTypeName.copyBytes(
                   0,
                   expectedTypeName.byteLength
@@ -26748,10 +26914,12 @@ function lowerStatementCore(
                 );
               }
               if (
-                tree.nodes[root].kind == ExpressionKind.memberExpression
+                !isZStructViewTypeName(program, importedTypes, expectedTypeName)
+                && tree.nodes[root].kind == ExpressionKind.memberExpression
                 && sourceExpressionRootsInThis(tree, root)
                 && expressions[loweredValue].kind
                   != LoweredExpressionKind.moveValue
+                && returnedThisFieldNeedsTransfer(program, importedTypes, evidence, tree, root)
               ) {
                 loweredValue = pushExpression(
                   inout expressions,
@@ -29151,6 +29319,8 @@ function lowerFunction(
     }));
   }
   const throwsError = match (in declaration.errorType) { some(_) => true; none => false; };
+  const returnsView = isPointerViewTypeName(declaration.returnType.name)
+    && returnType.kind == LoweredTypeKind.structType;
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
     testName: declaration.testName.copyBytes(0, declaration.testName.byteLength),
@@ -29182,6 +29352,7 @@ function lowerFunction(
     receiverMode: lowerReceiverMode(receiverSourceMode),
     parameters,
     returnType: move returnType,
+    returnsView,
     fallthroughExpression,
     expressions,
     statements,
@@ -32429,6 +32600,21 @@ function importedTypesForModule(
         match (loweredAttempt) {
           success(lowered) => {
             const visiting = Array<String>();
+            // An enum alias shares its target's variants; an empty variant list
+            // would hide `Target.variant` from imported enum lookup.
+            let aliasVariants = Array<LoweredVariant>();
+            let aliasPayloadBearing = false;
+            if (lowered.kind == LoweredTypeKind.enumType) {
+              match (loweredEnumCopy(enums, lowered.name)) {
+                some(declaration) => {
+                  for (const variant of declaration.variants) {
+                    aliasVariants.push(copyLoweredVariant(variant));
+                  }
+                  aliasPayloadBearing = declaration.payloadBearing;
+                }
+                none => {}
+              }
+            }
             types.push(LoweredImportedType({
               localName: symbol.name.copyBytes(
                 0,
@@ -32465,8 +32651,8 @@ function importedTypesForModule(
               ),
               resourceRelease: "",
               fields: Array<LoweredField>(),
-              variants: Array<LoweredVariant>(),
-              payloadBearing: false,
+              variants: move aliasVariants,
+              payloadBearing: aliasPayloadBearing,
               underlyingType: lowered.kind == LoweredTypeKind.functionType
                 ? aliasTarget.copyBytes(0, aliasTarget.byteLength)
                 : "",

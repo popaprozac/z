@@ -48,6 +48,7 @@ import {
   ModuleSymbolKind,
   ModuleTypeSignature,
   ResolvedModule,
+  codedModuleResolutionError,
   moduleResolutionError,
 } from "./semantic-model.zs";
 import {
@@ -732,6 +733,77 @@ function validateArenaTypes(
   }
 }
 
+// Declaration rules for a `view T` result, as in Stage 0. A method's view is
+// tied to an immutable value-struct receiver; a function's view to its `in`
+// inputs. Neither may cross a suspension or an error path.
+function validateViewReturn(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in declaration: FunctionDeclaration,
+  method: boolean,
+  valueStructMethod: boolean
+): void throws ModuleResolveError {
+  if (!stringStartsWith(declaration.returnType.name, "view ")) return;
+  const target = declaration.returnType.name.copyBytes(
+    5,
+    declaration.returnType.name.byteLength
+  );
+  let structTarget = false;
+  let borrowedHandle = false;
+  match (typeSymbolLocation(modules, moduleIndex, target)) {
+    some(location) => {
+      const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          structTarget = symbol.kind == ModuleSymbolKind.structSymbol
+            && signature.foreignNativeName.byteLength == 0;
+          borrowedHandle = signature.foreignKind == "handle"
+            && signature.foreignResourceRelease.byteLength == 0;
+        }
+        none => structTarget = symbol.kind == ModuleSymbolKind.structSymbol;
+      }
+    }
+    none => {}
+  }
+  const throwing = match (in declaration.errorType) {
+    some(_) => true;
+    none => false;
+  };
+  let message = "";
+  if (method) {
+    if (!valueStructMethod) {
+      message = "the zero-overhead view tier requires a value-struct owner";
+    } else if (
+      declaration.staticMethod
+      || declaration.asynchronous
+      || declaration.receiverMode != ReceiverMode.none
+      || throwing
+    ) {
+      message = "a view return requires a synchronous, non-throwing borrowed instance method";
+    } else if (!structTarget) {
+      message = "the first view tier requires a concrete Z struct target";
+    }
+  } else if (
+    declaration.asynchronous
+    || throwing
+    || declaration.rawLanguage.byteLength > 0
+  ) {
+    message = "a parameter-provenanced view result requires a synchronous, non-throwing Z function";
+  } else if (!structTarget && !borrowedHandle) {
+    message = "the first parameter-view tier requires a concrete Z struct or borrowed native handle target";
+  }
+  if (message.byteLength > 0) throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    "Z0206",
+    module.path,
+    message,
+    declaration.returnType.line,
+    declaration.returnType.column,
+    1
+  );
+}
+
 function validateFunctionTypes(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -1203,6 +1275,14 @@ function validateAggregateTypes(
       true,
       declaration.kind == DeclarationKind.structDeclaration
     );
+    try validateViewReturn(
+      module,
+      modules,
+      moduleIndex,
+      method,
+      true,
+      declaration.kind == DeclarationKind.structDeclaration
+    );
   }
   match (in declaration.deinitializer) {
     some(deinitializer) => {
@@ -1645,6 +1725,7 @@ export function validateModuleTypes(
   );
   for (const declaration of module.program.functions) {
     try validateFunctionTypes(module, modules, moduleIndex, empty, declaration, false, false);
+    try validateViewReturn(module, modules, moduleIndex, declaration, false, false);
   }
   for (const declaration of module.program.aggregates) {
     try validateAggregateTypes(module, modules, moduleIndex, declaration);

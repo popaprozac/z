@@ -5956,6 +5956,19 @@ function inferUnclassifiedCallArguments(
       nodeIndex,
       argumentType
     );
+    // Lowering emits a closure through its checked function type, such as an
+    // objc.connect action; record it so that type is generated.
+    if (
+      tree.nodes[nodeIndex].kind == ExpressionKind.closureExpression
+      && argumentType.byteLength > 0
+    ) recordExpressionResolution(
+      modules,
+      moduleIndex,
+      tree,
+      nodeIndex,
+      argumentType,
+      inout evidence
+    );
     if (
       tree.nodes[nodeIndex].kind == ExpressionKind.argumentReferenceExpression
       && tree.nodes[nodeIndex].value == "out"
@@ -9401,16 +9414,54 @@ function inferExpressionNodeType(
           );
         }
         const argument = children[1];
-        const actual = try inferExpressionNodeType(
-          module,
-          modules,
-          moduleIndex,
-          arena,
-          tree,
-          argument,
-          inout bindings,
-          inout evidence
-        );
+        // A literal takes the target type, as in Stage 0: `u64(18446744073709551615)`
+        // is in range and `u8(300)` is not.
+        const plainLiteral = tree.nodes[argument].kind == ExpressionKind.numberExpression
+          && isNumericTypeName(base);
+        if (
+          !plainLiteral
+          && isIntegerTypeName(base)
+          && isContextualNumericLiteral(tree, argument)
+          && tree.nodes[argument].kind == ExpressionKind.unaryExpression
+        ) {
+          // A signed constant converts by value; Stage 0 rejects it when the
+          // target cannot represent it rather than trapping at run time.
+          const operand = tree.nodes[argument].children[0];
+          const constant = tree.nodes[argument].value == "-"
+            ? `-${tree.nodes[operand].value}`
+            : tree.nodes[operand].value.copyBytes(0, tree.nodes[operand].value.byteLength);
+          if (!integerLiteralFits(constant, base)) throw codedModuleResolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            "Z0104",
+            module.path,
+            `constant integer value ${constant} cannot convert to ${base}`,
+            tree.nodes[argument].line,
+            tree.nodes[argument].column,
+            1
+          );
+        }
+        const actual = plainLiteral
+          ? try inferExpressionNodeTypeExpected(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            argument,
+            base,
+            inout bindings,
+            inout evidence
+          )
+          : try inferExpressionNodeType(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            argument,
+            inout bindings,
+            inout evidence
+          );
         if (actual.byteLength == 0) {
           // Stage 1 intentionally defers foreign scalar identity until that
           // ABI evidence enters the native graph. Stage 0 remains authoritative
