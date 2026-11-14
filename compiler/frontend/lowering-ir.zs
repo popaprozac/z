@@ -422,6 +422,9 @@ export struct LoweredExpression {
   objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
   // A call whose result is `view T`: a pointer to the borrowed value.
   resultView: boolean = false;
+  // A struct value's children in declaration order, when that differs from
+  // `children` (evaluation order). C++ requires ordered designators.
+  fieldOrder: Array<usize> = Array<usize>();
 }
 
 export struct LoweredMainDelaySegment {
@@ -7787,11 +7790,33 @@ function lendTemporaryArgument(
       success(type) => type;
       failure(message) => throw `${message} while lending ${aggregateName} at ${tree.nodes[argumentInput].line}:${tree.nodes[argumentInput].column}`;
     };
-    if (!moduleTypeNeedsCleanup(program, importedTypes, aggregateType)) return value;
+    if (!moduleTypeNeedsCleanup(program, importedTypes, aggregateType)) {
+      return lendCleanupFreeTemporary(aggregateName, value, inout output);
+    }
     return pushExpression(
       inout output, LoweredExpressionKind.borrowedTemporary,
       aggregateName, Array<usize>(value), Array<String>()
     );
+  }
+  if (
+    output[value].kind == LoweredExpressionKind.enumValue
+    || output[value].kind == LoweredExpressionKind.enumPayloadValue
+  ) {
+    const enumName = output[value].value.copyBytes(0, output[value].value.byteLength);
+    if (stringStartsWith(enumName, "__z_NicheViewOption_")) return value;
+    // A payload-free case owns nothing, whatever the enum's other cases hold.
+    if (output[value].kind == LoweredExpressionKind.enumValue) {
+      return lendCleanupFreeTemporary(enumName, value, inout output);
+    }
+    match (attempt lowerModuleTypeName(program, importedTypes, enumName)) {
+      success(enumType) => {
+        if (!moduleTypeNeedsCleanup(program, importedTypes, enumType)) {
+          return lendCleanupFreeTemporary(enumName, value, inout output);
+        }
+      }
+      failure(_) => {}
+    }
+    return value;
   }
   if (
     output[value].kind == LoweredExpressionKind.closureValue
@@ -7814,6 +7839,19 @@ function lendTemporaryArgument(
     );
   }
   return value;
+}
+
+// A literal has no storage to borrow (in C++ a compound literal is a
+// temporary), so it is held in a named temporary with no cleanup.
+function lendCleanupFreeTemporary(
+  in typeName: String,
+  value: usize,
+  inout output: Array<LoweredExpression>
+): usize {
+  return pushExpression(
+    inout output, LoweredExpressionKind.borrowedTemporary,
+    typeName, Array<usize>(value), Array<String>("cleanup-free")
+  );
 }
 
 function wrapOwnedStorage(
@@ -10140,6 +10178,43 @@ function importedStructTarget(
     ));
   }
   return Option<String>.none;
+}
+
+// The declaration-order permutation of a struct value's labelled children,
+// or empty when they are already in order or the layout is not known here.
+function structValueFieldOrder(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String,
+  in labels: Array<String>
+): Array<usize> {
+  let declared = Array<String>();
+  for (const aggregate of program.aggregates) {
+    if (aggregate.name != name || declared.length > 0) continue;
+    for (const field of aggregate.fields) {
+      declared.push(field.name.copyBytes(0, field.name.byteLength));
+    }
+  }
+  for (const imported of importedTypes) {
+    if (declared.length > 0 || (imported.localName != name && imported.targetName != name)) continue;
+    for (const field of imported.fields) {
+      declared.push(field.name.copyBytes(0, field.name.byteLength));
+    }
+  }
+  let order = Array<usize>();
+  let reordered = false;
+  for (const fieldName of declared) {
+    let index: usize = 0;
+    while (index < labels.length) {
+      if (labels[index] == fieldName) {
+        if (index != order.length) reordered = true;
+        order.push(index);
+      }
+      index = index + 1;
+    }
+  }
+  if (!reordered || order.length != labels.length) return Array<usize>();
+  return order;
 }
 
 function importedStructIsForeign(
@@ -16803,6 +16878,7 @@ function lowerExpressionNode(
                 moveChildren,
                 Array<String>()
               );
+              const fieldOrder = structValueFieldOrder(program, importedTypes, constructionName, labels);
               const constructed = pushExpression(
                 inout output,
                 LoweredExpressionKind.structValue,
@@ -16810,6 +16886,7 @@ function lowerExpressionNode(
                 children,
                 labels
               );
+              output[constructed].fieldOrder = move fieldOrder;
               let spreadChildren = Array<usize>();
               spreadChildren.push(constructed);
               spreadChildren.push(movedSource);
@@ -16914,6 +16991,7 @@ function lowerExpressionNode(
                   moveChildren,
                   Array<String>()
                 );
+                const fieldOrder = structValueFieldOrder(program, importedTypes, constructionName, labels);
                 const constructed = pushExpression(
                   inout output,
                   LoweredExpressionKind.structValue,
@@ -16921,6 +16999,7 @@ function lowerExpressionNode(
                   children,
                   labels
                 );
+                output[constructed].fieldOrder = move fieldOrder;
                 let spreadChildren = Array<usize>();
                 spreadChildren.push(constructed);
                 spreadChildren.push(movedSource);
@@ -16981,7 +17060,8 @@ function lowerExpressionNode(
             }
           }
         }
-        return pushExpression(
+        const fieldOrder = structValueFieldOrder(program, importedTypes, constructionName, labels);
+        const constructed = pushExpression(
           inout output,
           importedStructIsForeign(importedTypes, constructionName)
             ? LoweredExpressionKind.foreignStructValue
@@ -16990,6 +17070,8 @@ function lowerExpressionNode(
           children,
           labels
         );
+        output[constructed].fieldOrder = move fieldOrder;
+        return constructed;
       }
     }
     let staticMethodTarget = "";
@@ -17368,6 +17450,12 @@ function lowerExpressionNode(
           Array<String>()
         );
       }
+      // A borrowed value receiver that is a literal has no storage of its own.
+      if (
+        receiverType.kind != LoweredTypeKind.classType
+        && receiverType.kind != LoweredTypeKind.foreignObjCType
+        && (receiverMode.byteLength == 0 || receiverMode == "in")
+      ) receiver = try lendTemporaryArgument(program, importedTypes, tree, receiverInput, receiver, inout output);
       let children = Array<usize>();
       children.push(receiver);
       const parameterModes = resolvedCallParameterModes(

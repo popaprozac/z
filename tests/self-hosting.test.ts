@@ -1,4 +1,5 @@
 import { chmodSync, copyFileSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   ApiNoteConflictError,
   DiagnosticError,
@@ -654,12 +655,12 @@ test("keeps optional struct fields ownership-safe through native parsing and emi
   assert.match(emission.stdout, /\.payload = \(Z___z_Option_Resource\)\{\.tag = Z___z_Option_ResourceTag_none\}/);
   assert.match(
     emission.stdout,
-    /\.payload = \(Z___z_Option_Resource\)\{\.tag = Z___z_Option_ResourceTag_some, \.payload\.some = \(_z_stage1_live_resource = false, resource\)\}/,
+    /\.payload = \(Z___z_Option_Resource\)\{\.tag = Z___z_Option_ResourceTag_some, \.payload = \{ \.some = \(_z_stage1_live_resource = false, resource\)\}\}/,
   );
   assert.match(emission.stdout, /\.payload = \(_z_stage1_live_option = false, option\)/);
   assert.doesNotMatch(
     emission.stdout,
-    /\.payload\.some = option/,
+    /\.payload = \{ \.some = option/,
   );
   // The source owner is disarmed at transfer; shared cleanup may remain, but
   // must be conditional rather than destroying the moved value again.
@@ -1253,7 +1254,7 @@ test("copies and moves owned fields through native object destructuring", () => 
   );
   assert.match(
     emission.stdout,
-    /_z_destructure_\d+\.path = \(__typeof__\(_z_destructure_\d+\.path\)\)\{0\}/,
+    /_z_destructure_\d+\.path = \(__typeof__\(_z_destructure_\d+\.path\)\)\{\}/,
   );
   assert.match(
     emission.stdout,
@@ -1324,7 +1325,7 @@ test("materializes concrete generic value structs through native ownership", () 
   );
   assert.match(
     emission.stdout,
-    /_z_destructure_\d+\.first = \(__typeof__\(_z_destructure_\d+\.first\)\)\{0\}/,
+    /_z_destructure_\d+\.first = \(__typeof__\(_z_destructure_\d+\.first\)\)\{\}/,
   );
   assert.match(
     emission.stdout,
@@ -1979,7 +1980,7 @@ test("keeps typed worker try propagation inside the worker result context", () =
     assert.equal(emission.status, 0, emission.stderr);
     assert.doesNotMatch(
       emission.stdout,
-      /\.payload\.success = _z_function_\d+_loadText\(/,
+      /\.payload = \{ \.success = _z_function_\d+_loadText\(/,
     );
     assert.doesNotMatch(
       emission.stdout,
@@ -3519,7 +3520,7 @@ test("emits static struct and class methods as direct native calls", () => {
   );
   assert.match(
     emission.stdout,
-    /\.payload\.success = Z_Range_normalized\(left, right\)/,
+    /\.payload = \{ \.success = Z_Range_normalized\(left, right\)/,
   );
   assert.match(
     emission.stdout,
@@ -4208,7 +4209,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     defaultsEmission.stdout,
-    /Z_RequestOptions patient = \(Z_RequestOptions\)\{\.timeoutMilliseconds = 5000, \.retries = 3/,
+    /Z_RequestOptions patient = \(Z_RequestOptions\)\{\.retries = 3, \.timeoutMilliseconds = 5000/,
   );
   const defaultsExecutable = resolve(directory, "defaults");
   const defaultsCompilation = spawnSync(
@@ -4347,7 +4348,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     moduleEmission.stdout,
-    /int32_t main\(void\) \{.*?Z_Point point = _z_function_\d+_makePoint\(20, 20\);.*?Z_Point directPoint = \(Z_Point\)\{\.x = 1, \.y = 1\};.*?Z_Resource resource = _z_function_\d+_makeResource\(0\);.*?Z_Session session = \(Z_Session\)\{\.resource = resource\};.*?Z_ResourceState current = _z_function_\d+_makeState\(0\);.*?Z_ResourceState direct = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_ready, \.payload\.ready = _z_function_\d+_makeResource\(0\)\};.*?Z_ResourceState empty = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_empty\};/s,
+    /int32_t main\(void\) \{.*?Z_Point point = _z_function_\d+_makePoint\(20, 20\);.*?Z_Point directPoint = \(Z_Point\)\{\.x = 1, \.y = 1\};.*?Z_Resource resource = _z_function_\d+_makeResource\(0\);.*?Z_Session session = \(Z_Session\)\{\.resource = resource\};.*?Z_ResourceState current = _z_function_\d+_makeState\(0\);.*?Z_ResourceState direct = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_ready, \.payload = \{ \.ready = _z_function_\d+_makeResource\(0\)\}\};.*?Z_ResourceState empty = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_empty\};/s,
   );
   assert.equal(
     moduleEmission.stdout.match(/Z_Resource_deinit\(&self->resource\);/g)?.length,
@@ -4696,7 +4697,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     nativeStringEmission.stdout,
-    /_z_function_\d+_borrowedLength\(&\(Z_STRING_LITERAL\("ok"\)\)\)/,
+    /_z_function_\d+_borrowedLength\(Z_STRING_LITERAL_ADDRESS\("ok"\)\)/,
   );
   assert.match(nativeStringEmission.stdout, /z_text_buffer_append\(&\(output\), Z_STRING_LITERAL\("he"\)\)/);
   assert.match(nativeStringEmission.stdout, /z_text_buffer_append_bytes\(&\(output\), Z_STRING_LITERAL\("llo!"\), (?:0|UINT64_C\(0\)), (?:1|UINT64_C\(1\))\)/);
@@ -4805,7 +4806,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     payloadEnumEmission.stdout,
-    /return \(Z_Reading\)\{\.tag = Z_ReadingTag_count, \.payload\.count = value\};/,
+    /return \(Z_Reading\)\{\.tag = Z_ReadingTag_count, \.payload = \{ \.count = value\}\};/,
   );
   assert.match(
     payloadEnumEmission.stdout,
@@ -4842,7 +4843,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /return \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some, \.payload\.some = value\};/,
+    /return \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some, \.payload = \{ \.some = value\}\};/,
   );
   assert.match(
     optionEmission.stdout,
@@ -4866,7 +4867,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /Z___z_Option_i32 scalar = \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some, \.payload\.some = 42\};/,
+    /Z___z_Option_i32 scalar = \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some, \.payload = \{ \.some = 42\}\};/,
   );
   assert.match(
     optionEmission.stdout,
@@ -4874,7 +4875,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /present \? \(Z___z_Option_String\)\{\.tag = Z___z_Option_StringTag_some, \.payload\.some = Z_STRING_LITERAL\("z"\)\} : \(Z___z_Option_String\)\{\.tag = Z___z_Option_StringTag_none\}/,
+    /present \? \(Z___z_Option_String\)\{\.tag = Z___z_Option_StringTag_some, \.payload = \{ \.some = Z_STRING_LITERAL\("z"\)\}\} : \(Z___z_Option_String\)\{\.tag = Z___z_Option_StringTag_none\}/,
   );
   assert.match(
     optionEmission.stdout,
@@ -4882,7 +4883,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /Z___z_Option_User storedUser = .*?\.payload\.some = Z_User_retain\(user\)/s,
+    /Z___z_Option_User storedUser = .*?\.payload = \{ \.some = Z_User_retain\(user\)/s,
   );
   assert.match(
     optionEmission.stdout,
@@ -4912,11 +4913,11 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(resultEmission.stdout, /typedef enum Z___z_Result_i32_ProblemTag/);
   assert.match(
     resultEmission.stdout,
-    /return \(Z___z_Result_i32_Problem\)\{\.tag = Z___z_Result_i32_ProblemTag_failure, \.payload\.failure = \(Z_Problem\)\{\.code = 7\}\};/,
+    /return \(Z___z_Result_i32_Problem\)\{\.tag = Z___z_Result_i32_ProblemTag_failure, \.payload = \{ \.failure = \(Z_Problem\)\{\.code = 7\}\}\};/,
   );
   assert.match(
     resultEmission.stdout,
-    /return \(Z___z_Result_i32_Problem\)\{\.tag = Z___z_Result_i32_ProblemTag_success, \.payload\.success = 42\};/,
+    /return \(Z___z_Result_i32_Problem\)\{\.tag = Z___z_Result_i32_ProblemTag_success, \.payload = \{ \.success = 42\}\};/,
   );
   assert.match(
     resultEmission.stdout,
@@ -4948,7 +4949,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     resultEmission.stdout,
-    /validate\(bool shouldFail\).*?return \(Z___z_Result_void_Problem\)\{\.tag = Z___z_Result_void_ProblemTag_failure, \.payload\.failure = .*?return \(Z___z_Result_void_Problem\)\{\.tag = Z___z_Result_void_ProblemTag_success\};/s,
+    /validate\(bool shouldFail\).*?return \(Z___z_Result_void_Problem\)\{\.tag = Z___z_Result_void_ProblemTag_failure, \.payload = \{ \.failure = .*?return \(Z___z_Result_void_Problem\)\{\.tag = Z___z_Result_void_ProblemTag_success\};/s,
   );
   assert.match(
     resultEmission.stdout,
@@ -6470,7 +6471,7 @@ test("propagates an owned worker failure through native try await", () => {
     );
     assert.match(
       emission.stdout,
-      /Z___z_Result_i32_OwnedErrorTag_failure, \.payload\.failure = _z_stage1_try_\d+\.payload\.failure/,
+      /Z___z_Result_i32_OwnedErrorTag_failure, \.payload = \{ \.failure = _z_stage1_try_\d+\.payload\.failure/,
     );
     assert.match(
       emission.stdout,
@@ -9633,7 +9634,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     );
     assert.match(
       objcEmission,
-      /\.payload\.success = z_stage1_objc_owned\(\[NativeOwner sharedOwner\]\)/,
+      /\.payload = \{ \.success = z_stage1_objc_owned\(\[NativeOwner sharedOwner\]\)/,
     );
     assert.match(
       objcEmission,
@@ -11072,6 +11073,35 @@ test("compiles a multi-module Z application through the standalone native driver
     assert.equal(result.status, 1, `${entry}: ${result.stderr}`);
     assert.match(result.stderr, message, entry);
     assert.doesNotMatch(result.stderr, /internal compiler error/, entry);
+  }
+  // Emitted C is also valid C++20, so a C++ header import compiles the
+  // program as C++ (this header is not valid C).
+  const cppHeaderRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-cpp-header/main.zs")], {
+    encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+  });
+  assert.equal(cppHeaderRun.status, 0, cppHeaderRun.stderr);
+  assert.equal(cppHeaderRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "total=42\n");
+  for (const entry of [
+    "compiler/driver/main.zs",
+    "tests/fixtures/borrowed-aggregate-temporaries.zs",
+    "tests/fixtures/native-ownership-lifetimes.zs",
+    "tests/fixtures/self-host-channel-sync.zs",
+    "tests/fixtures/async-linear-scope-join.zs",
+    "examples/language/basics/closures.zs",
+    "examples/language/basics/mutable-methods.zs",
+    "examples/language/control-flow/result.zs",
+  ]) {
+    const emitted = spawnSync(driver, ["emit", resolve(projectRoot, entry)], {
+      encoding: "utf8", env: foreignAdapterEnvironment, maxBuffer: 64 * 1024 * 1024, timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(emitted.status, 0, `${entry}: ${emitted.stderr}`);
+    for (const language of [["-x", "c", "-std=c11"], ["-x", "c++", "-std=c++20", "-Wc99-designator"]]) {
+      const checked = spawnSync("clang", [
+        ...language, "-Wall", "-Wextra", "-Werror", "-fsyntax-only",
+        "-I", dirname(resolve(projectRoot, entry)), "-",
+      ], { input: emitted.stdout, encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL" });
+      assert.equal(checked.status, 0, `${entry} as ${language[1]}: ${checked.stderr}`);
+    }
   }
 
   const internalProject = resolve(directory, "internal-project");
@@ -14951,7 +14981,7 @@ test("lowers the complete native frontend graph to C", () => {
   );
   assert.match(
     emission.stdout,
-    /\.payload\.success = \(Z_ParsedModuleBatch\)\{\.arena = arena, \.modules = storedModules\}/,
+    /\.payload = \{ \.success = \(Z_ParsedModuleBatch\)\{\.arena = arena, \.modules = storedModules\}/,
   );
   const parsedBatchDestructor = emission.stdout.match(
     /static __attribute__\(\(unused\)\) void Z_ParsedModuleBatch_deinit\(Z_ParsedModuleBatch \*self\) \{[^]*?\n\}/,
@@ -18368,7 +18398,7 @@ test("polls and resumes a stored async closure across scheduler.yield", () => {
   assert.match(emission.stdout, /frame->child\.task->waiter = task;/);
   assert.match(
     emission.stdout,
-    /int32_t main\(void\) \{\n  Z_AsyncExecutor executor = \{0\};\n  z_stage1_async_parent_main \*frame/,
+    /int32_t main\(void\) \{\n  Z_AsyncExecutor executor = \{\};\n  z_stage1_async_parent_main \*frame/,
   );
   assert.doesNotMatch(
     emission.stdout,
@@ -19074,7 +19104,7 @@ test("propagates an owned error from an executor-placed async function local", (
   );
   assert.match(
     emission.stdout,
-    /\.payload\.failure = _z_stage1_async_try_\d+\.payload\.failure/,
+    /\.payload = \{ \.failure = _z_stage1_async_try_\d+\.payload\.failure/,
   );
   assert.match(
     emission.stdout,
@@ -19498,8 +19528,8 @@ test("resolves aggregate members through exported transparent aliases natively",
     { encoding: "utf8" },
   );
   assert.equal(emission.status, 0, emission.stderr);
-  assert.match(emission.stdout, /\.value\.i32_value = .*\.code/);
-  assert.match(emission.stdout, /\.value\.string_value = .*\.message/);
+  assert.match(emission.stdout, /\.value = \{ \.i32_value = .*\.code/);
+  assert.match(emission.stdout, /\.value = \{ \.string_value = .*\.message/);
 });
 
 test("preserves callable identities nested in Map values", () => {
@@ -19982,7 +20012,7 @@ hostToolchainTest("preserves first-tier struct spread capability evidence native
   );
   assert.equal(emitted.status, 0, emitted.stderr);
   assert.match(emitted.stdout, /\.first = 21, \.second = baseline\.second/);
-  assert.match(emitted.stdout, /\.second = 23, \.first = baseline\.first/);
+  assert.match(emitted.stdout, /\.first = baseline\.first, \.second = 23/);
   assert.match(emitted.stdout, /\.value = z_string_copy\(copySource\.value\)/);
   assert.match(
     emitted.stdout,

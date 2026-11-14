@@ -635,7 +635,31 @@ function projectUsesObjectiveC(in project: NativeProject): boolean {
   return false;
 }
 
+// A C++ header import or a `raw cpp` body makes the program C++, as in
+// Stage 0; the emitted translation unit is valid as both C11 and C++20.
+function projectUsesCPlusPlus(in project: NativeProject): boolean {
+  for (const foreignModule of project.foreignModules) {
+    if (foreignModule.contracts.cPlusPlus) return true;
+  }
+  for (const module of project.modules) {
+    for (const declaration of module.program.functions) {
+      if (declaration.rawLanguage == "cpp") return true;
+    }
+    for (const aggregate of module.program.aggregates) {
+      for (const method of aggregate.methods) {
+        if (method.rawLanguage == "cpp") return true;
+      }
+    }
+  }
+  return false;
+}
+
+function projectNativeCompiler(in project: NativeProject): String {
+  return projectUsesCPlusPlus(project) ? "clang++" : "clang";
+}
+
 function projectNativeSourceExtension(in project: NativeProject): String {
+  if (projectUsesCPlusPlus(project)) return projectUsesObjectiveC(project) ? ".mm" : ".cc";
   return projectUsesObjectiveC(project) ? ".m" : ".c";
 }
 
@@ -643,12 +667,16 @@ function appendProjectLanguageArguments(
   in project: NativeProject,
   inout arguments: Array<String>
 ): void {
+  const cPlusPlus = projectUsesCPlusPlus(project);
   arguments.push("-x");
   if (projectUsesObjectiveC(project)) {
-    arguments.push("objective-c");
+    arguments.push(cPlusPlus ? "objective-c++" : "objective-c");
     arguments.push("-fobjc-arc");
-  } else arguments.push("c");
-  arguments.push("-std=c11");
+  } else arguments.push(cPlusPlus ? "c++" : "c");
+  if (cPlusPlus) {
+    arguments.push("-std=c++20");
+    arguments.push("-Wc99-designator");
+  } else arguments.push("-std=c11");
 }
 
 // Flags supplied after `--` on the command line reach the C compiler verbatim,
@@ -691,7 +719,8 @@ function compileEmittedProject(
   appendExtraCompilerArguments(extraFlags, inout compilerArguments);
   compilerArguments.push("-o");
   compilerArguments.push(copy outputPath);
-  return try process.run("clang", compilerArguments);
+  const compiler = projectNativeCompiler(project);
+  return try process.run(compiler, compilerArguments);
 }
 
 function buildLoadedProject(
@@ -944,7 +973,8 @@ function buildStaticLibrary(
   compilerArguments.push(copy cPath);
   compilerArguments.push("-o");
   compilerArguments.push(copy objectPath);
-  const compilationExitCode = try process.run("clang", compilerArguments);
+  const compiler = projectNativeCompiler(project);
+  const compilationExitCode = try process.run(compiler, compilerArguments);
   if (compilationExitCode != 0) return compilationExitCode;
 
   let archiveArguments = Array<String>();
@@ -1057,7 +1087,8 @@ function buildSharedLibrary(
   appendExtraCompilerArguments(extraFlags, inout compilerArguments);
   compilerArguments.push("-o");
   compilerArguments.push(copy libraryPath);
-  const compilationExitCode = try process.run("clang", compilerArguments);
+  const compiler = projectNativeCompiler(project);
+  const compilationExitCode = try process.run(compiler, compilerArguments);
   if (compilationExitCode != 0) return compilationExitCode;
   try fs.writeText(headerPath, header);
   console.log(`built ${libraryPath}`);

@@ -260,6 +260,8 @@ export readonly class NativeForeignContractSet {
   moduleSpecifier: String;
   // The framework that provides this header, linked when the header is imported.
   framework: String;
+  // A C++ header: the program is compiled as C++, as in Stage 0.
+  cPlusPlus: boolean;
   types: Array<NativeForeignTypeContract>;
   constants: Array<NativeForeignConstantContract>;
   functions: Array<NativeForeignFunctionContract>;
@@ -4804,6 +4806,7 @@ export function normalizeForeignContracts(
       contracts.moduleSpecifier.byteLength
     ),
     framework,
+    cPlusPlus: declarations.cPlusPlus,
     types,
     constants,
     functions,

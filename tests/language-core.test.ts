@@ -125,8 +125,9 @@ test("restricts private struct initialization to its declaring aggregate", () =>
 test("keeps field storage spelling consistent across C backends without changing public C rules", () => {
   const source = readFileSync(resolve(projectRoot, "compiler/frontend/c-emitter.zs"), "utf8");
   const bindingPolicy = source.split("function isCReservedWord(")[1]!.split("function appendCBindingName(")[0]!;
+  const cPlusPlusPolicy = source.split("function isCPlusPlusReservedWord(")[1]!.split("function appendCFieldName(")[0]!;
   const fieldPolicy = source.split("function appendCFieldName(")[1]!.split("function cFieldName(")[0]!;
-  const nativeWords = new Set([...`${bindingPolicy}\n${fieldPolicy}`.matchAll(/name == "([^"]+)"/g)]
+  const nativeWords = new Set([...`${bindingPolicy}\n${cPlusPlusPolicy}\n${fieldPolicy}`.matchAll(/name == "([^"]+)"/g)]
     .map((match) => match[1]!)
     .filter((name) => !["Class", "SEL", "id"].includes(name)));
   assert.deepEqual([...nativeWords].sort(), [...cFamilyReservedIdentifiers].sort());

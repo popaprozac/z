@@ -91,9 +91,9 @@ static void z_channel_${id}_release(Z_ChannelStorage_${id} *s) {
 }
 static __attribute__((unused)) Z___z_Channel_Endpoints_${id} Z___z_Channel_Endpoints_${id}_bounded(size_t capacity) {
   if (capacity == 0 || capacity > SIZE_MAX / sizeof(${value})) abort();
-  Z_ChannelStorage_${id} *s = calloc(1, sizeof(*s));
+  Z_ChannelStorage_${id} *s = (__typeof__(s))calloc(1, sizeof(*s));
   if (s == NULL) abort();
-  s->items = calloc(capacity, sizeof(${value}));
+  s->items = (__typeof__(s->items))calloc(capacity, sizeof(${value}));
   if (s->items == NULL) { free(s); abort(); }
 #if defined(_WIN32)
   InitializeSRWLock(&s->mutex);
@@ -153,7 +153,7 @@ static __attribute__((unused)) Z___z_Result_void___z_Channel_Closed_${id} Z___z_
   }
   if (s->closed) {
     z_channel_${id}_unlock(s);
-    return (Z___z_Result_void___z_Channel_Closed_${id}){ .tag = Z___z_Result_void___z_Channel_Closed_${id}Tag_failure, .payload.failure = { .value = value } };
+    return (Z___z_Result_void___z_Channel_Closed_${id}){ .tag = Z___z_Result_void___z_Channel_Closed_${id}Tag_failure, .payload = { .failure = { .value = value } } };
   }
   s->items[s->tail] = value;
   s->tail = (s->tail + 1) % s->capacity;
@@ -189,7 +189,7 @@ static __attribute__((unused)) Z___z_Option_${id} Z___z_Channel_SyncReceiver_${i
   if (pthread_cond_signal(&s->writable) != 0) abort();
 #endif
   z_channel_${id}_unlock(s);
-  return (Z___z_Option_${id}){ .tag = Z___z_Option_${id}Tag_some, .payload.some = value };
+  return (Z___z_Option_${id}){ .tag = Z___z_Option_${id}Tag_some, .payload = { .some = value } };
 }
 `);
   return output.finish();
