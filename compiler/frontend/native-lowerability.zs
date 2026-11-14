@@ -27,6 +27,7 @@ import {
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import { typeHasCleanup, typeIsThreadTransferable } from "./semantic-type-ownership.zs";
+import { typeHasMainExecutorLifecycle } from "./semantic-type-validation.zs";
 import { channelTypeKind } from "./channel-shapes.zs";
 import { transparentTypeName, typeSymbolLocation } from "./semantic-type-identities.zs";
 import { typeMentionsParameter } from "./semantic-generic-inference.zs";
@@ -1699,10 +1700,33 @@ function requireNativeThreadCaptureType(
       visiting
     )) {
       let sharedClassCandidate = false;
+      let mainIsolated = false;
       match (typeSymbolLocation(graph.modules, moduleIndex, typeName)) {
-        some(location) => sharedClassCandidate = graph.modules[location.moduleIndex]
-          .symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol;
+        some(location) => {
+          const symbol = view graph.modules[location.moduleIndex].symbols[location.symbolIndex];
+          sharedClassCandidate = symbol.kind == ModuleSymbolKind.classSymbol;
+          // Stage 0 carries main-isolated identity across opaquely; native lowering cannot yet.
+          if (sharedClassCandidate && symbol.foreignHeader.byteLength == 0) {
+            mainIsolated = typeHasMainExecutorLifecycle(graph.modules, moduleIndex, actualType);
+            match (in symbol.typeSignature) {
+              some(signature) => { if (signature.executorAffinity.byteLength > 0) mainIsolated = true; }
+              none => {}
+            }
+          }
+        }
         none => {}
+      }
+      if (mainIsolated) {
+        let length = captureName.byteLength;
+        if (length == 0) length = 1;
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          `thread.spawn cannot carry main-isolated capture "${captureName}" of type ${typeName} in the native compiler yet`,
+          line,
+          column,
+          length
+        );
       }
       if (!sharedClassCandidate) {
         let length = captureName.byteLength;
@@ -2109,6 +2133,47 @@ function typeMentionsAnyParameter(in typeName: String, in typeParameters: Array<
   return false;
 }
 
+// std/objc operations with no native lowering yet are located tier limits.
+// Semantic checking still accepts them, as Stage 0 does.
+function validateNativeObjCCall(
+  in path: String,
+  in program: Program,
+  in tree: ExpressionTree,
+  index: usize
+): void throws ModuleResolveError {
+  const node = view tree.nodes[index];
+  if (node.kind != ExpressionKind.callExpression || node.children.length == 0) return;
+  const callee = view tree.nodes[node.children[0]];
+  if (callee.kind != ExpressionKind.memberExpression || callee.children.length != 1) return;
+  const receiver = view tree.nodes[callee.children[0]];
+  if (receiver.kind != ExpressionKind.identifierExpression) return;
+  let objcNamespace = false;
+  for (const declaration of program.imports) {
+    if (declaration.header == "std/objc" && declaration.moduleName == receiver.value) objcNamespace = true;
+  }
+  if (!objcNamespace) return;
+  if (callee.value == "bind") throw loweringBoundary(
+    path,
+    "Z1000",
+    "objc.bind is not executable in the native compiler yet; Stage 0 compiles Objective-C protocol bindings",
+    callee.line,
+    callee.column,
+    4
+  );
+  if (callee.value != "pool" || node.children.length != 2) return;
+  const operation = view tree.nodes[node.children[1]];
+  if (operation.kind != ExpressionKind.closureExpression) return;
+  if (operation.labels.length >= 3 && operation.labels[2] == "block") return;
+  throw loweringBoundary(
+    path,
+    "Z1000",
+    "objc.pool with an expression-bodied closure is not executable in the native compiler yet; use a block body that returns the value",
+    operation.line,
+    operation.column,
+    1
+  );
+}
+
 function validateNativeExpressionTree(
   in path: String,
   moduleIndex: usize,
@@ -2126,6 +2191,7 @@ function validateNativeExpressionTree(
     for (const type of node.typeReferences) {
       try validateNativeType(path, type);
     }
+    try validateNativeObjCCall(path, modules[moduleIndex].program, tree, index);
     if (node.kind == ExpressionKind.arrayExpression) {
       const typeName = resolvedExpressionType(
         graph,

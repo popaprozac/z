@@ -4897,6 +4897,120 @@ function inferCVariadicArgumentType(
   );
 }
 
+// A class captured by thread.spawn crosses only as deeply readonly shared
+// identity, as in Stage 0 (Z0704), which names the first reason it cannot.
+// Only those named reasons reject here; Stage 0 also accepts some identities
+// this check cannot classify (mutex-guarded state, main-isolated identity),
+// and native lowering decides those.
+function requireThreadSpawnClassCapture(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  closureIndex: usize,
+  in capture: String,
+  in captureType: String
+): void throws ModuleResolveError {
+  const actual = transparentTypeName(modules, moduleIndex, captureType);
+  const location = match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(found) => found;
+    none => return;
+  };
+  const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+  if (symbol.kind != ModuleSymbolKind.classSymbol || symbol.foreignHeader.byteLength > 0) return;
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      if (
+        signature.executorAffinity.byteLength > 0
+        || typeHasMainExecutorLifecycle(modules, moduleIndex, actual)
+      ) return;
+      if (typeIsThreadShareable(modules, moduleIndex, actual)) return;
+      let reason = "";
+      if (signature.customDeinit && !signature.deinitThreadAny) {
+        reason = `: ${captureType} has a custom deinit whose thread affinity is unknown`;
+      } else {
+        for (const method of signature.methods) {
+          if (reason.byteLength == 0 && !method.staticMethod && method.receiverMode == "inout") {
+            reason = `: ${captureType} exposes mutable method "${method.name}"`;
+          }
+        }
+        for (const field of signature.fields) {
+          if (reason.byteLength == 0 && !field.readonlyField) {
+            reason = `: ${captureType} has mutable field "${field.name}"`;
+          }
+        }
+      }
+      if (reason.byteLength == 0) return;
+      throw codedModuleResolutionError(
+        ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+        `capture "${capture}" of type ${captureType} cannot cross a native thread boundary${reason}`,
+        tree.nodes[closureIndex].line, tree.nodes[closureIndex].column, 1
+      );
+    }
+    none => {}
+  }
+}
+
+// The worker's declared result returns to the owner thread, so it must be
+// transferable, as in Stage 0.
+function requireThreadSpawnResult(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  closureIndex: usize
+): void throws ModuleResolveError {
+  if (tree.nodes[closureIndex].labels.length == 0) return;
+  const resultType = view tree.nodes[closureIndex].labels[0];
+  if (resultType.byteLength == 0 || resultType == "void") return;
+  if (typeIsThreadTransferable(modules, moduleIndex, resultType)) return;
+  throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `thread.spawn result type "${resultType}" cannot cross a native thread boundary yet`,
+    tree.nodes[closureIndex].line, tree.nodes[closureIndex].column, 1
+  );
+}
+
+// objc.connect(control, action): the action is a synchronous `() => void`,
+// as in Stage 0, so a block closure's body is checked against that context.
+function inferObjCConnectArguments(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  in children: Array<usize>,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): void throws ModuleResolveError {
+  const connectArguments = callArgumentNodes(children);
+  if (
+    connectArguments.length != 2
+    || tree.nodes[connectArguments[1]].kind != ExpressionKind.closureExpression
+  ) {
+    try inferUnclassifiedCallArguments(
+      module, modules, moduleIndex, arena, tree, children,
+      inout bindings, inout evidence
+    );
+    return;
+  }
+  const controlType = try inferExpressionNodeType(
+    module, modules, moduleIndex, arena, tree, connectArguments[0],
+    inout bindings, inout evidence
+  );
+  try requireSettledExpressionType(module, tree, connectArguments[0], controlType);
+  const operationType = try inferExpressionNodeTypeExpected(
+    module, modules, moduleIndex, arena, tree, connectArguments[1], "() => void",
+    inout bindings, inout evidence
+  );
+  let recordedOperationType = copy operationType;
+  if (recordedOperationType.byteLength == 0) recordedOperationType = "() => void";
+  recordExpressionResolution(
+    modules, moduleIndex, tree, connectArguments[1], recordedOperationType,
+    inout evidence
+  );
+}
+
 // The `in` arguments of a call through a function value.
 function requireStoredBorrowedArguments(
   in module: ParsedModule,
@@ -10303,7 +10417,11 @@ function inferExpressionNodeType(
                   tree.nodes[argument].line, tree.nodes[argument].column
                 );
               }
+              if (!typeMentionsActiveTypeParameter(bindings, captureType)) {
+                try requireThreadSpawnClassCapture(module, modules, moduleIndex, tree, argument, capture, captureType);
+              }
             }
+            try requireThreadSpawnResult(module, modules, moduleIndex, tree, argument);
           }
           addValueBinding(
             inout workerBindings,
@@ -10432,15 +10550,9 @@ function inferExpressionNodeType(
             "__z_native_closure_executor_context",
             connectionExecutorContext
           );
-          try inferUnclassifiedCallArguments(
-            module,
-            modules,
-            moduleIndex,
-            arena,
-            tree,
-            children,
-            inout connectionBindings,
-            inout evidence
+          try inferObjCConnectArguments(
+            module, modules, moduleIndex, arena, tree, children,
+            inout connectionBindings, inout evidence
           );
           copyBindingFlowStates(inout bindings, connectionBindings);
           return "";

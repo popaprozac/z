@@ -1687,11 +1687,21 @@ function collectGenericStructUseFromType(
           match (in symbol.typeSignature) {
             some(signature) => {
               let unsettledArgument = false;
+              let unsettledIndex: usize = 0;
               for (const argument of generic.arguments) {
-                if (typeContainsGenericParameter(
-                  argument,
-                  signature.typeParameters
-                )) unsettledArgument = true;
+                // An argument that resolved to a declared type is concrete even
+                // when it shares a name with one of the generic's own type
+                // parameters, as `Protocol<Command, Message>` beside `enum Command`.
+                const argumentPath = genericTypeIdentityPath(path, `${unsettledIndex}`);
+                const resolvedArgument = match (typeIdentityAtPath(identities, argumentPath)) {
+                  some(_) => true;
+                  none => false;
+                };
+                if (
+                  !resolvedArgument
+                  && typeContainsGenericParameter(argument, signature.typeParameters)
+                ) unsettledArgument = true;
+                unsettledIndex = unsettledIndex + 1;
               }
               if (
                 signature.typeParameters.length == 0
@@ -2081,9 +2091,18 @@ function collectGenericStructUses(
   let moduleIndex: usize = 0;
   while (moduleIndex < graph.modules.length) {
     const evidence = view graph.modules[moduleIndex].semanticEvidence;
-    const unsettledTypeParameters = programGenericTypeParameterNames(
-      parsed[moduleIndex].program
-    );
+    // A type parameter named like a concrete type of this module, such as
+    // `Protocol<Command, Message>` beside `enum Command`, must not hide the
+    // concrete specialization from demand.
+    const declaredTypeParameters = programGenericTypeParameterNames(parsed[moduleIndex].program);
+    let unsettledTypeParameters = Array<String>();
+    for (const name of declaredTypeParameters) {
+      const concrete = match (typeSymbolLocation(graph.modules, moduleIndex, name)) {
+        some(_) => true;
+        none => false;
+      };
+      if (!concrete) unsettledTypeParameters.push(copy name);
+    }
     // Concrete generic aggregates can exist only in a declaration signature
     // (for example a generated adapter marker parameter) and never appear as
     // a local binding or expression. Declaration types are first-class demand
@@ -9158,16 +9177,23 @@ function collectObjCPoolClosureCaptures(
       index = index + 1;
       continue;
     }
-    const typeName = match (namedValueTypeName(
+    // A name with no binding, such as a foreign class used as a static
+    // receiver, is not a lexical capture, as for ordinary closures.
+    let typeName = "";
+    match (namedValueTypeName(
       program,
       evidence,
       ownerName,
       captureName,
       useOffset
     )) {
-      some(name) => name;
-      none => throw `native objc.pool cannot resolve capture ${captureName}`;
-    };
+      some(name) => typeName = move name;
+      none => {}
+    }
+    if (typeName.byteLength == 0) {
+      index = index + 1;
+      continue;
+    }
     const type = try lowerModuleTypeName(
       program,
       importedTypes,
@@ -13691,7 +13717,11 @@ function lowerExpressionNode(
           });
         }
         let labels = Array<String>();
-        labels.push(loweredTypeIdentity(resultType));
+        // An Objective-C class identity is a bare native name; mark it so C
+        // emission can recover the object type the pool returns.
+        if (resultType.kind == LoweredTypeKind.foreignObjCType) {
+          labels.push(`__z_objc_class:${resultType.name}`);
+        } else labels.push(loweredTypeIdentity(resultType));
         labels.push(loweredTypeIdentity(returnType));
         labels.push(move errorName);
         labels.push("block");
@@ -19797,6 +19827,21 @@ function lowerExpressionExpected(
     none => {}
   }
   if (tree.nodes[index].kind == ExpressionKind.closureExpression) {
+    // An imported callable alias may not resolve through this module's type
+    // table, but the checked closure carries the same signature.
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(checkedType) => {
+        if (checkedType != expectedTypeName) {
+          match (nativeFunctionSignature(checkedType)) {
+            some(_) => return try lowerExpressionExpected(
+              program, importedTypes, evidence, tree, index, checkedType, inout output
+            );
+            none => {}
+          }
+        }
+      }
+      none => {}
+    }
     throw `native contextual closure lowering could not resolve callable signature ${expectedTypeName}`;
   }
   let contextualTypeName = "";
@@ -32716,11 +32761,19 @@ function importedTypesForModule(
       || graph.modules[targetModule].symbols[targetSymbolIndex].kind
         != ModuleSymbolKind.typeAliasSymbol
     ) continue;
+    // Resolve the alias in its own module first: its target may itself be an
+    // import there (possibly renamed with `as`) that this module cannot name.
+    let sourceTarget = copy graph.modules[targetModule].symbols[targetSymbolIndex].importedName;
+    const resolvedTarget = transparentTypeName(graph.modules, targetModule, sourceTarget);
+    match (nativeFunctionSignature(resolvedTarget)) {
+      some(_) => sourceTarget = copy resolvedTarget;
+      none => {}
+    }
     const aliasTarget = rebaseTypeName(
       graph.modules,
       targetModule,
       moduleIndex,
-      graph.modules[targetModule].symbols[targetSymbolIndex].importedName
+      sourceTarget
     );
     const loweredOutcome = attempt lowerModuleTypeName(
       program,

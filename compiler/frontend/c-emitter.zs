@@ -3832,6 +3832,12 @@ function loweredTypeForIdentity(
     some(spelling) => return LoweredType({ kind: LoweredTypeKind.foreignObjCType, name: spelling });
     none => {}
   }
+  if (stringStartsWith(identity, "__z_objc_class:")) {
+    return LoweredType({
+      kind: LoweredTypeKind.foreignObjCType,
+      name: identity.copyBytes(15, identity.byteLength),
+    });
+  }
   if (identity == "void") return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
   if (identity == "boolean") return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
   if (identity == "i8") return LoweredType({ kind: LoweredTypeKind.i8Type, name: "" });

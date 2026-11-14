@@ -6009,9 +6009,10 @@ test("emits, joins, and cleans up a native worker task", () => {
       { encoding: "utf8" },
     );
     assert.equal(unshareable.status, 1);
+    // The native resolver now reports Stage 0's Z0704 reason before lowering.
     assert.match(
       unshareable.stderr,
-      /thread\.spawn cannot retain non-shareable ARC capture snapshot of type MutableSnapshot yet/,
+      /error\[Z0704\]: capture "snapshot" of type MutableSnapshot cannot cross a native thread boundary: MutableSnapshot exposes mutable method "increment"/,
     );
 
     for (const [fixture, binding, type] of [[
@@ -6029,7 +6030,7 @@ test("emits, joins, and cleans up a native worker task", () => {
       assert.match(
         result.stderr,
         new RegExp(
-          `thread\\.spawn cannot retain non-shareable ARC capture ${binding} of type ${type} yet`,
+          `capture "${binding}" of type ${type} cannot cross a native thread boundary: ${type} has a custom deinit whose thread affinity is unknown`,
         ),
       );
     }
@@ -6185,7 +6186,7 @@ test("transfers and discards owned native worker results exactly once", () => {
     assert.equal(invalid.status, 1);
     assert.match(
       invalid.stderr,
-      /native thread\.spawn cannot transfer worker result AffineResource to its owner thread yet/,
+      /error\[Z0704\]: thread\.spawn result type "AffineResource" cannot cross a native thread boundary yet/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -11031,6 +11032,11 @@ test("compiles a multi-module Z application through the standalone native driver
     "examples/language/ownership/parameter-views.zs",
     "examples/interop/c/native-out.zs",
     "examples/interop/c/deployment-target",
+    // Native crashes the census found, now executed.
+    "examples/interop/objc/target-action.zs",
+    "tests/fixtures/objc-autorelease-pool.zs",
+    "tests/fixtures/self-host-program-metadata-alias-constructor.zs",
+    "tests/fixtures/native-imported-callable-alias/main.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
@@ -11048,6 +11054,25 @@ test("compiles a multi-module Z application through the standalone native driver
   });
   assert.equal(voidClosureRun.status, 0, voidClosureRun.stderr);
   assert.equal(voidClosureRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "applied\nannounced\n");
+  // Stage 0 stops at an async-frame tier limit here; native runs it.
+  const importedAliasRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/self-host-imported-thread-main-alias/main.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(importedAliasRun.status, 0, importedAliasRun.stderr);
+  // Native tier limits are located diagnostics, not lowering failures.
+  const tierLimits: [string, RegExp][] = [
+    ["examples/interop/objc/protocol-conformance.zs", /error\[Z1000\]: objc\.bind is not executable in the native compiler yet/],
+    ["tests/fixtures/objc-autorelease-pool-async.zs", /error\[Z1000\]: objc\.pool with an expression-bodied closure is not executable in the native compiler yet/],
+    ["examples/async/member-affinity.zs", /error\[Z1000\]: thread\.spawn cannot carry main-isolated capture "application" of type Application in the native compiler yet/],
+  ];
+  for (const [entry, message] of tierLimits) {
+    const result = spawnSync(driver, ["check", resolve(projectRoot, entry)], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 60_000, killSignal: "SIGKILL",
+    });
+    assert.equal(result.status, 1, `${entry}: ${result.stderr}`);
+    assert.match(result.stderr, message, entry);
+    assert.doesNotMatch(result.stderr, /internal compiler error/, entry);
+  }
 
   const internalProject = resolve(directory, "internal-project");
   const internalFramework = resolve(internalProject, "framework");
