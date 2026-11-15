@@ -5024,6 +5024,18 @@ function appendCallArgument(
   else try appendExpression(inout output, declaration, value);
 }
 
+function programUsesCxxMoves(in program: LoweredProgram): boolean {
+  for (const function_ of program.functions) {
+    for (const expression of function_.expressions) {
+      if (
+        expression.kind == LoweredExpressionKind.moveValue
+        && labelsContain(expression.labels, "cpp-move")
+      ) return true;
+    }
+  }
+  return false;
+}
+
 function appendExpression(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -6168,15 +6180,20 @@ function appendExpression(
       throw "native C emission received a malformed move expression";
     }
     const operand = declaration.expressions[index].children[0];
+    const cppMove = labelsContain(declaration.expressions[index].labels, "cpp-move");
     if (declaration.expressions[index].value.byteLength > 0) {
       output.append("(");
       output.append(declaration.expressions[index].value);
       output.append(" = false, ");
+      if (cppMove) output.append("std::move(");
       try appendExpression(inout output, declaration, operand);
+      if (cppMove) output.append(")");
       output.append(")");
       return;
     }
+    if (cppMove) output.append("std::move(");
     try appendExpression(inout output, declaration, operand);
+    if (cppMove) output.append(")");
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.copyValue) {
@@ -8443,6 +8460,7 @@ function appendLocalStatementStorage(
     output.append(" const ");
   } else if (
     !declaration.statements[index].mutableBinding
+    && !declaration.statements[index].cppMoveStorage
     && constStorage
     && hasInitializer
   ) {
@@ -26540,6 +26558,7 @@ function emitLoweredC(
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
   output.append("#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n");
+  if (programUsesCxxMoves(program)) output.append("#if defined(__cplusplus)\n#include <utility>\n#endif\n");
   if (usesObjectiveCDataCopy || usesObjectiveCDataBorrow) {
     output.append("#import <Foundation/Foundation.h>\n");
   }

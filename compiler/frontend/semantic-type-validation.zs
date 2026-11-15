@@ -52,6 +52,7 @@ import {
   moduleResolutionError,
 } from "./semantic-model.zs";
 import {
+  typeContainsMoveOnlyNative,
   typeContainsStoredView,
   typeContainsSlice,
   typeIsArenaOwnerBundle,
@@ -862,6 +863,14 @@ function validateFunctionTypes(
   );
   for (const parameter of declaration.parameters) {
     try validateTypeReference(module, modules, moduleIndex, bindings, parameter.type);
+    if (
+      parameter.mode == ParameterMode.output
+      && typeContainsMoveOnlyNative(modules, moduleIndex, parameter.type.name, 0)
+    ) throw codedModuleResolutionError(
+      ModuleResolveErrorKind.typeMismatch, "Z0240", module.path,
+      `out parameter "${parameter.name}" cannot use move-only native storage in the first C++ ownership tier`,
+      parameter.line, parameter.column, 1
+    );
     let parameterViewVisiting = Array<String>();
     if (typeContainsStoredView(
       modules,
@@ -1158,6 +1167,14 @@ function validateAggregateTypes(
   }
   for (const field of declaration.fields) {
     try validateTypeReference(module, modules, moduleIndex, bindings, field.type);
+    if (
+      declaration.kind == DeclarationKind.classDeclaration
+      && typeContainsMoveOnlyNative(modules, moduleIndex, field.type.name, 0)
+    ) throw codedModuleResolutionError(
+      ModuleResolveErrorKind.typeMismatch, "Z0240", module.path,
+      "ARC class fields cannot store move-only native values in the first C++ ownership tier",
+      field.type.line, field.type.column, 1
+    );
     if (typeContainsSlice(modules, moduleIndex, field.type.name)) {
       throw validationError(ModuleResolveErrorKind.typeMismatch, module.path,
         "Slice values cannot be stored in struct or class fields",

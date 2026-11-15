@@ -11029,6 +11029,10 @@ test("compiles a multi-module Z application through the standalone native driver
     // calls, with C++ copy and destruction counts matching Stage 0.
     "examples/interop/cpp/foreign-values.zs",
     "examples/interop/cpp/cpp-callables.zs",
+    // Move-only C++ values: std::move at Z move points and C++ references,
+    // with C++ move counts matching Stage 0.
+    "examples/interop/cpp/cpp-move-only.zs",
+    "examples/interop/cpp/cpp-references.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
@@ -11058,8 +11062,9 @@ test("compiles a multi-module Z application through the standalone native driver
     ["examples/async/member-affinity.zs", /error\[Z1000\]: thread\.spawn cannot carry main-isolated capture "application" of type Application in the native compiler yet/],
     // Namespaces and overloads check natively; aggregate interpolation is a separate tier.
     ["examples/interop/cpp/cpp-interop.zs", /12:121: error\[Z1000\]: template interpolation of "cpp\.zcpp\.Point" is not executable in the native compiler yet/],
-    // Move-only C++ values need std::move at Z move points; a later tier.
-    ["examples/interop/cpp/cpp-move-only.zs", /17:9: error\[Z1000\]: C\+\+ move-only value "zcpp::UniqueValue" is not executable in the native compiler yet/],
+    // C++ values in union, collection, or Arena storage are a later tier.
+    ["examples/interop/cpp/cpp-move-only-array.zs", /10:7: error\[Z1000\]: C\+\+ value "zcpp::UniqueValue" stored in a class, Option, Result, enum payload, or collection is not executable in the native compiler yet/],
+    ["examples/interop/cpp/cpp-arena.zs", /11:30: error\[Z1000\]: C\+\+ values stored in an Arena are not executable in the native compiler yet/],
   ];
   for (const [entry, message] of tierLimits) {
     const result = spawnSync(driver, ["check", resolve(projectRoot, entry)], {
@@ -11135,6 +11140,28 @@ test("compiles a multi-module Z application through the standalone native driver
       assert.notEqual(run.status, 0, `${to}: ${run.stdout}`);
       assert.ok(run.stderr.includes(`${foreignValuesVariant}:${expected}`), `${to}: ${run.stderr}`);
     }
+  }
+  // A conditional move of Z-cleanup + move-only C++ storage clears the Z
+  // liveness flag and C++-moves the value (Stage 0 cannot compile this one).
+  const mixedMove = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-cpp-move-mixed.zs")], {
+    encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+  });
+  assert.equal(mixedMove.status, 0, mixedMove.stderr);
+  assert.equal(mixedMove.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "taken=53 kept=1 moves=1 live=0\n");
+  // Move-only native storage follows Stage 0's ownership rules (Z0240).
+  const moveOnlyProbe = resolve(directory, "move-only-probe.zs");
+  for (const [body, message] of [
+    ["function main(): i32 {\n  const first = native.zcpp.UniqueValue(42);\n  const second = first;\n  return first.value();\n}\n", '5:10: error: use of moved value "first"'],
+    ["class Session {\n  value: native.zcpp.UniqueValue;\n}\nfunction main(): i32 { return 0; }\n", "3:10: error[Z0240]: ARC class fields cannot store move-only native values in the first C++ ownership tier"],
+    ["function main(): i32 {\n  let value: native.zcpp.UniqueValue;\n  return 0;\n}\n", "3:14: error[Z0240]: move-only native values must be initialized when their storage is declared"],
+    ["function fill(out value: native.zcpp.UniqueValue): void {\n}\nfunction main(): i32 { return 0; }\n", '2:19: error[Z0240]: out parameter "value" cannot use move-only native storage in the first C++ ownership tier'],
+  ]) {
+    writeFileSync(moveOnlyProbe, `import native from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};\n${body}`);
+    const checked = spawnSync(driver, ["check", moveOnlyProbe], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 60_000, killSignal: "SIGKILL",
+    });
+    assert.equal(checked.status, 1, `${body}: ${checked.stderr}`);
+    assert.ok(checked.stderr.includes(`${moveOnlyProbe}:${message}`), `${body}: ${checked.stderr}`);
   }
   // C++ value-type `.zd` facts (`copy;`, bare `deinit;`, `thread { }`) parse
   // with Stage 0's validation, code, and locations.

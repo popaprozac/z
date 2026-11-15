@@ -1980,29 +1980,44 @@ function foreignInferredParameter(
   let spelling = rawParameter.nativeType.copyBytes(0, rawParameter.nativeType.byteLength);
   let capability = "value";
   if (spelling.byteLength > 0 && spelling.byteAt(spelling.byteLength - 1) == 38) {
-    if (spelling.byteLength > 1 && spelling.byteAt(spelling.byteLength - 2) == 38) {
-      throw `native rvalue reference parameter "${spelling}" is not representable yet`;
+    // As Stage 0's mapForeignType: `const T &` lends (in), `T &` mutates in
+    // place (inout), `T &&` consumes a move-only value (move).
+    let end = spelling.byteLength - 1;
+    if (end > 0 && spelling.byteAt(end - 1) == 38) {
+      capability = "move";
+      end = end - 1;
+    } else capability = stringStartsWith(spelling, "const ") ? "in" : "inout";
+    while (end > 0 && spelling.byteAt(end - 1) == 32) {
+      end = end - 1;
     }
-    if (!stringStartsWith(spelling, "const ")) {
-      throw `native mutable reference parameter "${spelling}" is not representable yet`;
-    }
-    capability = "in";
-    spelling = spelling.copyBytes(6, spelling.byteLength - 1);
+    let start: usize = 0;
+    if (capability != "move" && stringStartsWith(spelling, "const ")) start = 6;
+    spelling = spelling.copyBytes(start, end);
   }
-  const typeName = capability == "in"
+  const typeName = capability != "value"
     ? try foreignValueTypeName(declarations, types, spelling, Option<String>.none)
     : try foreignValueTypeName(declarations, types, spelling, rawParameter.canonicalNativeType);
-  if (capability == "in") {
+  if (capability != "value") {
     // As Stage 0, only a named native type binds a reference.
-    match (normalizedForeignTypeIndex(types, typeName)) {
-      some(_) => {}
+    const referenced = match (normalizedForeignTypeIndex(types, typeName)) {
+      some(index) => index;
       none => throw `native reference parameter "${rawParameter.nativeType}" does not name a native type`;
-    }
+    };
+    if (
+      capability == "move"
+      && (types[referenced].kind != "value" || !types[referenced].lifecycleMove || types[referenced].lifecycleCopy)
+    ) throw `native rvalue reference parameter "${rawParameter.nativeType}" requires a move-only native value`;
   }
+  // The ABI mode is what the call passes: a C++ reference binds the Z place
+  // itself (no `&`). `in` lends (inValue); `inout` passes the place
+  // (reference); `move` consumes it (value, so lowering emits std::move).
+  let abiMode = "value";
+  if (capability == "in") abiMode = "inValue";
+  else if (capability == "inout") abiMode = "reference";
   return NativeForeignParameterContract({
     name: parameterName,
     capability,
-    abiMode: "value",
+    abiMode,
     typeName,
     nullOnly: false,
     fixedValue: "",

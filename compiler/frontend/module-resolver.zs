@@ -258,6 +258,7 @@ import {
   typeNameIsArena,
   typeMovesOnOwnedUse,
   typeSupportsExplicitCopy,
+  typeContainsMoveOnlyNative,
 } from "./semantic-type-ownership.zs";
 import {
   ModuleFunctionSignature,
@@ -5112,6 +5113,27 @@ function namespaceRootLength(in path: String): usize {
     index = index + 1;
   }
   return path.byteLength;
+}
+
+// Stage 0: an uninitialized Z local does not run a non-trivial C++ constructor.
+function requireInitializedNativeStorage(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  index: usize
+): void throws ModuleResolveError {
+  match (in arena.nodes[index].typeAnnotation) {
+    some(type) => {
+      if (!typeContainsMoveOnlyNative(modules, moduleIndex, type.name, 0)) return;
+      throw codedModuleResolutionError(
+        ModuleResolveErrorKind.typeMismatch, "Z0240", module.path,
+        "move-only native values must be initialized when their storage is declared",
+        type.line, type.column, 1
+      );
+    }
+    none => {}
+  }
 }
 
 function recordCxxMethodCall(
@@ -13268,7 +13290,7 @@ function inferStatement(
         inout bindings,
         inout evidence
       );
-      none => {}
+      none => try requireInitializedNativeStorage(module, modules, moduleIndex, arena, index);
     }
     if (
       contextualExpected == "String"

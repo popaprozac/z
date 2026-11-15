@@ -508,6 +508,8 @@ export struct LoweredStatement {
   foreignMatchMember: String = "";
   foreignMatchValues: Array<String> = Array<String>();
   foreignMatchFallback: boolean = false;
+  // A local that C++ moves from (`std::move`) is never const storage.
+  cppMoveStorage: boolean = false;
 }
 
 export struct LoweredCleanup {
@@ -946,6 +948,8 @@ struct LoweredImportedType {
   variants: Array<LoweredVariant>;
   payloadBearing: boolean;
   underlyingType: String;
+  // A move-only C++ value: Z moves it with std::move; C++ destroys it.
+  cxxMoveOnly: boolean = false;
 }
 
 struct LoweredGenericStructField {
@@ -7856,6 +7860,64 @@ function lendCleanupFreeTemporary(
   );
 }
 
+// A local that C++ moves from cannot be const storage: std::move of a const
+// object would select the (deleted) copy constructor.
+function markCxxMovedLocals(inout functions: Array<LoweredFunction>): void {
+  let functionIndex: usize = 0;
+  while (functionIndex < functions.length) {
+    let moved = Array<String>();
+    for (const expression of functions[functionIndex].expressions) {
+      if (
+        expression.kind != LoweredExpressionKind.moveValue
+        || expression.children.length != 1
+        || !expressionHasLabel(expression, "cpp-move")
+      ) continue;
+      let operand = expression.children[0];
+      while (
+        functions[functionIndex].expressions[operand].kind == LoweredExpressionKind.fieldValue
+        && functions[functionIndex].expressions[operand].children.length > 0
+      ) {
+        operand = functions[functionIndex].expressions[operand].children[0];
+      }
+      if (functions[functionIndex].expressions[operand].kind == LoweredExpressionKind.localValue) {
+        moved.push(copy functions[functionIndex].expressions[operand].value);
+      }
+    }
+    if (moved.length > 0) {
+      let statementIndex: usize = 0;
+      while (statementIndex < functions[functionIndex].statements.length) {
+        if (
+          functions[functionIndex].statements[statementIndex].kind == LoweredStatementKind.localStatement
+          && containsString(moved, functions[functionIndex].statements[statementIndex].name)
+        ) functions[functionIndex].statements[statementIndex].cppMoveStorage = true;
+        // `return local;` already moves in C++ (and may elide); an explicit
+        // std::move there is redundant and would change the move count.
+        if (functions[functionIndex].statements[statementIndex].kind == LoweredStatementKind.returnStatement) {
+          let returned = functions[functionIndex].expressions.length;
+          match (in functions[functionIndex].statements[statementIndex].expression) {
+            some(expression) => returned = expression;
+            none => {}
+          }
+          if (
+            returned < functions[functionIndex].expressions.length
+            && functions[functionIndex].expressions[returned].kind == LoweredExpressionKind.moveValue
+            && expressionHasLabel(functions[functionIndex].expressions[returned], "cpp-move")
+            && functions[functionIndex].expressions[returned].value.byteLength == 0
+            && functions[functionIndex].expressions[returned].children.length == 1
+          ) {
+            const operand = functions[functionIndex].expressions[returned].children[0];
+            if (functions[functionIndex].expressions[operand].kind == LoweredExpressionKind.localValue) {
+              functions[functionIndex].statements[statementIndex].expression = Option.some(operand);
+            }
+          }
+        }
+        statementIndex = statementIndex + 1;
+      }
+    }
+    functionIndex = functionIndex + 1;
+  }
+}
+
 function wrapOwnedStorage(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -7887,7 +7949,84 @@ function wrapOwnedStorage(
   );
 }
 
+// A value holding a move-only C++ value, directly or through Z struct fields.
+function moduleTypeIsCxxMoveOnly(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in type: LoweredType,
+  depth: usize
+): boolean {
+  if (depth > 8) return false;
+  if (type.kind == LoweredTypeKind.foreignStructType) {
+    for (const imported of importedTypes) {
+      if (
+        imported.kind == type.kind
+        && (imported.localName == type.name || imported.targetName == type.name)
+      ) return imported.cxxMoveOnly;
+    }
+    return false;
+  }
+  if (type.kind != LoweredTypeKind.structType) return false;
+  match (structIndex(program, type.name)) {
+    some(index) => {
+      for (const field of program.aggregates[index].fields) {
+        const lowered = attempt lowerModuleType(program, importedTypes, field.type);
+        match (lowered) {
+          success(fieldType) => {
+            if (moduleTypeIsCxxMoveOnly(program, importedTypes, fieldType, depth + 1)) return true;
+          }
+          failure(_) => {}
+        }
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 function wrapOwnedStorageType(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in tree: ExpressionTree,
+  input: usize,
+  in payloadType: LoweredType,
+  value: usize,
+  inout output: Array<LoweredExpression>
+): usize {
+  const cxxMove = moduleTypeIsCxxMoveOnly(program, importedTypes, payloadType, 0);
+  if (cxxMove && moduleTypeNeedsCleanup(program, importedTypes, payloadType)) {
+    // Z cleanup and a move-only C++ member: the Z move (with its liveness
+    // flag) also C++-moves the storage: `(flag = false, std::move(x))`.
+    const wrapped = wrapOwnedStorageZType(program, importedTypes, tree, input, payloadType, value, inout output);
+    if (
+      output[wrapped].kind == LoweredExpressionKind.moveValue
+      && !expressionHasLabel(output[wrapped], "cpp-move")
+    ) output[wrapped].labels.push("cpp-move");
+    return wrapped;
+  }
+  if (cxxMove) {
+    // C++ move-constructs the destination; its source stays a valid
+    // moved-from object that C++ destroys at the end of its scope.
+    const place = tree.nodes[input].kind == ExpressionKind.identifierExpression
+      || tree.nodes[input].kind == ExpressionKind.memberExpression
+      || tree.nodes[input].kind == ExpressionKind.indexExpression;
+    if (!place || output[value].kind == LoweredExpressionKind.moveValue) return value;
+    let children = Array<usize>();
+    children.push(value);
+    let labels = Array<String>();
+    labels.push("cpp-move");
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.moveValue,
+      "",
+      move children,
+      move labels
+    );
+  }
+  return wrapOwnedStorageZType(program, importedTypes, tree, input, payloadType, value, inout output);
+}
+
+function wrapOwnedStorageZType(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in tree: ExpressionTree,
@@ -8088,7 +8227,15 @@ function lowerCxxMethodCall(
   const receiverInput = tree.nodes[calleeInput].children[0];
   let children = Array<usize>();
   let labels = Array<String>();
-  const receiver = try lowerExpression(program, importedTypes, evidence, tree, receiverInput, inout output);
+  let receiver = try lowerExpression(program, importedTypes, evidence, tree, receiverInput, inout output);
+  // An `&&`-qualified member consumes its receiver: std::move(receiver).member().
+  if (resolvedCallReceiverMode(evidence, tree, index) == "move") {
+    let moveChildren = Array<usize>();
+    moveChildren.push(receiver);
+    let moveLabels = Array<String>();
+    moveLabels.push("cpp-move");
+    receiver = pushExpression(inout output, LoweredExpressionKind.moveValue, "", move moveChildren, move moveLabels);
+  }
   children.push(receiver);
   labels.push("receiver");
   const parameterModes = resolvedCallParameterModes(program, evidence, tree, index);
@@ -31633,6 +31780,7 @@ function copyImportedTypeAlias(
       0,
       declaration.underlyingType.byteLength
     ),
+    cxxMoveOnly: declaration.cxxMoveOnly,
   });
 }
 
@@ -32428,6 +32576,7 @@ function importedTypesForModule(
               variants: Array<LoweredVariant>(),
               payloadBearing: false,
               underlyingType: "",
+              cxxMoveOnly: signature.foreignKind == "moveValue",
             }));
           }
         }
@@ -35589,6 +35738,7 @@ function lowerProgramUnchecked(
   );
   rewriteNativeCExportCallTargets(inout functions);
   annotateObjectiveCEnumPayloads(enums, inout functions);
+  markCxxMovedLocals(inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
@@ -36306,6 +36456,7 @@ function lowerModulesIncludingTests(
   try rewriteCheckedCallTargets(parsed, graph, nativeCExportNames, inout functions, inout structs);
   rewriteNativeCExportCallTargets(inout functions);
   annotateObjectiveCEnumPayloads(enums, inout functions);
+  markCxxMovedLocals(inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
