@@ -9908,8 +9908,8 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     objectiveC: false,
     cPlusPlus: false,
   };
-  const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL000000000000000f\nM/);
+  const encoded = encodeForeignFunctionDeclarationStream(declarations, 8);
+  assert.match(encoded, /^ZFDCL0000000000000010\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -9918,7 +9918,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
         ["unsupported", {} as never],
       ]),
       objectTypes: new Map([["unsupported", {} as never]]),
-    }),
+    }, 8),
     encoded,
   );
 
@@ -10037,7 +10037,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     [directory],
   ).get("native");
   assert.ok(objcStream);
-  assert.match(objcStream, /^ZFDCL000000000000000f\nM/);
+  assert.match(objcStream, /^ZFDCL0000000000000010\nM/);
   assert.match(objcStream, /\nQ/);
   assert.match(objcStream, /\nI/);
   assert.match(objcStream, /\nJ/);
@@ -10051,6 +10051,20 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     { encoding: "utf8" },
   );
   assert.equal(objcExecution.status, 0, objcExecution.stderr);
+
+  const cppFixture = resolve(projectRoot, "tests/fixtures/foreign-values.hpp");
+  const cppStream = resolveForeignFunctionDeclarationStreams(
+    [{ ...objcImport, header: basename(cppFixture) }],
+    fixture,
+    [dirname(cppFixture)],
+  ).get("native");
+  assert.ok(cppStream);
+  assert.match(cppStream, /\nX/);
+  assert.match(cppStream, /\nY/);
+  const cppPath = resolve(directory, "cpp.zfdcl");
+  writeFileSync(cppPath, cppStream);
+  const cppExecution = spawnSync(executable, [cppPath, "cpp"], { encoding: "utf8" });
+  assert.equal(cppExecution.status, 0, cppExecution.stderr);
 
   const contractFixture = resolve(
     projectRoot,
@@ -10655,33 +10669,6 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   assert.equal(invalidForeignEnum.status, 3, invalidForeignEnum.stderr);
 
-  const uncontractedForeignFunctionPath = resolve(
-    directory,
-    "uncontracted-foreign-function.zs",
-  );
-  writeFileSync(
-    uncontractedForeignFunctionPath,
-    [
-      'import { z_foreign_measure as measure } from "foreign-functions-only.h";',
-      "function main(): i32 {",
-      '  measure(1, "label");',
-      "  return 0;",
-      "}",
-      "",
-    ].join("\n"),
-  );
-  const uncontractedForeignFunction = spawnSync(
-    contractExecutable,
-    [
-      clangPath,
-      contractPath,
-      uncontractedForeignFunctionPath,
-      emittedForeignPath,
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(uncontractedForeignFunction.status, 3);
-
   const unsupportedContractPath = resolve(directory, "unsupported.zd");
   writeFileSync(
     unsupportedContractPath,
@@ -11087,7 +11074,7 @@ test("compiles a multi-module Z application through the standalone native driver
   // aliases, selective namespace imports, and per-call overload choice.
   const cppNamespaces = resolve(projectRoot, "tests/fixtures/native-cpp-namespaces/main.zs");
   for (const [entry, expected] of [
-    [cppNamespaces, "area=42 tag=40 narrow=42 wide=5\nsigned=4 unsigned=6 deep=203 local=6\n"],
+    [cppNamespaces, "area=42 tag=40 narrow=42 wide=5\nsigned=4 unsigned=6 deep=203 local=6 span=21\n"],
     [resolve(projectRoot, "examples/interop/cpp/cpp-selective-interop.zs"), "selective cpp=42, adjusted=40\n"],
   ]) {
     const run = spawnSync(driver, ["run", entry], {
@@ -11114,6 +11101,32 @@ test("compiles a multi-module Z application through the standalone native driver
     });
     assert.equal(rejection.status, 1, `${to}: ${rejection.stderr}`);
     assert.ok(rejection.stderr.includes(`${cppNamespaceVariant}:${message}`), `${to}: ${rejection.stderr}`);
+  }
+  // C++ value-type `.zd` facts (`copy;`, bare `deinit;`, `thread { }`) parse
+  // with Stage 0's validation, code, and locations.
+  copyFileSync(resolve(projectRoot, "tests/fixtures/move-only.hpp"), resolve(directory, "move-only.hpp"));
+  const valueContractEntry = resolve(directory, "value-contract.zs");
+  writeFileSync(valueContractEntry, 'import native from "move-only.hpp";\nfunction main(): i32 {\n  return 0;\n}\n');
+  const valueContractPath = resolve(directory, "move-only.hpp.zd");
+  for (const [facts, message] of [
+    ["move;\n    deinit;\n    thread {\n      transfer;\n      deinit;\n    }", ""],
+    ["copy;\n    copy;\n    deinit;", '4:5: error[Z0801]: foreign type "zcpp.UniqueValue" cannot declare copy more than once'],
+    ["move;", '2:10: error[Z0801]: foreign value type "zcpp.UniqueValue" must declare deterministic deinit'],
+    ["deinit;", '2:10: error[Z0801]: foreign value type "zcpp.UniqueValue" must declare copy or move'],
+    ["move;\n    deinit;\n    flip;", '5:5: error[Z0801]: expected "copy", "move", "deinit", "thread", "project", or "discriminant" in foreign type contract, found "flip"'],
+    ["move;\n    deinit;\n    thread {\n      transfer;\n      share;\n    }", '7:7: error[Z0801]: foreign type "zcpp.UniqueValue" thread contract cannot declare both transfer and share; share already implies transfer'],
+    ["move;\n    deinit;\n    thread {\n      deinit;\n    }", '5:5: error[Z0801]: foreign type "zcpp.UniqueValue" thread contract requires transfer or share'],
+  ]) {
+    writeFileSync(valueContractPath, `declare module "move-only.hpp" {\n  export type zcpp.UniqueValue {\n    ${facts}\n  }\n}\n`);
+    const checked = spawnSync(driver, ["check", valueContractEntry], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 60_000, killSignal: "SIGKILL",
+    });
+    if (message.length === 0) {
+      assert.equal(checked.status, 0, `${facts}: ${checked.stderr}`);
+    } else {
+      assert.equal(checked.status, 1, `${facts}: ${checked.stderr}`);
+      assert.ok(checked.stderr.includes(`${valueContractPath}:${message}`), `${facts}: ${checked.stderr}`);
+    }
   }
   for (const entry of [
     "compiler/driver/main.zs",
@@ -11410,7 +11423,7 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(
     foreignContractInspection.stdout,
-    /normalized 5 foreign function contracts for foreign-functions-only\.h/,
+    /normalized 6 foreign function contracts for foreign-functions-only\.h/,
   );
   const mismatchedEnumContract = resolve(
     directory,
@@ -11495,7 +11508,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(incompleteNativeStatusInspection.status, 1);
   assert.match(
     incompleteNativeStatusInspection.stderr,
-    /incomplete-native-status\.zd:2:\d+: error: a native status contract requires at least one success value/,
+    /incomplete-native-status\.zd:2:\d+: error\[Z0801\]: a native status contract requires at least one success value/,
   );
 
   const nativeCallbackExample = resolve(

@@ -11,6 +11,6 @@ function main(): i32 {
   const unsigned: u64 = shapes.geometry.pick(u64(5));
   const deep = shapes.geometry.inner.depth(1) + g.inner.depth(2);
   console.log(`area=${shapes.area(point)} tag=${labels.tag(label)} narrow=${narrow} wide=${wide}`);
-  console.log(`signed=${signed} unsigned=${unsigned} deep=${deep} local=${g.area(g.Point({ x: 2, y: 3 }))}`);
+  console.log(`signed=${signed} unsigned=${unsigned} deep=${deep} local=${g.area(g.Point({ x: 2, y: 3 }))} span=${g.span(i64(7))}`);
   return 0;
 }

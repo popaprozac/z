@@ -27,7 +27,7 @@ function inspect(in path: String, in sourcePath: String, in mode: String, in pla
   }
   const source = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(source);
-  if (module.version != 15) throw "wrong foreign protocol version";
+  if (module.version != 16) throw "wrong foreign protocol version";
   let foundBase = false;
   let foundFinal = false;
   let observed: usize = 0;

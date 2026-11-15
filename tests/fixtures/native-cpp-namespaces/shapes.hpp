@@ -12,6 +12,7 @@ inline int widen(int value) { return value * 2; }
 inline double widen(double value) { return value * 2.5; }
 inline long long pick(long long value) { return value - 1; }
 inline unsigned long long pick(unsigned long long value) { return value + 1; }
+inline long span(long value) { return value * 3; }
 
 namespace inner {
 inline int depth(int value) { return value + 100; }

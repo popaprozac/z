@@ -7,7 +7,7 @@ import {
 function inspect(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 15) return 10;
+  if (module.version != 16) return 10;
   if (module.producer != "clang") return 11;
   if (module.objectiveC || module.cPlusPlus) return 12;
   if (module.functions.length != 1) return 13;
@@ -74,7 +74,7 @@ function inspect(in path: String): i32 throws String {
 function inspectClang(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 15) return 40;
+  if (module.version != 16) return 40;
   if (module.producer != "clang") return 41;
   if (module.objectiveC || module.cPlusPlus) return 42;
   if (module.types.length != 1) return 67;
@@ -129,7 +129,7 @@ function inspectClang(in path: String): i32 throws String {
 function inspectObjC(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 15) return 90;
+  if (module.version != 16) return 90;
   if (!module.objectiveC || module.cPlusPlus) return 91;
 
   let foundProtocol = false;
@@ -205,11 +205,56 @@ function inspectObjC(in path: String): i32 throws String {
   return 0;
 }
 
+// tests/fixtures/foreign-values.hpp with its `.zd`: a copyable C++ value
+// type and its members, all as native spellings.
+function inspectCpp(in path: String): i32 throws String {
+  const encoded = try fs.readText(path);
+  const module = try decodeRawForeignDeclarations(encoded);
+  if (module.version != 16) return 120;
+  if (!module.cPlusPlus || module.longWidth != 8) return 121;
+  let found = false;
+  for (const type of module.types) {
+    if (type.qualifiedName != "zcpp.ManagedValue") continue;
+    found = true;
+    if (type.kind != "value" || type.nativeName != "zcpp::ManagedValue") return 122;
+    if (!type.lifecycleCopy || type.lifecycleMove || !type.lifecycleDeinit) return 123;
+    if (type.threadTransfer || type.threadShare || type.threadDeinit) return 124;
+    if (type.memberCount != 8) return 125;
+    const constructorMember = view module.cxxMembers[type.memberStart];
+    if (constructorMember.role != "constructor" || constructorMember.nativeName != "zcpp::ManagedValue") return 126;
+    if (constructorMember.parameterCount != 1) return 127;
+    const parameter = view module.cxxMemberParameters[constructorMember.parameterStart];
+    if (parameter.nativeType != "int32_t") return 128;
+    match (in parameter.canonicalNativeType) {
+      some(name) => {
+        if (name != "i32") return 129;
+      }
+      none => return 129;
+    }
+    const fromMember = view module.cxxMembers[type.memberStart + 1];
+    if (fromMember.role != "static" || fromMember.nativeName != "zcpp::ManagedValue::from") return 130;
+    if (fromMember.returnNativeType != "zcpp::ManagedValue") return 131;
+    const value = view module.cxxMembers[type.memberStart + 4];
+    if (value.role != "method" || value.name != "value" || value.receiverAccess != "in") return 132;
+    const add = view module.cxxMembers[type.memberStart + 5];
+    if (add.name != "add" || add.receiverAccess != "inout") return 133;
+  }
+  if (!found) return 134;
+  return 0;
+}
+
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length < 1 || arguments.length > 2) return 2;
   if (arguments.length == 2 && arguments[1] == "clang") {
     const outcome = attempt inspectClang(arguments[0]);
+    return match (outcome) {
+      success(code) => code;
+      failure(_) => 3;
+    };
+  }
+  if (arguments.length == 2 && arguments[1] == "cpp") {
+    const outcome = attempt inspectCpp(arguments[0]);
     return match (outcome) {
       success(code) => code;
       failure(_) => 3;

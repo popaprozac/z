@@ -1,13 +1,15 @@
 import type {
   ForeignAvailability,
+  ForeignFunctionOverload,
   ForeignModuleDeclarations,
+  ForeignNamedType,
   ForeignObjCMethod,
   ForeignObjCProperty,
   ForeignType,
 } from "./foreign-ir.ts";
 import { objcParameterNativeSpelling } from "./foreign-type-spelling.ts";
 
-export const foreignDeclarationProtocolVersion = 15;
+export const foreignDeclarationProtocolVersion = 16;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -77,8 +79,41 @@ function availabilityRecord(
   ].join("");
 }
 
+const scalarTypeNames: ReadonlySet<string> = new Set([
+  "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize", "f32", "f64", "boolean",
+]);
+
+type CxxMemberRecord = {
+  readonly role: "constructor" | "static" | "method";
+  readonly overload: ForeignFunctionOverload;
+  readonly receiverAccess: string;
+};
+
+// A parameter or result travels as its qualified native spelling. A scalar the
+// producer already classified also carries its Z scalar as the canonical
+// spelling, so the consumer maps members and free functions the same way.
+function cxxCanonicalSpelling(type: ForeignType): string | null {
+  return type.kind === "z" && scalarTypeNames.has(type.name) ? type.name : null;
+}
+
+function cxxValueMembers(type: ForeignNamedType): CxxMemberRecord[] {
+  if (type.kind !== "value") return [];
+  return [
+    ...type.constructors.map((overload) => ({ role: "constructor" as const, overload, receiverAccess: "" })),
+    ...type.staticMethods.flatMap((method) => method.overloads.map((overload) => ({
+      role: "static" as const, overload, receiverAccess: "",
+    }))),
+    ...type.methods.flatMap((method) => method.overloads.map((overload) => ({
+      role: "method" as const, overload, receiverAccess: overload.receiverAccess,
+    }))),
+  ];
+}
+
 /**
  * Versioned bootstrap wire format for producer-facing foreign declarations.
+ * Version 16 carries the target's C `long` width and C++ value types: their
+ * copy/move/deinit and thread facts, and their constructors, static methods,
+ * and methods (with receiver access) as native spellings.
  * Version 15 retains Objective-C interface availability, including unavailable
  * and deployment-version restrictions on native superclasses.
  * Version 14 carries native subclass restrictions, designated-initializer,
@@ -106,12 +141,14 @@ function availabilityRecord(
  */
 export function encodeForeignFunctionDeclarationStream(
   module: ForeignModuleDeclarations,
+  longWidth: number,
 ): string {
   const namedTypes = [...module.namedTypes.values()].filter(
     (type) => (
       type.kind === "enum"
       || type.kind === "record"
       || type.kind === "scalar"
+      || type.kind === "value"
     ),
   );
 
@@ -123,6 +160,7 @@ export function encodeForeignFunctionDeclarationStream(
       optionalText(module.framework),
       boolean(module.objectiveC),
       boolean(module.cPlusPlus),
+      hexNumber(longWidth),
     ].join(""),
   ];
   for (let typeIndex = 0; typeIndex < namedTypes.length; typeIndex += 1) {
@@ -156,6 +194,14 @@ export function encodeForeignFunctionDeclarationStream(
       hexNumber(source?.column ?? 0),
       hexNumber(source?.length ?? 0),
       hexNumber(fields.length),
+      boolean(type.kind === "value" && type.lifecycle.copy),
+      boolean(type.kind === "value" && type.lifecycle.move),
+      boolean(type.kind === "value" && type.lifecycle.deinit),
+      boolean(type.kind === "value" && type.thread.transfer),
+      boolean(type.kind === "value" && type.thread.share),
+      boolean(type.kind === "value" && type.thread.deinit),
+      optionalText(type.metadata.executorAffinity),
+      hexNumber(cxxValueMembers(type).length),
     ].join(""));
     for (let fieldIndex = 0; fieldIndex < fields.length; fieldIndex += 1) {
       const field = fields[fieldIndex];
@@ -171,6 +217,59 @@ export function encodeForeignFunctionDeclarationStream(
         hexNumber(fieldSource?.column ?? 0),
         hexNumber(fieldSource?.length ?? 0),
       ].join(""));
+    }
+    const members = cxxValueMembers(type);
+    for (let memberIndex = 0; memberIndex < members.length; memberIndex += 1) {
+      const { role, overload, receiverAccess } = members[memberIndex];
+      const memberSource = overload.metadata.source;
+      records.push([
+        "X",
+        hexNumber(typeIndex),
+        hexNumber(memberIndex),
+        text(role),
+        text(overload.name),
+        text(overload.cName),
+        text(overload.returnType.cName),
+        optionalText(cxxCanonicalSpelling(overload.returnType)),
+        boolean(overload.variadic),
+        text(overload.cSignature),
+        optionalText(memberSource?.fileName),
+        hexNumber(memberSource?.line ?? 0),
+        hexNumber(memberSource?.column ?? 0),
+        hexNumber(memberSource?.length ?? 0),
+        optionalText(overload.metadata.executorAffinity),
+        text(receiverAccess),
+        hexNumber(overload.parameters.length),
+        hexNumber(overload.metadata.availability.length),
+      ].join(""));
+      for (let parameterIndex = 0; parameterIndex < overload.parameters.length; parameterIndex += 1) {
+        const parameter = overload.parameters[parameterIndex];
+        records.push([
+          "Y",
+          hexNumber(typeIndex),
+          hexNumber(memberIndex),
+          hexNumber(parameterIndex),
+          optionalText(parameter.name),
+          text(parameter.type.cName),
+          optionalText(cxxCanonicalSpelling(parameter.type)),
+        ].join(""));
+      }
+      for (let availabilityIndex = 0; availabilityIndex < overload.metadata.availability.length; availabilityIndex += 1) {
+        const availability = overload.metadata.availability[availabilityIndex];
+        records.push([
+          "U",
+          hexNumber(typeIndex),
+          hexNumber(memberIndex),
+          hexNumber(availabilityIndex),
+          optionalText(availability.platform),
+          optionalText(availability.introduced),
+          boolean(availability.deprecated),
+          optionalText(availability.deprecatedVersion),
+          optionalText(availability.obsoleted),
+          boolean(availability.unavailable),
+          optionalText(availability.message),
+        ].join(""));
+      }
     }
   }
   const constants = [...module.constants.values()];

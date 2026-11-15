@@ -247,7 +247,7 @@ export function resolveForeignFunctionDeclarationStreams(
   )) {
     streams.set(
       moduleName,
-      encodeForeignFunctionDeclarationStream(resolved.header.declarations),
+      encodeForeignFunctionDeclarationStream(resolved.header.declarations, targetIntegerWidths().long),
     );
   }
   return streams;
@@ -274,7 +274,7 @@ export function resolveForeignFunctionDeclarationStream(
       `foreign declaration producer did not resolve ${JSON.stringify(declaration.header)}`,
     );
   }
-  return encodeForeignFunctionDeclarationStream(resolved.header.declarations);
+  return encodeForeignFunctionDeclarationStream(resolved.header.declarations, targetIntegerWidths().long);
 }
 
 export interface ForeignDeclarationFingerprint {

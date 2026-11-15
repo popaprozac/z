@@ -82,6 +82,13 @@ export struct RawForeignTypeContract {
   executorAffinity: String;
   movable: boolean;
   release: String;
+  // `copy;`, `deinit;` (with or without a release function), and the
+  // type's `thread { ... }` facts, as Stage 0's ForeignValueContract.
+  copyable: boolean = false;
+  deinitDeclared: boolean = false;
+  threadTransfer: boolean = false;
+  threadShare: boolean = false;
+  threadDeinit: boolean = false;
   discriminantMember: String;
   variants: Array<RawForeignUnionVariant>;
   fallback: String;
@@ -282,7 +289,7 @@ function contractError(
   in cursor: ForeignContractCursor,
   in message: String
 ): String {
-  return `${cursor.path}:${cursor.tokens[cursor.index].line}:${cursor.tokens[cursor.index].column}: error: ${message}`;
+  return `${cursor.path}:${cursor.tokens[cursor.index].line}:${cursor.tokens[cursor.index].column}: error[Z0801]: ${message}`;
 }
 
 function contractErrorAt(
@@ -291,7 +298,7 @@ function contractErrorAt(
   column: usize,
   in message: String
 ): String {
-  return `${cursor.path}:${line}:${column}: error: ${message}`;
+  return `${cursor.path}:${line}:${column}: error[Z0801]: ${message}`;
 }
 
 function atText(in cursor: ForeignContractCursor, in text: String): boolean {
@@ -1250,6 +1257,9 @@ function parseType(
   inout cursor: ForeignContractCursor
 ): RawForeignTypeContract throws String {
   try expectText(inout cursor, "export");
+  // Stage 0 reports a type contract's own errors at its `type` keyword.
+  const typeLine = cursor.tokens[cursor.index].line;
+  const typeColumn = cursor.tokens[cursor.index].column;
   try expectText(inout cursor, "type");
   const line = cursor.tokens[cursor.index].line;
   const column = cursor.tokens[cursor.index].column;
@@ -1278,6 +1288,12 @@ function parseType(
   }
   try expectText(inout cursor, "{");
   let movable = false;
+  let copyable = false;
+  let deinitDeclared = false;
+  let threadDeclared = false;
+  let threadTransfer = false;
+  let threadShare = false;
+  let threadDeinit = false;
   let release = "";
   let discriminantMember = "";
   let variants = Array<RawForeignUnionVariant>();
@@ -1339,43 +1355,60 @@ function parseType(
       );
       continue;
     }
+    if (atText(cursor, "thread")) {
+      if (threadDeclared) {
+        throw contractError(
+          cursor,
+          `foreign type "${name}" cannot declare more than one thread contract`
+        );
+      }
+      threadDeclared = true;
+      try parseTypeThreadContract(
+        inout cursor,
+        `foreign type "${name}"`,
+        inout threadTransfer,
+        inout threadShare,
+        inout threadDeinit
+      );
+      continue;
+    }
+    const factLine = cursor.tokens[cursor.index].line;
+    const factColumn = cursor.tokens[cursor.index].column;
     const fact = cursor.tokens[cursor.index].text.copyBytes(
       0,
       cursor.tokens[cursor.index].text.byteLength
     );
+    if (fact != "copy" && fact != "move" && fact != "deinit") {
+      throw contractError(
+        cursor,
+        `expected "copy", "move", "deinit", "thread", "project", or "discriminant" in foreign type contract, found "${fact}"`
+      );
+    }
+    let duplicate = false;
+    if (fact == "copy") duplicate = copyable;
+    else if (fact == "move") duplicate = movable;
+    else duplicate = deinitDeclared;
+    if (duplicate) {
+      throw contractErrorAt(
+        cursor,
+        factLine,
+        factColumn,
+        `foreign type "${name}" cannot declare ${fact} more than once`
+      );
+    }
     cursor.index = cursor.index + 1;
-    if (fact == "move") {
-      if (movable) {
-        throw contractError(
-          cursor,
-          `foreign type "${name}" cannot declare move more than once`
-        );
-      }
-      movable = true;
-      try expectText(inout cursor, ";");
-      continue;
+    if (fact == "copy") copyable = true;
+    else if (fact == "move") movable = true;
+    else {
+      deinitDeclared = true;
+      // A bare `deinit;` is the C++ destructor; a named function is a C release.
+      if (!atText(cursor, ";")) release = try parseQualifiedName(inout cursor);
     }
-    if (fact == "deinit") {
-      if (release.byteLength > 0) {
-        throw contractError(
-          cursor,
-          `foreign type "${name}" cannot declare deinit more than once`
-        );
-      }
-      release = try parseQualifiedName(inout cursor);
-      try expectText(inout cursor, ";");
-      continue;
-    }
-    throw contractError(
-      cursor,
-      `C value resource "${name}" must use \`move;\` and \`deinit <release function>;\`, found "${fact}"`
-    );
+    try expectText(inout cursor, ";");
   }
   try expectText(inout cursor, "}");
-  if (
-    discriminantMember.byteLength > 0
-    && (movable || release.byteLength > 0)
-  ) {
+  const hasLifecycle = copyable || movable || deinitDeclared || threadDeclared;
+  if (discriminantMember.byteLength > 0 && hasLifecycle) {
     throw contractErrorAt(
       cursor,
       line,
@@ -1383,13 +1416,20 @@ function parseType(
       `foreign discriminated union "${name}" cannot also declare value lifecycle facts in the first tier`
     );
   }
-  const hasLifecycle = movable || release.byteLength > 0;
-  if (hasLifecycle && (!movable || release.byteLength == 0)) {
+  if (hasLifecycle && !deinitDeclared) {
     throw contractErrorAt(
       cursor,
-      line,
-      column,
-      `C value resource "${name}" must declare \`move;\` and \`deinit <release function>;\``
+      typeLine,
+      typeColumn,
+      `foreign value type "${name}" must declare deterministic deinit`
+    );
+  }
+  if (hasLifecycle && !copyable && !movable) {
+    throw contractErrorAt(
+      cursor,
+      typeLine,
+      typeColumn,
+      `foreign value type "${name}" must declare copy or move`
     );
   }
   if (
@@ -1416,7 +1456,62 @@ function parseType(
     fieldProjections,
     line,
     column,
+    copyable,
+    deinitDeclared,
+    threadTransfer,
+    threadShare,
+    threadDeinit,
   });
+}
+
+// `thread { transfer | share | deinit; }` on a foreign type, as Stage 0.
+function parseTypeThreadContract(
+  inout cursor: ForeignContractCursor,
+  in owner: String,
+  inout transfer: boolean,
+  inout share: boolean,
+  inout releases: boolean
+): void throws String {
+  const line = cursor.tokens[cursor.index].line;
+  const column = cursor.tokens[cursor.index].column;
+  try expectText(inout cursor, "thread");
+  try expectText(inout cursor, "{");
+  let shareLine: usize = 0;
+  let shareColumn: usize = 0;
+  while (!atText(cursor, "}")) {
+    const capability = cursor.tokens[cursor.index].text.copyBytes(
+      0,
+      cursor.tokens[cursor.index].text.byteLength
+    );
+    if (capability != "transfer" && capability != "share" && capability != "deinit") {
+      throw contractError(
+        cursor,
+        `expected "transfer", "share", or "deinit" in ${owner} thread contract, found "${capability}"`
+      );
+    }
+    const duplicate = capability == "transfer" ? transfer : capability == "share" ? share : releases;
+    if (duplicate) {
+      throw contractError(
+        cursor,
+        `${owner} thread contract cannot declare ${capability} more than once`
+      );
+    }
+    if (capability == "transfer") transfer = true;
+    else if (capability == "share") {
+      share = true;
+      shareLine = cursor.tokens[cursor.index].line;
+      shareColumn = cursor.tokens[cursor.index].column;
+    } else releases = true;
+    cursor.index = cursor.index + 1;
+    try expectText(inout cursor, ";");
+  }
+  try expectText(inout cursor, "}");
+  if (transfer && share) {
+    throw `${cursor.path}:${shareLine}:${shareColumn}: error[Z0801]: ${owner} thread contract cannot declare both transfer and share; share already implies transfer`;
+  }
+  if (!transfer && !share) {
+    throw contractErrorAt(cursor, line, column, `${owner} thread contract requires transfer or share`);
+  }
 }
 
 export function parseForeignContracts(
@@ -1657,12 +1752,30 @@ function normalizedForeignTypeIndex(
   return Option<usize>.none;
 }
 
+// C `long` follows the producer's target width, as Stage 0's mapBuiltinType.
+function targetScalarTypeName(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String
+): String throws String {
+  const compact = compactNativeType(nativeType);
+  if (
+    compact == "long"
+    || compact == "longint"
+    || compact == "signedlong"
+    || compact == "signedlongint"
+  ) return declarations.longWidth == 8 ? "i64" : "i32";
+  if (compact == "unsignedlong" || compact == "unsignedlongint") {
+    return declarations.longWidth == 8 ? "u64" : "u32";
+  }
+  return try scalarTypeName(nativeType);
+}
+
 function scalarTypeNameWithCanonical(
   in declarations: RawForeignModuleDeclarations,
   in nativeType: String,
   in canonicalNativeType: Option<String>
 ): String throws String {
-  const direct = attempt scalarTypeName(nativeType);
+  const direct = attempt targetScalarTypeName(declarations, nativeType);
   match (direct) {
     success(typeName) => return typeName;
     failure(_) => {}
@@ -1673,13 +1786,14 @@ function scalarTypeNameWithCanonical(
     declarations.types.length
   );
   if (scalarIndex < declarations.types.length) {
-    return try scalarTypeName(
+    return try targetScalarTypeName(
+      declarations,
       declarations.types[scalarIndex].underlyingType
     );
   }
   match (in canonicalNativeType) {
-    some(typeName) => return try scalarTypeName(typeName);
-    none => return try scalarTypeName(nativeType);
+    some(typeName) => return try targetScalarTypeName(declarations, typeName);
+    none => return try targetScalarTypeName(declarations, nativeType);
   }
 }
 
@@ -2007,7 +2121,7 @@ function statusScalarTypeName(
         declarations.types[index].underlyingType.byteLength
       );
     }
-    none => return try scalarTypeName(nativeType);
+    none => return try targetScalarTypeName(declarations, nativeType);
   }
 }
 
@@ -2231,6 +2345,36 @@ function rawObjCMethodContractExists(
     }
   }
   return false;
+}
+
+// A lifecycle contract names either a C record (a value resource released by
+// a C function) or a C++ value type, whose facts the producer already checked
+// against the header, as Stage 0's collectNamedTypes.
+function validateValueLifecycleContracts(
+  in contracts: RawForeignContractSet,
+  in declarations: RawForeignModuleDeclarations
+): void throws String {
+  for (const contract of contracts.types) {
+    if (!contract.copyable && !contract.movable && !contract.deinitDeclared) continue;
+    let record = false;
+    let value = false;
+    for (const declaration of declarations.types) {
+      if (
+        contract.name != declaration.exportName
+        && contract.name != declaration.qualifiedName
+        && contract.name != declaration.nativeName
+        && contract.name != rawForeignCanonicalRecordName(declaration)
+      ) continue;
+      if (declaration.kind == "record") record = true;
+      if (declaration.kind == "value") value = true;
+    }
+    if (record && (contract.copyable || !contract.movable || contract.release.byteLength == 0)) {
+      throw `C value resource "${contract.name}" must declare \`move;\` and \`deinit <release function>;\` without \`copy;\``;
+    }
+    if (!record && !value) {
+      throw `declaration names unknown foreign value type "${contract.name}"`;
+    }
+  }
 }
 
 function validateResourceContracts(
@@ -3897,6 +4041,7 @@ export function normalizeForeignContracts(
       recordAdded = true;
     }
   }
+  try validateValueLifecycleContracts(contracts, declarations);
   try validateResourceContracts(contracts, declarations, types);
   try collectOwnedHandleTypes(contracts, declarations, inout types);
   try collectBorrowedHandleTypes(contracts, declarations, inout types);

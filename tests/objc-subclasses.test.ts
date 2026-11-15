@@ -23,7 +23,7 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
       header: "objc-subclass-wire.h",
       location: { fileName: decoder, offset: 0, line: 1, column: 1 },
     }], decoder, [resolve(projectRoot, "tests/fixtures")]).get("native")!;
-    assert.match(stream, /^ZFDCL000000000000000f\n/);
+    assert.match(stream, /^ZFDCL0000000000000010\n/);
     const emission = spawnSync(process.execPath, [cli, "self-host-emit", decoder], {
       encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
     });
@@ -430,9 +430,9 @@ hostToolchainTest("checks native subclass declarations using normalized Clang sa
     assert.equal(incompleteAvailability.status, 1, incompleteAvailability.stdout + incompleteAvailability.stderr);
     assert.match(incompleteAvailability.stdout, /ended|expected|invalid/);
 
-    const obsolete = run(stream.replace("ZFDCL000000000000000f", "ZFDCL000000000000000e"));
+    const obsolete = run(stream.replace("ZFDCL0000000000000010", "ZFDCL000000000000000f"));
     assert.equal(obsolete.status, 1, obsolete.stderr);
-    assert.match(obsolete.stdout, /unsupported foreign declaration stream version 14/);
+    assert.match(obsolete.stdout, /unsupported foreign declaration stream version 15/);
     // Skip the J record's owner, indices, selector, and base name, then its
     // instance/instancetype booleans. The next byte is the new initializer fact.
     let flagOffset = stream.indexOf("\nJ") + 2;
