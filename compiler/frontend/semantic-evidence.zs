@@ -166,6 +166,16 @@ export function callableSymbolLocation(
     && tree.nodes[calleeIndex].children.length == 1
   ) {
     const receiverIndex = tree.nodes[calleeIndex].children[0];
+    const member = tree.nodes[calleeIndex].value.copyBytes(
+      0,
+      tree.nodes[calleeIndex].value.byteLength
+    );
+    const memberName = identifierLookupName(member);
+    if (
+      tree.nodes[receiverIndex].kind == ExpressionKind.memberExpression
+    ) return nestedForeignFunctionLocation(
+      modules, moduleIndex, tree, receiverIndex, memberName
+    );
     if (
       tree.nodes[receiverIndex].kind != ExpressionKind.identifierExpression
     ) return Option<ModuleSymbolLocation>.none;
@@ -173,11 +183,6 @@ export function callableSymbolLocation(
       0,
       tree.nodes[receiverIndex].value.byteLength
     );
-    const member = tree.nodes[calleeIndex].value.copyBytes(
-      0,
-      tree.nodes[calleeIndex].value.byteLength
-    );
-    const memberName = identifierLookupName(member);
     const symbolIndex = moduleSymbolIndex(modules[moduleIndex], namespace);
     if (
       symbolIndex < modules[moduleIndex].symbols.length
@@ -218,6 +223,63 @@ export function callableSymbolLocation(
     }
   }
   return Option<ModuleSymbolLocation>.none;
+}
+
+// `cpp.zcpp.translate`: a C++ namespace path below a foreign import binding.
+function foreignNamespacePath(
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
+    return identifierLookupName(tree.nodes[index].value);
+  }
+  if (
+    tree.nodes[index].kind != ExpressionKind.memberExpression
+    || tree.nodes[index].children.length != 1
+    || tree.nodes[index].optionalAccess
+  ) return "";
+  const receiver = foreignNamespacePath(tree, tree.nodes[index].children[0]);
+  if (receiver.byteLength == 0) return "";
+  const member = identifierLookupName(tree.nodes[index].value);
+  return `${receiver}.${member}`;
+}
+
+function nestedForeignFunctionLocation(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  receiverIndex: usize,
+  in memberName: String
+): Option<ModuleSymbolLocation> {
+  const path = foreignNamespacePath(tree, receiverIndex);
+  if (path.byteLength == 0) return Option<ModuleSymbolLocation>.none;
+  let rootLength: usize = 0;
+  while (rootLength < path.byteLength && path.byteAt(rootLength) != 46) {
+    rootLength = rootLength + 1;
+  }
+  const root = path.copyBytes(0, rootLength);
+  const rootIndex = moduleSymbolIndex(modules[moduleIndex], root);
+  if (
+    rootIndex >= modules[moduleIndex].symbols.length
+    || modules[moduleIndex].symbols[rootIndex].kind != ModuleSymbolKind.namespaceSymbol
+  ) return Option<ModuleSymbolLocation>.none;
+  match (in modules[moduleIndex].symbols[rootIndex].targetModule) {
+    some(_) => return Option<ModuleSymbolLocation>.none;
+    none => {}
+  }
+  const qualified = `${path}.${memberName}`;
+  const foreignIndex = moduleSymbolIndex(modules[moduleIndex], qualified);
+  if (
+    foreignIndex >= modules[moduleIndex].symbols.length
+    || modules[moduleIndex].symbols[foreignIndex].kind != ModuleSymbolKind.importedSymbol
+  ) return Option<ModuleSymbolLocation>.none;
+  return match (in modules[moduleIndex].symbols[foreignIndex].functionSignature) {
+    some(_) => Option<ModuleSymbolLocation>.some(ModuleSymbolLocation({
+      moduleIndex,
+      symbolIndex: foreignIndex,
+    }));
+    none => Option<ModuleSymbolLocation>.none;
+  };
 }
 
 export function foreignValueSymbolLocation(

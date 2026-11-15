@@ -1,4 +1,4 @@
-import { Map } from "std/collections";
+import { Map, Set } from "std/collections";
 import {
   NativeForeignContractSet,
   NativeForeignFunctionContract,
@@ -923,6 +923,26 @@ function attachSelectiveFunction(
       importedName
     );
   }
+  if (contracts.functions[contractIndex].overloaded) {
+    // The placeholder becomes the first overload; the rest follow it under
+    // the same local name.
+    let first = true;
+    for (const contract of contracts.functions) {
+      if (contract.name != importedName) continue;
+      const symbol = foreignFunctionSymbol(
+        contract, contracts, indices, namespace, localName,
+        modules[moduleIndex].symbols[symbolIndex].offset, line, column
+      );
+      if (first) {
+        modules[moduleIndex].symbols[symbolIndex] = symbol;
+        first = false;
+      } else modules[moduleIndex].symbols.push(symbol);
+    }
+    modules[moduleIndex].symbolIndices = buildModuleSymbolIndices(
+      modules[moduleIndex].symbols
+    );
+    return;
+  }
   modules[moduleIndex].symbols[symbolIndex].importedName =
     contracts.functions[contractIndex].nativeName.copyBytes(
       0,
@@ -952,6 +972,84 @@ function attachSelectiveFunction(
   }
 }
 
+function foreignLeafName(in name: String): String {
+  let index = name.byteLength;
+  while (index > 0) {
+    if (name.byteAt(index - 1) == 46) return name.copyBytes(index, name.byteLength);
+    index = index - 1;
+  }
+  return name.copyBytes(0, name.byteLength);
+}
+
+// A namespaced C++ declaration is also reachable by its final name when no
+// other declaration in the header shares that name, as in Stage 0.
+function ambiguousForeignLeafNames(
+  in names: Array<String>
+): Set<String> {
+  let owners = Map<String, usize>();
+  let ambiguous = Set<String>();
+  let index: usize = 0;
+  while (index < names.length) {
+    const leaf = foreignLeafName(names[index]);
+    const owner = indexedForeignName(owners, leaf);
+    match (owner) {
+      some(ownerIndex) => {
+        if (names[ownerIndex] != names[index]) ambiguous.add(copy leaf);
+      }
+      none => owners.set(copy leaf, index);
+    }
+    index = index + 1;
+  }
+  return ambiguous;
+}
+
+function foreignFunctionSymbol(
+  in contract: NativeForeignFunctionContract,
+  in contracts: NativeForeignContractSet,
+  in indices: ForeignNameIndices,
+  in namespace: String,
+  in name: String,
+  offset: usize,
+  line: usize,
+  column: usize
+): ModuleSymbol {
+  let successValues = Array<String>();
+  for (const successValue of contract.successValues) {
+    successValues.push(
+      successValue.copyBytes(0, successValue.byteLength)
+    );
+  }
+  return ModuleSymbol({
+    name: name.copyBytes(0, name.byteLength),
+    kind: ModuleSymbolKind.importedSymbol,
+    exported: false,
+    packageVisible: false,
+    nativeCExport: false,
+    targetModule: Option<usize>.none,
+    importedName: contract.nativeName.copyBytes(
+      0,
+      contract.nativeName.byteLength
+    ),
+    valueType: "",
+    functionSignature: Option<ModuleFunctionSignature>.some(
+      foreignFunctionSignature(contract, contracts, indices, namespace)
+    ),
+    typeSignature: Option<ModuleTypeSignature>.none,
+    foreignHeader: contracts.moduleSpecifier.copyBytes(
+      0,
+      contracts.moduleSpecifier.byteLength
+    ),
+    foreignSuccessValues: successValues,
+    foreignArguments: foreignArgumentPlan(contract),
+    offset,
+    line,
+    column,
+    foreignOverloadName: contract.overloaded
+      ? contract.name.copyBytes(0, contract.name.byteLength)
+      : "",
+  });
+}
+
 function attachNamespaceFunctions(
   moduleIndex: usize,
   inout modules: Array<ResolvedModule>,
@@ -962,42 +1060,22 @@ function attachNamespaceFunctions(
   line: usize,
   column: usize
 ): void {
+  let names = Array<String>();
   for (const contract of contracts.functions) {
+    names.push(contract.name.copyBytes(0, contract.name.byteLength));
     const name = `${namespace}.${contract.name}`;
-    const symbolIndex = modules[moduleIndex].symbols.length;
-    let successValues = Array<String>();
-    const foreignArguments = foreignArgumentPlan(contract);
-    for (const successValue of contract.successValues) {
-      successValues.push(
-        successValue.copyBytes(0, successValue.byteLength)
-      );
-    }
-    modules[moduleIndex].symbols.push(ModuleSymbol({
-      name: name.copyBytes(0, name.byteLength),
-      kind: ModuleSymbolKind.importedSymbol,
-      exported: false,
-      packageVisible: false,
-      nativeCExport: false,
-      targetModule: Option<usize>.none,
-      importedName: contract.nativeName.copyBytes(
-        0,
-        contract.nativeName.byteLength
-      ),
-      valueType: "",
-      functionSignature: Option<ModuleFunctionSignature>.some(
-        foreignFunctionSignature(contract, contracts, indices, namespace)
-      ),
-      typeSignature: Option<ModuleTypeSignature>.none,
-      foreignHeader: contracts.moduleSpecifier.copyBytes(
-        0,
-        contracts.moduleSpecifier.byteLength
-      ),
-      foreignSuccessValues: successValues,
-      foreignArguments,
-      offset,
-      line,
-      column,
-    }));
+    modules[moduleIndex].symbols.push(foreignFunctionSymbol(
+      contract, contracts, indices, namespace, name, offset, line, column
+    ));
+  }
+  const ambiguous = ambiguousForeignLeafNames(names);
+  for (const contract of contracts.functions) {
+    const leaf = foreignLeafName(contract.name);
+    if (leaf.byteLength == contract.name.byteLength || ambiguous.has(leaf)) continue;
+    const name = `${namespace}.${leaf}`;
+    modules[moduleIndex].symbols.push(foreignFunctionSymbol(
+      contract, contracts, indices, namespace, name, offset, line, column
+    ));
   }
   modules[moduleIndex].symbolIndices = buildModuleSymbolIndices(
     modules[moduleIndex].symbols
@@ -1222,43 +1300,84 @@ function attachForeignTypes(
         contracts.moduleSpecifier.byteLength
       );
   }
+  let names = Array<String>();
+  let added = Set<String>();
   let typeIndex: usize = 0;
   for (const type of contracts.types) {
-    const signature = signatures.types[typeIndex];
-    typeIndex = typeIndex + 1;
+    names.push(type.name.copyBytes(0, type.name.byteLength));
     const name = `${namespace}.${type.name}`;
-    if (moduleSymbolIndex(modules[moduleIndex], name) < modules[moduleIndex].symbols.length) {
+    if (
+      added.has(name)
+      || moduleSymbolIndex(modules[moduleIndex], name) < modules[moduleIndex].symbols.length
+    ) {
+      typeIndex = typeIndex + 1;
       continue;
     }
-    modules[moduleIndex].symbols.push(ModuleSymbol({
-      name,
-      kind: type.kind == "enum"
-        ? ModuleSymbolKind.enumSymbol
-        : ModuleSymbolKind.structSymbol,
-      exported: false,
-      packageVisible: false,
-      nativeCExport: false,
-      targetModule: Option<usize>.none,
-      importedName: type.nativeName.copyBytes(0, type.nativeName.byteLength),
-      valueType: "",
-      functionSignature: Option<ModuleFunctionSignature>.none,
-      typeSignature: Option<ModuleTypeSignature>.some(
-        signature
-      ),
-      foreignHeader: contracts.moduleSpecifier.copyBytes(
-        0,
-        contracts.moduleSpecifier.byteLength
-      ),
-      foreignSuccessValues: Array<String>(),
-      foreignArguments: Array<ModuleForeignArgument>(),
-      offset,
-      line,
-      column,
-    }));
+    modules[moduleIndex].symbols.push(foreignTypeSymbol(
+      type, contracts, signatures, typeIndex, name, offset, line, column
+    ));
+    added.add(copy name);
+    typeIndex = typeIndex + 1;
+  }
+  // Foreign type identity is the native spelling, so a leaf alias names the
+  // same type as its qualified symbol.
+  const ambiguous = ambiguousForeignLeafNames(names);
+  typeIndex = 0;
+  for (const type of contracts.types) {
+    const leaf = foreignLeafName(type.name);
+    const name = `${namespace}.${leaf}`;
+    if (
+      leaf.byteLength != type.name.byteLength
+      && !ambiguous.has(leaf)
+      && !added.has(name)
+      && moduleSymbolIndex(modules[moduleIndex], name) >= modules[moduleIndex].symbols.length
+    ) {
+      modules[moduleIndex].symbols.push(foreignTypeSymbol(
+        type, contracts, signatures, typeIndex, name, offset, line, column
+      ));
+      added.add(copy name);
+    }
+    typeIndex = typeIndex + 1;
   }
   modules[moduleIndex].symbolIndices = buildModuleSymbolIndices(
     modules[moduleIndex].symbols
   );
+}
+
+function foreignTypeSymbol(
+  in type: NativeForeignTypeContract,
+  in contracts: NativeForeignContractSet,
+  in signatures: ForeignTypeSignatures,
+  typeIndex: usize,
+  in name: String,
+  offset: usize,
+  line: usize,
+  column: usize
+): ModuleSymbol {
+  const signature = signatures.types[typeIndex];
+  return ModuleSymbol({
+    name: name.copyBytes(0, name.byteLength),
+    kind: type.kind == "enum"
+      ? ModuleSymbolKind.enumSymbol
+      : ModuleSymbolKind.structSymbol,
+    exported: false,
+    packageVisible: false,
+    nativeCExport: false,
+    targetModule: Option<usize>.none,
+    importedName: type.nativeName.copyBytes(0, type.nativeName.byteLength),
+    valueType: "",
+    functionSignature: Option<ModuleFunctionSignature>.none,
+    typeSignature: Option<ModuleTypeSignature>.some(signature),
+    foreignHeader: contracts.moduleSpecifier.copyBytes(
+      0,
+      contracts.moduleSpecifier.byteLength
+    ),
+    foreignSuccessValues: Array<String>(),
+    foreignArguments: Array<ModuleForeignArgument>(),
+    offset,
+    line,
+    column,
+  });
 }
 
 function attachForeignObjCTypes(
@@ -1433,6 +1552,70 @@ function attachSelectiveType(
     );
 }
 
+function foreignNamespaceImported(
+  in contracts: NativeForeignContractSet,
+  in name: String
+): boolean {
+  const prefix = `${name}.`;
+  for (const contract of contracts.functions) {
+    if (stringStartsWith(contract.name, prefix)) return true;
+  }
+  for (const type of contracts.types) {
+    if (stringStartsWith(type.name, prefix)) return true;
+  }
+  return false;
+}
+
+// `import { zcpp as math }` binds a C++ namespace: `math.X` names `zcpp.X`.
+// Types keep their canonical symbols under the import's hidden namespace, so
+// signatures and identities are shared with the qualified spelling.
+function attachSelectiveNamespace(
+  moduleIndex: usize,
+  inout modules: Array<ResolvedModule>,
+  in contracts: NativeForeignContractSet,
+  in signatures: ForeignTypeSignatures,
+  in namespace: String,
+  in localName: String,
+  in importedName: String
+): void {
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], localName);
+  const offset = modules[moduleIndex].symbols[symbolIndex].offset;
+  const line = modules[moduleIndex].symbols[symbolIndex].line;
+  const column = modules[moduleIndex].symbols[symbolIndex].column;
+  modules[moduleIndex].symbols[symbolIndex].kind = ModuleSymbolKind.namespaceSymbol;
+  modules[moduleIndex].symbols[symbolIndex].targetModule = Option<usize>.none;
+  modules[moduleIndex].symbols[symbolIndex].importedName =
+    contracts.moduleSpecifier.copyBytes(0, contracts.moduleSpecifier.byteLength);
+  modules[moduleIndex].symbols[symbolIndex].foreignHeader =
+    contracts.moduleSpecifier.copyBytes(0, contracts.moduleSpecifier.byteLength);
+  modules[moduleIndex].symbols[symbolIndex].valueType = "";
+  modules[moduleIndex].symbols[symbolIndex].functionSignature =
+    Option<ModuleFunctionSignature>.none;
+  const prefix = `${importedName}.`;
+  for (const contract of contracts.functions) {
+    if (!stringStartsWith(contract.name, prefix)) continue;
+    const rest = contract.name.copyBytes(prefix.byteLength, contract.name.byteLength);
+    const name = `${localName}.${rest}`;
+    modules[moduleIndex].symbols.push(foreignFunctionSymbol(
+      contract, contracts, signatures.indices, namespace, name, offset, line, column
+    ));
+  }
+  let typeIndex: usize = 0;
+  for (const type of contracts.types) {
+    if (stringStartsWith(type.name, prefix)) {
+      const rest = type.name.copyBytes(prefix.byteLength, type.name.byteLength);
+      const name = `${localName}.${rest}`;
+      modules[moduleIndex].symbols.push(foreignTypeSymbol(
+        type, contracts, signatures, typeIndex, name, offset, line, column
+      ));
+    }
+    typeIndex = typeIndex + 1;
+  }
+  modules[moduleIndex].symbolIndices = buildModuleSymbolIndices(
+    modules[moduleIndex].symbols
+  );
+}
+
 function attachSelectiveObjCInterface(
   moduleIndex: usize,
   inout modules: Array<ResolvedModule>,
@@ -1542,6 +1725,21 @@ function attachModuleContract(
         );
         const line = importBinding.line;
         const column = importBinding.column;
+        if (
+          binding.contracts.cPlusPlus
+          && foreignNamespaceImported(binding.contracts, importedName)
+        ) {
+          attachSelectiveNamespace(
+            moduleIndex,
+            inout modules,
+            binding.contracts,
+            signatures,
+            namespace,
+            localName,
+            importedName
+          );
+          continue;
+        }
         match (indexedForeignName(indices.functions, importedName)) {
           some(_) => try attachSelectiveFunction(
             parsed[moduleIndex],

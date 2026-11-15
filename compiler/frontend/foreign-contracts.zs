@@ -131,6 +131,9 @@ export struct NativeForeignFunctionContract {
   invalidatesLifetimes: Array<String>;
   // A C variadic function: arguments past `parameters` follow C default promotion.
   variadic: boolean = false;
+  // One member of a C++ overload set sharing `name`; calls select by arguments.
+  overloaded: boolean = false;
+  nativeSignature: String = "";
 }
 
 export struct NativeForeignCallbackContract {
@@ -1838,9 +1841,9 @@ function foreignValueTypeName(
   match (foreignEnumTypeIndex(declarations, nativeType)) {
     some(typeIndex) => return declarations.types[
       typeIndex
-    ].exportName.copyBytes(
+    ].qualifiedName.copyBytes(
       0,
-      declarations.types[typeIndex].exportName.byteLength
+      declarations.types[typeIndex].qualifiedName.byteLength
     );
     none => {}
   }
@@ -1861,9 +1864,9 @@ function foreignValueTypeName(
   if (recordTypeIndex < declarations.types.length) {
     const typeName = declarations.types[
       recordTypeIndex
-    ].exportName.copyBytes(
+    ].qualifiedName.copyBytes(
       0,
-      declarations.types[recordTypeIndex].exportName.byteLength
+      declarations.types[recordTypeIndex].qualifiedName.byteLength
     );
     match (normalizedForeignTypeIndex(types, typeName)) {
       some(typeIndex) => {
@@ -2051,9 +2054,9 @@ function normalizedForeignType(
   }
   return NativeForeignTypeContract({
     kind: declaration.kind.copyBytes(0, declaration.kind.byteLength),
-    name: declaration.exportName.copyBytes(
+    name: declaration.qualifiedName.copyBytes(
       0,
-      declaration.exportName.byteLength
+      declaration.qualifiedName.byteLength
     ),
     nativeName: declaration.nativeName.copyBytes(
       0,
@@ -2151,9 +2154,9 @@ function appendRepresentableForeignField(
     some(typeIndex) => {
       fields.push(NativeForeignFieldContract({
         name: rawFieldName.copyBytes(0, rawFieldName.byteLength),
-        typeName: declarations.types[typeIndex].exportName.copyBytes(
+        typeName: declarations.types[typeIndex].qualifiedName.copyBytes(
           0,
-          declarations.types[typeIndex].exportName.byteLength
+          declarations.types[typeIndex].qualifiedName.byteLength
         ),
         lifetime: "",
       }));
@@ -2183,7 +2186,7 @@ function appendRepresentableForeignField(
     none => {}
   }
   if (nestedTypeIndex >= declarations.types.length) return false;
-  const nestedName = view declarations.types[nestedTypeIndex].exportName;
+  const nestedName = view declarations.types[nestedTypeIndex].qualifiedName;
   match (normalizedForeignTypeIndex(types, nestedName)) {
     some(typeIndex) => {
       if (types[typeIndex].kind != "record") return false;
@@ -2828,7 +2831,7 @@ function attachDiscriminatedUnionContracts(
     }
     const typeIndex = match (normalizedForeignTypeIndex(
       types,
-      declaration.exportName
+      declaration.qualifiedName
     )) {
       some(index) => index;
       none => throw `foreign discriminated union "${contract.name}" could not preserve its native layout`;
@@ -2950,7 +2953,7 @@ function attachFieldProjectionContracts(
     }
     const typeIndex = match (normalizedForeignTypeIndex(
       types,
-      declaration.exportName
+      declaration.qualifiedName
     )) {
       some(index) => index;
       none => throw `field projection for "${contract.name}" requires a preserved native struct layout`;
@@ -3135,9 +3138,9 @@ function relativeObjCTypeName(
   }
   for (const declaration of declarations.types) {
     if (typeName == declaration.typeName) {
-      return declaration.exportName.copyBytes(
+      return declaration.qualifiedName.copyBytes(
         0,
-        declaration.exportName.byteLength
+        declaration.qualifiedName.byteLength
       );
     }
   }
@@ -3851,7 +3854,7 @@ export function normalizeForeignContracts(
           && declaration.layout != "union"
         )
       ) continue;
-      match (normalizedForeignTypeIndex(types, declaration.exportName)) {
+      match (normalizedForeignTypeIndex(types, declaration.qualifiedName)) {
         some(_) => continue;
         none => {}
       }
@@ -3910,9 +3913,9 @@ export function normalizeForeignContracts(
         )
         && declaration.typeName == declarations.types[typeIndex].typeName
       ) {
-        typeName = declarations.types[typeIndex].exportName.copyBytes(
+        typeName = declarations.types[typeIndex].qualifiedName.copyBytes(
           0,
-          declarations.types[typeIndex].exportName.byteLength
+          declarations.types[typeIndex].qualifiedName.byteLength
         );
         break;
       }
@@ -4394,9 +4397,9 @@ export function normalizeForeignContracts(
           }
         }
         if (valueTypeIndex < declarations.types.length) {
-          typeName = declarations.types[valueTypeIndex].exportName.copyBytes(
+          typeName = declarations.types[valueTypeIndex].qualifiedName.copyBytes(
             0,
-            declarations.types[valueTypeIndex].exportName.byteLength
+            declarations.types[valueTypeIndex].qualifiedName.byteLength
           );
           let resource = false;
           match (normalizedForeignTypeIndex(types, typeName)) {
@@ -4436,9 +4439,9 @@ export function normalizeForeignContracts(
           if (capability != "in" && !mutablePointer) {
             throw `native Z declaration ${capability} parameter "${contract.parameters[parameterIndex].name}" requires a mutable C record pointer`;
           }
-          typeName = declarations.types[pointerTypeIndex].exportName.copyBytes(
+          typeName = declarations.types[pointerTypeIndex].qualifiedName.copyBytes(
             0,
-            declarations.types[pointerTypeIndex].exportName.byteLength
+            declarations.types[pointerTypeIndex].qualifiedName.byteLength
           );
         }
         match (normalizedForeignTypeIndex(types, typeName)) {
@@ -4615,9 +4618,9 @@ export function normalizeForeignContracts(
       )) {
         some(typeIndex) => {
           errorType = Option.some(
-            declarations.types[typeIndex].exportName.copyBytes(
+            declarations.types[typeIndex].qualifiedName.copyBytes(
               0,
-              declarations.types[typeIndex].exportName.byteLength
+              declarations.types[typeIndex].qualifiedName.byteLength
             )
           );
         }
@@ -4713,11 +4716,17 @@ export function normalizeForeignContracts(
     }));
   }
   for (const declaration of declarations.functions) {
-    if (
-      rawContractFunctionExists(contracts, declaration.qualifiedName)
-      || declaration.overloadCount != 1
-    ) continue;
-    const overload = view declarations.overloads[declaration.overloadStart];
+    if (rawContractFunctionExists(contracts, declaration.qualifiedName)) continue;
+    // A C++ overload set keeps every representable overload under one
+    // qualified name; the checker selects among them per call. An overload
+    // whose types Z cannot represent is not callable, as in Stage 0.
+    let overloads = Array<NativeForeignFunctionContract>();
+    let overloadOffset: usize = 0;
+    while (overloadOffset < declaration.overloadCount) {
+    const overload = view declarations.overloads[
+      declaration.overloadStart + overloadOffset
+    ];
+    overloadOffset = overloadOffset + 1;
     let inferredParameters = Array<NativeForeignParameterContract>();
     let representable = true;
     let parameterIndex: usize = 0;
@@ -4765,7 +4774,7 @@ export function normalizeForeignContracts(
       overload.returnCanonicalNativeType
     );
     match (inferredReturn) {
-      success(returnType) => functions.push(NativeForeignFunctionContract({
+      success(returnType) => overloads.push(NativeForeignFunctionContract({
         name: declaration.qualifiedName.copyBytes(
           0,
           declaration.qualifiedName.byteLength
@@ -4783,8 +4792,19 @@ export function normalizeForeignContracts(
         invalidatesParameters: Array<usize>(),
         invalidatesLifetimes: Array<String>(),
         variadic: overload.variadic,
+        nativeSignature: overload.nativeSignature.copyBytes(
+          0,
+          overload.nativeSignature.byteLength
+        ),
       }));
       failure(_) => {}
+    }
+    }
+    const overloaded = overloads.length > 1;
+    for (const candidate of overloads) {
+      let contract = copy candidate;
+      contract.overloaded = overloaded;
+      functions.push(move contract);
     }
   }
   const objectiveCInterfaces = try normalizedObjCInterfaces(

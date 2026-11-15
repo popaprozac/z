@@ -5060,6 +5060,172 @@ function localValueIsNotCallable(
   return false;
 }
 
+// The member named neither a checked function nor a type. A leaf shared by
+// several C++ namespaces gets Stage 0's ambiguity diagnostic instead.
+function missingForeignMember(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  namespaceIndex: usize,
+  in path: String,
+  in memberName: String,
+  line: usize,
+  column: usize
+): ModuleResolveError {
+  const header = view modules[moduleIndex].symbols[namespaceIndex].foreignHeader;
+  const prefix = `${path}.`;
+  const suffix = `.${memberName}`;
+  let matches: usize = 0;
+  for (const symbol of modules[moduleIndex].symbols) {
+    if (
+      (symbol.kind == ModuleSymbolKind.structSymbol || symbol.kind == ModuleSymbolKind.enumSymbol)
+      && symbol.foreignHeader == header
+      && symbol.name.byteLength > prefix.byteLength + suffix.byteLength
+      && stringStartsWith(symbol.name, prefix)
+      && symbol.name.copyBytes(symbol.name.byteLength - suffix.byteLength, symbol.name.byteLength) == suffix
+    ) matches = matches + 1;
+  }
+  if (matches > 1) return resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `native type "${memberName}" is ambiguous across C++ namespaces`,
+    line,
+    column
+  );
+  const relative = path.copyBytes(namespaceRootLength(path), path.byteLength);
+  const name = relative.byteLength > 0 ? `${relative}.${memberName}` : memberName.copyBytes(0, memberName.byteLength);
+  return resolutionError(
+    ModuleResolveErrorKind.missingExport,
+    module.path,
+    `native contract for "${header}" has no checked function "${name}"`,
+    line,
+    column
+  );
+}
+
+// `cpp.zcpp` -> 4, the offset just past the import binding and its dot.
+function namespaceRootLength(in path: String): usize {
+  let index: usize = 0;
+  while (index < path.byteLength) {
+    if (path.byteAt(index) == 46) return index + 1;
+    index = index + 1;
+  }
+  return path.byteLength;
+}
+
+// Stage 0's foreignOverloadScore: exact literal shapes and exactly typed
+// arguments outrank conversions, and fixed-arity overloads outrank variadic.
+function foreignOverloadScore(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  in argumentNodes: Array<usize>,
+  in signature: ModuleFunctionSignature,
+  in bindings: Array<NativeValueBinding>
+): usize {
+  let score: usize = signature.variadic ? 0 : 2;
+  let argument: usize = 0;
+  while (argument < argumentNodes.length && argument < signature.parameterTypes.length) {
+    const node = argumentNodes[argument];
+    const expected = transparentTypeName(modules, moduleIndex, signature.parameterTypes[argument]);
+    argument = argument + 1;
+    if (tree.nodes[node].kind == ExpressionKind.numberExpression && isNumericTypeName(expected)) {
+      const literal = view tree.nodes[node].value;
+      let floating = false;
+      let byte: usize = 0;
+      while (byte < literal.byteLength) {
+        const code = literal.byteAt(byte);
+        if (code == 46 || code == 101 || code == 69) floating = true;
+        byte = byte + 1;
+      }
+      if (!floating) {
+        score = score + (expected == "i32" ? 8 : isIntegerTypeName(expected) ? 5 : 1);
+      } else {
+        score = score + (expected == "f64" ? 8 : expected == "f32" ? 5 : 0);
+      }
+      continue;
+    }
+    // The trial check accepted this argument; only a known differing type
+    // (an accepted conversion) scores lower.
+    const actual = storagePathTypeName(modules, moduleIndex, tree, node, bindings);
+    if (actual.byteLength == 0 || transparentTypeName(modules, moduleIndex, actual) == expected) {
+      score = score + 8;
+    } else score = score + 1;
+  }
+  return score;
+}
+
+// A C++ overload set: check each overload against a copy of the call's state,
+// then keep the unique best score, as Stage 0 does (Z0803 otherwise).
+function selectForeignOverload(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  callIndex: usize,
+  in argumentNodes: Array<usize>,
+  in bindings: Array<NativeValueBinding>,
+  in found: ModuleSymbolLocation
+): ModuleSymbolLocation throws ModuleResolveError {
+  const owner = found.moduleIndex;
+  const name = view modules[owner].symbols[found.symbolIndex].name;
+  const qualifiedName = view modules[owner].symbols[found.symbolIndex].foreignOverloadName;
+  let matched = false;
+  let tied = false;
+  let bestScore: usize = 0;
+  let bestIndex = modules[owner].symbols.length;
+  let candidateIndex: usize = 0;
+  while (candidateIndex < modules[owner].symbols.length) {
+    const candidate = view modules[owner].symbols[candidateIndex];
+    if (candidate.foreignOverloadName.byteLength == 0 || candidate.name != name) {
+      candidateIndex = candidateIndex + 1;
+      continue;
+    }
+    match (in candidate.functionSignature) {
+      some(signature) => {
+        const callable = rebaseModuleFunctionSignature(modules, owner, moduleIndex, signature);
+        let trialBindings = copyValueBindings(bindings);
+        let trialEvidence = emptySemanticEvidence();
+        const outcome = attempt inferSignatureCallType(
+          module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+          argumentNodes, inout trialBindings, "", "", candidate.importedName,
+          callable, Array<NativeValueBinding>(), owner, candidateIndex,
+          "foreign", inout trialEvidence
+        );
+        match (outcome) {
+          success(_) => {
+            const score = foreignOverloadScore(
+              modules, moduleIndex, tree, argumentNodes, callable, trialBindings
+            );
+            if (!matched || score > bestScore) {
+              matched = true;
+              tied = false;
+              bestScore = score;
+              bestIndex = candidateIndex;
+            } else if (score == bestScore) tied = true;
+          }
+          failure(_) => {}
+        }
+      }
+      none => {}
+    }
+    candidateIndex = candidateIndex + 1;
+  }
+  if (!matched) throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0803", module.path,
+    `no overload of foreign function "${qualifiedName}" accepts these arguments`,
+    tree.nodes[callIndex].line, tree.nodes[callIndex].column, 1
+  );
+  if (tied) throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0803", module.path,
+    `call to foreign function "${qualifiedName}" is ambiguous`,
+    tree.nodes[callIndex].line, tree.nodes[callIndex].column, 1
+  );
+  return ModuleSymbolLocation({ moduleIndex: owner, symbolIndex: bestIndex });
+}
+
 function inferSignatureCallType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -10259,7 +10425,25 @@ function inferExpressionNodeType(
         }
       }
     }
-    const location = callableSymbolLocation(modules, moduleIndex, tree, calleeIndex);
+    const callable = callableSymbolLocation(modules, moduleIndex, tree, calleeIndex);
+    let location = Option<ModuleSymbolLocation>.none;
+    match (in callable) {
+      some(found) => {
+        if (
+          modules[found.moduleIndex].symbols[found.symbolIndex].foreignOverloadName.byteLength > 0
+        ) {
+          const overloadArguments = callArgumentNodes(children);
+          location = Option.some(try selectForeignOverload(
+            module, modules, moduleIndex, arena, tree, calleeIndex, index,
+            overloadArguments, bindings, found
+          ));
+        } else location = Option.some(ModuleSymbolLocation({
+          moduleIndex: found.moduleIndex,
+          symbolIndex: found.symbolIndex,
+        }));
+      }
+      none => {}
+    }
     match (location) {
       some(location) => {
         match (in modules[location.moduleIndex].symbols[location.symbolIndex].functionSignature) {
@@ -10675,13 +10859,44 @@ function inferExpressionNodeType(
           && modules[moduleIndex].symbols[foreignNamespaceIndex]
             .foreignHeader.byteLength > 0
         ) {
-          throw resolutionError(
-            ModuleResolveErrorKind.missingExport,
-            module.path,
-            `native contract for "${modules[moduleIndex].symbols[foreignNamespaceIndex].foreignHeader}" has no checked function "${memberName}"`,
-            tree.nodes[calleeIndex].line,
-            tree.nodes[calleeIndex].column
+          throw missingForeignMember(
+            module, modules, moduleIndex, foreignNamespaceIndex,
+            namespaceName, memberName,
+            tree.nodes[calleeIndex].line, tree.nodes[calleeIndex].column
           );
+        }
+      }
+      if (tree.nodes[receiverIndex].kind == ExpressionKind.memberExpression) {
+        // A C++ namespace path below a foreign import that named no callable.
+        const foreignPath = typeExpressionName(tree, receiverIndex);
+        let rootLength: usize = 0;
+        while (rootLength < foreignPath.byteLength && foreignPath.byteAt(rootLength) != 46) {
+          rootLength = rootLength + 1;
+        }
+        const foreignRoot = foreignPath.copyBytes(0, rootLength);
+        const rootIndex = moduleSymbolIndex(modules[moduleIndex], foreignRoot);
+        const memberName = identifierLookupName(tree.nodes[calleeIndex].value);
+        let receiverIsType = false;
+        match (typeSymbolLocation(modules, moduleIndex, foreignPath)) {
+          some(_) => receiverIsType = true;
+          none => {}
+        }
+        // A type receiver (`AppKit.NSMenuItem.alloc()`) is a member call.
+        if (
+          rootLength > 0
+          && !receiverIsType
+          && rootIndex < modules[moduleIndex].symbols.length
+          && modules[moduleIndex].symbols[rootIndex].kind == ModuleSymbolKind.namespaceSymbol
+          && modules[moduleIndex].symbols[rootIndex].foreignHeader.byteLength > 0
+        ) {
+          const qualifiedMember = `${foreignPath}.${memberName}`;
+          match (typeSymbolLocation(modules, moduleIndex, qualifiedMember)) {
+            some(_) => {}
+            none => throw missingForeignMember(
+              module, modules, moduleIndex, rootIndex, foreignPath, memberName,
+              tree.nodes[calleeIndex].line, tree.nodes[calleeIndex].column
+            );
+          }
         }
       }
       let ownerType = try inferExpressionNodeType(

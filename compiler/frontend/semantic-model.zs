@@ -318,6 +318,9 @@ export struct ModuleSymbol {
   offset: usize;
   line: usize;
   column: usize;
+  // Non-empty for one member of a C++ overload set: every symbol sharing this
+  // symbol's name is a candidate, and this is the set's qualified C++ name.
+  foreignOverloadName: String = "";
 }
 
 export struct ModuleFieldSignature {

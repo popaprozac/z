@@ -16462,13 +16462,8 @@ function lowerExpressionNode(
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
     ) {
-      const constructorReceiver = tree.nodes[calleeInput].children[0];
-      if (
-        tree.nodes[constructorReceiver].kind
-          == ExpressionKind.identifierExpression
-      ) {
-        constructorTypeName = `${tree.nodes[constructorReceiver].value}.${tree.nodes[calleeInput].value}`;
-      }
+      // `ns.Type` or a C++ namespace path such as `cpp.alpha.Point`.
+      constructorTypeName = typeExpressionName(tree, calleeInput);
     }
     if (contextualTypeName.byteLength > 0) {
       match (genericTypeShape(contextualTypeName)) {

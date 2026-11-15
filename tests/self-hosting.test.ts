@@ -11065,6 +11065,8 @@ test("compiles a multi-module Z application through the standalone native driver
     ["examples/interop/objc/protocol-conformance.zs", /error\[Z1000\]: objc\.bind is not executable in the native compiler yet/],
     ["tests/fixtures/objc-autorelease-pool-async.zs", /error\[Z1000\]: objc\.pool with an expression-bodied closure is not executable in the native compiler yet/],
     ["examples/async/member-affinity.zs", /error\[Z1000\]: thread\.spawn cannot carry main-isolated capture "application" of type Application in the native compiler yet/],
+    // Namespaces and overloads check natively; aggregate interpolation is a separate tier.
+    ["examples/interop/cpp/cpp-interop.zs", /12:121: error\[Z1000\]: template interpolation of "cpp\.zcpp\.Point" is not executable in the native compiler yet/],
   ];
   for (const [entry, message] of tierLimits) {
     const result = spawnSync(driver, ["check", resolve(projectRoot, entry)], {
@@ -11081,6 +11083,38 @@ test("compiles a multi-module Z application through the standalone native driver
   });
   assert.equal(cppHeaderRun.status, 0, cppHeaderRun.stderr);
   assert.equal(cppHeaderRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "total=42\n");
+  // C++ namespaces and overloads follow Stage 0: qualified paths, unique leaf
+  // aliases, selective namespace imports, and per-call overload choice.
+  const cppNamespaces = resolve(projectRoot, "tests/fixtures/native-cpp-namespaces/main.zs");
+  for (const [entry, expected] of [
+    [cppNamespaces, "area=42 tag=40 narrow=42 wide=5\nsigned=4 unsigned=6 deep=203 local=6\n"],
+    [resolve(projectRoot, "examples/interop/cpp/cpp-selective-interop.zs"), "selective cpp=42, adjusted=40\n"],
+  ]) {
+    const run = spawnSync(driver, ["run", entry], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(run.status, 0, `${entry}: ${run.stderr}`);
+    assert.equal(run.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), expected, entry);
+  }
+  const cppNamespaceSource = readFileSync(cppNamespaces, "utf8");
+  copyFileSync(resolve(dirname(cppNamespaces), "shapes.hpp"), resolve(directory, "shapes.hpp"));
+  const cppNamespaceVariant = resolve(directory, "cpp-namespace-variant.zs");
+  for (const [from, to, message] of [
+    ["shapes.geometry.pick(u64(5))", "shapes.geometry.pick(5)", '11:45: error[Z0803]: call to foreign function "geometry.pick" is ambiguous'],
+    ['g.widen(2.0)', 'g.widen("x")', '9:28: error[Z0803]: no overload of foreign function "geometry.widen" accepts these arguments'],
+    ["labels.Point({ id: 4 })", "shapes.Point({ id: 4 })", '7:24: error: native type "Point" is ambiguous across C++ namespaces'],
+    ["labels.Point({ id: 4 })", 'labels.Point({ id: "x" })', "7:36: error: expected i32, found String"],
+    ["const point: shapes.geometry.Point", "const point: shapes.labels.Point", "6:59: error: expected shapes.labels.Point, found shapes.geometry.Point"],
+    ["shapes.geometry.inner.depth(1)", "shapes.geometry.missing(1)", '12:32: error: native contract for "shapes.hpp" has no checked function "geometry.missing"'],
+  ]) {
+    assert.ok(cppNamespaceSource.includes(from), from);
+    writeFileSync(cppNamespaceVariant, cppNamespaceSource.replace(from, to));
+    const rejection = spawnSync(driver, ["check", cppNamespaceVariant], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 60_000, killSignal: "SIGKILL",
+    });
+    assert.equal(rejection.status, 1, `${to}: ${rejection.stderr}`);
+    assert.ok(rejection.stderr.includes(`${cppNamespaceVariant}:${message}`), `${to}: ${rejection.stderr}`);
+  }
   for (const entry of [
     "compiler/driver/main.zs",
     "tests/fixtures/borrowed-aggregate-temporaries.zs",
