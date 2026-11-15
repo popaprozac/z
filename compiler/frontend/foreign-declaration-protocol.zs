@@ -469,6 +469,17 @@ function buildForeignTypeIndices(
     }
     index = index + 1;
   }
+  // The producer spells a C++ type by its leaf name when that name is unique
+  // in the header (Stage 0's byCName). Index leaves after every native name so
+  // a top-level type of the same spelling keeps precedence.
+  index = 0;
+  while (index < module.types.length) {
+    if (module.types[index].kind == "value") {
+      const exportName = copy module.types[index].exportName;
+      indexName(inout module.valueTypeIndices, exportName, index);
+    }
+    index = index + 1;
+  }
   index = 0;
   while (index < module.objectiveCInterfaces.length) {
     const className = copy module.objectiveCInterfaces[index].className;

@@ -11025,6 +11025,10 @@ test("compiles a multi-module Z application through the standalone native driver
     "tests/fixtures/objc-autorelease-pool.zs",
     "tests/fixtures/self-host-program-metadata-alias-constructor.zs",
     "tests/fixtures/native-imported-callable-alias/main.zs",
+    // Copyable C++ values: inline storage, constructors, static and member
+    // calls, with C++ copy and destruction counts matching Stage 0.
+    "examples/interop/cpp/foreign-values.zs",
+    "examples/interop/cpp/cpp-callables.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
@@ -11054,6 +11058,8 @@ test("compiles a multi-module Z application through the standalone native driver
     ["examples/async/member-affinity.zs", /error\[Z1000\]: thread\.spawn cannot carry main-isolated capture "application" of type Application in the native compiler yet/],
     // Namespaces and overloads check natively; aggregate interpolation is a separate tier.
     ["examples/interop/cpp/cpp-interop.zs", /12:121: error\[Z1000\]: template interpolation of "cpp\.zcpp\.Point" is not executable in the native compiler yet/],
+    // Move-only C++ values need std::move at Z move points; a later tier.
+    ["examples/interop/cpp/cpp-move-only.zs", /17:9: error\[Z1000\]: C\+\+ move-only value "zcpp::UniqueValue" is not executable in the native compiler yet/],
   ];
   for (const [entry, message] of tierLimits) {
     const result = spawnSync(driver, ["check", resolve(projectRoot, entry)], {
@@ -11101,6 +11107,34 @@ test("compiles a multi-module Z application through the standalone native driver
     });
     assert.equal(rejection.status, 1, `${to}: ${rejection.stderr}`);
     assert.ok(rejection.stderr.includes(`${cppNamespaceVariant}:${message}`), `${to}: ${rejection.stderr}`);
+  }
+  // C++ value members follow Stage 0's overload choice, receiver access, and
+  // messages; C++ values in union or heap storage are a later tier.
+  const foreignValuesEntry = resolve(projectRoot, "examples/interop/cpp/foreign-values.zs");
+  const foreignValuesSource = readFileSync(foreignValuesEntry, "utf8")
+    .replace("../../../tests/fixtures/foreign-values.hpp", resolve(projectRoot, "tests/fixtures/foreign-values.hpp"));
+  const foreignValuesVariant = resolve(directory, "foreign-values-variant.zs");
+  for (const [from, to, expected] of [
+    ["copied.value.value()", "copied.value.plus(0)", "answer=42, copies=2, drops=3, live=0\n"],
+    ["copied.value.value()", "copied.value.plus(2.5) > 1.0 ? 1 : 0", "answer=1, copies=2, drops=3, live=0\n"],
+    ["copied.value.value()", 'copied.value.plus("no")', '13:27: error[Z0803]: no overload of native method "zcpp.ManagedValue.plus" accepts these arguments'],
+    ["let copied = owner;", "const copied = owner;", '12:10: error: mutable native method "add" requires addressable let storage'],
+    ["struct NativeOwner {", "class NativeOwner {", '10:9: error[Z1000]: C++ value "zcpp::ManagedValue" stored in a class, Option, Result, enum payload, or collection is not executable in the native compiler yet'],
+  ]) {
+    assert.ok(foreignValuesSource.includes(from), from);
+    let variantSource = foreignValuesSource.replace(from, to);
+    if (to.startsWith("class ")) variantSource = variantSource.replace("NativeOwner({", "new NativeOwner({");
+    writeFileSync(foreignValuesVariant, variantSource);
+    const run = spawnSync(driver, ["run", foreignValuesVariant], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+    });
+    if (expected.endsWith("\n")) {
+      assert.equal(run.status, 0, `${to}: ${run.stderr}`);
+      assert.equal(run.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), expected, to);
+    } else {
+      assert.notEqual(run.status, 0, `${to}: ${run.stdout}`);
+      assert.ok(run.stderr.includes(`${foreignValuesVariant}:${expected}`), `${to}: ${run.stderr}`);
+    }
   }
   // C++ value-type `.zd` facts (`copy;`, bare `deinit;`, `thread { }`) parse
   // with Stage 0's validation, code, and locations.

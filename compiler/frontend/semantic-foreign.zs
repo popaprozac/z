@@ -1,6 +1,8 @@
 import { Map, Set } from "std/collections";
 import {
+  NativeForeignCallbackContract,
   NativeForeignContractSet,
+  NativeForeignCxxMemberContract,
   NativeForeignFunctionContract,
   NativeForeignObjCAvailabilityContract,
   NativeForeignObjCInterfaceContract,
@@ -83,7 +85,7 @@ function sharedForeignTypeSignatures(
   const indices = foreignNameIndices(contracts);
   let types = Array<ModuleTypeSignature>();
   for (const type of contracts.types) {
-    types.push(foreignTypeSignature(type, indices, namespace));
+    types.push(foreignTypeSignature(type, contracts, indices, namespace));
   }
   let interfaces = Array<ModuleTypeSignature>();
   for (const interface_ of contracts.objectiveCInterfaces) {
@@ -1129,8 +1131,84 @@ function attachNamespaceConstants(
   );
 }
 
+// A C++ member as a function contract named by its qualified C++ path, so it
+// shares the foreign call machinery (signature, argument plan, overloads).
+function cxxMemberFunctionContract(
+  in type: NativeForeignTypeContract,
+  in member: NativeForeignCxxMemberContract
+): NativeForeignFunctionContract {
+  const name = member.role == "constructor"
+    ? type.name.copyBytes(0, type.name.byteLength)
+    : `${type.name}.${member.name}`;
+  return NativeForeignFunctionContract({
+    name,
+    nativeName: member.nativeName.copyBytes(0, member.nativeName.byteLength),
+    returnType: member.returnType.copyBytes(0, member.returnType.byteLength),
+    errorType: Option<String>.none,
+    successValues: Array<String>(),
+    parameters: copy member.parameters,
+    callbacks: Array<NativeForeignCallbackContract>(),
+    borrowedFromParameter: Option<usize>.none,
+    invalidatesParameters: Array<usize>(),
+    invalidatesLifetimes: Array<String>(),
+    overloaded: member.overloaded,
+  });
+}
+
+function cxxMethodSignatures(
+  in type: NativeForeignTypeContract,
+  in contracts: NativeForeignContractSet,
+  in indices: ForeignNameIndices,
+  in namespace: String
+): Array<ModuleMethodSignature> {
+  let methods = Array<ModuleMethodSignature>();
+  for (const member of type.members) {
+    if (member.role != "method") continue;
+    const contract = cxxMemberFunctionContract(type, member);
+    let signature = foreignFunctionSignature(contract, contracts, indices, namespace);
+    signature.executorAffinity = member.executorAffinity.copyBytes(0, member.executorAffinity.byteLength);
+    methods.push(ModuleMethodSignature({
+      name: member.name.copyBytes(0, member.name.byteLength),
+      staticMethod: false,
+      visibility: "public",
+      receiverMode: member.receiverAccess.copyBytes(0, member.receiverAccess.byteLength),
+      signature,
+      cppNativeName: member.nativeName.copyBytes(0, member.nativeName.byteLength),
+      cppOverloaded: member.overloaded,
+    }));
+  }
+  return methods;
+}
+
+// Constructors and static methods of a C++ value type are reachable through
+// the type's path: `T(args)` and `T.method(args)` call them directly.
+function pushCxxValueCallables(
+  moduleIndex: usize,
+  inout modules: Array<ResolvedModule>,
+  in type: NativeForeignTypeContract,
+  in contracts: NativeForeignContractSet,
+  in indices: ForeignNameIndices,
+  in namespace: String,
+  in typeSymbolName: String,
+  offset: usize,
+  line: usize,
+  column: usize
+): void {
+  for (const member of type.members) {
+    if (member.role != "constructor" && member.role != "static") continue;
+    const contract = cxxMemberFunctionContract(type, member);
+    const name = member.role == "constructor"
+      ? `${typeSymbolName}.__z_cpp_constructor`
+      : `${typeSymbolName}.${member.name}`;
+    let symbol = foreignFunctionSymbol(contract, contracts, indices, namespace, name, offset, line, column);
+    symbol.foreignMemberRole = member.role.copyBytes(0, member.role.byteLength);
+    modules[moduleIndex].symbols.push(move symbol);
+  }
+}
+
 function foreignTypeSignature(
   in type: NativeForeignTypeContract,
+  in contracts: NativeForeignContractSet,
   in indices: ForeignNameIndices,
   in namespace: String
 ): ModuleTypeSignature {
@@ -1201,7 +1279,9 @@ function foreignTypeSignature(
     ),
     implementedTraits: Array<String>(),
     fields,
-    methods: Array<ModuleMethodSignature>(),
+    methods: type.kind == "value"
+      ? cxxMethodSignatures(type, contracts, indices, namespace)
+      : Array<ModuleMethodSignature>(),
     variants,
     customDeinit: type.resourceRelease.byteLength > 0,
     customConstructor: type.resourceRelease.byteLength > 0,
@@ -1210,6 +1290,8 @@ function foreignTypeSignature(
       ? "union"
       : type.viewOnly
         ? "viewRecord"
+      : type.kind == "value" && !type.lifecycleCopy
+        ? "moveValue"
       : type.kind.copyBytes(0, type.kind.byteLength),
     foreignLayout: type.layout.copyBytes(0, type.layout.byteLength),
     foreignNativeName: type.nativeName.copyBytes(
@@ -1316,6 +1398,9 @@ function attachForeignTypes(
     modules[moduleIndex].symbols.push(foreignTypeSymbol(
       type, contracts, signatures, typeIndex, name, offset, line, column
     ));
+    if (type.kind == "value") pushCxxValueCallables(
+      moduleIndex, inout modules, type, contracts, signatures.indices, namespace, name, offset, line, column
+    );
     added.add(copy name);
     typeIndex = typeIndex + 1;
   }
@@ -1335,6 +1420,9 @@ function attachForeignTypes(
       modules[moduleIndex].symbols.push(foreignTypeSymbol(
         type, contracts, signatures, typeIndex, name, offset, line, column
       ));
+      if (type.kind == "value") pushCxxValueCallables(
+        moduleIndex, inout modules, type, contracts, signatures.indices, namespace, name, offset, line, column
+      );
       added.add(copy name);
     }
     typeIndex = typeIndex + 1;
@@ -1608,6 +1696,9 @@ function attachSelectiveNamespace(
       modules[moduleIndex].symbols.push(foreignTypeSymbol(
         type, contracts, signatures, typeIndex, name, offset, line, column
       ));
+      if (type.kind == "value") pushCxxValueCallables(
+        moduleIndex, inout modules, type, contracts, signatures.indices, namespace, name, offset, line, column
+      );
     }
     typeIndex = typeIndex + 1;
   }

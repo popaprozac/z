@@ -267,6 +267,8 @@ export struct ModuleCallResolution {
   foreignSuccessValues: Array<String>;
   foreignArguments: Array<ModuleForeignArgument>;
   objectiveCSelector: String = "";
+  // A C++ value-type method call: the member called on the receiver.
+  cppMethodName: String = "";
   objectiveCReceiverNativeType: String = "";
   objectiveCNativeReturnType: String = "";
   objectiveCReceiverHandoff: boolean = false;
@@ -321,6 +323,8 @@ export struct ModuleSymbol {
   // Non-empty for one member of a C++ overload set: every symbol sharing this
   // symbol's name is a candidate, and this is the set's qualified C++ name.
   foreignOverloadName: String = "";
+  // "constructor" or "static" for a C++ value type's callable member.
+  foreignMemberRole: String = "";
 }
 
 export struct ModuleFieldSignature {
@@ -424,6 +428,10 @@ export struct ModuleMethodSignature {
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
+  // A C++ value-type method: the member called on the receiver, directly.
+  cppNativeName: String = "";
+  // Another C++ method shares this name; calls select by arguments.
+  cppOverloaded: boolean = false;
 }
 
 export struct ModuleTypeParameterConstraint {

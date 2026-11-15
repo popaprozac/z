@@ -264,6 +264,97 @@ function validateNativeCollectionTypeName(
   }
 }
 
+// The C++ value tier executes copyable values held directly, in fields, and
+// in calls. Move-only values (`std::move` at Z move points) and C++ values
+// inside unions (Option, Result, enum payloads) or containers are later tiers.
+function cxxValueTierLimit(
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in typeName: String,
+  contained: boolean,
+  depth: usize
+): String {
+  if (depth > 8 || typeName.byteLength == 0) return "";
+  let name = typeName.copyBytes(0, typeName.byteLength);
+  if (stringStartsWith(name, "view ")) name = name.copyBytes(5, name.byteLength);
+  if (stringStartsWith(name, "readonly ")) name = name.copyBytes(9, name.byteLength);
+  const nullable = nullableTargetType(name);
+  if (nullable.byteLength > 0) {
+    return cxxValueTierLimit(graph, moduleIndex, nullable, true, depth + 1);
+  }
+  match (fixedArrayShape(name)) {
+    some(shape) => return cxxValueTierLimit(graph, moduleIndex, shape.elementType, true, depth + 1);
+    none => {}
+  }
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      for (const argument of generic.arguments) {
+        const limit = cxxValueTierLimit(graph, moduleIndex, argument, true, depth + 1);
+        if (limit.byteLength > 0) return limit;
+      }
+      return "";
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(graph.modules, moduleIndex, name)) {
+    some(location) => {
+      match (in graph.modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          if (signature.foreignKind == "moveValue") {
+            return `C++ move-only value "${signature.foreignNativeName}" is not executable in the native compiler yet`;
+          }
+          if (signature.foreignKind == "value") {
+            if (!contained) return "";
+            return `C++ value "${signature.foreignNativeName}" stored in a class, Option, Result, enum payload, or collection is not executable in the native compiler yet`;
+          }
+          if (signature.foreignNativeName.byteLength > 0) return "";
+          // A class instance is heap storage freed without C++ member destructors.
+          const heapOwned = contained
+            || graph.modules[location.moduleIndex].symbols[location.symbolIndex].kind
+              == ModuleSymbolKind.classSymbol;
+          for (const field of signature.fields) {
+            const limit = cxxValueTierLimit(graph, location.moduleIndex, field.typeName, heapOwned, depth + 1);
+            if (limit.byteLength > 0) return limit;
+          }
+          for (const variant of signature.variants) {
+            const limit = cxxValueTierLimit(graph, location.moduleIndex, variant.payloadType, true, depth + 1);
+            if (limit.byteLength > 0) return limit;
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return "";
+}
+
+function moduleUsesCxxValues(in graph: ModuleGraph, moduleIndex: usize): boolean {
+  for (const symbol of graph.modules[moduleIndex].symbols) {
+    match (in symbol.typeSignature) {
+      some(signature) => {
+        if (signature.foreignKind == "value" || signature.foreignKind == "moveValue") return true;
+      }
+      none => {}
+    }
+  }
+  return false;
+}
+
+function validateNativeCxxValueTypeName(
+  in path: String,
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in typeName: String,
+  line: usize,
+  column: usize,
+  length: usize
+): void throws ModuleResolveError {
+  const limit = cxxValueTierLimit(graph, moduleIndex, typeName, false, 0);
+  if (limit.byteLength == 0) return;
+  throw loweringBoundary(path, "Z1000", limit, line, column, length);
+}
+
 function validateNativeType(
   in path: String,
   in type: TypeReference
@@ -3407,6 +3498,7 @@ export function validateNativeLowerability(
       continue;
     }
     const module = view modules[parsedModuleIndex];
+    const cxxValues = moduleUsesCxxValues(graph, graphModuleIndex);
     for (const binding of graph.modules[graphModuleIndex]
       .semanticEvidence.bindingResolutions) {
       const bindingLength = binding.name.byteLength;
@@ -3419,6 +3511,10 @@ export function validateNativeLowerability(
         bindingColumn,
         bindingLength
       );
+      if (cxxValues) try validateNativeCxxValueTypeName(
+        module.path, graph, graphModuleIndex, binding.typeName,
+        bindingLine, bindingColumn, bindingLength
+      );
     }
     for (const expression of graph.modules[graphModuleIndex]
       .semanticEvidence.expressionResolutions) {
@@ -3430,6 +3526,10 @@ export function validateNativeLowerability(
         expressionLine,
         expressionColumn,
         1
+      );
+      if (cxxValues) try validateNativeCxxValueTypeName(
+        module.path, graph, graphModuleIndex, expression.typeName,
+        expressionLine, expressionColumn, 1
       );
     }
     for (const aggregate of module.program.aggregates) {

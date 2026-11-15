@@ -290,6 +290,8 @@ export enum LoweredExpressionKind {
   closureValue,
   methodCall,
   objectiveCMessageCall,
+  // `(receiver).member(arguments)` on a C++ value; value is the member name.
+  cppMethodCall,
   objectiveCSuperCall,
   objectiveCOptionalSuperCall,
   objectiveCSuperInitializer,
@@ -8058,6 +8060,61 @@ function resolvedObjectiveCSelector(
   return resolution.objectiveCSelector.copyBytes(
     0,
     resolution.objectiveCSelector.byteLength
+  );
+}
+
+function resolvedCxxMethodName(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  const resolutionIndex = resolvedCallResolutionIndex(evidence, tree, index);
+  if (resolutionIndex >= evidence.callResolutions.length) return "";
+  return copy evidence.callResolutions[resolutionIndex].cppMethodName;
+}
+
+// A C++ method on a C++ value: the receiver and arguments pass as C++ binds
+// them (by value or reference); C++ runs any copy the call needs.
+function lowerCxxMethodCall(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in memberName: String,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const calleeInput = tree.nodes[index].children[0];
+  const receiverInput = tree.nodes[calleeInput].children[0];
+  let children = Array<usize>();
+  let labels = Array<String>();
+  const receiver = try lowerExpression(program, importedTypes, evidence, tree, receiverInput, inout output);
+  children.push(receiver);
+  labels.push("receiver");
+  const parameterModes = resolvedCallParameterModes(program, evidence, tree, index);
+  const parameterTypes = resolvedCallParameterTypes(program, evidence, tree, index);
+  let argument: usize = 1;
+  while (argument < tree.nodes[index].children.length) {
+    const argumentInput = tree.nodes[index].children[argument];
+    if (parameterTypes.length < argument) {
+      throw "native C++ method lowering lost a parameter type";
+    }
+    const value = try lowerExpressionExpected(
+      program, importedTypes, evidence, tree, argumentInput,
+      parameterTypes[argument - 1], inout output
+    );
+    children.push(value);
+    labels.push(parameterModes.length >= argument
+      ? copy parameterModes[argument - 1]
+      : "value");
+    argument = argument + 1;
+  }
+  return pushExpression(
+    inout output,
+    LoweredExpressionKind.cppMethodCall,
+    memberName,
+    children,
+    labels
   );
 }
 
@@ -16505,8 +16562,10 @@ function lowerExpressionNode(
       }
       none => {}
     }
+    // A C++ value's constructor is a resolved foreign call, not a literal.
     if (
       constructorTypeName.byteLength > 0
+      && resolvedCallKind(evidence, tree, index) != "foreign"
       && (
         tree.nodes[index].children.length == 1
         || tree.nodes[index].children.length == 2
@@ -17155,6 +17214,15 @@ function lowerExpressionNode(
         move children,
         Array<String>()
       );
+    }
+    const cppMethodName = resolvedCxxMethodName(evidence, tree, index);
+    if (
+      cppMethodName.byteLength > 0
+      && callKind == "method"
+      && tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+    ) {
+      return try lowerCxxMethodCall(program, importedTypes, evidence, tree, index, cppMethodName, inout output);
     }
     if (
       objectiveCSelector.byteLength > 0

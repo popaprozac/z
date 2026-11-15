@@ -168,6 +168,27 @@ export struct NativeForeignTypeContract {
   variants: Array<NativeForeignUnionVariant>;
   fallback: String;
   executorAffinity: String = "";
+  // A C++ value type (`kind == "value"`): C++ copy/move/destruction facts and
+  // its callable members. Its values live inline; C++ runs its lifecycle.
+  lifecycleCopy: boolean = false;
+  lifecycleMove: boolean = false;
+  threadTransfer: boolean = false;
+  threadShare: boolean = false;
+  threadDeinit: boolean = false;
+  members: Array<NativeForeignCxxMemberContract> = Array<NativeForeignCxxMemberContract>();
+}
+
+// One representable constructor, static method, or method overload.
+export struct NativeForeignCxxMemberContract {
+  role: String;
+  name: String;
+  nativeName: String;
+  returnType: String;
+  parameters: Array<NativeForeignParameterContract>;
+  receiverAccess: String;
+  executorAffinity: String;
+  // Another member shares this role and name; calls select by arguments.
+  overloaded: boolean = false;
 }
 
 export struct NativeForeignUnionVariant {
@@ -1926,6 +1947,143 @@ function nativeCallbackShape(
   });
 }
 
+// A C++ value type spelled by value, possibly `const`-qualified.
+function foreignCxxValueTypeIndex(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String
+): Option<usize> {
+  let spelling = nativeType.copyBytes(0, nativeType.byteLength);
+  while (spelling.byteLength > 0 && spelling.byteAt(spelling.byteLength - 1) == 32) {
+    spelling = spelling.copyBytes(0, spelling.byteLength - 1);
+  }
+  if (stringStartsWith(spelling, "const ")) spelling = spelling.copyBytes(6, spelling.byteLength);
+  const found = declarations.valueTypeIndices.get(spelling);
+  return match (in found) {
+    some(index) => Option.some(index);
+    none => Option<usize>.none;
+  };
+}
+
+// A header parameter: a C++ `const T &` lends `T` (Z `in`); other spellings
+// are values. Mutable and rvalue references are a later tier.
+function foreignInferredParameter(
+  in declarations: RawForeignModuleDeclarations,
+  in types: Array<NativeForeignTypeContract>,
+  in rawParameter: RawForeignParameter,
+  parameterIndex: usize
+): NativeForeignParameterContract throws String {
+  let parameterName = `argument${parameterIndex}`;
+  match (in rawParameter.name) {
+    some(name) => parameterName = name.copyBytes(0, name.byteLength);
+    none => {}
+  }
+  let spelling = rawParameter.nativeType.copyBytes(0, rawParameter.nativeType.byteLength);
+  let capability = "value";
+  if (spelling.byteLength > 0 && spelling.byteAt(spelling.byteLength - 1) == 38) {
+    if (spelling.byteLength > 1 && spelling.byteAt(spelling.byteLength - 2) == 38) {
+      throw `native rvalue reference parameter "${spelling}" is not representable yet`;
+    }
+    if (!stringStartsWith(spelling, "const ")) {
+      throw `native mutable reference parameter "${spelling}" is not representable yet`;
+    }
+    capability = "in";
+    spelling = spelling.copyBytes(6, spelling.byteLength - 1);
+  }
+  const typeName = capability == "in"
+    ? try foreignValueTypeName(declarations, types, spelling, Option<String>.none)
+    : try foreignValueTypeName(declarations, types, spelling, rawParameter.canonicalNativeType);
+  if (capability == "in") {
+    // As Stage 0, only a named native type binds a reference.
+    match (normalizedForeignTypeIndex(types, typeName)) {
+      some(_) => {}
+      none => throw `native reference parameter "${rawParameter.nativeType}" does not name a native type`;
+    }
+  }
+  return NativeForeignParameterContract({
+    name: parameterName,
+    capability,
+    abiMode: "value",
+    typeName,
+    nullOnly: false,
+    fixedValue: "",
+  });
+}
+
+function normalizedCxxMembers(
+  in declarations: RawForeignModuleDeclarations,
+  in types: Array<NativeForeignTypeContract>,
+  in declaration: RawForeignType
+): Array<NativeForeignCxxMemberContract> {
+  let members = Array<NativeForeignCxxMemberContract>();
+  let memberIndex: usize = 0;
+  while (memberIndex < declaration.memberCount) {
+    const raw = view declarations.cxxMembers[declaration.memberStart + memberIndex];
+    memberIndex = memberIndex + 1;
+    let parameters = Array<NativeForeignParameterContract>();
+    let representable = !raw.variadic;
+    let parameterIndex: usize = 0;
+    while (representable && parameterIndex < raw.parameterCount) {
+      const outcome = attempt foreignInferredParameter(
+        declarations,
+        types,
+        declarations.cxxMemberParameters[raw.parameterStart + parameterIndex],
+        parameterIndex
+      );
+      match (outcome) {
+        success(parameter) => parameters.push(parameter);
+        failure(_) => representable = false;
+      }
+      parameterIndex = parameterIndex + 1;
+    }
+    if (!representable) continue;
+    let returnType = "";
+    if (raw.role == "constructor") {
+      returnType = declaration.qualifiedName.copyBytes(0, declaration.qualifiedName.byteLength);
+    } else {
+      const mapped = attempt foreignValueTypeName(
+        declarations,
+        types,
+        raw.returnNativeType,
+        raw.returnCanonicalNativeType
+      );
+      match (mapped) {
+        success(typeName) => returnType = typeName;
+        failure(_) => continue;
+      }
+    }
+    let executorAffinity = "";
+    match (in raw.executorAffinity) {
+      some(affinity) => executorAffinity = affinity == "main"
+        ? "thread.main"
+        : affinity.copyBytes(0, affinity.byteLength);
+      none => {}
+    }
+    members.push(NativeForeignCxxMemberContract({
+      role: raw.role.copyBytes(0, raw.role.byteLength),
+      name: raw.name.copyBytes(0, raw.name.byteLength),
+      nativeName: raw.nativeName.copyBytes(0, raw.nativeName.byteLength),
+      returnType,
+      parameters,
+      receiverAccess: raw.receiverAccess.copyBytes(0, raw.receiverAccess.byteLength),
+      executorAffinity,
+    }));
+  }
+  let index: usize = 0;
+  while (index < members.length) {
+    let other: usize = 0;
+    while (other < members.length) {
+      if (
+        other != index
+        && members[other].role == members[index].role
+        && members[other].name == members[index].name
+      ) members[index].overloaded = true;
+      other = other + 1;
+    }
+    index = index + 1;
+  }
+  return members;
+}
+
 function foreignValueTypeName(
   in declarations: RawForeignModuleDeclarations,
   in types: Array<NativeForeignTypeContract>,
@@ -1994,6 +2152,16 @@ function foreignValueTypeName(
       }
       none => throw `native Z declaration record value ${typeName} requires a scalar-field struct layout`;
     }
+  }
+  match (foreignCxxValueTypeIndex(declarations, nativeType)) {
+    some(typeIndex) => {
+      const typeName = view declarations.types[typeIndex].qualifiedName;
+      match (normalizedForeignTypeIndex(types, typeName)) {
+        some(_) => return typeName.copyBytes(0, typeName.byteLength);
+        none => {}
+      }
+    }
+    none => {}
   }
   return try scalarTypeNameWithCanonical(
     declarations,
@@ -4041,6 +4209,42 @@ export function normalizeForeignContracts(
       recordAdded = true;
     }
   }
+  // C++ value types: their members may name any type normalized above or
+  // another value type, so members are mapped once every value type exists.
+  let firstValueType = types.length;
+  for (const declaration of declarations.types) {
+    if (declaration.kind != "value") continue;
+    let valueType = normalizedForeignType(
+      declaration,
+      "",
+      Array<NativeForeignFieldContract>(),
+      false,
+      contracts
+    );
+    match (in declaration.executorAffinity) {
+      some(affinity) => {
+        if (valueType.executorAffinity.byteLength == 0) {
+          valueType.executorAffinity = affinity == "main"
+            ? "thread.main"
+            : affinity.copyBytes(0, affinity.byteLength);
+        }
+      }
+      none => {}
+    }
+    valueType.lifecycleCopy = declaration.lifecycleCopy;
+    valueType.lifecycleMove = declaration.lifecycleMove;
+    valueType.threadTransfer = declaration.threadTransfer;
+    valueType.threadShare = declaration.threadShare;
+    valueType.threadDeinit = declaration.threadDeinit;
+    types.push(move valueType);
+  }
+  let cxxValueIndex = firstValueType;
+  for (const declaration of declarations.types) {
+    if (declaration.kind != "value") continue;
+    const members = normalizedCxxMembers(declarations, types, declaration);
+    types[cxxValueIndex].members = move members;
+    cxxValueIndex = cxxValueIndex + 1;
+  }
   try validateValueLifecycleContracts(contracts, declarations);
   try validateResourceContracts(contracts, declarations, types);
   try collectOwnedHandleTypes(contracts, declarations, inout types);
@@ -4876,34 +5080,14 @@ export function normalizeForeignContracts(
     let representable = true;
     let parameterIndex: usize = 0;
     while (parameterIndex < overload.parameterCount) {
-      const rawParameter = view declarations.parameters[
-        overload.parameterStart + parameterIndex
-      ];
-      const inferredType = attempt foreignValueTypeName(
+      const inferred = attempt foreignInferredParameter(
         declarations,
         types,
-        rawParameter.nativeType,
-        rawParameter.canonicalNativeType
+        declarations.parameters[overload.parameterStart + parameterIndex],
+        parameterIndex
       );
-      match (inferredType) {
-        success(typeName) => {
-          let parameterName = `argument${parameterIndex}`;
-          match (in rawParameter.name) {
-            some(name) => parameterName = name.copyBytes(
-              0,
-              name.byteLength
-            );
-            none => {}
-          }
-          inferredParameters.push(NativeForeignParameterContract({
-            name: parameterName,
-            capability: "value",
-            abiMode: "value",
-            typeName,
-            nullOnly: false,
-            fixedValue: "",
-          }));
-        }
+      match (inferred) {
+        success(parameter) => inferredParameters.push(parameter);
         failure(_) => {
           representable = false;
           break;

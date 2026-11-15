@@ -5079,6 +5079,24 @@ function appendExpression(
     }
     throw `native C callback lowering has unknown ABI role "${role}"`;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.cppMethodCall) {
+    // C++ binds each argument as the member declares it (value or reference).
+    const children = view declaration.expressions[index].children;
+    if (children.length == 0) throw "native C++ method call lost its receiver";
+    output.append("(");
+    try appendExpression(inout output, declaration, children[0]);
+    output.append(").");
+    output.append(declaration.expressions[index].value);
+    output.append("(");
+    let argument: usize = 1;
+    while (argument < children.length) {
+      if (argument > 1) output.append(", ");
+      try appendExpression(inout output, declaration, children[argument]);
+      argument = argument + 1;
+    }
+    output.append(")");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.receiverValue) {
     let classReceiver = false;
     let valueReceiver = false;

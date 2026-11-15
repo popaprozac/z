@@ -176,6 +176,7 @@ import {
   aggregateConstructionShape,
   aggregateFieldShape,
   callableMethodCallShape,
+  cxxMethodCallShape,
   hasKnownAggregate,
   isForeignUnionType,
   isActiveTypeParameter,
@@ -5113,6 +5114,359 @@ function namespaceRootLength(in path: String): usize {
   return path.byteLength;
 }
 
+function recordCxxMethodCall(
+  in tree: ExpressionTree,
+  callIndex: usize,
+  in name: String,
+  inout evidence: ModuleSemanticEvidence
+): void {
+  let resolution: usize = 0;
+  while (resolution < evidence.callResolutions.length) {
+    if (evidence.callResolutions[resolution].offset == tree.nodes[callIndex].offset) {
+      evidence.callResolutions[resolution].cppMethodName = copy name;
+    }
+    resolution = resolution + 1;
+  }
+}
+
+function isCxxValueTypeCallee(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  calleeIndex: usize
+): boolean {
+  const typeName = typeExpressionName(tree, calleeIndex);
+  if (typeName.byteLength == 0) return false;
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => return signature.foreignKind == "value"
+          || signature.foreignKind == "moveValue";
+        none => return false;
+      }
+    }
+    none => return false;
+  }
+}
+
+// `T(args)` for a C++ value type calls one of its constructors directly, as
+// Stage 0's checkForeignCxxConstructorCall.
+function inferCxxConstructorCall(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  callIndex: usize,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): String throws ModuleResolveError {
+  const typeName = typeExpressionName(tree, calleeIndex);
+  const constructorIndex = moduleSymbolIndex(modules[moduleIndex], `${typeName}.__z_cpp_constructor`);
+  if (constructorIndex >= modules[moduleIndex].symbols.length) {
+    const location = match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+      some(found) => found;
+      none => ModuleSymbolLocation({ moduleIndex, symbolIndex: 0 });
+    };
+    const nativeName = match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+      some(signature) => copy signature.foreignNativeName;
+      none => copy typeName;
+    };
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `native value "${nativeName}" has no imported public constructor`,
+      tree.nodes[callIndex].line,
+      tree.nodes[callIndex].column
+    );
+  }
+  const argumentNodes = callArgumentNodes(tree.nodes[callIndex].children);
+  let found = ModuleSymbolLocation({ moduleIndex, symbolIndex: constructorIndex });
+  if (modules[moduleIndex].symbols[constructorIndex].foreignOverloadName.byteLength > 0) {
+    found = try selectForeignOverload(
+      module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+      argumentNodes, bindings, found
+    );
+  }
+  const symbol = view modules[found.moduleIndex].symbols[found.symbolIndex];
+  const signature = match (in symbol.functionSignature) {
+    some(signature) => rebaseModuleFunctionSignature(modules, found.moduleIndex, moduleIndex, signature);
+    none => throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "native constructor lost its signature",
+      tree.nodes[callIndex].line,
+      tree.nodes[callIndex].column
+    );
+  };
+  const callType = try inferSignatureCallType(
+    module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+    argumentNodes, inout bindings, "", "", symbol.importedName, signature,
+    Array<NativeValueBinding>(), found.moduleIndex, found.symbolIndex,
+    "foreign", inout evidence
+  );
+  recordForeignCallFacts(tree, callIndex, modules[found.moduleIndex].symbols[found.symbolIndex], inout evidence);
+  return callType;
+}
+
+// A call through a function symbol: local, imported, or foreign (with C++
+// overload selection). None when the callee names no callable symbol.
+function inferCallableSymbolCall(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  index: usize,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): Option<String> throws ModuleResolveError {
+  const children = view tree.nodes[index].children;
+  const callable = callableSymbolLocation(modules, moduleIndex, tree, calleeIndex);
+  let location = Option<ModuleSymbolLocation>.none;
+  match (in callable) {
+    some(found) => {
+      if (
+        modules[found.moduleIndex].symbols[found.symbolIndex].foreignOverloadName.byteLength > 0
+      ) {
+        const overloadArguments = callArgumentNodes(children);
+        location = Option.some(try selectForeignOverload(
+          module, modules, moduleIndex, arena, tree, calleeIndex, index,
+          overloadArguments, bindings, found
+        ));
+      } else location = Option.some(ModuleSymbolLocation({
+        moduleIndex: found.moduleIndex,
+        symbolIndex: found.symbolIndex,
+      }));
+    }
+    none => {}
+  }
+  match (location) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].functionSignature) {
+        some(signature) => {
+          let functionName = modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
+            0,
+            modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
+          );
+          let callKind = "function";
+          if (
+            modules[location.moduleIndex].symbols[location.symbolIndex].kind
+              == ModuleSymbolKind.importedSymbol
+          ) {
+            match (
+              in modules[location.moduleIndex].symbols[location.symbolIndex].targetModule
+            ) {
+              some(_) => {}
+              none => {
+                functionName = modules[location.moduleIndex]
+                  .symbols[location.symbolIndex]
+                  .importedName
+                  .copyBytes(
+                    0,
+                    modules[location.moduleIndex]
+                      .symbols[location.symbolIndex]
+                      .importedName
+                      .byteLength
+                  );
+                callKind = "foreign";
+              }
+            }
+          }
+          const substitutions = Array<NativeValueBinding>();
+          const callableSignature = rebaseModuleFunctionSignature(
+            modules,
+            location.moduleIndex,
+            moduleIndex,
+            signature
+          );
+          const argumentNodes = callArgumentNodes(children);
+          const callType = try inferSignatureCallType(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            calleeIndex,
+            index,
+            argumentNodes,
+            inout bindings,
+            "",
+            "",
+            functionName,
+            callableSignature,
+            substitutions,
+            location.moduleIndex,
+            location.symbolIndex,
+            callKind,
+            inout evidence
+          );
+          if (callKind == "foreign") {
+            recordForeignCallFacts(
+              tree,
+              index,
+              modules[location.moduleIndex].symbols[location.symbolIndex],
+              inout evidence
+            );
+          }
+          return Option.some(callType);
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return Option<String>.none;
+}
+
+// A call to an overloaded C++ method: the overload its arguments select, then
+// the receiver access it declares. Returns "" when the owner has no C++
+// overload set of this name and arity, leaving the caller's diagnostics.
+function inferCxxOverloadedMethodCall(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  callIndex: usize,
+  receiverIndex: usize,
+  inout bindings: Array<NativeValueBinding>,
+  in ownerType: String,
+  in methodName: String,
+  inout evidence: ModuleSemanticEvidence
+): String throws ModuleResolveError {
+  const argumentNodes = callArgumentNodes(tree.nodes[callIndex].children);
+  const selected = try selectCxxMethodOverload(
+    module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+    argumentNodes, bindings, ownerType, methodName
+  );
+  const method = match (selected) {
+    some(method) => method;
+    none => return "";
+  };
+  let receiverRoot = "";
+  let receiverAccess = "";
+  if (method.receiverMode == "inout" || method.receiverMode == "move") {
+    receiverRoot = expressionStorageRootName(tree, receiverIndex);
+    receiverAccess = copy method.receiverMode;
+  }
+  if (method.receiverMode == "inout") {
+    try requireCxxMutableReceiver(module, tree, receiverIndex, bindings, receiverRoot, method);
+  }
+  const callable = methodCallableSignature(method);
+  const callType = try inferSignatureCallType(
+    module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+    argumentNodes, inout bindings, receiverRoot, receiverAccess,
+    `${ownerType}.${methodName}`, callable, Array<NativeValueBinding>(),
+    method.ownerModuleIndex, method.ownerSymbolIndex, "method", inout evidence
+  );
+  recordCxxMethodCall(tree, callIndex, method.cppNativeName, inout evidence);
+  if (receiverAccess == "move" && receiverRoot.byteLength > 0) {
+    setValueBindingOwnership(inout bindings, receiverRoot, NativeOwnershipState.moved);
+  }
+  return callType;
+}
+
+// Stage 0: a mutable C++ method needs a mutable addressable receiver.
+function requireCxxMutableReceiver(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  receiverIndex: usize,
+  in bindings: Array<NativeValueBinding>,
+  in receiverRoot: String,
+  in method: NativeMethodCallShape
+): void throws ModuleResolveError {
+  if (method.cppNativeName.byteLength == 0) return;
+  if (receiverRoot.byteLength > 0 && valueBindingIsMutable(bindings, receiverRoot)) return;
+  throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `mutable native method "${method.name}" requires addressable let storage`,
+    tree.nodes[receiverIndex].line,
+    tree.nodes[receiverIndex].column
+  );
+}
+
+// C++ method overloads of one name and arity: check each candidate against a
+// copy of the call state and keep the unique best Stage 0 score. Returns none
+// when the owner has no such C++ method, leaving the caller's diagnostics.
+function selectCxxMethodOverload(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  callIndex: usize,
+  in argumentNodes: Array<usize>,
+  in bindings: Array<NativeValueBinding>,
+  in ownerType: String,
+  in methodName: String
+): Option<NativeMethodCallShape> throws ModuleResolveError {
+  let best = Option<NativeMethodCallShape>.none;
+  let candidates: usize = 0;
+  let matched = false;
+  let tied = false;
+  let bestScore: usize = 0;
+  let ownerName = "";
+  let candidate: usize = 0;
+  let searching = true;
+  while (searching) {
+    const shape = cxxMethodCallShape(
+      modules, moduleIndex, ownerType, methodName, argumentNodes.length, candidate
+    );
+    candidate = candidate + 1;
+    match (shape) {
+      some(method) => {
+        candidates = candidates + 1;
+        ownerName = copy method.ownerName;
+        const callable = methodCallableSignature(method);
+        let trialBindings = copyValueBindings(bindings);
+        let trialEvidence = emptySemanticEvidence();
+        const outcome = attempt inferSignatureCallType(
+          module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+          argumentNodes, inout trialBindings, "", "", method.name, callable,
+          Array<NativeValueBinding>(), method.ownerModuleIndex,
+          method.ownerSymbolIndex, "method", inout trialEvidence
+        );
+        let accepted = false;
+        match (outcome) {
+          success(_) => accepted = true;
+          failure(_) => {}
+        }
+        if (accepted) {
+          const score = foreignOverloadScore(
+            modules, moduleIndex, tree, argumentNodes, callable, trialBindings
+          );
+          if (!matched || score > bestScore) {
+            matched = true;
+            tied = false;
+            bestScore = score;
+            best = Option.some(move method);
+          } else if (score == bestScore) tied = true;
+        }
+      }
+      none => searching = false;
+    }
+  }
+  if (candidates < 2) return Option<NativeMethodCallShape>.none;
+  const relative = ownerName.copyBytes(namespaceRootLength(ownerName), ownerName.byteLength);
+  if (!matched) throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0803", module.path,
+    `no overload of native method "${relative}.${methodName}" accepts these arguments`,
+    tree.nodes[callIndex].line, tree.nodes[callIndex].column, 1
+  );
+  if (tied) throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0803", module.path,
+    `call to native method "${relative}.${methodName}" is ambiguous`,
+    tree.nodes[callIndex].line, tree.nodes[callIndex].column, 1
+  );
+  return best;
+}
+
 // Stage 0's foreignOverloadScore: exact literal shapes and exactly typed
 // arguments outrank conversions, and fixed-arity overloads outrank variadic.
 function foreignOverloadScore(
@@ -5213,14 +5567,18 @@ function selectForeignOverload(
     }
     candidateIndex = candidateIndex + 1;
   }
+  const role = view modules[owner].symbols[found.symbolIndex].foreignMemberRole;
+  const subject = role == "constructor"
+    ? "native constructor"
+    : role == "static" ? "native static method" : "foreign function";
   if (!matched) throw codedModuleResolutionError(
     ModuleResolveErrorKind.typeMismatch, "Z0803", module.path,
-    `no overload of foreign function "${qualifiedName}" accepts these arguments`,
+    `no overload of ${subject} "${qualifiedName}" accepts these arguments`,
     tree.nodes[callIndex].line, tree.nodes[callIndex].column, 1
   );
   if (tied) throw codedModuleResolutionError(
     ModuleResolveErrorKind.typeMismatch, "Z0803", module.path,
-    `call to foreign function "${qualifiedName}" is ambiguous`,
+    `call to ${subject} "${qualifiedName}" is ambiguous`,
     tree.nodes[callIndex].line, tree.nodes[callIndex].column, 1
   );
   return ModuleSymbolLocation({ moduleIndex: owner, symbolIndex: bestIndex });
@@ -9481,6 +9839,12 @@ function inferExpressionNodeType(
         none => {}
       }
     }
+    if (isCxxValueTypeCallee(modules, moduleIndex, tree, calleeIndex)) {
+      return try inferCxxConstructorCall(
+        module, modules, moduleIndex, arena, tree, calleeIndex, index,
+        inout bindings, inout evidence
+      );
+    }
     // Type aliases are transparent at construction sites too. In particular,
     // an alias of a generic empty marker such as `Protocol()` must retain the
     // concrete generic arguments so an enclosing generic call can infer and
@@ -10425,98 +10789,12 @@ function inferExpressionNodeType(
         }
       }
     }
-    const callable = callableSymbolLocation(modules, moduleIndex, tree, calleeIndex);
-    let location = Option<ModuleSymbolLocation>.none;
-    match (in callable) {
-      some(found) => {
-        if (
-          modules[found.moduleIndex].symbols[found.symbolIndex].foreignOverloadName.byteLength > 0
-        ) {
-          const overloadArguments = callArgumentNodes(children);
-          location = Option.some(try selectForeignOverload(
-            module, modules, moduleIndex, arena, tree, calleeIndex, index,
-            overloadArguments, bindings, found
-          ));
-        } else location = Option.some(ModuleSymbolLocation({
-          moduleIndex: found.moduleIndex,
-          symbolIndex: found.symbolIndex,
-        }));
-      }
-      none => {}
-    }
-    match (location) {
-      some(location) => {
-        match (in modules[location.moduleIndex].symbols[location.symbolIndex].functionSignature) {
-          some(signature) => {
-            let functionName = modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
-              0,
-              modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
-            );
-            let callKind = "function";
-            if (
-              modules[location.moduleIndex].symbols[location.symbolIndex].kind
-                == ModuleSymbolKind.importedSymbol
-            ) {
-              match (
-                in modules[location.moduleIndex].symbols[location.symbolIndex].targetModule
-              ) {
-                some(_) => {}
-                none => {
-                  functionName = modules[location.moduleIndex]
-                    .symbols[location.symbolIndex]
-                    .importedName
-                    .copyBytes(
-                      0,
-                      modules[location.moduleIndex]
-                        .symbols[location.symbolIndex]
-                        .importedName
-                        .byteLength
-                    );
-                  callKind = "foreign";
-                }
-              }
-            }
-            const substitutions = Array<NativeValueBinding>();
-            const callableSignature = rebaseModuleFunctionSignature(
-              modules,
-              location.moduleIndex,
-              moduleIndex,
-              signature
-            );
-            const argumentNodes = callArgumentNodes(children);
-            const callType = try inferSignatureCallType(
-              module,
-              modules,
-              moduleIndex,
-              arena,
-              tree,
-              calleeIndex,
-              index,
-              argumentNodes,
-              inout bindings,
-              "",
-              "",
-              functionName,
-              callableSignature,
-              substitutions,
-              location.moduleIndex,
-              location.symbolIndex,
-              callKind,
-              inout evidence
-            );
-            if (callKind == "foreign") {
-              recordForeignCallFacts(
-                tree,
-                index,
-                modules[location.moduleIndex].symbols[location.symbolIndex],
-                inout evidence
-              );
-            }
-            return callType;
-          }
-          none => {}
-        }
-      }
+    const callableCallType = try inferCallableSymbolCall(
+      module, modules, moduleIndex, arena, tree, calleeIndex, index,
+      inout bindings, inout evidence
+    );
+    match (callableCallType) {
+      some(callType) => return callType;
       none => {}
     }
     if (
@@ -12584,6 +12862,7 @@ function inferExpressionNodeType(
             let receiverAccess = "";
             if (!method.staticMethod && method.receiverMode == "inout") {
               receiverRoot = expressionStorageRootName(tree, receiverIndex);
+              try requireCxxMutableReceiver(module, tree, receiverIndex, bindings, receiverRoot, method);
               if (receiverRoot.byteLength == 0) {
                 let storageDescription = "addressable let storage";
                 if (
@@ -12756,6 +13035,9 @@ function inferExpressionNodeType(
               method,
               evidence
             );
+            if (method.cppNativeName.byteLength > 0) {
+              recordCxxMethodCall(tree, index, method.cppNativeName, inout evidence);
+            }
             if (method.objectiveCSelector.byteLength > 0) {
               recordResolvedObjCCallFacts(
                 modules,
@@ -12831,6 +13113,13 @@ function inferExpressionNodeType(
             return callType;
           }
           none => {
+            if (!staticMethod) {
+              const cxxCallType = try inferCxxOverloadedMethodCall(
+                module, modules, moduleIndex, arena, tree, calleeIndex, index,
+                receiverIndex, inout bindings, ownerType, methodName, inout evidence
+              );
+              if (cxxCallType.byteLength > 0) return cxxCallType;
+            }
             if (isActiveTypeParameter(bindings, ownerType)) {
               throw resolutionError(
                 ModuleResolveErrorKind.unknownMember,
