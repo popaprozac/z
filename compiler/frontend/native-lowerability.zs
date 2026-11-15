@@ -288,8 +288,10 @@ function cxxValueTierLimit(
   }
   match (genericTypeShape(name)) {
     some(generic) => {
+      // An Array constructs, moves, and destroys C++ elements in place.
+      const elementStorage = generic.base == "Array" && generic.arguments.length == 1;
       for (const argument of generic.arguments) {
-        const limit = cxxValueTierLimit(graph, moduleIndex, argument, true, depth + 1);
+        const limit = cxxValueTierLimit(graph, moduleIndex, argument, !elementStorage, depth + 1);
         if (limit.byteLength > 0) return limit;
       }
       return "";
@@ -2310,6 +2312,21 @@ function validateNativeExpressionTree(
     }
     try validateNativeObjCCall(path, modules[moduleIndex].program, tree, index);
     try validateNativeCxxArenaStorage(path, moduleIndex, graph, tree, index);
+    if (node.kind == ExpressionKind.arrayExpression && moduleUsesCxxValues(graph, moduleIndex)) {
+      const literalType = resolvedExpressionType(graph, moduleIndex, tree, index);
+      match (genericTypeShape(literalType)) {
+        some(generic) => {
+          let elementLimit = "";
+          if (generic.base == "Array" && generic.arguments.length == 1) {
+            elementLimit = cxxValueTierLimit(graph, moduleIndex, generic.arguments[0], true, 0);
+          }
+          if (elementLimit.byteLength > 0) throw loweringBoundary(path, "Z1000",
+            "an Array literal of C++ values is not executable in the native compiler yet; push the values instead",
+            node.line, node.column, 1);
+        }
+        none => {}
+      }
+    }
     if (node.kind == ExpressionKind.arrayExpression) {
       const typeName = resolvedExpressionType(
         graph,

@@ -2,6 +2,7 @@
 
 import { TextBuffer } from "std/text";
 import {
+  LoweredArray,
   LoweredExpression,
   LoweredExpressionKind,
   LoweredEnum,
@@ -5024,7 +5025,28 @@ function appendCallArgument(
   else try appendExpression(inout output, declaration, value);
 }
 
+// Destroy C++ elements last-to-first: Z cleanup of their Z members (when the
+// element also owns Z storage), then the C++ destructor.
+function appendCxxElementDestruction(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredArray,
+  in elementType: String
+): void {
+  output.append(`  ${elementType} *items = (${elementType} *)self->data;\n`);
+  output.append("  while (self->length > 0) {\n");
+  output.append("    self->length -= 1;\n");
+  if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
+    output.append(`    Z_${declaration.elementType.name}_deinit(&items[self->length]);\n`);
+  }
+  output.append("    std::destroy_at(&items[self->length]);\n");
+  output.append("  }\n");
+}
+
 function programUsesCxxMoves(in program: LoweredProgram): boolean {
+  for (const declaration of program.arrays) {
+    if (declaration.cxxElements) return true;
+  }
   for (const function_ of program.functions) {
     for (const expression of function_.expressions) {
       if (
@@ -26558,7 +26580,7 @@ function emitLoweredC(
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
   output.append("#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n");
-  if (programUsesCxxMoves(program)) output.append("#if defined(__cplusplus)\n#include <utility>\n#endif\n");
+  if (programUsesCxxMoves(program)) output.append("#if defined(__cplusplus)\n#include <memory>\n#include <utility>\n#endif\n");
   if (usesObjectiveCDataCopy || usesObjectiveCDataBorrow) {
     output.append("#import <Foundation/Foundation.h>\n");
   }
@@ -27504,6 +27526,10 @@ function emitLoweredC(
       output.append(elementType);
       output.append(" const __strong *)values;\n");
       output.append("  for (size_t index = 0; index < length; index += 1) storage[index] = source[index];\n");
+    } else if (declaration.cxxElements) {
+      // C++ elements: move (or, copy-only, copy) each one out of the temporary array.
+      output.append(`  ${elementType} *source = (${elementType} *)values;\n`);
+      output.append(`  for (size_t index = 0; index < length; index += 1) std::construct_at(&((${elementType} *)storage)[index], std::move_if_noexcept(source[index]));\n`);
     } else {
       output.append("  memcpy(storage, values, length * sizeof(");
       output.append(elementType);
@@ -27598,6 +27624,17 @@ function emitLoweredC(
       output.append("    for (size_t index = 0; index < self->length; index += 1) { storage[index] = previous[index]; previous[index] = nil; }\n");
       output.append("    free(previous);\n");
       output.append("    self->data = storage;\n");
+    } else if (declaration.cxxElements) {
+      // C++ elements are relocated by move (copy-only: copy) construction, never realloc.
+      output.append(`    ${elementType} *storage = (${elementType} *)malloc(next * sizeof(${elementType}));\n`);
+      output.append("    if (storage == NULL) abort();\n");
+      output.append(`    ${elementType} *previous = (${elementType} *)self->data;\n`);
+      output.append("    for (size_t index = 0; index < self->length; index += 1) {\n");
+      output.append("      std::construct_at(&storage[index], std::move_if_noexcept(previous[index]));\n");
+      output.append("      std::destroy_at(&previous[index]);\n");
+      output.append("    }\n");
+      output.append("    free(previous);\n");
+      output.append("    self->data = storage;\n");
     } else {
       output.append("    void *storage = realloc(self->data, next * sizeof(");
       output.append(elementType);
@@ -27611,7 +27648,23 @@ function emitLoweredC(
     output.append(`static inline __attribute__((unused)) Z_${declaration.name} Z_${declaration.name}_withCapacity(size_t minimumCapacity) {\n`);
     output.append(`  Z_${declaration.name} result = { .data = NULL, .length = 0, .capacity = 0 };\n`);
     output.append(`  Z_${declaration.name}_reserveCapacity(&result, minimumCapacity);\n  return result;\n}\n\n`);
-    if (!objectiveCElements) {
+    if (!objectiveCElements && declaration.cxxElements && !declaration.cxxMoveOnlyElements) {
+      // Copyable C++ elements are copy-constructed into place.
+      output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_append(Z_${declaration.name} *self, Z_${declaration.sliceName} items) {\n`);
+      output.append("  if (items.length == 0) return;\n");
+      output.append("  if (items.length > SIZE_MAX - self->length) abort();\n");
+      output.append(`  if (self->length + items.length > self->capacity) Z_${declaration.name}_reserveCapacity(self, self->length + items.length);\n`);
+      output.append(`  for (size_t index = 0; index < items.length; index += 1) std::construct_at(&((${elementType} *)self->data)[self->length + index], ((${elementType} const *)items.data)[index]);\n`);
+      output.append("  self->length += items.length;\n");
+      output.append("}\n\n");
+      output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_appendRepeated(Z_${declaration.name} *self, ${elementType} value, size_t count) {\n`);
+      output.append("  if (count == 0) return;\n");
+      output.append("  if (count > SIZE_MAX - self->length) abort();\n");
+      output.append(`  if (self->length + count > self->capacity) Z_${declaration.name}_reserveCapacity(self, self->length + count);\n`);
+      output.append(`  for (size_t index = 0; index < count; index += 1) std::construct_at(&((${elementType} *)self->data)[self->length + index], value);\n`);
+      output.append("  self->length += count;\n");
+      output.append("}\n\n");
+    } else if (!objectiveCElements && !declaration.cxxElements) {
       // Array.append: the checker admits only cleanup-free elements and keeps
       // the source out of the receiver's storage, so one copy suffices. A
       // short run is copied inline, where a memcpy call costs more.
@@ -27652,11 +27705,16 @@ function emitLoweredC(
     output.append("  if (self->length == self->capacity) {\n");
     output.append("    if (self->length == SIZE_MAX) abort();\n");
     output.append(`    Z_${declaration.name}_reserveCapacity(self, self->capacity == 0 ? 8 : self->length + 1);\n  }\n`);
-    output.append("  ((");
-    output.append(elementType);
-    if (objectiveCElements) {
-      output.append(" __strong *)self->data)[self->length] = value;\n");
-    } else output.append(" *)self->data)[self->length] = value;\n");
+    if (declaration.cxxElements) {
+      // A copy-only C++ type (deleted move) is copied; a movable one moved.
+      output.append(`  std::construct_at(&((${elementType} *)self->data)[self->length], std::move_if_noexcept(value));\n`);
+    } else {
+      output.append("  ((");
+      output.append(elementType);
+      if (objectiveCElements) {
+        output.append(" __strong *)self->data)[self->length] = value;\n");
+      } else output.append(" *)self->data)[self->length] = value;\n");
+    }
     output.append("  self->length += 1;\n");
     output.append("}\n\n");
     output.append("static inline __attribute__((unused)) void Z_");
@@ -27674,6 +27732,8 @@ function emitLoweredC(
       output.append("    self->length -= 1;\n");
       output.append("    items[self->length] = nil;\n");
       output.append("  }\n");
+    } else if (declaration.cxxElements) {
+      appendCxxElementDestruction(inout output, program, declaration, elementType);
     } else if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
       output.append("  ");
       output.append(elementType);
@@ -27776,7 +27836,10 @@ function emitLoweredC(
     output.append("_deinit(Z_");
     output.append(declaration.name);
     output.append(" *self) {\n");
-    if (declaration.elementType.kind == LoweredTypeKind.foreignObjCType) {
+    if (declaration.cxxElements) {
+      const elementType = try cType(declaration.elementType);
+      appendCxxElementDestruction(inout output, program, declaration, elementType);
+    } else if (declaration.elementType.kind == LoweredTypeKind.foreignObjCType) {
       const elementType = try cType(declaration.elementType);
       output.append("  ");
       output.append(elementType);

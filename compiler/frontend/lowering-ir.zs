@@ -180,6 +180,10 @@ export struct LoweredArray {
   name: String;
   sliceName: String;
   elementType: LoweredType;
+  // Elements hold C++ values: storage is constructed, moved, and destroyed
+  // element by element (std::construct_at / std::destroy_at), never memcpy.
+  cxxElements: boolean = false;
+  cxxMoveOnlyElements: boolean = false;
 }
 
 export struct LoweredFixedArray {
@@ -950,6 +954,8 @@ struct LoweredImportedType {
   underlyingType: String;
   // A move-only C++ value: Z moves it with std::move; C++ destroys it.
   cxxMoveOnly: boolean = false;
+  // Any C++ value type (copyable or move-only).
+  cxxValue: boolean = false;
 }
 
 struct LoweredGenericStructField {
@@ -3311,7 +3317,53 @@ export function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.mutexType) {
     return type.name.copyBytes(0, type.name.byteLength);
   }
+  // A C++ spelling (`zcpp::UniqueValue`) becomes an identifier inside
+  // intrinsic storage names: each ':' is "_3a_", reversed on lookup.
+  if (type.kind == LoweredTypeKind.foreignStructType) {
+    let qualified = false;
+    let index: usize = 0;
+    while (index < type.name.byteLength) {
+      if (type.name.byteAt(index) == 58) qualified = true;
+      index = index + 1;
+    }
+    if (qualified) {
+      let output = TextBuffer();
+      index = 0;
+      while (index < type.name.byteLength) {
+        const byte = type.name.byteAt(index);
+        if (byte == 58) output.append("_3a_");
+        else output.appendAscii(byte);
+        index = index + 1;
+      }
+      return output.finish();
+    }
+  }
   return type.name.copyBytes(0, type.name.byteLength);
+}
+
+// The C++ spelling behind an escaped intrinsic identity, if `name` is one.
+function decodedCxxIdentity(in name: String): Option<String> {
+  let output = TextBuffer();
+  let decoded = false;
+  let index: usize = 0;
+  while (index < name.byteLength) {
+    if (
+      index + 4 <= name.byteLength
+      && name.byteAt(index) == 95
+      && name.byteAt(index + 1) == 51
+      && name.byteAt(index + 2) == 97
+      && name.byteAt(index + 3) == 95
+    ) {
+      output.appendAscii(58);
+      decoded = true;
+      index = index + 4;
+      continue;
+    }
+    output.appendAscii(name.byteAt(index));
+    index = index + 1;
+  }
+  if (!decoded) return Option<String>.none;
+  return Option.some(output.finish());
 }
 
 export function decodedObjCProtocolIdentity(in identity: String): Option<String> {
@@ -3962,6 +4014,12 @@ function lowerModuleTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): LoweredType throws String {
+  if (!stringStartsWith(name, "__z_")) {
+    match (decodedCxxIdentity(name)) {
+      some(decoded) => return try lowerModuleTypeName(program, importedTypes, decoded);
+      none => {}
+    }
+  }
   if (name == "__z_std_text_Utf8Error"
     || isImportedStandardBinding(program, "std/text", "Utf8Error", name)) {
     return LoweredType({ kind: LoweredTypeKind.structType, name: "__z_std_text_Utf8Error" });
@@ -5345,10 +5403,15 @@ function intrinsicArrayDeclaration(
         importedTypes,
         generic.arguments[0]
       );
+      const cxxElements = moduleTypeHoldsCxx(program, importedTypes, elementType, 0, false);
+      const cxxMoveOnlyElements = cxxElements
+        && moduleTypeHoldsCxx(program, importedTypes, elementType, 0, true);
       return Option.some(LoweredArray({
         name: intrinsicArrayName(elementType),
         sliceName: intrinsicSliceName(elementType),
         elementType,
+        cxxElements,
+        cxxMoveOnlyElements,
       }));
     }
     none => return Option<LoweredArray>.none;
@@ -7956,13 +8019,25 @@ function moduleTypeIsCxxMoveOnly(
   in type: LoweredType,
   depth: usize
 ): boolean {
+  return moduleTypeHoldsCxx(program, importedTypes, type, depth, true);
+}
+
+// A value holding any C++ value (moveOnly: only a move-only one), directly or
+// through Z struct fields.
+function moduleTypeHoldsCxx(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in type: LoweredType,
+  depth: usize,
+  moveOnly: boolean
+): boolean {
   if (depth > 8) return false;
   if (type.kind == LoweredTypeKind.foreignStructType) {
     for (const imported of importedTypes) {
       if (
         imported.kind == type.kind
         && (imported.localName == type.name || imported.targetName == type.name)
-      ) return imported.cxxMoveOnly;
+      ) return moveOnly ? imported.cxxMoveOnly : imported.cxxValue;
     }
     return false;
   }
@@ -7973,7 +8048,7 @@ function moduleTypeIsCxxMoveOnly(
         const lowered = attempt lowerModuleType(program, importedTypes, field.type);
         match (lowered) {
           success(fieldType) => {
-            if (moduleTypeIsCxxMoveOnly(program, importedTypes, fieldType, depth + 1)) return true;
+            if (moduleTypeHoldsCxx(program, importedTypes, fieldType, depth + 1, moveOnly)) return true;
           }
           failure(_) => {}
         }
@@ -31781,6 +31856,7 @@ function copyImportedTypeAlias(
       declaration.underlyingType.byteLength
     ),
     cxxMoveOnly: declaration.cxxMoveOnly,
+    cxxValue: declaration.cxxValue,
   });
 }
 
@@ -32577,6 +32653,7 @@ function importedTypesForModule(
               payloadBearing: false,
               underlyingType: "",
               cxxMoveOnly: signature.foreignKind == "moveValue",
+              cxxValue: signature.foreignKind == "value" || signature.foreignKind == "moveValue",
             }));
           }
         }

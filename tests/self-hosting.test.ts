@@ -11063,7 +11063,7 @@ test("compiles a multi-module Z application through the standalone native driver
     // Namespaces and overloads check natively; aggregate interpolation is a separate tier.
     ["examples/interop/cpp/cpp-interop.zs", /12:121: error\[Z1000\]: template interpolation of "cpp\.zcpp\.Point" is not executable in the native compiler yet/],
     // C++ values in union, collection, or Arena storage are a later tier.
-    ["examples/interop/cpp/cpp-move-only-array.zs", /10:7: error\[Z1000\]: C\+\+ value "zcpp::UniqueValue" stored in a class, Option, Result, enum payload, or collection is not executable in the native compiler yet/],
+    ["examples/interop/cpp/cpp-move-only-enum.zs", /41:9: error\[Z1000\]: C\+\+ value "zcpp::UniqueValue" stored in a class, Option, Result, enum payload, or collection is not executable in the native compiler yet/],
     ["examples/interop/cpp/cpp-arena.zs", /11:30: error\[Z1000\]: C\+\+ values stored in an Arena are not executable in the native compiler yet/],
   ];
   for (const [entry, message] of tierLimits) {
@@ -11148,6 +11148,20 @@ test("compiles a multi-module Z application through the standalone native driver
   });
   assert.equal(mixedMove.status, 0, mixedMove.stderr);
   assert.equal(mixedMove.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "taken=53 kept=1 moves=1 live=0\n");
+  // Arrays construct, relocate, and destroy C++ elements in place. Move counts
+  // depend on the growth policy (Stage 0 starts at 4, native at 8), so the
+  // count is matched as Stage 0's own test does. Stage 0's clear() leaks
+  // copyable C++ elements, so the copyable fixture is native-only.
+  for (const [entry, expected] of [
+    ["examples/interop/cpp/cpp-move-only-array.zs", /^array answer=42, moves=[1-9][0-9]*, live=0\n$/],
+    ["tests/fixtures/native-cpp-array-values.zs", /^len=1 copies=3 drops=5 live=1\n$/],
+  ] as const) {
+    const run = spawnSync(driver, ["run", resolve(projectRoot, entry)], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(run.status, 0, `${entry}: ${run.stderr}`);
+    assert.match(run.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), expected, entry);
+  }
   // Move-only native storage follows Stage 0's ownership rules (Z0240).
   const moveOnlyProbe = resolve(directory, "move-only-probe.zs");
   for (const [body, message] of [
