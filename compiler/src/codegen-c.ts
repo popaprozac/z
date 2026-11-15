@@ -811,14 +811,6 @@ export function generateC(
     const slice = parseSliceType(type)!;
     lines.push(`struct ${sliceName(type)} {\n  ${mapType(slice.elementType, structs, enums, semanticInfo.foreignNamedTypes)} *data;\n  uintptr_t length;\n};`, "");
   }
-  // A checked sub-range of a Slice: start <= end <= length, or a trap.
-  for (const type of new Set([...semanticInfo.sliceRanges.values()].map((range) => sliceTypeName(range.elementType)))) {
-    const name = mapType(type, structs, enums, semanticInfo.foreignNamedTypes);
-    lines.push(`static Z_UNUSED_FUNCTION ${name} ${name}_range(${name} items, uintptr_t start, uintptr_t end) {
-  if (start > end || end > items.length) abort();
-  return (${name}){ .data = items.data == NULL ? NULL : items.data + start, .length = end - start };
-}`, "");
-  }
   if (usesObjCDataCopy) {
     lines.push(generateObjCDataCopyRuntime(
       mapType(sliceTypeName("u8"), structs, enums, semanticInfo.foreignNamedTypes),
@@ -845,6 +837,16 @@ export function generateC(
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
+  // A checked sub-range of a Slice: start <= end <= length, or a trap.
+  // After the aggregates: the pointer arithmetic needs the element type
+  // complete, and a struct or enum element is only declared before them.
+  for (const type of new Set([...semanticInfo.sliceRanges.values()].map((range) => sliceTypeName(range.elementType)))) {
+    const name = mapType(type, structs, enums, semanticInfo.foreignNamedTypes);
+    lines.push(`static Z_UNUSED_FUNCTION ${name} ${name}_range(${name} items, uintptr_t start, uintptr_t end) {
+  if (start > end || end > items.length) abort();
+  return (${name}){ .data = items.data == NULL ? NULL : items.data + start, .length = end - start };
+}`, "");
+  }
   for (const type of memoryReplaceTypes) {
     lines.push(generateMemoryReplace(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
