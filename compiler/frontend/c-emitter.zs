@@ -5344,12 +5344,13 @@ function appendExpression(
         && parameter.type.kind == LoweredTypeKind.foreignObjCType
       ) foreignObjCParameter = true;
     }
+    // In an async frame the parameter's pointer lives in the frame.
     if (foreignObjCParameter) {
-      appendCBindingName(inout output, declaration.expressions[index].value);
+      appendAsyncFrameBindingName(inout output, declaration, declaration.expressions[index].value);
       return;
     }
     output.append("(*");
-    appendCBindingName(inout output, declaration.expressions[index].value);
+    appendAsyncFrameBindingName(inout output, declaration, declaration.expressions[index].value);
     output.append(")");
     return;
   }
@@ -11123,7 +11124,6 @@ function appendYieldFrameParameters(
 ): void throws String {
   let index: usize = 0;
   for (const parameter of parameters) {
-    if (parameter.mode != LoweredParameterMode.value) throw "native yield frames require owned value parameters";
     output.append(", ");
     const name = `_z_argument_${index}`;
     try appendCallableParameterDeclaration(inout output, parameter, name);
@@ -11214,11 +11214,6 @@ function yieldFrameAwaitType(
     if (functionType.name != awaited.value) continue;
     if (!functionType.asynchronous || functionType.parameters.length + 1 != awaited.children.length) {
       throw "native yield frame lost its child callable signature";
-    }
-    for (const parameter of functionType.parameters) {
-      if (parameter.mode != LoweredParameterMode.value) {
-        throw "native yield-frame child awaits require owned value arguments; borrowed child loans remain a later tier";
-      }
     }
     return copy functionType.returnType;
   }
@@ -11318,12 +11313,7 @@ function appendYieldFrameSpawn(
   output.append(`${slot} = Z_${spawned.value}_start(`);
   try appendExpression(inout output, declaration, spawned.children[0]);
   output.append(", task->executor");
-  let argument: usize = 1;
-  while (argument < spawned.children.length) {
-    output.append(", ");
-    try appendExpression(inout output, declaration, spawned.children[argument]);
-    argument = argument + 1;
-  }
+  try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, true);
   output.append(");\n");
   appendBorrowedTemporaryCleanups(inout output, declaration, expression, depth);
   // A hot child: it runs on this executor once the parent suspends.
@@ -11423,6 +11413,100 @@ function appendYieldFrameCancel(
   output.append("}\n");
 }
 
+// The child function type of an `await f(...)` in a frame.
+function yieldFrameChildFunctionType(
+  in program: LoweredProgram, in declaration: LoweredFunction, expression: usize
+): LoweredFunctionType throws String {
+  for (const functionType of program.functionTypes) {
+    if (functionType.name == declaration.expressions[expression].value) return copy functionType;
+  }
+  throw "native yield frame lost its child callable signature";
+}
+
+function yieldFrameArgumentBorrowed(in expression: LoweredExpression, argument: usize): boolean {
+  if (expression.labels.length < argument) return false;
+  const mode = view expression.labels[argument - 1];
+  return mode == "in" || mode == "inout" || mode == "out";
+}
+
+// Storage that outlives a suspension: frame locals, parameters, and fields.
+function yieldFrameBorrowPlace(in declaration: LoweredFunction, index: usize): boolean {
+  const kind = declaration.expressions[index].kind;
+  if (kind == LoweredExpressionKind.localValue || kind == LoweredExpressionKind.parameterValue
+    || kind == LoweredExpressionKind.receiverValue) return true;
+  if (kind == LoweredExpressionKind.fieldValue && declaration.expressions[index].children.length == 1) {
+    return yieldFrameBorrowPlace(declaration, declaration.expressions[index].children[0]);
+  }
+  return false;
+}
+
+// A fresh value borrowed by an awaited child lives in the parent frame until
+// the child completes (Stage 0's address-stable borrow temporaries).
+function yieldFrameBorrowTemporaryName(statementIndex: usize, argument: usize): String {
+  return `_z_await_borrow_${statementIndex}_${argument}`;
+}
+
+function appendYieldFrameChildArguments(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  statementIndex: usize, expression: usize, spawn: boolean
+): void throws String {
+  const call = view declaration.expressions[expression];
+  let argument: usize = 1;
+  while (argument < call.children.length) {
+    output.append(", ");
+    const value = call.children[argument];
+    if (!yieldFrameArgumentBorrowed(call, argument)) {
+      try appendExpression(inout output, declaration, value);
+    } else if (yieldFrameBorrowPlace(declaration, value)) {
+      try appendAddressOf(inout output, declaration, value);
+    } else if (spawn || call.labels[argument - 1] != "in") {
+      throw "native async frame borrows of temporaries are executable only for `in` arguments of awaited calls";
+    } else {
+      output.append("&");
+      const temporary = yieldFrameBorrowTemporaryName(statementIndex, argument);
+      appendAsyncFrameBindingName(inout output, declaration, temporary);
+    }
+    argument = argument + 1;
+  }
+}
+
+function appendYieldFrameBorrowTemporaries(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
+  statementIndex: usize, expression: usize, depth: usize, release: boolean
+): void throws String {
+  const call = view declaration.expressions[expression];
+  const functionType = try yieldFrameChildFunctionType(program, declaration, expression);
+  let argument: usize = 1;
+  while (argument < call.children.length) {
+    const value = call.children[argument];
+    if (yieldFrameArgumentBorrowed(call, argument) && !yieldFrameBorrowPlace(declaration, value)) {
+      const name = yieldFrameBorrowTemporaryName(statementIndex, argument);
+      const needsDeinit = loweredTypeNeedsDeinit(program, functionType.parameters[argument - 1].type);
+      if (release) {
+        if (needsDeinit) {
+          const cleanup = LoweredCleanup({
+            name: copy name, type: copy functionType.parameters[argument - 1].type, guard: `${name}_live`,
+          });
+          appendAsyncFrameCleanup(inout output, declaration, cleanup, depth);
+          appendIndent(inout output, depth);
+          output.append(`${name}_live = false;\n`);
+        }
+      } else {
+        appendIndent(inout output, depth);
+        appendAsyncFrameBindingName(inout output, declaration, name);
+        output.append(" = ");
+        try appendExpression(inout output, declaration, value);
+        output.append(";\n");
+        if (needsDeinit) {
+          appendIndent(inout output, depth);
+          output.append(`${name}_live = true;\n`);
+        }
+      }
+    }
+    argument = argument + 1;
+  }
+}
+
 function appendYieldFrameAwait(
   inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
   statementIndex: usize, expression: usize, depth: usize
@@ -11436,16 +11520,12 @@ function appendYieldFrameAwait(
   try appendBorrowedTemporaryInitializers(inout output, declaration, expression, depth);
   appendIndent(inout output, depth);
   output.append("if (frame->child.task != NULL) abort();\n");
+  try appendYieldFrameBorrowTemporaries(inout output, program, declaration, statementIndex, expression, depth, false);
   appendIndent(inout output, depth);
   output.append(`frame->child = Z_${awaited.value}_start(`);
   try appendExpression(inout output, declaration, awaited.children[0]);
   output.append(", task->executor");
-  let argument: usize = 1;
-  while (argument < awaited.children.length) {
-    output.append(", ");
-    try appendExpression(inout output, declaration, awaited.children[argument]);
-    argument = argument + 1;
-  }
+  try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, false);
   output.append(");\n");
   appendBorrowedTemporaryCleanups(inout output, declaration, expression, depth);
   appendIndent(inout output, depth);
@@ -11489,6 +11569,7 @@ function appendYieldFrameAwait(
   appendIndent(inout output, depth + 1);
   const frameName = yieldFrameName(declaration);
   output.append(`${frameName}_release_child(frame);\n`);
+  try appendYieldFrameBorrowTemporaries(inout output, program, declaration, statementIndex, expression, depth + 1, true);
 }
 
 function appendYieldFrameTry(
@@ -11695,7 +11776,8 @@ function appendYieldFrameStatement(
   if (statement.kind == LoweredStatementKind.localStatement) {
     match (in statement.expression) {
       none => {
-        if (statement.children.length == 0) throw "native yield frames require initialized locals";
+        // An uninitialized local: zeroed frame storage, not live yet.
+        if (statement.children.length == 0) return;
         for (const child of statement.children) {
           try appendYieldFrameStatement(inout output, program, declaration, child, depth);
         }
@@ -11844,6 +11926,8 @@ function appendYieldFrameHelpers(
     for (const parameter of source.parameters) {
       output.append("  ");
       output.append(try cType(parameter.type));
+      if (parameter.mode == LoweredParameterMode.input) output.append(" const *");
+      else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
       output.append(" _z_binding_");
       appendCBindingName(inout output, parameter.name);
       output.append(";\n");
@@ -11851,6 +11935,31 @@ function appendYieldFrameHelpers(
       if (guard.byteLength > 0) output.append(`  bool ${guard};\n`);
     }
     if (hasSpawns) output.append("  bool cancel_children;\n  bool unwinding;\n");
+    // Frame borrow temporaries of awaited `in` arguments.
+    let borrowNames = Array<String>();
+    let borrowTypes = Array<LoweredType>();
+    let borrowStatement: usize = 0;
+    while (borrowStatement < source.statements.length) {
+      const awaitedCall = yieldFrameAwaitExpression(source, borrowStatement);
+      if (awaitedCall < source.expressions.length) {
+        const childType = try yieldFrameChildFunctionType(program, source, awaitedCall);
+        let argument: usize = 1;
+        while (argument < source.expressions[awaitedCall].children.length) {
+          if (yieldFrameArgumentBorrowed(source.expressions[awaitedCall], argument)
+            && !yieldFrameBorrowPlace(source, source.expressions[awaitedCall].children[argument])) {
+            const borrowName = yieldFrameBorrowTemporaryName(borrowStatement, argument);
+            const borrowType = copy childType.parameters[argument - 1].type;
+            output.append(`  ${try cType(borrowType)} _z_binding_${borrowName};\n`);
+            if (loweredTypeNeedsDeinit(program, borrowType)) output.append(`  bool ${borrowName}_live;\n`);
+            declaration.asyncFrameBindings.push(copy borrowName);
+            borrowNames.push(borrowName);
+            borrowTypes.push(borrowType);
+          }
+          argument = argument + 1;
+        }
+      }
+      borrowStatement = borrowStatement + 1;
+    }
     for (const site of spawnSites) {
       if (source.statements[site].kind == LoweredStatementKind.expressionStatement) {
         output.append(`  Z_AsyncInvocation _z_spawn_${site};\n`);
@@ -11879,6 +11988,14 @@ function appendYieldFrameHelpers(
       }
     }
     output.append(`} ${name};\n`);
+    let borrowMacro: usize = 0;
+    while (borrowMacro < borrowNames.length) {
+      output.append(`#define _z_stage1_frame_binding_${borrowNames[borrowMacro]} (frame->_z_binding_${borrowNames[borrowMacro]})\n`);
+      if (loweredTypeNeedsDeinit(program, borrowTypes[borrowMacro])) {
+        output.append(`#define ${borrowNames[borrowMacro]}_live (frame->${borrowNames[borrowMacro]}_live)\n`);
+      }
+      borrowMacro = borrowMacro + 1;
+    }
     for (const parameter of source.parameters) {
       output.append("#define _z_stage1_frame_binding_");
       appendCBindingName(inout output, parameter.name);
@@ -11902,6 +12019,7 @@ function appendYieldFrameHelpers(
     output.append(`static void ${name}_cleanup(${name} *frame) {\n  (void)frame;\n`);
     let cleanup = Array<LoweredCleanup>();
     for (const parameter of source.parameters) {
+      if (parameter.mode != LoweredParameterMode.value) continue;
       const guard = yieldFrameParameterGuard(source, parameter.name);
       if (guard.byteLength > 0 || typeContainsObjectiveCStrongSlot(program, parameter.type)) cleanup.push(LoweredCleanup({
         name: copy parameter.name, type: copy parameter.type, guard,
@@ -11919,6 +12037,16 @@ function appendYieldFrameHelpers(
       if (statement.liveFlag.byteLength == 0
         && !typeContainsObjectiveCStrongSlot(program, type)) continue;
       cleanup.push(LoweredCleanup({ name: copy statement.name, type, guard: copy statement.liveFlag }));
+    }
+    let borrowCleanup: usize = 0;
+    while (borrowCleanup < borrowNames.length) {
+      if (loweredTypeNeedsDeinit(program, borrowTypes[borrowCleanup])) {
+        cleanup.push(LoweredCleanup({
+          name: copy borrowNames[borrowCleanup], type: copy borrowTypes[borrowCleanup],
+          guard: `${borrowNames[borrowCleanup]}_live`,
+        }));
+      }
+      borrowCleanup = borrowCleanup + 1;
     }
     appendYieldFrameCleanups(inout output, program, declaration, cleanup, 1);
     if (hasSpawns) {
@@ -12044,6 +12172,12 @@ function appendYieldFrameHelpers(
       appendCBindingName(inout output, statement.name);
       output.append("\n");
       if (statement.liveFlag.byteLength > 0) output.append(`#undef ${statement.liveFlag}\n`);
+    }
+    let borrowUndef: usize = 0;
+    while (borrowUndef < borrowNames.length) {
+      output.append(`#undef _z_stage1_frame_binding_${borrowNames[borrowUndef]}\n`);
+      if (loweredTypeNeedsDeinit(program, borrowTypes[borrowUndef])) output.append(`#undef ${borrowNames[borrowUndef]}_live\n`);
+      borrowUndef = borrowUndef + 1;
     }
     output.append(`static void ${name}_take(Z_AsyncTask *task, void *output) {\n  if (!task->completed || task->cancelled) abort();\n`);
     if (source.returnType.kind != LoweredTypeKind.voidType) {

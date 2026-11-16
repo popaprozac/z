@@ -86,13 +86,27 @@ int main(void) {
   }
   dropped.destroy(dropped.task);
   if (executor.head != NULL || executor.timers != NULL) return 16;
+
+  // A cancelled parent releases the temporary it lent to its child once.
+  Z_AsyncInvocation lender = _z_stage1_yield_borrower_start(&executor);
+  z_stage1_async_enqueue(&executor, lender.task);
+  for (int tick = 0; tick < 8 && (executor.timers == NULL || executor.timers->wake_at_ms - z_stage1_async_now_ms() < 1000); ++tick) {
+    if (!z_stage1_async_drive_one(&executor)) return 17;
+  }
+  z_stage1_async_request_cancel(lender.task);
+  for (int tick = 0; !lender.task->completed; ++tick) {
+    if (tick > 8 || !z_stage1_async_drive_one(&executor)) return 18;
+  }
+  if (!lender.task->cancelled || executor.timers != NULL) return 19;
+  lender.destroy(lender.task);
   if (z_stage1_async_now_ms() - started > 5000) return 10;
   return 0;
 }`;
   execute(source, "sleeping 1\nreleased job 1\nsleeping 3\nreleased job 3\nreleased job 2\n"
     + "sleeping 11\nsleeping 12\nreleased job 11\nreleased job 12\nreleased job 10\n"
     // A dropped frame destroys its children in reverse order, as Stage 0 does.
-    + "sleeping 21\nsleeping 22\nreleased job 22\nreleased job 21\nreleased job 20\n");
+    + "sleeping 21\nsleeping 22\nreleased job 22\nreleased job 21\nreleased job 20\n"
+    + "released job 30\n");
 }, 240_000);
 
 test("runs async main as a general native frame when it awaits timers directly", () => {
@@ -114,5 +128,15 @@ test("runs task spawns, joins, scopes, and failure cancellation in general nativ
   execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
   const source = emit(fixture);
   assert.match(source, /_release_slot\(task, &frame->_z_spawn_\d+\)/);
+  execute(source, expected);
+}, 240_000);
+
+test("passes borrowed parameters and frame borrow temporaries to general native frames", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/native-async-frame-borrows.zs");
+  const expected = "inspected 40\ninspected 40\ninspected 5\nreleased report 5\ninspected 40\n"
+    + "seen 40 counter 3 filled 7 relayed 41 temporary 5 sum 42\nreleased report 40\n";
+  execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
+  const source = emit(fixture);
+  assert.match(source, /_z_await_borrow_\d+_1_live = true;/);
   execute(source, expected);
 }, 240_000);

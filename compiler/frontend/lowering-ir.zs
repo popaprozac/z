@@ -12603,6 +12603,10 @@ function lowerDirectAsyncFunctionCall(
       resolution.parameterTypes[argument],
       inout output
     );
+    // A stored Array passed where a Slice is expected is borrowed as one.
+    const sliceTypeName = resolvedLocalTypeAlias(program, resolution.parameterTypes[argument]);
+    value = try lowerSliceArgument(program, importedTypes, evidence, tree,
+      argumentInput, sliceTypeName, value, inout output);
     if (resolution.parameterModes[argument] == "value") {
       value = try wrapOwnedStorage(
         program,

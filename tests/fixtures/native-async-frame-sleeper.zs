@@ -33,6 +33,17 @@ async function supervisor(job: Job): void {
   console.log(`unexpected supervisor ${job.id}`);
 }
 
+async function peek(in job: Job): i32 {
+  await delay(60000);
+  return job.id;
+}
+
+async function borrower(): i32 {
+  await delay(1);
+  const seen = await peek(Job({ id: 30 }));
+  return seen;
+}
+
 async function main(): i32 {
   return 0;
 }

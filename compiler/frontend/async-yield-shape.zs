@@ -229,7 +229,11 @@ function frameStatementIsSupported(
     || kind == StatementKind.destructureStatement) {
     // Keep lexical local storage expansion separate from root frame storage.
     if (nested || arena.nodes[index].arrayBindings.length != 0) return false;
-    match (in arena.nodes[index].expression) { some(_) => {} none => return false; }
+    // `let x: T;` is zeroed frame storage whose live flag starts false.
+    match (in arena.nodes[index].expression) {
+      some(_) => {}
+      none => return kind == StatementKind.variableStatement;
+    }
   } else if (kind != StatementKind.returnStatement
     && !(kind == StatementKind.selectStatement && synchronousOnly)
     && kind != StatementKind.throwStatement
@@ -316,10 +320,9 @@ function frameExpressionSuspends(in tree: ExpressionTree, index: usize): boolean
 export function functionUsesGeneralFrame(
   in program: Program, in declaration: FunctionDeclaration
 ): boolean {
+  // Borrowed parameters are pointers into the caller's storage, which stays
+  // in place while the caller is suspended on this frame.
   if (!declaration.asynchronous || declaration.executorAffinity.byteLength != 0) return false;
-  for (const parameter of declaration.parameters) {
-    if (parameter.mode != ParameterMode.value) return false;
-  }
   let suspends = false;
   for (const statement of declaration.body.nodes) {
     match (in statement.expression) {

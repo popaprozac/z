@@ -3141,6 +3141,13 @@ function validateYieldFrameStorage(
     none => {}
   }
   for (const parameter of declaration.parameters) {
+    // A borrowed parameter is a pointer in the frame; its value stays put.
+    // A Slice parameter views caller storage the suspended caller keeps alive.
+    if (parameter.mode != ParameterMode.value) continue;
+    match (genericTypeShape(parameter.type.name)) {
+      some(shape) => if (shape.base == "Slice") continue;
+      none => {}
+    }
     const visiting = Array<String>();
     if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, parameter.type.name, visiting)) {
       throw loweringBoundary(path, "Z0700",

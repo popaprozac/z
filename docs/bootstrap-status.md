@@ -1405,7 +1405,12 @@ that runs once the parent suspends, and `await t`, `try`/`attempt await t`, and
 children in spawn order; a failure or cancellation of the parent cancels them
 first. As in Stage 0, a frame releases its owners when it is destroyed at its
 join, not when it completes, and a spawned non-suspending function takes the
-frame so its body waits for the executor. Cancellation before
+frame so its body waits for the executor. This general frame also takes
+`in`/`inout`/`out` and `Slice` parameters: they point into the suspended
+caller's storage, a caller passes the address of its own frame storage, and a
+fresh `in` argument of an awaited call lives in the caller's frame until the
+child completes. `let x: T;` locals are zeroed frame storage that is not yet
+live. Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument

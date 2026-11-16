@@ -368,7 +368,7 @@ async function main(): i32 {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
-test("rejects invalid moved inputs and unsupported borrowed or collection yield parameters", () => {
+test("rejects invalid moved inputs and unsupported collection yield parameters, and stores borrowed ones", () => {
   const directory = mkdtempSync("/tmp/z-native-yield-input-rejection-");
   try {
     const input = resolve(directory, "main.zs");
@@ -384,11 +384,6 @@ function main(): i32 { return 0; }`;
     const cases = [
       { source: moved, expected: /moved value/ },
       { source: `import { scheduler } from "std/async";
-async function inspect(in message: String): void {
-  while (true) { await scheduler.yield(); }
-}
-function main(): i32 { return 0; }`, expected: /Z0700/ },
-      { source: `import { scheduler } from "std/async";
 import { Set } from "std/collections";
 async function inspect(state: Set<i32>): void {
   while (true) { await scheduler.yield(); }
@@ -403,6 +398,17 @@ function main(): i32 { return 0; }`, expected: /parameter "state" requires suppo
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, item.expected);
     }
+    // A borrowed parameter is a pointer into the suspended caller's storage.
+    writeFileSync(input, `import { scheduler } from "std/async";
+async function inspect(in message: String): void {
+  while (true) { await scheduler.yield(); }
+}
+function main(): i32 { return 0; }`);
+    const borrowed = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(borrowed.status, 0, borrowed.stderr);
+    assert.match(borrowed.stdout, /Z_String const \* _z_binding_message;/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
