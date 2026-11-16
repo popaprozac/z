@@ -199,9 +199,11 @@ selecting Z class retain/release helpers. Native heap-frame cleanup clears
 Objective-C locals and owned parameters on completion/cancellation, including
 strong fields inside value structs. Cross-thread native subclass captures and
 async overrides remain rejected. Main-isolated helpers mixing timers with
-arbitrary child awaits, main-isolated `scheduler.yield`, direct timer awaits in native
-`main`, and direct named-task creation outside the native callable-task tier
+arbitrary child awaits, main-isolated `scheduler.yield`, direct timer awaits in a native
+`main` declared `on thread.main`, and direct named-task creation outside the native callable-task tier
 remain separate native async composition work; this is not general async parity.
+A plain `async function main()` with direct timer awaits runs as a general native
+frame on a root executor.
 
 The related-family close checkpoint (2026-09-13) extends native linear main-task
 timer frames to `match`-initialized owned locals and direct `TaskScope.close()` /

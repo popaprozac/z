@@ -18,7 +18,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { functionContainsFrameDelay, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -3181,6 +3181,22 @@ function validateYieldFrameStorage(
   }
 }
 
+function validateGeneralFrameStorage(
+  in path: String,
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in declaration: FunctionDeclaration
+): void throws ModuleResolveError {
+  try validateYieldFrameStorage(path, moduleIndex, modules, graph, declaration);
+  const visiting = Array<String>();
+  if (declaration.returnType.name != "void"
+    && !nativeYieldFrameStorageSupported(modules, graph, moduleIndex, declaration.returnType.name, visiting)) {
+    throw loweringBoundary(path, "Z0700", "native async frame result requires supported owned frame storage",
+      declaration.line, declaration.column, 5);
+  }
+}
+
 function validateNativeFunction(
   in path: String,
   moduleIndex: usize,
@@ -3219,7 +3235,13 @@ function validateNativeFunction(
   const yieldFrame = owner.byteLength == 0 && parsedModule < modules.length
     && !(declaration.name != "main" && firstTierSchedulerYield)
     && functionUsesYieldFrame(modules[parsedModule].program, declaration);
-  if (owner.byteLength == 0 && declaration.name == "main" && parsedModule < modules.length) {
+  // main with a direct timer await runs as a general frame on a root executor.
+  const generalMain = !yieldFrame && owner.byteLength == 0 && declaration.name == "main"
+    && parsedModule < modules.length
+    && functionContainsFrameDelay(modules[parsedModule].program, declaration)
+    && functionUsesGeneralFrame(modules[parsedModule].program, declaration);
+  if (generalMain) try validateGeneralFrameStorage(path, moduleIndex, modules, graph, declaration);
+  if (owner.byteLength == 0 && declaration.name == "main" && parsedModule < modules.length && !generalMain) {
     // main has a synchronous host entry in the current native driver. Do not
     // misclassify an unsupported timer await as a join of an unnamed Task.
     for (const root of declaration.body.roots) {
@@ -3238,15 +3260,7 @@ function validateNativeFunction(
   const generalFrame = !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
     && owner.byteLength == 0 && declaration.name != "main" && parsedModule < modules.length
     && functionUsesGeneralFrame(modules[parsedModule].program, declaration);
-  if (generalFrame) {
-    try validateYieldFrameStorage(path, moduleIndex, modules, graph, declaration);
-    const visiting = Array<String>();
-    if (declaration.returnType.name != "void"
-      && !nativeYieldFrameStorageSupported(modules, graph, moduleIndex, declaration.returnType.name, visiting)) {
-      throw loweringBoundary(path, "Z0700", "native async frame result requires supported owned frame storage",
-        declaration.line, declaration.column, 5);
-    }
-  }
+  if (generalFrame) try validateGeneralFrameStorage(path, moduleIndex, modules, graph, declaration);
   if (declaration.asynchronous && declaration.name != "main"
     && functionUsesFirstTierLinearAwait(moduleIndex, modules, graph, declaration)
     && parsedModule < modules.length) {
@@ -3298,7 +3312,7 @@ function validateNativeFunction(
       }
     }
   }
-  if (!yieldFrame && !generalFrame && !firstTierSchedulerYield && !firstTierTailAwait
+  if (!yieldFrame && !generalFrame && !generalMain && !firstTierSchedulerYield && !firstTierTailAwait
     && parsedModule < modules.length) {
     let index: usize = 0;
     while (index < declaration.body.nodes.length) {

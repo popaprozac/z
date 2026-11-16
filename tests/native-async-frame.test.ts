@@ -68,3 +68,12 @@ int main(void) {
 }`;
   execute(source, "sleeping 1\nreleased job 1\nsleeping 3\nreleased job 3\nreleased job 2\n");
 }, 240_000);
+
+test("runs async main as a general native frame when it awaits timers directly", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/native-async-frame-main.zs");
+  const expected = "begin\nreleased 5\nvalue 5 job 4 index 3 code 6\nreleased 4\n";
+  execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
+  const source = emit(fixture);
+  assert.match(source, /_z_stage1_yield_(?:_z_function_\d+_)?main_start\(&executor\)/);
+  execute(source, expected);
+}, 240_000);

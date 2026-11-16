@@ -97,7 +97,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { functionContainsFrameDelay, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -29538,6 +29538,10 @@ function lowerFunction(
       if (moduleTypeNeedsCleanup(program, importedTypes, type)) asyncSuspension = "yield-frame";
     }
   }
+  // main with a direct timer await runs as a general frame on a root executor.
+  if (declaration.name == "main" && receiverName.byteLength == 0 && !yieldFrame
+    && functionContainsFrameDelay(program, declaration)
+    && functionUsesGeneralFrame(program, declaration)) generalFrame = true;
   if ((yieldFrame || generalFrame) && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
   let parameters = Array<LoweredParameter>();
   let ownedParameters = Array<LoweredCleanup>();

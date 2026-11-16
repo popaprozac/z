@@ -276,3 +276,16 @@ export function functionUsesGeneralFrame(
   }
   return true;
 }
+
+// A direct `await delay(ms)` statement anywhere in the body. Native `main`
+// has no resumable entry outside the general frame, so this selects it.
+export function functionContainsFrameDelay(
+  in program: Program, in declaration: FunctionDeclaration
+): boolean {
+  let index: usize = 0;
+  while (index < declaration.body.nodes.length) {
+    if (isFrameDelay(program, declaration.body, index)) return true;
+    index = index + 1;
+  }
+  return false;
+}
