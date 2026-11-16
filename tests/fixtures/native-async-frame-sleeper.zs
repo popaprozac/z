@@ -26,6 +26,13 @@ async function parent(job: Job): i32 {
   return job.id;
 }
 
+async function supervisor(job: Job): void {
+  task sleeper(Job({ id: job.id + 1 }));
+  task sleeper(Job({ id: job.id + 2 }));
+  await delay(60000);
+  console.log(`unexpected supervisor ${job.id}`);
+}
+
 async function main(): i32 {
   return 0;
 }

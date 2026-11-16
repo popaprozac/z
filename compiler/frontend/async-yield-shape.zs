@@ -92,16 +92,60 @@ function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): bo
   return true;
 }
 
+// `task f(args)`: a named callee with synchronous arguments.
+function frameSpawnIsSupported(in tree: ExpressionTree, index: usize): boolean {
+  if (tree.nodes[index].children.length != 1) return false;
+  const call = tree.nodes[index].children[0];
+  if (tree.nodes[call].kind != ExpressionKind.callExpression
+    || tree.nodes[call].children.length == 0) return false;
+  const callee = tree.nodes[call].children[0];
+  if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) return false;
+  for (const child of tree.nodes[call].children) {
+    if (!frameExpressionIsSynchronous(tree, child)) return false;
+  }
+  return true;
+}
+
+// The receiver node of `t.cancel()`, or the tree length.
+function frameTaskCancelReceiver(in tree: ExpressionTree, call: usize): usize {
+  if (tree.nodes[call].kind != ExpressionKind.callExpression
+    || tree.nodes[call].children.length != 1) return tree.nodes.length;
+  const member = tree.nodes[call].children[0];
+  if (tree.nodes[member].kind != ExpressionKind.memberExpression
+    || tree.nodes[member].value != "cancel"
+    || tree.nodes[member].children.length != 1) return tree.nodes.length;
+  const receiver = tree.nodes[member].children[0];
+  if (tree.nodes[receiver].kind != ExpressionKind.identifierExpression) return tree.nodes.length;
+  return receiver;
+}
+
+function statementRootIsSpawn(in arena: StatementArena, index: usize): boolean {
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => tree.nodes[tree.root].kind == ExpressionKind.spawnExpression;
+      none => false;
+    }
+    none => false;
+  };
+}
+
 function frameExpressionIsSupported(in tree: ExpressionTree, index: usize): boolean {
   let root = index;
   if ((tree.nodes[root].kind == ExpressionKind.tryExpression
     || tree.nodes[root].kind == ExpressionKind.attemptExpression)
     && tree.nodes[root].children.length == 1) root = tree.nodes[root].children[0];
+  if (tree.nodes[root].kind == ExpressionKind.spawnExpression) {
+    return frameSpawnIsSupported(tree, root);
+  }
   if (tree.nodes[root].kind != ExpressionKind.awaitExpression) {
     return frameExpressionIsSynchronous(tree, root);
   }
   if (tree.nodes[root].children.length != 1) return false;
   const call = tree.nodes[root].children[0];
+  // Joins of task locals: `await t` and `await t.cancel()`. The function's
+  // task-local rule checks that `t` names a root spawn local.
+  if (tree.nodes[call].kind == ExpressionKind.identifierExpression) return true;
+  if (frameTaskCancelReceiver(tree, call) < tree.nodes.length) return true;
   if (tree.nodes[call].kind != ExpressionKind.callExpression
     || tree.nodes[call].children.length == 0) return false;
   const callee = tree.nodes[call].children[0];
@@ -163,6 +207,23 @@ function frameStatementIsSupported(
       }
       none => false;
     };
+  }
+  // Spawn sites own one frame slot each: root statements, or `task f();`
+  // directly in an unnamed `async scope`, which joins its slots on exit. A
+  // loop therefore never restarts a slot whose child is still running.
+  if (nested && statementRootIsSpawn(arena, index)) return false;
+  if (kind == StatementKind.asyncScopeStatement) {
+    if (synchronousOnly || arena.nodes[index].name.byteLength != 0
+      || arena.nodes[index].children.length != 1) return false;
+    const block = arena.nodes[index].children[0];
+    if (arena.nodes[block].kind != StatementKind.blockStatement) return false;
+    for (const child of arena.nodes[block].children) {
+      if (statementRootIsSpawn(arena, child)) {
+        if (arena.nodes[child].kind != StatementKind.expressionStatement
+          || !frameStatementIsSupported(program, arena, child, false, false)) return false;
+      } else if (!frameStatementIsSupported(program, arena, child, true, false)) return false;
+    }
+    return true;
   }
   if (kind == StatementKind.variableStatement
     || kind == StatementKind.destructureStatement) {
@@ -235,11 +296,12 @@ export function functionUsesYieldFrame(
   for (const root of declaration.body.roots) {
     if (!frameStatementIsSupported(program, declaration.body, root, false, false)) return false;
   }
-  return true;
+  return frameTaskLocalsAreJoinOnly(declaration);
 }
 
 function frameExpressionSuspends(in tree: ExpressionTree, index: usize): boolean {
-  if (tree.nodes[index].kind == ExpressionKind.awaitExpression) return true;
+  if (tree.nodes[index].kind == ExpressionKind.awaitExpression
+    || tree.nodes[index].kind == ExpressionKind.spawnExpression) return true;
   if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
   for (const child of tree.nodes[index].children) {
     if (frameExpressionSuspends(tree, child)) return true;
@@ -270,11 +332,158 @@ export function functionUsesGeneralFrame(
       none => {}
     }
   }
-  if (!suspends) return false;
+  // A spawned child must not run its body at `task f()`: Stage 0 starts it
+  // when the parent suspends. A non-suspending spawned function takes the
+  // frame too, so starting it only creates the frame.
+  if (!suspends && !programSpawnsFunction(program, declaration.name)) return false;
   for (const root of declaration.body.roots) {
     if (!frameStatementIsSupported(program, declaration.body, root, false, false)) return false;
   }
+  return frameTaskLocalsAreJoinOnly(declaration);
+}
+
+function bodySpawnsFunction(in body: StatementArena, in name: String): boolean {
+  for (const statement of body.nodes) {
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          for (const node of tree.nodes) {
+            if (node.kind != ExpressionKind.spawnExpression || node.children.length != 1) continue;
+            const call = node.children[0];
+            if (tree.nodes[call].kind != ExpressionKind.callExpression
+              || tree.nodes[call].children.length == 0) continue;
+            const callee = tree.nodes[call].children[0];
+            if (tree.nodes[callee].kind == ExpressionKind.identifierExpression
+              && tree.nodes[callee].value == name) return true;
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  return false;
+}
+
+// `task name(...)` anywhere in this module.
+function programSpawnsFunction(in program: Program, in name: String): boolean {
+  for (const candidate of program.functions) {
+    if (bodySpawnsFunction(candidate.body, name)) return true;
+  }
+  for (const aggregate of program.aggregates) {
+    for (const method of aggregate.methods) {
+      if (bodySpawnsFunction(method.body, name)) return true;
+    }
+  }
+  return false;
+}
+
+function nameIsLocalBinding(in declaration: FunctionDeclaration, in name: String): boolean {
+  for (const parameter of declaration.parameters) {
+    if (parameter.name == name) return true;
+  }
+  for (const statement of declaration.body.nodes) {
+    if (statement.kind == StatementKind.variableStatement && statement.name == name) return true;
+  }
+  return false;
+}
+
+function frameTaskJoinUses(in tree: ExpressionTree, in name: String): usize {
+  let count: usize = 0;
+  for (const node of tree.nodes) {
+    if (node.kind != ExpressionKind.awaitExpression || node.children.length != 1) continue;
+    const operand = node.children[0];
+    if (tree.nodes[operand].kind == ExpressionKind.identifierExpression
+      && tree.nodes[operand].value == name) count = count + 1;
+    const receiver = frameTaskCancelReceiver(tree, operand);
+    if (receiver < tree.nodes.length && tree.nodes[receiver].value == name) count = count + 1;
+  }
+  return count;
+}
+
+// A spawn's callee is a named function (not a local callable, which other
+// tiers own), and a task local is used only by `await t` / `await t.cancel()`:
+// its storage is the frame's invocation slot, not a thread-task handle.
+function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration): boolean {
+  let tasks = Array<String>();
+  let spawnIndex: usize = 0;
+  while (spawnIndex < declaration.body.nodes.length) {
+    const statement = view declaration.body.nodes[spawnIndex];
+    let root = false;
+    for (const candidate of declaration.body.roots) { if (candidate == spawnIndex) root = true; }
+    spawnIndex = spawnIndex + 1;
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          if (tree.nodes[tree.root].kind == ExpressionKind.spawnExpression) {
+            const call = tree.nodes[tree.root].children[0];
+            const callee = tree.nodes[call].children[0];
+            if (nameIsLocalBinding(declaration, tree.nodes[callee].value)) return false;
+            if (statement.kind == StatementKind.variableStatement) {
+              if (!root) return false;
+              for (const existing of tasks) { if (existing == statement.name) return false; }
+              tasks.push(copy statement.name);
+            } else if (statement.kind != StatementKind.expressionStatement) return false;
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  for (const statement of declaration.body.nodes) {
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          for (const node of tree.nodes) {
+            if (node.kind != ExpressionKind.awaitExpression || node.children.length != 1) continue;
+            const operand = node.children[0];
+            let joined = "";
+            if (tree.nodes[operand].kind == ExpressionKind.identifierExpression) joined = copy tree.nodes[operand].value;
+            const receiver = frameTaskCancelReceiver(tree, operand);
+            if (receiver < tree.nodes.length) joined = copy tree.nodes[receiver].value;
+            if (joined.byteLength == 0) continue;
+            let known = false;
+            for (const task of tasks) { if (task == joined) known = true; }
+            if (!known) return false;
+          }
+          for (const task of tasks) {
+            let uses: usize = 0;
+            for (const node of tree.nodes) {
+              if (node.kind == ExpressionKind.identifierExpression && node.value == task) uses = uses + 1;
+            }
+            if (uses != frameTaskJoinUses(tree, task)) return false;
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+    match (in statement.secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          for (const task of tasks) {
+            for (const node of tree.nodes) {
+              if (node.kind == ExpressionKind.identifierExpression && node.value == task) return false;
+            }
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
   return true;
+}
+
+// A `task f(args)` statement anywhere in the body.
+export function functionContainsFrameSpawn(in declaration: FunctionDeclaration): boolean {
+  let index: usize = 0;
+  while (index < declaration.body.nodes.length) {
+    if (statementRootIsSpawn(declaration.body, index)) return true;
+    index = index + 1;
+  }
+  return false;
 }
 
 // A direct `await delay(ms)` statement anywhere in the body. Native `main`

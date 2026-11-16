@@ -63,10 +63,36 @@ int main(void) {
   if (!outer.task->cancelled || executor.timers != NULL) return 8;
   outer.destroy(outer.task);
   if (executor.head != NULL) return 9;
+
+  // Cancelling a parent cancels and joins its spawned children first.
+  Z_AsyncInvocation cancelled = _z_stage1_yield_supervisor_start(&executor, (Z_Job){ .id = 10 });
+  z_stage1_async_enqueue(&executor, cancelled.task);
+  for (int tick = 0; tick < 3; ++tick) {
+    if (!z_stage1_async_drive_one(&executor)) return 11;
+  }
+  if (executor.head != NULL || cancelled.task->completed) return 12;
+  z_stage1_async_request_cancel(cancelled.task);
+  for (int tick = 0; !cancelled.task->completed; ++tick) {
+    if (tick > 8 || !z_stage1_async_drive_one(&executor)) return 13;
+  }
+  if (!cancelled.task->cancelled || executor.timers != NULL) return 14;
+  cancelled.destroy(cancelled.task);
+
+  // Dropping an unfinished parent drains its children before freeing it.
+  Z_AsyncInvocation dropped = _z_stage1_yield_supervisor_start(&executor, (Z_Job){ .id = 20 });
+  z_stage1_async_enqueue(&executor, dropped.task);
+  for (int tick = 0; tick < 3; ++tick) {
+    if (!z_stage1_async_drive_one(&executor)) return 15;
+  }
+  dropped.destroy(dropped.task);
+  if (executor.head != NULL || executor.timers != NULL) return 16;
   if (z_stage1_async_now_ms() - started > 5000) return 10;
   return 0;
 }`;
-  execute(source, "sleeping 1\nreleased job 1\nsleeping 3\nreleased job 3\nreleased job 2\n");
+  execute(source, "sleeping 1\nreleased job 1\nsleeping 3\nreleased job 3\nreleased job 2\n"
+    + "sleeping 11\nsleeping 12\nreleased job 11\nreleased job 12\nreleased job 10\n"
+    // A dropped frame destroys its children in reverse order, as Stage 0 does.
+    + "sleeping 21\nsleeping 22\nreleased job 22\nreleased job 21\nreleased job 20\n");
 }, 240_000);
 
 test("runs async main as a general native frame when it awaits timers directly", () => {
@@ -75,5 +101,18 @@ test("runs async main as a general native frame when it awaits timers directly",
   execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
   const source = emit(fixture);
   assert.match(source, /_z_stage1_yield_(?:_z_function_\d+_)?main_start\(&executor\)/);
+  execute(source, expected);
+}, 240_000);
+
+test("runs task spawns, joins, scopes, and failure cancellation in general native frames", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/native-async-frame-tasks.zs");
+  const expected = [
+    "spawned", "quick 2", "finished 1", "released job 1", "value 1",
+    "quick 4", "released job 4", "finished 5", "finished 3", "released job 3", "released job 5",
+    "scope done", "released job 6", "cancelled", "released job 9", "code 3", "released job 2", "",
+  ].join("\n");
+  execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
+  const source = emit(fixture);
+  assert.match(source, /_release_slot\(task, &frame->_z_spawn_\d+\)/);
   execute(source, expected);
 }, 240_000);

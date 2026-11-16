@@ -97,7 +97,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { functionContainsFrameDelay, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -296,6 +296,10 @@ export enum LoweredExpressionKind {
   functionCall,
   asyncFunctionAwait,
   asyncFunctionTask,
+  // A general async frame's `await t` / `await t.cancel()` of a spawn-slot
+  // task local (not a thread-task handle). The child is the local.
+  frameTaskJoin,
+  frameTaskCancel,
   directFunctionValue,
   closureValue,
   methodCall,
@@ -12529,6 +12533,103 @@ function lowerExpressionContextual(
   return value;
 }
 
+// A call of a named async function, lowered as an await or a task start.
+function lowerDirectAsyncFunctionCall(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  taskInput: usize,
+  callResolutionIndex: usize,
+  kind: LoweredExpressionKind,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const resolution = view evidence.callResolutions[callResolutionIndex];
+  if (
+    tree.nodes[taskInput].children.length
+      != resolution.parameterTypes.length + 1
+  ) throw "native direct async callable await received mismatched arguments";
+  const resultType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    resolution.returnType
+  );
+  const callableIdentity = try moduleCallFunctionTypeIdentity(
+    program,
+    importedTypes,
+    resolution
+  );
+  let target = resolution.targetName.copyBytes(
+    0,
+    resolution.targetName.byteLength
+  );
+  const genericFunctionSuffix = try resolvedGenericFunctionSuffix(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    taskInput
+  );
+  target = `${target}${genericFunctionSuffix}`;
+  let callableLabels = Array<String>();
+  callableLabels.push(callableIdentity.copyBytes(
+    0,
+    callableIdentity.byteLength
+  ));
+  const callable = pushExpression(
+    inout output,
+    LoweredExpressionKind.directFunctionValue,
+    target,
+    Array<usize>(),
+    callableLabels
+  );
+  preserveCallTargetIdentity(
+    evidence, tree, taskInput, callable, inout output
+  );
+  let children = Array<usize>();
+  children.push(callable);
+  let labels = Array<String>();
+  let argument: usize = 0;
+  while (argument < resolution.parameterTypes.length) {
+    const argumentInput = tree.nodes[taskInput].children[
+      argument + 1
+    ];
+    let value = try lowerExpressionExpected(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      argumentInput,
+      resolution.parameterTypes[argument],
+      inout output
+    );
+    if (resolution.parameterModes[argument] == "value") {
+      value = try wrapOwnedStorage(
+        program,
+        importedTypes,
+        tree,
+        argumentInput,
+        resolution.parameterTypes[argument],
+        value,
+        inout output
+      );
+    }
+    children.push(value);
+    labels.push(resolution.parameterModes[argument].copyBytes(
+      0,
+      resolution.parameterModes[argument].byteLength
+    ));
+    argument = argument + 1;
+  }
+  return pushExpression(
+    inout output,
+    kind,
+    callableIdentity,
+    children,
+    labels
+  );
+}
+
 function lowerExpressionNode(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -13756,6 +13857,17 @@ function lowerExpressionNode(
       || tree.nodes[taskInput].children.length == 0
     ) throw "native callable task lowering requires a direct call";
     const callableInput = tree.nodes[taskInput].children[0];
+    // `task f(args)` of a named async function starts the same child an
+    // `await f(args)` would, without joining it.
+    const taskResolution = resolvedCallResolutionIndex(evidence, tree, taskInput);
+    if (taskResolution < evidence.callResolutions.length
+      && evidence.callResolutions[taskResolution].asynchronous
+      && evidence.callResolutions[taskResolution].kind == "function") {
+      return try lowerDirectAsyncFunctionCall(
+        program, importedTypes, evidence, tree, taskInput, taskResolution,
+        LoweredExpressionKind.asyncFunctionTask, inout output
+      );
+    }
     let callableTypeName = "";
     match (resolvedExpressionTypeName(evidence, tree, callableInput)) {
       some(name) => callableTypeName = move name;
@@ -13930,88 +14042,9 @@ function lowerExpressionNode(
           callResolutionIndex
         ];
         if (resolution.asynchronous && resolution.kind == "function") {
-          if (
-            tree.nodes[taskInput].children.length
-              != resolution.parameterTypes.length + 1
-          ) throw "native direct async callable await received mismatched arguments";
-          const resultType = try lowerModuleTypeName(
-            program,
-            importedTypes,
-            resolution.returnType
-          );
-          const callableIdentity = try moduleCallFunctionTypeIdentity(
-            program,
-            importedTypes,
-            resolution
-          );
-          let target = resolution.targetName.copyBytes(
-            0,
-            resolution.targetName.byteLength
-          );
-          const genericFunctionSuffix = try resolvedGenericFunctionSuffix(
-            program,
-            importedTypes,
-            evidence,
-            tree,
-            taskInput
-          );
-          target = `${target}${genericFunctionSuffix}`;
-          let callableLabels = Array<String>();
-          callableLabels.push(callableIdentity.copyBytes(
-            0,
-            callableIdentity.byteLength
-          ));
-          const callable = pushExpression(
-            inout output,
-            LoweredExpressionKind.directFunctionValue,
-            target,
-            Array<usize>(),
-            callableLabels
-          );
-          preserveCallTargetIdentity(
-            evidence, tree, taskInput, callable, inout output
-          );
-          let children = Array<usize>();
-          children.push(callable);
-          let labels = Array<String>();
-          let argument: usize = 0;
-          while (argument < resolution.parameterTypes.length) {
-            const argumentInput = tree.nodes[taskInput].children[
-              argument + 1
-            ];
-            let value = try lowerExpressionExpected(
-              program,
-              importedTypes,
-              evidence,
-              tree,
-              argumentInput,
-              resolution.parameterTypes[argument],
-              inout output
-            );
-            if (resolution.parameterModes[argument] == "value") {
-              value = try wrapOwnedStorage(
-                program,
-                importedTypes,
-                tree,
-                argumentInput,
-                resolution.parameterTypes[argument],
-                value,
-                inout output
-              );
-            }
-            children.push(value);
-            labels.push(resolution.parameterModes[argument].copyBytes(
-              0,
-              resolution.parameterModes[argument].byteLength
-            ));
-            argument = argument + 1;
-          }
-          return pushExpression(
-            inout output,
-            LoweredExpressionKind.asyncFunctionAwait,
-            callableIdentity,
-            children,
-            labels
+          return try lowerDirectAsyncFunctionCall(
+            program, importedTypes, evidence, tree, taskInput, callResolutionIndex,
+            LoweredExpressionKind.asyncFunctionAwait, inout output
           );
         }
         if (resolution.asynchronous && resolution.kind == "method") {
@@ -29272,6 +29305,39 @@ function ensureMainFrameLocalLiveFlags(
   }
 }
 
+// In a general async frame, a task local initialized by `task f()` is the
+// spawn's invocation slot; its joins are frame suspensions, not thread joins.
+function markFrameTaskJoins(
+  inout expressions: Array<LoweredExpression>, in statements: Array<LoweredStatement>
+): void {
+  let tasks = Array<String>();
+  for (const statement of statements) {
+    if (statement.kind != LoweredStatementKind.localStatement) continue;
+    match (in statement.expression) {
+      some(initializer) => {
+        if (expressions[initializer].kind == LoweredExpressionKind.asyncFunctionTask) tasks.push(copy statement.name);
+      }
+      none => {}
+    }
+  }
+  let index: usize = 0;
+  while (index < expressions.length) {
+    const kind = expressions[index].kind;
+    if ((kind == LoweredExpressionKind.threadAwait || kind == LoweredExpressionKind.threadCancel)
+      && expressions[index].children.length == 1) {
+      const child = expressions[index].children[0];
+      if (expressions[child].kind == LoweredExpressionKind.localValue) {
+        for (const task of tasks) {
+          if (task != expressions[child].value) continue;
+          expressions[index].kind = kind == LoweredExpressionKind.threadAwait
+            ? LoweredExpressionKind.frameTaskJoin : LoweredExpressionKind.frameTaskCancel;
+        }
+      }
+    }
+    index = index + 1;
+  }
+}
+
 function lowerFunction(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -29540,7 +29606,7 @@ function lowerFunction(
   }
   // main with a direct timer await runs as a general frame on a root executor.
   if (declaration.name == "main" && receiverName.byteLength == 0 && !yieldFrame
-    && functionContainsFrameDelay(program, declaration)
+    && (functionContainsFrameDelay(program, declaration) || functionContainsFrameSpawn(declaration))
     && functionUsesGeneralFrame(program, declaration)) generalFrame = true;
   if ((yieldFrame || generalFrame) && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
   let parameters = Array<LoweredParameter>();
@@ -30047,6 +30113,7 @@ function lowerFunction(
   const throwsError = match (in declaration.errorType) { some(_) => true; none => false; };
   const returnsView = isPointerViewTypeName(declaration.returnType.name)
     && returnType.kind == LoweredTypeKind.structType;
+  if (asyncSuspension == "yield-frame") markFrameTaskJoins(inout expressions, statements);
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
     testName: declaration.testName.copyBytes(0, declaration.testName.byteLength),

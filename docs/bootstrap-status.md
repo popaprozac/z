@@ -200,10 +200,10 @@ Objective-C locals and owned parameters on completion/cancellation, including
 strong fields inside value structs. Cross-thread native subclass captures and
 async overrides remain rejected. Main-isolated helpers mixing timers with
 arbitrary child awaits, main-isolated `scheduler.yield`, direct timer awaits in a native
-`main` declared `on thread.main`, and direct named-task creation outside the native callable-task tier
-remain separate native async composition work; this is not general async parity.
-A plain `async function main()` with direct timer awaits runs as a general native
-frame on a root executor.
+`main` declared `on thread.main`, and named-task creation outside the general
+native frame remain separate native async composition work; this is not general
+async parity. A plain `async function main()` with direct timer awaits or
+named-function task spawns runs as a general native frame on a root executor.
 
 The related-family close checkpoint (2026-09-13) extends native linear main-task
 timer frames to `match`-initialized owned locals and direct `TaskScope.close()` /
@@ -1397,7 +1397,15 @@ root initialized Z-owned locals/destructuring, and `scheduler.yield()` or
 A helper with a `scheduler.yield()` returns `void`/`i32`. A suspending free
 function that no other native async shape claims takes the same frame without
 one, with any result type the frame can store, including typed errors.
-Cancellation wakes a frame asleep on a timer at once. Cancellation before
+Cancellation wakes a frame asleep on a timer at once. The frame also runs
+`task f(args)` spawns of named functions (root statements, or directly inside an
+unnamed `async scope`): each spawn owns an invocation slot, starts a hot child
+that runs once the parent suspends, and `await t`, `try`/`attempt await t`, and
+`await t.cancel()` join it. A scope's exit and the function's exit join leftover
+children in spawn order; a failure or cancellation of the parent cancels them
+first. As in Stage 0, a frame releases its owners when it is destroyed at its
+join, not when it completes, and a spawned non-suspending function takes the
+frame so its body waits for the executor. Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument

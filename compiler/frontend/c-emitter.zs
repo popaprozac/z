@@ -3741,7 +3741,13 @@ function programTaskTypeNames(
     for (const parameter of declaration.parameters) {
       appendTaskTypeName(inout names, parameter.type);
     }
+    let index: usize = 0;
     for (const statement of declaration.statements) {
+      // A general async frame's task local is an invocation slot.
+      const frameSlot = declaration.asyncSuspension == "yield-frame"
+        && yieldFrameSpawnExpression(declaration, index) < declaration.expressions.length;
+      index = index + 1;
+      if (frameSlot) continue;
       match (in statement.type) {
         some(type) => appendTaskTypeName(inout names, type);
         none => {}
@@ -11185,7 +11191,10 @@ function yieldFrameExpressionContainsAwait(in declaration: LoweredFunction, inde
   const expression = view declaration.expressions[index];
   if (expression.kind == LoweredExpressionKind.closureValue) return false;
   if (expression.kind == LoweredExpressionKind.asyncFunctionAwait
-    || expression.kind == LoweredExpressionKind.threadAwait) return true;
+    || expression.kind == LoweredExpressionKind.threadAwait
+    || expression.kind == LoweredExpressionKind.frameTaskJoin
+    || expression.kind == LoweredExpressionKind.frameTaskCancel
+    || expression.kind == LoweredExpressionKind.asyncFunctionTask) return true;
   for (const child of expression.children) {
     if (yieldFrameExpressionContainsAwait(declaration, child)) return true;
   }
@@ -11214,6 +11223,204 @@ function yieldFrameAwaitType(
     return copy functionType.returnType;
   }
   throw "native yield frame lost its child result type";
+}
+
+// A spawn site: a root local or expression statement starting `task f()`.
+function yieldFrameSpawnExpression(in declaration: LoweredFunction, index: usize): usize {
+  const statement = view declaration.statements[index];
+  if (statement.kind != LoweredStatementKind.localStatement
+    && statement.kind != LoweredStatementKind.expressionStatement) return declaration.expressions.length;
+  return match (in statement.expression) {
+    some(expression) => declaration.expressions[expression].kind == LoweredExpressionKind.asyncFunctionTask
+      ? expression : declaration.expressions.length;
+    none => declaration.expressions.length;
+  };
+}
+
+// The frame slot of a spawn site: a task local's own field, or a hidden slot.
+function yieldFrameSpawnSlot(in declaration: LoweredFunction, index: usize): String {
+  let slot = TextBuffer();
+  const statement = view declaration.statements[index];
+  if (statement.kind == LoweredStatementKind.localStatement) {
+    slot.append("frame->_z_binding_");
+    appendCBindingName(inout slot, statement.name);
+  } else slot.append(`frame->_z_spawn_${index}`);
+  return slot.finish();
+}
+
+function yieldFrameTaskSlotNamed(in declaration: LoweredFunction, in name: String): String throws String {
+  let index: usize = 0;
+  while (index < declaration.statements.length) {
+    if (declaration.statements[index].kind == LoweredStatementKind.localStatement
+      && declaration.statements[index].name == name
+      && yieldFrameSpawnExpression(declaration, index) < declaration.expressions.length) {
+      return yieldFrameSpawnSlot(declaration, index);
+    }
+    index = index + 1;
+  }
+  throw "native async frame lost the spawn slot of a task join";
+}
+
+// `await t` on a spawn-slot task local, as a whole statement's value.
+function yieldFrameJoinExpression(in declaration: LoweredFunction, index: usize): usize {
+  return match (in declaration.statements[index].expression) {
+    some(expression) => declaration.expressions[expression].kind == LoweredExpressionKind.frameTaskJoin
+      ? expression : declaration.expressions.length;
+    none => declaration.expressions.length;
+  };
+}
+
+function yieldFrameCancelExpression(in declaration: LoweredFunction, index: usize): usize {
+  if (declaration.statements[index].kind != LoweredStatementKind.expressionStatement) {
+    return declaration.expressions.length;
+  }
+  return match (in declaration.statements[index].expression) {
+    some(expression) => declaration.expressions[expression].kind == LoweredExpressionKind.frameTaskCancel
+      ? expression : declaration.expressions.length;
+    none => declaration.expressions.length;
+  };
+}
+
+function yieldFrameJoinSlot(in declaration: LoweredFunction, expression: usize): String throws String {
+  const task = declaration.expressions[expression].children[0];
+  return try yieldFrameTaskSlotNamed(declaration, declaration.expressions[task].value);
+}
+
+// Spawn statements directly inside an unnamed `async scope` statement.
+function yieldFrameScopeSpawns(in declaration: LoweredFunction, scopeIndex: usize): Array<usize> {
+  let sites = Array<usize>();
+  const statement = view declaration.statements[scopeIndex];
+  if (statement.kind != LoweredStatementKind.blockStatement
+    || !labelsContain(statement.labels, "async-scope")
+    || statement.children.length != 1) return sites;
+  for (const child of declaration.statements[statement.children[0]].children) {
+    if (yieldFrameSpawnExpression(declaration, child) < declaration.expressions.length) sites.push(child);
+  }
+  return sites;
+}
+
+function yieldFrameScopeJoinState(in declaration: LoweredFunction, site: usize): usize {
+  return declaration.statements.length * 2 + 1 + site;
+}
+
+function appendYieldFrameSpawn(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  statementIndex: usize, expression: usize, depth: usize
+): void throws String {
+  const spawned = view declaration.expressions[expression];
+  const slot = yieldFrameSpawnSlot(declaration, statementIndex);
+  appendIndent(inout output, depth);
+  output.append("{\n");
+  try appendBorrowedTemporaryInitializers(inout output, declaration, expression, depth);
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task != NULL) abort();\n`);
+  appendIndent(inout output, depth);
+  output.append(`${slot} = Z_${spawned.value}_start(`);
+  try appendExpression(inout output, declaration, spawned.children[0]);
+  output.append(", task->executor");
+  let argument: usize = 1;
+  while (argument < spawned.children.length) {
+    output.append(", ");
+    try appendExpression(inout output, declaration, spawned.children[argument]);
+    argument = argument + 1;
+  }
+  output.append(");\n");
+  appendBorrowedTemporaryCleanups(inout output, declaration, expression, depth);
+  // A hot child: it runs on this executor once the parent suspends.
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task == NULL) abort();\n`);
+  appendIndent(inout output, depth);
+  output.append(`if (!${slot}.task->completed) z_stage1_async_enqueue(task->executor, ${slot}.task);\n`);
+  const live = view declaration.statements[statementIndex].liveFlag;
+  if (live.byteLength > 0) {
+    appendIndent(inout output, depth);
+    output.append(`${live} = true;\n`);
+  }
+  appendIndent(inout output, depth);
+  output.append("}\n");
+}
+
+// Joins a spawn slot and opens the block holding its result temporary, as
+// appendYieldFrameAwait does for an awaited child.
+function appendYieldFrameJoin(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
+  statementIndex: usize, expression: usize, in resultType: LoweredType, depth: usize
+): void throws String {
+  const slot = try yieldFrameJoinSlot(declaration, expression);
+  const frameName = yieldFrameName(declaration);
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task == NULL) abort();\n`);
+  appendIndent(inout output, depth);
+  output.append(`frame->state = ${statementIndex + 1};\n`);
+  appendIndent(inout output, depth);
+  output.append(`if (!${slot}.task->completed) {\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`if (${slot}.task->waiter != NULL) abort();\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`${slot}.task->waiter = task;\n`);
+  appendIndent(inout output, depth + 1);
+  output.append("return;\n");
+  appendIndent(inout output, depth);
+  output.append(`}\n_z_resume_${statementIndex}:;\n`);
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task == NULL || !${slot}.task->completed) abort();\n`);
+  // A child cancelled under this parent cancels the parent, as for awaits.
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task->cancelled) { frame->unwinding = true; frame->cancel_children = true; ${frameName}_release_slot(task, &${slot}); goto _z_finish; }\n`);
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.failed != NULL && ${slot}.failed(${slot}.task)) abort();\n`);
+  appendIndent(inout output, depth);
+  output.append("{\n");
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    appendIndent(inout output, depth + 1);
+    output.append(try cType(resultType));
+    output.append(` _z_child_result_${statementIndex} = {};\n`);
+  }
+  appendIndent(inout output, depth + 1);
+  output.append(`if (${slot}.take_result == NULL) abort();\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`${slot}.take_result(${slot}.task, `);
+  if (resultType.kind == LoweredTypeKind.voidType) output.append("NULL");
+  else output.append(`&_z_child_result_${statementIndex}`);
+  output.append(");\n");
+  appendIndent(inout output, depth + 1);
+  output.append(`${frameName}_release_slot(task, &${slot});\n`);
+  const task = declaration.expressions[expression].children[0];
+  appendFrameTaskLiveDisarm(inout output, declaration, declaration.expressions[task].value, depth + 1);
+}
+
+function appendFrameTaskLiveDisarm(
+  inout output: TextBuffer, in declaration: LoweredFunction, in name: String, depth: usize
+): void {
+  for (const statement of declaration.statements) {
+    if (statement.kind != LoweredStatementKind.localStatement || statement.name != name) continue;
+    if (statement.liveFlag.byteLength == 0) return;
+    appendIndent(inout output, depth);
+    output.append(`${statement.liveFlag} = false;\n`);
+    return;
+  }
+}
+
+function appendYieldFrameCancel(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  statementIndex: usize, expression: usize, depth: usize
+): void throws String {
+  const slot = try yieldFrameJoinSlot(declaration, expression);
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task != NULL) {\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`z_stage1_async_request_cancel(${slot}.task);\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`frame->state = ${statementIndex + 1};\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`if (!${slot}.task->completed) { ${slot}.task->waiter = task; return; }\n`);
+  output.append(`_z_resume_${statementIndex}:;\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`${yieldFrameName(declaration)}_release_slot(task, &${slot});\n`);
+  const task = declaration.expressions[expression].children[0];
+  appendFrameTaskLiveDisarm(inout output, declaration, declaration.expressions[task].value, depth + 1);
+  appendIndent(inout output, depth);
+  output.append("}\n");
 }
 
 function appendYieldFrameAwait(
@@ -11410,16 +11617,31 @@ function appendYieldFrameStatement(
     try appendYieldFrameMatch(inout output, program, declaration, index, depth);
     return;
   }
+  const spawned = yieldFrameSpawnExpression(declaration, index);
+  if (spawned < declaration.expressions.length) {
+    try appendYieldFrameSpawn(inout output, declaration, index, spawned, depth);
+    return;
+  }
+  const cancelled = yieldFrameCancelExpression(declaration, index);
+  if (cancelled < declaration.expressions.length) {
+    try appendYieldFrameCancel(inout output, declaration, index, cancelled, depth);
+    return;
+  }
   const awaited = yieldFrameAwaitExpression(declaration, index);
-  if (awaited < declaration.expressions.length) {
-    const resultType = try yieldFrameAwaitType(program, declaration, awaited);
+  const joined = yieldFrameJoinExpression(declaration, index);
+  if (awaited < declaration.expressions.length || joined < declaration.expressions.length) {
+    const resultType = awaited < declaration.expressions.length
+      ? try yieldFrameAwaitType(program, declaration, awaited)
+      : try taskResultType(program, declaration.expressions[joined].value);
     if (statement.kind != LoweredStatementKind.localStatement
       && statement.kind != LoweredStatementKind.expressionStatement
       && statement.kind != LoweredStatementKind.returnStatement
       && statement.kind != LoweredStatementKind.tryStatement) {
       throw "native yield-frame child awaits require a local, return, or expression statement";
     }
-    try appendYieldFrameAwait(inout output, program, declaration, index, awaited, depth);
+    if (awaited < declaration.expressions.length) {
+      try appendYieldFrameAwait(inout output, program, declaration, index, awaited, depth);
+    } else try appendYieldFrameJoin(inout output, program, declaration, index, joined, resultType, depth);
     const temporary = `_z_child_result_${index}`;
     if (statement.kind == LoweredStatementKind.tryStatement) {
       try appendYieldFrameTry(inout output, program, declaration, index, temporary, depth + 1);
@@ -11534,6 +11756,22 @@ function appendYieldFrameStatement(
     for (const child of statement.children) {
       try appendYieldFrameStatement(inout output, program, declaration, child, depth);
     }
+    // Leaving an `async scope` joins the children started directly in it.
+    const scopeSpawns = yieldFrameScopeSpawns(declaration, index);
+    for (const site of scopeSpawns) {
+      const slot = yieldFrameSpawnSlot(declaration, site);
+      appendIndent(inout output, depth);
+      output.append(`if (${slot}.task != NULL) {\n`);
+      appendIndent(inout output, depth + 1);
+      output.append(`frame->state = ${yieldFrameScopeJoinState(declaration, site)};\n`);
+      appendIndent(inout output, depth + 1);
+      output.append(`if (!${slot}.task->completed) { ${slot}.task->waiter = task; return; }\n`);
+      output.append(`_z_scope_join_${site}:;\n`);
+      appendIndent(inout output, depth + 1);
+      output.append(`${yieldFrameName(declaration)}_release_slot(task, &${slot});\n`);
+      appendIndent(inout output, depth);
+      output.append("}\n");
+    }
     appendYieldFrameCleanups(inout output, program, declaration, statement.cleanups, depth);
     return;
   }
@@ -11574,12 +11812,16 @@ function appendYieldFrameHelpers(
     const resultNeedsDeinit = loweredTypeNeedsDeinit(program, source.returnType);
     let hasChild = false;
     let hasTimer = false;
+    // Spawn sites in statement (source) order: one invocation slot each.
+    let spawnSites = Array<usize>();
     let childStatement: usize = 0;
     while (childStatement < source.statements.length) {
       if (yieldFrameAwaitExpression(source, childStatement) < source.expressions.length) hasChild = true;
       if (source.statements[childStatement].kind == LoweredStatementKind.delayStatement) hasTimer = true;
+      if (yieldFrameSpawnExpression(source, childStatement) < source.expressions.length) spawnSites.push(childStatement);
       childStatement = childStatement + 1;
     }
+    const hasSpawns = spawnSites.length > 0;
     let declaration = copy source;
     for (const parameter of source.parameters) {
       declaration.asyncFrameBindings.push(copy parameter.name);
@@ -11608,14 +11850,25 @@ function appendYieldFrameHelpers(
       const guard = yieldFrameParameterGuard(source, parameter.name);
       if (guard.byteLength > 0) output.append(`  bool ${guard};\n`);
     }
+    if (hasSpawns) output.append("  bool cancel_children;\n  bool unwinding;\n");
+    for (const site of spawnSites) {
+      if (source.statements[site].kind == LoweredStatementKind.expressionStatement) {
+        output.append(`  Z_AsyncInvocation _z_spawn_${site};\n`);
+      }
+    }
+    let localStatement: usize = 0;
     for (const statement of source.statements) {
+      const spawnLocal = yieldFrameSpawnExpression(source, localStatement) < source.expressions.length;
+      localStatement = localStatement + 1;
       if (statement.kind != LoweredStatementKind.localStatement) continue;
       const type = match (in statement.type) {
         some(value) => copy value;
         none => throw "native yield frame lost local type evidence";
       };
       output.append("  ");
-      output.append(try cType(type));
+      // A spawned task local is its invocation slot.
+      if (spawnLocal) output.append("Z_AsyncInvocation");
+      else output.append(try cType(type));
       output.append(" _z_binding_");
       appendCBindingName(inout output, statement.name);
       output.append(";\n");
@@ -11654,8 +11907,11 @@ function appendYieldFrameHelpers(
         name: copy parameter.name, type: copy parameter.type, guard,
       }));
     }
+    let cleanupStatement: usize = 0;
     for (const statement of source.statements) {
-      if (statement.kind != LoweredStatementKind.localStatement) continue;
+      const spawnLocal = yieldFrameSpawnExpression(source, cleanupStatement) < source.expressions.length;
+      cleanupStatement = cleanupStatement + 1;
+      if (statement.kind != LoweredStatementKind.localStatement || spawnLocal) continue;
       const type = match (in statement.type) {
         some(value) => copy value;
         none => throw "native yield frame lost cleanup type evidence";
@@ -11665,15 +11921,34 @@ function appendYieldFrameHelpers(
       cleanup.push(LoweredCleanup({ name: copy statement.name, type, guard: copy statement.liveFlag }));
     }
     appendYieldFrameCleanups(inout output, program, declaration, cleanup, 1);
-    if (hasChild || hasTimer) {
+    if (hasSpawns) {
+      // Joins a completed slot, or (on destroy) cancels and drains a live one.
+      output.append(`}\nstatic void ${name}_release_slot(Z_AsyncTask *task, Z_AsyncInvocation *slot) {\n  if (slot->task == NULL) return;\n  if (!slot->task->completed) {\n    z_stage1_async_request_cancel(slot->task);\n    slot->task->waiter = NULL;\n    while (!slot->task->completed) { if (!z_stage1_async_drive_one(task->executor)) abort(); }\n  }\n  slot->task->waiter = NULL;\n  z_stage1_async_remove_queued(slot->task);\n  if (slot->destroy != NULL) slot->destroy(slot->task);\n  if (slot->release_context != NULL) slot->release_context(slot->callable_context);\n  *slot = (Z_AsyncInvocation){};\n`);
+    }
+    if (hasChild || hasTimer || hasSpawns) {
     if (hasChild) output.append(`}\nstatic void ${name}_release_child(${name} *frame) {\n  if (frame->child.task == NULL) return;\n  if (!frame->child.task->completed) abort();\n  frame->child.task->waiter = NULL;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){};\n`);
     output.append(`}\nstatic void ${name}_cancel(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n  (void)frame;\n`);
     if (hasChild) output.append("  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n");
     // A sleeping frame observes cancellation now, not when its timer fires.
     if (hasTimer) output.append("  if (task->timer_scheduled) {\n    z_stage1_async_remove_timer(task);\n    if (!task->queued && !task->completed) z_stage1_async_enqueue(task->executor, task);\n  }\n");
+    // Cancelling the parent cancels its spawned children; each wakes the
+    // parent through its waiter, and the parent then joins them all.
+    for (const site of spawnSites) {
+      const slot = yieldFrameSpawnSlot(source, site);
+      output.append(`  if (${slot}.task != NULL) z_stage1_async_request_cancel(${slot}.task);\n`);
+    }
     }
     output.append(`}\nstatic void ${name}_poll(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n`);
-    if (hasChild) {
+    if (hasSpawns) {
+      // Cancellation unwinds through the shared finish path, which cancels and
+      // joins every live spawn slot before the frame completes.
+      output.append("  if (!frame->unwinding && (task->cancellation_requested");
+      if (hasChild) output.append(" || (frame->child.task != NULL && frame->child.task->cancelled)");
+      output.append(")) {\n");
+      if (hasChild) output.append(`    if (frame->child.task != NULL && !frame->child.task->completed) {\n      z_stage1_async_request_cancel(frame->child.task);\n      return;\n    }\n    ${name}_release_child(frame);\n`);
+      if (hasTimer) output.append("    z_stage1_async_remove_timer(task);\n");
+      output.append("    frame->unwinding = true;\n    frame->cancel_children = true;\n    goto _z_finish;\n  }\n  switch (frame->state) {\n    case 0: break;\n");
+    } else if (hasChild) {
     output.append(`  if (task->cancellation_requested && frame->child.task != NULL && !frame->child.task->completed) {\n    z_stage1_async_request_cancel(frame->child.task);\n    return;\n  }\n`);
     output.append(`  if (task->cancellation_requested || (frame->child.task != NULL && frame->child.task->cancelled)) {\n    ${hasTimer ? "z_stage1_async_remove_timer(task);\n    " : ""}${name}_release_child(frame);\n    ${name}_cleanup(frame);\n    task->cancelled = true; task->completed = true; return;\n  }\n  switch (frame->state) {\n    case 0: break;\n`);
     } else output.append(`  if (task->cancellation_requested) { ${hasTimer ? "z_stage1_async_remove_timer(task); " : ""}${name}_cleanup(frame); task->cancelled = true; task->completed = true; return; }\n  switch (frame->state) {\n    case 0: break;\n`);
@@ -11681,10 +11956,25 @@ function appendYieldFrameHelpers(
     while (index < declaration.statements.length) {
       if (declaration.statements[index].kind == LoweredStatementKind.schedulerYieldStatement
         || declaration.statements[index].kind == LoweredStatementKind.delayStatement
-        || yieldFrameAwaitExpression(declaration, index) < declaration.expressions.length) {
+        || yieldFrameAwaitExpression(declaration, index) < declaration.expressions.length
+        || yieldFrameJoinExpression(declaration, index) < declaration.expressions.length
+        || yieldFrameCancelExpression(declaration, index) < declaration.expressions.length) {
         output.append(`    case ${index + 1}: goto _z_resume_${index};\n`);
       }
       index = index + 1;
+    }
+    let finishState: usize = 0;
+    while (finishState < spawnSites.length) {
+      output.append(`    case ${declaration.statements.length + 1 + finishState}: goto _z_finish_${finishState};\n`);
+      finishState = finishState + 1;
+    }
+    let scopeStatement: usize = 0;
+    while (scopeStatement < declaration.statements.length) {
+      const scopeSpawns = yieldFrameScopeSpawns(declaration, scopeStatement);
+      for (const site of scopeSpawns) {
+        output.append(`    case ${yieldFrameScopeJoinState(declaration, site)}: goto _z_scope_join_${site};\n`);
+      }
+      scopeStatement = scopeStatement + 1;
     }
     output.append("    default: abort();\n  }\n");
     for (const root of declaration.roots) {
@@ -11700,9 +11990,31 @@ function appendYieldFrameHelpers(
     }
     output.append("_z_complete: __attribute__((unused));\n");
     if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
-    output.append(`  ${name}_cleanup(frame);\n  task->completed = true;\n}\n`);
+    if (hasSpawns) {
+      // A failure (throw or `try`) cancels the children it leaves behind.
+      if (source.throwsError) {
+        output.append(`  if (frame->result.tag == Z_${source.returnType.name}Tag_failure) frame->cancel_children = true;\n`);
+      }
+      output.append("_z_finish: __attribute__((unused));\n");
+      let site: usize = 0;
+      while (site < spawnSites.length) {
+        const slot = yieldFrameSpawnSlot(source, spawnSites[site]);
+        output.append(`  if (${slot}.task != NULL) {\n    if (frame->cancel_children) z_stage1_async_request_cancel(${slot}.task);\n    frame->state = ${declaration.statements.length + 1 + site};\n    if (!${slot}.task->completed) { ${slot}.task->waiter = task; return; }\n_z_finish_${site}:;\n    ${name}_release_slot(task, &${slot});\n  }\n`);
+        site = site + 1;
+      }
+      output.append("  if (frame->unwinding) task->cancelled = true;\n");
+    }
+    // Frame owners are released when the frame is destroyed (at its join),
+    // not at completion, as in Stage 0: a finished spawned child keeps its
+    // locals until the parent joins it.
+    output.append("  task->completed = true;\n}\n");
     output.append(`static void ${name}_destroy(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n  z_stage1_async_remove_queued(task);\n`);
     if (hasTimer) output.append("  z_stage1_async_remove_timer(task);\n");
+    let releasedSite = spawnSites.length;
+    while (releasedSite > 0) {
+      releasedSite = releasedSite - 1;
+      output.append(`  ${name}_release_slot(task, &${yieldFrameSpawnSlot(source, spawnSites[releasedSite])});\n`);
+    }
     if (hasChild) output.append(`  if (frame->child.task != NULL && !frame->child.task->completed) {\n    z_stage1_async_request_cancel(task);\n    frame->child.task->waiter = NULL;\n    while (!frame->child.task->completed) { if (!z_stage1_async_drive_one(task->executor)) abort(); }\n  }\n  ${name}_release_child(frame);\n`);
     output.append(`  ${name}_cleanup(frame);\n`);
     if (resultNeedsDeinit) {
@@ -11744,7 +12056,7 @@ function appendYieldFrameHelpers(
     output.append(`}\nstatic __attribute__((unused)) Z_AsyncInvocation ${name}_start(Z_AsyncExecutor *executor`);
     try appendYieldFrameParameters(inout output, source.parameters);
     output.append(`) {\n  if (executor == NULL) abort();\n  ${name} *frame = (__typeof__(frame))calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.executor = executor;\n  frame->task.poll = ${name}_poll;\n`);
-    if (hasChild || hasTimer) output.append(`  frame->task.request_cancel = ${name}_cancel;\n`);
+    if (hasChild || hasTimer || hasSpawns) output.append(`  frame->task.request_cancel = ${name}_cancel;\n`);
     let argument: usize = 0;
     for (const parameter of source.parameters) {
       output.append("  frame->_z_binding_");

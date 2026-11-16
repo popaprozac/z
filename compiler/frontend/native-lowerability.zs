@@ -18,7 +18,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { functionContainsFrameDelay, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -2806,7 +2806,8 @@ function validateNativeBody(
   allowNonTailPlacedAsyncCall: boolean,
   in typeParameters: Array<String>,
   scopeStart: usize,
-  in parameters: Array<Parameter>
+  in parameters: Array<Parameter>,
+  frameScopes: boolean
 ): void throws ModuleResolveError {
   try validateNativeThreadBlockCaptures(path, moduleIndex, graph, body, scopeStart, parameters);
   let statementIndex: usize = 0;
@@ -2856,7 +2857,8 @@ function validateNativeBody(
         5
       );
     }
-    if (statement.kind == StatementKind.asyncScopeStatement) {
+    // A general async frame joins its unnamed scopes' spawn slots itself.
+    if (statement.kind == StatementKind.asyncScopeStatement && !frameScopes) {
       if (!nativeCallableTaskScopeCandidate(body, statementIndex)) {
         throw loweringBoundary(
           path,
@@ -3031,17 +3033,20 @@ function nativeYieldFrameStorageSupported(
   }
   match (genericTypeShape(name)) {
     some(generic) => {
+      // A frame's Task<T> local is its spawn's invocation slot (the shape rule
+      // admits only spawn-initialized task locals).
       if (generic.base != "Array" && generic.base != "Option"
         && generic.base != "Result" && generic.base != "Mutex"
-        && generic.base != "Map") {
+        && generic.base != "Map" && generic.base != "Task") {
         if (parsedModule >= modules.length) return false;
         const channelKind = channelTypeKind(modules[parsedModule].program, generic.base);
         if (channelKind.byteLength == 0) return false;
       }
       let argumentIndex: usize = 0;
       for (const argument of generic.arguments) {
-        // Result<void, E> has a payload-free success variant, not a void slot.
-        if (generic.base == "Result" && argumentIndex == 0 && argument == "void") {
+        // Result<void, E> has a payload-free success variant, not a void slot;
+        // a Task<void> slot holds no result.
+        if ((generic.base == "Result" || generic.base == "Task") && argumentIndex == 0 && argument == "void") {
           argumentIndex = argumentIndex + 1;
           continue;
         }
@@ -3238,10 +3243,12 @@ function validateNativeFunction(
   // main with a direct timer await runs as a general frame on a root executor.
   const generalMain = !yieldFrame && owner.byteLength == 0 && declaration.name == "main"
     && parsedModule < modules.length
-    && functionContainsFrameDelay(modules[parsedModule].program, declaration)
+    && (functionContainsFrameDelay(modules[parsedModule].program, declaration)
+      || functionContainsFrameSpawn(declaration))
     && functionUsesGeneralFrame(modules[parsedModule].program, declaration);
   if (generalMain) try validateGeneralFrameStorage(path, moduleIndex, modules, graph, declaration);
-  if (owner.byteLength == 0 && declaration.name == "main" && parsedModule < modules.length && !generalMain) {
+  if (owner.byteLength == 0 && declaration.name == "main" && parsedModule < modules.length
+    && !generalMain && !yieldFrame) {
     // main has a synchronous host entry in the current native driver. Do not
     // misclassify an unsupported timer await as a join of an unnamed Task.
     for (const root of declaration.body.roots) {
@@ -3432,7 +3439,8 @@ function validateNativeFunction(
     allowNonTailPlacedAsyncCall,
     typeParameters,
     declaration.offset,
-    declaration.parameters
+    declaration.parameters,
+    yieldFrame || generalFrame || generalMain
   );
 }
 
@@ -3495,7 +3503,8 @@ function validateNativeAggregate(
         false,
         typeParameters,
         initializer.offset,
-        initializer.parameters
+        initializer.parameters,
+        false
       );
     }
     none => {}
@@ -3512,7 +3521,8 @@ function validateNativeAggregate(
       false,
       typeParameters,
       0,
-      Array<Parameter>()
+      Array<Parameter>(),
+      false
     );
   }
   for (const method of aggregate.methods) {
@@ -3537,7 +3547,8 @@ function validateNativeAggregate(
       false,
       typeParameters,
       deinitializer.offset,
-      Array<Parameter>()
+      Array<Parameter>(),
+      false
     );
     none => {}
   }
