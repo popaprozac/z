@@ -1441,7 +1441,16 @@ active advancement must finish first). `await stream.next()` and `for await`
 (including `try for await`, which propagates the stream's error) run in
 general frames; a `for await` over a fresh stream owns it until the loop
 exits or the frame is destroyed, and sequential loops may reuse a binding
-name. Destructured `for await` bindings remain staged. Cancellation before
+name. Destructured `for await` bindings remain staged. `main` runs on the
+main executor, so its `on thread.main` placements run where they are, as in
+Stage 0: a placed synchronous call is a call, a placed async call or method is
+an ordinary await, `task on thread.main f()` is an ordinary spawn, and a
+synchronous `using (in|inout|move ...)` block becomes a block helper called
+in place (`in` captures read-only, `inout` and `move` captures updated in
+place; a moved capture stays owned by `main` until its scope ends). Placement
+in other functions keeps the worker-to-main tiers; placed blocks that throw or
+select an Objective-C value, and placement inside synchronous `thread.spawn`
+closures, remain staged. Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument

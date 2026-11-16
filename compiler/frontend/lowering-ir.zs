@@ -98,7 +98,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { mainPlacementThreadNames, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -423,6 +423,11 @@ export struct LoweredExpression {
   closureBodyLowered: boolean = false;
   closureReturnType: String = "";
   closureAsynchronous: boolean = false;
+  // An objc.pool-style block helper without an autorelease pool: a placed
+  // block that runs where it is (`main`'s `on thread.main` blocks).
+  placedInline: boolean = false;
+  // Its `inout` and `move` captures, which the helper may update in place.
+  placedMutableCaptures: Array<String> = Array<String>();
   closureParameterCount: usize = 0;
   closureParameterModes: Array<String> = Array<String>();
   closureParameterTypes: Array<LoweredType> = Array<LoweredType>();
@@ -9929,6 +9934,7 @@ function collectObjCPoolClosureCaptures(
   in evidence: ModuleSemanticEvidence,
   in ownerName: String,
   in expressions: Array<LoweredExpression>,
+  in statements: Array<LoweredStatement>,
   start: usize,
   useOffset: usize
 ): Array<LoweredClosureCapture> throws String {
@@ -9981,15 +9987,35 @@ function collectObjCPoolClosureCaptures(
       some(name) => typeName = move name;
       none => {}
     }
+    // A local whose binding evidence has no type (one bound from a thread
+    // task's await) still has its lowered type.
+    let loweredLocal = Option<LoweredType>.none;
     if (typeName.byteLength == 0) {
+      for (const statement of statements) {
+        if (statement.kind != LoweredStatementKind.localStatement || statement.name != captureName) continue;
+        match (in statement.type) {
+          some(localType) => loweredLocal = Option.some(copy localType);
+          none => {}
+        }
+      }
+    }
+    let foundType = typeName.byteLength > 0;
+    match (in loweredLocal) {
+      some(_) => foundType = true;
+      none => {}
+    }
+    if (!foundType) {
       index = index + 1;
       continue;
     }
-    const type = try lowerModuleTypeName(
-      program,
-      importedTypes,
-      typeName
-    );
+    const type = match (loweredLocal) {
+      some(localType) => localType;
+      none => try lowerModuleTypeName(
+        program,
+        importedTypes,
+        typeName
+      );
+    };
     captures.push(LoweredClosureCapture({
       name: move captureName,
       type,
@@ -12973,6 +12999,12 @@ function lowerExpressionNode(
       move children,
       Array<String>()
     );
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.executorPlacementExpression
+    && tree.nodes[index].value == "inline"
+  ) {
+    return try lowerInlinePlacedBlock(program, importedTypes, tree, index, inout output);
   }
   if (
     tree.nodes[index].kind
@@ -23753,6 +23785,7 @@ function completeNativeClosureBlocks(
         evidence,
         ownerName,
         expressions,
+        statements,
         bodyExpressionStart,
         useOffset
       );
@@ -23766,8 +23799,11 @@ function completeNativeClosureBlocks(
           0,
           capture.name.byteLength
         ));
+        // An Objective-C class is a bare native name: mark its identity.
         expressions[expressionIndex].labels.push(
-          loweredTypeIdentity(capture.type)
+          capture.type.kind == LoweredTypeKind.foreignObjCType
+            ? `__z_objc_class:${capture.type.name}`
+            : loweredTypeIdentity(capture.type)
         );
         const captureValue = pushExpression(
           inout expressions,
@@ -35017,6 +35053,66 @@ function lowerInstanceDeinitializer(
   return try lowerDeinitializer(program, importedTypes, moduleEvidence, sourcePath, ownerName, body);
 }
 
+// A placed block that runs where it is becomes a block helper, like an
+// objc.pool closure's, called in place with its captures.
+function lowerInlinePlacedBlock(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in tree: ExpressionTree,
+  index: usize,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const node = view tree.nodes[index];
+  if (node.labels[1].byteLength > 0) throw "native placed blocks cannot throw in this tier";
+  const returnName = node.labels[0].byteLength > 0 ? copy node.labels[0] : "void";
+  const returnType = try lowerModuleTypeName(program, importedTypes, returnName);
+  if (returnType.kind == LoweredTypeKind.foreignObjCType) {
+    throw "native placed blocks cannot select an Objective-C value in this tier";
+  }
+  let labels = Array<String>();
+  labels.push(loweredTypeIdentity(returnType));
+  labels.push(loweredTypeIdentity(returnType));
+  labels.push("");
+  labels.push("block");
+  const block = pushExpression(inout output, LoweredExpressionKind.objectiveCAutoreleasePool,
+    `${node.offset}`, Array<usize>(), labels);
+  output[block].placedInline = true;
+  for (const child of node.children) {
+    if (tree.nodes[child].kind == ExpressionKind.executorCaptureExpression
+      && tree.nodes[child].value != "in" && tree.nodes[child].labels.length == 1) {
+      output[block].placedMutableCaptures.push(copy tree.nodes[child].labels[0]);
+    }
+  }
+  for (const statement of node.statements) {
+    output[block].statements.push(statement);
+  }
+  return block;
+}
+
+// `main` runs on the main executor: its `on thread.main` placements are the
+// placed operations themselves (normalizeMainPlacements).
+function lowerFreeFunction(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in declaration: FunctionDeclaration,
+  in sourcePath: String
+): LoweredFunction throws String {
+  if (declaration.name != "main") {
+    return try lowerFunction(program, importedTypes, evidence, declaration, declaration.name, sourcePath,
+      "", LoweredTypeKind.voidType, ReceiverMode.none);
+  }
+  let asyncCallOffsets = Array<usize>();
+  for (const resolution of evidence.callResolutions) {
+    if (resolution.asynchronous) asyncCallOffsets.push(resolution.offset);
+  }
+  let normalized = copy declaration;
+  const threadNames = mainPlacementThreadNames(program);
+  normalizeMainPlacements(inout normalized.body, threadNames, asyncCallOffsets);
+  return try lowerFunction(program, importedTypes, evidence, normalized, declaration.name, sourcePath,
+    "", LoweredTypeKind.voidType, ReceiverMode.none);
+}
+
 function lowerInstanceMethod(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -36093,17 +36189,7 @@ function appendLoweredProgram(
     ) {
       throw `native module emission requires collision-safe function identity for ${declaration.name}`;
     }
-    const loweredFunctionOutcome = attempt lowerFunction(
-      program,
-      importedTypes,
-      evidence,
-      declaration,
-      declaration.name,
-      sourcePath,
-      "",
-      LoweredTypeKind.voidType,
-      ReceiverMode.none
-    );
+    const loweredFunctionOutcome = attempt lowerFreeFunction(program, importedTypes, evidence, declaration, sourcePath);
     let loweredFunction = match (loweredFunctionOutcome) {
       success(lowered) => lowered;
       failure(message) => {

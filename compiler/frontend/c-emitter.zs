@@ -23787,6 +23787,55 @@ function appendMutexWithLockHelpers(
   }
 }
 
+function appendObjCAutoreleasePoolSignature(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction, expressionIndex: usize
+): void throws String {
+  const expression = view declaration.expressions[expressionIndex];
+  const resultType = try loweredTypeForIdentity(program, expression.labels[0]);
+  output.append(`static __attribute__((unused)) ${try cType(resultType)} `);
+  appendObjCAutoreleasePoolHelperName(inout output, declaration, expressionIndex);
+  output.append("(");
+  let captureLabel: usize = 4;
+  while (captureLabel + 1 < expression.labels.length) {
+    if (captureLabel > 4) output.append(", ");
+    const captureType = try loweredTypeForIdentity(program, expression.labels[captureLabel + 1]);
+    // A placed block updates its `inout`/`move` captures in place; others are
+    // read-only. ARC needs an Objective-C reference's ownership spelled out.
+    let mutable = false;
+    for (const name of expression.placedMutableCaptures) {
+      if (name == expression.labels[captureLabel]) mutable = true;
+    }
+    if (captureType.kind == LoweredTypeKind.foreignObjCType) {
+      output.append(try cType(captureType));
+      output.append(" const __strong *");
+    } else {
+      if (!mutable) output.append("const ");
+      output.append(try cType(captureType));
+      output.append(" *");
+    }
+    appendCBindingName(inout output, expression.labels[captureLabel]);
+    captureLabel = captureLabel + 2;
+  }
+  if (captureLabel == 4) output.append("void");
+  output.append(")");
+}
+
+// Frames call placed-block helpers before their bodies are emitted.
+function appendPlacedBlockPrototypes(inout output: TextBuffer, in program: LoweredProgram): void throws String {
+  for (const declaration of program.functions) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < declaration.expressions.length) {
+      const expression = view declaration.expressions[expressionIndex];
+      if (expression.kind == LoweredExpressionKind.objectiveCAutoreleasePool && expression.placedInline
+        && expression.labels.length >= 4 && expression.labels[3] == "lowered-block") {
+        try appendObjCAutoreleasePoolSignature(inout output, program, declaration, expressionIndex);
+        output.append(";\n");
+      }
+      expressionIndex = expressionIndex + 1;
+    }
+  }
+}
+
 function appendObjCAutoreleasePoolHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -23811,32 +23860,8 @@ function appendObjCAutoreleasePoolHelpers(
         program,
         expression.labels[0]
       );
-      const nativeResultType = try cType(resultType);
-      output.append("static __attribute__((unused)) ");
-      output.append(nativeResultType);
-      output.append(" ");
-      appendObjCAutoreleasePoolHelperName(
-        inout output,
-        declaration,
-        expressionIndex
-      );
-      output.append("(");
-      let captureLabel: usize = 4;
-      while (captureLabel + 1 < expression.labels.length) {
-        if (captureLabel > 4) output.append(", ");
-        const captureType = try loweredTypeForIdentity(
-          program,
-          expression.labels[captureLabel + 1]
-        );
-        const nativeCaptureType = try cType(captureType);
-        output.append("const ");
-        output.append(nativeCaptureType);
-        output.append(" *");
-        appendCBindingName(inout output, expression.labels[captureLabel]);
-        captureLabel = captureLabel + 2;
-      }
-      if (captureLabel == 4) output.append("void");
-      output.append(") {\n  @autoreleasepool {\n");
+      try appendObjCAutoreleasePoolSignature(inout output, program, declaration, expressionIndex);
+      output.append(expression.placedInline ? " {\n  {\n" : " {\n  @autoreleasepool {\n");
       for (const root of expression.statements) {
         try appendStatement(inout output, declaration, root, 2);
       }
@@ -29862,6 +29887,7 @@ function emitLoweredC(
   try appendTaskScopeScheduleHelpers(inout output, program);
   try appendAsyncMethodAwaitStartPrototypes(inout output, program);
   appendGeneratorHandleHelpers(inout output, program);
+  try appendPlacedBlockPrototypes(inout output, program);
   try appendYieldFrameHelpers(inout output, program);
   try appendGeneratorHelpers(inout output, program);
   try appendCallableHelpers(inout output, program);

@@ -19,7 +19,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { mainPlacementThreadNames, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -3802,6 +3802,19 @@ export function validateNativeLowerability(
       }
     }
     for (const declaration of module.program.functions) {
+      // `main` runs on the main executor: its `on thread.main` placements are
+      // the placed operations themselves, as lowering normalizes them.
+      if (declaration.name == "main" && graphModuleIndex < graph.modules.length) {
+        let asyncCallOffsets = Array<usize>();
+        for (const resolution of graph.modules[graphModuleIndex].semanticEvidence.callResolutions) {
+          if (resolution.asynchronous) asyncCallOffsets.push(resolution.offset);
+        }
+        let normalized = copy declaration;
+        const threadNames = mainPlacementThreadNames(module.program);
+        normalizeMainPlacements(inout normalized.body, threadNames, asyncCallOffsets);
+        try validateNativeFunction(module.path, graphModuleIndex, modules, graph, normalized, "", Array<String>());
+        continue;
+      }
       try validateNativeFunction(
         module.path,
         graphModuleIndex,
