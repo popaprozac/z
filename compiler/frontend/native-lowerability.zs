@@ -3032,6 +3032,11 @@ function nativeYieldFrameStorageSupported(
   if (nullable.byteLength > 0) {
     return nativeYieldFrameStorageSupported(modules, graph, moduleIndex, nullable, visiting);
   }
+  // A fixed array is inline storage of its elements.
+  match (fixedArrayShape(name)) {
+    some(shape) => return nativeYieldFrameStorageSupported(modules, graph, moduleIndex, shape.elementType, visiting);
+    none => {}
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       // A frame's Task<T> local is its spawn's invocation slot (the shape rule

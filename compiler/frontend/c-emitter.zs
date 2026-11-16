@@ -11936,8 +11936,17 @@ function appendYieldFrameStatement(
     return;
   }
   if (statement.kind == LoweredStatementKind.blockStatement) {
-    for (const child of statement.children) {
-      try appendYieldFrameStatement(inout output, program, declaration, child, depth);
+    // An `async scope` runs its own statements, joins the children started in
+    // it, and only then releases its locals (they may be lent to children).
+    const asyncScope = labelsContain(statement.labels, "async-scope") && statement.children.length == 1;
+    if (asyncScope) {
+      for (const child of declaration.statements[statement.children[0]].children) {
+        try appendYieldFrameStatement(inout output, program, declaration, child, depth);
+      }
+    } else {
+      for (const child of statement.children) {
+        try appendYieldFrameStatement(inout output, program, declaration, child, depth);
+      }
     }
     // Leaving an `async scope` joins the children started directly in it.
     const scopeSpawns = yieldFrameScopeSpawns(declaration, index);
@@ -11954,6 +11963,26 @@ function appendYieldFrameStatement(
       output.append(`${yieldFrameName(declaration)}_release_slot(task, &${slot});\n`);
       appendIndent(inout output, depth);
       output.append("}\n");
+    }
+    if (asyncScope) {
+      // The scope's locals live in the frame; release them at the scope's
+      // exit, newest first (their live flags keep frame cleanup from repeating).
+      let scopeLocals = Array<LoweredCleanup>();
+      for (const child of declaration.statements[statement.children[0]].children) {
+        const local = view declaration.statements[child];
+        if (local.kind != LoweredStatementKind.localStatement
+          || yieldFrameSpawnExpression(declaration, child) < declaration.expressions.length) continue;
+        match (in local.type) {
+          some(type) => {
+            if (loweredTypeNeedsDeinit(program, type) || typeContainsObjectiveCStrongSlot(program, type)) {
+              scopeLocals.push(LoweredCleanup({ name: copy local.name, type: copy type, guard: copy local.liveFlag }));
+            }
+          }
+          none => {}
+        }
+      }
+      appendYieldFrameCleanups(inout output, program, declaration, scopeLocals, depth);
+      appendYieldFrameCleanups(inout output, program, declaration, declaration.statements[statement.children[0]].cleanups, depth);
     }
     appendYieldFrameCleanups(inout output, program, declaration, statement.cleanups, depth);
     return;

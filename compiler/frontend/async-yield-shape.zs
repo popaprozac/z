@@ -275,10 +275,13 @@ function frameStatementIsSupported(
       || arena.nodes[index].children.length != 1) return false;
     const block = arena.nodes[index].children[0];
     if (arena.nodes[block].kind != StatementKind.blockStatement) return false;
+    // A scope's own statements are frame-level: its locals (including task
+    // locals) live in the frame and are released when the scope exits, after
+    // its children are joined.
     for (const child of arena.nodes[block].children) {
-      if (statementRootIsSpawn(arena, child)) {
-        if (arena.nodes[child].kind != StatementKind.expressionStatement
-          || !frameStatementIsSupported(program, arena, child, false, false)) return false;
+      const local = arena.nodes[child].kind == StatementKind.variableStatement;
+      if (statementRootIsSpawn(arena, child) || local) {
+        if (!frameStatementIsSupported(program, arena, child, false, false)) return false;
       } else if (!frameStatementIsSupported(program, arena, child, true, false)) return false;
     }
     return true;
@@ -402,10 +405,23 @@ export function functionUsesGeneralFrame(
   // when the parent suspends. A non-suspending spawned function takes the
   // frame too, so starting it only creates the frame.
   if (!suspends && !programSpawnsFunction(program, declaration.name)) return false;
+  if (!frameLocalNamesAreUnique(declaration)) return false;
   for (const root of declaration.body.roots) {
     if (!frameStatementIsSupported(program, declaration.body, root, false, false)) return false;
   }
   return frameTaskLocalsAreJoinOnly(declaration);
+}
+
+// Frame storage is named by binding: locals and parameters must not repeat.
+function frameLocalNamesAreUnique(in declaration: FunctionDeclaration): boolean {
+  let names = Array<String>();
+  for (const parameter of declaration.parameters) { names.push(copy parameter.name); }
+  for (const statement of declaration.body.nodes) {
+    if (statement.kind != StatementKind.variableStatement) continue;
+    for (const name of names) { if (name == statement.name) return false; }
+    names.push(copy statement.name);
+  }
+  return true;
 }
 
 function bodySpawnsFunction(in body: StatementArena, in name: String): boolean {
@@ -472,11 +488,17 @@ function frameTaskJoinUses(in tree: ExpressionTree, in name: String): usize {
 // its storage is the frame's invocation slot, not a thread-task handle.
 function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration): boolean {
   let tasks = Array<String>();
+  // Frame-level statements: roots and the direct statements of unnamed scopes.
+  let frameLevel = copy declaration.body.roots;
+  for (const statement of declaration.body.nodes) {
+    if (statement.kind != StatementKind.asyncScopeStatement || statement.children.length != 1) continue;
+    for (const child of declaration.body.nodes[statement.children[0]].children) { frameLevel.push(child); }
+  }
   let spawnIndex: usize = 0;
   while (spawnIndex < declaration.body.nodes.length) {
     const statement = view declaration.body.nodes[spawnIndex];
     let root = false;
-    for (const candidate of declaration.body.roots) { if (candidate == spawnIndex) root = true; }
+    for (const candidate of frameLevel) { if (candidate == spawnIndex) root = true; }
     spawnIndex = spawnIndex + 1;
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {

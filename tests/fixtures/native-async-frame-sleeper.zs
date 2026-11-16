@@ -44,6 +44,13 @@ async function borrower(): i32 {
   return seen;
 }
 
+async function scoped(): void {
+  async scope {
+    const held = Job({ id: 40 });
+    task peek(held);
+  }
+}
+
 async function main(): i32 {
   return 0;
 }

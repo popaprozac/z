@@ -99,6 +99,20 @@ int main(void) {
   }
   if (!lender.task->cancelled || executor.timers != NULL) return 19;
   lender.destroy(lender.task);
+
+  // A frame cancelled inside a scope joins its child, then releases the
+  // scope's local once.
+  Z_AsyncInvocation scope = _z_stage1_yield_scoped_start(&executor);
+  z_stage1_async_enqueue(&executor, scope.task);
+  for (int tick = 0; executor.timers == NULL; ++tick) {
+    if (tick > 4 || !z_stage1_async_drive_one(&executor)) return 20;
+  }
+  z_stage1_async_request_cancel(scope.task);
+  for (int tick = 0; !scope.task->completed; ++tick) {
+    if (tick > 8 || !z_stage1_async_drive_one(&executor)) return 21;
+  }
+  if (!scope.task->cancelled || executor.timers != NULL) return 22;
+  scope.destroy(scope.task);
   if (z_stage1_async_now_ms() - started > 5000) return 10;
   return 0;
 }`;
@@ -106,7 +120,7 @@ int main(void) {
     + "sleeping 11\nsleeping 12\nreleased job 11\nreleased job 12\nreleased job 10\n"
     // A dropped frame destroys its children in reverse order, as Stage 0 does.
     + "sleeping 21\nsleeping 22\nreleased job 22\nreleased job 21\nreleased job 20\n"
-    + "released job 30\n");
+    + "released job 30\nreleased job 40\n");
 }, 240_000);
 
 test("runs async main as a general native frame when it awaits timers directly", () => {
@@ -173,4 +187,12 @@ async function main(): i32 {
     assert.match(result.stderr, /main\.zs:9:22: error\[Z0700\]: an ownership-bearing nested await result is not executable yet/);
     assert.doesNotMatch(result.stderr, /internal compiler error/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("keeps async scope locals in general native frames until the scope joins its children", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/native-async-frame-scope-locals.zs");
+  const expected = "inspected 2\ninspected 1\nobserved 1\nreleased report 2\nreleased report 1\nscope closed\n"
+    + "inspected 10\nreleased report 10\ninspected 11\nreleased report 11\nsum 42\n";
+  execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
+  execute(emit(fixture), expected);
 }, 240_000);
