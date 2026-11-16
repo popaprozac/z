@@ -340,6 +340,70 @@ function cxxValueTierLimit(
   return "";
 }
 
+// An async function whose result, error, or by-value parameter holds a C++
+// value takes the general frame, which constructs and destroys C++ frame
+// storage. Mirrors asyncSignatureHoldsCxx (lowering).
+function nativeAsyncSignatureHoldsCxx(
+  in graph: ModuleGraph, moduleIndex: usize, in declaration: FunctionDeclaration
+): boolean {
+  if (!declaration.asynchronous) return false;
+  if (nativeTypeNameHoldsCxx(graph, moduleIndex, declaration.returnType.name, 0)) return true;
+  match (in declaration.errorType) {
+    some(errorType) => {
+      if (nativeTypeNameHoldsCxx(graph, moduleIndex, errorType.name, 0)) return true;
+    }
+    none => {}
+  }
+  for (const parameter of declaration.parameters) {
+    if (parameter.mode == ParameterMode.value
+      && nativeTypeNameHoldsCxx(graph, moduleIndex, parameter.type.name, 0)) return true;
+  }
+  return false;
+}
+
+// A value holding a C++ value inline: directly, in struct fields, or in enum,
+// Option, and Result payloads (collections and classes hold it on the heap).
+function nativeTypeNameHoldsCxx(
+  in graph: ModuleGraph, moduleIndex: usize, in typeName: String, depth: usize
+): boolean {
+  if (depth > 8 || typeName.byteLength == 0) return false;
+  let name = typeName.copyBytes(0, typeName.byteLength);
+  if (stringStartsWith(name, "readonly ")) name = name.copyBytes(9, name.byteLength);
+  if (stringStartsWith(name, "view ")) return false;
+  const nullable = nullableTargetType(name);
+  if (nullable.byteLength > 0) return nativeTypeNameHoldsCxx(graph, moduleIndex, nullable, depth + 1);
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (generic.base != "Option" && generic.base != "Result") return false;
+      for (const argument of generic.arguments) {
+        if (nativeTypeNameHoldsCxx(graph, moduleIndex, argument, depth + 1)) return true;
+      }
+      return false;
+    }
+    none => {}
+  }
+  const location = match (typeSymbolLocation(graph.modules, moduleIndex, name)) {
+    some(found) => found;
+    none => return false;
+  };
+  const symbol = view graph.modules[location.moduleIndex].symbols[location.symbolIndex];
+  if (symbol.kind == ModuleSymbolKind.classSymbol) return false;
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      if (signature.foreignKind == "value" || signature.foreignKind == "moveValue") return true;
+      if (signature.foreignNativeName.byteLength > 0) return false;
+      for (const field of signature.fields) {
+        if (nativeTypeNameHoldsCxx(graph, location.moduleIndex, field.typeName, depth + 1)) return true;
+      }
+      for (const variant of signature.variants) {
+        if (nativeTypeNameHoldsCxx(graph, location.moduleIndex, variant.payloadType, depth + 1)) return true;
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 function moduleUsesCxxValues(in graph: ModuleGraph, moduleIndex: usize): boolean {
   for (const symbol of graph.modules[moduleIndex].symbols) {
     match (in symbol.typeSignature) {
@@ -3074,6 +3138,8 @@ function nativeYieldFrameStorageSupported(
     some(signature) => {
       if (signature.foreignKind == "objcInterface"
         || signature.foreignKind == "objcProtocol") return true;
+      // A C++ value lives in constructed frame storage (Z_FrameCxx).
+      if (signature.foreignKind == "value" || signature.foreignKind == "moveValue") return true;
     }
     none => {}
   }
@@ -3289,7 +3355,8 @@ function validateNativeFunction(
   in owner: String,
   in ownerTypeParameters: Array<String>
 ): void throws ModuleResolveError {
-  const firstTierSchedulerYield = functionHasFirstTierSchedulerYieldStorage(
+  const cxxFrame = nativeAsyncSignatureHoldsCxx(graph, moduleIndex, declaration);
+  const firstTierSchedulerYield = !cxxFrame && functionHasFirstTierSchedulerYieldStorage(
     moduleIndex,
     modules,
     graph,
@@ -3334,7 +3401,7 @@ function validateNativeFunction(
     }
   }
   if (yieldFrame) try validateYieldFrameStorage(path, moduleIndex, modules, graph, declaration);
-  const firstTierTailAwait = functionHasFirstTierTailAwaitStorage(
+  const firstTierTailAwait = !cxxFrame && functionHasFirstTierTailAwaitStorage(
     moduleIndex,
     modules,
     graph,

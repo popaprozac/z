@@ -11040,6 +11040,13 @@ test("compiles a multi-module Z application through the standalone native driver
     "examples/applications/document-workspace/main.zs",
     "tests/fixtures/native-element-mutation.zs",
     "tests/fixtures/native-view-receiver.zs",
+    // C++ values in general async frames: parameters, locals, results,
+    // `try` propagation, borrows, and cancellation release.
+    "examples/async/async-native-parameters.zs",
+    "examples/async/async-native-ownership.zs",
+    "examples/async/async-native-aggregate.zs",
+    "examples/async/async-borrowing.zs",
+    "examples/async/async-caller-cancellation.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);

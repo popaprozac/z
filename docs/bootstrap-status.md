@@ -1420,7 +1420,14 @@ clears its live flag), awaited methods start through their await-site helper
 (which forwards to the callee's frame when it has one), and a static async
 method awaits like a named function. `task receiver.method(args)` starts a
 method as a hot child the same way. As in Stage 0, an async struct method
-must take `move this` (Z0704). Cancellation before
+must take `move this` (Z0704). A C++ value (directly, in a Z struct, or in an
+enum, Option, or Result payload) held by a frame parameter, local, result, or
+borrow temporary is raw frame storage: the frame constructs it at
+initialization, a finished child's result is constructed in the parent's
+storage, `try` moves a C++ failure into the frame's own Result, and the frame
+destroys the value after its Z cleanup when it is destroyed. An async function
+whose result, error, or by-value parameter holds a C++ value takes this frame
+instead of a shape tier. Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument

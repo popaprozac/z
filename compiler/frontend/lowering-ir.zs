@@ -8175,6 +8175,41 @@ function wrapOwnedStorage(
   );
 }
 
+// An async function whose result, error, or by-value parameter holds a C++
+// value takes the general frame: only it constructs and destroys C++ frame
+// storage (Z_FrameCxx). Mirrors nativeAsyncSignatureHoldsCxx (lowerability).
+function asyncSignatureHoldsCxx(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in declaration: FunctionDeclaration
+): boolean {
+  if (!declaration.asynchronous) return false;
+  if (moduleTypeReferenceHoldsCxx(program, importedTypes, declaration.returnType)) return true;
+  match (in declaration.errorType) {
+    some(errorType) => {
+      if (moduleTypeReferenceHoldsCxx(program, importedTypes, errorType)) return true;
+    }
+    none => {}
+  }
+  for (const parameter of declaration.parameters) {
+    if (parameter.mode == ParameterMode.value
+      && moduleTypeReferenceHoldsCxx(program, importedTypes, parameter.type)) return true;
+  }
+  return false;
+}
+
+function moduleTypeReferenceHoldsCxx(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in reference: TypeReference
+): boolean {
+  const lowered = attempt lowerModuleType(program, importedTypes, reference);
+  return match (lowered) {
+    success(type) => moduleTypeHoldsCxx(program, importedTypes, type, 0, false);
+    failure(_) => false;
+  };
+}
+
 // A value holding a move-only C++ value, directly or through Z struct fields.
 function moduleTypeIsCxxMoveOnly(
   in program: Program,
@@ -18033,7 +18068,10 @@ function lowerExpressionNode(
         receiverInput,
         inout output
       );
-      if (
+      if (receiverMode == "move" && moduleTypeIsCxxMoveOnly(program, importedTypes, receiverType, 0)) {
+        // A consumed receiver holding a move-only C++ value is C++-moved too.
+        receiver = wrapOwnedStorageType(program, importedTypes, tree, receiverInput, receiverType, receiver, inout output);
+      } else if (
         receiverMode == "move"
         && moduleTypeNeedsCleanup(program, importedTypes, receiverType)
       ) {
@@ -29420,7 +29458,8 @@ function lowerFunction(
     }
   }
   if (declaration.asynchronous && declaration.name != "main") {
-    const firstTierSchedulerYield = executorAffinity != "thread.main"
+    const cxxFrame = asyncSignatureHoldsCxx(program, importedTypes, declaration);
+    const firstTierSchedulerYield = !cxxFrame && executorAffinity != "thread.main"
       && functionUsesFirstTierSchedulerYield(program, declaration);
     const firstTierDoubleAwait = functionUsesFirstTierDoubleAwait(
       declaration
@@ -29464,7 +29503,7 @@ function lowerFunction(
     const firstTierPlacedFunctionTail = executorAffinity
         != "thread.main"
       && functionUsesFirstTierPlacedFunctionTailAwait(declaration);
-    const firstTierTailAwait = (
+    const firstTierTailAwait = !cxxFrame && ((
         executorAffinity != "thread.main"
         && (
         functionUsesFirstTierTailAwait(declaration)
@@ -29493,7 +29532,7 @@ function lowerFunction(
           || firstTierLinearAwait
           || firstTierDoubleAwait
         )
-      );
+      ));
     // Every shape tier rejected this function: the general frame takes it.
     // A method's frame stores its receiver: a retained class, or a moved struct.
     const frameReceiver = receiverName.byteLength == 0

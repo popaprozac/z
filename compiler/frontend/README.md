@@ -348,8 +348,8 @@ invalid safety boundary rejects, and destruction follows the same affinity.
 
 The standalone executable subset is intentionally narrower than the native
 parser and semantic graph. Unplaced suspending async functions outside the native
-frame (Objective-C or C++ frame storage, and locals in nested blocks outside
-an `async scope`), traits, generic
+frame (Objective-C frame storage, C++ locals declared without an initializer,
+and locals in nested blocks outside an `async scope`), traits, generic
 methods, fixed arrays, and callable combinations beyond the first synchronous
 direct-function/expression-closure tier still stop before C emission. Ordinary
 transparent aliases, first-class synchronous callable values, and direct calls

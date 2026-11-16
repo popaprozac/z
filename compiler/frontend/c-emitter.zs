@@ -11114,6 +11114,90 @@ function yieldFrameName(in declaration: LoweredFunction): String {
   return name.finish();
 }
 
+function yieldFrameBindingField(in name: String): String {
+  let field = TextBuffer();
+  field.append("_z_binding_");
+  appendCBindingName(inout field, name);
+  return field.finish();
+}
+
+// A returned frame local or parameter moves into the result (lowering leaves
+// `return local` unwrapped because C++ moves it implicitly from a stack local).
+function appendYieldFrameReturnedValue(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction, value: usize
+): void throws String {
+  const kind = declaration.expressions[value].kind;
+  const movesLocal = yieldFrameHoldsCxx(program, declaration.returnType)
+    && (kind == LoweredExpressionKind.localValue || kind == LoweredExpressionKind.parameterValue);
+  if (movesLocal) output.append("std::move(");
+  try appendExpression(inout output, declaration, value);
+  if (movesLocal) output.append(")");
+}
+
+// A frame field holding a C++ value is Z_FrameCxx raw storage (see the
+// prelude); its binding reads `.get()` and its initializations construct.
+function yieldFrameHoldsCxx(in program: LoweredProgram, in type: LoweredType): boolean {
+  return loweredTypeHoldsCxx(program.cxxValueTypes, program.structs, program.enums, type, 0);
+}
+
+function appendYieldFrameField(
+  inout output: TextBuffer, in program: LoweredProgram, in type: LoweredType, in field: String
+): void throws String {
+  output.append("  ");
+  if (yieldFrameHoldsCxx(program, type)) output.append(`Z_FrameCxx<${try cType(type)}>`);
+  else output.append(try cType(type));
+  output.append(` ${field};\n`);
+}
+
+function appendYieldFrameMacro(
+  inout output: TextBuffer, in program: LoweredProgram, in type: LoweredType, in macro: String, in field: String
+): void {
+  output.append(`#define ${macro} (frame->${field}${yieldFrameHoldsCxx(program, type) ? ".get()" : ""})\n`);
+}
+
+// `place = value` for a frame field: C++ storage is constructed in place.
+function appendYieldFrameStoreStart(
+  inout output: TextBuffer, in program: LoweredProgram, in type: LoweredType, in field: String
+): void {
+  output.append(`frame->${field}`);
+  output.append(yieldFrameHoldsCxx(program, type) ? ".init(" : " = ");
+}
+
+function appendYieldFrameStoreEnd(
+  inout output: TextBuffer, in program: LoweredProgram, in type: LoweredType
+): void {
+  output.append(yieldFrameHoldsCxx(program, type) ? ");\n" : ";\n");
+}
+
+// A finished child's result in `_z_child_result_<index>` (a C++ value is
+// constructed by take_result in raw storage, then moved to the temporary).
+function appendYieldFrameChildResult(
+  inout output: TextBuffer, in program: LoweredProgram, in resultType: LoweredType,
+  in invocation: String, index: usize, depth: usize
+): void throws String {
+  appendIndent(inout output, depth);
+  output.append(`if (${invocation}.take_result == NULL) abort();\n`);
+  appendIndent(inout output, depth);
+  if (resultType.kind == LoweredTypeKind.voidType) {
+    output.append(`${invocation}.take_result(${invocation}.task, NULL);\n`);
+    return;
+  }
+  const type = try cType(resultType);
+  if (yieldFrameHoldsCxx(program, resultType)) {
+    output.append(`${type} _z_child_result_${index} = Z_FrameCxx<${type}>::take(${invocation}.take_result, ${invocation}.task);\n`);
+    return;
+  }
+  output.append(`${type} _z_child_result_${index} = {};\n`);
+  appendIndent(inout output, depth);
+  output.append(`${invocation}.take_result(${invocation}.task, &_z_child_result_${index});\n`);
+}
+
+// The C++ value a statement hands from a frame temporary or local to frame
+// storage moves (a returned local is not wrapped in std::move by lowering).
+function yieldFrameMovedValue(in program: LoweredProgram, in type: LoweredType, in value: String): String {
+  return yieldFrameHoldsCxx(program, type) ? `std::move(${value})` : copy value;
+}
+
 function yieldFrameParameterGuard(in declaration: LoweredFunction, in name: String): String {
   for (const flag of declaration.liveFlags) {
     if (flag.parameter && flag.owner == name) return copy flag.name;
@@ -11133,10 +11217,15 @@ function appendYieldFrameParameters(
   }
 }
 
-function appendYieldFrameArguments(inout output: TextBuffer, count: usize): void {
+// Forwards a frame entry's arguments; a by-value C++ argument moves.
+function appendYieldFrameArguments(
+  inout output: TextBuffer, in program: LoweredProgram, in parameters: Array<LoweredParameter>
+): void {
   let index: usize = 0;
-  while (index < count) {
-    output.append(`, _z_argument_${index}`);
+  for (const parameter of parameters) {
+    if (parameter.mode == LoweredParameterMode.value && yieldFrameHoldsCxx(program, parameter.type)) {
+      output.append(`, std::move(_z_argument_${index})`);
+    } else output.append(`, _z_argument_${index}`);
     index = index + 1;
   }
 }
@@ -11454,7 +11543,9 @@ function appendYieldFrameHoistedAwait(
   else try appendYieldFrameJoin(inout output, program, declaration, virtual, moved, resultType, depth);
   if (resultType.kind != LoweredTypeKind.voidType) {
     appendIndent(inout output, depth + 1);
-    output.append(`_z_stage1_frame_binding__z_await_value_${site} = _z_child_result_${virtual};\n`);
+    appendYieldFrameStoreStart(inout output, program, resultType, `_z_binding__z_await_value_${site}`);
+    output.append(yieldFrameMovedValue(program, resultType, `_z_child_result_${virtual}`));
+    appendYieldFrameStoreEnd(inout output, program, resultType);
   }
   appendIndent(inout output, depth);
   output.append("}\n");
@@ -11547,18 +11638,7 @@ function appendYieldFrameJoin(
   output.append(`if (${slot}.failed != NULL && ${slot}.failed(${slot}.task)) abort();\n`);
   appendIndent(inout output, depth);
   output.append("{\n");
-  if (resultType.kind != LoweredTypeKind.voidType) {
-    appendIndent(inout output, depth + 1);
-    output.append(try cType(resultType));
-    output.append(` _z_child_result_${statementIndex} = {};\n`);
-  }
-  appendIndent(inout output, depth + 1);
-  output.append(`if (${slot}.take_result == NULL) abort();\n`);
-  appendIndent(inout output, depth + 1);
-  output.append(`${slot}.take_result(${slot}.task, `);
-  if (resultType.kind == LoweredTypeKind.voidType) output.append("NULL");
-  else output.append(`&_z_child_result_${statementIndex}`);
-  output.append(");\n");
+  try appendYieldFrameChildResult(inout output, program, resultType, slot, statementIndex, depth + 1);
   appendIndent(inout output, depth + 1);
   output.append(`${frameName}_release_slot(task, &${slot});\n`);
   const task = declaration.expressions[expression].children[0];
@@ -11677,12 +11757,15 @@ function appendYieldFrameBorrowTemporaries(
           appendIndent(inout output, depth);
           output.append(`${name}_live = false;\n`);
         }
+        if (yieldFrameHoldsCxx(program, functionType.parameters[argument - 1].type)) {
+          appendIndent(inout output, depth);
+          output.append(`frame->_z_binding_${name}.reset();\n`);
+        }
       } else {
         appendIndent(inout output, depth);
-        appendAsyncFrameBindingName(inout output, declaration, name);
-        output.append(" = ");
+        appendYieldFrameStoreStart(inout output, program, functionType.parameters[argument - 1].type, `_z_binding_${name}`);
         try appendExpression(inout output, declaration, value);
-        output.append(";\n");
+        appendYieldFrameStoreEnd(inout output, program, functionType.parameters[argument - 1].type);
         if (needsDeinit) {
           appendIndent(inout output, depth);
           output.append(`${name}_live = true;\n`);
@@ -11777,18 +11860,7 @@ function appendYieldFrameAwait(
   // the statement below must transfer or destroy its owned result exactly once.
   appendIndent(inout output, depth);
   output.append("{\n");
-  if (resultType.kind != LoweredTypeKind.voidType) {
-    appendIndent(inout output, depth + 1);
-    output.append(try cType(resultType));
-    output.append(` _z_child_result_${statementIndex} = {};\n`);
-  }
-  appendIndent(inout output, depth + 1);
-  output.append("if (frame->child.take_result == NULL) abort();\n");
-  appendIndent(inout output, depth + 1);
-  output.append("frame->child.take_result(frame->child.task, ");
-  if (resultType.kind == LoweredTypeKind.voidType) output.append("NULL");
-  else output.append(`&_z_child_result_${statementIndex}`);
-  output.append(");\n");
+  try appendYieldFrameChildResult(inout output, program, resultType, "frame->child", statementIndex, depth + 1);
   appendIndent(inout output, depth + 1);
   const frameName = yieldFrameName(declaration);
   output.append(`${frameName}_release_child(frame);\n`);
@@ -11801,10 +11873,19 @@ function appendYieldFrameTry(
 ): void throws String {
   const statement = view declaration.statements[index];
   if (statement.labels.length < 2) throw "native yield frame lost try propagation evidence";
+  // A C++-payload Result is a C++ struct: its failure moves out and the
+  // frame's own Result is built by its factory.
+  const sourceCxx = yieldFrameHoldsCxx(program, LoweredType({ kind: LoweredTypeKind.enumType, name: copy statement.name }));
+  const propagatedType = LoweredType({ kind: LoweredTypeKind.enumType, name: copy statement.labels[1] });
+  const failure = sourceCxx ? `std::move(${temporary}.payload.failure)` : `${temporary}.payload.failure`;
   appendIndent(inout output, depth);
   output.append(`if (${temporary}.tag == Z_${statement.name}Tag_failure) {\n`);
   appendIndent(inout output, depth + 1);
-  output.append(`frame->result = (Z_${statement.labels[1]}){.tag = Z_${statement.labels[1]}Tag_failure, .payload = { .failure = ${temporary}.payload.failure }};\n`);
+  if (yieldFrameHoldsCxx(program, propagatedType)) {
+    output.append(`frame->result.init(Z_${statement.labels[1]}::make_failure(${failure}));\n`);
+  } else {
+    output.append(`frame->result = (Z_${statement.labels[1]}){.tag = Z_${statement.labels[1]}Tag_failure, .payload = { .failure = ${failure} }};\n`);
+  }
   appendYieldFrameLexicalCleanups(inout output, declaration, statement.cleanups, depth + 1);
   appendIndent(inout output, depth + 1);
   output.append("goto _z_complete;\n");
@@ -11820,6 +11901,21 @@ function appendYieldFrameTry(
     return;
   }
   if (statement.labels.length == 3) throw "native yield-frame try replacement remains a later tier";
+  const successType = match (in statement.type) {
+    some(type) => copy type;
+    none => LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
+  };
+  if (sourceCxx && yieldFrameHoldsCxx(program, successType)) {
+    match (in statement.secondExpression) {
+      some(_) => throw "native async frame cannot assign a C++ `try` result to existing storage yet";
+      none => {}
+    }
+    if (!asyncFrameBinds(declaration, statement.labels[0])) throw "native async frame lost its C++ `try` binding";
+    const successField = yieldFrameBindingField(statement.labels[0]);
+    appendIndent(inout output, depth);
+    output.append(`frame->${successField}.init(std::move(${temporary}.payload.success));\n`);
+    return;
+  }
   appendIndent(inout output, depth);
   match (in statement.secondExpression) {
     some(target) => try appendExpression(inout output, declaration, target);
@@ -11996,9 +12092,15 @@ function appendYieldFrameStatement(
     if (statement.kind == LoweredStatementKind.tryStatement) {
       try appendYieldFrameTry(inout output, program, declaration, index, temporary, depth + 1);
     } else if (statement.kind == LoweredStatementKind.localStatement) {
+      const localType = match (in statement.type) {
+        some(type) => copy type;
+        none => throw "native yield frame lost local type evidence";
+      };
+      const localField = yieldFrameBindingField(statement.name);
       appendIndent(inout output, depth + 1);
-      appendAsyncFrameBindingName(inout output, declaration, statement.name);
-      output.append(` = ${temporary};\n`);
+      appendYieldFrameStoreStart(inout output, program, localType, localField);
+      output.append(yieldFrameMovedValue(program, localType, temporary));
+      appendYieldFrameStoreEnd(inout output, program, localType);
       if (statement.liveFlag.byteLength > 0) {
         appendIndent(inout output, depth + 1);
         output.append(`${statement.liveFlag} = true;\n`);
@@ -12006,7 +12108,9 @@ function appendYieldFrameStatement(
     } else if (statement.kind == LoweredStatementKind.returnStatement) {
       if (resultType.kind != LoweredTypeKind.voidType) {
         appendIndent(inout output, depth + 1);
-        output.append(`frame->result = ${temporary};\n`);
+        appendYieldFrameStoreStart(inout output, program, declaration.returnType, "result");
+        output.append(yieldFrameMovedValue(program, declaration.returnType, temporary));
+        appendYieldFrameStoreEnd(inout output, program, declaration.returnType);
       }
       appendIndent(inout output, depth + 1);
       output.append("goto _z_complete;\n");
@@ -12046,6 +12150,12 @@ function appendYieldFrameStatement(
     match (in statement.expression) {
       none => {
         // An uninitialized local: zeroed frame storage, not live yet.
+        match (in statement.type) {
+          some(type) => {
+            if (yieldFrameHoldsCxx(program, type)) throw "native async frame cannot defer a C++ local's initialization yet";
+          }
+          none => {}
+        }
         if (statement.children.length == 0) return;
         for (const child of statement.children) {
           try appendYieldFrameStatement(inout output, program, declaration, child, depth);
@@ -12065,11 +12175,15 @@ function appendYieldFrameStatement(
     appendIndent(inout output, depth);
     output.append("{\n");
     try appendBorrowedTemporaryInitializers(inout output, declaration, initializer, depth);
+    const localType = match (in statement.type) {
+      some(type) => copy type;
+      none => throw "native yield frame lost local type evidence";
+    };
+    const localField = yieldFrameBindingField(statement.name);
     appendIndent(inout output, depth);
-    appendAsyncFrameBindingName(inout output, declaration, statement.name);
-    output.append(" = ");
+    appendYieldFrameStoreStart(inout output, program, localType, localField);
     try appendExpression(inout output, declaration, initializer);
-    output.append(";\n");
+    appendYieldFrameStoreEnd(inout output, program, localType);
     appendBorrowedTemporaryCleanups(inout output, declaration, initializer, depth);
     if (statement.liveFlag.byteLength > 0) {
       appendIndent(inout output, depth);
@@ -12087,9 +12201,9 @@ function appendYieldFrameStatement(
       some(value) => {
         try appendBorrowedTemporaryInitializers(inout output, declaration, value, depth);
         appendIndent(inout output, depth);
-        output.append("frame->result = ");
-        try appendExpression(inout output, declaration, value);
-        output.append(";\n");
+        appendYieldFrameStoreStart(inout output, program, declaration.returnType, "result");
+        try appendYieldFrameReturnedValue(inout output, program, declaration, value);
+        appendYieldFrameStoreEnd(inout output, program, declaration.returnType);
         appendBorrowedTemporaryCleanups(inout output, declaration, value, depth);
       }
       none => {}
@@ -12180,7 +12294,13 @@ function appendYieldFrameStatement(
     }
     return;
   }
+  // Its temporaries end with it: C++ forbids a resume goto past their
+  // initialization.
+  appendIndent(inout output, depth);
+  output.append("{\n");
   try appendStatement(inout output, declaration, index, depth);
+  appendIndent(inout output, depth);
+  output.append("}\n");
 }
 
 function appendYieldFrameHelpers(
@@ -12307,24 +12427,27 @@ function appendYieldFrameHelpers(
     let hoistedField: usize = 0;
     while (hoistedField < hoistedSites.length) {
       if (hoistedTypes[hoistedField].kind != LoweredTypeKind.voidType) {
-        output.append(`  ${try cType(hoistedTypes[hoistedField])} _z_binding__z_await_value_${hoistedSites[hoistedField]};\n`);
+        try appendYieldFrameField(inout output, program, hoistedTypes[hoistedField], `_z_binding__z_await_value_${hoistedSites[hoistedField]}`);
       }
       hoistedField = hoistedField + 1;
     }
     if (source.returnType.kind != LoweredTypeKind.voidType) {
-      output.append("  ");
-      output.append(try cType(source.returnType));
-      output.append(" result;\n");
+      try appendYieldFrameField(inout output, program, source.returnType, "result");
       if (resultNeedsDeinit) output.append("  bool live_result;\n");
     }
     for (const parameter of source.parameters) {
-      output.append("  ");
-      output.append(try cType(parameter.type));
-      if (parameter.mode == LoweredParameterMode.input) output.append(" const *");
-      else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
-      output.append(" _z_binding_");
-      appendCBindingName(inout output, parameter.name);
-      output.append(";\n");
+      let field = TextBuffer();
+      field.append("_z_binding_");
+      appendCBindingName(inout field, parameter.name);
+      const fieldName = field.finish();
+      if (parameter.mode == LoweredParameterMode.value) {
+        try appendYieldFrameField(inout output, program, parameter.type, fieldName);
+      } else {
+        output.append("  ");
+        output.append(try cType(parameter.type));
+        output.append(parameter.mode == LoweredParameterMode.input ? " const *" : " *");
+        output.append(` ${fieldName};\n`);
+      }
       const guard = yieldFrameParameterGuard(source, parameter.name);
       if (guard.byteLength > 0) output.append(`  bool ${guard};\n`);
     }
@@ -12364,7 +12487,7 @@ function appendYieldFrameHelpers(
             && !yieldFrameBorrowPlace(source, source.expressions[awaitedCall].children[argument])) {
             const borrowName = yieldFrameBorrowTemporaryName(borrowStatement, argument);
             const borrowType = copy childType.parameters[argument - 1].type;
-            output.append(`  ${try cType(borrowType)} _z_binding_${borrowName};\n`);
+            try appendYieldFrameField(inout output, program, borrowType, `_z_binding_${borrowName}`);
             if (loweredTypeNeedsDeinit(program, borrowType)) output.append(`  bool ${borrowName}_live;\n`);
             declaration.asyncFrameBindings.push(copy borrowName);
             borrowNames.push(borrowName);
@@ -12386,7 +12509,7 @@ function appendYieldFrameHelpers(
           && !yieldFrameBorrowPlace(declaration, declaration.expressions[moved].children[argument])) {
           const borrowName = yieldFrameBorrowTemporaryName(virtual, argument);
           const borrowType = copy childType.parameters[argument - 1].type;
-          output.append(`  ${try cType(borrowType)} _z_binding_${borrowName};\n`);
+          try appendYieldFrameField(inout output, program, borrowType, `_z_binding_${borrowName}`);
           if (loweredTypeNeedsDeinit(program, borrowType)) output.append(`  bool ${borrowName}_live;\n`);
           declaration.asyncFrameBindings.push(copy borrowName);
           borrowNames.push(borrowName);
@@ -12409,13 +12532,13 @@ function appendYieldFrameHelpers(
         some(value) => copy value;
         none => throw "native yield frame lost local type evidence";
       };
-      output.append("  ");
+      let field = TextBuffer();
+      field.append("_z_binding_");
+      appendCBindingName(inout field, statement.name);
+      const fieldName = field.finish();
       // A spawned task local is its invocation slot.
-      if (spawnLocal) output.append("Z_AsyncInvocation");
-      else output.append(try cType(type));
-      output.append(" _z_binding_");
-      appendCBindingName(inout output, statement.name);
-      output.append(";\n");
+      if (spawnLocal) output.append(`  Z_AsyncInvocation ${fieldName};\n`);
+      else try appendYieldFrameField(inout output, program, type, fieldName);
       if (statement.liveFlag.byteLength > 0) {
         output.append("  bool ");
         output.append(statement.liveFlag);
@@ -12427,8 +12550,12 @@ function appendYieldFrameHelpers(
       output.append("#define self (frame->_z_receiver)\n#define _z_stage1_frame_binding_this (frame->_z_receiver)\n");
       if (receiverGuard.byteLength > 0) output.append(`#define ${receiverGuard} (frame->${receiverGuard})\n`);
     }
-    for (const site of hoistedSites) {
-      output.append(`#define _z_stage1_frame_binding__z_await_value_${site} (frame->_z_binding__z_await_value_${site})\n`);
+    let hoistedMacro: usize = 0;
+    while (hoistedMacro < hoistedSites.length) {
+      const site = hoistedSites[hoistedMacro];
+      appendYieldFrameMacro(inout output, program, hoistedTypes[hoistedMacro],
+        `_z_stage1_frame_binding__z_await_value_${site}`, `_z_binding__z_await_value_${site}`);
+      hoistedMacro = hoistedMacro + 1;
     }
     let payloadMacro: usize = 0;
     while (payloadMacro < payloadNames.length) {
@@ -12441,7 +12568,8 @@ function appendYieldFrameHelpers(
     }
     let borrowMacro: usize = 0;
     while (borrowMacro < borrowNames.length) {
-      output.append(`#define _z_stage1_frame_binding_${borrowNames[borrowMacro]} (frame->_z_binding_${borrowNames[borrowMacro]})\n`);
+      appendYieldFrameMacro(inout output, program, borrowTypes[borrowMacro],
+        `_z_stage1_frame_binding_${borrowNames[borrowMacro]}`, `_z_binding_${borrowNames[borrowMacro]}`);
       if (loweredTypeNeedsDeinit(program, borrowTypes[borrowMacro])) {
         output.append(`#define ${borrowNames[borrowMacro]}_live (frame->${borrowNames[borrowMacro]}_live)\n`);
       }
@@ -12452,16 +12580,25 @@ function appendYieldFrameHelpers(
       appendCBindingName(inout output, parameter.name);
       output.append(" (frame->_z_binding_");
       appendCBindingName(inout output, parameter.name);
+      if (parameter.mode == LoweredParameterMode.value && yieldFrameHoldsCxx(program, parameter.type)) output.append(".get()");
       output.append(")\n");
       const guard = yieldFrameParameterGuard(source, parameter.name);
       if (guard.byteLength > 0) output.append(`#define ${guard} (frame->${guard})\n`);
     }
+    let macroStatement: usize = 0;
     for (const statement of source.statements) {
+      const spawnLocal = yieldFrameSpawnExpression(source, macroStatement) < source.expressions.length;
+      macroStatement = macroStatement + 1;
       if (statement.kind != LoweredStatementKind.localStatement) continue;
       output.append("#define _z_stage1_frame_binding_");
       appendCBindingName(inout output, statement.name);
       output.append(" (frame->_z_binding_");
       appendCBindingName(inout output, statement.name);
+      const localCxx = match (in statement.type) {
+        some(type) => !spawnLocal && yieldFrameHoldsCxx(program, type);
+        none => false;
+      };
+      if (localCxx) output.append(".get()");
       output.append(")\n");
       if (statement.liveFlag.byteLength > 0) {
         output.append(`#define ${statement.liveFlag} (frame->${statement.liveFlag})\n`);
@@ -12514,6 +12651,48 @@ function appendYieldFrameHelpers(
       output.append(`  if (frame->_z_receiver != NULL) { Z_${receiverTypeName}_release(frame->_z_receiver); frame->_z_receiver = NULL; }\n`);
     } else if (receiverGuard.byteLength > 0) {
       output.append(`  if (${receiverGuard}) { Z_${receiverTypeName}_deinit(&frame->_z_receiver); ${receiverGuard} = false; }\n`);
+    }
+    // C++ storage is destroyed after Z cleanup, newest first.
+    let cxxBorrow = borrowNames.length;
+    while (cxxBorrow > 0) {
+      cxxBorrow = cxxBorrow - 1;
+      if (yieldFrameHoldsCxx(program, borrowTypes[cxxBorrow])) {
+        output.append(`  frame->_z_binding_${borrowNames[cxxBorrow]}.reset();\n`);
+      }
+    }
+    let cxxLocal = source.statements.length;
+    while (cxxLocal > 0) {
+      cxxLocal = cxxLocal - 1;
+      const statement = view source.statements[cxxLocal];
+      if (statement.kind != LoweredStatementKind.localStatement
+        || yieldFrameSpawnExpression(source, cxxLocal) < source.expressions.length) continue;
+      match (in statement.type) {
+        some(type) => {
+          if (yieldFrameHoldsCxx(program, type)) {
+            output.append("  frame->_z_binding_");
+            appendCBindingName(inout output, statement.name);
+            output.append(".reset();\n");
+          }
+        }
+        none => {}
+      }
+    }
+    let cxxHoisted = hoistedSites.length;
+    while (cxxHoisted > 0) {
+      cxxHoisted = cxxHoisted - 1;
+      if (yieldFrameHoldsCxx(program, hoistedTypes[cxxHoisted])) {
+        output.append(`  frame->_z_binding__z_await_value_${hoistedSites[cxxHoisted]}.reset();\n`);
+      }
+    }
+    let cxxParameter = source.parameters.length;
+    while (cxxParameter > 0) {
+      cxxParameter = cxxParameter - 1;
+      const parameter = view source.parameters[cxxParameter];
+      if (parameter.mode == LoweredParameterMode.value && yieldFrameHoldsCxx(program, parameter.type)) {
+        output.append("  frame->_z_binding_");
+        appendCBindingName(inout output, parameter.name);
+        output.append(".reset();\n");
+      }
     }
     if (hasSpawns) {
       // Joins a completed slot, or (on destroy) cancels and drains a live one.
@@ -12580,9 +12759,11 @@ function appendYieldFrameHelpers(
     }
     match (in declaration.fallthroughExpression) {
       some(expression) => {
-        output.append("  {\n  frame->result = ");
-        try appendExpression(inout output, declaration, expression);
-        output.append(";\n  }\n");
+        output.append("  {\n  ");
+        appendYieldFrameStoreStart(inout output, program, declaration.returnType, "result");
+        try appendYieldFrameReturnedValue(inout output, program, declaration, expression);
+        appendYieldFrameStoreEnd(inout output, program, declaration.returnType);
+        output.append("  }\n");
       }
       none => {}
     }
@@ -12591,7 +12772,7 @@ function appendYieldFrameHelpers(
     if (hasSpawns) {
       // A failure (throw or `try`) cancels the children it leaves behind.
       if (source.throwsError) {
-        output.append(`  if (frame->result.tag == Z_${source.returnType.name}Tag_failure) frame->cancel_children = true;\n`);
+        output.append(`  if (frame->result${yieldFrameHoldsCxx(program, source.returnType) ? ".get()" : ""}.tag == Z_${source.returnType.name}Tag_failure) frame->cancel_children = true;\n`);
       }
       output.append("_z_finish: __attribute__((unused));\n");
       let site: usize = 0;
@@ -12615,12 +12796,14 @@ function appendYieldFrameHelpers(
     }
     if (hasChild) output.append(`  if (frame->child.task != NULL && !frame->child.task->completed) {\n    z_stage1_async_request_cancel(task);\n    frame->child.task->waiter = NULL;\n    while (!frame->child.task->completed) { if (!z_stage1_async_drive_one(task->executor)) abort(); }\n  }\n  ${name}_release_child(frame);\n`);
     output.append(`  ${name}_cleanup(frame);\n`);
+    const resultCxx = source.returnType.kind != LoweredTypeKind.voidType && yieldFrameHoldsCxx(program, source.returnType);
     if (resultNeedsDeinit) {
       output.append("  if (frame->live_result) {\n");
-      const resultCleanup = LoweredCleanup({ name: "frame->result", type: copy source.returnType, guard: "" });
+      const resultCleanup = LoweredCleanup({ name: resultCxx ? "frame->result.get()" : "frame->result", type: copy source.returnType, guard: "" });
       appendCleanup(inout output, resultCleanup, 2);
       output.append("  }\n");
     }
+    if (resultCxx) output.append("  frame->result.reset();\n");
     // Result transfer and Z deinit do not destroy Clang's strong heap slots.
     // Clear these even after take_result disarms the Z-owned cleanup guard.
     if (typeContainsObjectiveCStrongSlot(program, source.returnType)) {
@@ -12667,9 +12850,14 @@ function appendYieldFrameHelpers(
     output.append(`static void ${name}_take(Z_AsyncTask *task, void *output) {\n  if (!task->completed || task->cancelled) abort();\n`);
     if (source.returnType.kind != LoweredTypeKind.voidType) {
       if (resultNeedsDeinit) output.append(`  if (!((${name} *)task)->live_result) abort();\n`);
-      output.append("  *(");
-      output.append(try cType(source.returnType));
-      output.append(` *)output = ((${name} *)task)->result;\n`);
+      if (yieldFrameHoldsCxx(program, source.returnType)) {
+        // `output` is raw storage: construct the result there.
+        output.append(`  ::new (output) ${try cType(source.returnType)}(std::move(((${name} *)task)->result.get()));\n`);
+      } else {
+        output.append("  *(");
+        output.append(try cType(source.returnType));
+        output.append(` *)output = ((${name} *)task)->result;\n`);
+      }
       if (resultNeedsDeinit) output.append(`  ((${name} *)task)->live_result = false;\n`);
     } else output.append("  (void)output;\n");
     output.append(`}\nstatic __attribute__((unused)) Z_AsyncInvocation ${name}_start(Z_AsyncExecutor *executor`);
@@ -12688,7 +12876,9 @@ function appendYieldFrameHelpers(
     for (const parameter of source.parameters) {
       output.append("  frame->_z_binding_");
       appendCBindingName(inout output, parameter.name);
-      output.append(` = _z_argument_${argument};\n`);
+      if (parameter.mode == LoweredParameterMode.value && yieldFrameHoldsCxx(program, parameter.type)) {
+        output.append(`.init(std::move(_z_argument_${argument}));\n`);
+      } else output.append(` = _z_argument_${argument};\n`);
       const guard = yieldFrameParameterGuard(source, parameter.name);
       if (guard.byteLength > 0) output.append(`  frame->${guard} = true;\n`);
       argument = argument + 1;
@@ -12723,12 +12913,11 @@ function appendYieldFrameDriver(
     some(_) => output.append(", self");
     none => {}
   }
-  appendYieldFrameArguments(inout output, declaration.parameters.length);
+  appendYieldFrameArguments(inout output, program, declaration.parameters);
   output.append(");\n  z_stage1_async_enqueue(&executor, invocation.task);\n  while (!invocation.task->completed) { if (!z_stage1_async_drive_one(&executor)) abort(); }\n");
   if (declaration.returnType.kind != LoweredTypeKind.voidType) {
-    output.append("  ");
-    output.append(try cType(declaration.returnType));
-    output.append(" result;\n  invocation.take_result(invocation.task, &result);\n");
+    const resultType = try cType(declaration.returnType);
+    appendInvocationResultTake(inout output, program, declaration.returnType, resultType);
   } else output.append("  invocation.take_result(invocation.task, NULL);\n");
   output.append("  invocation.destroy(invocation.task);\n");
   if (programUsesObjectiveCAsyncCompletion(program) || programUsesAsyncThreadAwait(program)) {
@@ -14083,7 +14272,7 @@ function appendCallableOwnerHelpers(
           output.append(") {\n  (void)context;\n  return _z_stage1_yield_");
           appendCBindingName(inout output, expression.value);
           output.append("_start(executor");
-          appendYieldFrameArguments(inout output, functionType.parameters.length);
+          appendYieldFrameArguments(inout output, program, functionType.parameters);
           output.append(");\n}\nstatic Z_");
           output.append(functionType.name);
           output.append(" ");
@@ -16414,7 +16603,7 @@ function appendAsyncCallableAwaitHelpers(
       output.append("_start(callable, &executor");
       for (const functionParameter of functionType.parameters) {
         output.append(", ");
-        appendCBindingName(inout output, functionParameter.name);
+        appendForwardedArgument(inout output, program, functionParameter);
       }
       output.append(");\n");
       output.append("  if (invocation.task == NULL) abort();\n");
@@ -16432,11 +16621,8 @@ function appendAsyncCallableAwaitHelpers(
       if (functionType.returnType.kind == LoweredTypeKind.voidType) {
         output.append("  if (invocation.take_result != NULL) invocation.take_result(invocation.task, NULL);\n");
       } else {
-        output.append("  ");
-        output.append(returnType);
-        output.append(" result;\n");
         output.append("  if (invocation.take_result == NULL) abort();\n");
-        output.append("  invocation.take_result(invocation.task, &result);\n");
+        appendInvocationResultTake(inout output, program, functionType.returnType, returnType);
       }
       output.append("  if (invocation.destroy != NULL) invocation.destroy(invocation.task);\n");
       output.append("  if (invocation.release_context != NULL) invocation.release_context(invocation.callable_context);\n");
@@ -16813,15 +16999,13 @@ function appendAsyncObjectiveCMethodAwaitHelper(
   output.append("_start_invocation(&executor, receiver");
   for (const argument of functionType.parameters) {
     output.append(", ");
-    appendCBindingName(inout output, argument.name);
+    appendForwardedArgument(inout output, program, argument);
   }
   output.append(");\n  z_stage1_async_enqueue(&executor, invocation.task);\n  while (!invocation.task->completed) { if (!z_stage1_async_drive_one(&executor)) abort(); }\n  if (invocation.task->cancelled) abort();\n");
   if (functionType.returnType.kind != LoweredTypeKind.voidType) {
-    output.append("  ");
-    output.append(returnType);
-    output.append(" result");
-    if (directObjectiveCResult) output.append(" = nil");
-    output.append(";\n  invocation.take_result(invocation.task, &result);\n");
+    if (directObjectiveCResult) {
+      output.append(`  ${returnType} result = nil;\n  invocation.take_result(invocation.task, &result);\n`);
+    } else appendInvocationResultTake(inout output, program, functionType.returnType, returnType);
   } else output.append("  invocation.take_result(invocation.task, NULL);\n");
   output.append("  invocation.destroy(invocation.task);\n  z_stage1_async_executor_destroy_external(&executor);\n");
   if (functionType.returnType.kind != LoweredTypeKind.voidType) {
@@ -24558,6 +24742,30 @@ function appendFunctionTypeLayout(
   output.append(";\n\n");
 }
 
+// A parameter forwarded to another call: a by-value C++ argument moves (it
+// may be move-only).
+function appendForwardedArgument(
+  inout output: TextBuffer, in program: LoweredProgram, in parameter: LoweredParameter
+): void {
+  const movesCxx = parameter.mode == LoweredParameterMode.value
+    && loweredTypeHoldsCxx(program.cxxValueTypes, program.structs, program.enums, parameter.type, 0);
+  if (movesCxx) output.append("std::move(");
+  appendCBindingName(inout output, parameter.name);
+  if (movesCxx) output.append(")");
+}
+
+// A finished invocation's result in a new local `result`; a C++ value is
+// constructed by take_result in raw storage.
+function appendInvocationResultTake(
+  inout output: TextBuffer, in program: LoweredProgram, in type: LoweredType, in returnType: String
+): void {
+  if (loweredTypeHoldsCxx(program.cxxValueTypes, program.structs, program.enums, type, 0)) {
+    output.append(`  ${returnType} result = Z_FrameCxx<${returnType}>::take(invocation.take_result, invocation.task);\n`);
+    return;
+  }
+  output.append(`  ${returnType} result;\n  invocation.take_result(invocation.task, &result);\n`);
+}
+
 function appendFunctionTypeHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -24605,7 +24813,7 @@ function appendFunctionTypeHelpers(
   } else output.append("value.call(value.context");
   for (const parameter of declaration.parameters) {
     output.append(", ");
-    appendCBindingName(inout output, parameter.name);
+    appendForwardedArgument(inout output, program, parameter);
   }
   output.append(");\n}\n\n");
   output.append("static inline __attribute__((unused)) void Z_");
@@ -27763,7 +27971,13 @@ function emitLoweredC(
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
   output.append("#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n");
-  if (programUsesCxxMoves(program)) output.append("#if defined(__cplusplus)\n#include <memory>\n#include <utility>\n#endif\n");
+  if (programUsesCxxMoves(program)) {
+    output.append("#if defined(__cplusplus)\n#include <memory>\n#include <new>\n#include <utility>\n");
+    // An async frame is calloc'd: a C++ value it holds is raw storage that
+    // the frame constructs at initialization and destroys with the frame.
+    output.append("template <typename T> struct Z_FrameCxx {\n  alignas(T) unsigned char storage[sizeof(T)];\n  bool constructed;\n  T &get() { return *std::launder(reinterpret_cast<T *>(storage)); }\n  template <typename U> void init(U &&value) {\n    reset();\n    ::new (static_cast<void *>(storage)) T(std::forward<U>(value));\n    constructed = true;\n  }\n  void reset() {\n    if (!constructed) return;\n    constructed = false;\n    std::destroy_at(&get());\n  }\n  // Takes a finished child's result: take_result constructs it in raw storage.\n  template <typename F, typename A> static T take(F take_result, A *task) {\n    Z_FrameCxx slot = {};\n    take_result(task, static_cast<void *>(slot.storage));\n    slot.constructed = true;\n    T value(std::move(slot.get()));\n    slot.reset();\n    return value;\n  }\n};\n");
+    output.append("#endif\n");
+  }
   if (usesObjectiveCDataCopy || usesObjectiveCDataBorrow) {
     output.append("#import <Foundation/Foundation.h>\n");
   }

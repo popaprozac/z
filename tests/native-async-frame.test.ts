@@ -175,7 +175,7 @@ test("hoists awaits nested in expressions ahead of their statement in general na
   const expected = "baseline 0 missing -3 sum 42 total 42 joined 6\nexpected\nunexpected\n";
   execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
   const source = emit(fixture);
-  assert.match(source, /_z_stage1_frame_binding__z_await_value_\d+ = _z_child_result_\d+;/);
+  assert.match(source, /frame->_z_binding__z_await_value_\d+ = _z_child_result_\d+;/);
   execute(source, expected);
 
   // An owned nested result needs a frame slot handoff: both compilers reject it.
