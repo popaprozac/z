@@ -288,8 +288,10 @@ function cxxValueTierLimit(
   }
   match (genericTypeShape(name)) {
     some(generic) => {
-      // An Array constructs, moves, and destroys C++ elements in place.
-      const elementStorage = generic.base == "Array" && generic.arguments.length == 1;
+      // An Array constructs, moves, and destroys C++ elements in place; an
+      // Option or Result is a C++-payload enum like a Z enum.
+      const elementStorage = (generic.base == "Array" && generic.arguments.length == 1)
+        || generic.base == "Option" || generic.base == "Result";
       for (const argument of generic.arguments) {
         const limit = cxxValueTierLimit(graph, moduleIndex, argument, !elementStorage, depth + 1);
         if (limit.byteLength > 0) return limit;
@@ -315,8 +317,10 @@ function cxxValueTierLimit(
             const limit = cxxValueTierLimit(graph, location.moduleIndex, field.typeName, heapOwned, depth + 1);
             if (limit.byteLength > 0) return limit;
           }
+          // A Z enum with a C++ payload is a C++ struct with an explicit
+          // union lifetime; its payloads are storage like struct fields.
           for (const variant of signature.variants) {
-            const limit = cxxValueTierLimit(graph, location.moduleIndex, variant.payloadType, true, depth + 1);
+            const limit = cxxValueTierLimit(graph, location.moduleIndex, variant.payloadType, heapOwned, depth + 1);
             if (limit.byteLength > 0) return limit;
           }
         }

@@ -5025,6 +5025,65 @@ function appendCallArgument(
   else try appendExpression(inout output, declaration, value);
 }
 
+// An enum with a C++ payload is a C++ struct: its union member is constructed
+// and destroyed explicitly, as Stage 0's generateNativeMoveEnum. Values are
+// built through `make_<case>` factories; Z cleanup of Z payloads stays in the
+// enum's Z deinit helper and runs before the C++ destructor.
+function appendCxxPayloadEnum(
+  inout output: TextBuffer,
+  in declaration: LoweredEnum
+): void throws String {
+  const name = `Z_${declaration.name}`;
+  const tag = `${name}Tag`;
+  output.append(`struct ${name} {\n  ${tag} tag;\n  union ${name}_Payload {\n`);
+  for (const variant of declaration.variants) {
+    match (in variant.payload) {
+      some(type) => {
+        const payloadType = try cType(type);
+        output.append(`    ${payloadType} ${variant.name};\n`);
+      }
+      none => {}
+    }
+  }
+  output.append(`    ${name}_Payload() {}\n    ~${name}_Payload() {}\n  } payload;\n`);
+  output.append(`  explicit ${name}(${tag} value) : tag(value) {}\n`);
+  let moveCases = TextBuffer();
+  let copyCases = TextBuffer();
+  let destroyCases = TextBuffer();
+  for (const variant of declaration.variants) {
+    match (in variant.payload) {
+      some(_) => {
+        moveCases.append(`      case ${tag}_${variant.name}: std::construct_at(&payload.${variant.name}, std::move_if_noexcept(other.payload.${variant.name})); break;\n`);
+        copyCases.append(`      case ${tag}_${variant.name}: std::construct_at(&payload.${variant.name}, other.payload.${variant.name}); break;\n`);
+        destroyCases.append(`      case ${tag}_${variant.name}: std::destroy_at(&payload.${variant.name}); break;\n`);
+      }
+      none => {}
+    }
+  }
+  const moves = moveCases.finish();
+  const copies = copyCases.finish();
+  const destroys = destroyCases.finish();
+  output.append(`  ${name}(${name} &&other) noexcept : tag(other.tag) {\n    switch (tag) {\n${moves}      default: break;\n    }\n  }\n`);
+  if (declaration.cxxMoveOnlyPayloads) {
+    output.append(`  ${name}(const ${name} &) = delete;\n  ${name} &operator=(const ${name} &) = delete;\n`);
+  } else {
+    output.append(`  ${name}(const ${name} &other) : tag(other.tag) {\n    switch (tag) {\n${copies}      default: break;\n    }\n  }\n`);
+    output.append(`  ${name} &operator=(const ${name} &other) {\n    if (this != &other) { this->~${name}(); std::construct_at(this, other); }\n    return *this;\n  }\n`);
+  }
+  output.append(`  ${name} &operator=(${name} &&other) noexcept {\n    if (this != &other) { this->~${name}(); std::construct_at(this, std::move(other)); }\n    return *this;\n  }\n`);
+  output.append(`  ~${name}() {\n    switch (tag) {\n${destroys}      default: break;\n    }\n  }\n`);
+  for (const variant of declaration.variants) {
+    match (in variant.payload) {
+      some(type) => {
+        const payloadType = try cType(type);
+        output.append(`  static ${name} make_${variant.name}(${payloadType} value) {\n    ${name} result(${tag}_${variant.name});\n    std::construct_at(&result.payload.${variant.name}, std::move_if_noexcept(value));\n    return result;\n  }\n`);
+      }
+      none => output.append(`  static ${name} make_${variant.name}() { return ${name}(${tag}_${variant.name}); }\n`);
+    }
+  }
+  output.append(`};\ntypedef struct ${name} ${name};\n\n`);
+}
+
 // Destroy C++ elements last-to-first: Z cleanup of their Z members (when the
 // element also owns Z storage), then the C++ destructor.
 function appendCxxElementDestruction(
@@ -5046,6 +5105,9 @@ function appendCxxElementDestruction(
 function programUsesCxxMoves(in program: LoweredProgram): boolean {
   for (const declaration of program.arrays) {
     if (declaration.cxxElements) return true;
+  }
+  for (const declaration of program.enums) {
+    if (declaration.cxxPayloads) return true;
   }
   for (const function_ of program.functions) {
     for (const expression of function_.expressions) {
@@ -7727,6 +7789,10 @@ function appendExpression(
       return;
     }
     if (declaration.expressions[index].labels.length == 2) {
+      if (declaration.expressions[index].cxxEnumFactory) {
+        output.append(`Z_${declaration.expressions[index].value}::make_${declaration.expressions[index].labels[0]}()`);
+        return;
+      }
       output.append("(Z_");
       output.append(declaration.expressions[index].value);
       output.append("){.tag = Z_");
@@ -7764,6 +7830,12 @@ function appendExpression(
       }
       const payload = declaration.expressions[index].children[0];
       try appendExpression(inout output, declaration, payload);
+      return;
+    }
+    if (declaration.expressions[index].cxxEnumFactory) {
+      output.append(`Z_${declaration.expressions[index].value}::make_${declaration.expressions[index].labels[0]}(`);
+      try appendExpression(inout output, declaration, declaration.expressions[index].children[0]);
+      output.append(")");
       return;
     }
     output.append("(Z_");
@@ -8838,11 +8910,15 @@ function appendEnumMatchStart(
     output.append(matchTemporary);
     output.append(" = ");
     match (in declaration.statements[index].expression) {
-      some(subject) => try appendExpression(
-        inout output,
-        declaration,
-        subject
-      );
+      some(subject) => {
+        // A C++-payload enum place is moved into the match temporary.
+        const movePlace = declaration.statements[index].cppPayload
+          && (declaration.expressions[subject].kind == LoweredExpressionKind.localValue
+            || declaration.expressions[subject].kind == LoweredExpressionKind.fieldValue);
+        if (movePlace) output.append("std::move(");
+        try appendExpression(inout output, declaration, subject);
+        if (movePlace) output.append(")");
+      }
       none => throw "native C emission received a match without a subject";
     }
     output.append(";\n");
@@ -8953,14 +9029,19 @@ function appendEnumMatchArmStart(
           || type.kind == LoweredTypeKind.foreignObjCType
           || cTypeIsPointer(payloadType)
         );
+      const cppPayload = declaration.statements[index].cppPayload;
+      const cppConsumed = cppPayload && declaration.statements[index].matchConsumesSubject;
       if (
         !declaration.statements[arm].matchBindingNeedsCleanup
         && !nicheViewOption
         && !constantClassPayload
+        && !cppConsumed
       ) {
         output.append("const ");
       }
       output.append(payloadType);
+      // A borrowed C++ payload binds by reference; a consumed one is moved out.
+      if (cppPayload && !cppConsumed) output.append(" &");
       if (constantClassPayload) output.append(" const");
       if (
         nicheViewOption
@@ -8986,6 +9067,7 @@ function appendEnumMatchArmStart(
           ? "z_stage1_objc_take(&"
           : "z_stage1_objc_borrow(&");
       }
+      if (cppConsumed) output.append("std::move_if_noexcept(");
       if (declaration.statements[index].matchConsumesSubject || !nicheViewOption) {
         output.append(matchTemporary);
       } else {
@@ -9011,6 +9093,7 @@ function appendEnumMatchArmStart(
         output.append(declaration.statements[arm].name);
       }
       if (objectiveCPayload) output.append(")");
+      if (cppConsumed) output.append(")");
       output.append(";\n");
       if (declaration.statements[arm].liveFlag.byteLength > 0) {
         appendIndent(inout output, depth + 2);
@@ -9307,7 +9390,11 @@ function appendStatement(
         output.append(`_deinit(_z_stage1_assignment_slot_${index});\n`);
       }
       appendIndent(inout output, depth);
-      output.append(`*_z_stage1_assignment_slot_${index} = _z_stage1_assignment_${index};\n`);
+      if (declaration.statements[index].cppMoveStorage) {
+        output.append(`*_z_stage1_assignment_slot_${index} = std::move_if_noexcept(_z_stage1_assignment_${index});\n`);
+      } else {
+        output.append(`*_z_stage1_assignment_slot_${index} = _z_stage1_assignment_${index};\n`);
+      }
       if (declaration.statements[index].cleanups[0].guard.byteLength > 0) {
         appendIndent(inout output, depth);
         output.append(declaration.statements[index].cleanups[0].guard);
@@ -23217,7 +23304,9 @@ function appendEnumDefinition(
   output.append(program.enums[index].name);
   if (program.enums[index].payloadBearing) output.append("Tag");
   output.append(";\n\n");
-  if (program.enums[index].payloadBearing) {
+  if (program.enums[index].payloadBearing && program.enums[index].cxxPayloads) {
+    try appendCxxPayloadEnum(inout output, program.enums[index]);
+  } else if (program.enums[index].payloadBearing) {
     output.append("typedef struct Z_");
     output.append(program.enums[index].name);
     output.append(" {\n  Z_");
@@ -24350,6 +24439,17 @@ function appendArrayPopRuntime(
     }
     if (!supported) continue;
     const elementType = try cType(declaration.elementType);
+    if (declaration.cxxElements) {
+      // The C++ element moves into the Option; its moved-from slot is destroyed.
+      output.append(`static __attribute__((unused)) Z_${optionName} Z_${declaration.name}_pop(Z_${declaration.name} *self) {\n`);
+      output.append(`  if (self->length == 0) return Z_${optionName}::make_none();\n`);
+      output.append("  self->length -= 1;\n");
+      output.append(`  ${elementType} *items = (${elementType} *)self->data;\n`);
+      output.append(`  Z_${optionName} result = Z_${optionName}::make_some(std::move_if_noexcept(items[self->length]));\n`);
+      output.append("  std::destroy_at(&items[self->length]);\n");
+      output.append("  return result;\n}\n\n");
+      continue;
+    }
     output.append(`static __attribute__((unused)) Z_${optionName} Z_${declaration.name}_pop(Z_${declaration.name} *self) {\n`);
     output.append(`  if (self->length == 0) return (Z_${optionName}){ .tag = Z_${optionName}Tag_none };\n`);
     output.append("  self->length -= 1;\n");

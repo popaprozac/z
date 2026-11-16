@@ -223,6 +223,10 @@ export struct LoweredEnum {
   variants: Array<LoweredVariant>;
   payloadBearing: boolean;
   needsDeinit: boolean;
+  // A payload holds a C++ value: the enum is a C++ struct whose union member
+  // is constructed and destroyed explicitly, built through factories.
+  cxxPayloads: boolean = false;
+  cxxMoveOnlyPayloads: boolean = false;
 }
 
 export struct LoweredVariant {
@@ -419,6 +423,8 @@ export struct LoweredExpression {
   objectiveCBlockNativeType: String = "";
   objectiveCReceiverNativeType: String = "";
   objectiveCOwnedPayload: boolean = false;
+  // Builds a C++-payload enum: emitted as its `make_<case>` factory.
+  cxxEnumFactory: boolean = false;
   objectiveCReceiverHandoff: boolean = false;
   objectiveCHandoffReturnType: String = "";
   objectiveCHandoffParameterTypes: Array<String> = Array<String>();
@@ -514,6 +520,8 @@ export struct LoweredStatement {
   foreignMatchFallback: boolean = false;
   // A local that C++ moves from (`std::move`) is never const storage.
   cppMoveStorage: boolean = false;
+  // A match over a C++-payload enum: payloads bind by reference or move.
+  cppPayload: boolean = false;
 }
 
 export struct LoweredCleanup {
@@ -7923,6 +7931,126 @@ function lendCleanupFreeTemporary(
   );
 }
 
+function collectCxxTypeNames(
+  in importedTypes: Array<LoweredImportedType>,
+  inout values: Array<String>,
+  inout moveOnly: Array<String>
+): void {
+  for (const imported of importedTypes) {
+    if (!imported.cxxValue || containsString(values, imported.targetName)) continue;
+    values.push(copy imported.targetName);
+    if (imported.cxxMoveOnly) moveOnly.push(copy imported.targetName);
+  }
+}
+
+function loweredTypeHoldsCxx(
+  in cxxNames: Array<String>,
+  in structs: Array<LoweredStruct>,
+  in enums: Array<LoweredEnum>,
+  in type: LoweredType,
+  depth: usize
+): boolean {
+  if (depth > 12) return false;
+  if (type.kind == LoweredTypeKind.foreignStructType) return containsString(cxxNames, type.name);
+  if (type.kind == LoweredTypeKind.structType) {
+    for (const declaration of structs) {
+      if (declaration.name != type.name) continue;
+      if (declaration.referenceType) return false;
+      for (const field of declaration.fields) {
+        if (loweredTypeHoldsCxx(cxxNames, structs, enums, field.type, depth + 1)) return true;
+      }
+      return false;
+    }
+  }
+  if (type.kind == LoweredTypeKind.enumType) {
+    for (const declaration of enums) {
+      if (declaration.name != type.name) continue;
+      for (const variant of declaration.variants) {
+        match (in variant.payload) {
+          some(payload) => {
+            if (loweredTypeHoldsCxx(cxxNames, structs, enums, payload, depth + 1)) return true;
+          }
+          none => {}
+        }
+      }
+      return false;
+    }
+  }
+  return false;
+}
+
+// Enums with C++ payloads are C++ structs: mark them, their constructions
+// (factories), and matches over them (payloads bind by reference or move).
+function markCxxEnumStorage(
+  in cxxValueNames: Array<String>,
+  in cxxMoveOnlyNames: Array<String>,
+  in structs: Array<LoweredStruct>,
+  inout enums: Array<LoweredEnum>,
+  inout functions: Array<LoweredFunction>
+): void {
+  if (cxxValueNames.length == 0) return;
+  let cxxEnumNames = Array<String>();
+  let index: usize = 0;
+  while (index < enums.length) {
+    let holds = false;
+    let moveOnly = false;
+    for (const variant of enums[index].variants) {
+      match (in variant.payload) {
+        some(payload) => {
+          if (loweredTypeHoldsCxx(cxxValueNames, structs, enums, payload, 0)) holds = true;
+          if (loweredTypeHoldsCxx(cxxMoveOnlyNames, structs, enums, payload, 0)) moveOnly = true;
+        }
+        none => {}
+      }
+    }
+    if (holds) {
+      enums[index].cxxPayloads = true;
+      enums[index].cxxMoveOnlyPayloads = moveOnly;
+      cxxEnumNames.push(copy enums[index].name);
+    }
+    index = index + 1;
+  }
+  // A replacement assignment of C++ storage moves its staged value in.
+  let assignmentFunction: usize = 0;
+  while (assignmentFunction < functions.length) {
+    let statementIndex: usize = 0;
+    while (statementIndex < functions[assignmentFunction].statements.length) {
+      if (
+        functions[assignmentFunction].statements[statementIndex].kind == LoweredStatementKind.assignmentStatement
+        && functions[assignmentFunction].statements[statementIndex].cleanups.length == 1
+        && loweredTypeHoldsCxx(
+          cxxValueNames, structs, enums,
+          functions[assignmentFunction].statements[statementIndex].cleanups[0].type, 0
+        )
+      ) functions[assignmentFunction].statements[statementIndex].cppMoveStorage = true;
+      statementIndex = statementIndex + 1;
+    }
+    assignmentFunction = assignmentFunction + 1;
+  }
+  if (cxxEnumNames.length == 0) return;
+  let functionIndex: usize = 0;
+  while (functionIndex < functions.length) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < functions[functionIndex].expressions.length) {
+      const kind = functions[functionIndex].expressions[expressionIndex].kind;
+      if (
+        (kind == LoweredExpressionKind.enumValue || kind == LoweredExpressionKind.enumPayloadValue)
+        && containsString(cxxEnumNames, functions[functionIndex].expressions[expressionIndex].value)
+      ) functions[functionIndex].expressions[expressionIndex].cxxEnumFactory = true;
+      expressionIndex = expressionIndex + 1;
+    }
+    let statementIndex: usize = 0;
+    while (statementIndex < functions[functionIndex].statements.length) {
+      if (
+        functions[functionIndex].statements[statementIndex].kind == LoweredStatementKind.matchStatement
+        && containsString(cxxEnumNames, functions[functionIndex].statements[statementIndex].name)
+      ) functions[functionIndex].statements[statementIndex].cppPayload = true;
+      statementIndex = statementIndex + 1;
+    }
+    functionIndex = functionIndex + 1;
+  }
+}
+
 // A local that C++ moves from cannot be const storage: std::move of a const
 // object would select the (deleted) copy constructor.
 function markCxxMovedLocals(inout functions: Array<LoweredFunction>): void {
@@ -8038,6 +8166,28 @@ function moduleTypeHoldsCxx(
         imported.kind == type.kind
         && (imported.localName == type.name || imported.targetName == type.name)
       ) return moveOnly ? imported.cxxMoveOnly : imported.cxxValue;
+    }
+    return false;
+  }
+  if (type.kind == LoweredTypeKind.enumType) {
+    match (enumIndex(program, type.name)) {
+      some(index) => {
+        for (const variant of program.enums[index].variants) {
+          match (in variant.payload) {
+            some(payload) => {
+              const lowered = attempt lowerModuleType(program, importedTypes, payload);
+              match (lowered) {
+                success(payloadType) => {
+                  if (moduleTypeHoldsCxx(program, importedTypes, payloadType, depth + 1, moveOnly)) return true;
+                }
+                failure(_) => {}
+              }
+            }
+            none => {}
+          }
+        }
+      }
+      none => {}
     }
     return false;
   }
@@ -35816,6 +35966,10 @@ function lowerProgramUnchecked(
   rewriteNativeCExportCallTargets(inout functions);
   annotateObjectiveCEnumPayloads(enums, inout functions);
   markCxxMovedLocals(inout functions);
+  let cxxValueNames = Array<String>();
+  let cxxMoveOnlyNames = Array<String>();
+  collectCxxTypeNames(importedTypes, inout cxxValueNames, inout cxxMoveOnlyNames);
+  markCxxEnumStorage(cxxValueNames, cxxMoveOnlyNames, structs, inout enums, inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
@@ -36160,6 +36314,8 @@ function lowerModulesIncludingTests(
   in demands: LoweredGenericDemands,
   in instances: LoweredGenericInstanceEvidence
 ): LoweredProgram throws String {
+  let cxxValueNames = Array<String>();
+  let cxxMoveOnlyNames = Array<String>();
   let alignedModuleIndex: usize = 0;
   let objectiveCSubclasses = Array<ModuleObjCSubclassPlan>();
   for (const module of graph.modules) {
@@ -36232,6 +36388,7 @@ function lowerModulesIncludingTests(
       failure(message) => throw
         `${parsed[moduleIndex].path}: native import lowering: ${message}`;
     };
+    collectCxxTypeNames(importedTypes, inout cxxValueNames, inout cxxMoveOnlyNames);
     // Generic aggregate specializations can be owned by a framework module
     // while their concrete arguments are declared by a downstream consumer.
     // Preserve those canonical argument types without introducing a source
@@ -36534,6 +36691,7 @@ function lowerModulesIncludingTests(
   rewriteNativeCExportCallTargets(inout functions);
   annotateObjectiveCEnumPayloads(enums, inout functions);
   markCxxMovedLocals(inout functions);
+  markCxxEnumStorage(cxxValueNames, cxxMoveOnlyNames, structs, inout enums, inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,

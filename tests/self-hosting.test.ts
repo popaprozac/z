@@ -11033,6 +11033,7 @@ test("compiles a multi-module Z application through the standalone native driver
     // with C++ move counts matching Stage 0.
     "examples/interop/cpp/cpp-move-only.zs",
     "examples/interop/cpp/cpp-references.zs",
+    "tests/fixtures/native-cpp-option.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
@@ -11063,7 +11064,7 @@ test("compiles a multi-module Z application through the standalone native driver
     // Namespaces and overloads check natively; aggregate interpolation is a separate tier.
     ["examples/interop/cpp/cpp-interop.zs", /12:121: error\[Z1000\]: template interpolation of "cpp\.zcpp\.Point" is not executable in the native compiler yet/],
     // C++ values in union, collection, or Arena storage are a later tier.
-    ["examples/interop/cpp/cpp-move-only-enum.zs", /41:9: error\[Z1000\]: C\+\+ value "zcpp::UniqueValue" stored in a class, Option, Result, enum payload, or collection is not executable in the native compiler yet/],
+    ["examples/language/collections/map-native-values.zs", /5:7: error\[Z1000\]: C\+\+ value "zcpp::UniqueValue" stored in a class, Option, Result, enum payload, or collection is not executable in the native compiler yet/],
     ["examples/interop/cpp/cpp-arena.zs", /11:30: error\[Z1000\]: C\+\+ values stored in an Arena are not executable in the native compiler yet/],
   ];
   for (const [entry, message] of tierLimits) {
@@ -11154,6 +11155,8 @@ test("compiles a multi-module Z application through the standalone native driver
   // copyable C++ elements, so the copyable fixture is native-only.
   for (const [entry, expected] of [
     ["examples/interop/cpp/cpp-move-only-array.zs", /^array answer=42, moves=[1-9][0-9]*, live=0\n$/],
+    // C++-payload enums elide a staged replacement move Stage 0 performs.
+    ["examples/interop/cpp/cpp-move-only-enum.zs", /^enum answer=42, moves=[1-9][0-9]*, live=0\n$/],
     ["tests/fixtures/native-cpp-array-values.zs", /^len=1 copies=3 drops=5 live=1\n$/],
   ] as const) {
     const run = spawnSync(driver, ["run", resolve(projectRoot, entry)], {
