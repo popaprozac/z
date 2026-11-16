@@ -9,6 +9,7 @@ import {
   ParameterMode,
   Program,
   ReceiverMode,
+  Statement,
   StatementArena,
   StatementKind,
   TypeNameReference,
@@ -3031,6 +3032,11 @@ function nativeYieldFrameStorageSupported(
   if (nullable.byteLength > 0) {
     return nativeYieldFrameStorageSupported(modules, graph, moduleIndex, nullable, visiting);
   }
+  // A fixed array is inline storage of its elements.
+  match (fixedArrayShape(name)) {
+    some(shape) => return nativeYieldFrameStorageSupported(modules, graph, moduleIndex, shape.elementType, visiting);
+    none => {}
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       // A frame's Task<T> local is its spawn's invocation slot (the shape rule
@@ -3193,6 +3199,55 @@ function validateYieldFrameStorage(
   }
 }
 
+// An await the frame hoists ahead of its statement holds its result in a
+// frame temporary; as in Stage 0, that result must be cleanup-free (Stage 0
+// also hoists owned Results, which this tier does not yet).
+function validateHoistedAwaitResults(
+  in path: String,
+  moduleIndex: usize,
+  in graph: ModuleGraph,
+  in statement: Statement,
+  in tree: ExpressionTree,
+  statementRoot: boolean
+): void throws ModuleResolveError {
+  let handled = tree.nodes.length;
+  // A whole assigned or selected value moves straight into its destination.
+  if ((statementRoot && statement.kind == StatementKind.selectStatement)
+    || (!statementRoot && statement.kind == StatementKind.assignmentStatement)) {
+    handled = tree.root;
+  }
+  if (statementRoot && (statement.kind == StatementKind.variableStatement
+    || statement.kind == StatementKind.expressionStatement
+    || statement.kind == StatementKind.returnStatement)) {
+    handled = tree.root;
+    if ((tree.nodes[handled].kind == ExpressionKind.tryExpression
+      || tree.nodes[handled].kind == ExpressionKind.attemptExpression)
+      && tree.nodes[handled].children.length == 1) handled = tree.nodes[handled].children[0];
+  }
+  let index: usize = 0;
+  while (index < tree.nodes.length) {
+    const node = view tree.nodes[index];
+    if (node.kind == ExpressionKind.awaitExpression && index != handled) {
+      // `attempt await f()` hoists the materialized Result.
+      let valueNode = index;
+      let parent: usize = 0;
+      while (parent < tree.nodes.length) {
+        if (tree.nodes[parent].kind == ExpressionKind.attemptExpression
+          && tree.nodes[parent].children.length == 1 && tree.nodes[parent].children[0] == index) valueNode = parent;
+        parent = parent + 1;
+      }
+      const typeName = resolvedExpressionType(graph, moduleIndex, tree, valueNode);
+      const visiting = Array<String>();
+      if (typeName.byteLength == 0 || typeHasCleanup(graph.modules, moduleIndex, typeName, visiting)) {
+        throw loweringBoundary(path, "Z0700",
+          "an ownership-bearing nested await result is not executable yet",
+          node.line, node.column, 5);
+      }
+    }
+    index = index + 1;
+  }
+}
+
 function validateGeneralFrameStorage(
   in path: String,
   moduleIndex: usize,
@@ -3201,6 +3256,22 @@ function validateGeneralFrameStorage(
   in declaration: FunctionDeclaration
 ): void throws ModuleResolveError {
   try validateYieldFrameStorage(path, moduleIndex, modules, graph, declaration);
+  for (const statement of declaration.body.nodes) {
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => try validateHoistedAwaitResults(path, moduleIndex, graph, statement, tree, true);
+        none => {}
+      }
+      none => {}
+    }
+    match (in statement.secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => try validateHoistedAwaitResults(path, moduleIndex, graph, statement, tree, false);
+        none => {}
+      }
+      none => {}
+    }
+  }
   const visiting = Array<String>();
   if (declaration.returnType.name != "void"
     && !nativeYieldFrameStorageSupported(modules, graph, moduleIndex, declaration.returnType.name, visiting)) {
@@ -3271,8 +3342,12 @@ function validateNativeFunction(
     owner
   );
   // Every shape tier rejected this function: the general frame takes it.
+  // A method's frame stores its receiver: a retained class, or a moved struct
+  // (the resolver requires `move this` on async struct methods).
+  const ownerAffinity = nativeOwnerExecutorAffinity(moduleIndex, modules, owner);
   const generalFrame = !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
-    && owner.byteLength == 0 && declaration.name != "main" && parsedModule < modules.length
+    && ownerAffinity.byteLength == 0
+    && declaration.name != "main" && parsedModule < modules.length
     && functionUsesGeneralFrame(modules[parsedModule].program, declaration);
   if (generalFrame) try validateGeneralFrameStorage(path, moduleIndex, modules, graph, declaration);
   if (declaration.asynchronous && declaration.name != "main"

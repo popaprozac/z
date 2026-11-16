@@ -1,6 +1,6 @@
 import {
   assert, cli, compileToC, mkdtempSync, projectRoot, readFileSync,
-  resolve, rmSync, spawnSync, test, bindGeneratedNames,
+  resolve, rmSync, spawnSync, test, bindGeneratedNames, writeFileSync,
 } from "./support/bootstrap.ts";
 
 // General native async frames: suspending functions that no shape tier claims.
@@ -99,6 +99,35 @@ int main(void) {
   }
   if (!lender.task->cancelled || executor.timers != NULL) return 19;
   lender.destroy(lender.task);
+
+  // A frame cancelled inside a scope joins its child, then releases the
+  // scope's local once.
+  Z_AsyncInvocation scope = _z_stage1_yield_scoped_start(&executor);
+  z_stage1_async_enqueue(&executor, scope.task);
+  for (int tick = 0; executor.timers == NULL; ++tick) {
+    if (tick > 4 || !z_stage1_async_drive_one(&executor)) return 20;
+  }
+  z_stage1_async_request_cancel(scope.task);
+  for (int tick = 0; !scope.task->completed; ++tick) {
+    if (tick > 8 || !z_stage1_async_drive_one(&executor)) return 21;
+  }
+  if (!scope.task->cancelled || executor.timers != NULL) return 22;
+  scope.destroy(scope.task);
+
+  // A frame cancelled inside a suspending match arm releases the arm's owned
+  // payload once.
+  Z_AsyncInvocation arm = _z_stage1_yield_holding_start(&executor,
+    (Z_Holder){ .tag = Z_HolderTag_held, .payload = { .held = (Z_Job){ .id = 50 } } });
+  z_stage1_async_enqueue(&executor, arm.task);
+  for (int tick = 0; executor.timers == NULL; ++tick) {
+    if (tick > 4 || !z_stage1_async_drive_one(&executor)) return 23;
+  }
+  z_stage1_async_request_cancel(arm.task);
+  for (int tick = 0; !arm.task->completed; ++tick) {
+    if (tick > 8 || !z_stage1_async_drive_one(&executor)) return 24;
+  }
+  if (!arm.task->cancelled || executor.timers != NULL) return 25;
+  arm.destroy(arm.task);
   if (z_stage1_async_now_ms() - started > 5000) return 10;
   return 0;
 }`;
@@ -106,7 +135,7 @@ int main(void) {
     + "sleeping 11\nsleeping 12\nreleased job 11\nreleased job 12\nreleased job 10\n"
     // A dropped frame destroys its children in reverse order, as Stage 0 does.
     + "sleeping 21\nsleeping 22\nreleased job 22\nreleased job 21\nreleased job 20\n"
-    + "released job 30\n");
+    + "released job 30\nreleased job 40\nreleased job 50\n");
 }, 240_000);
 
 test("runs async main as a general native frame when it awaits timers directly", () => {
@@ -138,5 +167,68 @@ test("passes borrowed parameters and frame borrow temporaries to general native 
   execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
   const source = emit(fixture);
   assert.match(source, /_z_await_borrow_\d+_1_live = true;/);
+  execute(source, expected);
+}, 240_000);
+
+test("hoists awaits nested in expressions ahead of their statement in general native frames", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/native-async-frame-hoisted.zs");
+  const expected = "baseline 0 missing -3 sum 42 total 42 joined 6\nexpected\nunexpected\n";
+  execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
+  const source = emit(fixture);
+  assert.match(source, /_z_stage1_frame_binding__z_await_value_\d+ = _z_child_result_\d+;/);
+  execute(source, expected);
+
+  // An owned nested result needs a frame slot handoff: both compilers reject it.
+  const directory = mkdtempSync("/tmp/z-async-frame-hoist-boundary-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const program = `import { delay } from "std/time";
+function size(text: String): usize { return text.byteLength; }
+async function name(): String {
+  await delay(1);
+  return "named";
+}
+async function main(): i32 {
+  await delay(1);
+  const count = size(await name());
+  return i32(count) - 5;
+}`;
+    writeFileSync(input, program);
+    assert.throws(() => compileToC(program, input), /an ownership-bearing nested await result is not executable yet/);
+    const result = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /main\.zs:9:22: error\[Z0700\]: an ownership-bearing nested await result is not executable yet/);
+    assert.doesNotMatch(result.stderr, /internal compiler error/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
+test("keeps async scope locals in general native frames until the scope joins its children", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/native-async-frame-scope-locals.zs");
+  const expected = "inspected 2\ninspected 1\nobserved 1\nreleased report 2\nreleased report 1\nscope closed\n"
+    + "inspected 10\nreleased report 10\ninspected 11\nreleased report 11\nsum 42\n";
+  execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
+  execute(emit(fixture), expected);
+}, 240_000);
+
+test("keeps suspending match arm payloads in general native frames", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/native-async-frame-match-arms.zs");
+  const expected = "released job 1\nreleased job 2\nresolved 1 2 -3\nconsumed cached 6\nreleased job 6\n"
+    + "consume done\nconsumed missing 7\nconsume done\n";
+  execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
+  const source = emit(fixture);
+  assert.match(source, /_z_stage1_frame_binding__z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\./);
+  execute(source, expected);
+}, 240_000);
+
+test("runs, spawns, and joins class, moved-struct, and static async methods in general native frames", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/native-async-frame-methods.zs");
+  const expected = "forwarded 6 temporary 9\nreleased request 7\nreleased request 8\nspawned 9 8\n"
+    + "sent 7 code 5 echoes 11 13\nreleased client 9\nreleased client 5\n";
+  execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
+  const source = emit(fixture);
+  assert.match(source, /#define self \(frame->_z_receiver\)/);
+  assert.match(source, /frame->_z_receiver = Z_Client_retain\(receiver\);/);
   execute(source, expected);
 }, 240_000);

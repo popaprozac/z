@@ -1410,7 +1410,17 @@ frame so its body waits for the executor. This general frame also takes
 caller's storage, a caller passes the address of its own frame storage, and a
 fresh `in` argument of an awaited call lives in the caller's frame until the
 child completes. `let x: T;` locals are zeroed frame storage that is not yet
-live. Cancellation before
+live. An unnamed `async scope`'s own locals, task locals included, live in the
+frame too (local names must be unique in the function): the scope joins its
+children first, then releases its locals newest first, and a frame cancelled
+inside the scope releases them once. Fixed arrays are frame storage. Async
+methods take the frame too: a class receiver is retained by the frame, a
+`move this` struct receiver is owned by it (moving it into a child method
+clears its live flag), awaited methods start through their await-site helper
+(which forwards to the callee's frame when it has one), and a static async
+method awaits like a named function. `task receiver.method(args)` starts a
+method as a hot child the same way. As in Stage 0, an async struct method
+must take `move this` (Z0704). Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument
@@ -1431,9 +1441,15 @@ children, borrowed matches, wildcard cleanup, early return/throw/`try`, and
 loop exits. Match payloads stay in lexical storage and finish before the next
 suspension. Root owned locals may also be initialized by a synchronous match;
 returning or throwing arms leave the destination uninitialized, with cleanup
-tested before and after frame entry. Awaited subjects, suspension inside arms,
-and destructured patterns remain outside this native frame tier. Borrowed child arguments, method/placed
-awaits, nested awaited expressions, and nested source locals remain separate
+tested before and after frame entry. Awaits nested in an expression (operands,
+assignment values, `if` conditions, and match subjects) run first, in evaluation
+order, into frame temporaries, as in Stage 0; like Stage 0, the frame rejects an
+ownership-bearing nested await result, and it also does not yet hoist owned
+Results. A match arm may suspend: its payload then lives in the frame, and an
+owned payload is released at arm end, moved out, or released by cancellation,
+once; `return match (...)` arms included. Destructured payload patterns, and
+C++, foreign, and view-Option matches with suspending arms, remain outside this
+native frame tier. Method/placed awaits and nested source locals remain separate
 yield-frame boundaries. These reductions alone do not establish application integration. The broader
 `async-owned-destructure.zs` probe covers explicit copy/move, awaited producers,
 scoped child borrows, errors, and cancellation before or after initialization.

@@ -1299,6 +1299,8 @@ function asyncMethodAwaitStartsChild(
   in declaration: LoweredFunction,
   expressionIndex: usize
 ): boolean {
+  // A general async frame starts every awaited method as its child.
+  if (declaration.asyncSuspension == "yield-frame") return true;
   match (asyncTailAwaitShape(program, declaration.name)) {
     some(_) => if (
       declaration.asyncSuspension == "tail-await"
@@ -11179,7 +11181,138 @@ function appendYieldFrameCleanups(
   }
 }
 
+// A statement whose value is an awaited call: the statement itself suspends.
+// Other statements hoist their awaits (yieldFrameNestedAwaits).
+function yieldFrameStatementAwaitsRoot(in declaration: LoweredFunction, index: usize): boolean {
+  const kind = declaration.statements[index].kind;
+  return kind == LoweredStatementKind.localStatement || kind == LoweredStatementKind.expressionStatement
+    || kind == LoweredStatementKind.returnStatement || kind == LoweredStatementKind.tryStatement;
+}
+
+function yieldFrameIsAwait(in declaration: LoweredFunction, index: usize): boolean {
+  const kind = declaration.expressions[index].kind;
+  return kind == LoweredExpressionKind.asyncFunctionAwait || kind == LoweredExpressionKind.frameTaskJoin;
+}
+
+function collectYieldFrameAwaits(
+  in declaration: LoweredFunction, index: usize, skip: usize, inout found: Array<usize>
+): void {
+  if (declaration.expressions[index].kind == LoweredExpressionKind.closureValue) return;
+  if (index != skip) {
+    for (const child of declaration.expressions[index].children) {
+      collectYieldFrameAwaits(declaration, child, skip, inout found);
+    }
+  }
+  if (index != skip && yieldFrameIsAwait(declaration, index)) found.push(index);
+}
+
+// The awaits a statement runs before itself, in evaluation order.
+function yieldFrameNestedAwaits(in declaration: LoweredFunction, index: usize): Array<usize> {
+  let found = Array<usize>();
+  const statement = view declaration.statements[index];
+  match (in statement.expression) {
+    some(root) => {
+      let skip = declaration.expressions.length;
+      if (yieldFrameStatementAwaitsRoot(declaration, index) && yieldFrameIsAwait(declaration, root)) skip = root;
+      collectYieldFrameAwaits(declaration, root, skip, inout found);
+    }
+    none => {}
+  }
+  match (in statement.secondExpression) {
+    some(root) => collectYieldFrameAwaits(declaration, root, declaration.expressions.length, inout found);
+    none => {}
+  }
+  return found;
+}
+
+function collectYieldFrameHoisted(
+  in declaration: LoweredFunction, index: usize, inout found: Array<usize>
+): void {
+  if (declaration.expressions[index].kind == LoweredExpressionKind.closureValue) return;
+  for (const child of declaration.expressions[index].children) {
+    collectYieldFrameHoisted(declaration, child, inout found);
+  }
+  if (declaration.expressions[index].hoistedAwait > 0) found.push(index);
+}
+
+// The frame-temporary nodes standing for a statement's hoisted awaits.
+function yieldFrameHoistedAwaits(in declaration: LoweredFunction, index: usize): Array<usize> {
+  let found = Array<usize>();
+  match (in declaration.statements[index].expression) {
+    some(root) => collectYieldFrameHoisted(declaration, root, inout found);
+    none => {}
+  }
+  match (in declaration.statements[index].secondExpression) {
+    some(root) => collectYieldFrameHoisted(declaration, root, inout found);
+    none => {}
+  }
+  return found;
+}
+
+// Whether the statement's value moves a hoisted await's result straight
+// into its destination: the await is the value's root or sits under enum
+// payload or move construction only.
+function yieldFrameHoistMovesIntoValue(in declaration: LoweredFunction, statementIndex: usize, site: usize): boolean {
+  const statement = view declaration.statements[statementIndex];
+  let current = declaration.expressions.length;
+  if (statement.kind == LoweredStatementKind.assignmentStatement) {
+    match (in statement.secondExpression) { some(value) => current = value; none => {} }
+  } else if (statement.kind == LoweredStatementKind.localStatement
+    || statement.kind == LoweredStatementKind.returnStatement) {
+    match (in statement.expression) { some(value) => current = value; none => {} }
+  }
+  while (current < declaration.expressions.length) {
+    if (current == site) return true;
+    const node = view declaration.expressions[current];
+    if ((node.kind != LoweredExpressionKind.enumValue && node.kind != LoweredExpressionKind.enumPayloadValue
+      && node.kind != LoweredExpressionKind.moveValue) || node.children.length != 1) return false;
+    current = node.children[0];
+  }
+  return false;
+}
+
+// Whether running this statement can suspend the frame.
+function yieldFrameStatementSuspends(in declaration: LoweredFunction, index: usize): boolean {
+  const statement = view declaration.statements[index];
+  if (statement.kind == LoweredStatementKind.delayStatement
+    || statement.kind == LoweredStatementKind.schedulerYieldStatement) return true;
+  const none = declaration.expressions.length;
+  if (yieldFrameAwaitExpression(declaration, index) < none || yieldFrameJoinExpression(declaration, index) < none
+    || yieldFrameCancelExpression(declaration, index) < none || yieldFrameSpawnExpression(declaration, index) < none) return true;
+  const hoisted = yieldFrameHoistedAwaits(declaration, index);
+  if (hoisted.length > 0) return true;
+  for (const child of statement.children) {
+    if (yieldFrameStatementSuspends(declaration, child)) return true;
+  }
+  return false;
+}
+
+// A frame payload the arm owns (released at arm end or by frame cleanup);
+// a borrowed payload is a view of the subject and is never released.
+function yieldFrameArmOwnsPayload(in program: LoweredProgram, in declaration: LoweredFunction, arm: usize): boolean {
+  if (!declaration.statements[arm].matchBindingNeedsCleanup) return false;
+  return match (in declaration.statements[arm].type) {
+    some(type) => loweredTypeNeedsDeinit(program, type);
+    none => false;
+  };
+}
+
+// A match arm that suspends keeps its payload in the frame.
+function yieldFrameArmPayloadInFrame(in declaration: LoweredFunction, arm: usize): boolean {
+  const statement = view declaration.statements[arm];
+  if (statement.kind != LoweredStatementKind.matchArmStatement || statement.labels.length != 1) return false;
+  return match (in statement.type) {
+    some(_) => yieldFrameStatementSuspends(declaration, arm);
+    none => false;
+  };
+}
+
+function yieldFrameHoistedState(in declaration: LoweredFunction, site: usize): usize {
+  return declaration.statements.length * 3 + site;
+}
+
 function yieldFrameAwaitExpression(in declaration: LoweredFunction, index: usize): usize {
+  if (!yieldFrameStatementAwaitsRoot(declaration, index)) return declaration.expressions.length;
   return match (in declaration.statements[index].expression) {
     some(expression) => declaration.expressions[expression].kind == LoweredExpressionKind.asyncFunctionAwait
       ? expression : declaration.expressions.length;
@@ -11205,10 +11338,16 @@ function yieldFrameAwaitType(
   in program: LoweredProgram, in declaration: LoweredFunction, expression: usize
 ): LoweredType throws String {
   const awaited = view declaration.expressions[expression];
+  if (awaited.labels.length > 0 && awaited.labels[0] == "method") {
+    // A method child: its result type is its callable type's.
+    for (const functionType of program.functionTypes) {
+      if (functionType.name == awaited.value && functionType.asynchronous) return copy functionType.returnType;
+    }
+    throw "native yield frame lost its method child result type";
+  }
   if (awaited.children.length == 0
-    || declaration.expressions[awaited.children[0]].kind != LoweredExpressionKind.directFunctionValue
-    || (awaited.labels.length > 0 && awaited.labels[0] == "method")) {
-    throw "native yield frames currently await direct named functions only";
+    || declaration.expressions[awaited.children[0]].kind != LoweredExpressionKind.directFunctionValue) {
+    throw "native yield frames currently await direct named functions or methods only";
   }
   for (const functionType of program.functionTypes) {
     if (functionType.name != awaited.value) continue;
@@ -11258,6 +11397,7 @@ function yieldFrameTaskSlotNamed(in declaration: LoweredFunction, in name: Strin
 
 // `await t` on a spawn-slot task local, as a whole statement's value.
 function yieldFrameJoinExpression(in declaration: LoweredFunction, index: usize): usize {
+  if (!yieldFrameStatementAwaitsRoot(declaration, index)) return declaration.expressions.length;
   return match (in declaration.statements[index].expression) {
     some(expression) => declaration.expressions[expression].kind == LoweredExpressionKind.frameTaskJoin
       ? expression : declaration.expressions.length;
@@ -11298,6 +11438,28 @@ function yieldFrameScopeJoinState(in declaration: LoweredFunction, site: usize):
   return declaration.statements.length * 2 + 1 + site;
 }
 
+// Runs one hoisted await into its frame temporary, under a resume state of
+// its own past every statement-indexed state.
+function appendYieldFrameHoistedAwait(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
+  site: usize, depth: usize
+): void throws String {
+  const moved = declaration.expressions[site].hoistedAwait - 1;
+  const virtual = yieldFrameHoistedState(declaration, site);
+  const awaitsCall = declaration.expressions[moved].kind == LoweredExpressionKind.asyncFunctionAwait;
+  const resultType = awaitsCall
+    ? try yieldFrameAwaitType(program, declaration, moved)
+    : try taskResultType(program, declaration.expressions[moved].value);
+  if (awaitsCall) try appendYieldFrameAwait(inout output, program, declaration, virtual, moved, site, depth);
+  else try appendYieldFrameJoin(inout output, program, declaration, virtual, moved, resultType, depth);
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    appendIndent(inout output, depth + 1);
+    output.append(`_z_stage1_frame_binding__z_await_value_${site} = _z_child_result_${virtual};\n`);
+  }
+  appendIndent(inout output, depth);
+  output.append("}\n");
+}
+
 function appendYieldFrameSpawn(
   inout output: TextBuffer, in declaration: LoweredFunction,
   statementIndex: usize, expression: usize, depth: usize
@@ -11310,11 +11472,35 @@ function appendYieldFrameSpawn(
   appendIndent(inout output, depth);
   output.append(`if (${slot}.task != NULL) abort();\n`);
   appendIndent(inout output, depth);
-  output.append(`${slot} = Z_${spawned.value}_start(`);
-  try appendExpression(inout output, declaration, spawned.children[0]);
-  output.append(", task->executor");
-  try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, true);
-  output.append(");\n");
+  if (spawned.labels.length > 0 && spawned.labels[0] == "method") {
+    // A method child starts through its spawn-site helper.
+    const method = view declaration.expressions[spawned.children[0]];
+    if (method.kind != LoweredExpressionKind.methodCall) throw "native async frame spawns Z methods only in this tier";
+    output.append(`${slot} = `);
+    appendAsyncCallableAwaitHelperName(inout output, declaration, expression);
+    output.append("_start_invocation(task->executor");
+    let argument: usize = 0;
+    while (argument < method.children.length) {
+      output.append(", ");
+      const labelIndex = argument + 2;
+      const borrowed = argument > 0 && method.labels.length > labelIndex
+        && (method.labels[labelIndex] == "in" || method.labels[labelIndex] == "inout" || method.labels[labelIndex] == "out");
+      if (borrowed) {
+        if (!yieldFrameBorrowPlace(declaration, method.children[argument])) {
+          throw "native async frame method borrows require named storage in this tier";
+        }
+        try appendAddressOf(inout output, declaration, method.children[argument]);
+      } else try appendExpression(inout output, declaration, method.children[argument]);
+      argument = argument + 1;
+    }
+    output.append(");\n");
+  } else {
+    output.append(`${slot} = Z_${spawned.value}_start(`);
+    try appendExpression(inout output, declaration, spawned.children[0]);
+    output.append(", task->executor");
+    try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, true);
+    output.append(");\n");
+  }
   appendBorrowedTemporaryCleanups(inout output, declaration, expression, depth);
   // A hot child: it runs on this executor once the parent suspends.
   appendIndent(inout output, depth);
@@ -11509,7 +11695,7 @@ function appendYieldFrameBorrowTemporaries(
 
 function appendYieldFrameAwait(
   inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
-  statementIndex: usize, expression: usize, depth: usize
+  statementIndex: usize, expression: usize, helperExpression: usize, depth: usize
 ): void throws String {
   const awaited = view declaration.expressions[expression];
   const resultType = try yieldFrameAwaitType(program, declaration, expression);
@@ -11522,11 +11708,48 @@ function appendYieldFrameAwait(
   output.append("if (frame->child.task != NULL) abort();\n");
   try appendYieldFrameBorrowTemporaries(inout output, program, declaration, statementIndex, expression, depth, false);
   appendIndent(inout output, depth);
-  output.append(`frame->child = Z_${awaited.value}_start(`);
-  try appendExpression(inout output, declaration, awaited.children[0]);
-  output.append(", task->executor");
-  try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, false);
-  output.append(");\n");
+  if (awaited.labels.length > 0 && awaited.labels[0] == "method") {
+    // A method child starts through its await-site helper (generated for the
+    // original expression, before any hoisting moved it).
+    const method = view declaration.expressions[awaited.children[0]];
+    if (method.kind != LoweredExpressionKind.methodCall) {
+      throw "native async frame awaits Z methods only in this tier";
+    }
+    output.append("frame->child = ");
+    appendAsyncCallableAwaitHelperName(inout output, declaration, helperExpression);
+    output.append("_start_invocation(task->executor");
+    let argument: usize = 0;
+    while (argument < method.children.length) {
+      output.append(", ");
+      const labelIndex = argument + 2;
+      const borrowed = argument > 0 && method.labels.length > labelIndex
+        && (method.labels[labelIndex] == "in" || method.labels[labelIndex] == "inout" || method.labels[labelIndex] == "out");
+      // A consuming method call moves this frame's own receiver out of it.
+      let receiver = method.children[argument];
+      if (declaration.expressions[receiver].kind == LoweredExpressionKind.moveValue
+        && declaration.expressions[receiver].children.length == 1) receiver = declaration.expressions[receiver].children[0];
+      const receiverGuard = yieldFrameParameterGuard(declaration, "this");
+      const movesOwnReceiver = argument == 0 && method.labels.length > 1 && method.labels[1] == "move"
+        && declaration.expressions[receiver].kind == LoweredExpressionKind.receiverValue
+        && receiverGuard.byteLength > 0;
+      if (movesOwnReceiver) {
+        output.append(`(${receiverGuard} = false, self)`);
+      } else if (borrowed) {
+        if (!yieldFrameBorrowPlace(declaration, method.children[argument])) {
+          throw "native async frame method borrows require named storage in this tier";
+        }
+        try appendAddressOf(inout output, declaration, method.children[argument]);
+      } else try appendExpression(inout output, declaration, method.children[argument]);
+      argument = argument + 1;
+    }
+    output.append(");\n");
+  } else {
+    output.append(`frame->child = Z_${awaited.value}_start(`);
+    try appendExpression(inout output, declaration, awaited.children[0]);
+    output.append(", task->executor");
+    try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, false);
+    output.append(");\n");
+  }
   appendBorrowedTemporaryCleanups(inout output, declaration, expression, depth);
   appendIndent(inout output, depth);
   output.append("}\n");
@@ -11629,6 +11852,31 @@ function appendYieldFrameLexicalCleanups(
   }
 }
 
+// A suspending arm's case: its payload is copied into the frame (a consumed
+// subject transfers it), and an owned payload becomes live there.
+function appendYieldFrameArmStart(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
+  index: usize, arm: usize, depth: usize
+): void throws String {
+  const matchStatement = view declaration.statements[index];
+  const armStatement = view declaration.statements[arm];
+  appendIndent(inout output, depth);
+  output.append(`case Z_${matchStatement.name}`);
+  if (labelsContain(matchStatement.labels, "tagged")) output.append("Tag");
+  output.append(`_${armStatement.name}: {\n`);
+  appendIndent(inout output, depth + 1);
+  appendAsyncFrameBindingName(inout output, declaration, armStatement.labels[0]);
+  output.append(` = _z_stage1_match_${index}`);
+  if (!matchStatement.matchConsumesSubject || labelsContain(matchStatement.labels, "view-subject")) {
+    output.append("->payload.");
+  } else output.append(".payload.");
+  output.append(`${armStatement.name};\n`);
+  if (yieldFrameArmOwnsPayload(program, declaration, arm)) {
+    appendIndent(inout output, depth + 1);
+    output.append(`_z_stage1_live_${armStatement.labels[0]} = true;\n`);
+  }
+}
+
 function appendYieldFrameMatch(
   inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
   index: usize, depth: usize
@@ -11645,11 +11893,27 @@ function appendYieldFrameMatch(
   let hasWildcard = false;
   for (const arm of statement.children) {
     if (declaration.statements[arm].name == "_") hasWildcard = true;
-    try appendEnumMatchArmStart(inout output, declaration, index, arm, depth + 1);
+    const framePayload = yieldFrameArmPayloadInFrame(declaration, arm);
+    if (framePayload) try appendYieldFrameArmStart(inout output, program, declaration, index, arm, depth + 1);
+    else try appendEnumMatchArmStart(inout output, declaration, index, arm, depth + 1);
     for (const child of declaration.statements[arm].children) {
       try appendYieldFrameStatement(inout output, program, declaration, child, depth + 3);
     }
-    appendCleanups(inout output, declaration.statements[arm].cleanups, depth + 3);
+    if (framePayload) {
+      // The frame payload's release is guarded by its live flag: a move
+      // out of it, or cancellation earlier, already settled ownership.
+      const payload = view declaration.statements[arm].labels[0];
+      const ownsPayload = yieldFrameArmOwnsPayload(program, declaration, arm);
+      let armCleanups = copy declaration.statements[arm].cleanups;
+      let cleanupIndex: usize = 0;
+      while (cleanupIndex < armCleanups.length) {
+        if (ownsPayload && armCleanups[cleanupIndex].name == payload) {
+          armCleanups[cleanupIndex].guard = `_z_stage1_live_${payload}`;
+        }
+        cleanupIndex = cleanupIndex + 1;
+      }
+      appendYieldFrameCleanups(inout output, program, declaration, armCleanups, depth + 3);
+    } else appendCleanups(inout output, declaration.statements[arm].cleanups, depth + 3);
     appendIndent(inout output, depth + 3);
     output.append("break;\n");
     appendIndent(inout output, depth + 2);
@@ -11694,6 +11958,11 @@ function appendYieldFrameStatement(
     output.append(`return;\n_z_resume_${index}:;\n`);
     return;
   }
+  // Awaits nested in this statement's expressions run first.
+  const hoisted = yieldFrameHoistedAwaits(declaration, index);
+  for (const site of hoisted) {
+    try appendYieldFrameHoistedAwait(inout output, program, declaration, site, depth);
+  }
   if (statement.kind == LoweredStatementKind.matchStatement) {
     try appendYieldFrameMatch(inout output, program, declaration, index, depth);
     return;
@@ -11721,7 +11990,7 @@ function appendYieldFrameStatement(
       throw "native yield-frame child awaits require a local, return, or expression statement";
     }
     if (awaited < declaration.expressions.length) {
-      try appendYieldFrameAwait(inout output, program, declaration, index, awaited, depth);
+      try appendYieldFrameAwait(inout output, program, declaration, index, awaited, awaited, depth);
     } else try appendYieldFrameJoin(inout output, program, declaration, index, joined, resultType, depth);
     const temporary = `_z_child_result_${index}`;
     if (statement.kind == LoweredStatementKind.tryStatement) {
@@ -11835,8 +12104,17 @@ function appendYieldFrameStatement(
     return;
   }
   if (statement.kind == LoweredStatementKind.blockStatement) {
-    for (const child of statement.children) {
-      try appendYieldFrameStatement(inout output, program, declaration, child, depth);
+    // An `async scope` runs its own statements, joins the children started in
+    // it, and only then releases its locals (they may be lent to children).
+    const asyncScope = labelsContain(statement.labels, "async-scope") && statement.children.length == 1;
+    if (asyncScope) {
+      for (const child of declaration.statements[statement.children[0]].children) {
+        try appendYieldFrameStatement(inout output, program, declaration, child, depth);
+      }
+    } else {
+      for (const child of statement.children) {
+        try appendYieldFrameStatement(inout output, program, declaration, child, depth);
+      }
     }
     // Leaving an `async scope` joins the children started directly in it.
     const scopeSpawns = yieldFrameScopeSpawns(declaration, index);
@@ -11853,6 +12131,26 @@ function appendYieldFrameStatement(
       output.append(`${yieldFrameName(declaration)}_release_slot(task, &${slot});\n`);
       appendIndent(inout output, depth);
       output.append("}\n");
+    }
+    if (asyncScope) {
+      // The scope's locals live in the frame; release them at the scope's
+      // exit, newest first (their live flags keep frame cleanup from repeating).
+      let scopeLocals = Array<LoweredCleanup>();
+      for (const child of declaration.statements[statement.children[0]].children) {
+        const local = view declaration.statements[child];
+        if (local.kind != LoweredStatementKind.localStatement
+          || yieldFrameSpawnExpression(declaration, child) < declaration.expressions.length) continue;
+        match (in local.type) {
+          some(type) => {
+            if (loweredTypeNeedsDeinit(program, type) || typeContainsObjectiveCStrongSlot(program, type)) {
+              scopeLocals.push(LoweredCleanup({ name: copy local.name, type: copy type, guard: copy local.liveFlag }));
+            }
+          }
+          none => {}
+        }
+      }
+      appendYieldFrameCleanups(inout output, program, declaration, scopeLocals, depth);
+      appendYieldFrameCleanups(inout output, program, declaration, declaration.statements[statement.children[0]].cleanups, depth);
     }
     appendYieldFrameCleanups(inout output, program, declaration, statement.cleanups, depth);
     return;
@@ -11915,8 +12213,104 @@ function appendYieldFrameHelpers(
       }
       declaration.asyncFrameBindings.push(copy statement.name);
     }
+    // Awaits nested in a statement run before it: each moves to a new slot,
+    // and its old node reads the frame temporary that holds its result.
+    let hoistedSites = Array<usize>();
+    let hoistedTypes = Array<LoweredType>();
+    let hoistStatement: usize = 0;
+    while (hoistStatement < declaration.statements.length) {
+      const nestedAwaits = yieldFrameNestedAwaits(declaration, hoistStatement);
+      for (const site of nestedAwaits) {
+        const moved = declaration.expressions.length;
+        declaration.expressions.push(copy declaration.expressions[site]);
+        const resultType = declaration.expressions[moved].kind == LoweredExpressionKind.asyncFunctionAwait
+          ? try yieldFrameAwaitType(program, declaration, moved)
+          : try taskResultType(program, declaration.expressions[moved].value);
+        if (declaration.expressions[moved].kind == LoweredExpressionKind.asyncFunctionAwait) hasChild = true;
+        // A value whose root (an assignment's value, a returned or initialized
+        // value, a match arm's selection) is the await, or wraps it only in
+        // enum or move construction, takes the result with no suspension
+        // between: the temporary never owns it across a resume.
+        const ownedHandoff = yieldFrameHoistMovesIntoValue(declaration, hoistStatement, site);
+        if ((!ownedHandoff && loweredTypeNeedsDeinit(program, resultType))
+          || typeContainsObjectiveCStrongSlot(program, resultType)) {
+          throw "native async frame received a hoisted await with an owned result";
+        }
+        declaration.expressions[site].kind = LoweredExpressionKind.localValue;
+        declaration.expressions[site].value = `_z_await_value_${site}`;
+        declaration.expressions[site].children = Array<usize>();
+        declaration.expressions[site].labels = Array<String>();
+        declaration.expressions[site].hoistedAwait = moved + 1;
+        declaration.asyncFrameBindings.push(`_z_await_value_${site}`);
+        hoistedSites.push(site);
+        hoistedTypes.push(resultType);
+      }
+      hoistStatement = hoistStatement + 1;
+    }
+    // Payloads of match arms that suspend live in the frame; an owned one has
+    // a live flag that its moves clear and frame cleanup honors.
+    let payloadNames = Array<String>();
+    let payloadTypes = Array<LoweredType>();
+    let payloadOwned = Array<boolean>();
+    let payloadMatch: usize = 0;
+    while (payloadMatch < declaration.statements.length) {
+      if (declaration.statements[payloadMatch].kind == LoweredStatementKind.matchStatement) {
+        const plainMatch = !declaration.statements[payloadMatch].cppPayload
+          && !labelsContain(declaration.statements[payloadMatch].labels, "niche-view-option")
+          && declaration.statements[payloadMatch].foreignMatchDiscriminant.byteLength == 0;
+        for (const arm of source.statements[payloadMatch].children) {
+          if (!yieldFrameArmPayloadInFrame(declaration, arm)) continue;
+          if (!plainMatch) throw "native async frame cannot suspend in a C++, foreign, or view-Option match arm yet";
+          const payloadType = match (in declaration.statements[arm].type) {
+            some(type) => copy type;
+            none => throw "native async frame lost a match payload type";
+          };
+          if (payloadType.kind == LoweredTypeKind.foreignObjCType || typeContainsObjectiveCStrongSlot(program, payloadType)) {
+            throw "native async frame cannot keep an Objective-C match payload across a suspension yet";
+          }
+          const payloadName = copy declaration.statements[arm].labels[0];
+          if (asyncFrameBinds(declaration, payloadName)) throw "native yield frames cannot reuse a local binding name yet";
+          declaration.asyncFrameBindings.push(copy payloadName);
+          const ownsPayload = yieldFrameArmOwnsPayload(program, declaration, arm);
+          if (ownsPayload) {
+            let moveIndex: usize = 0;
+            while (moveIndex < declaration.expressions.length) {
+              let movesPayload = false;
+              if (declaration.expressions[moveIndex].kind == LoweredExpressionKind.moveValue
+                && declaration.expressions[moveIndex].value.byteLength == 0
+                && declaration.expressions[moveIndex].children.length == 1) {
+                const operand = declaration.expressions[moveIndex].children[0];
+                movesPayload = declaration.expressions[operand].kind == LoweredExpressionKind.localValue
+                  && declaration.expressions[operand].value == payloadName;
+              }
+              if (movesPayload) declaration.expressions[moveIndex].value = `_z_stage1_live_${payloadName}`;
+              moveIndex = moveIndex + 1;
+            }
+          }
+          payloadNames.push(payloadName);
+          payloadTypes.push(payloadType);
+          payloadOwned.push(ownsPayload);
+        }
+      }
+      payloadMatch = payloadMatch + 1;
+    }
     output.append(`typedef struct ${name} {\n  Z_AsyncTask task;\n  uint32_t state;\n`);
     if (hasChild) output.append("  Z_AsyncInvocation child;\n");
+    let payloadField: usize = 0;
+    while (payloadField < payloadNames.length) {
+      output.append(`  ${try cType(payloadTypes[payloadField])} _z_binding_${payloadNames[payloadField]};\n`);
+      if (payloadOwned[payloadField]) {
+        output.append(`  bool _z_stage1_live_${payloadNames[payloadField]};\n`);
+      }
+      payloadField = payloadField + 1;
+    }
+    let hoistedField: usize = 0;
+    while (hoistedField < hoistedSites.length) {
+      if (hoistedTypes[hoistedField].kind != LoweredTypeKind.voidType) {
+        output.append(`  ${try cType(hoistedTypes[hoistedField])} _z_binding__z_await_value_${hoistedSites[hoistedField]};\n`);
+      }
+      hoistedField = hoistedField + 1;
+    }
     if (source.returnType.kind != LoweredTypeKind.voidType) {
       output.append("  ");
       output.append(try cType(source.returnType));
@@ -11933,6 +12327,27 @@ function appendYieldFrameHelpers(
       output.append(";\n");
       const guard = yieldFrameParameterGuard(source, parameter.name);
       if (guard.byteLength > 0) output.append(`  bool ${guard};\n`);
+    }
+    // A method's frame stores its receiver: a retained class or a moved struct.
+    let receiverTypeName = "";
+    let classReceiver = false;
+    match (in source.receiverType) {
+      some(type) => {
+        receiverTypeName = copy type.name;
+        classReceiver = type.kind == LoweredTypeKind.classType;
+        if (!classReceiver && (type.kind != LoweredTypeKind.structType || source.receiverMode != LoweredParameterMode.value)) {
+          throw "native async frame methods require a class or `move this` struct receiver";
+        }
+      }
+      none => {}
+    }
+    const receiverGuard = yieldFrameParameterGuard(source, "this");
+    if (receiverTypeName.byteLength > 0) {
+      // The frame owns its receiver and releases it once, at destroy: a
+      // `return` does not release it lexically.
+      declaration.asyncFrameBindings.push("this");
+      output.append(classReceiver ? `  Z_${receiverTypeName} *_z_receiver;\n` : `  Z_${receiverTypeName} _z_receiver;\n`);
+      if (receiverGuard.byteLength > 0) output.append(`  bool ${receiverGuard};\n`);
     }
     if (hasSpawns) output.append("  bool cancel_children;\n  bool unwinding;\n");
     // Frame borrow temporaries of awaited `in` arguments.
@@ -11959,6 +12374,26 @@ function appendYieldFrameHelpers(
         }
       }
       borrowStatement = borrowStatement + 1;
+    }
+    for (const site of hoistedSites) {
+      const moved = declaration.expressions[site].hoistedAwait - 1;
+      if (declaration.expressions[moved].kind != LoweredExpressionKind.asyncFunctionAwait) continue;
+      const virtual = yieldFrameHoistedState(declaration, site);
+      const childType = try yieldFrameChildFunctionType(program, declaration, moved);
+      let argument: usize = 1;
+      while (argument < declaration.expressions[moved].children.length) {
+        if (yieldFrameArgumentBorrowed(declaration.expressions[moved], argument)
+          && !yieldFrameBorrowPlace(declaration, declaration.expressions[moved].children[argument])) {
+          const borrowName = yieldFrameBorrowTemporaryName(virtual, argument);
+          const borrowType = copy childType.parameters[argument - 1].type;
+          output.append(`  ${try cType(borrowType)} _z_binding_${borrowName};\n`);
+          if (loweredTypeNeedsDeinit(program, borrowType)) output.append(`  bool ${borrowName}_live;\n`);
+          declaration.asyncFrameBindings.push(copy borrowName);
+          borrowNames.push(borrowName);
+          borrowTypes.push(borrowType);
+        }
+        argument = argument + 1;
+      }
     }
     for (const site of spawnSites) {
       if (source.statements[site].kind == LoweredStatementKind.expressionStatement) {
@@ -11988,6 +12423,22 @@ function appendYieldFrameHelpers(
       }
     }
     output.append(`} ${name};\n`);
+    if (receiverTypeName.byteLength > 0) {
+      output.append("#define self (frame->_z_receiver)\n#define _z_stage1_frame_binding_this (frame->_z_receiver)\n");
+      if (receiverGuard.byteLength > 0) output.append(`#define ${receiverGuard} (frame->${receiverGuard})\n`);
+    }
+    for (const site of hoistedSites) {
+      output.append(`#define _z_stage1_frame_binding__z_await_value_${site} (frame->_z_binding__z_await_value_${site})\n`);
+    }
+    let payloadMacro: usize = 0;
+    while (payloadMacro < payloadNames.length) {
+      const payloadName = view payloadNames[payloadMacro];
+      output.append(`#define _z_stage1_frame_binding_${payloadName} (frame->_z_binding_${payloadName})\n`);
+      if (payloadOwned[payloadMacro]) {
+        output.append(`#define _z_stage1_live_${payloadName} (frame->_z_stage1_live_${payloadName})\n`);
+      }
+      payloadMacro = payloadMacro + 1;
+    }
     let borrowMacro: usize = 0;
     while (borrowMacro < borrowNames.length) {
       output.append(`#define _z_stage1_frame_binding_${borrowNames[borrowMacro]} (frame->_z_binding_${borrowNames[borrowMacro]})\n`);
@@ -12038,6 +12489,16 @@ function appendYieldFrameHelpers(
         && !typeContainsObjectiveCStrongSlot(program, type)) continue;
       cleanup.push(LoweredCleanup({ name: copy statement.name, type, guard: copy statement.liveFlag }));
     }
+    let payloadCleanup: usize = 0;
+    while (payloadCleanup < payloadNames.length) {
+      if (payloadOwned[payloadCleanup]) {
+        cleanup.push(LoweredCleanup({
+          name: copy payloadNames[payloadCleanup], type: copy payloadTypes[payloadCleanup],
+          guard: `_z_stage1_live_${payloadNames[payloadCleanup]}`,
+        }));
+      }
+      payloadCleanup = payloadCleanup + 1;
+    }
     let borrowCleanup: usize = 0;
     while (borrowCleanup < borrowNames.length) {
       if (loweredTypeNeedsDeinit(program, borrowTypes[borrowCleanup])) {
@@ -12049,6 +12510,11 @@ function appendYieldFrameHelpers(
       borrowCleanup = borrowCleanup + 1;
     }
     appendYieldFrameCleanups(inout output, program, declaration, cleanup, 1);
+    if (classReceiver) {
+      output.append(`  if (frame->_z_receiver != NULL) { Z_${receiverTypeName}_release(frame->_z_receiver); frame->_z_receiver = NULL; }\n`);
+    } else if (receiverGuard.byteLength > 0) {
+      output.append(`  if (${receiverGuard}) { Z_${receiverTypeName}_deinit(&frame->_z_receiver); ${receiverGuard} = false; }\n`);
+    }
     if (hasSpawns) {
       // Joins a completed slot, or (on destroy) cancels and drains a live one.
       output.append(`}\nstatic void ${name}_release_slot(Z_AsyncTask *task, Z_AsyncInvocation *slot) {\n  if (slot->task == NULL) return;\n  if (!slot->task->completed) {\n    z_stage1_async_request_cancel(slot->task);\n    slot->task->waiter = NULL;\n    while (!slot->task->completed) { if (!z_stage1_async_drive_one(task->executor)) abort(); }\n  }\n  slot->task->waiter = NULL;\n  z_stage1_async_remove_queued(slot->task);\n  if (slot->destroy != NULL) slot->destroy(slot->task);\n  if (slot->release_context != NULL) slot->release_context(slot->callable_context);\n  *slot = (Z_AsyncInvocation){};\n`);
@@ -12090,6 +12556,10 @@ function appendYieldFrameHelpers(
         output.append(`    case ${index + 1}: goto _z_resume_${index};\n`);
       }
       index = index + 1;
+    }
+    for (const site of hoistedSites) {
+      const virtual = yieldFrameHoistedState(declaration, site);
+      output.append(`    case ${virtual + 1}: goto _z_resume_${virtual};\n`);
     }
     let finishState: usize = 0;
     while (finishState < spawnSites.length) {
@@ -12159,6 +12629,10 @@ function appendYieldFrameHelpers(
       output.append("){};\n");
     }
     output.append("  free(frame);\n}\n");
+    if (receiverTypeName.byteLength > 0) {
+      output.append("#undef self\n#undef _z_stage1_frame_binding_this\n");
+      if (receiverGuard.byteLength > 0) output.append(`#undef ${receiverGuard}\n`);
+    }
     for (const parameter of source.parameters) {
       output.append("#undef _z_stage1_frame_binding_");
       appendCBindingName(inout output, parameter.name);
@@ -12172,6 +12646,17 @@ function appendYieldFrameHelpers(
       appendCBindingName(inout output, statement.name);
       output.append("\n");
       if (statement.liveFlag.byteLength > 0) output.append(`#undef ${statement.liveFlag}\n`);
+    }
+    for (const site of hoistedSites) {
+      output.append(`#undef _z_stage1_frame_binding__z_await_value_${site}\n`);
+    }
+    let payloadUndef: usize = 0;
+    while (payloadUndef < payloadNames.length) {
+      output.append(`#undef _z_stage1_frame_binding_${payloadNames[payloadUndef]}\n`);
+      if (payloadOwned[payloadUndef]) {
+        output.append(`#undef _z_stage1_live_${payloadNames[payloadUndef]}\n`);
+      }
+      payloadUndef = payloadUndef + 1;
     }
     let borrowUndef: usize = 0;
     while (borrowUndef < borrowNames.length) {
@@ -12188,9 +12673,17 @@ function appendYieldFrameHelpers(
       if (resultNeedsDeinit) output.append(`  ((${name} *)task)->live_result = false;\n`);
     } else output.append("  (void)output;\n");
     output.append(`}\nstatic __attribute__((unused)) Z_AsyncInvocation ${name}_start(Z_AsyncExecutor *executor`);
+    if (receiverTypeName.byteLength > 0) {
+      output.append(classReceiver ? `, const Z_${receiverTypeName} *receiver` : `, Z_${receiverTypeName} receiver`);
+    }
     try appendYieldFrameParameters(inout output, source.parameters);
     output.append(`) {\n  if (executor == NULL) abort();\n  ${name} *frame = (__typeof__(frame))calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.executor = executor;\n  frame->task.poll = ${name}_poll;\n`);
     if (hasChild || hasTimer || hasSpawns) output.append(`  frame->task.request_cancel = ${name}_cancel;\n`);
+    if (classReceiver) output.append(`  frame->_z_receiver = Z_${receiverTypeName}_retain(receiver);\n`);
+    else if (receiverTypeName.byteLength > 0) {
+      output.append("  frame->_z_receiver = receiver;\n");
+      if (receiverGuard.byteLength > 0) output.append(`  frame->${receiverGuard} = true;\n`);
+    }
     let argument: usize = 0;
     for (const parameter of source.parameters) {
       output.append("  frame->_z_binding_");
@@ -12225,6 +12718,11 @@ function appendYieldFrameDriver(
     output.append("  z_stage1_async_executor_init_external(&executor);\n");
   }
   output.append(`  Z_AsyncInvocation invocation = ${name}_start(&executor`);
+  // A method's synchronous entry hands its receiver to the frame.
+  match (in declaration.receiverType) {
+    some(_) => output.append(", self");
+    none => {}
+  }
   appendYieldFrameArguments(inout output, declaration.parameters.length);
   output.append(");\n  z_stage1_async_enqueue(&executor, invocation.task);\n  while (!invocation.task->completed) { if (!z_stage1_async_drive_one(&executor)) abort(); }\n");
   if (declaration.returnType.kind != LoweredTypeKind.voidType) {
@@ -16341,7 +16839,8 @@ function appendAsyncMethodAwaitHelpers(
     while (expressionIndex < owner.expressions.length) {
       const expression = view owner.expressions[expressionIndex];
       if (
-        expression.kind != LoweredExpressionKind.asyncFunctionAwait
+        (expression.kind != LoweredExpressionKind.asyncFunctionAwait
+          && expression.kind != LoweredExpressionKind.asyncFunctionTask)
         || expression.labels.length == 0
         || expression.labels[0] != "method"
         || expression.children.length != 1
@@ -16402,6 +16901,64 @@ function appendAsyncMethodAwaitHelpers(
         && method.labels[1] == "move";
       if (!classReceiver && !consumingStructReceiver) {
         throw "native async method await helper requires a retained class or moved struct receiver";
+      }
+      // A method that runs in a general async frame starts that frame.
+      let calleeFrame = program.functions.length;
+      let calleeCandidate: usize = 0;
+      while (calleeCandidate < program.functions.length) {
+        if (program.functions[calleeCandidate].name == method.value
+          && program.functions[calleeCandidate].asyncSuspension == "yield-frame") calleeFrame = calleeCandidate;
+        calleeCandidate = calleeCandidate + 1;
+      }
+      if (calleeFrame < program.functions.length && !asyncMethodAwaitStartsChild(program, owner, expressionIndex)) {
+        // A blocking caller runs the method's synchronous frame entry.
+        output.append(`static __attribute__((unused)) ${try cType(functionType.returnType)} `);
+        appendAsyncCallableAwaitHelperName(inout output, owner, expressionIndex);
+        output.append(`(${classReceiver ? "const " : ""}Z_${receiverType}${classReceiver ? " *receiver" : " receiver"}`);
+        let blockingParameter: usize = 0;
+        while (blockingParameter < functionType.parameters.length) {
+          output.append(", ");
+          try appendCallableParameterDeclaration(
+            inout output, functionType.parameters[blockingParameter], functionType.parameters[blockingParameter].name
+          );
+          blockingParameter = blockingParameter + 1;
+        }
+        output.append(") {\n  ");
+        if (functionType.returnType.kind != LoweredTypeKind.voidType) output.append("return ");
+        appendCBindingName(inout output, program.functions[calleeFrame].name);
+        output.append("(receiver");
+        blockingParameter = 0;
+        while (blockingParameter < functionType.parameters.length) {
+          output.append(", ");
+          appendCBindingName(inout output, functionType.parameters[blockingParameter].name);
+          blockingParameter = blockingParameter + 1;
+        }
+        output.append(");\n}\n\n");
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      if (calleeFrame < program.functions.length) {
+        output.append("static __attribute__((unused)) Z_AsyncInvocation ");
+        appendAsyncCallableAwaitHelperName(inout output, owner, expressionIndex);
+        output.append(`_start_invocation(Z_AsyncExecutor *executor, ${classReceiver ? "const " : ""}Z_${receiverType}${classReceiver ? " *receiver" : " receiver"}`);
+        let adapterParameter: usize = 0;
+        while (adapterParameter < functionType.parameters.length) {
+          output.append(", ");
+          try appendCallableParameterDeclaration(
+            inout output, functionType.parameters[adapterParameter], functionType.parameters[adapterParameter].name
+          );
+          adapterParameter = adapterParameter + 1;
+        }
+        output.append(`) {\n  return ${yieldFrameName(program.functions[calleeFrame])}_start(executor, receiver`);
+        adapterParameter = 0;
+        while (adapterParameter < functionType.parameters.length) {
+          output.append(", ");
+          appendCBindingName(inout output, functionType.parameters[adapterParameter].name);
+          adapterParameter = adapterParameter + 1;
+        }
+        output.append(");\n}\n\n");
+        expressionIndex = expressionIndex + 1;
+        continue;
       }
       const returnType = try cType(functionType.returnType);
       const resultNeedsDeinit = loweredTypeNeedsDeinit(
@@ -18188,7 +18745,8 @@ function appendAsyncMethodAwaitStartPrototypes(
     while (expressionIndex < owner.expressions.length) {
       const expression = view owner.expressions[expressionIndex];
       if (
-        expression.kind != LoweredExpressionKind.asyncFunctionAwait
+        (expression.kind != LoweredExpressionKind.asyncFunctionAwait
+          && expression.kind != LoweredExpressionKind.asyncFunctionTask)
         || expression.labels.length == 0
         || expression.labels[0] != "method"
         || expression.children.length != 1
