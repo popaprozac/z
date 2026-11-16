@@ -11053,6 +11053,12 @@ test("compiles a multi-module Z application through the standalone native driver
     "examples/language/control-flow/generator-return.zs",
     "examples/language/control-flow/generator-throws.zs",
     "tests/fixtures/native-generator-frames.zs",
+    // Async generators: persistent stream frames stepped by `await next()`
+    // and `for await`, typed errors, and owner release on finish or drop.
+    "examples/language/control-flow/async-generators.zs",
+    "examples/language/control-flow/async-for-await.zs",
+    "examples/language/control-flow/async-for-await-errors.zs",
+    "tests/fixtures/native-async-generator-frames.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);

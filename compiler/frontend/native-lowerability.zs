@@ -19,7 +19,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -404,6 +404,15 @@ function nativeTypeNameHoldsCxx(
   return false;
 }
 
+// An async function whose body yields and returns an AsyncGenerator.
+function nativeAsyncGeneratorBody(in declaration: FunctionDeclaration): boolean {
+  if (!declaration.asynchronous || !stringStartsWith(declaration.returnType.name, "AsyncGenerator<")) return false;
+  for (const node of declaration.body.nodes) {
+    if (node.kind == StatementKind.yieldStatement) return true;
+  }
+  return false;
+}
+
 function moduleUsesCxxValues(in graph: ModuleGraph, moduleIndex: usize): boolean {
   for (const symbol of graph.modules[moduleIndex].symbols) {
     match (in symbol.typeSignature) {
@@ -458,16 +467,7 @@ function validateNativeType(
     }
     none => {}
   }
-  if (typeUsesGeneric(type.name, "AsyncGenerator")) {
-    throw loweringBoundary(
-      path,
-      "Z0700",
-      `async-generator type "${type.name}" is not executable in the native compiler yet`,
-      type.line,
-      type.column,
-      type.name.byteLength
-    );
-  }
+
 }
 
 function stableOptionalChainSource(
@@ -2898,7 +2898,8 @@ function validateNativeBody(
       );
       none => {}
     }
-    if (statement.kind == StatementKind.yieldStatement && asynchronous) {
+    // An async generator's `yield` runs in the general frame only.
+    if (statement.kind == StatementKind.yieldStatement && asynchronous && !frameScopes) {
       throw loweringBoundary(
         path,
         "Z0700",
@@ -2983,14 +2984,15 @@ function validateNativeBody(
       statement.kind == StatementKind.forAwaitStatement
       || statement.kind == StatementKind.forTryAwaitStatement
     ) {
-      throw loweringBoundary(
-        path,
-        "Z0700",
-        "asynchronous iteration is not executable in the native compiler yet",
-        statement.line,
-        statement.column,
-        3
-      );
+      // A general frame steps async generators; destructured bindings are a later tier.
+      if (!frameScopes) {
+        throw loweringBoundary(path, "Z0700", "asynchronous iteration is not executable in the native compiler yet",
+          statement.line, statement.column, 3);
+      }
+      if (statement.objectBindings.length > 0 || statement.arrayBindings.length > 0) {
+        throw loweringBoundary(path, "Z1000", "destructuring for bindings are not executable in the native compiler yet",
+          statement.line, statement.column, 3);
+      }
     }
     if (statement.kind == StatementKind.forStatement) {
       if (statement.mutableBinding) {
@@ -3094,7 +3096,9 @@ function nativeYieldFrameStorageSupported(
       // admits only spawn-initialized task locals).
       if (generic.base != "Array" && generic.base != "Option"
         && generic.base != "Result" && generic.base != "Mutex"
-        && generic.base != "Map" && generic.base != "Task") {
+        && generic.base != "Map" && generic.base != "Task"
+        && generic.base != "GeneratorStep" && generic.base != "Generator"
+        && generic.base != "AsyncGenerator") {
         if (parsedModule >= modules.length) return false;
         const channelKind = channelTypeKind(modules[parsedModule].program, generic.base);
         if (channelKind.byteLength == 0) return false;
@@ -3103,7 +3107,8 @@ function nativeYieldFrameStorageSupported(
       for (const argument of generic.arguments) {
         // Result<void, E> has a payload-free success variant, not a void slot;
         // a Task<void> slot holds no result.
-        if ((generic.base == "Result" || generic.base == "Task") && argumentIndex == 0 && argument == "void") {
+        if (((generic.base == "Result" || generic.base == "Task") && argumentIndex == 0 && argument == "void")
+          || ((generic.base == "Generator" || generic.base == "AsyncGenerator") && argument == "void")) {
           argumentIndex = argumentIndex + 1;
           continue;
         }
@@ -3326,10 +3331,24 @@ function validateGeneralFrameStorage(
     }
   }
   const visiting = Array<String>();
-  if (declaration.returnType.name != "void"
-    && !nativeYieldFrameStorageSupported(modules, graph, moduleIndex, declaration.returnType.name, visiting)) {
-    throw loweringBoundary(path, "Z0700", "native async frame result requires supported owned frame storage",
-      declaration.line, declaration.column, 5);
+  // An async generator's frame holds its steps, not the handle it returns.
+  let resultTypes = Array<String>();
+  if (nativeAsyncGeneratorBody(declaration)) {
+    match (genericTypeShape(declaration.returnType.name)) {
+      some(generic) => {
+        for (const argument of generic.arguments) {
+          resultTypes.push(copy argument);
+        }
+      }
+      none => {}
+    }
+  } else resultTypes.push(copy declaration.returnType.name);
+  for (const resultType of resultTypes) {
+    if (resultType != "void"
+      && !nativeYieldFrameStorageSupported(modules, graph, moduleIndex, resultType, visiting)) {
+      throw loweringBoundary(path, "Z0700", "native async frame result requires supported owned frame storage",
+        declaration.line, declaration.column, 5);
+    }
   }
 }
 
@@ -3342,7 +3361,10 @@ function validateNativeFunction(
   in owner: String,
   in ownerTypeParameters: Array<String>
 ): void throws ModuleResolveError {
-  const cxxFrame = nativeAsyncSignatureHoldsCxx(graph, moduleIndex, declaration);
+  // C++ frame storage and async generator streams exist only in the general
+  // frame (mirrors lowering's routing).
+  const cxxFrame = nativeAsyncSignatureHoldsCxx(graph, moduleIndex, declaration)
+    || nativeAsyncGeneratorBody(declaration) || functionAwaitsStreamStep(declaration);
   const firstTierSchedulerYield = !cxxFrame && functionHasFirstTierSchedulerYieldStorage(
     moduleIndex,
     modules,
@@ -3376,7 +3398,7 @@ function validateNativeFunction(
   const generalMain = !yieldFrame && owner.byteLength == 0 && declaration.name == "main"
     && parsedModule < modules.length
     && (functionContainsFrameDelay(modules[parsedModule].program, declaration)
-      || functionContainsFrameSpawn(declaration))
+      || functionContainsFrameSpawn(declaration) || functionAwaitsStreamStep(declaration))
     && functionUsesGeneralFrame(modules[parsedModule].program, declaration);
   if (generalMain) try validateGeneralFrameStorage(path, moduleIndex, modules, graph, declaration);
   if (owner.byteLength == 0 && declaration.name == "main" && parsedModule < modules.length

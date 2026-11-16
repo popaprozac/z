@@ -98,7 +98,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -539,6 +539,8 @@ export struct LoweredStatement {
   cppMoveStorage: boolean = false;
   // A match over a C++-payload enum: payloads bind by reference or move.
   cppPayload: boolean = false;
+  // C emission of `for await` in a frame: the awaited step (index + 1).
+  streamAwait: usize = 0;
 }
 
 export struct LoweredCleanup {
@@ -3436,6 +3438,12 @@ export function intrinsicGeneratorName(in step: LoweredType): String {
   return `__z_Generator_${identity}`;
 }
 
+// An AsyncGenerator handle shares the generator kind; its name tells them apart.
+export function intrinsicAsyncGeneratorName(in step: LoweredType): String {
+  const identity = loweredTypeIdentity(step);
+  return `__z_AsyncGenerator_${identity}`;
+}
+
 function intrinsicGeneratorStepName(in yielded: LoweredType, in completion: LoweredType): String {
   const yieldedIdentity = loweredTypeIdentity(yielded);
   const completionIdentity = loweredTypeIdentity(completion);
@@ -3752,7 +3760,7 @@ function lowerTypeName(
   if (stringStartsWith(name, "__z_GeneratorStep_")) {
     return LoweredType({ kind: LoweredTypeKind.enumType, name: copy name });
   }
-  if (stringStartsWith(name, "__z_Generator_")) {
+  if (stringStartsWith(name, "__z_Generator_") || stringStartsWith(name, "__z_AsyncGenerator_")) {
     return LoweredType({ kind: LoweredTypeKind.generatorType, name: copy name });
   }
   if (stringStartsWith(name, "Task_")) {
@@ -3946,10 +3954,14 @@ function lowerTypeName(
             : intrinsicOptionName(payload),
         });
       }
-      if (generic.base == "Generator" && generic.arguments.length >= 1 && generic.arguments.length <= 3) {
+      if ((generic.base == "Generator" || generic.base == "AsyncGenerator")
+        && generic.arguments.length >= 1 && generic.arguments.length <= 3) {
         const stepName = generatorStepTypeName(generic.arguments);
         const step = try lowerTypeName(program, stepName);
-        return LoweredType({ kind: LoweredTypeKind.generatorType, name: intrinsicGeneratorName(step) });
+        return LoweredType({
+          kind: LoweredTypeKind.generatorType,
+          name: generic.base == "Generator" ? intrinsicGeneratorName(step) : intrinsicAsyncGeneratorName(step),
+        });
       }
       if (generic.base == "GeneratorStep" && generic.arguments.length == 2) {
         const yielded = try lowerTypeName(program, generic.arguments[0]);
@@ -4193,7 +4205,7 @@ function lowerModuleTypeName(
   if (stringStartsWith(name, "__z_GeneratorStep_")) {
     return LoweredType({ kind: LoweredTypeKind.enumType, name: copy name });
   }
-  if (stringStartsWith(name, "__z_Generator_")) {
+  if (stringStartsWith(name, "__z_Generator_") || stringStartsWith(name, "__z_AsyncGenerator_")) {
     return LoweredType({ kind: LoweredTypeKind.generatorType, name: copy name });
   }
   if (stringStartsWith(name, "Task_")) {
@@ -4336,10 +4348,14 @@ function lowerModuleTypeName(
             : intrinsicOptionName(payload),
         });
       }
-      if (generic.base == "Generator" && generic.arguments.length >= 1 && generic.arguments.length <= 3) {
+      if ((generic.base == "Generator" || generic.base == "AsyncGenerator")
+        && generic.arguments.length >= 1 && generic.arguments.length <= 3) {
         const stepName = generatorStepTypeName(generic.arguments);
         const step = try lowerModuleTypeName(program, importedTypes, stepName);
-        return LoweredType({ kind: LoweredTypeKind.generatorType, name: intrinsicGeneratorName(step) });
+        return LoweredType({
+          kind: LoweredTypeKind.generatorType,
+          name: generic.base == "Generator" ? intrinsicGeneratorName(step) : intrinsicAsyncGeneratorName(step),
+        });
       }
       if (generic.base == "GeneratorStep" && generic.arguments.length == 2) {
         const yielded = try lowerModuleTypeName(program, importedTypes, generic.arguments[0]);
@@ -5963,7 +5979,7 @@ function semanticMethodOwnerMatches(
 // Generator<Y, R, E>) lowers its body as returning R ("void" for
 // Generator<Y>); the emitter wraps it in a frame that `next()` steps.
 export function generatorCompletionTypeName(in declaration: FunctionDeclaration): Option<String> {
-  if (declaration.asynchronous) return Option<String>.none;
+  const handleBase = declaration.asynchronous ? "AsyncGenerator" : "Generator";
   let yields = false;
   for (const node of declaration.body.nodes) {
     if (node.kind == StatementKind.yieldStatement) yields = true;
@@ -5971,7 +5987,7 @@ export function generatorCompletionTypeName(in declaration: FunctionDeclaration)
   if (!yields) return Option<String>.none;
   match (genericTypeShape(declaration.returnType.name)) {
     some(generic) => {
-      if (generic.base != "Generator" || generic.arguments.length == 0 || generic.arguments.length > 3) {
+      if (generic.base != handleBase || generic.arguments.length == 0 || generic.arguments.length > 3) {
         return Option<String>.none;
       }
       if (generic.arguments.length == 1) return Option.some("void");
@@ -14273,6 +14289,30 @@ function lowerExpressionNode(
         }
       }
     }
+    // `await stream.next()` resumes an async generator's frame to its next step.
+    if (tree.nodes[taskInput].kind == ExpressionKind.callExpression && tree.nodes[taskInput].children.length == 1) {
+      const nextCallee = tree.nodes[taskInput].children[0];
+      if (tree.nodes[nextCallee].kind == ExpressionKind.memberExpression && tree.nodes[nextCallee].value == "next"
+        && tree.nodes[nextCallee].children.length == 1) {
+        const streamInput: usize = tree.nodes[nextCallee].children[0];
+        const streamTypeName = match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, streamInput)) {
+          some(name) => name;
+          none => "";
+        };
+        const streamType = attempt lowerModuleTypeName(program, importedTypes, streamTypeName);
+        const handle = match (streamType) {
+          success(type) => type.kind == LoweredTypeKind.generatorType && stringStartsWith(type.name, "__z_AsyncGenerator_")
+            ? copy type.name : "";
+          failure(_) => "";
+        };
+        if (handle.byteLength > 0) {
+          const stream: usize = try lowerExpression(program, importedTypes, evidence, tree, streamInput, inout output);
+          markMutableStorage(inout output, stream);
+          return pushExpression(inout output, LoweredExpressionKind.asyncFunctionAwait, handle,
+            Array<usize>(stream), Array<String>("generator-next"));
+        }
+      }
+    }
     if (
       tree.nodes[taskInput].kind == ExpressionKind.callExpression
       && tree.nodes[taskInput].children.length > 0
@@ -14788,7 +14828,12 @@ function lowerExpressionNode(
         );
       }
     }
-    if (resolvedCallIsAsynchronous(evidence, tree, index)) {
+    // Calling an async generator function only makes its cold stream.
+    const callTypeName = match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, index)) {
+      some(name) => name;
+      none => "";
+    };
+    if (resolvedCallIsAsynchronous(evidence, tree, index) && !stringStartsWith(callTypeName, "AsyncGenerator<")) {
       throw "native lowering requires an explicit supported placement for async function calls";
     }
     const adapterPlanIndex = objectiveCAdapterResolutionIndex(
@@ -27685,7 +27730,11 @@ function lowerStatementCore(
     kind = LoweredStatementKind.ifStatement;
   } else if (arena.nodes[index].kind == StatementKind.whileStatement) {
     kind = LoweredStatementKind.whileStatement;
-  } else if (arena.nodes[index].kind == StatementKind.forStatement) {
+  } else if (
+    arena.nodes[index].kind == StatementKind.forStatement
+    || arena.nodes[index].kind == StatementKind.forAwaitStatement
+    || arena.nodes[index].kind == StatementKind.forTryAwaitStatement
+  ) {
     if (arena.nodes[index].mutableBinding) {
       throw "native lowering does not support `for (const value of inout values)` yet";
     }
@@ -27716,7 +27765,11 @@ function lowerStatementCore(
       index
     );
     type = Option.some(move loweredType);
-  } else if (arena.nodes[index].kind == StatementKind.forStatement) {
+  } else if (
+    arena.nodes[index].kind == StatementKind.forStatement
+    || arena.nodes[index].kind == StatementKind.forAwaitStatement
+    || arena.nodes[index].kind == StatementKind.forTryAwaitStatement
+  ) {
     for (const binding of evidence.bindingResolutions) {
       if (
         binding.offset == arena.nodes[index].nameOffset
@@ -28300,7 +28353,9 @@ function lowerStatementCore(
     labels.push("throw");
   }
   if (directTryReturn) labels.push("direct-try");
-  if (arena.nodes[index].kind == StatementKind.forStatement) {
+  const asyncIteration = arena.nodes[index].kind == StatementKind.forAwaitStatement
+    || arena.nodes[index].kind == StatementKind.forTryAwaitStatement;
+  if (arena.nodes[index].kind == StatementKind.forStatement || asyncIteration) {
     match (in arena.nodes[index].expression) {
       some(iterable) => match (in iterable.tree) {
         some(tree) => {
@@ -28406,7 +28461,8 @@ function lowerStatementCore(
             match (genericTypeShape(typeName)) {
               some(generic) => {
                 if (
-                  (generic.base == "Array" || generic.base == "Slice" || generic.base == "Generator")
+                  (generic.base == "Array" || generic.base == "Slice" || generic.base == "Generator"
+                    || generic.base == "AsyncGenerator")
                   && generic.arguments.length >= 1
                 ) {
                   const elementType = try lowerModuleTypeName(
@@ -28470,6 +28526,12 @@ function lowerStatementCore(
             labels.push("map");
           }
           if (iterableType.kind == LoweredTypeKind.generatorType) labels.push("generator");
+          // `for await` steps an async generator; `try for await` propagates its error.
+          if (asyncIteration != stringStartsWith(iterableType.name, "__z_AsyncGenerator_")) {
+            throw "native lowering iterates async generators only with `for await`";
+          }
+          if (asyncIteration) labels.push("await");
+          if (arena.nodes[index].kind == StatementKind.forTryAwaitStatement) labels.push("try");
           if (viewIterable) labels.push("view");
         }
         none => throw "native lowering cannot iterate an opaque expression";
@@ -28477,7 +28539,7 @@ function lowerStatementCore(
       none => throw "native lowering received a for statement without an iterable";
     }
   }
-  if (arena.nodes[index].kind == StatementKind.forStatement) {
+  if (arena.nodes[index].kind == StatementKind.forStatement || asyncIteration) {
     match (in type) {
       some(_) => {}
       none => throw `native lowering could not find the element type for ${arena.nodes[index].name}`;
@@ -29694,7 +29756,11 @@ function lowerFunction(
     }
   }
   if (declaration.asynchronous && declaration.name != "main") {
-    const cxxFrame = asyncSignatureHoldsCxx(program, importedTypes, declaration);
+    // C++ frame storage and async generator streams exist only in the
+    // general frame: skip the shape tiers.
+    const asyncGeneratorBody = generatorCompletionTypeName(declaration);
+    const cxxFrame = asyncSignatureHoldsCxx(program, importedTypes, declaration) || isSomeString(asyncGeneratorBody)
+      || functionAwaitsStreamStep(declaration);
     const firstTierSchedulerYield = !cxxFrame && executorAffinity != "thread.main"
       && functionUsesFirstTierSchedulerYield(program, declaration);
     const firstTierDoubleAwait = functionUsesFirstTierDoubleAwait(
@@ -29922,7 +29988,8 @@ function lowerFunction(
   }
   // main with a direct timer await runs as a general frame on a root executor.
   if (declaration.name == "main" && receiverName.byteLength == 0 && !yieldFrame
-    && (functionContainsFrameDelay(program, declaration) || functionContainsFrameSpawn(declaration))
+    && (functionContainsFrameDelay(program, declaration) || functionContainsFrameSpawn(declaration)
+      || functionAwaitsStreamStep(declaration))
     && functionUsesGeneralFrame(program, declaration)) generalFrame = true;
   if ((yieldFrame || generalFrame) && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
   // A synchronous generator's body is a frame too: its owners live there and
@@ -31538,7 +31605,8 @@ function collectIntrinsicTypeName(
             inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
         }
       }
-      if (generic.base == "Generator" && generic.arguments.length >= 1 && generic.arguments.length <= 3) {
+      if ((generic.base == "Generator" || generic.base == "AsyncGenerator")
+        && generic.arguments.length >= 1 && generic.arguments.length <= 3) {
         const stepName = generatorStepTypeName(generic.arguments);
         try collectIntrinsicTypeName(program, importedTypes, stepName,
           inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);

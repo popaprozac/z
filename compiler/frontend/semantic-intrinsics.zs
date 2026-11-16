@@ -105,6 +105,12 @@ export function iterationElementType(in name: String): String {
         0,
         generic.arguments[0].byteLength
       );
+      // A throwing generator's handle spells its completion and error:
+      // `AsyncGenerator<T, void, E>` still yields T.
+      if ((generic.base == "Generator" || generic.base == "AsyncGenerator")
+        && generic.arguments.length == 3 && generic.arguments[1] == "void") {
+        return generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
+      }
       if (generic.base == "Map" && generic.arguments.length == 2) {
         return `Map.Entry<${generic.arguments[0]}, ${generic.arguments[1]}>`;
       }

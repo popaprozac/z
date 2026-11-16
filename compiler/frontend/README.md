@@ -383,7 +383,7 @@ the backend still contains hard stops that must be classified. The first
 source-mapped lowerability preflight now reports suspending ordinary async as `Z0700` and
 valid non-async shapes without a current native representation as `Z1000`;
 custom constructors on generic aggregates and independently generic methods,
-traits, async generators,
+traits,
 value-producing loops, `async scope`,
 unsafe expressions, and the syntactically decidable optional-chain boundaries
 no longer fall into resolver-internal messages. Public lowering and C-emission
