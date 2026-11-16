@@ -224,7 +224,8 @@ function frameStatementIsSupported(
   // statement matches. The selected value becomes live only after the match;
   // an arm that returns/throws never initializes the destination frame slot.
   let matchInitializer = false;
-  if (kind == StatementKind.variableStatement && !nested) {
+  // `return match (...) { ... }` selects into the frame result the same way.
+  if ((kind == StatementKind.variableStatement && !nested) || kind == StatementKind.returnStatement) {
     match (in arena.nodes[index].expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => matchInitializer = tree.nodes[tree.root].kind == ExpressionKind.matchExpression;
@@ -250,12 +251,12 @@ function frameStatementIsSupported(
             const arm = tree.nodes[root].children[armIndex];
             if (tree.nodes[arm].kind != ExpressionKind.matchArmExpression
               || tree.nodes[arm].labels.length != 1) return false;
-            // Payload bindings remain lexical C storage. Destructured payload
-            // locals and payloads spanning suspension need their own frame tier.
+            // Destructured payload patterns need their own frame tier.
             if (tree.nodes[arm].labels[0] != "none"
               && tree.nodes[arm].labels[0] != "binding") return false;
+            // Arms may suspend: a suspending arm's payload lives in the frame.
             for (const child of tree.nodes[arm].statements) {
-              if (!frameStatementIsSupported(program, arena, child, true, true)) return false;
+              if (!frameStatementIsSupported(program, arena, child, true, synchronousOnly)) return false;
             }
             armIndex = armIndex + 1;
           }
@@ -296,7 +297,7 @@ function frameStatementIsSupported(
       none => return kind == StatementKind.variableStatement;
     }
   } else if (kind != StatementKind.returnStatement
-    && !(kind == StatementKind.selectStatement && synchronousOnly)
+    && kind != StatementKind.selectStatement
     && kind != StatementKind.throwStatement
     && kind != StatementKind.expressionStatement
     && kind != StatementKind.assignmentStatement

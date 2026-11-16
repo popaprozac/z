@@ -113,6 +113,21 @@ int main(void) {
   }
   if (!scope.task->cancelled || executor.timers != NULL) return 22;
   scope.destroy(scope.task);
+
+  // A frame cancelled inside a suspending match arm releases the arm's owned
+  // payload once.
+  Z_AsyncInvocation arm = _z_stage1_yield_holding_start(&executor,
+    (Z_Holder){ .tag = Z_HolderTag_held, .payload = { .held = (Z_Job){ .id = 50 } } });
+  z_stage1_async_enqueue(&executor, arm.task);
+  for (int tick = 0; executor.timers == NULL; ++tick) {
+    if (tick > 4 || !z_stage1_async_drive_one(&executor)) return 23;
+  }
+  z_stage1_async_request_cancel(arm.task);
+  for (int tick = 0; !arm.task->completed; ++tick) {
+    if (tick > 8 || !z_stage1_async_drive_one(&executor)) return 24;
+  }
+  if (!arm.task->cancelled || executor.timers != NULL) return 25;
+  arm.destroy(arm.task);
   if (z_stage1_async_now_ms() - started > 5000) return 10;
   return 0;
 }`;
@@ -120,7 +135,7 @@ int main(void) {
     + "sleeping 11\nsleeping 12\nreleased job 11\nreleased job 12\nreleased job 10\n"
     // A dropped frame destroys its children in reverse order, as Stage 0 does.
     + "sleeping 21\nsleeping 22\nreleased job 22\nreleased job 21\nreleased job 20\n"
-    + "released job 30\nreleased job 40\n");
+    + "released job 30\nreleased job 40\nreleased job 50\n");
 }, 240_000);
 
 test("runs async main as a general native frame when it awaits timers directly", () => {
@@ -195,4 +210,14 @@ test("keeps async scope locals in general native frames until the scope joins it
     + "inspected 10\nreleased report 10\ninspected 11\nreleased report 11\nsum 42\n";
   execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
   execute(emit(fixture), expected);
+}, 240_000);
+
+test("keeps suspending match arm payloads in general native frames", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/native-async-frame-match-arms.zs");
+  const expected = "released job 1\nreleased job 2\nresolved 1 2 -3\nconsumed cached 6\nreleased job 6\n"
+    + "consume done\nconsumed missing 7\nconsume done\n";
+  execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
+  const source = emit(fixture);
+  assert.match(source, /_z_stage1_frame_binding__z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\./);
+  execute(source, expected);
 }, 240_000);

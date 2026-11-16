@@ -1438,7 +1438,10 @@ tested before and after frame entry. Awaits nested in an expression (operands,
 assignment values, `if` conditions, and match subjects) run first, in evaluation
 order, into frame temporaries, as in Stage 0; like Stage 0, the frame rejects an
 ownership-bearing nested await result, and it also does not yet hoist owned
-Results. Suspension inside arms and destructured patterns remain outside this
+Results. A match arm may suspend: its payload then lives in the frame, and an
+owned payload is released at arm end, moved out, or released by cancellation,
+once; `return match (...)` arms included. Destructured payload patterns, and
+C++, foreign, and view-Option matches with suspending arms, remain outside this
 native frame tier. Method/placed awaits and nested source locals remain separate
 yield-frame boundaries. These reductions alone do not establish application integration. The broader
 `async-owned-destructure.zs` probe covers explicit copy/move, awaited producers,

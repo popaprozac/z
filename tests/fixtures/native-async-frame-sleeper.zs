@@ -51,6 +51,21 @@ async function scoped(): void {
   }
 }
 
+enum Holder {
+  held Job,
+  empty i32,
+}
+
+async function holding(holder: Holder): void {
+  match (holder) {
+    held(job) => {
+      await delay(60000);
+      console.log(`unexpected held ${job.id}`);
+    }
+    empty(code) => console.log(`empty ${code}`);
+  }
+}
+
 async function main(): i32 {
   return 0;
 }

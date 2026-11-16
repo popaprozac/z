@@ -11247,6 +11247,64 @@ function yieldFrameHoistedAwaits(in declaration: LoweredFunction, index: usize):
   return found;
 }
 
+// Whether the statement's value moves a hoisted await's result straight
+// into its destination: the await is the value's root or sits under enum
+// payload or move construction only.
+function yieldFrameHoistMovesIntoValue(in declaration: LoweredFunction, statementIndex: usize, site: usize): boolean {
+  const statement = view declaration.statements[statementIndex];
+  let current = declaration.expressions.length;
+  if (statement.kind == LoweredStatementKind.assignmentStatement) {
+    match (in statement.secondExpression) { some(value) => current = value; none => {} }
+  } else if (statement.kind == LoweredStatementKind.localStatement
+    || statement.kind == LoweredStatementKind.returnStatement) {
+    match (in statement.expression) { some(value) => current = value; none => {} }
+  }
+  while (current < declaration.expressions.length) {
+    if (current == site) return true;
+    const node = view declaration.expressions[current];
+    if ((node.kind != LoweredExpressionKind.enumValue && node.kind != LoweredExpressionKind.enumPayloadValue
+      && node.kind != LoweredExpressionKind.moveValue) || node.children.length != 1) return false;
+    current = node.children[0];
+  }
+  return false;
+}
+
+// Whether running this statement can suspend the frame.
+function yieldFrameStatementSuspends(in declaration: LoweredFunction, index: usize): boolean {
+  const statement = view declaration.statements[index];
+  if (statement.kind == LoweredStatementKind.delayStatement
+    || statement.kind == LoweredStatementKind.schedulerYieldStatement) return true;
+  const none = declaration.expressions.length;
+  if (yieldFrameAwaitExpression(declaration, index) < none || yieldFrameJoinExpression(declaration, index) < none
+    || yieldFrameCancelExpression(declaration, index) < none || yieldFrameSpawnExpression(declaration, index) < none) return true;
+  const hoisted = yieldFrameHoistedAwaits(declaration, index);
+  if (hoisted.length > 0) return true;
+  for (const child of statement.children) {
+    if (yieldFrameStatementSuspends(declaration, child)) return true;
+  }
+  return false;
+}
+
+// A frame payload the arm owns (released at arm end or by frame cleanup);
+// a borrowed payload is a view of the subject and is never released.
+function yieldFrameArmOwnsPayload(in program: LoweredProgram, in declaration: LoweredFunction, arm: usize): boolean {
+  if (!declaration.statements[arm].matchBindingNeedsCleanup) return false;
+  return match (in declaration.statements[arm].type) {
+    some(type) => loweredTypeNeedsDeinit(program, type);
+    none => false;
+  };
+}
+
+// A match arm that suspends keeps its payload in the frame.
+function yieldFrameArmPayloadInFrame(in declaration: LoweredFunction, arm: usize): boolean {
+  const statement = view declaration.statements[arm];
+  if (statement.kind != LoweredStatementKind.matchArmStatement || statement.labels.length != 1) return false;
+  return match (in statement.type) {
+    some(_) => yieldFrameStatementSuspends(declaration, arm);
+    none => false;
+  };
+}
+
 function yieldFrameHoistedState(in declaration: LoweredFunction, site: usize): usize {
   return declaration.statements.length * 3 + site;
 }
@@ -11725,6 +11783,31 @@ function appendYieldFrameLexicalCleanups(
   }
 }
 
+// A suspending arm's case: its payload is copied into the frame (a consumed
+// subject transfers it), and an owned payload becomes live there.
+function appendYieldFrameArmStart(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
+  index: usize, arm: usize, depth: usize
+): void throws String {
+  const matchStatement = view declaration.statements[index];
+  const armStatement = view declaration.statements[arm];
+  appendIndent(inout output, depth);
+  output.append(`case Z_${matchStatement.name}`);
+  if (labelsContain(matchStatement.labels, "tagged")) output.append("Tag");
+  output.append(`_${armStatement.name}: {\n`);
+  appendIndent(inout output, depth + 1);
+  appendAsyncFrameBindingName(inout output, declaration, armStatement.labels[0]);
+  output.append(` = _z_stage1_match_${index}`);
+  if (!matchStatement.matchConsumesSubject || labelsContain(matchStatement.labels, "view-subject")) {
+    output.append("->payload.");
+  } else output.append(".payload.");
+  output.append(`${armStatement.name};\n`);
+  if (yieldFrameArmOwnsPayload(program, declaration, arm)) {
+    appendIndent(inout output, depth + 1);
+    output.append(`_z_stage1_live_${armStatement.labels[0]} = true;\n`);
+  }
+}
+
 function appendYieldFrameMatch(
   inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
   index: usize, depth: usize
@@ -11741,11 +11824,27 @@ function appendYieldFrameMatch(
   let hasWildcard = false;
   for (const arm of statement.children) {
     if (declaration.statements[arm].name == "_") hasWildcard = true;
-    try appendEnumMatchArmStart(inout output, declaration, index, arm, depth + 1);
+    const framePayload = yieldFrameArmPayloadInFrame(declaration, arm);
+    if (framePayload) try appendYieldFrameArmStart(inout output, program, declaration, index, arm, depth + 1);
+    else try appendEnumMatchArmStart(inout output, declaration, index, arm, depth + 1);
     for (const child of declaration.statements[arm].children) {
       try appendYieldFrameStatement(inout output, program, declaration, child, depth + 3);
     }
-    appendCleanups(inout output, declaration.statements[arm].cleanups, depth + 3);
+    if (framePayload) {
+      // The frame payload's release is guarded by its live flag: a move
+      // out of it, or cancellation earlier, already settled ownership.
+      const payload = view declaration.statements[arm].labels[0];
+      const ownsPayload = yieldFrameArmOwnsPayload(program, declaration, arm);
+      let armCleanups = copy declaration.statements[arm].cleanups;
+      let cleanupIndex: usize = 0;
+      while (cleanupIndex < armCleanups.length) {
+        if (ownsPayload && armCleanups[cleanupIndex].name == payload) {
+          armCleanups[cleanupIndex].guard = `_z_stage1_live_${payload}`;
+        }
+        cleanupIndex = cleanupIndex + 1;
+      }
+      appendYieldFrameCleanups(inout output, program, declaration, armCleanups, depth + 3);
+    } else appendCleanups(inout output, declaration.statements[arm].cleanups, depth + 3);
     appendIndent(inout output, depth + 3);
     output.append("break;\n");
     appendIndent(inout output, depth + 2);
@@ -12059,7 +12158,13 @@ function appendYieldFrameHelpers(
           ? try yieldFrameAwaitType(program, declaration, moved)
           : try taskResultType(program, declaration.expressions[moved].value);
         if (declaration.expressions[moved].kind == LoweredExpressionKind.asyncFunctionAwait) hasChild = true;
-        if (loweredTypeNeedsDeinit(program, resultType) || typeContainsObjectiveCStrongSlot(program, resultType)) {
+        // A value whose root (an assignment's value, a returned or initialized
+        // value, a match arm's selection) is the await, or wraps it only in
+        // enum or move construction, takes the result with no suspension
+        // between: the temporary never owns it across a resume.
+        const ownedHandoff = yieldFrameHoistMovesIntoValue(declaration, hoistStatement, site);
+        if ((!ownedHandoff && loweredTypeNeedsDeinit(program, resultType))
+          || typeContainsObjectiveCStrongSlot(program, resultType)) {
           throw "native async frame received a hoisted await with an owned result";
         }
         declaration.expressions[site].kind = LoweredExpressionKind.localValue;
@@ -12073,8 +12178,63 @@ function appendYieldFrameHelpers(
       }
       hoistStatement = hoistStatement + 1;
     }
+    // Payloads of match arms that suspend live in the frame; an owned one has
+    // a live flag that its moves clear and frame cleanup honors.
+    let payloadNames = Array<String>();
+    let payloadTypes = Array<LoweredType>();
+    let payloadOwned = Array<boolean>();
+    let payloadMatch: usize = 0;
+    while (payloadMatch < declaration.statements.length) {
+      if (declaration.statements[payloadMatch].kind == LoweredStatementKind.matchStatement) {
+        const plainMatch = !declaration.statements[payloadMatch].cppPayload
+          && !labelsContain(declaration.statements[payloadMatch].labels, "niche-view-option")
+          && declaration.statements[payloadMatch].foreignMatchDiscriminant.byteLength == 0;
+        for (const arm of source.statements[payloadMatch].children) {
+          if (!yieldFrameArmPayloadInFrame(declaration, arm)) continue;
+          if (!plainMatch) throw "native async frame cannot suspend in a C++, foreign, or view-Option match arm yet";
+          const payloadType = match (in declaration.statements[arm].type) {
+            some(type) => copy type;
+            none => throw "native async frame lost a match payload type";
+          };
+          if (payloadType.kind == LoweredTypeKind.foreignObjCType || typeContainsObjectiveCStrongSlot(program, payloadType)) {
+            throw "native async frame cannot keep an Objective-C match payload across a suspension yet";
+          }
+          const payloadName = copy declaration.statements[arm].labels[0];
+          if (asyncFrameBinds(declaration, payloadName)) throw "native yield frames cannot reuse a local binding name yet";
+          declaration.asyncFrameBindings.push(copy payloadName);
+          const ownsPayload = yieldFrameArmOwnsPayload(program, declaration, arm);
+          if (ownsPayload) {
+            let moveIndex: usize = 0;
+            while (moveIndex < declaration.expressions.length) {
+              let movesPayload = false;
+              if (declaration.expressions[moveIndex].kind == LoweredExpressionKind.moveValue
+                && declaration.expressions[moveIndex].value.byteLength == 0
+                && declaration.expressions[moveIndex].children.length == 1) {
+                const operand = declaration.expressions[moveIndex].children[0];
+                movesPayload = declaration.expressions[operand].kind == LoweredExpressionKind.localValue
+                  && declaration.expressions[operand].value == payloadName;
+              }
+              if (movesPayload) declaration.expressions[moveIndex].value = `_z_stage1_live_${payloadName}`;
+              moveIndex = moveIndex + 1;
+            }
+          }
+          payloadNames.push(payloadName);
+          payloadTypes.push(payloadType);
+          payloadOwned.push(ownsPayload);
+        }
+      }
+      payloadMatch = payloadMatch + 1;
+    }
     output.append(`typedef struct ${name} {\n  Z_AsyncTask task;\n  uint32_t state;\n`);
     if (hasChild) output.append("  Z_AsyncInvocation child;\n");
+    let payloadField: usize = 0;
+    while (payloadField < payloadNames.length) {
+      output.append(`  ${try cType(payloadTypes[payloadField])} _z_binding_${payloadNames[payloadField]};\n`);
+      if (payloadOwned[payloadField]) {
+        output.append(`  bool _z_stage1_live_${payloadNames[payloadField]};\n`);
+      }
+      payloadField = payloadField + 1;
+    }
     let hoistedField: usize = 0;
     while (hoistedField < hoistedSites.length) {
       if (hoistedTypes[hoistedField].kind != LoweredTypeKind.voidType) {
@@ -12176,6 +12336,15 @@ function appendYieldFrameHelpers(
     for (const site of hoistedSites) {
       output.append(`#define _z_stage1_frame_binding__z_await_value_${site} (frame->_z_binding__z_await_value_${site})\n`);
     }
+    let payloadMacro: usize = 0;
+    while (payloadMacro < payloadNames.length) {
+      const payloadName = view payloadNames[payloadMacro];
+      output.append(`#define _z_stage1_frame_binding_${payloadName} (frame->_z_binding_${payloadName})\n`);
+      if (payloadOwned[payloadMacro]) {
+        output.append(`#define _z_stage1_live_${payloadName} (frame->_z_stage1_live_${payloadName})\n`);
+      }
+      payloadMacro = payloadMacro + 1;
+    }
     let borrowMacro: usize = 0;
     while (borrowMacro < borrowNames.length) {
       output.append(`#define _z_stage1_frame_binding_${borrowNames[borrowMacro]} (frame->_z_binding_${borrowNames[borrowMacro]})\n`);
@@ -12225,6 +12394,16 @@ function appendYieldFrameHelpers(
       if (statement.liveFlag.byteLength == 0
         && !typeContainsObjectiveCStrongSlot(program, type)) continue;
       cleanup.push(LoweredCleanup({ name: copy statement.name, type, guard: copy statement.liveFlag }));
+    }
+    let payloadCleanup: usize = 0;
+    while (payloadCleanup < payloadNames.length) {
+      if (payloadOwned[payloadCleanup]) {
+        cleanup.push(LoweredCleanup({
+          name: copy payloadNames[payloadCleanup], type: copy payloadTypes[payloadCleanup],
+          guard: `_z_stage1_live_${payloadNames[payloadCleanup]}`,
+        }));
+      }
+      payloadCleanup = payloadCleanup + 1;
     }
     let borrowCleanup: usize = 0;
     while (borrowCleanup < borrowNames.length) {
@@ -12367,6 +12546,14 @@ function appendYieldFrameHelpers(
     }
     for (const site of hoistedSites) {
       output.append(`#undef _z_stage1_frame_binding__z_await_value_${site}\n`);
+    }
+    let payloadUndef: usize = 0;
+    while (payloadUndef < payloadNames.length) {
+      output.append(`#undef _z_stage1_frame_binding_${payloadNames[payloadUndef]}\n`);
+      if (payloadOwned[payloadUndef]) {
+        output.append(`#undef _z_stage1_live_${payloadNames[payloadUndef]}\n`);
+      }
+      payloadUndef = payloadUndef + 1;
     }
     let borrowUndef: usize = 0;
     while (borrowUndef < borrowNames.length) {

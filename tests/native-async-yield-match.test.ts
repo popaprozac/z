@@ -236,13 +236,11 @@ int main(void) {
     + "retry\nreleased endpoint outer\nreleased error retry\n");
 }, 240_000);
 
-test("keeps suspending match payloads and nested locals outside the native yielding tier, and hoists awaited subjects", () => {
+test("keeps destructured payloads and arm locals outside the native yielding tier, and runs awaited subjects and suspending arms", () => {
   const directory = mkdtempSync("/tmp/z-yield-match-boundary-");
   try {
     const input = resolve(directory, "main.zs");
     const cases = [
-      `const option = Option.some(1);
-       match (option) { some(value) => { await scheduler.yield(); } none => {} }`,
       `const option = Option.some(Item({ count: 1 }));
        match (option) { some({ count }) => {} none => {} }`,
       `const option = Option.some(1);
@@ -265,18 +263,25 @@ async function main(): i32 {
       assert.notEqual(result.status, 0, source);
       assert.match(result.stderr, /Z0700/, `${source}\n${result.stderr}`);
     }
-    // An awaited subject runs into a frame temporary before the match.
-    writeFileSync(input, `import { scheduler } from "std/async";
+    // An awaited subject runs into a frame temporary before the match, and an
+    // arm may suspend with its payload kept in the frame.
+    for (const body of [
+      "match (await child()) { some(value) => {} none => {} }",
+      "const option = Option.some(1);\n  match (option) { some(value) => { await scheduler.yield(); } none => {} }",
+    ]) {
+      writeFileSync(input, `import { scheduler } from "std/async";
 async function child(): Option<i32> { return Option.some(1); }
 async function main(): i32 {
-  match (await child()) { some(value) => {} none => {} }
+  ${body}
   await scheduler.yield();
   return 0;
 }`);
-    const awaited = spawnSync(process.execPath, [cli, "self-host-emit", input], {
-      encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
-    });
-    assert.equal(awaited.status, 0, awaited.stderr);
+      const accepted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+      });
+      assert.equal(accepted.status, 0, accepted.stderr);
+      execute(accepted.stdout, "");
+    }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 

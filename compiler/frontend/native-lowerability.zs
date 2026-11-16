@@ -3211,6 +3211,11 @@ function validateHoistedAwaitResults(
   statementRoot: boolean
 ): void throws ModuleResolveError {
   let handled = tree.nodes.length;
+  // A whole assigned or selected value moves straight into its destination.
+  if ((statementRoot && statement.kind == StatementKind.selectStatement)
+    || (!statementRoot && statement.kind == StatementKind.assignmentStatement)) {
+    handled = tree.root;
+  }
   if (statementRoot && (statement.kind == StatementKind.variableStatement
     || statement.kind == StatementKind.expressionStatement
     || statement.kind == StatementKind.returnStatement)) {
