@@ -222,10 +222,10 @@ test("keeps suspending match arm payloads in general native frames", () => {
   execute(source, expected);
 }, 240_000);
 
-test("runs class, moved-struct, and static async methods in general native frames", () => {
+test("runs, spawns, and joins class, moved-struct, and static async methods in general native frames", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/native-async-frame-methods.zs");
-  const expected = "forwarded 6 temporary 9\nreleased request 7\nsent 7 code 5 echoes 11 13\n"
-    + "released client 9\nreleased client 5\n";
+  const expected = "forwarded 6 temporary 9\nreleased request 7\nreleased request 8\nspawned 9 8\n"
+    + "sent 7 code 5 echoes 11 13\nreleased client 9\nreleased client 5\n";
   execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
   const source = emit(fixture);
   assert.match(source, /#define self \(frame->_z_receiver\)/);

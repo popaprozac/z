@@ -1,7 +1,7 @@
 // Async methods in general native frames: a class receiver stays retained
 // across suspension, a `move this` struct receiver is owned by the frame
 // (and moved on into a child), frames await methods as children, and static
-// async methods await like named functions.
+// async methods await like named functions. Methods also start as tasks.
 import console from "std/console";
 import { delay } from "std/time";
 
@@ -73,8 +73,13 @@ async function main(): i32 {
     success(value) => value;
     failure(error) => error;
   };
+  const loading = task other.load();
+  const sending = task Request({ id: 8 }).send();
+  const loadedLater = await loading;
+  const sentLater = await sending;
+  console.log(`spawned ${loadedLater} ${sentLater}`);
   const classEcho = await Client.echo(11);
   const structEcho = await Request.echo(13);
   console.log(`sent ${sent} code ${code} echoes ${classEcho} ${structEcho}`);
-  return forwarded - 6 + temporary - 9 + sent - 7 + code - 5 + classEcho - 11 + structEcho - 13;
+  return forwarded - 6 + temporary - 9 + sent - 7 + code - 5 + classEcho - 11 + structEcho - 13 + loadedLater - 9 + sentLater - 8;
 }

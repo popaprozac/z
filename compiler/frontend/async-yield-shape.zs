@@ -162,7 +162,7 @@ function frameSpawnIsSupported(in tree: ExpressionTree, index: usize): boolean {
   if (tree.nodes[call].kind != ExpressionKind.callExpression
     || tree.nodes[call].children.length == 0) return false;
   const callee = tree.nodes[call].children[0];
-  if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) return false;
+  if (!frameCalleeIsSupported(tree, callee)) return false;
   for (const child of tree.nodes[call].children) {
     if (!frameExpressionIsSynchronous(tree, child)) return false;
   }
@@ -514,7 +514,8 @@ function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration): boolea
           if (tree.nodes[tree.root].kind == ExpressionKind.spawnExpression) {
             const call = tree.nodes[tree.root].children[0];
             const callee = tree.nodes[call].children[0];
-            if (nameIsLocalBinding(declaration, tree.nodes[callee].value)) return false;
+            if (tree.nodes[callee].kind == ExpressionKind.identifierExpression
+              && nameIsLocalBinding(declaration, tree.nodes[callee].value)) return false;
             if (statement.kind == StatementKind.variableStatement) {
               if (!root) return false;
               for (const existing of tasks) { if (existing == statement.name) return false; }

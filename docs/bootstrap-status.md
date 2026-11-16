@@ -1418,7 +1418,8 @@ methods take the frame too: a class receiver is retained by the frame, a
 `move this` struct receiver is owned by it (moving it into a child method
 clears its live flag), awaited methods start through their await-site helper
 (which forwards to the callee's frame when it has one), and a static async
-method awaits like a named function. As in Stage 0, an async struct method
+method awaits like a named function. `task receiver.method(args)` starts a
+method as a hot child the same way. As in Stage 0, an async struct method
 must take `move this` (Z0704). Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted

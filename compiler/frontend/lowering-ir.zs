@@ -13885,6 +13885,18 @@ function lowerExpressionNode(
     const taskResolution = resolvedCallResolutionIndex(evidence, tree, taskInput);
     if (taskResolution < evidence.callResolutions.length
       && evidence.callResolutions[taskResolution].asynchronous
+      && evidence.callResolutions[taskResolution].kind == "method") {
+      // `task receiver.method(args)` starts the method as a hot child.
+      const methodCall = try lowerAsyncMethodTailCall(program, importedTypes, evidence, tree, taskInput, inout output);
+      const methodIdentity = try moduleCallFunctionTypeIdentity(program, importedTypes, evidence.callResolutions[taskResolution]);
+      let methodChildren = Array<usize>();
+      methodChildren.push(methodCall);
+      let methodLabels = Array<String>();
+      methodLabels.push("method");
+      return pushExpression(inout output, LoweredExpressionKind.asyncFunctionTask, methodIdentity, methodChildren, methodLabels);
+    }
+    if (taskResolution < evidence.callResolutions.length
+      && evidence.callResolutions[taskResolution].asynchronous
       && (evidence.callResolutions[taskResolution].kind == "function"
         || evidence.callResolutions[taskResolution].kind == "staticMethod")) {
       return try lowerDirectAsyncFunctionCall(

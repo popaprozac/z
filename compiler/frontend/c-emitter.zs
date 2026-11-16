@@ -11472,11 +11472,35 @@ function appendYieldFrameSpawn(
   appendIndent(inout output, depth);
   output.append(`if (${slot}.task != NULL) abort();\n`);
   appendIndent(inout output, depth);
-  output.append(`${slot} = Z_${spawned.value}_start(`);
-  try appendExpression(inout output, declaration, spawned.children[0]);
-  output.append(", task->executor");
-  try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, true);
-  output.append(");\n");
+  if (spawned.labels.length > 0 && spawned.labels[0] == "method") {
+    // A method child starts through its spawn-site helper.
+    const method = view declaration.expressions[spawned.children[0]];
+    if (method.kind != LoweredExpressionKind.methodCall) throw "native async frame spawns Z methods only in this tier";
+    output.append(`${slot} = `);
+    appendAsyncCallableAwaitHelperName(inout output, declaration, expression);
+    output.append("_start_invocation(task->executor");
+    let argument: usize = 0;
+    while (argument < method.children.length) {
+      output.append(", ");
+      const labelIndex = argument + 2;
+      const borrowed = argument > 0 && method.labels.length > labelIndex
+        && (method.labels[labelIndex] == "in" || method.labels[labelIndex] == "inout" || method.labels[labelIndex] == "out");
+      if (borrowed) {
+        if (!yieldFrameBorrowPlace(declaration, method.children[argument])) {
+          throw "native async frame method borrows require named storage in this tier";
+        }
+        try appendAddressOf(inout output, declaration, method.children[argument]);
+      } else try appendExpression(inout output, declaration, method.children[argument]);
+      argument = argument + 1;
+    }
+    output.append(");\n");
+  } else {
+    output.append(`${slot} = Z_${spawned.value}_start(`);
+    try appendExpression(inout output, declaration, spawned.children[0]);
+    output.append(", task->executor");
+    try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, true);
+    output.append(");\n");
+  }
   appendBorrowedTemporaryCleanups(inout output, declaration, expression, depth);
   // A hot child: it runs on this executor once the parent suspends.
   appendIndent(inout output, depth);
@@ -16815,7 +16839,8 @@ function appendAsyncMethodAwaitHelpers(
     while (expressionIndex < owner.expressions.length) {
       const expression = view owner.expressions[expressionIndex];
       if (
-        expression.kind != LoweredExpressionKind.asyncFunctionAwait
+        (expression.kind != LoweredExpressionKind.asyncFunctionAwait
+          && expression.kind != LoweredExpressionKind.asyncFunctionTask)
         || expression.labels.length == 0
         || expression.labels[0] != "method"
         || expression.children.length != 1
@@ -18720,7 +18745,8 @@ function appendAsyncMethodAwaitStartPrototypes(
     while (expressionIndex < owner.expressions.length) {
       const expression = view owner.expressions[expressionIndex];
       if (
-        expression.kind != LoweredExpressionKind.asyncFunctionAwait
+        (expression.kind != LoweredExpressionKind.asyncFunctionAwait
+          && expression.kind != LoweredExpressionKind.asyncFunctionTask)
         || expression.labels.length == 0
         || expression.labels[0] != "method"
         || expression.children.length != 1
