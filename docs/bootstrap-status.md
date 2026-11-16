@@ -1389,9 +1389,13 @@ The immediate consumer-driven prerequisite is Zapp's lifecycle-owned launch
 listener, before enabling automatic secondary-instance forwarding. Its reduced
 `async-launch-listener.zs` and `async-launch-owned-destructure.zs` fixtures now
 execute through both compiler paths. The native executor-local yield frame
-supports `void`/`i32` helpers, including supported typed errors, without explicit declaration affinity,
-owned Z-value parameters, root initialized Z-owned locals/destructuring, and
-`scheduler.yield()` inside nested `if`/`while` control flow. Cancellation before
+supports helpers without explicit declaration affinity, owned Z-value parameters,
+root initialized Z-owned locals/destructuring, and `scheduler.yield()` or
+`await delay(ms)` (any `u64` expression) inside nested `if`/`while` control flow.
+A helper with a `scheduler.yield()` returns `void`/`i32`. A suspending free
+function that no other native async shape claims takes the same frame without
+one, with any result type the frame can store, including typed errors.
+Cancellation wakes a frame asleep on a timer at once. Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument
@@ -1415,8 +1419,7 @@ returning or throwing arms leave the destination uninitialized, with cleanup
 tested before and after frame entry. Awaited subjects, suspension inside arms,
 and destructured patterns remain outside this native frame tier. Borrowed child arguments, method/placed
 awaits, nested awaited expressions, and nested source locals remain separate
-yield-frame boundaries. The frame still requires an explicit `scheduler.yield()`;
-these reductions alone do not establish application integration. The broader
+yield-frame boundaries. These reductions alone do not establish application integration. The broader
 `async-owned-destructure.zs` probe covers explicit copy/move, awaited producers,
 scoped child borrows, errors, and cancellation before or after initialization.
 Cleanup-bearing branch/loop locals still require an explicit `async scope`,

@@ -347,7 +347,8 @@ current model for closing a lowering slice: the positive path executes, its
 invalid safety boundary rejects, and destruction follows the same affinity.
 
 The standalone executable subset is intentionally narrower than the native
-parser and semantic graph. Unplaced genuinely suspending async functions, traits, generic
+parser and semantic graph. Unplaced suspending async functions outside the native
+frame (borrowed parameters, methods, suspension in match arms or nested locals), traits, generic
 methods, fixed arrays, and callable combinations beyond the first synchronous
 direct-function/expression-closure tier still stop before C emission. Ordinary
 transparent aliases, first-class synchronous callable values, and direct calls

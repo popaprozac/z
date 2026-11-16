@@ -18,7 +18,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -3118,6 +3118,69 @@ function validateNativeChannelExpression(
   }
 }
 
+function validateYieldFrameStorage(
+  in path: String,
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in declaration: FunctionDeclaration
+): void throws ModuleResolveError {
+  match (in declaration.errorType) {
+    some(error) => {
+      const visiting = Array<String>();
+      if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, error.name, visiting)) {
+        throw loweringBoundary(path, "Z0700", "native yield-frame error requires supported owned frame storage",
+          declaration.line, declaration.column, 5);
+      }
+    }
+    none => {}
+  }
+  for (const parameter of declaration.parameters) {
+    const visiting = Array<String>();
+    if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, parameter.type.name, visiting)) {
+      throw loweringBoundary(path, "Z0700",
+        `native yield-frame parameter "${parameter.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
+        parameter.line, parameter.column, parameter.name.byteLength);
+    }
+  }
+  for (const statement of declaration.body.nodes) {
+    // The compiler-created owner must be supported too, even when none of
+    // its unsupported fields are selected into user-visible bindings.
+    if (statement.kind == StatementKind.destructureStatement) {
+      match (in statement.expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => {
+            const root = tree.root;
+            const sourceType = resolvedExpressionType(graph, moduleIndex, tree, root);
+            const visiting = Array<String>();
+            if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, sourceType, visiting)) {
+              throw loweringBoundary(path, "Z0700",
+                "native yield-frame destructuring source requires supported owned frame storage; borrowed views and other native storage remain outside this tier",
+                statement.line, statement.column, 5);
+            }
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
+    for (const binding of graph.modules[moduleIndex].semanticEvidence.bindingResolutions) {
+      let matches = statement.kind == StatementKind.variableStatement
+        && binding.offset == statement.nameOffset;
+      for (const field of statement.objectBindings) {
+        if (binding.offset == field.bindingOffset) matches = true;
+      }
+      if (!matches) continue;
+      const visiting = Array<String>();
+      if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, binding.typeName, visiting)) {
+        throw loweringBoundary(path, "Z0700",
+          `native yield-frame local "${binding.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
+          binding.line, binding.column, binding.name.byteLength);
+      }
+    }
+  }
+}
+
 function validateNativeFunction(
   in path: String,
   moduleIndex: usize,
@@ -3163,62 +3226,7 @@ function validateNativeFunction(
       try validateMainTimerStatement(modules[parsedModule].program, declaration.body, root, path);
     }
   }
-  if (yieldFrame) {
-    match (in declaration.errorType) {
-      some(error) => {
-        const visiting = Array<String>();
-        if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, error.name, visiting)) {
-          throw loweringBoundary(path, "Z0700", "native yield-frame error requires supported owned frame storage",
-            declaration.line, declaration.column, 5);
-        }
-      }
-      none => {}
-    }
-    for (const parameter of declaration.parameters) {
-      const visiting = Array<String>();
-      if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, parameter.type.name, visiting)) {
-        throw loweringBoundary(path, "Z0700",
-          `native yield-frame parameter "${parameter.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
-          parameter.line, parameter.column, parameter.name.byteLength);
-      }
-    }
-    for (const statement of declaration.body.nodes) {
-      // The compiler-created owner must be supported too, even when none of
-      // its unsupported fields are selected into user-visible bindings.
-      if (statement.kind == StatementKind.destructureStatement) {
-        match (in statement.expression) {
-          some(syntax) => match (in syntax.tree) {
-            some(tree) => {
-              const root = tree.root;
-              const sourceType = resolvedExpressionType(graph, moduleIndex, tree, root);
-              const visiting = Array<String>();
-              if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, sourceType, visiting)) {
-                throw loweringBoundary(path, "Z0700",
-                  "native yield-frame destructuring source requires supported owned frame storage; borrowed views and other native storage remain outside this tier",
-                  statement.line, statement.column, 5);
-              }
-            }
-            none => {}
-          }
-          none => {}
-        }
-      }
-      for (const binding of graph.modules[moduleIndex].semanticEvidence.bindingResolutions) {
-        let matches = statement.kind == StatementKind.variableStatement
-          && binding.offset == statement.nameOffset;
-        for (const field of statement.objectBindings) {
-          if (binding.offset == field.bindingOffset) matches = true;
-        }
-        if (!matches) continue;
-        const visiting = Array<String>();
-        if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, binding.typeName, visiting)) {
-          throw loweringBoundary(path, "Z0700",
-            `native yield-frame local "${binding.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
-            binding.line, binding.column, binding.name.byteLength);
-        }
-      }
-    }
-  }
+  if (yieldFrame) try validateYieldFrameStorage(path, moduleIndex, modules, graph, declaration);
   const firstTierTailAwait = functionHasFirstTierTailAwaitStorage(
     moduleIndex,
     modules,
@@ -3226,6 +3234,19 @@ function validateNativeFunction(
     declaration,
     owner
   );
+  // Every shape tier rejected this function: the general frame takes it.
+  const generalFrame = !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
+    && owner.byteLength == 0 && declaration.name != "main" && parsedModule < modules.length
+    && functionUsesGeneralFrame(modules[parsedModule].program, declaration);
+  if (generalFrame) {
+    try validateYieldFrameStorage(path, moduleIndex, modules, graph, declaration);
+    const visiting = Array<String>();
+    if (declaration.returnType.name != "void"
+      && !nativeYieldFrameStorageSupported(modules, graph, moduleIndex, declaration.returnType.name, visiting)) {
+      throw loweringBoundary(path, "Z0700", "native async frame result requires supported owned frame storage",
+        declaration.line, declaration.column, 5);
+    }
+  }
   if (declaration.asynchronous && declaration.name != "main"
     && functionUsesFirstTierLinearAwait(moduleIndex, modules, graph, declaration)
     && parsedModule < modules.length) {
@@ -3261,7 +3282,7 @@ function validateNativeFunction(
     }
   }
   if (declaration.asynchronous && declaration.name != "main"
-    && !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait) {
+    && !yieldFrame && !generalFrame && !firstTierSchedulerYield && !firstTierTailAwait) {
     let earlierTerminalAwait = false;
     for (const root of declaration.body.roots) {
       if (earlierTerminalAwait && statementIsFirstTierAwaitLocal(declaration.body, root)) {
@@ -3277,7 +3298,7 @@ function validateNativeFunction(
       }
     }
   }
-  if (!yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
+  if (!yieldFrame && !generalFrame && !firstTierSchedulerYield && !firstTierTailAwait
     && parsedModule < modules.length) {
     let index: usize = 0;
     while (index < declaration.body.nodes.length) {
@@ -3354,6 +3375,7 @@ function validateNativeFunction(
     && !firstTierSchedulerYield
     && !firstTierTailAwait
     && !yieldFrame
+    && !generalFrame
   ) {
     throw loweringBoundary(
       path,

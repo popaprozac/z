@@ -97,7 +97,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -25928,6 +25928,9 @@ function lowerStatementWithResult(
     statements[placeholder].kind = LoweredStatementKind.schedulerYieldStatement;
     return placeholder;
   }
+  if (isFrameDelay(program, arena, index)) {
+    return try lowerFrameDelay(program, importedTypes, evidence, arena, index, inout expressions, inout statements);
+  }
   match (in arena.nodes[index].expression) {
     some(syntax) => {
       let includeRoot = true;
@@ -28178,6 +28181,33 @@ function bindLoopBreakTargets(
   }
 }
 
+// A frame timer suspension: the delay statement carries its u64 duration.
+// Main's delay tiers intercept their own delays before statement lowering.
+function lowerFrameDelay(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  index: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): usize throws String {
+  const tree = match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(value) => copy value;
+      none => throw "native frame delay lost its expression tree";
+    }
+    none => throw "native frame delay lost its expression";
+  };
+  const call = tree.nodes[tree.root].children[0];
+  const milliseconds = try lowerExpressionContextual(
+    program, importedTypes, evidence, tree, tree.nodes[call].children[1], "u64", inout expressions
+  );
+  const placeholder = appendMainDelayPlaceholder(inout statements);
+  statements[placeholder].expression = Option.some(milliseconds);
+  return placeholder;
+}
+
 function appendMainDelayPlaceholder(
   inout statements: Array<LoweredStatement>
 ): usize {
@@ -29267,6 +29297,7 @@ function lowerFunction(
   let asyncSuspension = "";
   const yieldFrame = receiverName.byteLength == 0
     && functionUsesYieldFrame(program, declaration);
+  let generalFrame = false;
   let executorAffinity = declaration.executorAffinity.copyBytes(
     0,
     declaration.executorAffinity.byteLength
@@ -29360,12 +29391,17 @@ function lowerFunction(
           || firstTierDoubleAwait
         )
       );
+    // Every shape tier rejected this function: the general frame takes it.
+    generalFrame = !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
+      && receiverName.byteLength == 0 && executorAffinity.byteLength == 0
+      && functionUsesGeneralFrame(program, declaration);
     if (
       executorAffinity != "thread.main"
       && functionContainsSuspension(declaration)
       && !firstTierSchedulerYield
       && !firstTierTailAwait
       && !yieldFrame
+      && !generalFrame
     ) {
       throw `native lowering does not support suspending async function ${declaration.name} yet`;
     }
@@ -29502,7 +29538,7 @@ function lowerFunction(
       if (moduleTypeNeedsCleanup(program, importedTypes, type)) asyncSuspension = "yield-frame";
     }
   }
-  if (yieldFrame && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
+  if ((yieldFrame || generalFrame) && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
   let parameters = Array<LoweredParameter>();
   let ownedParameters = Array<LoweredCleanup>();
   let liveFlags = Array<LoweredLiveFlag>();

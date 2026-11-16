@@ -39,6 +39,38 @@ export function isFrameSchedulerYield(
   };
 }
 
+// `await delay(ms)` from std/time as a whole statement: one timer suspension.
+export function isFrameDelay(
+  in program: Program, in arena: StatementArena, index: usize
+): boolean {
+  if (arena.nodes[index].kind != StatementKind.expressionStatement) return false;
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (tree.nodes[root].kind != ExpressionKind.awaitExpression
+          || tree.nodes[root].children.length != 1) return false;
+        const call = tree.nodes[root].children[0];
+        if (tree.nodes[call].kind != ExpressionKind.callExpression
+          || tree.nodes[call].children.length != 2) return false;
+        const callee = tree.nodes[call].children[0];
+        if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) return false;
+        if (!frameExpressionIsSynchronous(tree, tree.nodes[call].children[1])) return false;
+        for (const imported of program.imports) {
+          if (imported.header != "std/time") continue;
+          for (const binding of imported.bindings) {
+            if (binding.importedName == "delay"
+              && binding.localName == tree.nodes[callee].value) return true;
+          }
+        }
+        select false;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
 function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): boolean {
   const kind = tree.nodes[index].kind;
   if (kind == ExpressionKind.awaitExpression
@@ -86,7 +118,8 @@ function frameStatementIsSupported(
   in program: Program, in arena: StatementArena, index: usize,
   nested: boolean, synchronousOnly: boolean
 ): boolean {
-  if (isFrameSchedulerYield(program, arena, index)) return !synchronousOnly;
+  if (isFrameSchedulerYield(program, arena, index)
+    || isFrameDelay(program, arena, index)) return !synchronousOnly;
   const kind = arena.nodes[index].kind;
   // Match-initialized root owners use the same non-suspending arm lowering as
   // statement matches. The selected value becomes live only after the match;
@@ -199,6 +232,45 @@ export function functionUsesYieldFrame(
     index = index + 1;
   }
   if (!yields) return false;
+  for (const root of declaration.body.roots) {
+    if (!frameStatementIsSupported(program, declaration.body, root, false, false)) return false;
+  }
+  return true;
+}
+
+function frameExpressionSuspends(in tree: ExpressionTree, index: usize): boolean {
+  if (tree.nodes[index].kind == ExpressionKind.awaitExpression) return true;
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
+  for (const child of tree.nodes[index].children) {
+    if (frameExpressionSuspends(tree, child)) return true;
+  }
+  return false;
+}
+
+// The general native async frame: the yield frame's storage and resume model
+// for a suspending function every shape tier rejects. It needs no
+// scheduler.yield() and takes any result type; the lowerability pass checks
+// that the result, parameters, and locals have supported frame storage.
+export function functionUsesGeneralFrame(
+  in program: Program, in declaration: FunctionDeclaration
+): boolean {
+  if (!declaration.asynchronous || declaration.executorAffinity.byteLength != 0) return false;
+  for (const parameter of declaration.parameters) {
+    if (parameter.mode != ParameterMode.value) return false;
+  }
+  let suspends = false;
+  for (const statement of declaration.body.nodes) {
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          if (frameExpressionSuspends(tree, tree.root)) suspends = true;
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  if (!suspends) return false;
   for (const root of declaration.body.roots) {
     if (!frameStatementIsSupported(program, declaration.body, root, false, false)) return false;
   }

@@ -11391,6 +11391,21 @@ function appendYieldFrameStatement(
     output.append(`return;\n_z_resume_${index}:;\n`);
     return;
   }
+  if (statement.kind == LoweredStatementKind.delayStatement) {
+    const milliseconds = match (in statement.expression) {
+      some(value) => value;
+      none => throw "native async frame received a detached delay statement";
+    };
+    appendIndent(inout output, depth);
+    output.append(`frame->state = ${index + 1};\n`);
+    appendIndent(inout output, depth);
+    output.append("z_stage1_async_schedule_delay(task, (uint64_t)(");
+    try appendExpression(inout output, declaration, milliseconds);
+    output.append("));\n");
+    appendIndent(inout output, depth);
+    output.append(`return;\n_z_resume_${index}:;\n`);
+    return;
+  }
   if (statement.kind == LoweredStatementKind.matchStatement) {
     try appendYieldFrameMatch(inout output, program, declaration, index, depth);
     return;
@@ -11558,9 +11573,11 @@ function appendYieldFrameHelpers(
     const name = yieldFrameName(source);
     const resultNeedsDeinit = loweredTypeNeedsDeinit(program, source.returnType);
     let hasChild = false;
+    let hasTimer = false;
     let childStatement: usize = 0;
     while (childStatement < source.statements.length) {
       if (yieldFrameAwaitExpression(source, childStatement) < source.expressions.length) hasChild = true;
+      if (source.statements[childStatement].kind == LoweredStatementKind.delayStatement) hasTimer = true;
       childStatement = childStatement + 1;
     }
     let declaration = copy source;
@@ -11648,18 +11665,22 @@ function appendYieldFrameHelpers(
       cleanup.push(LoweredCleanup({ name: copy statement.name, type, guard: copy statement.liveFlag }));
     }
     appendYieldFrameCleanups(inout output, program, declaration, cleanup, 1);
-    if (hasChild) {
-    output.append(`}\nstatic void ${name}_release_child(${name} *frame) {\n  if (frame->child.task == NULL) return;\n  if (!frame->child.task->completed) abort();\n  frame->child.task->waiter = NULL;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){};\n`);
-    output.append(`}\nstatic void ${name}_cancel(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n`);
+    if (hasChild || hasTimer) {
+    if (hasChild) output.append(`}\nstatic void ${name}_release_child(${name} *frame) {\n  if (frame->child.task == NULL) return;\n  if (!frame->child.task->completed) abort();\n  frame->child.task->waiter = NULL;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){};\n`);
+    output.append(`}\nstatic void ${name}_cancel(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n  (void)frame;\n`);
+    if (hasChild) output.append("  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n");
+    // A sleeping frame observes cancellation now, not when its timer fires.
+    if (hasTimer) output.append("  if (task->timer_scheduled) {\n    z_stage1_async_remove_timer(task);\n    if (!task->queued && !task->completed) z_stage1_async_enqueue(task->executor, task);\n  }\n");
     }
     output.append(`}\nstatic void ${name}_poll(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n`);
     if (hasChild) {
     output.append(`  if (task->cancellation_requested && frame->child.task != NULL && !frame->child.task->completed) {\n    z_stage1_async_request_cancel(frame->child.task);\n    return;\n  }\n`);
-    output.append(`  if (task->cancellation_requested || (frame->child.task != NULL && frame->child.task->cancelled)) {\n    ${name}_release_child(frame);\n    ${name}_cleanup(frame);\n    task->cancelled = true; task->completed = true; return;\n  }\n  switch (frame->state) {\n    case 0: break;\n`);
-    } else output.append(`  if (task->cancellation_requested) { ${name}_cleanup(frame); task->cancelled = true; task->completed = true; return; }\n  switch (frame->state) {\n    case 0: break;\n`);
+    output.append(`  if (task->cancellation_requested || (frame->child.task != NULL && frame->child.task->cancelled)) {\n    ${hasTimer ? "z_stage1_async_remove_timer(task);\n    " : ""}${name}_release_child(frame);\n    ${name}_cleanup(frame);\n    task->cancelled = true; task->completed = true; return;\n  }\n  switch (frame->state) {\n    case 0: break;\n`);
+    } else output.append(`  if (task->cancellation_requested) { ${hasTimer ? "z_stage1_async_remove_timer(task); " : ""}${name}_cleanup(frame); task->cancelled = true; task->completed = true; return; }\n  switch (frame->state) {\n    case 0: break;\n`);
     let index: usize = 0;
     while (index < declaration.statements.length) {
       if (declaration.statements[index].kind == LoweredStatementKind.schedulerYieldStatement
+        || declaration.statements[index].kind == LoweredStatementKind.delayStatement
         || yieldFrameAwaitExpression(declaration, index) < declaration.expressions.length) {
         output.append(`    case ${index + 1}: goto _z_resume_${index};\n`);
       }
@@ -11681,6 +11702,7 @@ function appendYieldFrameHelpers(
     if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
     output.append(`  ${name}_cleanup(frame);\n  task->completed = true;\n}\n`);
     output.append(`static void ${name}_destroy(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n  z_stage1_async_remove_queued(task);\n`);
+    if (hasTimer) output.append("  z_stage1_async_remove_timer(task);\n");
     if (hasChild) output.append(`  if (frame->child.task != NULL && !frame->child.task->completed) {\n    z_stage1_async_request_cancel(task);\n    frame->child.task->waiter = NULL;\n    while (!frame->child.task->completed) { if (!z_stage1_async_drive_one(task->executor)) abort(); }\n  }\n  ${name}_release_child(frame);\n`);
     output.append(`  ${name}_cleanup(frame);\n`);
     if (resultNeedsDeinit) {
@@ -11722,7 +11744,7 @@ function appendYieldFrameHelpers(
     output.append(`}\nstatic __attribute__((unused)) Z_AsyncInvocation ${name}_start(Z_AsyncExecutor *executor`);
     try appendYieldFrameParameters(inout output, source.parameters);
     output.append(`) {\n  if (executor == NULL) abort();\n  ${name} *frame = (__typeof__(frame))calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.executor = executor;\n  frame->task.poll = ${name}_poll;\n`);
-    if (hasChild) output.append(`  frame->task.request_cancel = ${name}_cancel;\n`);
+    if (hasChild || hasTimer) output.append(`  frame->task.request_cancel = ${name}_cancel;\n`);
     let argument: usize = 0;
     for (const parameter of source.parameters) {
       output.append("  frame->_z_binding_");
@@ -25203,6 +25225,10 @@ function programUsesMainDelay(in program: LoweredProgram): boolean {
       || declaration.mainDelayMatches.length > 0
       || declaration.mainDelayLoops.length > 0
     ) return true;
+    if (declaration.asyncSuspension != "yield-frame") continue;
+    for (const statement of declaration.statements) {
+      if (statement.kind == LoweredStatementKind.delayStatement) return true;
+    }
   }
   return false;
 }
