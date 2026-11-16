@@ -10967,6 +10967,31 @@ function inferExpressionNodeType(
             inout evidence
           );
           copyBindingFlowStates(inout bindings, workerBindings);
+          // The worker's handle, as in Stage 0: `(): T` gives Task<T> and
+          // `(): T throws E` gives Task<T, E>, so `await` types its result.
+          for (const argument of children) {
+            const worker = view tree.nodes[argument];
+            if (worker.kind != ExpressionKind.closureExpression || worker.labels.length < 2) continue;
+            let workerReturn = copy worker.labels[0];
+            let workerError = copy worker.labels[1];
+            // An expression closure's result is its inferred signature's.
+            if (workerReturn.byteLength == 0) {
+              for (const resolution of evidence.expressionResolutions) {
+                if (resolution.offset != worker.offset || resolution.line != worker.line
+                  || resolution.column != worker.column) continue;
+                match (nativeFunctionSignature(resolution.typeName)) {
+                  some(signature) => {
+                    workerReturn = copy signature.returnType;
+                    workerError = copy signature.errorType;
+                  }
+                  none => {}
+                }
+              }
+            }
+            if (workerReturn.byteLength == 0) continue;
+            if (workerError.byteLength > 0) return `Task<${workerReturn}, ${workerError}>`;
+            return `Task<${workerReturn}>`;
+          }
           return "";
         }
         const shadowedSelectorNamespace = memberName == "selector" || memberName == "optionalCall" ? valueBindingType(bindings, namespaceName) : "";

@@ -619,7 +619,8 @@ export function functionUsesYieldFrame(
   for (const root of declaration.body.roots) {
     if (!frameStatementIsSupported(program, declaration.body, root, false, false)) return false;
   }
-  return frameTaskLocalsAreJoinOnly(declaration);
+  const threadNames = mainPlacementThreadNames(program);
+  return frameTaskLocalsAreJoinOnly(declaration, threadNames);
 }
 
 function frameExpressionSuspends(in tree: ExpressionTree, index: usize): boolean {
@@ -664,7 +665,8 @@ export function functionUsesGeneralFrame(
   for (const root of declaration.body.roots) {
     if (!frameStatementIsSupported(program, declaration.body, root, false, false)) return false;
   }
-  return frameTaskLocalsAreJoinOnly(declaration);
+  const threadNames = mainPlacementThreadNames(program);
+  return frameTaskLocalsAreJoinOnly(declaration, threadNames);
 }
 
 // Frame storage is named by binding: locals and parameters must not repeat.
@@ -756,7 +758,21 @@ function frameTaskJoinUses(in tree: ExpressionTree, in name: String): usize {
 // A spawn's callee is a named function (not a local callable, which other
 // tiers own), and a task local is used only by `await t` / `await t.cancel()`:
 // its storage is the frame's invocation slot, not a thread-task handle.
-function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration): boolean {
+// `const t = thread.spawn(...)`: a worker the frame joins like a child.
+function isThreadSpawnCall(in tree: ExpressionTree, index: usize, in threadNames: Array<String>): boolean {
+  if (tree.nodes[index].kind != ExpressionKind.callExpression || tree.nodes[index].children.length == 0) return false;
+  const callee = tree.nodes[index].children[0];
+  if (tree.nodes[callee].kind != ExpressionKind.memberExpression || tree.nodes[callee].value != "spawn"
+    || tree.nodes[callee].children.length != 1) return false;
+  const namespace = tree.nodes[callee].children[0];
+  if (tree.nodes[namespace].kind != ExpressionKind.identifierExpression) return false;
+  for (const name of threadNames) {
+    if (name == tree.nodes[namespace].value) return true;
+  }
+  return false;
+}
+
+function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration, in threadNames: Array<String>): boolean {
   let tasks = Array<String>();
   // Frame-level statements: roots and the direct statements of unnamed scopes.
   let frameLevel = copy declaration.body.roots;
@@ -773,6 +789,12 @@ function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration): boolea
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
+          // A root worker local is joined like a spawn local.
+          if (root && statement.kind == StatementKind.variableStatement
+            && isThreadSpawnCall(tree, tree.root, threadNames)) {
+            for (const existing of tasks) { if (existing == statement.name) return false; }
+            tasks.push(copy statement.name);
+          }
           if (tree.nodes[tree.root].kind == ExpressionKind.spawnExpression) {
             const call = tree.nodes[tree.root].children[0];
             const callee = tree.nodes[call].children[0];
