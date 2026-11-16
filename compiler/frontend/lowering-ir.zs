@@ -12567,14 +12567,29 @@ function lowerDirectAsyncFunctionCall(
     0,
     resolution.targetName.byteLength
   );
-  const genericFunctionSuffix = try resolvedGenericFunctionSuffix(
-    program,
-    importedTypes,
-    evidence,
-    tree,
-    taskInput
-  );
-  target = `${target}${genericFunctionSuffix}`;
+  // A static method's function is named after its owner, as its own lowering
+  // names it.
+  if (resolution.kind == "staticMethod") {
+    const owner = try resolvedStaticMethodOwnerType(program, importedTypes, evidence, tree, taskInput);
+    match (owner) {
+      some(ownerType) => {
+        const callee = tree.nodes[taskInput].children[0];
+        const methodSuffix = try resolvedGenericMethodSuffix(program, importedTypes, evidence, tree, taskInput);
+        target = userMethodTarget(ownerType.name, tree.nodes[callee].value, methodSuffix);
+      }
+      none => throw "native static async method lowering lost its owner type";
+    }
+  }
+  if (resolution.kind == "function") {
+    const genericFunctionSuffix = try resolvedGenericFunctionSuffix(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      taskInput
+    );
+    target = `${target}${genericFunctionSuffix}`;
+  }
   let callableLabels = Array<String>();
   callableLabels.push(callableIdentity.copyBytes(
     0,
@@ -13870,7 +13885,8 @@ function lowerExpressionNode(
     const taskResolution = resolvedCallResolutionIndex(evidence, tree, taskInput);
     if (taskResolution < evidence.callResolutions.length
       && evidence.callResolutions[taskResolution].asynchronous
-      && evidence.callResolutions[taskResolution].kind == "function") {
+      && (evidence.callResolutions[taskResolution].kind == "function"
+        || evidence.callResolutions[taskResolution].kind == "staticMethod")) {
       return try lowerDirectAsyncFunctionCall(
         program, importedTypes, evidence, tree, taskInput, taskResolution,
         LoweredExpressionKind.asyncFunctionTask, inout output
@@ -14049,7 +14065,8 @@ function lowerExpressionNode(
         const resolution = view evidence.callResolutions[
           callResolutionIndex
         ];
-        if (resolution.asynchronous && resolution.kind == "function") {
+        // A static method has no receiver: it awaits like a named function.
+        if (resolution.asynchronous && (resolution.kind == "function" || resolution.kind == "staticMethod")) {
           return try lowerDirectAsyncFunctionCall(
             program, importedTypes, evidence, tree, taskInput, callResolutionIndex,
             LoweredExpressionKind.asyncFunctionAwait, inout output
@@ -29466,8 +29483,12 @@ function lowerFunction(
         )
       );
     // Every shape tier rejected this function: the general frame takes it.
+    // A method's frame stores its receiver: a retained class, or a moved struct.
+    const frameReceiver = receiverName.byteLength == 0
+      || receiverKind == LoweredTypeKind.classType
+      || (receiverKind == LoweredTypeKind.structType && receiverSourceMode == ReceiverMode.move);
     generalFrame = !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
-      && receiverName.byteLength == 0 && executorAffinity.byteLength == 0
+      && frameReceiver && executorAffinity.byteLength == 0
       && functionUsesGeneralFrame(program, declaration);
     if (
       executorAffinity != "thread.main"
@@ -34366,6 +34387,7 @@ function collectProgramAsyncCallFunctionType(
     || (
       resolution.kind != "function"
       && resolution.kind != "method"
+      && resolution.kind != "staticMethod"
     )
   ) return;
   const name = try moduleCallFunctionTypeIdentity(

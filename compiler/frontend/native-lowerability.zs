@@ -3342,8 +3342,12 @@ function validateNativeFunction(
     owner
   );
   // Every shape tier rejected this function: the general frame takes it.
+  // A method's frame stores its receiver: a retained class, or a moved struct
+  // (the resolver requires `move this` on async struct methods).
+  const ownerAffinity = nativeOwnerExecutorAffinity(moduleIndex, modules, owner);
   const generalFrame = !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
-    && owner.byteLength == 0 && declaration.name != "main" && parsedModule < modules.length
+    && ownerAffinity.byteLength == 0
+    && declaration.name != "main" && parsedModule < modules.length
     && functionUsesGeneralFrame(modules[parsedModule].program, declaration);
   if (generalFrame) try validateGeneralFrameStorage(path, moduleIndex, modules, graph, declaration);
   if (declaration.asynchronous && declaration.name != "main"

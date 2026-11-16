@@ -118,6 +118,18 @@ test("checks thread.spawn captures and results in both compilers", () => {
     undefined, ["self-host-resolve"]);
 }, 240_000);
 
+test("requires `move this` on async struct methods, as Stage 0 does", () => {
+  rejects(`
+    struct Counter {
+      value: i32;
+      async function read(): i32 { return this.value; }
+    }
+    async function main(): i32 { return 0; }
+  `, /an async struct method must take ownership with `move this` in the first async tier/,
+    /error\[Z0704\]: an async struct method must take ownership with `move this` in the first async tier/,
+    ["self-host-resolve"]);
+}, 240_000);
+
 test("requires named storage for async borrows a task frame cannot hold, as Stage 0 does", () => {
   const program = (body: string) => `
     struct Report { value: i32; }

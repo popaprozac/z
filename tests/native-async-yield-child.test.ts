@@ -81,7 +81,7 @@ int main(void) {
   execute(source, "released request\nreleased endpoint\n" + "released snapshot\n".repeat(3));
 }, 240_000);
 
-test("rejects unsupported child loans and nested await shapes instead of blocking a yield frame", () => {
+test("runs borrowed child loans, nested awaits, and method awaits in native yield frames", () => {
   const directory = mkdtempSync("/tmp/z-yield-child-boundary-");
   try {
     const input = resolve(directory, "main.zs");
@@ -113,29 +113,20 @@ async function main(): i32 {
     });
     assert.equal(nested.status, 0, nested.stderr);
     execute(nested.stdout, "");
-    const cases = [
-      {
-        source: `class Reader { async function read(): i32 { return 0; } }
+    // A frame awaits a method as its child.
+    writeFileSync(input, `import { scheduler } from "std/async";
+class Reader { async function read(): i32 { return 0; } }
 async function main(): i32 {
   const reader = new Reader({});
   await scheduler.yield();
   const value = await reader.read();
   return value;
-}`,
-        diagnostic: /Z0700/,
-      },
-    ];
-    for (const { source, diagnostic } of cases) {
-      const program = `import { scheduler } from "std/async";\n${source}`;
-      // These are valid Z programs; only the native executable tier is limited.
-      compileToC(program, input);
-      writeFileSync(input, program);
-      const result = spawnSync(process.execPath, [cli, "self-host-emit", input], {
-        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
-      });
-      assert.notEqual(result.status, 0, source);
-      assert.match(result.stderr, diagnostic, `${source}\n${result.stderr}`);
-    }
+}`);
+    const methodAwait = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(methodAwait.status, 0, methodAwait.stderr);
+    execute(methodAwait.stdout, "");
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 

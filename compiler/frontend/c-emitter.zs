@@ -1299,6 +1299,8 @@ function asyncMethodAwaitStartsChild(
   in declaration: LoweredFunction,
   expressionIndex: usize
 ): boolean {
+  // A general async frame starts every awaited method as its child.
+  if (declaration.asyncSuspension == "yield-frame") return true;
   match (asyncTailAwaitShape(program, declaration.name)) {
     some(_) => if (
       declaration.asyncSuspension == "tail-await"
@@ -11336,10 +11338,16 @@ function yieldFrameAwaitType(
   in program: LoweredProgram, in declaration: LoweredFunction, expression: usize
 ): LoweredType throws String {
   const awaited = view declaration.expressions[expression];
+  if (awaited.labels.length > 0 && awaited.labels[0] == "method") {
+    // A method child: its result type is its callable type's.
+    for (const functionType of program.functionTypes) {
+      if (functionType.name == awaited.value && functionType.asynchronous) return copy functionType.returnType;
+    }
+    throw "native yield frame lost its method child result type";
+  }
   if (awaited.children.length == 0
-    || declaration.expressions[awaited.children[0]].kind != LoweredExpressionKind.directFunctionValue
-    || (awaited.labels.length > 0 && awaited.labels[0] == "method")) {
-    throw "native yield frames currently await direct named functions only";
+    || declaration.expressions[awaited.children[0]].kind != LoweredExpressionKind.directFunctionValue) {
+    throw "native yield frames currently await direct named functions or methods only";
   }
   for (const functionType of program.functionTypes) {
     if (functionType.name != awaited.value) continue;
@@ -11442,7 +11450,7 @@ function appendYieldFrameHoistedAwait(
   const resultType = awaitsCall
     ? try yieldFrameAwaitType(program, declaration, moved)
     : try taskResultType(program, declaration.expressions[moved].value);
-  if (awaitsCall) try appendYieldFrameAwait(inout output, program, declaration, virtual, moved, depth);
+  if (awaitsCall) try appendYieldFrameAwait(inout output, program, declaration, virtual, moved, site, depth);
   else try appendYieldFrameJoin(inout output, program, declaration, virtual, moved, resultType, depth);
   if (resultType.kind != LoweredTypeKind.voidType) {
     appendIndent(inout output, depth + 1);
@@ -11663,7 +11671,7 @@ function appendYieldFrameBorrowTemporaries(
 
 function appendYieldFrameAwait(
   inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
-  statementIndex: usize, expression: usize, depth: usize
+  statementIndex: usize, expression: usize, helperExpression: usize, depth: usize
 ): void throws String {
   const awaited = view declaration.expressions[expression];
   const resultType = try yieldFrameAwaitType(program, declaration, expression);
@@ -11676,11 +11684,48 @@ function appendYieldFrameAwait(
   output.append("if (frame->child.task != NULL) abort();\n");
   try appendYieldFrameBorrowTemporaries(inout output, program, declaration, statementIndex, expression, depth, false);
   appendIndent(inout output, depth);
-  output.append(`frame->child = Z_${awaited.value}_start(`);
-  try appendExpression(inout output, declaration, awaited.children[0]);
-  output.append(", task->executor");
-  try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, false);
-  output.append(");\n");
+  if (awaited.labels.length > 0 && awaited.labels[0] == "method") {
+    // A method child starts through its await-site helper (generated for the
+    // original expression, before any hoisting moved it).
+    const method = view declaration.expressions[awaited.children[0]];
+    if (method.kind != LoweredExpressionKind.methodCall) {
+      throw "native async frame awaits Z methods only in this tier";
+    }
+    output.append("frame->child = ");
+    appendAsyncCallableAwaitHelperName(inout output, declaration, helperExpression);
+    output.append("_start_invocation(task->executor");
+    let argument: usize = 0;
+    while (argument < method.children.length) {
+      output.append(", ");
+      const labelIndex = argument + 2;
+      const borrowed = argument > 0 && method.labels.length > labelIndex
+        && (method.labels[labelIndex] == "in" || method.labels[labelIndex] == "inout" || method.labels[labelIndex] == "out");
+      // A consuming method call moves this frame's own receiver out of it.
+      let receiver = method.children[argument];
+      if (declaration.expressions[receiver].kind == LoweredExpressionKind.moveValue
+        && declaration.expressions[receiver].children.length == 1) receiver = declaration.expressions[receiver].children[0];
+      const receiverGuard = yieldFrameParameterGuard(declaration, "this");
+      const movesOwnReceiver = argument == 0 && method.labels.length > 1 && method.labels[1] == "move"
+        && declaration.expressions[receiver].kind == LoweredExpressionKind.receiverValue
+        && receiverGuard.byteLength > 0;
+      if (movesOwnReceiver) {
+        output.append(`(${receiverGuard} = false, self)`);
+      } else if (borrowed) {
+        if (!yieldFrameBorrowPlace(declaration, method.children[argument])) {
+          throw "native async frame method borrows require named storage in this tier";
+        }
+        try appendAddressOf(inout output, declaration, method.children[argument]);
+      } else try appendExpression(inout output, declaration, method.children[argument]);
+      argument = argument + 1;
+    }
+    output.append(");\n");
+  } else {
+    output.append(`frame->child = Z_${awaited.value}_start(`);
+    try appendExpression(inout output, declaration, awaited.children[0]);
+    output.append(", task->executor");
+    try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, false);
+    output.append(");\n");
+  }
   appendBorrowedTemporaryCleanups(inout output, declaration, expression, depth);
   appendIndent(inout output, depth);
   output.append("}\n");
@@ -11921,7 +11966,7 @@ function appendYieldFrameStatement(
       throw "native yield-frame child awaits require a local, return, or expression statement";
     }
     if (awaited < declaration.expressions.length) {
-      try appendYieldFrameAwait(inout output, program, declaration, index, awaited, depth);
+      try appendYieldFrameAwait(inout output, program, declaration, index, awaited, awaited, depth);
     } else try appendYieldFrameJoin(inout output, program, declaration, index, joined, resultType, depth);
     const temporary = `_z_child_result_${index}`;
     if (statement.kind == LoweredStatementKind.tryStatement) {
@@ -12259,6 +12304,27 @@ function appendYieldFrameHelpers(
       const guard = yieldFrameParameterGuard(source, parameter.name);
       if (guard.byteLength > 0) output.append(`  bool ${guard};\n`);
     }
+    // A method's frame stores its receiver: a retained class or a moved struct.
+    let receiverTypeName = "";
+    let classReceiver = false;
+    match (in source.receiverType) {
+      some(type) => {
+        receiverTypeName = copy type.name;
+        classReceiver = type.kind == LoweredTypeKind.classType;
+        if (!classReceiver && (type.kind != LoweredTypeKind.structType || source.receiverMode != LoweredParameterMode.value)) {
+          throw "native async frame methods require a class or `move this` struct receiver";
+        }
+      }
+      none => {}
+    }
+    const receiverGuard = yieldFrameParameterGuard(source, "this");
+    if (receiverTypeName.byteLength > 0) {
+      // The frame owns its receiver and releases it once, at destroy: a
+      // `return` does not release it lexically.
+      declaration.asyncFrameBindings.push("this");
+      output.append(classReceiver ? `  Z_${receiverTypeName} *_z_receiver;\n` : `  Z_${receiverTypeName} _z_receiver;\n`);
+      if (receiverGuard.byteLength > 0) output.append(`  bool ${receiverGuard};\n`);
+    }
     if (hasSpawns) output.append("  bool cancel_children;\n  bool unwinding;\n");
     // Frame borrow temporaries of awaited `in` arguments.
     let borrowNames = Array<String>();
@@ -12333,6 +12399,10 @@ function appendYieldFrameHelpers(
       }
     }
     output.append(`} ${name};\n`);
+    if (receiverTypeName.byteLength > 0) {
+      output.append("#define self (frame->_z_receiver)\n#define _z_stage1_frame_binding_this (frame->_z_receiver)\n");
+      if (receiverGuard.byteLength > 0) output.append(`#define ${receiverGuard} (frame->${receiverGuard})\n`);
+    }
     for (const site of hoistedSites) {
       output.append(`#define _z_stage1_frame_binding__z_await_value_${site} (frame->_z_binding__z_await_value_${site})\n`);
     }
@@ -12416,6 +12486,11 @@ function appendYieldFrameHelpers(
       borrowCleanup = borrowCleanup + 1;
     }
     appendYieldFrameCleanups(inout output, program, declaration, cleanup, 1);
+    if (classReceiver) {
+      output.append(`  if (frame->_z_receiver != NULL) { Z_${receiverTypeName}_release(frame->_z_receiver); frame->_z_receiver = NULL; }\n`);
+    } else if (receiverGuard.byteLength > 0) {
+      output.append(`  if (${receiverGuard}) { Z_${receiverTypeName}_deinit(&frame->_z_receiver); ${receiverGuard} = false; }\n`);
+    }
     if (hasSpawns) {
       // Joins a completed slot, or (on destroy) cancels and drains a live one.
       output.append(`}\nstatic void ${name}_release_slot(Z_AsyncTask *task, Z_AsyncInvocation *slot) {\n  if (slot->task == NULL) return;\n  if (!slot->task->completed) {\n    z_stage1_async_request_cancel(slot->task);\n    slot->task->waiter = NULL;\n    while (!slot->task->completed) { if (!z_stage1_async_drive_one(task->executor)) abort(); }\n  }\n  slot->task->waiter = NULL;\n  z_stage1_async_remove_queued(slot->task);\n  if (slot->destroy != NULL) slot->destroy(slot->task);\n  if (slot->release_context != NULL) slot->release_context(slot->callable_context);\n  *slot = (Z_AsyncInvocation){};\n`);
@@ -12530,6 +12605,10 @@ function appendYieldFrameHelpers(
       output.append("){};\n");
     }
     output.append("  free(frame);\n}\n");
+    if (receiverTypeName.byteLength > 0) {
+      output.append("#undef self\n#undef _z_stage1_frame_binding_this\n");
+      if (receiverGuard.byteLength > 0) output.append(`#undef ${receiverGuard}\n`);
+    }
     for (const parameter of source.parameters) {
       output.append("#undef _z_stage1_frame_binding_");
       appendCBindingName(inout output, parameter.name);
@@ -12570,9 +12649,17 @@ function appendYieldFrameHelpers(
       if (resultNeedsDeinit) output.append(`  ((${name} *)task)->live_result = false;\n`);
     } else output.append("  (void)output;\n");
     output.append(`}\nstatic __attribute__((unused)) Z_AsyncInvocation ${name}_start(Z_AsyncExecutor *executor`);
+    if (receiverTypeName.byteLength > 0) {
+      output.append(classReceiver ? `, const Z_${receiverTypeName} *receiver` : `, Z_${receiverTypeName} receiver`);
+    }
     try appendYieldFrameParameters(inout output, source.parameters);
     output.append(`) {\n  if (executor == NULL) abort();\n  ${name} *frame = (__typeof__(frame))calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.executor = executor;\n  frame->task.poll = ${name}_poll;\n`);
     if (hasChild || hasTimer || hasSpawns) output.append(`  frame->task.request_cancel = ${name}_cancel;\n`);
+    if (classReceiver) output.append(`  frame->_z_receiver = Z_${receiverTypeName}_retain(receiver);\n`);
+    else if (receiverTypeName.byteLength > 0) {
+      output.append("  frame->_z_receiver = receiver;\n");
+      if (receiverGuard.byteLength > 0) output.append(`  frame->${receiverGuard} = true;\n`);
+    }
     let argument: usize = 0;
     for (const parameter of source.parameters) {
       output.append("  frame->_z_binding_");
@@ -12607,6 +12694,11 @@ function appendYieldFrameDriver(
     output.append("  z_stage1_async_executor_init_external(&executor);\n");
   }
   output.append(`  Z_AsyncInvocation invocation = ${name}_start(&executor`);
+  // A method's synchronous entry hands its receiver to the frame.
+  match (in declaration.receiverType) {
+    some(_) => output.append(", self");
+    none => {}
+  }
   appendYieldFrameArguments(inout output, declaration.parameters.length);
   output.append(");\n  z_stage1_async_enqueue(&executor, invocation.task);\n  while (!invocation.task->completed) { if (!z_stage1_async_drive_one(&executor)) abort(); }\n");
   if (declaration.returnType.kind != LoweredTypeKind.voidType) {
@@ -16784,6 +16876,64 @@ function appendAsyncMethodAwaitHelpers(
         && method.labels[1] == "move";
       if (!classReceiver && !consumingStructReceiver) {
         throw "native async method await helper requires a retained class or moved struct receiver";
+      }
+      // A method that runs in a general async frame starts that frame.
+      let calleeFrame = program.functions.length;
+      let calleeCandidate: usize = 0;
+      while (calleeCandidate < program.functions.length) {
+        if (program.functions[calleeCandidate].name == method.value
+          && program.functions[calleeCandidate].asyncSuspension == "yield-frame") calleeFrame = calleeCandidate;
+        calleeCandidate = calleeCandidate + 1;
+      }
+      if (calleeFrame < program.functions.length && !asyncMethodAwaitStartsChild(program, owner, expressionIndex)) {
+        // A blocking caller runs the method's synchronous frame entry.
+        output.append(`static __attribute__((unused)) ${try cType(functionType.returnType)} `);
+        appendAsyncCallableAwaitHelperName(inout output, owner, expressionIndex);
+        output.append(`(${classReceiver ? "const " : ""}Z_${receiverType}${classReceiver ? " *receiver" : " receiver"}`);
+        let blockingParameter: usize = 0;
+        while (blockingParameter < functionType.parameters.length) {
+          output.append(", ");
+          try appendCallableParameterDeclaration(
+            inout output, functionType.parameters[blockingParameter], functionType.parameters[blockingParameter].name
+          );
+          blockingParameter = blockingParameter + 1;
+        }
+        output.append(") {\n  ");
+        if (functionType.returnType.kind != LoweredTypeKind.voidType) output.append("return ");
+        appendCBindingName(inout output, program.functions[calleeFrame].name);
+        output.append("(receiver");
+        blockingParameter = 0;
+        while (blockingParameter < functionType.parameters.length) {
+          output.append(", ");
+          appendCBindingName(inout output, functionType.parameters[blockingParameter].name);
+          blockingParameter = blockingParameter + 1;
+        }
+        output.append(");\n}\n\n");
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      if (calleeFrame < program.functions.length) {
+        output.append("static __attribute__((unused)) Z_AsyncInvocation ");
+        appendAsyncCallableAwaitHelperName(inout output, owner, expressionIndex);
+        output.append(`_start_invocation(Z_AsyncExecutor *executor, ${classReceiver ? "const " : ""}Z_${receiverType}${classReceiver ? " *receiver" : " receiver"}`);
+        let adapterParameter: usize = 0;
+        while (adapterParameter < functionType.parameters.length) {
+          output.append(", ");
+          try appendCallableParameterDeclaration(
+            inout output, functionType.parameters[adapterParameter], functionType.parameters[adapterParameter].name
+          );
+          adapterParameter = adapterParameter + 1;
+        }
+        output.append(`) {\n  return ${yieldFrameName(program.functions[calleeFrame])}_start(executor, receiver`);
+        adapterParameter = 0;
+        while (adapterParameter < functionType.parameters.length) {
+          output.append(", ");
+          appendCBindingName(inout output, functionType.parameters[adapterParameter].name);
+          adapterParameter = adapterParameter + 1;
+        }
+        output.append(");\n}\n\n");
+        expressionIndex = expressionIndex + 1;
+        continue;
       }
       const returnType = try cType(functionType.returnType);
       const resultNeedsDeinit = loweredTypeNeedsDeinit(

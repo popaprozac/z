@@ -1283,6 +1283,17 @@ function validateAggregateTypes(
     none => {}
   }
   for (const method of declaration.methods) {
+    // A borrowed struct receiver cannot stay live in a suspended task frame
+    // (Stage 0, Z0704).
+    if (method.asynchronous && !method.staticMethod
+      && declaration.kind == DeclarationKind.structDeclaration
+      && method.receiverMode != ReceiverMode.move) {
+      throw codedModuleResolutionError(
+        ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+        "an async struct method must take ownership with `move this` in the first async tier",
+        method.line, method.column, 1
+      );
+    }
     try validateFunctionTypes(
       module,
       modules,

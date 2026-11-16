@@ -2875,8 +2875,9 @@ test("rejects a suspending value-struct receiver before native lowering", () => 
     { encoding: "utf8" },
   );
   assert.equal(emission.status, 1);
-  assert.match(emission.stderr, /error\[Z0700\]/);
-  assert.match(emission.stderr, /scheduler\.yield\(\) in this function requires unsupported native frame composition/);
+  // The resolver rejects it as Stage 0 does: a borrowed struct receiver cannot
+  // stay live in a suspended frame.
+  assert.match(emission.stderr, /6:9: error\[Z0704\]: an async struct method must take ownership with `move this` in the first async tier/);
   assert.doesNotMatch(emission.stderr, /internal compiler error/);
 });
 

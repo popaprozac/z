@@ -92,6 +92,14 @@ function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): bo
   return true;
 }
 
+// A child's callee: a named function, or a method on a synchronous receiver.
+function frameCalleeIsSupported(in tree: ExpressionTree, callee: usize): boolean {
+  if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) return true;
+  return tree.nodes[callee].kind == ExpressionKind.memberExpression
+    && tree.nodes[callee].children.length == 1
+    && frameExpressionIsSynchronous(tree, tree.nodes[callee].children[0]);
+}
+
 // An await that a frame can run before its statement: a named call with
 // synchronous arguments, or a task-local join.
 function frameAwaitOperandIsSupported(in tree: ExpressionTree, index: usize): boolean {
@@ -101,7 +109,7 @@ function frameAwaitOperandIsSupported(in tree: ExpressionTree, index: usize): bo
   if (frameTaskCancelReceiver(tree, operand) < tree.nodes.length) return false;
   if (tree.nodes[operand].kind != ExpressionKind.callExpression
     || tree.nodes[operand].children.length == 0) return false;
-  if (tree.nodes[tree.nodes[operand].children[0]].kind != ExpressionKind.identifierExpression) return false;
+  if (!frameCalleeIsSupported(tree, tree.nodes[operand].children[0])) return false;
   for (const child of tree.nodes[operand].children) {
     if (!frameExpressionIsSynchronous(tree, child)) return false;
   }
@@ -204,9 +212,8 @@ function frameExpressionIsSupported(in tree: ExpressionTree, index: usize): bool
   if (tree.nodes[call].kind != ExpressionKind.callExpression
     || tree.nodes[call].children.length == 0) return false;
   const callee = tree.nodes[call].children[0];
-  // First child tier: a named function, with already checked owned arguments.
-  // Method/placed calls and arbitrary expression normalization remain separate.
-  if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) return false;
+  // A named function or a method, with already checked arguments.
+  if (!frameCalleeIsSupported(tree, callee)) return false;
   for (const child of tree.nodes[call].children) {
     if (!frameExpressionIsSynchronous(tree, child)) return false;
   }

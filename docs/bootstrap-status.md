@@ -1413,7 +1413,13 @@ child completes. `let x: T;` locals are zeroed frame storage that is not yet
 live. An unnamed `async scope`'s own locals, task locals included, live in the
 frame too (local names must be unique in the function): the scope joins its
 children first, then releases its locals newest first, and a frame cancelled
-inside the scope releases them once. Fixed arrays are frame storage. Cancellation before
+inside the scope releases them once. Fixed arrays are frame storage. Async
+methods take the frame too: a class receiver is retained by the frame, a
+`move this` struct receiver is owned by it (moving it into a child method
+clears its live flag), awaited methods start through their await-site helper
+(which forwards to the callee's frame when it has one), and a static async
+method awaits like a named function. As in Stage 0, an async struct method
+must take `move this` (Z0704). Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument
