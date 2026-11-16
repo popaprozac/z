@@ -5606,6 +5606,49 @@ function selectForeignOverload(
   return ModuleSymbolLocation({ moduleIndex: owner, symbolIndex: bestIndex });
 }
 
+function asyncBorrowNamesStorage(in tree: ExpressionTree, index: usize): boolean {
+  const kind = tree.nodes[index].kind;
+  // `in x` parses as an argument reference around an argument binding.
+  if (kind == ExpressionKind.identifierExpression
+    || kind == ExpressionKind.argumentBindingExpression) return true;
+  if ((kind == ExpressionKind.argumentReferenceExpression || kind == ExpressionKind.memberExpression
+    || kind == ExpressionKind.indexExpression) && tree.nodes[index].children.length >= 1) {
+    return asyncBorrowNamesStorage(tree, tree.nodes[index].children[0]);
+  }
+  return false;
+}
+
+// Stage 0's task-frame rule (Z0704): an `in` argument of an async call must
+// name storage, which stays in place until the child completes. A fresh
+// struct value passed to a directly awaited call is held by the caller's
+// frame instead.
+function requireAsyncBorrowStorage(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  callIndex: usize,
+  nodeIndex: usize,
+  in signature: ModuleFunctionSignature,
+  in mode: String
+): void throws ModuleResolveError {
+  if (mode != "in" || !signature.asynchronous) return;
+  if (asyncBorrowNamesStorage(tree, nodeIndex)) return;
+  const node = view tree.nodes[nodeIndex];
+  const freshAggregate = node.kind == ExpressionKind.callExpression && node.children.length == 2
+    && tree.nodes[node.children[0]].kind == ExpressionKind.identifierExpression
+    && tree.nodes[node.children[1]].kind == ExpressionKind.objectExpression;
+  if (freshAggregate) {
+    for (const candidate of tree.nodes) {
+      if (candidate.kind == ExpressionKind.awaitExpression && candidate.children.length == 1
+        && candidate.children[0] == callIndex) return;
+    }
+  }
+  throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    "an async immutable borrow requires named storage in this task-frame tier",
+    node.line, node.column, 1
+  );
+}
+
 function inferSignatureCallType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -5931,6 +5974,7 @@ function inferSignatureCallType(
     if (access.byteLength > 0) {
       bindingName = identifierLookupName(tree.nodes[bindingIndex].value);
     }
+    try requireAsyncBorrowStorage(module, tree, callIndex, nodeIndex, signature, mode);
     if (mode == "out" || mode == "inout") {
       if (
         access != mode

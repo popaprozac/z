@@ -118,6 +118,28 @@ test("checks thread.spawn captures and results in both compilers", () => {
     undefined, ["self-host-resolve"]);
 }, 240_000);
 
+test("requires named storage for async borrows a task frame cannot hold, as Stage 0 does", () => {
+  const program = (body: string) => `
+    struct Report { value: i32; }
+    async function inspect(in report: Report): i32 { return report.value; }
+    async function make(): Report { return Report({ value: 1 }); }
+    async function main(): i32 {
+      ${body}
+    }
+  `;
+  const message = /an async immutable borrow requires named storage in this task-frame tier/;
+  const nativeMessage = /error\[Z0704\]: an async immutable borrow requires named storage in this task-frame tier/;
+  // A spawned child outlives the statement, so a fresh value has no owner.
+  rejects(program(`
+    const pending = task inspect(Report({ value: 1 }));
+    return await pending;
+  `), message, nativeMessage, ["self-host-resolve"]);
+  // A call result is not a fresh aggregate the awaiting frame materializes.
+  rejects(program(`
+    return await inspect(await make());
+  `), message, nativeMessage, ["self-host-resolve"]);
+}, 240_000);
+
 test("checks view results and numeric constant conversions in both compilers", () => {
   const prelude = `
     struct Doc { id: i32; title: String; }
