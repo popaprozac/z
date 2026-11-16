@@ -85,18 +85,23 @@ test("rejects unsupported child loans and nested await shapes instead of blockin
   const directory = mkdtempSync("/tmp/z-yield-child-boundary-");
   try {
     const input = resolve(directory, "main.zs");
-    const cases = [
-      {
-        source: `struct Request { count: i32; }
+    // A borrowed child argument lends the parent's frame storage.
+    const borrowed = `import { scheduler } from "std/async";
+struct Request { count: i32; }
 async function child(in request: Request): i32 { return request.count; }
 async function main(): i32 {
   const request = Request({ count: 0 });
   await scheduler.yield();
   const value = await child(in request);
   return value;
-}`,
-        diagnostic: /child awaits require owned value arguments/,
-      },
+}`;
+    writeFileSync(input, borrowed);
+    const lent = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(lent.status, 0, lent.stderr);
+    execute(lent.stdout, "");
+    const cases = [
       {
         source: `async function child(): i32 { return 0; }
 async function main(): i32 {

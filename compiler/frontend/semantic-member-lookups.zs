@@ -139,6 +139,7 @@ export struct NativeMethodCallShape {
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
+  cppNativeName: String = "";
 }
 
 function objcSelectorLabelAt(in selector: String, target: usize): String {
@@ -770,6 +771,7 @@ export function rebaseModuleFunctionSignature(
     typeParameterConstraints,
     parameterModes,
     parameterTypes,
+    variadic: signature.variadic,
     viewParameter: signature.viewParameter,
     viewParameters,
     classIdentitySource: signature.classIdentitySource.copyBytes(
@@ -833,6 +835,11 @@ export function methodCallShapeWithOptional(
                 method.signature.parameterTypes.length != argumentCount
                 || !objcMethodLabelsMatch(method, argumentLabels)
               )
+            ) continue;
+            // C++ overloads of one name first narrow by arity.
+            if (
+              method.cppOverloaded
+              && method.signature.parameterTypes.length != argumentCount
             ) continue;
             let ownerTypeParameters = Array<String>();
             for (const parameter of typeSignature.typeParameters) {
@@ -928,6 +935,7 @@ export function methodCallShapeWithOptional(
                 method.objectiveCAsyncResultParameter,
               objectiveCAsyncErrorParameter:
                 method.objectiveCAsyncErrorParameter,
+              cppNativeName: method.cppNativeName.copyBytes(0, method.cppNativeName.byteLength),
             });
             matched = Option<NativeMethodCallShape>.some(move shape);
             matchCount = matchCount + 1;
@@ -974,6 +982,72 @@ export function methodCallShapeWithOptional(
               }
               none => {}
             }
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return Option<NativeMethodCallShape>.none;
+}
+
+// The candidate-th C++ method named `methodName` with `argumentCount`
+// parameters on a C++ value type, for overload selection.
+export function cxxMethodCallShape(
+  in modules: Array<ResolvedModule>, moduleIndex: usize, in ownerType: String,
+  in methodName: String, argumentCount: usize, candidate: usize
+): Option<NativeMethodCallShape> {
+  match (memberTypeSymbolLocation(modules, moduleIndex, ownerType)) {
+    some(location) => {
+      match (
+        in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature
+      ) {
+        some(typeSignature) => {
+          if (
+            typeSignature.foreignKind != "value"
+            && typeSignature.foreignKind != "moveValue"
+          ) return Option<NativeMethodCallShape>.none;
+          let seen: usize = 0;
+          for (const method of typeSignature.methods) {
+            if (
+              method.name != methodName
+              || method.staticMethod
+              || method.cppNativeName.byteLength == 0
+              || method.signature.parameterTypes.length != argumentCount
+            ) continue;
+            if (seen != candidate) {
+              seen = seen + 1;
+              continue;
+            }
+            const shape = NativeMethodCallShape({
+              name: method.name.copyBytes(0, method.name.byteLength),
+              ownerName: modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
+                0,
+                modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
+              ),
+              ownerModuleIndex: location.moduleIndex,
+              ownerSymbolIndex: location.symbolIndex,
+              staticMethod: false,
+              visibility: method.visibility.copyBytes(0, method.visibility.byteLength),
+              receiverMode: method.receiverMode.copyBytes(0, method.receiverMode.byteLength),
+              ownerTypeParameters: Array<String>(),
+              ownerTypeArguments: Array<String>(),
+              ownerTypeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+              signature: rebaseModuleFunctionSignature(
+                modules,
+                location.moduleIndex,
+                moduleIndex,
+                method.signature
+              ),
+              objectiveCSelector: "",
+              objectiveCReturnsInstanceType: false,
+              objectiveCNativeReturnType: "",
+              objectiveCParameterNativeTypes: Array<String>(),
+              objectiveCParameterProtocols: Array<ModuleObjCParameterProtocolSignature>(),
+              cppNativeName: method.cppNativeName.copyBytes(0, method.cppNativeName.byteLength),
+            });
+            return Option<NativeMethodCallShape>.some(move shape);
           }
         }
         none => {}

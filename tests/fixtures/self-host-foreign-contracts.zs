@@ -315,7 +315,11 @@ function inspect(
   if (normalized.constants[0].typeName != "ZForeignStatus") return 54;
   if (normalized.constants[2].typeName != "i32") return 55;
   if (normalized.constants[4].typeName != "u32") return 56;
-  if (normalized.functions.length != 5) return 11;
+  // Header-only `long z_foreign_measure(int, const char *)` follows the
+  // stream's target long width.
+  if (normalized.functions.length != 6) return 11;
+  if (normalized.functions[5].name != "z_foreign_measure") return 152;
+  if (normalized.functions[5].returnType != "i64") return 153;
   if (normalized.functions[0].name != "z_foreign_add") return 12;
   if (normalized.functions[0].nativeName != "z_foreign_add") return 13;
   if (normalized.functions[0].returnType != "i32") return 14;

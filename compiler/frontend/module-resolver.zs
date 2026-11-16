@@ -163,7 +163,9 @@ import {
   nativeBorrowedCallbackType,
   requireExpressionSyntaxType,
   requireExpressionType,
+  verifiedForeignNumericUnderlyingType,
 } from "./semantic-expression-types.zs";
+import { integerLiteralFits } from "./numeric-literal.zs";
 import {
   NativeAggregateConstructionShape,
   NativeMatchShape,
@@ -174,6 +176,7 @@ import {
   aggregateConstructionShape,
   aggregateFieldShape,
   callableMethodCallShape,
+  cxxMethodCallShape,
   hasKnownAggregate,
   isForeignUnionType,
   isActiveTypeParameter,
@@ -255,6 +258,7 @@ import {
   typeNameIsArena,
   typeMovesOnOwnedUse,
   typeSupportsExplicitCopy,
+  typeContainsMoveOnlyNative,
 } from "./semantic-type-ownership.zs";
 import {
   ModuleFunctionSignature,
@@ -4827,6 +4831,188 @@ function requireStoredBorrowedArgument(
   );
 }
 
+// An argument past a C variadic function's fixed parameters, as in Stage 0: a
+// number, boolean, or cstring passed by value after C default promotion, or a
+// String lent to the call as a cstring. An unannotated integer literal is i32.
+function inferCVariadicArgumentType(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  nodeIndex: usize,
+  in functionName: String,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): String throws ModuleResolveError {
+  const access = expressionCapabilityAccess(tree, nodeIndex);
+  if (access.byteLength > 0) throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `${access} is only valid for a classified imported C record-pointer parameter`,
+    tree.nodes[nodeIndex].line,
+    tree.nodes[nodeIndex].column
+  );
+  let expected = "";
+  if (isContextualNumericLiteral(tree, nodeIndex)) {
+    let literal = tree.nodes[nodeIndex].value.copyBytes(0, tree.nodes[nodeIndex].value.byteLength);
+    if (tree.nodes[nodeIndex].kind == ExpressionKind.unaryExpression) {
+      const operand = tree.nodes[nodeIndex].children[0];
+      literal = `${literal}${tree.nodes[operand].value}`;
+    }
+    let floating = false;
+    let byte: usize = 0;
+    while (byte < literal.byteLength) {
+      const code = literal.byteAt(byte);
+      if (code == 46 || code == 101 || code == 69) floating = true;
+      byte = byte + 1;
+    }
+    if (floating) expected = "f64";
+    else if (!integerLiteralFits(literal, "i32")) throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `variadic integer literal ${literal} does not fit default i32; bind it to an explicit integer type first`,
+      tree.nodes[nodeIndex].line,
+      tree.nodes[nodeIndex].column
+    );
+    else expected = "i32";
+  }
+  const argumentType = try inferExpressionNodeTypeExpected(
+    module, modules, moduleIndex, arena, tree, nodeIndex, expected,
+    inout bindings, inout evidence
+  );
+  const actual = transparentTypeName(modules, moduleIndex, argumentType);
+  const foreignNumeric = verifiedForeignNumericUnderlyingType(modules, moduleIndex, actual);
+  if (
+    isNumericTypeName(actual)
+    || actual == "boolean"
+    || actual == "cstring"
+    || actual == "String"
+    || foreignNumeric.byteLength > 0
+  ) return argumentType;
+  throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `unsupported variadic argument type ${argumentType} for C function "${functionName}"`,
+    tree.nodes[nodeIndex].line,
+    tree.nodes[nodeIndex].column
+  );
+}
+
+// A class captured by thread.spawn crosses only as deeply readonly shared
+// identity, as in Stage 0 (Z0704), which names the first reason it cannot.
+// Only those named reasons reject here; Stage 0 also accepts some identities
+// this check cannot classify (mutex-guarded state, main-isolated identity),
+// and native lowering decides those.
+function requireThreadSpawnClassCapture(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  closureIndex: usize,
+  in capture: String,
+  in captureType: String
+): void throws ModuleResolveError {
+  const actual = transparentTypeName(modules, moduleIndex, captureType);
+  const location = match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(found) => found;
+    none => return;
+  };
+  const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+  if (symbol.kind != ModuleSymbolKind.classSymbol || symbol.foreignHeader.byteLength > 0) return;
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      if (
+        signature.executorAffinity.byteLength > 0
+        || typeHasMainExecutorLifecycle(modules, moduleIndex, actual)
+      ) return;
+      if (typeIsThreadShareable(modules, moduleIndex, actual)) return;
+      let reason = "";
+      if (signature.customDeinit && !signature.deinitThreadAny) {
+        reason = `: ${captureType} has a custom deinit whose thread affinity is unknown`;
+      } else {
+        for (const method of signature.methods) {
+          if (reason.byteLength == 0 && !method.staticMethod && method.receiverMode == "inout") {
+            reason = `: ${captureType} exposes mutable method "${method.name}"`;
+          }
+        }
+        for (const field of signature.fields) {
+          if (reason.byteLength == 0 && !field.readonlyField) {
+            reason = `: ${captureType} has mutable field "${field.name}"`;
+          }
+        }
+      }
+      if (reason.byteLength == 0) return;
+      throw codedModuleResolutionError(
+        ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+        `capture "${capture}" of type ${captureType} cannot cross a native thread boundary${reason}`,
+        tree.nodes[closureIndex].line, tree.nodes[closureIndex].column, 1
+      );
+    }
+    none => {}
+  }
+}
+
+// The worker's declared result returns to the owner thread, so it must be
+// transferable, as in Stage 0.
+function requireThreadSpawnResult(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  closureIndex: usize
+): void throws ModuleResolveError {
+  if (tree.nodes[closureIndex].labels.length == 0) return;
+  const resultType = view tree.nodes[closureIndex].labels[0];
+  if (resultType.byteLength == 0 || resultType == "void") return;
+  if (typeIsThreadTransferable(modules, moduleIndex, resultType)) return;
+  throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `thread.spawn result type "${resultType}" cannot cross a native thread boundary yet`,
+    tree.nodes[closureIndex].line, tree.nodes[closureIndex].column, 1
+  );
+}
+
+// objc.connect(control, action): the action is a synchronous `() => void`,
+// as in Stage 0, so a block closure's body is checked against that context.
+function inferObjCConnectArguments(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  in children: Array<usize>,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): void throws ModuleResolveError {
+  const connectArguments = callArgumentNodes(children);
+  if (
+    connectArguments.length != 2
+    || tree.nodes[connectArguments[1]].kind != ExpressionKind.closureExpression
+  ) {
+    try inferUnclassifiedCallArguments(
+      module, modules, moduleIndex, arena, tree, children,
+      inout bindings, inout evidence
+    );
+    return;
+  }
+  const controlType = try inferExpressionNodeType(
+    module, modules, moduleIndex, arena, tree, connectArguments[0],
+    inout bindings, inout evidence
+  );
+  try requireSettledExpressionType(module, tree, connectArguments[0], controlType);
+  const operationType = try inferExpressionNodeTypeExpected(
+    module, modules, moduleIndex, arena, tree, connectArguments[1], "() => void",
+    inout bindings, inout evidence
+  );
+  let recordedOperationType = copy operationType;
+  if (recordedOperationType.byteLength == 0) recordedOperationType = "() => void";
+  recordExpressionResolution(
+    modules, moduleIndex, tree, connectArguments[1], recordedOperationType,
+    inout evidence
+  );
+}
+
 // The `in` arguments of a call through a function value.
 function requireStoredBorrowedArguments(
   in module: ParsedModule,
@@ -4876,6 +5062,550 @@ function localValueIsNotCallable(
   return false;
 }
 
+// The member named neither a checked function nor a type. A leaf shared by
+// several C++ namespaces gets Stage 0's ambiguity diagnostic instead.
+function missingForeignMember(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  namespaceIndex: usize,
+  in path: String,
+  in memberName: String,
+  line: usize,
+  column: usize
+): ModuleResolveError {
+  const header = view modules[moduleIndex].symbols[namespaceIndex].foreignHeader;
+  const prefix = `${path}.`;
+  const suffix = `.${memberName}`;
+  let matches: usize = 0;
+  for (const symbol of modules[moduleIndex].symbols) {
+    if (
+      (symbol.kind == ModuleSymbolKind.structSymbol || symbol.kind == ModuleSymbolKind.enumSymbol)
+      && symbol.foreignHeader == header
+      && symbol.name.byteLength > prefix.byteLength + suffix.byteLength
+      && stringStartsWith(symbol.name, prefix)
+      && symbol.name.copyBytes(symbol.name.byteLength - suffix.byteLength, symbol.name.byteLength) == suffix
+    ) matches = matches + 1;
+  }
+  if (matches > 1) return resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `native type "${memberName}" is ambiguous across C++ namespaces`,
+    line,
+    column
+  );
+  const relative = path.copyBytes(namespaceRootLength(path), path.byteLength);
+  const name = relative.byteLength > 0 ? `${relative}.${memberName}` : memberName.copyBytes(0, memberName.byteLength);
+  return resolutionError(
+    ModuleResolveErrorKind.missingExport,
+    module.path,
+    `native contract for "${header}" has no checked function "${name}"`,
+    line,
+    column
+  );
+}
+
+// `cpp.zcpp` -> 4, the offset just past the import binding and its dot.
+function namespaceRootLength(in path: String): usize {
+  let index: usize = 0;
+  while (index < path.byteLength) {
+    if (path.byteAt(index) == 46) return index + 1;
+    index = index + 1;
+  }
+  return path.byteLength;
+}
+
+// Stage 0: an uninitialized Z local does not run a non-trivial C++ constructor.
+function requireInitializedNativeStorage(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  index: usize
+): void throws ModuleResolveError {
+  match (in arena.nodes[index].typeAnnotation) {
+    some(type) => {
+      if (!typeContainsMoveOnlyNative(modules, moduleIndex, type.name, 0)) return;
+      throw codedModuleResolutionError(
+        ModuleResolveErrorKind.typeMismatch, "Z0240", module.path,
+        "move-only native values must be initialized when their storage is declared",
+        type.line, type.column, 1
+      );
+    }
+    none => {}
+  }
+}
+
+function recordCxxMethodCall(
+  in tree: ExpressionTree,
+  callIndex: usize,
+  in name: String,
+  inout evidence: ModuleSemanticEvidence
+): void {
+  let resolution: usize = 0;
+  while (resolution < evidence.callResolutions.length) {
+    if (evidence.callResolutions[resolution].offset == tree.nodes[callIndex].offset) {
+      evidence.callResolutions[resolution].cppMethodName = copy name;
+    }
+    resolution = resolution + 1;
+  }
+}
+
+function isCxxValueTypeCallee(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  calleeIndex: usize
+): boolean {
+  const typeName = typeExpressionName(tree, calleeIndex);
+  if (typeName.byteLength == 0) return false;
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => return signature.foreignKind == "value"
+          || signature.foreignKind == "moveValue";
+        none => return false;
+      }
+    }
+    none => return false;
+  }
+}
+
+// `T(args)` for a C++ value type calls one of its constructors directly, as
+// Stage 0's checkForeignCxxConstructorCall.
+function inferCxxConstructorCall(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  callIndex: usize,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): String throws ModuleResolveError {
+  const typeName = typeExpressionName(tree, calleeIndex);
+  const constructorIndex = moduleSymbolIndex(modules[moduleIndex], `${typeName}.__z_cpp_constructor`);
+  if (constructorIndex >= modules[moduleIndex].symbols.length) {
+    const location = match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+      some(found) => found;
+      none => ModuleSymbolLocation({ moduleIndex, symbolIndex: 0 });
+    };
+    const nativeName = match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+      some(signature) => copy signature.foreignNativeName;
+      none => copy typeName;
+    };
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `native value "${nativeName}" has no imported public constructor`,
+      tree.nodes[callIndex].line,
+      tree.nodes[callIndex].column
+    );
+  }
+  const argumentNodes = callArgumentNodes(tree.nodes[callIndex].children);
+  let found = ModuleSymbolLocation({ moduleIndex, symbolIndex: constructorIndex });
+  if (modules[moduleIndex].symbols[constructorIndex].foreignOverloadName.byteLength > 0) {
+    found = try selectForeignOverload(
+      module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+      argumentNodes, bindings, found
+    );
+  }
+  const symbol = view modules[found.moduleIndex].symbols[found.symbolIndex];
+  const signature = match (in symbol.functionSignature) {
+    some(signature) => rebaseModuleFunctionSignature(modules, found.moduleIndex, moduleIndex, signature);
+    none => throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "native constructor lost its signature",
+      tree.nodes[callIndex].line,
+      tree.nodes[callIndex].column
+    );
+  };
+  const callType = try inferSignatureCallType(
+    module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+    argumentNodes, inout bindings, "", "", symbol.importedName, signature,
+    Array<NativeValueBinding>(), found.moduleIndex, found.symbolIndex,
+    "foreign", inout evidence
+  );
+  recordForeignCallFacts(tree, callIndex, modules[found.moduleIndex].symbols[found.symbolIndex], inout evidence);
+  return callType;
+}
+
+// A call through a function symbol: local, imported, or foreign (with C++
+// overload selection). None when the callee names no callable symbol.
+function inferCallableSymbolCall(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  index: usize,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): Option<String> throws ModuleResolveError {
+  const children = view tree.nodes[index].children;
+  const callable = callableSymbolLocation(modules, moduleIndex, tree, calleeIndex);
+  let location = Option<ModuleSymbolLocation>.none;
+  match (in callable) {
+    some(found) => {
+      if (
+        modules[found.moduleIndex].symbols[found.symbolIndex].foreignOverloadName.byteLength > 0
+      ) {
+        const overloadArguments = callArgumentNodes(children);
+        location = Option.some(try selectForeignOverload(
+          module, modules, moduleIndex, arena, tree, calleeIndex, index,
+          overloadArguments, bindings, found
+        ));
+      } else location = Option.some(ModuleSymbolLocation({
+        moduleIndex: found.moduleIndex,
+        symbolIndex: found.symbolIndex,
+      }));
+    }
+    none => {}
+  }
+  match (location) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].functionSignature) {
+        some(signature) => {
+          let functionName = modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
+            0,
+            modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
+          );
+          let callKind = "function";
+          if (
+            modules[location.moduleIndex].symbols[location.symbolIndex].kind
+              == ModuleSymbolKind.importedSymbol
+          ) {
+            match (
+              in modules[location.moduleIndex].symbols[location.symbolIndex].targetModule
+            ) {
+              some(_) => {}
+              none => {
+                functionName = modules[location.moduleIndex]
+                  .symbols[location.symbolIndex]
+                  .importedName
+                  .copyBytes(
+                    0,
+                    modules[location.moduleIndex]
+                      .symbols[location.symbolIndex]
+                      .importedName
+                      .byteLength
+                  );
+                callKind = "foreign";
+              }
+            }
+          }
+          const substitutions = Array<NativeValueBinding>();
+          const callableSignature = rebaseModuleFunctionSignature(
+            modules,
+            location.moduleIndex,
+            moduleIndex,
+            signature
+          );
+          const argumentNodes = callArgumentNodes(children);
+          const callType = try inferSignatureCallType(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            calleeIndex,
+            index,
+            argumentNodes,
+            inout bindings,
+            "",
+            "",
+            functionName,
+            callableSignature,
+            substitutions,
+            location.moduleIndex,
+            location.symbolIndex,
+            callKind,
+            inout evidence
+          );
+          if (callKind == "foreign") {
+            recordForeignCallFacts(
+              tree,
+              index,
+              modules[location.moduleIndex].symbols[location.symbolIndex],
+              inout evidence
+            );
+          }
+          return Option.some(callType);
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return Option<String>.none;
+}
+
+// A call to an overloaded C++ method: the overload its arguments select, then
+// the receiver access it declares. Returns "" when the owner has no C++
+// overload set of this name and arity, leaving the caller's diagnostics.
+function inferCxxOverloadedMethodCall(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  callIndex: usize,
+  receiverIndex: usize,
+  inout bindings: Array<NativeValueBinding>,
+  in ownerType: String,
+  in methodName: String,
+  inout evidence: ModuleSemanticEvidence
+): String throws ModuleResolveError {
+  const argumentNodes = callArgumentNodes(tree.nodes[callIndex].children);
+  const selected = try selectCxxMethodOverload(
+    module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+    argumentNodes, bindings, ownerType, methodName
+  );
+  const method = match (selected) {
+    some(method) => method;
+    none => return "";
+  };
+  let receiverRoot = "";
+  let receiverAccess = "";
+  if (method.receiverMode == "inout" || method.receiverMode == "move") {
+    receiverRoot = expressionStorageRootName(tree, receiverIndex);
+    receiverAccess = copy method.receiverMode;
+  }
+  if (method.receiverMode == "inout") {
+    try requireCxxMutableReceiver(module, tree, receiverIndex, bindings, receiverRoot, method);
+  }
+  const callable = methodCallableSignature(method);
+  const callType = try inferSignatureCallType(
+    module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+    argumentNodes, inout bindings, receiverRoot, receiverAccess,
+    `${ownerType}.${methodName}`, callable, Array<NativeValueBinding>(),
+    method.ownerModuleIndex, method.ownerSymbolIndex, "method", inout evidence
+  );
+  recordCxxMethodCall(tree, callIndex, method.cppNativeName, inout evidence);
+  if (receiverAccess == "move" && receiverRoot.byteLength > 0) {
+    setValueBindingOwnership(inout bindings, receiverRoot, NativeOwnershipState.moved);
+  }
+  return callType;
+}
+
+// Stage 0: a mutable C++ method needs a mutable addressable receiver.
+function requireCxxMutableReceiver(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  receiverIndex: usize,
+  in bindings: Array<NativeValueBinding>,
+  in receiverRoot: String,
+  in method: NativeMethodCallShape
+): void throws ModuleResolveError {
+  if (method.cppNativeName.byteLength == 0) return;
+  if (receiverRoot.byteLength > 0 && valueBindingIsMutable(bindings, receiverRoot)) return;
+  throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `mutable native method "${method.name}" requires addressable let storage`,
+    tree.nodes[receiverIndex].line,
+    tree.nodes[receiverIndex].column
+  );
+}
+
+// C++ method overloads of one name and arity: check each candidate against a
+// copy of the call state and keep the unique best Stage 0 score. Returns none
+// when the owner has no such C++ method, leaving the caller's diagnostics.
+function selectCxxMethodOverload(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  callIndex: usize,
+  in argumentNodes: Array<usize>,
+  in bindings: Array<NativeValueBinding>,
+  in ownerType: String,
+  in methodName: String
+): Option<NativeMethodCallShape> throws ModuleResolveError {
+  let best = Option<NativeMethodCallShape>.none;
+  let candidates: usize = 0;
+  let matched = false;
+  let tied = false;
+  let bestScore: usize = 0;
+  let ownerName = "";
+  let candidate: usize = 0;
+  let searching = true;
+  while (searching) {
+    const shape = cxxMethodCallShape(
+      modules, moduleIndex, ownerType, methodName, argumentNodes.length, candidate
+    );
+    candidate = candidate + 1;
+    match (shape) {
+      some(method) => {
+        candidates = candidates + 1;
+        ownerName = copy method.ownerName;
+        const callable = methodCallableSignature(method);
+        let trialBindings = copyValueBindings(bindings);
+        let trialEvidence = emptySemanticEvidence();
+        const outcome = attempt inferSignatureCallType(
+          module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+          argumentNodes, inout trialBindings, "", "", method.name, callable,
+          Array<NativeValueBinding>(), method.ownerModuleIndex,
+          method.ownerSymbolIndex, "method", inout trialEvidence
+        );
+        let accepted = false;
+        match (outcome) {
+          success(_) => accepted = true;
+          failure(_) => {}
+        }
+        if (accepted) {
+          const score = foreignOverloadScore(
+            modules, moduleIndex, tree, argumentNodes, callable, trialBindings
+          );
+          if (!matched || score > bestScore) {
+            matched = true;
+            tied = false;
+            bestScore = score;
+            best = Option.some(move method);
+          } else if (score == bestScore) tied = true;
+        }
+      }
+      none => searching = false;
+    }
+  }
+  if (candidates < 2) return Option<NativeMethodCallShape>.none;
+  const relative = ownerName.copyBytes(namespaceRootLength(ownerName), ownerName.byteLength);
+  if (!matched) throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0803", module.path,
+    `no overload of native method "${relative}.${methodName}" accepts these arguments`,
+    tree.nodes[callIndex].line, tree.nodes[callIndex].column, 1
+  );
+  if (tied) throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0803", module.path,
+    `call to native method "${relative}.${methodName}" is ambiguous`,
+    tree.nodes[callIndex].line, tree.nodes[callIndex].column, 1
+  );
+  return best;
+}
+
+// Stage 0's foreignOverloadScore: exact literal shapes and exactly typed
+// arguments outrank conversions, and fixed-arity overloads outrank variadic.
+function foreignOverloadScore(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  in argumentNodes: Array<usize>,
+  in signature: ModuleFunctionSignature,
+  in bindings: Array<NativeValueBinding>
+): usize {
+  let score: usize = signature.variadic ? 0 : 2;
+  let argument: usize = 0;
+  while (argument < argumentNodes.length && argument < signature.parameterTypes.length) {
+    const node = argumentNodes[argument];
+    const expected = transparentTypeName(modules, moduleIndex, signature.parameterTypes[argument]);
+    argument = argument + 1;
+    if (tree.nodes[node].kind == ExpressionKind.numberExpression && isNumericTypeName(expected)) {
+      const literal = view tree.nodes[node].value;
+      let floating = false;
+      let byte: usize = 0;
+      while (byte < literal.byteLength) {
+        const code = literal.byteAt(byte);
+        if (code == 46 || code == 101 || code == 69) floating = true;
+        byte = byte + 1;
+      }
+      if (!floating) {
+        score = score + (expected == "i32" ? 8 : isIntegerTypeName(expected) ? 5 : 1);
+      } else {
+        score = score + (expected == "f64" ? 8 : expected == "f32" ? 5 : 0);
+      }
+      continue;
+    }
+    // The trial check accepted this argument; only a known differing type
+    // (an accepted conversion) scores lower.
+    const actual = storagePathTypeName(modules, moduleIndex, tree, node, bindings);
+    if (actual.byteLength == 0 || transparentTypeName(modules, moduleIndex, actual) == expected) {
+      score = score + 8;
+    } else score = score + 1;
+  }
+  return score;
+}
+
+// A C++ overload set: check each overload against a copy of the call's state,
+// then keep the unique best score, as Stage 0 does (Z0803 otherwise).
+function selectForeignOverload(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  callIndex: usize,
+  in argumentNodes: Array<usize>,
+  in bindings: Array<NativeValueBinding>,
+  in found: ModuleSymbolLocation
+): ModuleSymbolLocation throws ModuleResolveError {
+  const owner = found.moduleIndex;
+  const name = view modules[owner].symbols[found.symbolIndex].name;
+  const qualifiedName = view modules[owner].symbols[found.symbolIndex].foreignOverloadName;
+  let matched = false;
+  let tied = false;
+  let bestScore: usize = 0;
+  let bestIndex = modules[owner].symbols.length;
+  let candidateIndex: usize = 0;
+  while (candidateIndex < modules[owner].symbols.length) {
+    const candidate = view modules[owner].symbols[candidateIndex];
+    if (candidate.foreignOverloadName.byteLength == 0 || candidate.name != name) {
+      candidateIndex = candidateIndex + 1;
+      continue;
+    }
+    match (in candidate.functionSignature) {
+      some(signature) => {
+        const callable = rebaseModuleFunctionSignature(modules, owner, moduleIndex, signature);
+        let trialBindings = copyValueBindings(bindings);
+        let trialEvidence = emptySemanticEvidence();
+        const outcome = attempt inferSignatureCallType(
+          module, modules, moduleIndex, arena, tree, calleeIndex, callIndex,
+          argumentNodes, inout trialBindings, "", "", candidate.importedName,
+          callable, Array<NativeValueBinding>(), owner, candidateIndex,
+          "foreign", inout trialEvidence
+        );
+        match (outcome) {
+          success(_) => {
+            const score = foreignOverloadScore(
+              modules, moduleIndex, tree, argumentNodes, callable, trialBindings
+            );
+            if (!matched || score > bestScore) {
+              matched = true;
+              tied = false;
+              bestScore = score;
+              bestIndex = candidateIndex;
+            } else if (score == bestScore) tied = true;
+          }
+          failure(_) => {}
+        }
+      }
+      none => {}
+    }
+    candidateIndex = candidateIndex + 1;
+  }
+  const role = view modules[owner].symbols[found.symbolIndex].foreignMemberRole;
+  const subject = role == "constructor"
+    ? "native constructor"
+    : role == "static" ? "native static method" : "foreign function";
+  if (!matched) throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0803", module.path,
+    `no overload of ${subject} "${qualifiedName}" accepts these arguments`,
+    tree.nodes[callIndex].line, tree.nodes[callIndex].column, 1
+  );
+  if (tied) throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0803", module.path,
+    `call to ${subject} "${qualifiedName}" is ambiguous`,
+    tree.nodes[callIndex].line, tree.nodes[callIndex].column, 1
+  );
+  return ModuleSymbolLocation({ moduleIndex: owner, symbolIndex: bestIndex });
+}
+
 function inferSignatureCallType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -4912,12 +5642,24 @@ function inferSignatureCallType(
     `function "${functionName}"`
   );
   const argumentCount = argumentNodes.length;
-  if (signature.parameterTypes.length != argumentCount) {
+  if (
+    signature.variadic
+      ? argumentCount < signature.parameterTypes.length
+      : signature.parameterTypes.length != argumentCount
+  ) {
+    const expectation = signature.variadic ? "at least " : "";
+    if (callKind == "foreign") throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `C function "${functionName}" expects ${expectation}${signature.parameterTypes.length} argument(s), found ${argumentCount}`,
+      tree.nodes[callIndex].line,
+      tree.nodes[callIndex].column
+    );
     throw genericCallError(
       module,
       tree,
       calleeIndex,
-      `${functionName} expects ${signature.parameterTypes.length} argument(s), received ${argumentCount}`
+      `${functionName} expects ${expectation}${signature.parameterTypes.length} argument(s), received ${argumentCount}`
     );
   }
   let accesses = Array<NativeCallAccess>();
@@ -4996,7 +5738,8 @@ function inferSignatureCallType(
     );
   }
   let accessIndex: usize = 0;
-  while (accessIndex < argumentCount) {
+  // C variadic arguments past the fixed parameters are passed by value.
+  while (accessIndex < argumentCount && accessIndex < signature.parameterTypes.length) {
     let nodeIndex = argumentNodes[accessIndex];
     // A Slice range borrows its receiver's storage for the call.
     if (stringStartsWith(signature.parameterTypes[accessIndex], "Slice<")) {
@@ -5138,6 +5881,14 @@ function inferSignatureCallType(
   let argumentIndex: usize = 0;
   while (argumentIndex < argumentCount) {
     const nodeIndex = argumentNodes[argumentIndex];
+    if (argumentIndex >= signature.parameterTypes.length) {
+      argumentTypes.push(try inferCVariadicArgumentType(
+        module, modules, moduleIndex, arena, tree, nodeIndex, functionName,
+        inout bindings, inout evidence
+      ));
+      argumentIndex = argumentIndex + 1;
+      continue;
+    }
     const mode = signature.parameterModes[argumentIndex].copyBytes(
       0,
       signature.parameterModes[argumentIndex].byteLength
@@ -5573,7 +6324,10 @@ function inferSignatureCallType(
     bindings
   );
   let parameterIndex: usize = 0;
-  while (parameterIndex < argumentTypes.length) {
+  while (
+    parameterIndex < argumentTypes.length
+    && parameterIndex < signature.parameterTypes.length
+  ) {
     const expected = substituteGenericType(
       signature.parameterTypes[parameterIndex],
       substitutions
@@ -5673,7 +6427,10 @@ function inferSignatureCallType(
     }
   }
   parameterIndex = 0;
-  while (parameterIndex < argumentTypes.length) {
+  while (
+    parameterIndex < argumentTypes.length
+    && parameterIndex < signature.parameterModes.length
+  ) {
     if (signature.parameterModes[parameterIndex] == "out") {
       const nodeIndex = argumentNodes[parameterIndex];
       const bindingIndex = tree.nodes[nodeIndex].children[0];
@@ -5858,6 +6615,19 @@ function inferUnclassifiedCallArguments(
       tree,
       nodeIndex,
       argumentType
+    );
+    // Lowering emits a closure through its checked function type, such as an
+    // objc.connect action; record it so that type is generated.
+    if (
+      tree.nodes[nodeIndex].kind == ExpressionKind.closureExpression
+      && argumentType.byteLength > 0
+    ) recordExpressionResolution(
+      modules,
+      moduleIndex,
+      tree,
+      nodeIndex,
+      argumentType,
+      inout evidence
     );
     if (
       tree.nodes[nodeIndex].kind == ExpressionKind.argumentReferenceExpression
@@ -7241,7 +8011,14 @@ function inferExpressionNodeType(
     );
     if (memberName == "length" || memberName == "capacity") {
       const lengthOwnerType = transparentTypeName(modules, moduleIndex, receiverValueType);
-      if (memberName == "length" ? collectionHasLength(lengthOwnerType) : collectionHasCapacity(lengthOwnerType)) {
+      let fixedLength = false;
+      if (memberName == "length") {
+        match (fixedArrayShape(lengthOwnerType)) {
+          some(_) => fixedLength = true;
+          none => {}
+        }
+      }
+      if (fixedLength || (memberName == "length" ? collectionHasLength(lengthOwnerType) : collectionHasCapacity(lengthOwnerType))) {
         recordExpressionResolution(
           modules,
           moduleIndex,
@@ -9084,6 +9861,12 @@ function inferExpressionNodeType(
         none => {}
       }
     }
+    if (isCxxValueTypeCallee(modules, moduleIndex, tree, calleeIndex)) {
+      return try inferCxxConstructorCall(
+        module, modules, moduleIndex, arena, tree, calleeIndex, index,
+        inout bindings, inout evidence
+      );
+    }
     // Type aliases are transparent at construction sites too. In particular,
     // an alias of a generic empty marker such as `Protocol()` must retain the
     // concrete generic arguments so an enclosing generic call can infer and
@@ -9297,16 +10080,54 @@ function inferExpressionNodeType(
           );
         }
         const argument = children[1];
-        const actual = try inferExpressionNodeType(
-          module,
-          modules,
-          moduleIndex,
-          arena,
-          tree,
-          argument,
-          inout bindings,
-          inout evidence
-        );
+        // A literal takes the target type, as in Stage 0: `u64(18446744073709551615)`
+        // is in range and `u8(300)` is not.
+        const plainLiteral = tree.nodes[argument].kind == ExpressionKind.numberExpression
+          && isNumericTypeName(base);
+        if (
+          !plainLiteral
+          && isIntegerTypeName(base)
+          && isContextualNumericLiteral(tree, argument)
+          && tree.nodes[argument].kind == ExpressionKind.unaryExpression
+        ) {
+          // A signed constant converts by value; Stage 0 rejects it when the
+          // target cannot represent it rather than trapping at run time.
+          const operand = tree.nodes[argument].children[0];
+          const constant = tree.nodes[argument].value == "-"
+            ? `-${tree.nodes[operand].value}`
+            : tree.nodes[operand].value.copyBytes(0, tree.nodes[operand].value.byteLength);
+          if (!integerLiteralFits(constant, base)) throw codedModuleResolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            "Z0104",
+            module.path,
+            `constant integer value ${constant} cannot convert to ${base}`,
+            tree.nodes[argument].line,
+            tree.nodes[argument].column,
+            1
+          );
+        }
+        const actual = plainLiteral
+          ? try inferExpressionNodeTypeExpected(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            argument,
+            base,
+            inout bindings,
+            inout evidence
+          )
+          : try inferExpressionNodeType(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            argument,
+            inout bindings,
+            inout evidence
+          );
         if (actual.byteLength == 0) {
           // Stage 1 intentionally defers foreign scalar identity until that
           // ABI evidence enters the native graph. Stage 0 remains authoritative
@@ -9990,80 +10811,12 @@ function inferExpressionNodeType(
         }
       }
     }
-    const location = callableSymbolLocation(modules, moduleIndex, tree, calleeIndex);
-    match (location) {
-      some(location) => {
-        match (in modules[location.moduleIndex].symbols[location.symbolIndex].functionSignature) {
-          some(signature) => {
-            let functionName = modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
-              0,
-              modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
-            );
-            let callKind = "function";
-            if (
-              modules[location.moduleIndex].symbols[location.symbolIndex].kind
-                == ModuleSymbolKind.importedSymbol
-            ) {
-              match (
-                in modules[location.moduleIndex].symbols[location.symbolIndex].targetModule
-              ) {
-                some(_) => {}
-                none => {
-                  functionName = modules[location.moduleIndex]
-                    .symbols[location.symbolIndex]
-                    .importedName
-                    .copyBytes(
-                      0,
-                      modules[location.moduleIndex]
-                        .symbols[location.symbolIndex]
-                        .importedName
-                        .byteLength
-                    );
-                  callKind = "foreign";
-                }
-              }
-            }
-            const substitutions = Array<NativeValueBinding>();
-            const callableSignature = rebaseModuleFunctionSignature(
-              modules,
-              location.moduleIndex,
-              moduleIndex,
-              signature
-            );
-            const argumentNodes = callArgumentNodes(children);
-            const callType = try inferSignatureCallType(
-              module,
-              modules,
-              moduleIndex,
-              arena,
-              tree,
-              calleeIndex,
-              index,
-              argumentNodes,
-              inout bindings,
-              "",
-              "",
-              functionName,
-              callableSignature,
-              substitutions,
-              location.moduleIndex,
-              location.symbolIndex,
-              callKind,
-              inout evidence
-            );
-            if (callKind == "foreign") {
-              recordForeignCallFacts(
-                tree,
-                index,
-                modules[location.moduleIndex].symbols[location.symbolIndex],
-                inout evidence
-              );
-            }
-            return callType;
-          }
-          none => {}
-        }
-      }
+    const callableCallType = try inferCallableSymbolCall(
+      module, modules, moduleIndex, arena, tree, calleeIndex, index,
+      inout bindings, inout evidence
+    );
+    match (callableCallType) {
+      some(callType) => return callType;
       none => {}
     }
     if (
@@ -10148,7 +10901,11 @@ function inferExpressionNodeType(
                   tree.nodes[argument].line, tree.nodes[argument].column
                 );
               }
+              if (!typeMentionsActiveTypeParameter(bindings, captureType)) {
+                try requireThreadSpawnClassCapture(module, modules, moduleIndex, tree, argument, capture, captureType);
+              }
             }
+            try requireThreadSpawnResult(module, modules, moduleIndex, tree, argument);
           }
           addValueBinding(
             inout workerBindings,
@@ -10277,15 +11034,9 @@ function inferExpressionNodeType(
             "__z_native_closure_executor_context",
             connectionExecutorContext
           );
-          try inferUnclassifiedCallArguments(
-            module,
-            modules,
-            moduleIndex,
-            arena,
-            tree,
-            children,
-            inout connectionBindings,
-            inout evidence
+          try inferObjCConnectArguments(
+            module, modules, moduleIndex, arena, tree, children,
+            inout connectionBindings, inout evidence
           );
           copyBindingFlowStates(inout bindings, connectionBindings);
           return "";
@@ -10408,13 +11159,44 @@ function inferExpressionNodeType(
           && modules[moduleIndex].symbols[foreignNamespaceIndex]
             .foreignHeader.byteLength > 0
         ) {
-          throw resolutionError(
-            ModuleResolveErrorKind.missingExport,
-            module.path,
-            `native contract for "${modules[moduleIndex].symbols[foreignNamespaceIndex].foreignHeader}" has no checked function "${memberName}"`,
-            tree.nodes[calleeIndex].line,
-            tree.nodes[calleeIndex].column
+          throw missingForeignMember(
+            module, modules, moduleIndex, foreignNamespaceIndex,
+            namespaceName, memberName,
+            tree.nodes[calleeIndex].line, tree.nodes[calleeIndex].column
           );
+        }
+      }
+      if (tree.nodes[receiverIndex].kind == ExpressionKind.memberExpression) {
+        // A C++ namespace path below a foreign import that named no callable.
+        const foreignPath = typeExpressionName(tree, receiverIndex);
+        let rootLength: usize = 0;
+        while (rootLength < foreignPath.byteLength && foreignPath.byteAt(rootLength) != 46) {
+          rootLength = rootLength + 1;
+        }
+        const foreignRoot = foreignPath.copyBytes(0, rootLength);
+        const rootIndex = moduleSymbolIndex(modules[moduleIndex], foreignRoot);
+        const memberName = identifierLookupName(tree.nodes[calleeIndex].value);
+        let receiverIsType = false;
+        match (typeSymbolLocation(modules, moduleIndex, foreignPath)) {
+          some(_) => receiverIsType = true;
+          none => {}
+        }
+        // A type receiver (`AppKit.NSMenuItem.alloc()`) is a member call.
+        if (
+          rootLength > 0
+          && !receiverIsType
+          && rootIndex < modules[moduleIndex].symbols.length
+          && modules[moduleIndex].symbols[rootIndex].kind == ModuleSymbolKind.namespaceSymbol
+          && modules[moduleIndex].symbols[rootIndex].foreignHeader.byteLength > 0
+        ) {
+          const qualifiedMember = `${foreignPath}.${memberName}`;
+          match (typeSymbolLocation(modules, moduleIndex, qualifiedMember)) {
+            some(_) => {}
+            none => throw missingForeignMember(
+              module, modules, moduleIndex, rootIndex, foreignPath, memberName,
+              tree.nodes[calleeIndex].line, tree.nodes[calleeIndex].column
+            );
+          }
         }
       }
       let ownerType = try inferExpressionNodeType(
@@ -12102,6 +12884,7 @@ function inferExpressionNodeType(
             let receiverAccess = "";
             if (!method.staticMethod && method.receiverMode == "inout") {
               receiverRoot = expressionStorageRootName(tree, receiverIndex);
+              try requireCxxMutableReceiver(module, tree, receiverIndex, bindings, receiverRoot, method);
               if (receiverRoot.byteLength == 0) {
                 let storageDescription = "addressable let storage";
                 if (
@@ -12274,6 +13057,9 @@ function inferExpressionNodeType(
               method,
               evidence
             );
+            if (method.cppNativeName.byteLength > 0) {
+              recordCxxMethodCall(tree, index, method.cppNativeName, inout evidence);
+            }
             if (method.objectiveCSelector.byteLength > 0) {
               recordResolvedObjCCallFacts(
                 modules,
@@ -12349,6 +13135,13 @@ function inferExpressionNodeType(
             return callType;
           }
           none => {
+            if (!staticMethod) {
+              const cxxCallType = try inferCxxOverloadedMethodCall(
+                module, modules, moduleIndex, arena, tree, calleeIndex, index,
+                receiverIndex, inout bindings, ownerType, methodName, inout evidence
+              );
+              if (cxxCallType.byteLength > 0) return cxxCallType;
+            }
             if (isActiveTypeParameter(bindings, ownerType)) {
               throw resolutionError(
                 ModuleResolveErrorKind.unknownMember,
@@ -12497,7 +13290,7 @@ function inferStatement(
         inout bindings,
         inout evidence
       );
-      none => {}
+      none => try requireInitializedNativeStorage(module, modules, moduleIndex, arena, index);
     }
     if (
       contextualExpected == "String"

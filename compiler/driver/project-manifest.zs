@@ -2034,7 +2034,12 @@ export function appendProjectCompileArguments(
         throw `native deployment target flags are not implemented for ${platform}`;
       }
       match (in config.minimumVersion) {
-        some(version) => arguments.push(`-mmacosx-version-min=${version}`);
+        some(version) => {
+          arguments.push(`-mmacosx-version-min=${version}`);
+          // Z checks availability against the target; a deprecated declaration
+          // is a Z diagnostic, not a C build failure, as in Stage 0.
+          arguments.push("-Wno-deprecated-declarations");
+        }
         none => {}
       }
     }

@@ -106,7 +106,7 @@ function isVerifiedForeignNominalType(
   return false;
 }
 
-function verifiedForeignNumericUnderlyingType(
+export function verifiedForeignNumericUnderlyingType(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
   in typeName: String

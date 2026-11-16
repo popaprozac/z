@@ -48,9 +48,11 @@ import {
   ModuleSymbolKind,
   ModuleTypeSignature,
   ResolvedModule,
+  codedModuleResolutionError,
   moduleResolutionError,
 } from "./semantic-model.zs";
 import {
+  typeContainsMoveOnlyNative,
   typeContainsStoredView,
   typeContainsSlice,
   typeIsArenaOwnerBundle,
@@ -732,6 +734,77 @@ function validateArenaTypes(
   }
 }
 
+// Declaration rules for a `view T` result, as in Stage 0. A method's view is
+// tied to an immutable value-struct receiver; a function's view to its `in`
+// inputs. Neither may cross a suspension or an error path.
+function validateViewReturn(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in declaration: FunctionDeclaration,
+  method: boolean,
+  valueStructMethod: boolean
+): void throws ModuleResolveError {
+  if (!stringStartsWith(declaration.returnType.name, "view ")) return;
+  const target = declaration.returnType.name.copyBytes(
+    5,
+    declaration.returnType.name.byteLength
+  );
+  let structTarget = false;
+  let borrowedHandle = false;
+  match (typeSymbolLocation(modules, moduleIndex, target)) {
+    some(location) => {
+      const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          structTarget = symbol.kind == ModuleSymbolKind.structSymbol
+            && signature.foreignNativeName.byteLength == 0;
+          borrowedHandle = signature.foreignKind == "handle"
+            && signature.foreignResourceRelease.byteLength == 0;
+        }
+        none => structTarget = symbol.kind == ModuleSymbolKind.structSymbol;
+      }
+    }
+    none => {}
+  }
+  const throwing = match (in declaration.errorType) {
+    some(_) => true;
+    none => false;
+  };
+  let message = "";
+  if (method) {
+    if (!valueStructMethod) {
+      message = "the zero-overhead view tier requires a value-struct owner";
+    } else if (
+      declaration.staticMethod
+      || declaration.asynchronous
+      || declaration.receiverMode != ReceiverMode.none
+      || throwing
+    ) {
+      message = "a view return requires a synchronous, non-throwing borrowed instance method";
+    } else if (!structTarget) {
+      message = "the first view tier requires a concrete Z struct target";
+    }
+  } else if (
+    declaration.asynchronous
+    || throwing
+    || declaration.rawLanguage.byteLength > 0
+  ) {
+    message = "a parameter-provenanced view result requires a synchronous, non-throwing Z function";
+  } else if (!structTarget && !borrowedHandle) {
+    message = "the first parameter-view tier requires a concrete Z struct or borrowed native handle target";
+  }
+  if (message.byteLength > 0) throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    "Z0206",
+    module.path,
+    message,
+    declaration.returnType.line,
+    declaration.returnType.column,
+    1
+  );
+}
+
 function validateFunctionTypes(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -790,6 +863,14 @@ function validateFunctionTypes(
   );
   for (const parameter of declaration.parameters) {
     try validateTypeReference(module, modules, moduleIndex, bindings, parameter.type);
+    if (
+      parameter.mode == ParameterMode.output
+      && typeContainsMoveOnlyNative(modules, moduleIndex, parameter.type.name, 0)
+    ) throw codedModuleResolutionError(
+      ModuleResolveErrorKind.typeMismatch, "Z0240", module.path,
+      `out parameter "${parameter.name}" cannot use move-only native storage in the first C++ ownership tier`,
+      parameter.line, parameter.column, 1
+    );
     let parameterViewVisiting = Array<String>();
     if (typeContainsStoredView(
       modules,
@@ -1086,6 +1167,14 @@ function validateAggregateTypes(
   }
   for (const field of declaration.fields) {
     try validateTypeReference(module, modules, moduleIndex, bindings, field.type);
+    if (
+      declaration.kind == DeclarationKind.classDeclaration
+      && typeContainsMoveOnlyNative(modules, moduleIndex, field.type.name, 0)
+    ) throw codedModuleResolutionError(
+      ModuleResolveErrorKind.typeMismatch, "Z0240", module.path,
+      "ARC class fields cannot store move-only native values in the first C++ ownership tier",
+      field.type.line, field.type.column, 1
+    );
     if (typeContainsSlice(modules, moduleIndex, field.type.name)) {
       throw validationError(ModuleResolveErrorKind.typeMismatch, module.path,
         "Slice values cannot be stored in struct or class fields",
@@ -1199,6 +1288,14 @@ function validateAggregateTypes(
       modules,
       moduleIndex,
       bindings,
+      method,
+      true,
+      declaration.kind == DeclarationKind.structDeclaration
+    );
+    try validateViewReturn(
+      module,
+      modules,
+      moduleIndex,
       method,
       true,
       declaration.kind == DeclarationKind.structDeclaration
@@ -1645,6 +1742,7 @@ export function validateModuleTypes(
   );
   for (const declaration of module.program.functions) {
     try validateFunctionTypes(module, modules, moduleIndex, empty, declaration, false, false);
+    try validateViewReturn(module, modules, moduleIndex, declaration, false, false);
   }
   for (const declaration of module.program.aggregates) {
     try validateAggregateTypes(module, modules, moduleIndex, declaration);

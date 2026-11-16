@@ -18,7 +18,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -27,6 +27,7 @@ import {
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import { typeHasCleanup, typeIsThreadTransferable } from "./semantic-type-ownership.zs";
+import { typeHasMainExecutorLifecycle } from "./semantic-type-validation.zs";
 import { channelTypeKind } from "./channel-shapes.zs";
 import { transparentTypeName, typeSymbolLocation } from "./semantic-type-identities.zs";
 import { typeMentionsParameter } from "./semantic-generic-inference.zs";
@@ -261,6 +262,107 @@ function validateNativeCollectionTypeName(
     }
     none => {}
   }
+}
+
+// The C++ value tier executes copyable values held directly, in fields, and
+// in calls. Move-only values (`std::move` at Z move points) and C++ values
+// inside unions (Option, Result, enum payloads) or containers are later tiers.
+function cxxValueTierLimit(
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in typeName: String,
+  contained: boolean,
+  depth: usize
+): String {
+  if (depth > 8 || typeName.byteLength == 0) return "";
+  let name = typeName.copyBytes(0, typeName.byteLength);
+  if (stringStartsWith(name, "view ")) name = name.copyBytes(5, name.byteLength);
+  if (stringStartsWith(name, "readonly ")) name = name.copyBytes(9, name.byteLength);
+  const nullable = nullableTargetType(name);
+  if (nullable.byteLength > 0) {
+    return cxxValueTierLimit(graph, moduleIndex, nullable, true, depth + 1);
+  }
+  match (fixedArrayShape(name)) {
+    some(shape) => return cxxValueTierLimit(graph, moduleIndex, shape.elementType, true, depth + 1);
+    none => {}
+  }
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      // An Array constructs, moves, and destroys C++ elements in place; an
+      // Option or Result is a C++-payload enum like a Z enum.
+      const elementStorage = (generic.base == "Array" && generic.arguments.length == 1)
+        || generic.base == "Option" || generic.base == "Result";
+      // A Map constructs, moves, and destroys C++ values in its entries; its
+      // keys hash and compare Z values only.
+      if (generic.base == "Map" && generic.arguments.length == 2) {
+        const keyLimit = cxxValueTierLimit(graph, moduleIndex, generic.arguments[0], true, depth + 1);
+        if (keyLimit.byteLength > 0) return keyLimit;
+        return cxxValueTierLimit(graph, moduleIndex, generic.arguments[1], false, depth + 1);
+      }
+      for (const argument of generic.arguments) {
+        const limit = cxxValueTierLimit(graph, moduleIndex, argument, !elementStorage, depth + 1);
+        if (limit.byteLength > 0) return limit;
+      }
+      return "";
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(graph.modules, moduleIndex, name)) {
+    some(location) => {
+      match (in graph.modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          if (signature.foreignKind == "value" || signature.foreignKind == "moveValue") {
+            if (!contained) return "";
+            return `C++ value "${signature.foreignNativeName}" stored in a class, Option, Result, enum payload, or collection is not executable in the native compiler yet`;
+          }
+          if (signature.foreignNativeName.byteLength > 0) return "";
+          // A class instance is heap storage freed without C++ member destructors.
+          const heapOwned = contained
+            || graph.modules[location.moduleIndex].symbols[location.symbolIndex].kind
+              == ModuleSymbolKind.classSymbol;
+          for (const field of signature.fields) {
+            const limit = cxxValueTierLimit(graph, location.moduleIndex, field.typeName, heapOwned, depth + 1);
+            if (limit.byteLength > 0) return limit;
+          }
+          // A Z enum with a C++ payload is a C++ struct with an explicit
+          // union lifetime; its payloads are storage like struct fields.
+          for (const variant of signature.variants) {
+            const limit = cxxValueTierLimit(graph, location.moduleIndex, variant.payloadType, heapOwned, depth + 1);
+            if (limit.byteLength > 0) return limit;
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return "";
+}
+
+function moduleUsesCxxValues(in graph: ModuleGraph, moduleIndex: usize): boolean {
+  for (const symbol of graph.modules[moduleIndex].symbols) {
+    match (in symbol.typeSignature) {
+      some(signature) => {
+        if (signature.foreignKind == "value" || signature.foreignKind == "moveValue") return true;
+      }
+      none => {}
+    }
+  }
+  return false;
+}
+
+function validateNativeCxxValueTypeName(
+  in path: String,
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in typeName: String,
+  line: usize,
+  column: usize,
+  length: usize
+): void throws ModuleResolveError {
+  const limit = cxxValueTierLimit(graph, moduleIndex, typeName, false, 0);
+  if (limit.byteLength == 0) return;
+  throw loweringBoundary(path, "Z1000", limit, line, column, length);
 }
 
 function validateNativeType(
@@ -1699,10 +1801,33 @@ function requireNativeThreadCaptureType(
       visiting
     )) {
       let sharedClassCandidate = false;
+      let mainIsolated = false;
       match (typeSymbolLocation(graph.modules, moduleIndex, typeName)) {
-        some(location) => sharedClassCandidate = graph.modules[location.moduleIndex]
-          .symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol;
+        some(location) => {
+          const symbol = view graph.modules[location.moduleIndex].symbols[location.symbolIndex];
+          sharedClassCandidate = symbol.kind == ModuleSymbolKind.classSymbol;
+          // Stage 0 carries main-isolated identity across opaquely; native lowering cannot yet.
+          if (sharedClassCandidate && symbol.foreignHeader.byteLength == 0) {
+            mainIsolated = typeHasMainExecutorLifecycle(graph.modules, moduleIndex, actualType);
+            match (in symbol.typeSignature) {
+              some(signature) => { if (signature.executorAffinity.byteLength > 0) mainIsolated = true; }
+              none => {}
+            }
+          }
+        }
         none => {}
+      }
+      if (mainIsolated) {
+        let length = captureName.byteLength;
+        if (length == 0) length = 1;
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          `thread.spawn cannot carry main-isolated capture "${captureName}" of type ${typeName} in the native compiler yet`,
+          line,
+          column,
+          length
+        );
       }
       if (!sharedClassCandidate) {
         let length = captureName.byteLength;
@@ -2109,6 +2234,47 @@ function typeMentionsAnyParameter(in typeName: String, in typeParameters: Array<
   return false;
 }
 
+// std/objc operations with no native lowering yet are located tier limits.
+// Semantic checking still accepts them, as Stage 0 does.
+function validateNativeObjCCall(
+  in path: String,
+  in program: Program,
+  in tree: ExpressionTree,
+  index: usize
+): void throws ModuleResolveError {
+  const node = view tree.nodes[index];
+  if (node.kind != ExpressionKind.callExpression || node.children.length == 0) return;
+  const callee = view tree.nodes[node.children[0]];
+  if (callee.kind != ExpressionKind.memberExpression || callee.children.length != 1) return;
+  const receiver = view tree.nodes[callee.children[0]];
+  if (receiver.kind != ExpressionKind.identifierExpression) return;
+  let objcNamespace = false;
+  for (const declaration of program.imports) {
+    if (declaration.header == "std/objc" && declaration.moduleName == receiver.value) objcNamespace = true;
+  }
+  if (!objcNamespace) return;
+  if (callee.value == "bind") throw loweringBoundary(
+    path,
+    "Z1000",
+    "objc.bind is not executable in the native compiler yet; Stage 0 compiles Objective-C protocol bindings",
+    callee.line,
+    callee.column,
+    4
+  );
+  if (callee.value != "pool" || node.children.length != 2) return;
+  const operation = view tree.nodes[node.children[1]];
+  if (operation.kind != ExpressionKind.closureExpression) return;
+  if (operation.labels.length >= 3 && operation.labels[2] == "block") return;
+  throw loweringBoundary(
+    path,
+    "Z1000",
+    "objc.pool with an expression-bodied closure is not executable in the native compiler yet; use a block body that returns the value",
+    operation.line,
+    operation.column,
+    1
+  );
+}
+
 function validateNativeExpressionTree(
   in path: String,
   moduleIndex: usize,
@@ -2125,6 +2291,22 @@ function validateNativeExpressionTree(
     const node = view tree.nodes[index];
     for (const type of node.typeReferences) {
       try validateNativeType(path, type);
+    }
+    try validateNativeObjCCall(path, modules[moduleIndex].program, tree, index);
+    if (node.kind == ExpressionKind.arrayExpression && moduleUsesCxxValues(graph, moduleIndex)) {
+      const literalType = resolvedExpressionType(graph, moduleIndex, tree, index);
+      match (genericTypeShape(literalType)) {
+        some(generic) => {
+          let elementLimit = "";
+          if (generic.base == "Array" && generic.arguments.length == 1) {
+            elementLimit = cxxValueTierLimit(graph, moduleIndex, generic.arguments[0], true, 0);
+          }
+          if (elementLimit.byteLength > 0) throw loweringBoundary(path, "Z1000",
+            "an Array literal of C++ values is not executable in the native compiler yet; push the values instead",
+            node.line, node.column, 1);
+        }
+        none => {}
+      }
     }
     if (node.kind == ExpressionKind.arrayExpression) {
       const typeName = resolvedExpressionType(
@@ -2624,7 +2806,8 @@ function validateNativeBody(
   allowNonTailPlacedAsyncCall: boolean,
   in typeParameters: Array<String>,
   scopeStart: usize,
-  in parameters: Array<Parameter>
+  in parameters: Array<Parameter>,
+  frameScopes: boolean
 ): void throws ModuleResolveError {
   try validateNativeThreadBlockCaptures(path, moduleIndex, graph, body, scopeStart, parameters);
   let statementIndex: usize = 0;
@@ -2674,7 +2857,8 @@ function validateNativeBody(
         5
       );
     }
-    if (statement.kind == StatementKind.asyncScopeStatement) {
+    // A general async frame joins its unnamed scopes' spawn slots itself.
+    if (statement.kind == StatementKind.asyncScopeStatement && !frameScopes) {
       if (!nativeCallableTaskScopeCandidate(body, statementIndex)) {
         throw loweringBoundary(
           path,
@@ -2849,17 +3033,20 @@ function nativeYieldFrameStorageSupported(
   }
   match (genericTypeShape(name)) {
     some(generic) => {
+      // A frame's Task<T> local is its spawn's invocation slot (the shape rule
+      // admits only spawn-initialized task locals).
       if (generic.base != "Array" && generic.base != "Option"
         && generic.base != "Result" && generic.base != "Mutex"
-        && generic.base != "Map") {
+        && generic.base != "Map" && generic.base != "Task") {
         if (parsedModule >= modules.length) return false;
         const channelKind = channelTypeKind(modules[parsedModule].program, generic.base);
         if (channelKind.byteLength == 0) return false;
       }
       let argumentIndex: usize = 0;
       for (const argument of generic.arguments) {
-        // Result<void, E> has a payload-free success variant, not a void slot.
-        if (generic.base == "Result" && argumentIndex == 0 && argument == "void") {
+        // Result<void, E> has a payload-free success variant, not a void slot;
+        // a Task<void> slot holds no result.
+        if ((generic.base == "Result" || generic.base == "Task") && argumentIndex == 0 && argument == "void") {
           argumentIndex = argumentIndex + 1;
           continue;
         }
@@ -2936,6 +3123,92 @@ function validateNativeChannelExpression(
   }
 }
 
+function validateYieldFrameStorage(
+  in path: String,
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in declaration: FunctionDeclaration
+): void throws ModuleResolveError {
+  match (in declaration.errorType) {
+    some(error) => {
+      const visiting = Array<String>();
+      if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, error.name, visiting)) {
+        throw loweringBoundary(path, "Z0700", "native yield-frame error requires supported owned frame storage",
+          declaration.line, declaration.column, 5);
+      }
+    }
+    none => {}
+  }
+  for (const parameter of declaration.parameters) {
+    // A borrowed parameter is a pointer in the frame; its value stays put.
+    // A Slice parameter views caller storage the suspended caller keeps alive.
+    if (parameter.mode != ParameterMode.value) continue;
+    match (genericTypeShape(parameter.type.name)) {
+      some(shape) => if (shape.base == "Slice") continue;
+      none => {}
+    }
+    const visiting = Array<String>();
+    if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, parameter.type.name, visiting)) {
+      throw loweringBoundary(path, "Z0700",
+        `native yield-frame parameter "${parameter.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
+        parameter.line, parameter.column, parameter.name.byteLength);
+    }
+  }
+  for (const statement of declaration.body.nodes) {
+    // The compiler-created owner must be supported too, even when none of
+    // its unsupported fields are selected into user-visible bindings.
+    if (statement.kind == StatementKind.destructureStatement) {
+      match (in statement.expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => {
+            const root = tree.root;
+            const sourceType = resolvedExpressionType(graph, moduleIndex, tree, root);
+            const visiting = Array<String>();
+            if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, sourceType, visiting)) {
+              throw loweringBoundary(path, "Z0700",
+                "native yield-frame destructuring source requires supported owned frame storage; borrowed views and other native storage remain outside this tier",
+                statement.line, statement.column, 5);
+            }
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
+    for (const binding of graph.modules[moduleIndex].semanticEvidence.bindingResolutions) {
+      let matches = statement.kind == StatementKind.variableStatement
+        && binding.offset == statement.nameOffset;
+      for (const field of statement.objectBindings) {
+        if (binding.offset == field.bindingOffset) matches = true;
+      }
+      if (!matches) continue;
+      const visiting = Array<String>();
+      if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, binding.typeName, visiting)) {
+        throw loweringBoundary(path, "Z0700",
+          `native yield-frame local "${binding.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
+          binding.line, binding.column, binding.name.byteLength);
+      }
+    }
+  }
+}
+
+function validateGeneralFrameStorage(
+  in path: String,
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in declaration: FunctionDeclaration
+): void throws ModuleResolveError {
+  try validateYieldFrameStorage(path, moduleIndex, modules, graph, declaration);
+  const visiting = Array<String>();
+  if (declaration.returnType.name != "void"
+    && !nativeYieldFrameStorageSupported(modules, graph, moduleIndex, declaration.returnType.name, visiting)) {
+    throw loweringBoundary(path, "Z0700", "native async frame result requires supported owned frame storage",
+      declaration.line, declaration.column, 5);
+  }
+}
+
 function validateNativeFunction(
   in path: String,
   moduleIndex: usize,
@@ -2974,69 +3247,22 @@ function validateNativeFunction(
   const yieldFrame = owner.byteLength == 0 && parsedModule < modules.length
     && !(declaration.name != "main" && firstTierSchedulerYield)
     && functionUsesYieldFrame(modules[parsedModule].program, declaration);
-  if (owner.byteLength == 0 && declaration.name == "main" && parsedModule < modules.length) {
+  // main with a direct timer await runs as a general frame on a root executor.
+  const generalMain = !yieldFrame && owner.byteLength == 0 && declaration.name == "main"
+    && parsedModule < modules.length
+    && (functionContainsFrameDelay(modules[parsedModule].program, declaration)
+      || functionContainsFrameSpawn(declaration))
+    && functionUsesGeneralFrame(modules[parsedModule].program, declaration);
+  if (generalMain) try validateGeneralFrameStorage(path, moduleIndex, modules, graph, declaration);
+  if (owner.byteLength == 0 && declaration.name == "main" && parsedModule < modules.length
+    && !generalMain && !yieldFrame) {
     // main has a synchronous host entry in the current native driver. Do not
     // misclassify an unsupported timer await as a join of an unnamed Task.
     for (const root of declaration.body.roots) {
       try validateMainTimerStatement(modules[parsedModule].program, declaration.body, root, path);
     }
   }
-  if (yieldFrame) {
-    match (in declaration.errorType) {
-      some(error) => {
-        const visiting = Array<String>();
-        if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, error.name, visiting)) {
-          throw loweringBoundary(path, "Z0700", "native yield-frame error requires supported owned frame storage",
-            declaration.line, declaration.column, 5);
-        }
-      }
-      none => {}
-    }
-    for (const parameter of declaration.parameters) {
-      const visiting = Array<String>();
-      if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, parameter.type.name, visiting)) {
-        throw loweringBoundary(path, "Z0700",
-          `native yield-frame parameter "${parameter.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
-          parameter.line, parameter.column, parameter.name.byteLength);
-      }
-    }
-    for (const statement of declaration.body.nodes) {
-      // The compiler-created owner must be supported too, even when none of
-      // its unsupported fields are selected into user-visible bindings.
-      if (statement.kind == StatementKind.destructureStatement) {
-        match (in statement.expression) {
-          some(syntax) => match (in syntax.tree) {
-            some(tree) => {
-              const root = tree.root;
-              const sourceType = resolvedExpressionType(graph, moduleIndex, tree, root);
-              const visiting = Array<String>();
-              if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, sourceType, visiting)) {
-                throw loweringBoundary(path, "Z0700",
-                  "native yield-frame destructuring source requires supported owned frame storage; borrowed views and other native storage remain outside this tier",
-                  statement.line, statement.column, 5);
-              }
-            }
-            none => {}
-          }
-          none => {}
-        }
-      }
-      for (const binding of graph.modules[moduleIndex].semanticEvidence.bindingResolutions) {
-        let matches = statement.kind == StatementKind.variableStatement
-          && binding.offset == statement.nameOffset;
-        for (const field of statement.objectBindings) {
-          if (binding.offset == field.bindingOffset) matches = true;
-        }
-        if (!matches) continue;
-        const visiting = Array<String>();
-        if (!nativeYieldFrameStorageSupported(modules, graph, moduleIndex, binding.typeName, visiting)) {
-          throw loweringBoundary(path, "Z0700",
-            `native yield-frame local "${binding.name}" requires supported owned frame storage; borrowed views and other native storage remain outside this tier`,
-            binding.line, binding.column, binding.name.byteLength);
-        }
-      }
-    }
-  }
+  if (yieldFrame) try validateYieldFrameStorage(path, moduleIndex, modules, graph, declaration);
   const firstTierTailAwait = functionHasFirstTierTailAwaitStorage(
     moduleIndex,
     modules,
@@ -3044,6 +3270,11 @@ function validateNativeFunction(
     declaration,
     owner
   );
+  // Every shape tier rejected this function: the general frame takes it.
+  const generalFrame = !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
+    && owner.byteLength == 0 && declaration.name != "main" && parsedModule < modules.length
+    && functionUsesGeneralFrame(modules[parsedModule].program, declaration);
+  if (generalFrame) try validateGeneralFrameStorage(path, moduleIndex, modules, graph, declaration);
   if (declaration.asynchronous && declaration.name != "main"
     && functionUsesFirstTierLinearAwait(moduleIndex, modules, graph, declaration)
     && parsedModule < modules.length) {
@@ -3079,7 +3310,7 @@ function validateNativeFunction(
     }
   }
   if (declaration.asynchronous && declaration.name != "main"
-    && !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait) {
+    && !yieldFrame && !generalFrame && !firstTierSchedulerYield && !firstTierTailAwait) {
     let earlierTerminalAwait = false;
     for (const root of declaration.body.roots) {
       if (earlierTerminalAwait && statementIsFirstTierAwaitLocal(declaration.body, root)) {
@@ -3095,7 +3326,7 @@ function validateNativeFunction(
       }
     }
   }
-  if (!yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
+  if (!yieldFrame && !generalFrame && !generalMain && !firstTierSchedulerYield && !firstTierTailAwait
     && parsedModule < modules.length) {
     let index: usize = 0;
     while (index < declaration.body.nodes.length) {
@@ -3172,6 +3403,7 @@ function validateNativeFunction(
     && !firstTierSchedulerYield
     && !firstTierTailAwait
     && !yieldFrame
+    && !generalFrame
   ) {
     throw loweringBoundary(
       path,
@@ -3214,7 +3446,8 @@ function validateNativeFunction(
     allowNonTailPlacedAsyncCall,
     typeParameters,
     declaration.offset,
-    declaration.parameters
+    declaration.parameters,
+    yieldFrame || generalFrame || generalMain
   );
 }
 
@@ -3277,7 +3510,8 @@ function validateNativeAggregate(
         false,
         typeParameters,
         initializer.offset,
-        initializer.parameters
+        initializer.parameters,
+        false
       );
     }
     none => {}
@@ -3294,7 +3528,8 @@ function validateNativeAggregate(
       false,
       typeParameters,
       0,
-      Array<Parameter>()
+      Array<Parameter>(),
+      false
     );
   }
   for (const method of aggregate.methods) {
@@ -3319,7 +3554,8 @@ function validateNativeAggregate(
       false,
       typeParameters,
       deinitializer.offset,
-      Array<Parameter>()
+      Array<Parameter>(),
+      false
     );
     none => {}
   }
@@ -3341,6 +3577,7 @@ export function validateNativeLowerability(
       continue;
     }
     const module = view modules[parsedModuleIndex];
+    const cxxValues = moduleUsesCxxValues(graph, graphModuleIndex);
     for (const binding of graph.modules[graphModuleIndex]
       .semanticEvidence.bindingResolutions) {
       const bindingLength = binding.name.byteLength;
@@ -3353,6 +3590,10 @@ export function validateNativeLowerability(
         bindingColumn,
         bindingLength
       );
+      if (cxxValues) try validateNativeCxxValueTypeName(
+        module.path, graph, graphModuleIndex, binding.typeName,
+        bindingLine, bindingColumn, bindingLength
+      );
     }
     for (const expression of graph.modules[graphModuleIndex]
       .semanticEvidence.expressionResolutions) {
@@ -3364,6 +3605,10 @@ export function validateNativeLowerability(
         expressionLine,
         expressionColumn,
         1
+      );
+      if (cxxValues) try validateNativeCxxValueTypeName(
+        module.path, graph, graphModuleIndex, expression.typeName,
+        expressionLine, expressionColumn, 1
       );
     }
     for (const aggregate of module.program.aggregates) {

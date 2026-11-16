@@ -7,7 +7,7 @@
 
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { isContextualNumericOperand } from "./semantic-expression-types.zs";
+import { isContextualNumericLiteral, isContextualNumericOperand } from "./semantic-expression-types.zs";
 
 import {
   ArrayBindingKind,
@@ -97,7 +97,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -180,6 +180,10 @@ export struct LoweredArray {
   name: String;
   sliceName: String;
   elementType: LoweredType;
+  // Elements hold C++ values: storage is constructed, moved, and destroyed
+  // element by element (std::construct_at / std::destroy_at), never memcpy.
+  cxxElements: boolean = false;
+  cxxMoveOnlyElements: boolean = false;
 }
 
 export struct LoweredFixedArray {
@@ -198,6 +202,8 @@ export struct LoweredMap {
   name: String;
   keyType: LoweredType;
   valueType: LoweredType;
+  // Values hold C++ values: entries are constructed, moved, and destroyed.
+  cxxValues: boolean = false;
 }
 
 export struct LoweredSet {
@@ -219,6 +225,10 @@ export struct LoweredEnum {
   variants: Array<LoweredVariant>;
   payloadBearing: boolean;
   needsDeinit: boolean;
+  // A payload holds a C++ value: the enum is a C++ struct whose union member
+  // is constructed and destroyed explicitly, built through factories.
+  cxxPayloads: boolean = false;
+  cxxMoveOnlyPayloads: boolean = false;
 }
 
 export struct LoweredVariant {
@@ -286,10 +296,16 @@ export enum LoweredExpressionKind {
   functionCall,
   asyncFunctionAwait,
   asyncFunctionTask,
+  // A general async frame's `await t` / `await t.cancel()` of a spawn-slot
+  // task local (not a thread-task handle). The child is the local.
+  frameTaskJoin,
+  frameTaskCancel,
   directFunctionValue,
   closureValue,
   methodCall,
   objectiveCMessageCall,
+  // `(receiver).member(arguments)` on a C++ value; value is the member name.
+  cppMethodCall,
   objectiveCSuperCall,
   objectiveCOptionalSuperCall,
   objectiveCSuperInitializer,
@@ -413,6 +429,8 @@ export struct LoweredExpression {
   objectiveCBlockNativeType: String = "";
   objectiveCReceiverNativeType: String = "";
   objectiveCOwnedPayload: boolean = false;
+  // Builds a C++-payload enum: emitted as its `make_<case>` factory.
+  cxxEnumFactory: boolean = false;
   objectiveCReceiverHandoff: boolean = false;
   objectiveCHandoffReturnType: String = "";
   objectiveCHandoffParameterTypes: Array<String> = Array<String>();
@@ -420,6 +438,11 @@ export struct LoweredExpression {
   objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
   objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
+  // A call whose result is `view T`: a pointer to the borrowed value.
+  resultView: boolean = false;
+  // A struct value's children in declaration order, when that differs from
+  // `children` (evaluation order). C++ requires ordered designators.
+  fieldOrder: Array<usize> = Array<usize>();
 }
 
 export struct LoweredMainDelaySegment {
@@ -501,6 +524,10 @@ export struct LoweredStatement {
   foreignMatchMember: String = "";
   foreignMatchValues: Array<String> = Array<String>();
   foreignMatchFallback: boolean = false;
+  // A local that C++ moves from (`std::move`) is never const storage.
+  cppMoveStorage: boolean = false;
+  // A match over a C++-payload enum: payloads bind by reference or move.
+  cppPayload: boolean = false;
 }
 
 export struct LoweredCleanup {
@@ -524,6 +551,8 @@ struct LoweredClosureCapture {
   uses: Array<usize> = Array<usize>();
   // A lexical parameter shadows declarations before its invocation scope.
   scopeStatementStart: usize = 0;
+  // The captured binding is itself a view: capture its pointer, not its address.
+  view: boolean = false;
 }
 
 export struct LoweredFunction {
@@ -554,6 +583,8 @@ export struct LoweredFunction {
   receiverMode: LoweredParameterMode;
   parameters: Array<LoweredParameter>;
   returnType: LoweredType;
+  // A `view T` result is returned as a pointer to the borrowed value.
+  returnsView: boolean = false;
   fallthroughExpression: Option<usize>;
   expressions: Array<LoweredExpression>;
   statements: Array<LoweredStatement>;
@@ -662,6 +693,8 @@ export struct LoweredProgram {
   structs: Array<LoweredStruct>;
   enums: Array<LoweredEnum>;
   functions: Array<LoweredFunction>;
+  // Native spellings of the C++ value types the program uses.
+  cxxValueTypes: Array<String> = Array<String>();
 }
 
 function collectForeignResources(
@@ -935,6 +968,10 @@ struct LoweredImportedType {
   variants: Array<LoweredVariant>;
   payloadBearing: boolean;
   underlyingType: String;
+  // A move-only C++ value: Z moves it with std::move; C++ destroys it.
+  cxxMoveOnly: boolean = false;
+  // Any C++ value type (copyable or move-only).
+  cxxValue: boolean = false;
 }
 
 struct LoweredGenericStructField {
@@ -1681,11 +1718,21 @@ function collectGenericStructUseFromType(
           match (in symbol.typeSignature) {
             some(signature) => {
               let unsettledArgument = false;
+              let unsettledIndex: usize = 0;
               for (const argument of generic.arguments) {
-                if (typeContainsGenericParameter(
-                  argument,
-                  signature.typeParameters
-                )) unsettledArgument = true;
+                // An argument that resolved to a declared type is concrete even
+                // when it shares a name with one of the generic's own type
+                // parameters, as `Protocol<Command, Message>` beside `enum Command`.
+                const argumentPath = genericTypeIdentityPath(path, `${unsettledIndex}`);
+                const resolvedArgument = match (typeIdentityAtPath(identities, argumentPath)) {
+                  some(_) => true;
+                  none => false;
+                };
+                if (
+                  !resolvedArgument
+                  && typeContainsGenericParameter(argument, signature.typeParameters)
+                ) unsettledArgument = true;
+                unsettledIndex = unsettledIndex + 1;
               }
               if (
                 signature.typeParameters.length == 0
@@ -2075,9 +2122,18 @@ function collectGenericStructUses(
   let moduleIndex: usize = 0;
   while (moduleIndex < graph.modules.length) {
     const evidence = view graph.modules[moduleIndex].semanticEvidence;
-    const unsettledTypeParameters = programGenericTypeParameterNames(
-      parsed[moduleIndex].program
-    );
+    // A type parameter named like a concrete type of this module, such as
+    // `Protocol<Command, Message>` beside `enum Command`, must not hide the
+    // concrete specialization from demand.
+    const declaredTypeParameters = programGenericTypeParameterNames(parsed[moduleIndex].program);
+    let unsettledTypeParameters = Array<String>();
+    for (const name of declaredTypeParameters) {
+      const concrete = match (typeSymbolLocation(graph.modules, moduleIndex, name)) {
+        some(_) => true;
+        none => false;
+      };
+      if (!concrete) unsettledTypeParameters.push(copy name);
+    }
     // Concrete generic aggregates can exist only in a declaration signature
     // (for example a generated adapter marker parameter) and never appear as
     // a local binding or expression. Declaration types are first-class demand
@@ -3277,7 +3333,53 @@ export function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.mutexType) {
     return type.name.copyBytes(0, type.name.byteLength);
   }
+  // A C++ spelling (`zcpp::UniqueValue`) becomes an identifier inside
+  // intrinsic storage names: each ':' is "_3a_", reversed on lookup.
+  if (type.kind == LoweredTypeKind.foreignStructType) {
+    let qualified = false;
+    let index: usize = 0;
+    while (index < type.name.byteLength) {
+      if (type.name.byteAt(index) == 58) qualified = true;
+      index = index + 1;
+    }
+    if (qualified) {
+      let output = TextBuffer();
+      index = 0;
+      while (index < type.name.byteLength) {
+        const byte = type.name.byteAt(index);
+        if (byte == 58) output.append("_3a_");
+        else output.appendAscii(byte);
+        index = index + 1;
+      }
+      return output.finish();
+    }
+  }
   return type.name.copyBytes(0, type.name.byteLength);
+}
+
+// The C++ spelling behind an escaped intrinsic identity, if `name` is one.
+function decodedCxxIdentity(in name: String): Option<String> {
+  let output = TextBuffer();
+  let decoded = false;
+  let index: usize = 0;
+  while (index < name.byteLength) {
+    if (
+      index + 4 <= name.byteLength
+      && name.byteAt(index) == 95
+      && name.byteAt(index + 1) == 51
+      && name.byteAt(index + 2) == 97
+      && name.byteAt(index + 3) == 95
+    ) {
+      output.appendAscii(58);
+      decoded = true;
+      index = index + 4;
+      continue;
+    }
+    output.appendAscii(name.byteAt(index));
+    index = index + 1;
+  }
+  if (!decoded) return Option<String>.none;
+  return Option.some(output.finish());
 }
 
 export function decodedObjCProtocolIdentity(in identity: String): Option<String> {
@@ -3928,6 +4030,12 @@ function lowerModuleTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): LoweredType throws String {
+  if (!stringStartsWith(name, "__z_")) {
+    match (decodedCxxIdentity(name)) {
+      some(decoded) => return try lowerModuleTypeName(program, importedTypes, decoded);
+      none => {}
+    }
+  }
   if (name == "__z_std_text_Utf8Error"
     || isImportedStandardBinding(program, "std/text", "Utf8Error", name)) {
     return LoweredType({ kind: LoweredTypeKind.structType, name: "__z_std_text_Utf8Error" });
@@ -5311,10 +5419,15 @@ function intrinsicArrayDeclaration(
         importedTypes,
         generic.arguments[0]
       );
+      const cxxElements = moduleTypeHoldsCxx(program, importedTypes, elementType, 0, false);
+      const cxxMoveOnlyElements = cxxElements
+        && moduleTypeHoldsCxx(program, importedTypes, elementType, 0, true);
       return Option.some(LoweredArray({
         name: intrinsicArrayName(elementType),
         sliceName: intrinsicSliceName(elementType),
         elementType,
+        cxxElements,
+        cxxMoveOnlyElements,
       }));
     }
     none => return Option<LoweredArray>.none;
@@ -5388,10 +5501,12 @@ function intrinsicMapDeclaration(
         importedTypes,
         generic.arguments[1]
       );
+      const cxxValues = moduleTypeHoldsCxx(program, importedTypes, valueType, 0, false);
       return Option.some(LoweredMap({
         name: intrinsicMapName(keyType, valueType),
         keyType,
         valueType,
+        cxxValues,
       }));
     }
     none => return Option<LoweredMap>.none;
@@ -6246,6 +6361,8 @@ function statementMovesName(
 
 struct CleanupMoveIndex {
   movedNames: Set<String>;
+  // Locals assigned after their declaration; a move does not end their life.
+  reassignedNames: Set<String>;
   borrowedBridgeNames: Set<String>;
   movedThreadBindingOffsets: Array<usize>;
   hasControlFlow: boolean;
@@ -6331,6 +6448,7 @@ function cleanupMoveIndex(
   in statements: Array<LoweredStatement>
 ): CleanupMoveIndex {
   let movedNames = Set<String>();
+  let reassignedNames = Set<String>();
   let borrowedBridgeNames = Set<String>();
   let hasControlFlow = false;
   for (const statement of arena.nodes) {
@@ -6341,6 +6459,24 @@ function cleanupMoveIndex(
       statement,
       inout movedNames
     );
+    if (statement.kind == StatementKind.assignmentStatement) {
+      match (in statement.expression) {
+        some(target) => {
+          match (in target.tree) {
+            some(tree) => {
+              if (tree.nodes[tree.root].kind == ExpressionKind.identifierExpression) {
+                reassignedNames.add(tree.nodes[tree.root].value.copyBytes(
+                  0,
+                  tree.nodes[tree.root].value.byteLength
+                ));
+              }
+            }
+            none => {}
+          }
+        }
+        none => {}
+      }
+    }
     if (
       statement.kind == StatementKind.ifStatement
       || statement.kind == StatementKind.whileStatement
@@ -6414,14 +6550,19 @@ function cleanupMoveIndex(
   }
   return CleanupMoveIndex({
     movedNames: move movedNames,
+    reassignedNames: move reassignedNames,
     borrowedBridgeNames: move borrowedBridgeNames,
     movedThreadBindingOffsets: move movedThreadBindingOffsets,
     hasControlFlow,
   });
 }
 
+// A moved local needs a live flag unless its single straight-line move is
+// its last use. Reassignment revives it, so it must be tracked like control flow.
 function cleanupIndexNeedsGuard(in index: CleanupMoveIndex, in name: String): boolean {
-  return index.hasControlFlow || index.borrowedBridgeNames.has(name);
+  return index.hasControlFlow
+    || index.borrowedBridgeNames.has(name)
+    || index.reassignedNames.has(name);
 }
 
 function cleanupIndexMovesBinding(
@@ -7234,16 +7375,29 @@ function planCleanupSequence(
               bindingName,
               bindingOffset
             );
+            // `let x: T;` holds no value until assigned or written through
+            // `out`; its live flag starts false so nothing destroys garbage.
+            // A class slot is NULL until then, which release already accepts.
+            const declaredWithoutValue = match (in arena.nodes[sourceIndex].expression) {
+              some(_) => false;
+              none => ownedType.kind != LoweredTypeKind.classType;
+            };
             let guard = "";
             if (
-              moved
-              && (forceMoveLiveGuards || cleanupIndexNeedsGuard(moveIndex, bindingName))
+              declaredWithoutValue
+              || (moved
+                && (forceMoveLiveGuards || cleanupIndexNeedsGuard(moveIndex, bindingName)))
             ) {
               guard = ownerLiveFlag(arena.nodes[sourceIndex].name);
               statements[localIndex].liveFlag = guard.copyBytes(
                 0,
                 guard.byteLength
               );
+              // Only the source declaration says whether a value exists yet;
+              // a match or try initializer lowers to later assignments.
+              if (declaredWithoutValue) {
+                statements[localIndex].labels.push("declared-without-value");
+              }
               liveFlags.push(LoweredLiveFlag({
                 owner: arena.nodes[sourceIndex].name.copyBytes(
                   0,
@@ -7611,6 +7765,27 @@ function wrapImplicitOwnedTransfer(
   );
 }
 
+// Returning a field of `this` moves it out only when the field owns cleanup.
+// A copied scalar leaves the receiver live, so a consuming method still
+// destroys it. An unresolved type keeps the conservative move.
+function returnedThisFieldNeedsTransfer(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, index)) {
+    some(typeName) => {
+      match (attempt lowerModuleTypeName(program, importedTypes, typeName)) {
+        success(type) => return moduleTypeNeedsCleanup(program, importedTypes, type);
+        failure(_) => return true;
+      }
+    }
+    none => return true;
+  }
+}
+
 function sourceExpressionRootsInThis(
   in tree: ExpressionTree,
   index: usize
@@ -7702,11 +7877,33 @@ function lendTemporaryArgument(
       success(type) => type;
       failure(message) => throw `${message} while lending ${aggregateName} at ${tree.nodes[argumentInput].line}:${tree.nodes[argumentInput].column}`;
     };
-    if (!moduleTypeNeedsCleanup(program, importedTypes, aggregateType)) return value;
+    if (!moduleTypeNeedsCleanup(program, importedTypes, aggregateType)) {
+      return lendCleanupFreeTemporary(aggregateName, value, inout output);
+    }
     return pushExpression(
       inout output, LoweredExpressionKind.borrowedTemporary,
       aggregateName, Array<usize>(value), Array<String>()
     );
+  }
+  if (
+    output[value].kind == LoweredExpressionKind.enumValue
+    || output[value].kind == LoweredExpressionKind.enumPayloadValue
+  ) {
+    const enumName = output[value].value.copyBytes(0, output[value].value.byteLength);
+    if (stringStartsWith(enumName, "__z_NicheViewOption_")) return value;
+    // A payload-free case owns nothing, whatever the enum's other cases hold.
+    if (output[value].kind == LoweredExpressionKind.enumValue) {
+      return lendCleanupFreeTemporary(enumName, value, inout output);
+    }
+    match (attempt lowerModuleTypeName(program, importedTypes, enumName)) {
+      success(enumType) => {
+        if (!moduleTypeNeedsCleanup(program, importedTypes, enumType)) {
+          return lendCleanupFreeTemporary(enumName, value, inout output);
+        }
+      }
+      failure(_) => {}
+    }
+    return value;
   }
   if (
     output[value].kind == LoweredExpressionKind.closureValue
@@ -7729,6 +7926,218 @@ function lendTemporaryArgument(
     );
   }
   return value;
+}
+
+// A literal has no storage to borrow (in C++ a compound literal is a
+// temporary), so it is held in a named temporary with no cleanup.
+function lendCleanupFreeTemporary(
+  in typeName: String,
+  value: usize,
+  inout output: Array<LoweredExpression>
+): usize {
+  return pushExpression(
+    inout output, LoweredExpressionKind.borrowedTemporary,
+    typeName, Array<usize>(value), Array<String>("cleanup-free")
+  );
+}
+
+function collectCxxTypeNames(
+  in importedTypes: Array<LoweredImportedType>,
+  inout values: Array<String>,
+  inout moveOnly: Array<String>
+): void {
+  for (const imported of importedTypes) {
+    if (!imported.cxxValue || containsString(values, imported.targetName)) continue;
+    values.push(copy imported.targetName);
+    if (imported.cxxMoveOnly) moveOnly.push(copy imported.targetName);
+  }
+}
+
+export function loweredTypeHoldsCxx(
+  in cxxNames: Array<String>,
+  in structs: Array<LoweredStruct>,
+  in enums: Array<LoweredEnum>,
+  in type: LoweredType,
+  depth: usize
+): boolean {
+  if (depth > 12) return false;
+  if (type.kind == LoweredTypeKind.foreignStructType) return containsString(cxxNames, type.name);
+  if (type.kind == LoweredTypeKind.structType) {
+    for (const declaration of structs) {
+      if (declaration.name != type.name) continue;
+      if (declaration.referenceType) return false;
+      for (const field of declaration.fields) {
+        if (loweredTypeHoldsCxx(cxxNames, structs, enums, field.type, depth + 1)) return true;
+      }
+      return false;
+    }
+  }
+  if (type.kind == LoweredTypeKind.enumType) {
+    for (const declaration of enums) {
+      if (declaration.name != type.name) continue;
+      for (const variant of declaration.variants) {
+        match (in variant.payload) {
+          some(payload) => {
+            if (loweredTypeHoldsCxx(cxxNames, structs, enums, payload, depth + 1)) return true;
+          }
+          none => {}
+        }
+      }
+      return false;
+    }
+  }
+  return false;
+}
+
+// Enums with C++ payloads are C++ structs: mark them, their constructions
+// (factories), and matches over them (payloads bind by reference or move).
+function markCxxEnumStorage(
+  in cxxValueNames: Array<String>,
+  in cxxMoveOnlyNames: Array<String>,
+  in structs: Array<LoweredStruct>,
+  inout enums: Array<LoweredEnum>,
+  inout arrays: Array<LoweredArray>,
+  inout maps: Array<LoweredMap>,
+  inout functions: Array<LoweredFunction>
+): void {
+  if (cxxValueNames.length == 0) return;
+  // Program-wide: an element or value type may be a Z struct from another
+  // module whose field holds the C++ value.
+  let arrayIndex: usize = 0;
+  while (arrayIndex < arrays.length) {
+    if (loweredTypeHoldsCxx(cxxValueNames, structs, enums, arrays[arrayIndex].elementType, 0)) {
+      arrays[arrayIndex].cxxElements = true;
+      if (loweredTypeHoldsCxx(cxxMoveOnlyNames, structs, enums, arrays[arrayIndex].elementType, 0)) {
+        arrays[arrayIndex].cxxMoveOnlyElements = true;
+      }
+    }
+    arrayIndex = arrayIndex + 1;
+  }
+  let mapIndex: usize = 0;
+  while (mapIndex < maps.length) {
+    if (loweredTypeHoldsCxx(cxxValueNames, structs, enums, maps[mapIndex].valueType, 0)) {
+      maps[mapIndex].cxxValues = true;
+    }
+    mapIndex = mapIndex + 1;
+  }
+  let cxxEnumNames = Array<String>();
+  let index: usize = 0;
+  while (index < enums.length) {
+    let holds = false;
+    let moveOnly = false;
+    for (const variant of enums[index].variants) {
+      match (in variant.payload) {
+        some(payload) => {
+          if (loweredTypeHoldsCxx(cxxValueNames, structs, enums, payload, 0)) holds = true;
+          if (loweredTypeHoldsCxx(cxxMoveOnlyNames, structs, enums, payload, 0)) moveOnly = true;
+        }
+        none => {}
+      }
+    }
+    if (holds && !stringStartsWith(enums[index].name, "__z_NicheViewOption_")) {
+      enums[index].cxxPayloads = true;
+      enums[index].cxxMoveOnlyPayloads = moveOnly;
+      cxxEnumNames.push(copy enums[index].name);
+    }
+    index = index + 1;
+  }
+  // A replacement assignment of C++ storage moves its staged value in.
+  let assignmentFunction: usize = 0;
+  while (assignmentFunction < functions.length) {
+    let statementIndex: usize = 0;
+    while (statementIndex < functions[assignmentFunction].statements.length) {
+      if (
+        functions[assignmentFunction].statements[statementIndex].kind == LoweredStatementKind.assignmentStatement
+        && functions[assignmentFunction].statements[statementIndex].cleanups.length == 1
+        && loweredTypeHoldsCxx(
+          cxxValueNames, structs, enums,
+          functions[assignmentFunction].statements[statementIndex].cleanups[0].type, 0
+        )
+      ) functions[assignmentFunction].statements[statementIndex].cppMoveStorage = true;
+      statementIndex = statementIndex + 1;
+    }
+    assignmentFunction = assignmentFunction + 1;
+  }
+  if (cxxEnumNames.length == 0) return;
+  let functionIndex: usize = 0;
+  while (functionIndex < functions.length) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < functions[functionIndex].expressions.length) {
+      const kind = functions[functionIndex].expressions[expressionIndex].kind;
+      if (
+        (kind == LoweredExpressionKind.enumValue || kind == LoweredExpressionKind.enumPayloadValue)
+        && containsString(cxxEnumNames, functions[functionIndex].expressions[expressionIndex].value)
+      ) functions[functionIndex].expressions[expressionIndex].cxxEnumFactory = true;
+      expressionIndex = expressionIndex + 1;
+    }
+    let statementIndex: usize = 0;
+    while (statementIndex < functions[functionIndex].statements.length) {
+      if (
+        functions[functionIndex].statements[statementIndex].kind == LoweredStatementKind.matchStatement
+        && containsString(cxxEnumNames, functions[functionIndex].statements[statementIndex].name)
+      ) functions[functionIndex].statements[statementIndex].cppPayload = true;
+      statementIndex = statementIndex + 1;
+    }
+    functionIndex = functionIndex + 1;
+  }
+}
+
+// A local that C++ moves from cannot be const storage: std::move of a const
+// object would select the (deleted) copy constructor.
+function markCxxMovedLocals(inout functions: Array<LoweredFunction>): void {
+  let functionIndex: usize = 0;
+  while (functionIndex < functions.length) {
+    let moved = Array<String>();
+    for (const expression of functions[functionIndex].expressions) {
+      if (
+        expression.kind != LoweredExpressionKind.moveValue
+        || expression.children.length != 1
+        || !expressionHasLabel(expression, "cpp-move")
+      ) continue;
+      let operand = expression.children[0];
+      while (
+        functions[functionIndex].expressions[operand].kind == LoweredExpressionKind.fieldValue
+        && functions[functionIndex].expressions[operand].children.length > 0
+      ) {
+        operand = functions[functionIndex].expressions[operand].children[0];
+      }
+      if (functions[functionIndex].expressions[operand].kind == LoweredExpressionKind.localValue) {
+        moved.push(copy functions[functionIndex].expressions[operand].value);
+      }
+    }
+    if (moved.length > 0) {
+      let statementIndex: usize = 0;
+      while (statementIndex < functions[functionIndex].statements.length) {
+        if (
+          functions[functionIndex].statements[statementIndex].kind == LoweredStatementKind.localStatement
+          && containsString(moved, functions[functionIndex].statements[statementIndex].name)
+        ) functions[functionIndex].statements[statementIndex].cppMoveStorage = true;
+        // `return local;` already moves in C++ (and may elide); an explicit
+        // std::move there is redundant and would change the move count.
+        if (functions[functionIndex].statements[statementIndex].kind == LoweredStatementKind.returnStatement) {
+          let returned = functions[functionIndex].expressions.length;
+          match (in functions[functionIndex].statements[statementIndex].expression) {
+            some(expression) => returned = expression;
+            none => {}
+          }
+          if (
+            returned < functions[functionIndex].expressions.length
+            && functions[functionIndex].expressions[returned].kind == LoweredExpressionKind.moveValue
+            && expressionHasLabel(functions[functionIndex].expressions[returned], "cpp-move")
+            && functions[functionIndex].expressions[returned].value.byteLength == 0
+            && functions[functionIndex].expressions[returned].children.length == 1
+          ) {
+            const operand = functions[functionIndex].expressions[returned].children[0];
+            if (functions[functionIndex].expressions[operand].kind == LoweredExpressionKind.localValue) {
+              functions[functionIndex].statements[statementIndex].expression = Option.some(operand);
+            }
+          }
+        }
+        statementIndex = statementIndex + 1;
+      }
+    }
+    functionIndex = functionIndex + 1;
+  }
 }
 
 function wrapOwnedStorage(
@@ -7762,7 +8171,147 @@ function wrapOwnedStorage(
   );
 }
 
+// A value holding a move-only C++ value, directly or through Z struct fields.
+function moduleTypeIsCxxMoveOnly(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in type: LoweredType,
+  depth: usize
+): boolean {
+  return moduleTypeHoldsCxx(program, importedTypes, type, depth, true);
+}
+
+// A value holding any C++ value (moveOnly: only a move-only one), directly or
+// through Z struct fields.
+function moduleTypeHoldsCxx(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in type: LoweredType,
+  depth: usize,
+  moveOnly: boolean
+): boolean {
+  if (depth > 8) return false;
+  if (type.kind == LoweredTypeKind.foreignStructType) {
+    for (const imported of importedTypes) {
+      if (
+        imported.kind == type.kind
+        && (imported.localName == type.name || imported.targetName == type.name)
+      ) return moveOnly ? imported.cxxMoveOnly : imported.cxxValue;
+    }
+    return false;
+  }
+  if (type.kind == LoweredTypeKind.enumType) {
+    match (enumIndex(program, type.name)) {
+      some(index) => {
+        for (const variant of program.enums[index].variants) {
+          match (in variant.payload) {
+            some(payload) => {
+              const lowered = attempt lowerModuleType(program, importedTypes, payload);
+              match (lowered) {
+                success(payloadType) => {
+                  if (moduleTypeHoldsCxx(program, importedTypes, payloadType, depth + 1, moveOnly)) return true;
+                }
+                failure(_) => {}
+              }
+            }
+            none => {}
+          }
+        }
+        return false;
+      }
+      none => {}
+    }
+    return importedTypeHoldsCxx(program, importedTypes, type, depth, moveOnly);
+  }
+  if (type.kind != LoweredTypeKind.structType) return false;
+  match (structIndex(program, type.name)) {
+    some(index) => {
+      for (const field of program.aggregates[index].fields) {
+        const lowered = attempt lowerModuleType(program, importedTypes, field.type);
+        match (lowered) {
+          success(fieldType) => {
+            if (moduleTypeHoldsCxx(program, importedTypes, fieldType, depth + 1, moveOnly)) return true;
+          }
+          failure(_) => {}
+        }
+      }
+      return false;
+    }
+    none => {}
+  }
+  return importedTypeHoldsCxx(program, importedTypes, type, depth, moveOnly);
+}
+
+// A Z struct or enum declared in another module, through its imported shape.
+function importedTypeHoldsCxx(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in type: LoweredType,
+  depth: usize,
+  moveOnly: boolean
+): boolean {
+  for (const imported of importedTypes) {
+    if (imported.kind != type.kind) continue;
+    if (imported.localName != type.name && imported.targetName != type.name) continue;
+    for (const field of imported.fields) {
+      if (moduleTypeHoldsCxx(program, importedTypes, field.type, depth + 1, moveOnly)) return true;
+    }
+    for (const variant of imported.variants) {
+      match (in variant.payload) {
+        some(payload) => {
+          if (moduleTypeHoldsCxx(program, importedTypes, payload, depth + 1, moveOnly)) return true;
+        }
+        none => {}
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
 function wrapOwnedStorageType(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in tree: ExpressionTree,
+  input: usize,
+  in payloadType: LoweredType,
+  value: usize,
+  inout output: Array<LoweredExpression>
+): usize {
+  const cxxMove = moduleTypeIsCxxMoveOnly(program, importedTypes, payloadType, 0);
+  if (cxxMove && moduleTypeNeedsCleanup(program, importedTypes, payloadType)) {
+    // Z cleanup and a move-only C++ member: the Z move (with its liveness
+    // flag) also C++-moves the storage: `(flag = false, std::move(x))`.
+    const wrapped = wrapOwnedStorageZType(program, importedTypes, tree, input, payloadType, value, inout output);
+    if (
+      output[wrapped].kind == LoweredExpressionKind.moveValue
+      && !expressionHasLabel(output[wrapped], "cpp-move")
+    ) output[wrapped].labels.push("cpp-move");
+    return wrapped;
+  }
+  if (cxxMove) {
+    // C++ move-constructs the destination; its source stays a valid
+    // moved-from object that C++ destroys at the end of its scope.
+    const place = tree.nodes[input].kind == ExpressionKind.identifierExpression
+      || tree.nodes[input].kind == ExpressionKind.memberExpression
+      || tree.nodes[input].kind == ExpressionKind.indexExpression;
+    if (!place || output[value].kind == LoweredExpressionKind.moveValue) return value;
+    let children = Array<usize>();
+    children.push(value);
+    let labels = Array<String>();
+    labels.push("cpp-move");
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.moveValue,
+      "",
+      move children,
+      move labels
+    );
+  }
+  return wrapOwnedStorageZType(program, importedTypes, tree, input, payloadType, value, inout output);
+}
+
+function wrapOwnedStorageZType(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in tree: ExpressionTree,
@@ -7935,6 +8484,103 @@ function resolvedObjectiveCSelector(
   return resolution.objectiveCSelector.copyBytes(
     0,
     resolution.objectiveCSelector.byteLength
+  );
+}
+
+// How a method receiver is passed: a class or Objective-C handle as is, a
+// struct by address, and a struct view (already a pointer, such as a
+// borrowed Option or Map payload) as is.
+function methodReceiverLabel(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  receiverInput: usize,
+  in receiverType: LoweredType
+): String {
+  if (receiverType.kind == LoweredTypeKind.foreignObjCType) {
+    return tree.nodes[receiverInput].kind == ExpressionKind.identifierExpression
+      && tree.nodes[receiverInput].value == "this" ? "nativeHelperSelf" : "nativeHelper";
+  }
+  if (receiverType.kind == LoweredTypeKind.classType) return "class";
+  match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, receiverInput)) {
+    some(typeName) => {
+      if (stringStartsWith(typeName, "view ")) return "viewStruct";
+    }
+    none => {}
+  }
+  return "struct";
+}
+
+function resolvedCxxMethodName(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  const resolutionIndex = resolvedCallResolutionIndex(evidence, tree, index);
+  if (resolutionIndex >= evidence.callResolutions.length) return "";
+  return copy evidence.callResolutions[resolutionIndex].cppMethodName;
+}
+
+// A C++ method on a C++ value: the receiver and arguments pass as C++ binds
+// them (by value or reference); C++ runs any copy the call needs.
+function lowerCxxMethodCall(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in memberName: String,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const calleeInput = tree.nodes[index].children[0];
+  const receiverInput = tree.nodes[calleeInput].children[0];
+  let children = Array<usize>();
+  let labels = Array<String>();
+  let receiver = try lowerExpression(program, importedTypes, evidence, tree, receiverInput, inout output);
+  if (resolvedCallReceiverMode(evidence, tree, index) == "inout") markMutableStorage(inout output, receiver);
+  // An `&&`-qualified member consumes its receiver: std::move(receiver).member().
+  if (resolvedCallReceiverMode(evidence, tree, index) == "move") {
+    let moveChildren = Array<usize>();
+    moveChildren.push(receiver);
+    let moveLabels = Array<String>();
+    moveLabels.push("cpp-move");
+    receiver = pushExpression(inout output, LoweredExpressionKind.moveValue, "", move moveChildren, move moveLabels);
+  }
+  children.push(receiver);
+  // A view receiver (for example a borrowed Map value) is a pointer.
+  let receiverLabel = "receiver";
+  match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, receiverInput)) {
+    some(receiverType) => {
+      if (stringStartsWith(receiverType, "view ")) receiverLabel = "view-receiver";
+    }
+    none => {}
+  }
+  labels.push(receiverLabel);
+  const parameterModes = resolvedCallParameterModes(program, evidence, tree, index);
+  const parameterTypes = resolvedCallParameterTypes(program, evidence, tree, index);
+  let argument: usize = 1;
+  while (argument < tree.nodes[index].children.length) {
+    const argumentInput = tree.nodes[index].children[argument];
+    if (parameterTypes.length < argument) {
+      throw "native C++ method lowering lost a parameter type";
+    }
+    const value = try lowerExpressionExpected(
+      program, importedTypes, evidence, tree, argumentInput,
+      parameterTypes[argument - 1], inout output
+    );
+    children.push(value);
+    labels.push(parameterModes.length >= argument
+      ? copy parameterModes[argument - 1]
+      : "value");
+    argument = argument + 1;
+  }
+  return pushExpression(
+    inout output,
+    LoweredExpressionKind.cppMethodCall,
+    memberName,
+    children,
+    labels
   );
 }
 
@@ -9092,16 +9738,23 @@ function collectObjCPoolClosureCaptures(
       index = index + 1;
       continue;
     }
-    const typeName = match (namedValueTypeName(
+    // A name with no binding, such as a foreign class used as a static
+    // receiver, is not a lexical capture, as for ordinary closures.
+    let typeName = "";
+    match (namedValueTypeName(
       program,
       evidence,
       ownerName,
       captureName,
       useOffset
     )) {
-      some(name) => name;
-      none => throw `native objc.pool cannot resolve capture ${captureName}`;
-    };
+      some(name) => typeName = move name;
+      none => {}
+    }
+    if (typeName.byteLength == 0) {
+      index = index + 1;
+      continue;
+    }
     const type = try lowerModuleTypeName(
       program,
       importedTypes,
@@ -9404,6 +10057,11 @@ function resolveCallableCaptures(
       captureIndex = captureIndex + 1;
     }
     if (exists) continue;
+    let viewBinding = false;
+    match (namedValueTypeName(program, evidence, ownerName, captureName, useOffset)) {
+      some(typeName) => viewBinding = isPointerViewTypeName(typeName);
+      none => {}
+    }
     let resolvedType = Option<LoweredType>.none;
     let mutableBinding = false;
     let priorStatement: usize = 0;
@@ -9434,10 +10092,11 @@ function resolveCallableCaptures(
     match (resolvedType) {
       some(type) => captures.push(LoweredClosureCapture({
         name: move captureName,
-        owned: moduleTypeNeedsCleanup(program, importedTypes, type),
+        owned: !viewBinding && moduleTypeNeedsCleanup(program, importedTypes, type),
         mutableBinding,
         uses: Array<usize>(index),
         type,
+        view: viewBinding,
       }));
       none => match (namedValueTypeName(
         program,
@@ -9477,10 +10136,11 @@ function resolveCallableCaptures(
           }
           captures.push(LoweredClosureCapture({
             name: move captureName,
-            owned: moduleTypeNeedsCleanup(program, importedTypes, type),
+            owned: !viewBinding && moduleTypeNeedsCleanup(program, importedTypes, type),
             mutableBinding,
             uses: Array<usize>(index),
             type,
+            view: viewBinding,
           }));
         }
         // Imported namespaces and direct compiler/runtime helpers are not
@@ -10041,6 +10701,43 @@ function importedStructTarget(
     ));
   }
   return Option<String>.none;
+}
+
+// The declaration-order permutation of a struct value's labelled children,
+// or empty when they are already in order or the layout is not known here.
+function structValueFieldOrder(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String,
+  in labels: Array<String>
+): Array<usize> {
+  let declared = Array<String>();
+  for (const aggregate of program.aggregates) {
+    if (aggregate.name != name || declared.length > 0) continue;
+    for (const field of aggregate.fields) {
+      declared.push(field.name.copyBytes(0, field.name.byteLength));
+    }
+  }
+  for (const imported of importedTypes) {
+    if (declared.length > 0 || (imported.localName != name && imported.targetName != name)) continue;
+    for (const field of imported.fields) {
+      declared.push(field.name.copyBytes(0, field.name.byteLength));
+    }
+  }
+  let order = Array<usize>();
+  let reordered = false;
+  for (const fieldName of declared) {
+    let index: usize = 0;
+    while (index < labels.length) {
+      if (labels[index] == fieldName) {
+        if (index != order.length) reordered = true;
+        order.push(index);
+      }
+      index = index + 1;
+    }
+  }
+  if (!reordered || order.length != labels.length) return Array<usize>();
+  return order;
 }
 
 function importedStructIsForeign(
@@ -11786,7 +12483,158 @@ function lowerSliceArgument(
   return lowered;
 }
 
+// A `view T` of a Z value is represented by a pointer; a borrowed cstring is not.
+function isPointerViewTypeName(in typeName: String): boolean {
+  return stringStartsWith(typeName, "view ")
+    && !stringStartsWith(typeName, "view cstring");
+}
+
+// A view result is returned as a pointer only for a Z struct target, as in
+// Stage 0. A foreign record or handle view keeps its native value ABI.
+function isZStructViewTypeName(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in typeName: String
+): boolean {
+  if (!isPointerViewTypeName(typeName)) return false;
+  const target = typeName.copyBytes(5, typeName.byteLength);
+  return match (attempt lowerModuleTypeName(program, importedTypes, target)) {
+    success(type) => type.kind == LoweredTypeKind.structType;
+    failure(_) => false;
+  };
+}
+
 function lowerExpressionContextual(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in contextualTypeName: String,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const value = try lowerExpressionNode(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    index,
+    contextualTypeName,
+    inout output
+  );
+  if (tree.nodes[index].kind == ExpressionKind.callExpression) {
+    match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, index)) {
+      some(typeName) => {
+        if (isZStructViewTypeName(program, importedTypes, typeName)) output[value].resultView = true;
+      }
+      none => {}
+    }
+  }
+  return value;
+}
+
+// A call of a named async function, lowered as an await or a task start.
+function lowerDirectAsyncFunctionCall(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  taskInput: usize,
+  callResolutionIndex: usize,
+  kind: LoweredExpressionKind,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const resolution = view evidence.callResolutions[callResolutionIndex];
+  if (
+    tree.nodes[taskInput].children.length
+      != resolution.parameterTypes.length + 1
+  ) throw "native direct async callable await received mismatched arguments";
+  const resultType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    resolution.returnType
+  );
+  const callableIdentity = try moduleCallFunctionTypeIdentity(
+    program,
+    importedTypes,
+    resolution
+  );
+  let target = resolution.targetName.copyBytes(
+    0,
+    resolution.targetName.byteLength
+  );
+  const genericFunctionSuffix = try resolvedGenericFunctionSuffix(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    taskInput
+  );
+  target = `${target}${genericFunctionSuffix}`;
+  let callableLabels = Array<String>();
+  callableLabels.push(callableIdentity.copyBytes(
+    0,
+    callableIdentity.byteLength
+  ));
+  const callable = pushExpression(
+    inout output,
+    LoweredExpressionKind.directFunctionValue,
+    target,
+    Array<usize>(),
+    callableLabels
+  );
+  preserveCallTargetIdentity(
+    evidence, tree, taskInput, callable, inout output
+  );
+  let children = Array<usize>();
+  children.push(callable);
+  let labels = Array<String>();
+  let argument: usize = 0;
+  while (argument < resolution.parameterTypes.length) {
+    const argumentInput = tree.nodes[taskInput].children[
+      argument + 1
+    ];
+    let value = try lowerExpressionExpected(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      argumentInput,
+      resolution.parameterTypes[argument],
+      inout output
+    );
+    // A stored Array passed where a Slice is expected is borrowed as one.
+    const sliceTypeName = resolvedLocalTypeAlias(program, resolution.parameterTypes[argument]);
+    value = try lowerSliceArgument(program, importedTypes, evidence, tree,
+      argumentInput, sliceTypeName, value, inout output);
+    if (resolution.parameterModes[argument] == "value") {
+      value = try wrapOwnedStorage(
+        program,
+        importedTypes,
+        tree,
+        argumentInput,
+        resolution.parameterTypes[argument],
+        value,
+        inout output
+      );
+    }
+    children.push(value);
+    labels.push(resolution.parameterModes[argument].copyBytes(
+      0,
+      resolution.parameterModes[argument].byteLength
+    ));
+    argument = argument + 1;
+  }
+  return pushExpression(
+    inout output,
+    kind,
+    callableIdentity,
+    children,
+    labels
+  );
+}
+
+function lowerExpressionNode(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
@@ -12140,6 +12988,18 @@ function lowerExpressionContextual(
           "",
           Array<usize>(lowered),
           Array<String>(copy type.name)
+        );
+      }
+      if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+        // `out` writes fresh storage: destroy a live previous value first.
+        let labels = Array<String>(copy type.name);
+        labels.push("value");
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.classOutputSlot,
+          "",
+          Array<usize>(lowered),
+          move labels
         );
       }
     }
@@ -13001,6 +13861,17 @@ function lowerExpressionContextual(
       || tree.nodes[taskInput].children.length == 0
     ) throw "native callable task lowering requires a direct call";
     const callableInput = tree.nodes[taskInput].children[0];
+    // `task f(args)` of a named async function starts the same child an
+    // `await f(args)` would, without joining it.
+    const taskResolution = resolvedCallResolutionIndex(evidence, tree, taskInput);
+    if (taskResolution < evidence.callResolutions.length
+      && evidence.callResolutions[taskResolution].asynchronous
+      && evidence.callResolutions[taskResolution].kind == "function") {
+      return try lowerDirectAsyncFunctionCall(
+        program, importedTypes, evidence, tree, taskInput, taskResolution,
+        LoweredExpressionKind.asyncFunctionTask, inout output
+      );
+    }
     let callableTypeName = "";
     match (resolvedExpressionTypeName(evidence, tree, callableInput)) {
       some(name) => callableTypeName = move name;
@@ -13175,88 +14046,9 @@ function lowerExpressionContextual(
           callResolutionIndex
         ];
         if (resolution.asynchronous && resolution.kind == "function") {
-          if (
-            tree.nodes[taskInput].children.length
-              != resolution.parameterTypes.length + 1
-          ) throw "native direct async callable await received mismatched arguments";
-          const resultType = try lowerModuleTypeName(
-            program,
-            importedTypes,
-            resolution.returnType
-          );
-          const callableIdentity = try moduleCallFunctionTypeIdentity(
-            program,
-            importedTypes,
-            resolution
-          );
-          let target = resolution.targetName.copyBytes(
-            0,
-            resolution.targetName.byteLength
-          );
-          const genericFunctionSuffix = try resolvedGenericFunctionSuffix(
-            program,
-            importedTypes,
-            evidence,
-            tree,
-            taskInput
-          );
-          target = `${target}${genericFunctionSuffix}`;
-          let callableLabels = Array<String>();
-          callableLabels.push(callableIdentity.copyBytes(
-            0,
-            callableIdentity.byteLength
-          ));
-          const callable = pushExpression(
-            inout output,
-            LoweredExpressionKind.directFunctionValue,
-            target,
-            Array<usize>(),
-            callableLabels
-          );
-          preserveCallTargetIdentity(
-            evidence, tree, taskInput, callable, inout output
-          );
-          let children = Array<usize>();
-          children.push(callable);
-          let labels = Array<String>();
-          let argument: usize = 0;
-          while (argument < resolution.parameterTypes.length) {
-            const argumentInput = tree.nodes[taskInput].children[
-              argument + 1
-            ];
-            let value = try lowerExpressionExpected(
-              program,
-              importedTypes,
-              evidence,
-              tree,
-              argumentInput,
-              resolution.parameterTypes[argument],
-              inout output
-            );
-            if (resolution.parameterModes[argument] == "value") {
-              value = try wrapOwnedStorage(
-                program,
-                importedTypes,
-                tree,
-                argumentInput,
-                resolution.parameterTypes[argument],
-                value,
-                inout output
-              );
-            }
-            children.push(value);
-            labels.push(resolution.parameterModes[argument].copyBytes(
-              0,
-              resolution.parameterModes[argument].byteLength
-            ));
-            argument = argument + 1;
-          }
-          return pushExpression(
-            inout output,
-            LoweredExpressionKind.asyncFunctionAwait,
-            callableIdentity,
-            children,
-            labels
+          return try lowerDirectAsyncFunctionCall(
+            program, importedTypes, evidence, tree, taskInput, callResolutionIndex,
+            LoweredExpressionKind.asyncFunctionAwait, inout output
           );
         }
         if (resolution.asynchronous && resolution.kind == "method") {
@@ -13556,7 +14348,11 @@ function lowerExpressionContextual(
           });
         }
         let labels = Array<String>();
-        labels.push(loweredTypeIdentity(resultType));
+        // An Objective-C class identity is a bare native name; mark it so C
+        // emission can recover the object type the pool returns.
+        if (resultType.kind == LoweredTypeKind.foreignObjCType) {
+          labels.push(`__z_objc_class:${resultType.name}`);
+        } else labels.push(loweredTypeIdentity(resultType));
         labels.push(loweredTypeIdentity(returnType));
         labels.push(move errorName);
         labels.push("block");
@@ -15016,6 +15812,10 @@ function lowerExpressionContextual(
         0,
         tree.nodes[calleeInput].value.byteLength
       );
+      // A literal already typed by its target needs no conversion.
+      if (sourceType == targetType && isContextualNumericLiteral(tree, argumentInput)) {
+        return argument;
+      }
       const conversionSourceType = match (
         loweredIntegerSourceType(importedTypes, sourceType, targetType)
       ) {
@@ -16218,13 +17018,8 @@ function lowerExpressionContextual(
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
     ) {
-      const constructorReceiver = tree.nodes[calleeInput].children[0];
-      if (
-        tree.nodes[constructorReceiver].kind
-          == ExpressionKind.identifierExpression
-      ) {
-        constructorTypeName = `${tree.nodes[constructorReceiver].value}.${tree.nodes[calleeInput].value}`;
-      }
+      // `ns.Type` or a C++ namespace path such as `cpp.alpha.Point`.
+      constructorTypeName = typeExpressionName(tree, calleeInput);
     }
     if (contextualTypeName.byteLength > 0) {
       match (genericTypeShape(contextualTypeName)) {
@@ -16266,8 +17061,10 @@ function lowerExpressionContextual(
       }
       none => {}
     }
+    // A C++ value's constructor is a resolved foreign call, not a literal.
     if (
       constructorTypeName.byteLength > 0
+      && resolvedCallKind(evidence, tree, index) != "foreign"
       && (
         tree.nodes[index].children.length == 1
         || tree.nodes[index].children.length == 2
@@ -16634,6 +17431,7 @@ function lowerExpressionContextual(
                 moveChildren,
                 Array<String>()
               );
+              const fieldOrder = structValueFieldOrder(program, importedTypes, constructionName, labels);
               const constructed = pushExpression(
                 inout output,
                 LoweredExpressionKind.structValue,
@@ -16641,6 +17439,7 @@ function lowerExpressionContextual(
                 children,
                 labels
               );
+              output[constructed].fieldOrder = move fieldOrder;
               let spreadChildren = Array<usize>();
               spreadChildren.push(constructed);
               spreadChildren.push(movedSource);
@@ -16745,6 +17544,7 @@ function lowerExpressionContextual(
                   moveChildren,
                   Array<String>()
                 );
+                const fieldOrder = structValueFieldOrder(program, importedTypes, constructionName, labels);
                 const constructed = pushExpression(
                   inout output,
                   LoweredExpressionKind.structValue,
@@ -16752,6 +17552,7 @@ function lowerExpressionContextual(
                   children,
                   labels
                 );
+                output[constructed].fieldOrder = move fieldOrder;
                 let spreadChildren = Array<usize>();
                 spreadChildren.push(constructed);
                 spreadChildren.push(movedSource);
@@ -16812,7 +17613,8 @@ function lowerExpressionContextual(
             }
           }
         }
-        return pushExpression(
+        const fieldOrder = structValueFieldOrder(program, importedTypes, constructionName, labels);
+        const constructed = pushExpression(
           inout output,
           importedStructIsForeign(importedTypes, constructionName)
             ? LoweredExpressionKind.foreignStructValue
@@ -16821,6 +17623,8 @@ function lowerExpressionContextual(
           children,
           labels
         );
+        output[constructed].fieldOrder = move fieldOrder;
+        return constructed;
       }
     }
     let staticMethodTarget = "";
@@ -16909,6 +17713,15 @@ function lowerExpressionContextual(
         move children,
         Array<String>()
       );
+    }
+    const cppMethodName = resolvedCxxMethodName(evidence, tree, index);
+    if (
+      cppMethodName.byteLength > 0
+      && callKind == "method"
+      && tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+    ) {
+      return try lowerCxxMethodCall(program, importedTypes, evidence, tree, index, cppMethodName, inout output);
     }
     if (
       objectiveCSelector.byteLength > 0
@@ -17199,6 +18012,14 @@ function lowerExpressionContextual(
           Array<String>()
         );
       }
+      // A mutating receiver (`array[index].method()`) needs mutable element access.
+      if (receiverMode == "inout") markMutableStorage(inout output, receiver);
+      // A borrowed value receiver that is a literal has no storage of its own.
+      if (
+        receiverType.kind != LoweredTypeKind.classType
+        && receiverType.kind != LoweredTypeKind.foreignObjCType
+        && (receiverMode.byteLength == 0 || receiverMode == "in")
+      ) receiver = try lendTemporaryArgument(program, importedTypes, tree, receiverInput, receiver, inout output);
       let children = Array<usize>();
       children.push(receiver);
       const parameterModes = resolvedCallParameterModes(
@@ -17214,12 +18035,7 @@ function lowerExpressionContextual(
         index
       );
       let labels = Array<String>();
-      labels.push(receiverType.kind == LoweredTypeKind.foreignObjCType
-        ? (tree.nodes[receiverInput].kind == ExpressionKind.identifierExpression
-          && tree.nodes[receiverInput].value == "this" ? "nativeHelperSelf" : "nativeHelper")
-        : receiverType.kind == LoweredTypeKind.classType
-        ? "class"
-        : "struct");
+      labels.push(methodReceiverLabel(program, importedTypes, evidence, tree, receiverInput, receiverType));
       if (receiverMode.byteLength > 0) {
         labels.push(receiverMode.copyBytes(0, receiverMode.byteLength));
       } else labels.push("in");
@@ -17683,8 +18499,11 @@ function lowerExpressionContextual(
         }
         if (
           callLabels[argument - 1] == "in"
-          && output[value].labels.length > 0
-          && stringStartsWith(output[value].labels[0], "view ")
+          && (
+            output[value].resultView
+            || (output[value].labels.length > 0
+              && stringStartsWith(output[value].labels[0], "view "))
+          )
         ) callLabels[argument - 1] = "view";
       }
       if (
@@ -17722,6 +18541,35 @@ function lowerExpressionContextual(
           );
         }
         callLabels[argument - 1] = "value";
+      }
+      if (foreignTarget.byteLength > 0 && argument > parameterTypes.length) {
+        // A C variadic argument is passed by value; a String is lent to the
+        // call as a cstring, and a template's String is destroyed after it.
+        let lentText = tree.nodes[argumentInput].kind == ExpressionKind.stringExpression
+          || tree.nodes[argumentInput].kind == ExpressionKind.templateExpression;
+        match (evidenceResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput
+        )) {
+          some(argumentType) => {
+            if (argumentType == "String") lentText = true;
+          }
+          none => {}
+        }
+        if (lentText) {
+          value = try lendTemporaryArgument(program, importedTypes, tree, argumentInput, value, inout output);
+          value = pushExpression(
+            inout output,
+            LoweredExpressionKind.cstringProjection,
+            "cstring",
+            Array<usize>(value),
+            Array<String>()
+          );
+        }
+        callLabels.push("value");
       }
       children.push(value);
       argument = argument + 1;
@@ -17796,6 +18644,13 @@ function lowerExpressionContextual(
           0,
           nativeArgument.mode.byteLength
         ));
+      }
+      // C variadic arguments follow the planned fixed parameters unchanged.
+      let variadicArgument = parameterTypes.length + 1;
+      while (variadicArgument < children.length) {
+        nativeChildren.push(children[variadicArgument]);
+        nativeLabels.push("value");
+        variadicArgument = variadicArgument + 1;
       }
       children = move nativeChildren;
       callLabels = move nativeLabels;
@@ -19619,6 +20474,21 @@ function lowerExpressionExpected(
     none => {}
   }
   if (tree.nodes[index].kind == ExpressionKind.closureExpression) {
+    // An imported callable alias may not resolve through this module's type
+    // table, but the checked closure carries the same signature.
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(checkedType) => {
+        if (checkedType != expectedTypeName) {
+          match (nativeFunctionSignature(checkedType)) {
+            some(_) => return try lowerExpressionExpected(
+              program, importedTypes, evidence, tree, index, checkedType, inout output
+            );
+            none => {}
+          }
+        }
+      }
+      none => {}
+    }
     throw `native contextual closure lowering could not resolve callable signature ${expectedTypeName}`;
   }
   let contextualTypeName = "";
@@ -21839,7 +22709,7 @@ function completeNativeClosureBlocks(
           throw "native expression callable changed its lexical capture order";
         }
         const mode = ownsEnvironment || capture.type.kind == LoweredTypeKind.cstringType
-          ? "value" : capture.mutableBinding ? "inout" : "in";
+          ? "value" : capture.view ? "view" : capture.mutableBinding ? "inout" : "in";
         expressions[expressionIndex].closureCaptureModes.push(copy mode);
         for (const use of capture.uses) {
           expressions[use].kind = LoweredExpressionKind.closureCaptureValue;
@@ -22020,7 +22890,7 @@ function completeNativeClosureBlocks(
         expressions[expressionIndex].closureCaptureModes.push(
           expressions[expressionIndex].labels[1] == "move"
             || capture.type.kind == LoweredTypeKind.cstringType
-            ? "value" : capture.mutableBinding ? "inout" : "in"
+            ? "value" : capture.view ? "view" : capture.mutableBinding ? "inout" : "in"
         );
       }
       // Each invocation owns its locals, independently of the environment
@@ -25095,6 +25965,9 @@ function lowerStatementWithResult(
     statements[placeholder].kind = LoweredStatementKind.schedulerYieldStatement;
     return placeholder;
   }
+  if (isFrameDelay(program, arena, index)) {
+    return try lowerFrameDelay(program, importedTypes, evidence, arena, index, inout expressions, inout statements);
+  }
   match (in arena.nodes[index].expression) {
     some(syntax) => {
       let includeRoot = true;
@@ -26679,7 +27552,31 @@ function lowerStatementCore(
                 expectedTypeName,
                 inout expressions
               );
-              if (expectedTypeName.byteLength > 0) {
+              if (isZStructViewTypeName(program, importedTypes, expectedTypeName)) {
+                // A view result is the address of the borrowed place, as in
+                // Stage 0; a view value or view call is already that address.
+                let alreadyView = expressions[loweredValue].resultView
+                  || expressions[loweredValue].kind == LoweredExpressionKind.viewProjection;
+                match (evidenceResolvedExpressionTypeName(
+                  program,
+                  importedTypes,
+                  evidence,
+                  tree,
+                  root
+                )) {
+                  some(actualTypeName) => {
+                    if (isPointerViewTypeName(actualTypeName)) alreadyView = true;
+                  }
+                  none => {}
+                }
+                if (!alreadyView) loweredValue = pushExpression(
+                  inout expressions,
+                  LoweredExpressionKind.viewProjection,
+                  "",
+                  Array<usize>(loweredValue),
+                  Array<String>()
+                );
+              } else if (expectedTypeName.byteLength > 0) {
                 let storageTypeName = expectedTypeName.copyBytes(
                   0,
                   expectedTypeName.byteLength
@@ -26712,10 +27609,12 @@ function lowerStatementCore(
                 );
               }
               if (
-                tree.nodes[root].kind == ExpressionKind.memberExpression
+                !isZStructViewTypeName(program, importedTypes, expectedTypeName)
+                && tree.nodes[root].kind == ExpressionKind.memberExpression
                 && sourceExpressionRootsInThis(tree, root)
                 && expressions[loweredValue].kind
                   != LoweredExpressionKind.moveValue
+                && returnedThisFieldNeedsTransfer(program, importedTypes, evidence, tree, root)
               ) {
                 loweredValue = pushExpression(
                   inout expressions,
@@ -27317,6 +28216,33 @@ function bindLoopBreakTargets(
     bindLoopBreakTargets(inout statements, child, target);
     childIndex = childIndex + 1;
   }
+}
+
+// A frame timer suspension: the delay statement carries its u64 duration.
+// Main's delay tiers intercept their own delays before statement lowering.
+function lowerFrameDelay(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  index: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): usize throws String {
+  const tree = match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(value) => copy value;
+      none => throw "native frame delay lost its expression tree";
+    }
+    none => throw "native frame delay lost its expression";
+  };
+  const call = tree.nodes[tree.root].children[0];
+  const milliseconds = try lowerExpressionContextual(
+    program, importedTypes, evidence, tree, tree.nodes[call].children[1], "u64", inout expressions
+  );
+  const placeholder = appendMainDelayPlaceholder(inout statements);
+  statements[placeholder].expression = Option.some(milliseconds);
+  return placeholder;
 }
 
 function appendMainDelayPlaceholder(
@@ -28383,6 +29309,39 @@ function ensureMainFrameLocalLiveFlags(
   }
 }
 
+// In a general async frame, a task local initialized by `task f()` is the
+// spawn's invocation slot; its joins are frame suspensions, not thread joins.
+function markFrameTaskJoins(
+  inout expressions: Array<LoweredExpression>, in statements: Array<LoweredStatement>
+): void {
+  let tasks = Array<String>();
+  for (const statement of statements) {
+    if (statement.kind != LoweredStatementKind.localStatement) continue;
+    match (in statement.expression) {
+      some(initializer) => {
+        if (expressions[initializer].kind == LoweredExpressionKind.asyncFunctionTask) tasks.push(copy statement.name);
+      }
+      none => {}
+    }
+  }
+  let index: usize = 0;
+  while (index < expressions.length) {
+    const kind = expressions[index].kind;
+    if ((kind == LoweredExpressionKind.threadAwait || kind == LoweredExpressionKind.threadCancel)
+      && expressions[index].children.length == 1) {
+      const child = expressions[index].children[0];
+      if (expressions[child].kind == LoweredExpressionKind.localValue) {
+        for (const task of tasks) {
+          if (task != expressions[child].value) continue;
+          expressions[index].kind = kind == LoweredExpressionKind.threadAwait
+            ? LoweredExpressionKind.frameTaskJoin : LoweredExpressionKind.frameTaskCancel;
+        }
+      }
+    }
+    index = index + 1;
+  }
+}
+
 function lowerFunction(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -28408,6 +29367,7 @@ function lowerFunction(
   let asyncSuspension = "";
   const yieldFrame = receiverName.byteLength == 0
     && functionUsesYieldFrame(program, declaration);
+  let generalFrame = false;
   let executorAffinity = declaration.executorAffinity.copyBytes(
     0,
     declaration.executorAffinity.byteLength
@@ -28501,12 +29461,17 @@ function lowerFunction(
           || firstTierDoubleAwait
         )
       );
+    // Every shape tier rejected this function: the general frame takes it.
+    generalFrame = !yieldFrame && !firstTierSchedulerYield && !firstTierTailAwait
+      && receiverName.byteLength == 0 && executorAffinity.byteLength == 0
+      && functionUsesGeneralFrame(program, declaration);
     if (
       executorAffinity != "thread.main"
       && functionContainsSuspension(declaration)
       && !firstTierSchedulerYield
       && !firstTierTailAwait
       && !yieldFrame
+      && !generalFrame
     ) {
       throw `native lowering does not support suspending async function ${declaration.name} yet`;
     }
@@ -28643,7 +29608,11 @@ function lowerFunction(
       if (moduleTypeNeedsCleanup(program, importedTypes, type)) asyncSuspension = "yield-frame";
     }
   }
-  if (yieldFrame && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
+  // main with a direct timer await runs as a general frame on a root executor.
+  if (declaration.name == "main" && receiverName.byteLength == 0 && !yieldFrame
+    && (functionContainsFrameDelay(program, declaration) || functionContainsFrameSpawn(declaration))
+    && functionUsesGeneralFrame(program, declaration)) generalFrame = true;
+  if ((yieldFrame || generalFrame) && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
   let parameters = Array<LoweredParameter>();
   let ownedParameters = Array<LoweredCleanup>();
   let liveFlags = Array<LoweredLiveFlag>();
@@ -29146,6 +30115,9 @@ function lowerFunction(
     }));
   }
   const throwsError = match (in declaration.errorType) { some(_) => true; none => false; };
+  const returnsView = isPointerViewTypeName(declaration.returnType.name)
+    && returnType.kind == LoweredTypeKind.structType;
+  if (asyncSuspension == "yield-frame") markFrameTaskJoins(inout expressions, statements);
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
     testName: declaration.testName.copyBytes(0, declaration.testName.byteLength),
@@ -29177,6 +30149,7 @@ function lowerFunction(
     receiverMode: lowerReceiverMode(receiverSourceMode),
     parameters,
     returnType: move returnType,
+    returnsView,
     fallthroughExpression,
     expressions,
     statements,
@@ -31230,6 +32203,8 @@ function copyImportedTypeAlias(
       0,
       declaration.underlyingType.byteLength
     ),
+    cxxMoveOnly: declaration.cxxMoveOnly,
+    cxxValue: declaration.cxxValue,
   });
 }
 
@@ -31594,6 +32569,38 @@ function graphObjectiveCTypesForLowering(
 ): Array<LoweredImportedType> throws String {
   let types = Array<LoweredImportedType>();
   let foreignObjCTypeNames = Set<String>();
+  // C++ value types cross module boundaries inside public Z aggregates the
+  // same way; keyed by native spelling so they never shadow a Z name.
+  for (const candidateModule of graph.modules) {
+    for (const symbol of candidateModule.symbols) {
+      if (symbol.kind != ModuleSymbolKind.structSymbol || symbol.foreignHeader.byteLength == 0) continue;
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          if (signature.foreignKind != "value" && signature.foreignKind != "moveValue") continue;
+          if (foreignObjCTypeNames.has(signature.foreignNativeName)) continue;
+          foreignObjCTypeNames.add(copy signature.foreignNativeName);
+          types.push(LoweredImportedType({
+            localName: copy signature.foreignNativeName,
+            targetName: copy signature.foreignNativeName,
+            nativeTypeName: copy signature.foreignNativeName,
+            kind: LoweredTypeKind.foreignStructType,
+            executorBound: false,
+            threadShareable: false,
+            workerDestructible: true,
+            needsDeinit: false,
+            resourceRelease: "",
+            fields: Array<LoweredField>(),
+            variants: Array<LoweredVariant>(),
+            payloadBearing: false,
+            underlyingType: "",
+            cxxMoveOnly: signature.foreignKind == "moveValue",
+            cxxValue: true,
+          }));
+        }
+        none => {}
+      }
+    }
+  }
   for (const candidateModule of graph.modules) {
     for (const symbol of candidateModule.symbols) {
       if (
@@ -32025,6 +33032,8 @@ function importedTypesForModule(
               variants: Array<LoweredVariant>(),
               payloadBearing: false,
               underlyingType: "",
+              cxxMoveOnly: signature.foreignKind == "moveValue",
+              cxxValue: signature.foreignKind == "value" || signature.foreignKind == "moveValue",
             }));
           }
         }
@@ -32424,6 +33433,21 @@ function importedTypesForModule(
         match (loweredAttempt) {
           success(lowered) => {
             const visiting = Array<String>();
+            // An enum alias shares its target's variants; an empty variant list
+            // would hide `Target.variant` from imported enum lookup.
+            let aliasVariants = Array<LoweredVariant>();
+            let aliasPayloadBearing = false;
+            if (lowered.kind == LoweredTypeKind.enumType) {
+              match (loweredEnumCopy(enums, lowered.name)) {
+                some(declaration) => {
+                  for (const variant of declaration.variants) {
+                    aliasVariants.push(copyLoweredVariant(variant));
+                  }
+                  aliasPayloadBearing = declaration.payloadBearing;
+                }
+                none => {}
+              }
+            }
             types.push(LoweredImportedType({
               localName: symbol.name.copyBytes(
                 0,
@@ -32460,8 +33484,8 @@ function importedTypesForModule(
               ),
               resourceRelease: "",
               fields: Array<LoweredField>(),
-              variants: Array<LoweredVariant>(),
-              payloadBearing: false,
+              variants: move aliasVariants,
+              payloadBearing: aliasPayloadBearing,
               underlyingType: lowered.kind == LoweredTypeKind.functionType
                 ? aliasTarget.copyBytes(0, aliasTarget.byteLength)
                 : "",
@@ -32494,11 +33518,19 @@ function importedTypesForModule(
       || graph.modules[targetModule].symbols[targetSymbolIndex].kind
         != ModuleSymbolKind.typeAliasSymbol
     ) continue;
+    // Resolve the alias in its own module first: its target may itself be an
+    // import there (possibly renamed with `as`) that this module cannot name.
+    let sourceTarget = copy graph.modules[targetModule].symbols[targetSymbolIndex].importedName;
+    const resolvedTarget = transparentTypeName(graph.modules, targetModule, sourceTarget);
+    match (nativeFunctionSignature(resolvedTarget)) {
+      some(_) => sourceTarget = copy resolvedTarget;
+      none => {}
+    }
     const aliasTarget = rebaseTypeName(
       graph.modules,
       targetModule,
       moduleIndex,
-      graph.modules[targetModule].symbols[targetSymbolIndex].importedName
+      sourceTarget
     );
     const loweredOutcome = attempt lowerModuleTypeName(
       program,
@@ -35163,6 +36195,11 @@ function lowerProgramUnchecked(
   );
   rewriteNativeCExportCallTargets(inout functions);
   annotateObjectiveCEnumPayloads(enums, inout functions);
+  markCxxMovedLocals(inout functions);
+  let cxxValueNames = Array<String>();
+  let cxxMoveOnlyNames = Array<String>();
+  collectCxxTypeNames(importedTypes, inout cxxValueNames, inout cxxMoveOnlyNames);
+  markCxxEnumStorage(cxxValueNames, cxxMoveOnlyNames, structs, inout enums, inout arrays, inout maps, inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
@@ -35181,6 +36218,7 @@ function lowerProgramUnchecked(
     structs,
     enums,
     functions,
+    cxxValueTypes: cxxValueNames,
   });
 }
 
@@ -35507,6 +36545,8 @@ function lowerModulesIncludingTests(
   in demands: LoweredGenericDemands,
   in instances: LoweredGenericInstanceEvidence
 ): LoweredProgram throws String {
+  let cxxValueNames = Array<String>();
+  let cxxMoveOnlyNames = Array<String>();
   let alignedModuleIndex: usize = 0;
   let objectiveCSubclasses = Array<ModuleObjCSubclassPlan>();
   for (const module of graph.modules) {
@@ -35579,6 +36619,7 @@ function lowerModulesIncludingTests(
       failure(message) => throw
         `${parsed[moduleIndex].path}: native import lowering: ${message}`;
     };
+    collectCxxTypeNames(importedTypes, inout cxxValueNames, inout cxxMoveOnlyNames);
     // Generic aggregate specializations can be owned by a framework module
     // while their concrete arguments are declared by a downstream consumer.
     // Preserve those canonical argument types without introducing a source
@@ -35880,6 +36921,8 @@ function lowerModulesIncludingTests(
   try rewriteCheckedCallTargets(parsed, graph, nativeCExportNames, inout functions, inout structs);
   rewriteNativeCExportCallTargets(inout functions);
   annotateObjectiveCEnumPayloads(enums, inout functions);
+  markCxxMovedLocals(inout functions);
+  markCxxEnumStorage(cxxValueNames, cxxMoveOnlyNames, structs, inout enums, inout arrays, inout maps, inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
@@ -35899,5 +36942,6 @@ function lowerModulesIncludingTests(
     structs,
     enums,
     functions,
+    cxxValueTypes: cxxValueNames,
   });
 }

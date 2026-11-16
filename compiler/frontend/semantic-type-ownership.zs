@@ -527,6 +527,60 @@ export function substituteGenericType(
   };
 }
 
+// Stage 0's hasMoveOnlyForeignType: a move-only C++ value or C value
+// resource, directly or through arrays, value-struct fields, or enum payloads.
+// A class field is behind ARC, so it does not make its owner move-only here.
+export function typeContainsMoveOnlyNative(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  depth: usize
+): boolean {
+  if (depth > 16 || typeName.byteLength == 0) return false;
+  if (stringStartsWith(typeName, "readonly ")) {
+    const target = typeName.copyBytes(9, typeName.byteLength);
+    return typeContainsMoveOnlyNative(modules, moduleIndex, target, depth + 1);
+  }
+  const transparent = transparentTypeName(modules, moduleIndex, typeName);
+  if (transparent != typeName) {
+    return typeContainsMoveOnlyNative(modules, moduleIndex, transparent, depth + 1);
+  }
+  match (fixedArrayShape(typeName)) {
+    some(array) => return typeContainsMoveOnlyNative(modules, moduleIndex, array.elementType, depth + 1);
+    none => {}
+  }
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      if (generic.base == "Array" && generic.arguments.length == 1) {
+        return typeContainsMoveOnlyNative(modules, moduleIndex, generic.arguments[0], depth + 1);
+      }
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+      if (symbol.kind == ModuleSymbolKind.classSymbol) return false;
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          if (signature.foreignKind == "moveValue") return true;
+          if (signature.foreignKind == "record" && signature.foreignResourceRelease.byteLength > 0) return true;
+          if (signature.foreignNativeName.byteLength > 0) return false;
+          for (const field of signature.fields) {
+            if (typeContainsMoveOnlyNative(modules, location.moduleIndex, field.typeName, depth + 1)) return true;
+          }
+          for (const variant of signature.variants) {
+            if (typeContainsMoveOnlyNative(modules, location.moduleIndex, variant.payloadType, depth + 1)) return true;
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 export function typeHasCleanup(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -662,6 +716,8 @@ function typeHasCleanupInner(
       match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
         some(signature) => {
           if (signature.customDeinit) return true;
+          // A move-only C++ value is owned: Z moves it (C++ destroys it).
+          if (signature.foreignKind == "moveValue") return true;
           let substitutions = Array<NativeValueBinding>();
           let typeIndex: usize = 0;
           while (

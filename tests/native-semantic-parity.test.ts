@@ -84,6 +84,77 @@ function rejects(source: string, stage0Message: RegExp, nativeMessage = stage0Me
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
+test("checks thread.spawn captures and results in both compilers", () => {
+  const program = (declarations: string, body: string) => `
+    import { thread } from "std/thread";
+    ${declarations}
+    async function main(): i32 {
+      ${body}
+    }
+  `;
+  rejects(program(`
+    readonly class Managed { readonly value: i32; deinit {} }
+  `, `
+    const snapshot = new Managed({ value: 1 });
+    const worker = thread.spawn(move (): i32 => snapshot.value);
+    return await worker;
+  `), /capture "snapshot" of type Managed cannot cross a native thread boundary: Managed has a custom deinit whose thread affinity is unknown/,
+    undefined, ["self-host-resolve"]);
+  rejects(program(`
+    class Counter { total: i32; function increment(inout this): void { this.total = this.total + 1; } }
+  `, `
+    const counter = new Counter({ total: 1 });
+    const worker = thread.spawn(move (): i32 => counter.total);
+    return await worker;
+  `), /capture "counter" of type Counter cannot cross a native thread boundary: Counter exposes mutable method "increment"/,
+    undefined, ["self-host-resolve"]);
+  rejects(program(`
+    class Resource { value: i32; }
+  `, `
+    const worker = thread.spawn(move (): Resource => new Resource({ value: 1 }));
+    const resource = await worker;
+    return resource.value;
+  `), /thread\.spawn result type "Resource" cannot cross a native thread boundary yet/,
+    undefined, ["self-host-resolve"]);
+}, 240_000);
+
+test("checks view results and numeric constant conversions in both compilers", () => {
+  const prelude = `
+    struct Doc { id: i32; title: String; }
+    struct Lib { docs: Array<Doc>; METHOD }
+  `;
+  const viewCases: [string, string, RegExp][] = [
+    ["function title(): view String { return this.docs[0].title; }", "",
+      /the first view tier requires a concrete Z struct target/],
+    ["function first(inout this): view Doc { return this.docs[0]; }", "",
+      /a view return requires a synchronous, non-throwing borrowed instance method/],
+    ["static function first(in lib: Lib): view Doc { return lib.docs[0]; }", "",
+      /a view return requires a synchronous, non-throwing borrowed instance method/],
+    ["", "async function pick(in lib: Lib): view Doc { return lib.docs[0]; }",
+      /a parameter-provenanced view result requires a synchronous, non-throwing Z function/],
+    ["", "function longest(in lib: Lib): view String { return lib.docs[0].title; }",
+      /the first parameter-view tier requires a concrete Z struct or borrowed native handle target/],
+  ];
+  for (const [method, declaration, message] of viewCases) {
+    rejects(`${prelude.replace("METHOD", method)}
+      ${declaration}
+      function main(): i32 { return 0; }
+    `, message, message, ["self-host-resolve"]);
+  }
+  // A literal takes the conversion's target type; a signed constant must fit it.
+  const conversionCases: [string, RegExp][] = [
+    ["u8(300)", /integer literal 300 does not fit u8/],
+    ["u64(-1)", /constant integer value -1 cannot convert to u64/],
+    ["i8(-200)", /constant integer value -200 cannot convert to i8/],
+  ];
+  for (const [conversion, message] of conversionCases) {
+    rejects(`function main(): i32 {
+      const value = ${conversion};
+      return 0;
+    }`, message, message, ["self-host-resolve"]);
+  }
+}, 240_000);
+
 test("keeps named callable signatures and executor contracts checked", () => {
   rejects(`
     function wrong(value: String): i32 { return 0; }

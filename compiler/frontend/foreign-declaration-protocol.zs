@@ -47,6 +47,40 @@ export struct RawForeignType {
   sourceLine: usize;
   sourceColumn: usize;
   sourceLength: usize;
+  // C++ value lifecycle and thread facts, resolved by the producer from the
+  // header and its `.zd` contract. False for every other kind.
+  lifecycleCopy: boolean = false;
+  lifecycleMove: boolean = false;
+  lifecycleDeinit: boolean = false;
+  threadTransfer: boolean = false;
+  threadShare: boolean = false;
+  threadDeinit: boolean = false;
+  executorAffinity: Option<String> = Option<String>.none;
+  memberStart: usize = 0;
+  memberCount: usize = 0;
+}
+
+// One C++ constructor, static method, or method overload of a value type.
+export struct RawForeignCxxMember {
+  typeIndex: usize;
+  memberIndex: usize;
+  role: String;
+  name: String;
+  nativeName: String;
+  returnNativeType: String;
+  returnCanonicalNativeType: Option<String>;
+  variadic: boolean;
+  nativeSignature: String;
+  sourceFile: Option<String>;
+  sourceLine: usize;
+  sourceColumn: usize;
+  sourceLength: usize;
+  executorAffinity: Option<String>;
+  receiverAccess: String;
+  parameterStart: usize;
+  parameterCount: usize;
+  availabilityStart: usize;
+  availabilityCount: usize;
 }
 
 export struct RawForeignField {
@@ -242,8 +276,13 @@ export struct RawForeignModuleDeclarations {
   framework: Option<String>;
   objectiveC: boolean;
   cPlusPlus: boolean;
+  // The target's C `long` width in bytes.
+  longWidth: usize = 8;
   namespaces: Array<String>;
   types: Array<RawForeignType>;
+  cxxMembers: Array<RawForeignCxxMember> = Array<RawForeignCxxMember>();
+  cxxMemberParameters: Array<RawForeignParameter> = Array<RawForeignParameter>();
+  cxxMemberAvailability: Array<RawForeignAvailability> = Array<RawForeignAvailability>();
   fields: Array<RawForeignField>;
   constants: Array<RawForeignConstant>;
   functions: Array<RawForeignFunction>;
@@ -262,6 +301,7 @@ export struct RawForeignModuleDeclarations {
   objectiveCPropertyAvailability: Array<RawForeignObjCPropertyAvailability>;
   enumTypeIndices: Map<String, usize>;
   recordTypeIndices: Map<String, usize>;
+  valueTypeIndices: Map<String, usize> = Map<String, usize>();
   scalarTypeIndices: Map<String, usize>;
   mutableRecordPointerIndices: Map<String, usize>;
   constRecordPointerIndices: Map<String, usize>;
@@ -346,6 +386,10 @@ function buildForeignTypeIndices(
       indexName(inout module.enumTypeIndices, nativeName, index);
       indexName(inout module.enumTypeIndices, exportName, index);
       indexName(inout module.enumTypeIndices, qualifiedName, index);
+    } else if (kind == "value") {
+      indexName(inout module.valueTypeIndices, nativeName, index);
+      indexName(inout module.valueTypeIndices, qualifiedName, index);
+      indexName(inout module.valueTypeIndices, typeName, index);
     } else if (kind == "scalar") {
       indexName(inout module.scalarTypeIndices, nativeName, index);
       indexName(inout module.scalarTypeIndices, exportName, index);
@@ -422,6 +466,17 @@ function buildForeignTypeIndices(
         constTagged,
         index
       );
+    }
+    index = index + 1;
+  }
+  // The producer spells a C++ type by its leaf name when that name is unique
+  // in the header (Stage 0's byCName). Index leaves after every native name so
+  // a top-level type of the same spelling keeps precedence.
+  index = 0;
+  while (index < module.types.length) {
+    if (module.types[index].kind == "value") {
+      const exportName = copy module.types[index].exportName;
+      indexName(inout module.valueTypeIndices, exportName, index);
     }
     index = index + 1;
   }
@@ -591,7 +646,7 @@ function appendType(
     throw "foreign declaration stream contains an out-of-order type";
   }
   const kind = try readText(inout cursor);
-  if (kind != "enum" && kind != "record" && kind != "scalar") {
+  if (kind != "enum" && kind != "record" && kind != "scalar" && kind != "value") {
     throw "foreign declaration stream contains an unsupported named type";
   }
   const exportName = try readText(inout cursor);
@@ -607,9 +662,19 @@ function appendType(
   const sourceColumn = try readHexUsize(inout cursor);
   const sourceLength = try readHexUsize(inout cursor);
   const fieldCount = try readHexUsize(inout cursor);
+  const lifecycleCopy = try readBoolean(inout cursor);
+  const lifecycleMove = try readBoolean(inout cursor);
+  const lifecycleDeinit = try readBoolean(inout cursor);
+  const threadTransfer = try readBoolean(inout cursor);
+  const threadShare = try readBoolean(inout cursor);
+  const threadDeinit = try readBoolean(inout cursor);
+  const executorAffinity = try readOptionalText(inout cursor);
+  const memberCount = try readHexUsize(inout cursor);
+  const valueFacts = lifecycleCopy || lifecycleMove || lifecycleDeinit
+    || threadTransfer || threadShare || threadDeinit || memberCount > 0;
   if (
     (
-      (kind == "enum" || kind == "scalar")
+      (kind == "enum" || kind == "scalar" || kind == "value")
       && (layout.byteLength > 0 || fieldCount > 0)
     )
     || (
@@ -617,6 +682,7 @@ function appendType(
       && layout != "struct"
       && layout != "union"
     )
+    || (kind != "value" && valueFacts)
   ) {
     throw "foreign declaration stream contains invalid named-type details";
   }
@@ -637,6 +703,15 @@ function appendType(
     sourceLine,
     sourceColumn,
     sourceLength,
+    lifecycleCopy,
+    lifecycleMove,
+    lifecycleDeinit,
+    threadTransfer,
+    threadShare,
+    threadDeinit,
+    executorAffinity,
+    memberStart: module.cxxMembers.length,
+    memberCount,
   }));
   try endRecord(inout cursor);
 }
@@ -674,6 +749,143 @@ function appendField(
     sourceLine,
     sourceColumn,
     sourceLength,
+  }));
+  try endRecord(inout cursor);
+}
+
+function appendCxxMember(
+  inout cursor: ForeignWireCursor,
+  inout module: RawForeignModuleDeclarations
+): void throws String {
+  const typeIndex = try readHexUsize(inout cursor);
+  const memberIndex = try readHexUsize(inout cursor);
+  if (
+    typeIndex + 1 != module.types.length
+    || module.types[typeIndex].kind != "value"
+    || memberIndex >= module.types[typeIndex].memberCount
+    || module.types[typeIndex].memberStart + memberIndex != module.cxxMembers.length
+  ) {
+    throw "foreign declaration stream contains an out-of-order C++ member";
+  }
+  const role = try readText(inout cursor);
+  if (role != "constructor" && role != "static" && role != "method") {
+    throw "foreign declaration stream contains an unknown C++ member role";
+  }
+  const name = try readText(inout cursor);
+  const nativeName = try readText(inout cursor);
+  const returnNativeType = try readText(inout cursor);
+  const returnCanonicalNativeType = try readOptionalText(inout cursor);
+  const variadic = try readBoolean(inout cursor);
+  const nativeSignature = try readText(inout cursor);
+  const sourceFile = try readOptionalText(inout cursor);
+  const sourceLine = try readHexUsize(inout cursor);
+  const sourceColumn = try readHexUsize(inout cursor);
+  const sourceLength = try readHexUsize(inout cursor);
+  const executorAffinity = try readOptionalText(inout cursor);
+  const receiverAccess = try readText(inout cursor);
+  if (
+    role == "method"
+      ? receiverAccess != "in" && receiverAccess != "inout" && receiverAccess != "move"
+      : receiverAccess.byteLength > 0
+  ) {
+    throw "foreign declaration stream contains an invalid C++ receiver access";
+  }
+  const parameterCount = try readHexUsize(inout cursor);
+  const availabilityCount = try readHexUsize(inout cursor);
+  module.cxxMembers.push(RawForeignCxxMember({
+    typeIndex,
+    memberIndex,
+    role,
+    name,
+    nativeName,
+    returnNativeType,
+    returnCanonicalNativeType,
+    variadic,
+    nativeSignature,
+    sourceFile,
+    sourceLine,
+    sourceColumn,
+    sourceLength,
+    executorAffinity,
+    receiverAccess,
+    parameterStart: module.cxxMemberParameters.length,
+    parameterCount,
+    availabilityStart: module.cxxMemberAvailability.length,
+    availabilityCount,
+  }));
+  try endRecord(inout cursor);
+}
+
+function appendCxxMemberParameter(
+  inout cursor: ForeignWireCursor,
+  inout module: RawForeignModuleDeclarations
+): void throws String {
+  const typeIndex = try readHexUsize(inout cursor);
+  const memberIndex = try readHexUsize(inout cursor);
+  const parameterIndex = try readHexUsize(inout cursor);
+  if (module.cxxMembers.length == 0) {
+    throw "foreign declaration stream contains a C++ member parameter before its member";
+  }
+  const current = view module.cxxMembers[module.cxxMembers.length - 1];
+  if (
+    current.typeIndex != typeIndex
+    || current.memberIndex != memberIndex
+    || parameterIndex >= current.parameterCount
+    || current.parameterStart + parameterIndex != module.cxxMemberParameters.length
+  ) {
+    throw "foreign declaration stream contains an out-of-order C++ member parameter";
+  }
+  const name = try readOptionalText(inout cursor);
+  const nativeType = try readText(inout cursor);
+  const canonicalNativeType = try readOptionalText(inout cursor);
+  module.cxxMemberParameters.push(RawForeignParameter({
+    functionIndex: typeIndex,
+    overloadIndex: memberIndex,
+    parameterIndex,
+    name,
+    nativeType,
+    canonicalNativeType,
+  }));
+  try endRecord(inout cursor);
+}
+
+function appendCxxMemberAvailability(
+  inout cursor: ForeignWireCursor,
+  inout module: RawForeignModuleDeclarations
+): void throws String {
+  const typeIndex = try readHexUsize(inout cursor);
+  const memberIndex = try readHexUsize(inout cursor);
+  const availabilityIndex = try readHexUsize(inout cursor);
+  if (module.cxxMembers.length == 0) {
+    throw "foreign declaration stream contains C++ member availability before its member";
+  }
+  const current = view module.cxxMembers[module.cxxMembers.length - 1];
+  if (
+    current.typeIndex != typeIndex
+    || current.memberIndex != memberIndex
+    || availabilityIndex >= current.availabilityCount
+    || current.availabilityStart + availabilityIndex != module.cxxMemberAvailability.length
+  ) {
+    throw "foreign declaration stream contains out-of-order C++ member availability";
+  }
+  const platform = try readOptionalText(inout cursor);
+  const introduced = try readOptionalText(inout cursor);
+  const deprecated = try readBoolean(inout cursor);
+  const deprecatedVersion = try readOptionalText(inout cursor);
+  const obsoleted = try readOptionalText(inout cursor);
+  const unavailable = try readBoolean(inout cursor);
+  const message = try readOptionalText(inout cursor);
+  module.cxxMemberAvailability.push(RawForeignAvailability({
+    functionIndex: typeIndex,
+    overloadIndex: memberIndex,
+    availabilityIndex,
+    platform,
+    introduced,
+    deprecated,
+    deprecatedVersion,
+    obsoleted,
+    unavailable,
+    message,
   }));
   try endRecord(inout cursor);
 }
@@ -1291,6 +1503,19 @@ function validateCompletedModule(
       fieldIndex = fieldIndex + 1;
     }
   }
+  for (const declaration of module.types) {
+    if (declaration.memberStart + declaration.memberCount > module.cxxMembers.length) {
+      throw "foreign declaration stream ended before all C++ members";
+    }
+  }
+  for (const member of module.cxxMembers) {
+    if (
+      member.parameterStart + member.parameterCount > module.cxxMemberParameters.length
+      || member.availabilityStart + member.availabilityCount > module.cxxMemberAvailability.length
+    ) {
+      throw "foreign declaration stream ended inside a C++ member";
+    }
+  }
   for (const declaration of module.functions) {
     if (
       declaration.overloadStart + declaration.overloadCount
@@ -1370,7 +1595,7 @@ export function decodeRawForeignDeclarations(
   try expectLiteral(inout cursor, "ZFDCL");
   let module = emptyRawForeignModule();
   module.version = try readHexUsize(inout cursor);
-  if (module.version != 15) {
+  if (module.version != 16) {
     throw `unsupported foreign declaration stream version ${module.version}`;
   }
   try endRecord(inout cursor);
@@ -1379,6 +1604,10 @@ export function decodeRawForeignDeclarations(
   module.framework = try readOptionalText(inout cursor);
   module.objectiveC = try readBoolean(inout cursor);
   module.cPlusPlus = try readBoolean(inout cursor);
+  module.longWidth = try readHexUsize(inout cursor);
+  if (module.longWidth != 4 && module.longWidth != 8) {
+    throw "foreign declaration stream contains an unsupported C long width";
+  }
   try endRecord(inout cursor);
 
   while (cursor.offset < cursor.batch.byteLength) {
@@ -1388,6 +1617,12 @@ export function decodeRawForeignDeclarations(
       try appendType(inout cursor, inout module);
     } else if (tag == 68) {
       try appendField(inout cursor, inout module);
+    } else if (tag == 88) {
+      try appendCxxMember(inout cursor, inout module);
+    } else if (tag == 89) {
+      try appendCxxMemberParameter(inout cursor, inout module);
+    } else if (tag == 85) {
+      try appendCxxMemberAvailability(inout cursor, inout module);
     } else if (tag == 67) {
       try appendConstant(inout cursor, inout module);
     } else if (tag == 70) {

@@ -2,6 +2,7 @@
 
 import { TextBuffer } from "std/text";
 import {
+  LoweredArray,
   LoweredExpression,
   LoweredExpressionKind,
   LoweredEnum,
@@ -25,6 +26,7 @@ import {
   lowerModules,
   lowerProgram,
   lowerTestModules,
+  loweredTypeHoldsCxx,
   loweredTypeIdentity,
   viewPayloadLoadsAsValue,
   decodedObjCProtocolIdentity,
@@ -280,7 +282,7 @@ function appendCBindingName(
     output.append("self");
     return;
   }
-  if (isCReservedWord(name)) output.append("z_");
+  if (isCReservedWord(name) || isCPlusPlusReservedWord(name)) output.append("z_");
   output.append(name);
 }
 
@@ -512,11 +514,10 @@ function appendNativeObjCConstructor(
   output.append("];\n}\n\n");
 }
 
-// Z-owned storage only; imported ABI fields and JSON wire keys keep their spelling.
-function appendCFieldName(inout output: TextBuffer, in name: String): void {
-  if (
-    (isCReservedWord(name) && name != "Class" && name != "SEL" && name != "id")
-    || name == "and" || name == "and_eq" || name == "asm"
+// C++ keywords (and words C++ or C23 reserve) that are ordinary C identifiers;
+// generated code must also compile as C++ when a program imports a C++ header.
+function isCPlusPlusReservedWord(in name: String): boolean {
+  return name == "and" || name == "and_eq" || name == "asm"
     || name == "atomic_cancel" || name == "atomic_commit" || name == "atomic_noexcept"
     || name == "bitand" || name == "bitor" || name == "catch"
     || name == "char8_t" || name == "char16_t" || name == "char32_t" || name == "class"
@@ -537,6 +538,14 @@ function appendCFieldName(inout output: TextBuffer, in name: String): void {
     || name == "final" || name == "import" || name == "module" || name == "override"
     || name == "typeof" || name == "typeof_unqual" || name == "_BitInt"
     || name == "_Decimal32" || name == "_Decimal64" || name == "_Decimal128"
+;
+}
+
+// Z-owned storage only; imported ABI fields and JSON wire keys keep their spelling.
+function appendCFieldName(inout output: TextBuffer, in name: String): void {
+  if (
+    (isCReservedWord(name) && name != "Class" && name != "SEL" && name != "id")
+    || isCPlusPlusReservedWord(name)
   ) output.append("_z_field_");
   output.append(name);
 }
@@ -772,7 +781,11 @@ function callableCaptureCType(
 ): String throws String {
   const type = try cType(expression.captureTypes[index]);
   if (index < expression.closureCaptureModes.length) {
-    if (expression.closureCaptureModes[index] == "in") return `${type} const *`;
+    // A view capture stores the view's own pointer; an in capture stores an address.
+    if (
+      expression.closureCaptureModes[index] == "in"
+      || expression.closureCaptureModes[index] == "view"
+    ) return `${type} const *`;
     if (expression.closureCaptureModes[index] == "inout") return `${type} *`;
   }
   return type;
@@ -781,7 +794,9 @@ function callableCaptureCType(
 function callableOwnsObjectiveCCapture(in expression: LoweredExpression, index: usize): boolean {
   return expression.captureTypes[index].kind == LoweredTypeKind.foreignObjCType
     && (index >= expression.closureCaptureModes.length
-      || (expression.closureCaptureModes[index] != "in" && expression.closureCaptureModes[index] != "inout"));
+      || (expression.closureCaptureModes[index] != "in"
+        && expression.closureCaptureModes[index] != "inout"
+        && expression.closureCaptureModes[index] != "view"));
 }
 
 function appendCallableEnvironmentAllocation(inout output: TextBuffer, in expression: LoweredExpression): void {
@@ -793,7 +808,7 @@ function appendCallableEnvironmentAllocation(inout output: TextBuffer, in expres
   }
   // ARC assignment reads/releases the previous strong slot. Heap slots must
   // therefore start at nil, and be cleared before their environment is freed.
-  output.append(objectiveC ? "_environment *environment = calloc(1, sizeof(*environment));\n" : "_environment *environment = malloc(sizeof(*environment));\n");
+  output.append(objectiveC ? "_environment *environment = (__typeof__(environment))calloc(1, sizeof(*environment));\n" : "_environment *environment = (__typeof__(environment))malloc(sizeof(*environment));\n");
   output.append("  if (environment == NULL) abort();\n  environment->_z_refcount = 1;\n");
 }
 
@@ -1014,7 +1029,7 @@ function appendAsyncScopeUnwind(
       appendAsyncFrameBindingName(inout output, declaration, statement.name);
       output.append("), frame->_z_unwind_cancelled");
       if (declaration.throwsError) output.append(` || frame->result.tag == Z_${functionType.returnType.name}Tag_failure`);
-      output.append(");\n      frame->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, frame->child.task);\n      return;\n    }\n    if (!frame->child.task->completed) return;\n    frame->_z_unwind_cancelled = frame->_z_unwind_cancelled || frame->child.task->cancelled;\n    z_stage1_async_remove_queued(frame->child.task);\n    if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n    frame->child = (Z_AsyncInvocation){0};\n  }\n");
+      output.append(");\n      frame->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, frame->child.task);\n      return;\n    }\n    if (!frame->child.task->completed) return;\n    frame->_z_unwind_cancelled = frame->_z_unwind_cancelled || frame->child.task->cancelled;\n    z_stage1_async_remove_queued(frame->child.task);\n    if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n    frame->child = (Z_AsyncInvocation){};\n  }\n");
       continue;
     }
     if (!asyncLinearOwnedScope(declaration, root)) continue;
@@ -1023,7 +1038,7 @@ function appendAsyncScopeUnwind(
     if (declaration.throwsError) {
       output.append(` || frame->result.tag == Z_${functionType.returnType.name}Tag_failure`);
     }
-    output.append(", task->executor);\n      frame->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, frame->child.task);\n      return;\n    }\n    if (!frame->child.task->completed) return;\n    frame->_z_unwind_cancelled = frame->_z_unwind_cancelled || frame->child.task->cancelled;\n    z_stage1_async_remove_queued(frame->child.task);\n    if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n    frame->child = (Z_AsyncInvocation){0};\n");
+    output.append(", task->executor);\n      frame->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, frame->child.task);\n      return;\n    }\n    if (!frame->child.task->completed) return;\n    frame->_z_unwind_cancelled = frame->_z_unwind_cancelled || frame->child.task->cancelled;\n    z_stage1_async_remove_queued(frame->child.task);\n    if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n    frame->child = (Z_AsyncInvocation){};\n");
     output.append(`    Z_TaskScope_release(frame->_z_owned_scope_${root});\n    frame->_z_owned_scope_${root} = NULL;\n  }\n`);
   }
   try appendAsyncTailLocalCleanups(inout output, program, declaration, 1);
@@ -1154,7 +1169,7 @@ function appendAsyncLinearEarlyTailCompletion(
       output.append("      frame->live_result = true;\n");
     }
   }
-  output.append("    }\n    z_stage1_async_remove_queued(frame->child.task);\n    if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n    if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n    frame->child = (Z_AsyncInvocation){0};\n");
+  output.append("    }\n    z_stage1_async_remove_queued(frame->child.task);\n    if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n    if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n    frame->child = (Z_AsyncInvocation){};\n");
   try appendAsyncFrameCompletion(inout output, program, declaration, functionType, "_z_early_cancelled", 2);
   output.append("  }\n");
 }
@@ -1200,7 +1215,7 @@ function appendAsyncLinearContinuation(
       output.append(`    frame->_z_resume_state = ${waitingState};\n`);
       output.append("    frame->child.task->waiter = task;\n    z_stage1_async_enqueue(task->executor, frame->child.task);\n    return;\n  }\n");
       output.append(`  if (frame->_z_resume_state == ${waitingState}) {\n`);
-      output.append("    if (frame->child.task == NULL || !frame->child.task->completed) abort();\n    const bool _z_join_cancelled = task->cancellation_requested || frame->child.task->cancelled;\n    z_stage1_async_remove_queued(frame->child.task);\n    if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n    if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n    frame->child = (Z_AsyncInvocation){0};\n    if (_z_join_cancelled) {\n");
+      output.append("    if (frame->child.task == NULL || !frame->child.task->completed) abort();\n    const bool _z_join_cancelled = task->cancellation_requested || frame->child.task->cancelled;\n    z_stage1_async_remove_queued(frame->child.task);\n    if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n    if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n    frame->child = (Z_AsyncInvocation){};\n    if (_z_join_cancelled) {\n");
       try appendAsyncFrameCompletion(inout output, program, declaration, functionType, "true", 3);
       output.append("    }\n");
       output.append(`    frame->_z_resume_state = ${waitingState + 1};\n  }\n  if (frame->_z_resume_state == ${waitingState + 1}) {\n`);
@@ -2100,7 +2115,7 @@ function appendAsyncStoredParameterCleanups(
       appendIndent(inout output, depth);
       output.append(`frame->argument${parameter} = `);
       if (stored.type.kind == LoweredTypeKind.foreignObjCType) output.append("nil");
-      else output.append(`(Z_${stored.type.name}){0}`);
+      else output.append(`(Z_${stored.type.name}){}`);
       output.append(";\n");
     }
   }
@@ -2468,9 +2483,9 @@ function appendAsyncTailTryStatement(
   output.append(statement.labels[1]);
   output.append("){.tag = Z_");
   output.append(statement.labels[1]);
-  output.append("Tag_failure, .payload.failure = ");
+  output.append("Tag_failure, .payload = { .failure = ");
   output.append(temporary);
-  output.append(".payload.failure};\n");
+  output.append(".payload.failure }};\n");
   if (loweredTypeNeedsDeinit(program, functionType.returnType)) {
     appendIndent(inout output, depth + 1);
     output.append("frame->live_result = true;\n");
@@ -2643,7 +2658,10 @@ function appendAsyncTailSynchronousMatch(
           && viewPayloadLoadsAsValue(type);
         const objectiveCPayload = type.kind
           == LoweredTypeKind.foreignObjCType;
-        const classPayload = objectiveCPayload || type.kind == LoweredTypeKind.classType;
+        const payloadType = try cType(type);
+        const classPayload = objectiveCPayload
+          || type.kind == LoweredTypeKind.classType
+          || cTypeIsPointer(payloadType);
         if (
           !arm.matchBindingNeedsCleanup
           && !nicheViewOption
@@ -2651,7 +2669,6 @@ function appendAsyncTailSynchronousMatch(
         ) {
           output.append("const ");
         }
-        const payloadType = try cType(type);
         output.append(payloadType);
         if (!arm.matchBindingNeedsCleanup && classPayload) {
           output.append(" const");
@@ -3724,7 +3741,13 @@ function programTaskTypeNames(
     for (const parameter of declaration.parameters) {
       appendTaskTypeName(inout names, parameter.type);
     }
+    let index: usize = 0;
     for (const statement of declaration.statements) {
+      // A general async frame's task local is an invocation slot.
+      const frameSlot = declaration.asyncSuspension == "yield-frame"
+        && yieldFrameSpawnExpression(declaration, index) < declaration.expressions.length;
+      index = index + 1;
+      if (frameSlot) continue;
       match (in statement.type) {
         some(type) => appendTaskTypeName(inout names, type);
         none => {}
@@ -3824,6 +3847,12 @@ function loweredTypeForIdentity(
     some(spelling) => return LoweredType({ kind: LoweredTypeKind.foreignObjCType, name: spelling });
     none => {}
   }
+  if (stringStartsWith(identity, "__z_objc_class:")) {
+    return LoweredType({
+      kind: LoweredTypeKind.foreignObjCType,
+      name: identity.copyBytes(15, identity.byteLength),
+    });
+  }
   if (identity == "void") return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
   if (identity == "boolean") return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
   if (identity == "i8") return LoweredType({ kind: LoweredTypeKind.i8Type, name: "" });
@@ -3921,6 +3950,13 @@ function loweredTypeForIdentity(
     if (declaration.name == identity) return LoweredType({
       kind: LoweredTypeKind.functionType,
       name: identity.copyBytes(0, identity.byteLength),
+    });
+  }
+  for (const name of program.cxxValueTypes) {
+    const escaped = loweredTypeIdentity(LoweredType({ kind: LoweredTypeKind.foreignStructType, name: copy name }));
+    if (name == identity || escaped == identity) return LoweredType({
+      kind: LoweredTypeKind.foreignStructType,
+      name: copy name,
     });
   }
   throw `native C emission cannot resolve intrinsic type identity ${identity}`;
@@ -4581,7 +4617,7 @@ function appendClassAndOnceRuntime(
       output.append(weakResultName);
       output.append("){ .tag = Z_");
       output.append(weakResultName);
-      output.append("Tag_failure, .payload.failure = (Z_WeakExpired){0} };\n  }\n  Z_");
+      output.append("Tag_failure, .payload = { .failure = (Z_WeakExpired){} } };\n  }\n  Z_");
       output.append(aggregate.name);
       output.append(" *value = (Z_");
       output.append(aggregate.name);
@@ -4589,9 +4625,9 @@ function appendClassAndOnceRuntime(
       output.append(weakResultName);
       output.append("){ .tag = Z_");
       output.append(weakResultName);
-      output.append("Tag_success, .payload.success = Z_");
+      output.append("Tag_success, .payload = { .success = Z_");
       output.append(aggregate.name);
-      output.append("_retain(value) };\n}\n\n");
+      output.append("_retain(value) } };\n}\n\n");
     }
     if (aggregate.executorBound) {
       output.append("static void Z_");
@@ -4932,9 +4968,8 @@ function appendConsoleCall(
       && declaration.expressions[index].labels[argument - 1] == "view";
     if (format == "string") {
       output.append("{ const Z_String *z_console_text = ");
-      if (!borrowedView) output.append("&(");
-      try appendExpression(inout output, declaration, value);
-      if (!borrowedView) output.append(")");
+      if (borrowedView) try appendExpression(inout output, declaration, value);
+      else try appendAddressOf(inout output, declaration, value);
       output.append(`; if (z_console_text->length > 0) fwrite(z_console_text->data, 1, z_console_text->length, ${stream}); } `);
     } else {
       if (format == "signed") output.append(`fprintf(${stream}, "%lld", (long long)(`);
@@ -4955,12 +4990,28 @@ function appendConsoleCall(
 }
 
 // The address of a borrowed value. A plain enum case is a C constant with no
-// storage, so it is held in a compound literal for the borrow.
+// storage, so it is held in a compound literal for the borrow. A string
+// literal borrows static storage: a compound literal is a temporary in C++.
 function appendAddressOf(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
   value: usize
 ): void throws String {
+  if (declaration.expressions[value].kind == LoweredExpressionKind.stringValue) {
+    output.append("Z_STRING_LITERAL_ADDRESS(");
+    appendCStringLiteral(inout output, declaration.expressions[value].value);
+    output.append(")");
+    return;
+  }
+  // A borrowed callable made at its use site lives for the call it is passed to.
+  if (isInlineBorrowedCallableTemporary(declaration, value)) {
+    output.append("Z_TEMPORARY_ADDRESS(Z_");
+    output.append(declaration.expressions[value].value);
+    output.append(", ");
+    try appendExpression(inout output, declaration, declaration.expressions[value].children[0]);
+    output.append(")");
+    return;
+  }
   const enumCase = declaration.expressions[value].kind == LoweredExpressionKind.enumValue
     && declaration.expressions[value].labels.length == 1
     && !isNicheViewOption(declaration.expressions[value].value);
@@ -4986,6 +5037,105 @@ function appendCallArgument(
 ): void throws String {
   if (borrowed) try appendAddressOf(inout output, declaration, value);
   else try appendExpression(inout output, declaration, value);
+}
+
+// An enum with a C++ payload is a C++ struct: its union member is constructed
+// and destroyed explicitly, as Stage 0's generateNativeMoveEnum. Values are
+// built through `make_<case>` factories; Z cleanup of Z payloads stays in the
+// enum's Z deinit helper and runs before the C++ destructor.
+function appendCxxPayloadEnum(
+  inout output: TextBuffer,
+  in declaration: LoweredEnum
+): void throws String {
+  const name = `Z_${declaration.name}`;
+  const tag = `${name}Tag`;
+  output.append(`struct ${name} {\n  ${tag} tag;\n  union ${name}_Payload {\n`);
+  for (const variant of declaration.variants) {
+    match (in variant.payload) {
+      some(type) => {
+        const payloadType = try cType(type);
+        output.append(`    ${payloadType} ${variant.name};\n`);
+      }
+      none => {}
+    }
+  }
+  output.append(`    ${name}_Payload() {}\n    ~${name}_Payload() {}\n  } payload;\n`);
+  output.append(`  explicit ${name}(${tag} value) : tag(value) {}\n`);
+  let moveCases = TextBuffer();
+  let copyCases = TextBuffer();
+  let destroyCases = TextBuffer();
+  for (const variant of declaration.variants) {
+    match (in variant.payload) {
+      some(_) => {
+        moveCases.append(`      case ${tag}_${variant.name}: std::construct_at(&payload.${variant.name}, std::move_if_noexcept(other.payload.${variant.name})); break;\n`);
+        copyCases.append(`      case ${tag}_${variant.name}: std::construct_at(&payload.${variant.name}, other.payload.${variant.name}); break;\n`);
+        destroyCases.append(`      case ${tag}_${variant.name}: std::destroy_at(&payload.${variant.name}); break;\n`);
+      }
+      none => {}
+    }
+  }
+  const moves = moveCases.finish();
+  const copies = copyCases.finish();
+  const destroys = destroyCases.finish();
+  output.append(`  ${name}(${name} &&other) noexcept : tag(other.tag) {\n    switch (tag) {\n${moves}      default: break;\n    }\n  }\n`);
+  if (declaration.cxxMoveOnlyPayloads) {
+    output.append(`  ${name}(const ${name} &) = delete;\n  ${name} &operator=(const ${name} &) = delete;\n`);
+  } else {
+    output.append(`  ${name}(const ${name} &other) : tag(other.tag) {\n    switch (tag) {\n${copies}      default: break;\n    }\n  }\n`);
+    output.append(`  ${name} &operator=(const ${name} &other) {\n    if (this != &other) { this->~${name}(); std::construct_at(this, other); }\n    return *this;\n  }\n`);
+  }
+  output.append(`  ${name} &operator=(${name} &&other) noexcept {\n    if (this != &other) { this->~${name}(); std::construct_at(this, std::move(other)); }\n    return *this;\n  }\n`);
+  output.append(`  ~${name}() {\n    switch (tag) {\n${destroys}      default: break;\n    }\n  }\n`);
+  for (const variant of declaration.variants) {
+    match (in variant.payload) {
+      some(type) => {
+        const payloadType = try cType(type);
+        output.append(`  static ${name} make_${variant.name}(${payloadType} value) {\n    ${name} result(${tag}_${variant.name});\n    std::construct_at(&result.payload.${variant.name}, std::move_if_noexcept(value));\n    return result;\n  }\n`);
+      }
+      none => output.append(`  static ${name} make_${variant.name}() { return ${name}(${tag}_${variant.name}); }\n`);
+    }
+  }
+  output.append(`};\ntypedef struct ${name} ${name};\n\n`);
+}
+
+// Destroy C++ elements last-to-first: Z cleanup of their Z members (when the
+// element also owns Z storage), then the C++ destructor.
+function appendCxxElementDestruction(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredArray,
+  in elementType: String
+): void {
+  output.append(`  ${elementType} *items = (${elementType} *)self->data;\n`);
+  output.append("  while (self->length > 0) {\n");
+  output.append("    self->length -= 1;\n");
+  if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
+    output.append(`    Z_${declaration.elementType.name}_deinit(&items[self->length]);\n`);
+  }
+  output.append("    std::destroy_at(&items[self->length]);\n");
+  output.append("  }\n");
+}
+
+function programUsesCxxMoves(in program: LoweredProgram): boolean {
+  for (const declaration of program.arrays) {
+    if (declaration.cxxElements) return true;
+  }
+  for (const declaration of program.enums) {
+    if (declaration.cxxPayloads) return true;
+  }
+  for (const declaration of program.maps) {
+    if (declaration.cxxValues) return true;
+  }
+  if (program.cxxValueTypes.length > 0) return true;
+  for (const function_ of program.functions) {
+    for (const expression of function_.expressions) {
+      if (
+        expression.kind == LoweredExpressionKind.moveValue
+        && labelsContain(expression.labels, "cpp-move")
+      ) return true;
+    }
+  }
+  return false;
 }
 
 function appendExpression(
@@ -5043,6 +5193,26 @@ function appendExpression(
     }
     throw `native C callback lowering has unknown ABI role "${role}"`;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.cppMethodCall) {
+    // C++ binds each argument as the member declares it (value or reference).
+    const children = view declaration.expressions[index].children;
+    if (children.length == 0) throw "native C++ method call lost its receiver";
+    const viewReceiver = declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "view-receiver";
+    output.append(viewReceiver ? "(*(" : "(");
+    try appendExpression(inout output, declaration, children[0]);
+    output.append(viewReceiver ? "))." : ").");
+    output.append(declaration.expressions[index].value);
+    output.append("(");
+    let argument: usize = 1;
+    while (argument < children.length) {
+      if (argument > 1) output.append(", ");
+      try appendExpression(inout output, declaration, children[argument]);
+      argument = argument + 1;
+    }
+    output.append(")");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.receiverValue) {
     let classReceiver = false;
     let valueReceiver = false;
@@ -5069,7 +5239,10 @@ function appendExpression(
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.closureCaptureValue) {
     output.append("(");
-    if (declaration.expressions[index].labels[0] != "value") output.append("*");
+    if (
+      declaration.expressions[index].labels[0] != "value"
+      && declaration.expressions[index].labels[0] != "view"
+    ) output.append("*");
     output.append("_z_stage1_callable_environment->");
     appendCBindingName(inout output, declaration.expressions[index].value);
     output.append(")");
@@ -5108,11 +5281,7 @@ function appendExpression(
       const borrowedEnvironment = callableBorrowsEnvironment(
         declaration.expressions[index]
       );
-      if (borrowedEnvironment) {
-        output.append("&(");
-        appendCallableHelperName(inout output, declaration, index);
-        output.append("_environment){0}, ");
-      }
+      if (borrowedEnvironment) output.append(`&_z_stage1_environment_${index}, `);
       let capture: usize = declaration.expressions[index].closureBlockBody
         ? usize(0)
         : usize(1);
@@ -5126,7 +5295,8 @@ function appendExpression(
         const modeIndex = capture - (declaration.expressions[index].closureBlockBody
           ? usize(0) : usize(1));
         const pointer = modeIndex < declaration.expressions[index].closureCaptureModes.length
-          && declaration.expressions[index].closureCaptureModes[modeIndex] != "value";
+          && declaration.expressions[index].closureCaptureModes[modeIndex] != "value"
+          && declaration.expressions[index].closureCaptureModes[modeIndex] != "view";
         if (pointer) output.append("&(");
         try appendExpression(inout output, declaration, value);
         if (pointer) output.append(")");
@@ -5174,12 +5344,13 @@ function appendExpression(
         && parameter.type.kind == LoweredTypeKind.foreignObjCType
       ) foreignObjCParameter = true;
     }
+    // In an async frame the parameter's pointer lives in the frame.
     if (foreignObjCParameter) {
-      appendCBindingName(inout output, declaration.expressions[index].value);
+      appendAsyncFrameBindingName(inout output, declaration, declaration.expressions[index].value);
       return;
     }
     output.append("(*");
-    appendCBindingName(inout output, declaration.expressions[index].value);
+    appendAsyncFrameBindingName(inout output, declaration, declaration.expressions[index].value);
     output.append(")");
     return;
   }
@@ -5197,6 +5368,12 @@ function appendExpression(
   ) {
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received a malformed cstring projection";
+    }
+    const projected = declaration.expressions[index].children[0];
+    if (declaration.expressions[projected].kind == LoweredExpressionKind.stringValue) {
+      // A literal is already NUL-terminated static storage, as in Stage 0.
+      appendCStringLiteral(inout output, declaration.expressions[projected].value);
+      return;
     }
     output.append("z_stage1_string_cstring(");
     const value = declaration.expressions[index].children[0];
@@ -5223,34 +5400,34 @@ function appendExpression(
         || declaration.expressions[index].labels[part] == "String"
         || declaration.expressions[index].labels[part] == "view String"
       ) {
-        output.append("Z_TEMPLATE_STRING, .value.string_value = ");
+        output.append("Z_TEMPLATE_STRING, .value = { .string_value = ");
       } else if (
         declaration.expressions[index].labels[part] == "boolean"
       ) {
-        output.append("Z_TEMPLATE_BOOLEAN, .value.boolean_value = ");
+        output.append("Z_TEMPLATE_BOOLEAN, .value = { .boolean_value = ");
       } else if (
         declaration.expressions[index].labels[part] == "i8"
         || declaration.expressions[index].labels[part] == "i16"
         || declaration.expressions[index].labels[part] == "i32"
       ) {
-        output.append("Z_TEMPLATE_I32, .value.i32_value = ");
+        output.append("Z_TEMPLATE_I32, .value = { .i32_value = ");
       } else if (
         declaration.expressions[index].labels[part] == "i64"
         || declaration.expressions[index].labels[part] == "isize"
       ) {
-        output.append("Z_TEMPLATE_I64, .value.i64_value = ");
+        output.append("Z_TEMPLATE_I64, .value = { .i64_value = ");
       } else if (declaration.expressions[index].labels[part] == "u8") {
-        output.append("Z_TEMPLATE_U8, .value.u8_value = ");
+        output.append("Z_TEMPLATE_U8, .value = { .u8_value = ");
       } else if (
         declaration.expressions[index].labels[part] == "u16"
         || declaration.expressions[index].labels[part] == "u32"
         || declaration.expressions[index].labels[part] == "u64"
       ) {
-        output.append("Z_TEMPLATE_U64, .value.u64_value = ");
+        output.append("Z_TEMPLATE_U64, .value = { .u64_value = ");
       } else if (declaration.expressions[index].labels[part] == "usize") {
-        output.append("Z_TEMPLATE_USIZE, .value.usize_value = ");
+        output.append("Z_TEMPLATE_USIZE, .value = { .usize_value = ");
       } else if (declaration.expressions[index].labels[part] == "f64") {
-        output.append("Z_TEMPLATE_F64, .value.f64_value = ");
+        output.append("Z_TEMPLATE_F64, .value = { .f64_value = ");
       } else {
         throw "native C emission cannot format this template value type";
       }
@@ -5260,7 +5437,7 @@ function appendExpression(
       if (viewString) output.append("(*(");
       try appendExpression(inout output, declaration, value);
       if (viewString) output.append("))");
-      output.append(" }");
+      output.append(" } }");
       part = part + 1;
     }
     output.append("}, ");
@@ -6041,6 +6218,44 @@ function appendExpression(
       throw "native C emission received a malformed class output slot";
     }
     const operand = expression.children[0];
+    if (expression.labels.length > 1 && expression.labels[1] == "value") {
+      // A value `out` slot: destroy a live previous value, then the callee
+      // initializes it. Without a flag, only the function's own `out`
+      // parameter is known to arrive uninitialized.
+      let destroy = expression.value.byteLength > 0;
+      if (!destroy) {
+        destroy = true;
+        if (declaration.expressions[operand].kind == LoweredExpressionKind.parameterValue) {
+          for (const parameter of declaration.parameters) {
+            if (
+              parameter.name == declaration.expressions[operand].value
+              && parameter.mode == LoweredParameterMode.output
+            ) destroy = false;
+          }
+        }
+      }
+      output.append("*({ ");
+      if (destroy) {
+        if (expression.value.byteLength > 0) {
+          output.append("if (");
+          output.append(expression.value);
+          output.append(") ");
+        }
+        output.append("Z_");
+        output.append(expression.labels[0]);
+        output.append("_deinit(&(");
+        try appendExpression(inout output, declaration, operand);
+        output.append(")); ");
+      }
+      if (expression.value.byteLength > 0) {
+        output.append(expression.value);
+        output.append(" = true; ");
+      }
+      output.append("&(");
+      try appendExpression(inout output, declaration, operand);
+      output.append("); })");
+      return;
+    }
     // Keep this an lvalue: ordinary call lowering takes its address. Evaluation
     // stays inside the call's branch, including short-circuit expressions.
     output.append("*({ ");
@@ -6070,15 +6285,20 @@ function appendExpression(
       throw "native C emission received a malformed move expression";
     }
     const operand = declaration.expressions[index].children[0];
+    const cppMove = labelsContain(declaration.expressions[index].labels, "cpp-move");
     if (declaration.expressions[index].value.byteLength > 0) {
       output.append("(");
       output.append(declaration.expressions[index].value);
       output.append(" = false, ");
+      if (cppMove) output.append("std::move(");
       try appendExpression(inout output, declaration, operand);
+      if (cppMove) output.append(")");
       output.append(")");
       return;
     }
+    if (cppMove) output.append("std::move(");
     try appendExpression(inout output, declaration, operand);
+    if (cppMove) output.append(")");
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.copyValue) {
@@ -6107,7 +6327,7 @@ function appendExpression(
     output.append("(__typeof__(");
     const storage = declaration.expressions[index].children[0];
     try appendExpression(inout output, declaration, storage);
-    output.append(")){0}");
+    output.append(")){}");
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.retainValue) {
@@ -6301,7 +6521,7 @@ function appendExpression(
       output.append(declaration.expressions[index].value);
       output.append("){.tag = Z_");
       output.append(declaration.expressions[index].value);
-      output.append("Tag_some, .payload.some = ");
+      output.append("Tag_some, .payload = { .some = ");
     } else if (
       declaration.expressions[index].labels[2] != "flatten"
     ) {
@@ -6312,7 +6532,7 @@ function appendExpression(
     output.append(").payload.some.");
     output.append(declaration.expressions[index].labels[1]);
     if (declaration.expressions[index].labels[2] == "wrap") {
-      output.append("}");
+      output.append("}}");
     }
     output.append(" : (Z_");
     output.append(declaration.expressions[index].value);
@@ -6362,11 +6582,11 @@ function appendExpression(
     output.append(declaration.expressions[index].value);
     output.append("){.tag = Z_");
     output.append(declaration.expressions[index].value);
-    output.append("Tag_some, .payload.some = z_string_byte_at((");
+    output.append("Tag_some, .payload = { .some = z_string_byte_at((");
     try appendExpression(inout output, declaration, optionalCallSource);
     output.append(").payload.some, ");
     try appendExpression(inout output, declaration, optionalCallArgument);
-    output.append(")} : (Z_");
+    output.append(")}} : (Z_");
     output.append(declaration.expressions[index].value);
     output.append("){.tag = Z_");
     output.append(declaration.expressions[index].value);
@@ -6539,6 +6759,7 @@ function appendExpression(
     const receiver = declaration.expressions[index].children[0];
     const classReceiver = declaration.expressions[index].labels.length > 0
       && (declaration.expressions[index].labels[0] == "class"
+        || declaration.expressions[index].labels[0] == "viewStruct"
         || declaration.expressions[index].labels[0] == "nativeHelper"
         || declaration.expressions[index].labels[0] == "nativeHelperSelf");
     const moveReceiver = declaration.expressions[index].labels.length > 1
@@ -7557,9 +7778,12 @@ function appendExpression(
     ) output.append("Z_");
     output.append(declaration.expressions[index].value);
     output.append("){");
-    let field: usize = 0;
-    while (field < declaration.expressions[index].children.length) {
-      if (field > 0) output.append(", ");
+    const ordered = declaration.expressions[index].fieldOrder.length
+      == declaration.expressions[index].children.length;
+    let position: usize = 0;
+    while (position < declaration.expressions[index].children.length) {
+      const field = ordered ? declaration.expressions[index].fieldOrder[position] : position;
+      if (position > 0) output.append(", ");
       output.append(".");
       if (declaration.expressions[index].kind == LoweredExpressionKind.foreignStructValue) {
         output.append(declaration.expressions[index].labels[field]);
@@ -7567,7 +7791,7 @@ function appendExpression(
       output.append(" = ");
       const value = declaration.expressions[index].children[field];
       try appendExpression(inout output, declaration, value);
-      field = field + 1;
+      position = position + 1;
     }
     output.append("}");
     return;
@@ -7587,6 +7811,10 @@ function appendExpression(
       return;
     }
     if (declaration.expressions[index].labels.length == 2) {
+      if (declaration.expressions[index].cxxEnumFactory) {
+        output.append(`Z_${declaration.expressions[index].value}::make_${declaration.expressions[index].labels[0]}()`);
+        return;
+      }
       output.append("(Z_");
       output.append(declaration.expressions[index].value);
       output.append("){.tag = Z_");
@@ -7626,13 +7854,19 @@ function appendExpression(
       try appendExpression(inout output, declaration, payload);
       return;
     }
+    if (declaration.expressions[index].cxxEnumFactory) {
+      output.append(`Z_${declaration.expressions[index].value}::make_${declaration.expressions[index].labels[0]}(`);
+      try appendExpression(inout output, declaration, declaration.expressions[index].children[0]);
+      output.append(")");
+      return;
+    }
     output.append("(Z_");
     output.append(declaration.expressions[index].value);
     output.append("){.tag = Z_");
     output.append(declaration.expressions[index].value);
     output.append("Tag_");
     output.append(declaration.expressions[index].labels[0]);
-    output.append(", .payload.");
+    output.append(", .payload = { .");
     output.append(declaration.expressions[index].labels[0]);
     output.append(" = ");
     const payload = declaration.expressions[index].children[0];
@@ -7643,7 +7877,7 @@ function appendExpression(
     if (declaration.expressions[index].objectiveCOwnedPayload) {
       output.append(")");
     }
-    output.append("}");
+    output.append("}}");
     return;
   }
   throw "native C emission does not support this lowered expression yet";
@@ -7684,16 +7918,41 @@ function isLazyOperation(
     || declaration.expressions[index].kind == LoweredExpressionKind.conditionalValue;
 }
 
+// A non-escaping closure's captures live in caller storage for the
+// statement; it is named because a C++ compound literal is a temporary.
+function closureBorrowsEnvironmentStorage(
+  in declaration: LoweredFunction,
+  index: usize
+): boolean {
+  return declaration.expressions[index].kind == LoweredExpressionKind.closureValue
+    && declaration.expressions[index].captureTypes.length > 0
+    && callableBorrowsEnvironment(declaration.expressions[index]);
+}
+
+function appendBorrowedEnvironmentStorage(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  index: usize,
+  depth: usize
+): void {
+  if (!closureBorrowsEnvironmentStorage(declaration, index)) return;
+  appendIndent(inout output, depth);
+  appendCallableHelperName(inout output, declaration, index);
+  output.append(`_environment _z_stage1_environment_${index} = {};\n`);
+}
+
 function containsBorrowedTemporary(
   in declaration: LoweredFunction,
   index: usize
 ): boolean {
-  if (isInlineBorrowedCallableTemporary(declaration, index)) return false;
+  if (isInlineBorrowedCallableTemporary(declaration, index)) {
+    return closureBorrowsEnvironmentStorage(declaration, declaration.expressions[index].children[0]);
+  }
   if (isLazyOperation(declaration, index)) return false;
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.closureValue
-  ) return false;
+  ) return closureBorrowsEnvironmentStorage(declaration, index);
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.borrowedTemporary
@@ -7710,12 +7969,18 @@ function appendBorrowedTemporaryInitializers(
   index: usize,
   depth: usize
 ): void throws String {
-  if (isInlineBorrowedCallableTemporary(declaration, index)) return;
+  if (isInlineBorrowedCallableTemporary(declaration, index)) {
+    appendBorrowedEnvironmentStorage(inout output, declaration, declaration.expressions[index].children[0], depth);
+    return;
+  }
   if (isLazyOperation(declaration, index)) return;
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.closureValue
-  ) return;
+  ) {
+    appendBorrowedEnvironmentStorage(inout output, declaration, index, depth);
+    return;
+  }
   for (const child of declaration.expressions[index].children) {
     try appendBorrowedTemporaryInitializers(
       inout output,
@@ -7740,7 +8005,8 @@ function appendBorrowedTemporaryInitializers(
       && declaration.expressions[declaration.expressions[index].children[0]].kind
         == LoweredExpressionKind.structValue)
     && !(declaration.expressions[index].labels.length == 1
-      && declaration.expressions[index].labels[0] == "discarded")
+      && (declaration.expressions[index].labels[0] == "discarded"
+        || declaration.expressions[index].labels[0] == "cleanup-free"))
   ) {
     throw "native C emission received an unsupported borrowed temporary type";
   }
@@ -7777,6 +8043,7 @@ function appendBorrowedTemporaryCleanups(
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.borrowedTemporary
+    && !labelsContain(declaration.expressions[index].labels, "cleanup-free")
   ) {
     appendIndent(inout output, depth);
     if (declaration.expressions[index].value == "Weak") {
@@ -7894,6 +8161,11 @@ function appendCondition(
   if (!alreadyGrouped) output.append("(");
   try appendExpression(inout output, declaration, index);
   if (!alreadyGrouped) output.append(")");
+}
+
+// A C spelling that is itself a pointer, such as a runtime handle.
+function cTypeIsPointer(in type: String): boolean {
+  return type.byteLength > 0 && type.byteAt(type.byteLength - 1) == 42;
 }
 
 function testValueTargetType(in typeName: String): String {
@@ -8173,9 +8445,9 @@ function appendLocalStatementStorage(
     output.append(outerResult);
     output.append("){.tag = Z_");
     output.append(outerResult);
-    output.append("Tag_failure, .payload.failure = ");
+    output.append("Tag_failure, .payload = { .failure = ");
     output.append(temporary);
-    output.append(".payload.failure};\n");
+    output.append(".payload.failure }};\n");
     appendCleanups(
       inout output,
       declaration.statements[index].cleanups,
@@ -8243,8 +8515,9 @@ function appendLocalStatementStorage(
     none => false;
   };
   const viewStorage = match (in declaration.statements[index].expression) {
-    some(initializer) => declaration.expressions[initializer].kind
-      == LoweredExpressionKind.viewProjection
+    some(initializer) => declaration.expressions[initializer].resultView
+      || declaration.expressions[initializer].kind
+        == LoweredExpressionKind.viewProjection
       || declaration.expressions[initializer].kind
         == LoweredExpressionKind.arenaCreate
       || (
@@ -8303,6 +8576,7 @@ function appendLocalStatementStorage(
     output.append(" const ");
   } else if (
     !declaration.statements[index].mutableBinding
+    && !declaration.statements[index].cppMoveStorage
     && constStorage
     && hasInitializer
   ) {
@@ -8346,7 +8620,12 @@ function appendLocalStatementStorage(
     appendIndent(inout output, depth);
     output.append("bool ");
     appendCBindingName(inout output, declaration.statements[index].liveFlag);
-    output.append(" = true;\n");
+    // A local declared without a value is not live until assigned.
+    let declaredLive = true;
+    for (const label of declaration.statements[index].labels) {
+      if (label == "declared-without-value") declaredLive = false;
+    }
+    output.append(declaredLive ? " = true;\n" : " = false;\n");
     if (
       (
         declaration.asyncSuspension == "tail-await"
@@ -8426,9 +8705,9 @@ function appendTryStatement(
   output.append(declaration.statements[index].labels[1]);
   output.append("){.tag = Z_");
   output.append(declaration.statements[index].labels[1]);
-  output.append("Tag_failure, .payload.failure = ");
+  output.append("Tag_failure, .payload = { .failure = ");
   output.append(temporary);
-  output.append(".payload.failure};\n");
+  output.append(".payload.failure }};\n");
   appendCleanups(
     inout output,
     declaration.statements[index].cleanups,
@@ -8653,11 +8932,15 @@ function appendEnumMatchStart(
     output.append(matchTemporary);
     output.append(" = ");
     match (in declaration.statements[index].expression) {
-      some(subject) => try appendExpression(
-        inout output,
-        declaration,
-        subject
-      );
+      some(subject) => {
+        // A C++-payload enum place is moved into the match temporary.
+        const movePlace = declaration.statements[index].cppPayload
+          && (declaration.expressions[subject].kind == LoweredExpressionKind.localValue
+            || declaration.expressions[subject].kind == LoweredExpressionKind.fieldValue);
+        if (movePlace) output.append("std::move(");
+        try appendExpression(inout output, declaration, subject);
+        if (movePlace) output.append(")");
+      }
       none => throw "native C emission received a match without a subject";
     }
     output.append(";\n");
@@ -8758,19 +9041,30 @@ function appendEnumMatchArmStart(
           type.kind == LoweredTypeKind.classType
           || type.kind == LoweredTypeKind.foreignObjCType
         );
-      // A class is already a pointer. Borrowed payload bindings freeze the
-      // pointer slot, not its pointee, matching ordinary `in Class` parameters.
+      // A class or other handle is already a pointer. Borrowed payload
+      // bindings freeze the pointer slot, not its pointee, matching ordinary
+      // `in Class` parameters.
+      const payloadType = try cType(type);
       const constantClassPayload = !declaration.statements[arm].matchBindingNeedsCleanup
-        && (type.kind == LoweredTypeKind.classType || type.kind == LoweredTypeKind.foreignObjCType);
+        && (
+          type.kind == LoweredTypeKind.classType
+          || type.kind == LoweredTypeKind.foreignObjCType
+          || cTypeIsPointer(payloadType)
+        );
+      // A niche view Option is a plain pointer, not a C++-payload enum.
+      const cppPayload = declaration.statements[index].cppPayload && !nicheViewOption;
+      const cppConsumed = cppPayload && declaration.statements[index].matchConsumesSubject;
       if (
         !declaration.statements[arm].matchBindingNeedsCleanup
         && !nicheViewOption
         && !constantClassPayload
+        && !cppConsumed
       ) {
         output.append("const ");
       }
-      const payloadType = try cType(type);
       output.append(payloadType);
+      // A borrowed C++ payload binds by reference; a consumed one is moved out.
+      if (cppPayload && !cppConsumed) output.append(" &");
       if (constantClassPayload) output.append(" const");
       if (
         nicheViewOption
@@ -8796,6 +9090,7 @@ function appendEnumMatchArmStart(
           ? "z_stage1_objc_take(&"
           : "z_stage1_objc_borrow(&");
       }
+      if (cppConsumed) output.append("std::move_if_noexcept(");
       if (declaration.statements[index].matchConsumesSubject || !nicheViewOption) {
         output.append(matchTemporary);
       } else {
@@ -8821,6 +9116,7 @@ function appendEnumMatchArmStart(
         output.append(declaration.statements[arm].name);
       }
       if (objectiveCPayload) output.append(")");
+      if (cppConsumed) output.append(")");
       output.append(";\n");
       if (declaration.statements[arm].liveFlag.byteLength > 0) {
         appendIndent(inout output, depth + 2);
@@ -8947,9 +9243,9 @@ function appendStatement(
     output.append(declaration.returnType.name);
     output.append("){ .tag = Z_");
     output.append(declaration.returnType.name);
-    output.append("Tag_failure, .payload.failure = ");
+    output.append("Tag_failure, .payload = { .failure = ");
     output.append(failureName);
-    output.append(" };\n");
+    output.append(" } };\n");
     appendIndent(inout output, depth);
     output.append("}\n");
     return;
@@ -8993,6 +9289,7 @@ function appendStatement(
             some(type) => returnType = try cType(type);
             none => returnType = try cType(declaration.returnType);
           }
+          if (declaration.returnsView) returnType = `const ${returnType} *`;
           output.append(returnType);
           output.append(` _z_stage1_return_${index} = `);
           try appendExpression(inout output, declaration, expression);
@@ -9026,6 +9323,7 @@ function appendStatement(
         some(type) => returnType = try cType(type);
         none => returnType = try cType(declaration.returnType);
       }
+      if (declaration.returnsView) returnType = `const ${returnType} *`;
       output.append(returnType);
       output.append(` _z_stage1_return_${index} = `);
       try appendExpression(inout output, declaration, expression);
@@ -9115,7 +9413,11 @@ function appendStatement(
         output.append(`_deinit(_z_stage1_assignment_slot_${index});\n`);
       }
       appendIndent(inout output, depth);
-      output.append(`*_z_stage1_assignment_slot_${index} = _z_stage1_assignment_${index};\n`);
+      if (declaration.statements[index].cppMoveStorage) {
+        output.append(`*_z_stage1_assignment_slot_${index} = std::move_if_noexcept(_z_stage1_assignment_${index});\n`);
+      } else {
+        output.append(`*_z_stage1_assignment_slot_${index} = _z_stage1_assignment_${index};\n`);
+      }
       if (declaration.statements[index].cleanups[0].guard.byteLength > 0) {
         appendIndent(inout output, depth);
         output.append(declaration.statements[index].cleanups[0].guard);
@@ -9487,7 +9789,8 @@ function appendFunctionSignature(
     }
     none => {}
   }
-  const returnType = try cType(declaration.returnType);
+  let returnType = try cType(declaration.returnType);
+  if (declaration.returnsView) returnType = `const ${returnType} *`;
   const throwingMain = isThrowingMain(declaration);
   let method = false;
   match (in declaration.receiverType) {
@@ -9938,9 +10241,9 @@ function appendDerivedJsonFailureResult(
   output.append(resultType);
   output.append("){ .tag = Z_");
   output.append(declaration.returnType.name);
-  output.append("Tag_failure, .payload.failure = (");
+  output.append("Tag_failure, .payload = { .failure = (");
   output.append(errorStorage);
-  output.append("){ .message = (Z_String){ .data = _z_json_message, .length = (size_t)strlen(_z_json_message), .capacity = 0 }, .offset = reader.offset, .line = reader.line, .column = reader.column } };\n");
+  output.append("){ .message = (Z_String){ .data = _z_json_message, .length = (size_t)strlen(_z_json_message), .capacity = 0 }, .offset = reader.offset, .line = reader.line, .column = reader.column } } };\n");
 }
 
 function derivedJsonErrorType(
@@ -10005,7 +10308,7 @@ function appendDerivedJsonDecode(
     output.append(reachableTarget.name);
     output.append(" *decoded) {\n  Z_");
     output.append(reachableTarget.name);
-    output.append(" value = {0};\n  Z_String key = { NULL, 0, 0 };\n  bool key_live = false;\n");
+    output.append(" value = {};\n  Z_String key = { NULL, 0, 0 };\n  bool key_live = false;\n");
     for (const field of reachableTarget.fields) {
       output.append("  bool seen_");
       appendCFieldName(inout output, field.name);
@@ -10049,7 +10352,7 @@ function appendDerivedJsonDecode(
         appendCFieldName(inout output, field.name);
         output.append(" = (Z_");
         output.append(field.type.name);
-        output.append("){0};\n");
+        output.append("){};\n");
       }
       const option = try derivedJsonOptionPayload(program, field.type);
       let optional = false;
@@ -10094,7 +10397,7 @@ function appendDerivedJsonDecode(
         } else {
           output.append("          Z_");
           output.append(element.name);
-          output.append(" _z_json_item = {0}; if (!z_json_derived_decode_");
+          output.append(" _z_json_item = {}; if (!z_json_derived_decode_");
           appendCBindingName(inout output, declaration.name);
           output.append("_");
           appendCBindingName(inout output, element.name);
@@ -10202,7 +10505,7 @@ function appendDerivedJsonDecode(
   output.append("  Z_JsonDerivedReader reader = { .data = source->data != NULL ? source->data : \"\", .length = source->length, .offset = 0, .line = 1, .column = 1, .message = NULL };\n");
   output.append("  ");
   output.append(targetType);
-  output.append(" value = {0};\n  if (!z_json_derived_decode_");
+  output.append(" value = {};\n  if (!z_json_derived_decode_");
   appendCBindingName(inout output, declaration.name);
   output.append("_");
   appendCBindingName(inout output, target.name);
@@ -10212,7 +10515,7 @@ function appendDerivedJsonDecode(
   output.append(resultType);
   output.append("){ .tag = Z_");
   output.append(declaration.returnType.name);
-  output.append("Tag_success, .payload.success = value };\n\n_z_json_value_failure:\n");
+  output.append("Tag_success, .payload = { .success = value } };\n\n_z_json_value_failure:\n");
   if (target.needsDeinit) {
     output.append("  Z_");
     output.append(target.name);
@@ -10353,19 +10656,19 @@ function appendDerivedJsonEncode(
     output.append("  z_string_append_bytes(output, \"}\", 1);\n  return true;\n}\n\n");
   }
   try appendFunctionSignature(inout output, declaration, processArguments);
-  output.append(" {\n  Z_String output = { NULL, 0, 0 };\n  Z_JsonEncodeFailure failure = {0};\n  if (!");
+  output.append(" {\n  Z_String output = { NULL, 0, 0 };\n  Z_JsonEncodeFailure failure = {};\n  if (!");
   output.append(derivedJsonEncodeHelperName(declaration, program.structs[structIndex].name));
   output.append("(&output, value, NULL, &failure)) {\n    z_json_encode_finish(&failure);\n    if (output.capacity > 0) free((void *)output.data);\n    return (");
   output.append(resultType);
   output.append("){ .tag = Z_");
   output.append(declaration.returnType.name);
-  output.append("Tag_failure, .payload.failure = (");
+  output.append("Tag_failure, .payload = { .failure = (");
   output.append(errorStorage);
-  output.append("){ .path = failure.path, .message = (Z_String){ .data = failure.message, .length = strlen(failure.message), .capacity = 0 } } };\n  }\n  z_json_encode_finish(&failure);\n  return (");
+  output.append("){ .path = failure.path, .message = (Z_String){ .data = failure.message, .length = strlen(failure.message), .capacity = 0 } } } };\n  }\n  z_json_encode_finish(&failure);\n  return (");
   output.append(resultType);
   output.append("){ .tag = Z_");
   output.append(declaration.returnType.name);
-  output.append("Tag_success, .payload.success = output };\n}\n\n");
+  output.append("Tag_success, .payload = { .success = output } };\n}\n\n");
 }
 
 function derivedJsonEncodeHelperName(
@@ -10821,7 +11124,6 @@ function appendYieldFrameParameters(
 ): void throws String {
   let index: usize = 0;
   for (const parameter of parameters) {
-    if (parameter.mode != LoweredParameterMode.value) throw "native yield frames require owned value parameters";
     output.append(", ");
     const name = `_z_argument_${index}`;
     try appendCallableParameterDeclaration(inout output, parameter, name);
@@ -10865,7 +11167,7 @@ function appendYieldFrameCleanups(
       else {
         output.append("(Z_");
         output.append(cleanup.type.name);
-        output.append("){0}");
+        output.append("){}");
       }
       output.append(";\n");
     }
@@ -10889,7 +11191,10 @@ function yieldFrameExpressionContainsAwait(in declaration: LoweredFunction, inde
   const expression = view declaration.expressions[index];
   if (expression.kind == LoweredExpressionKind.closureValue) return false;
   if (expression.kind == LoweredExpressionKind.asyncFunctionAwait
-    || expression.kind == LoweredExpressionKind.threadAwait) return true;
+    || expression.kind == LoweredExpressionKind.threadAwait
+    || expression.kind == LoweredExpressionKind.frameTaskJoin
+    || expression.kind == LoweredExpressionKind.frameTaskCancel
+    || expression.kind == LoweredExpressionKind.asyncFunctionTask) return true;
   for (const child of expression.children) {
     if (yieldFrameExpressionContainsAwait(declaration, child)) return true;
   }
@@ -10910,14 +11215,296 @@ function yieldFrameAwaitType(
     if (!functionType.asynchronous || functionType.parameters.length + 1 != awaited.children.length) {
       throw "native yield frame lost its child callable signature";
     }
-    for (const parameter of functionType.parameters) {
-      if (parameter.mode != LoweredParameterMode.value) {
-        throw "native yield-frame child awaits require owned value arguments; borrowed child loans remain a later tier";
-      }
-    }
     return copy functionType.returnType;
   }
   throw "native yield frame lost its child result type";
+}
+
+// A spawn site: a root local or expression statement starting `task f()`.
+function yieldFrameSpawnExpression(in declaration: LoweredFunction, index: usize): usize {
+  const statement = view declaration.statements[index];
+  if (statement.kind != LoweredStatementKind.localStatement
+    && statement.kind != LoweredStatementKind.expressionStatement) return declaration.expressions.length;
+  return match (in statement.expression) {
+    some(expression) => declaration.expressions[expression].kind == LoweredExpressionKind.asyncFunctionTask
+      ? expression : declaration.expressions.length;
+    none => declaration.expressions.length;
+  };
+}
+
+// The frame slot of a spawn site: a task local's own field, or a hidden slot.
+function yieldFrameSpawnSlot(in declaration: LoweredFunction, index: usize): String {
+  let slot = TextBuffer();
+  const statement = view declaration.statements[index];
+  if (statement.kind == LoweredStatementKind.localStatement) {
+    slot.append("frame->_z_binding_");
+    appendCBindingName(inout slot, statement.name);
+  } else slot.append(`frame->_z_spawn_${index}`);
+  return slot.finish();
+}
+
+function yieldFrameTaskSlotNamed(in declaration: LoweredFunction, in name: String): String throws String {
+  let index: usize = 0;
+  while (index < declaration.statements.length) {
+    if (declaration.statements[index].kind == LoweredStatementKind.localStatement
+      && declaration.statements[index].name == name
+      && yieldFrameSpawnExpression(declaration, index) < declaration.expressions.length) {
+      return yieldFrameSpawnSlot(declaration, index);
+    }
+    index = index + 1;
+  }
+  throw "native async frame lost the spawn slot of a task join";
+}
+
+// `await t` on a spawn-slot task local, as a whole statement's value.
+function yieldFrameJoinExpression(in declaration: LoweredFunction, index: usize): usize {
+  return match (in declaration.statements[index].expression) {
+    some(expression) => declaration.expressions[expression].kind == LoweredExpressionKind.frameTaskJoin
+      ? expression : declaration.expressions.length;
+    none => declaration.expressions.length;
+  };
+}
+
+function yieldFrameCancelExpression(in declaration: LoweredFunction, index: usize): usize {
+  if (declaration.statements[index].kind != LoweredStatementKind.expressionStatement) {
+    return declaration.expressions.length;
+  }
+  return match (in declaration.statements[index].expression) {
+    some(expression) => declaration.expressions[expression].kind == LoweredExpressionKind.frameTaskCancel
+      ? expression : declaration.expressions.length;
+    none => declaration.expressions.length;
+  };
+}
+
+function yieldFrameJoinSlot(in declaration: LoweredFunction, expression: usize): String throws String {
+  const task = declaration.expressions[expression].children[0];
+  return try yieldFrameTaskSlotNamed(declaration, declaration.expressions[task].value);
+}
+
+// Spawn statements directly inside an unnamed `async scope` statement.
+function yieldFrameScopeSpawns(in declaration: LoweredFunction, scopeIndex: usize): Array<usize> {
+  let sites = Array<usize>();
+  const statement = view declaration.statements[scopeIndex];
+  if (statement.kind != LoweredStatementKind.blockStatement
+    || !labelsContain(statement.labels, "async-scope")
+    || statement.children.length != 1) return sites;
+  for (const child of declaration.statements[statement.children[0]].children) {
+    if (yieldFrameSpawnExpression(declaration, child) < declaration.expressions.length) sites.push(child);
+  }
+  return sites;
+}
+
+function yieldFrameScopeJoinState(in declaration: LoweredFunction, site: usize): usize {
+  return declaration.statements.length * 2 + 1 + site;
+}
+
+function appendYieldFrameSpawn(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  statementIndex: usize, expression: usize, depth: usize
+): void throws String {
+  const spawned = view declaration.expressions[expression];
+  const slot = yieldFrameSpawnSlot(declaration, statementIndex);
+  appendIndent(inout output, depth);
+  output.append("{\n");
+  try appendBorrowedTemporaryInitializers(inout output, declaration, expression, depth);
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task != NULL) abort();\n`);
+  appendIndent(inout output, depth);
+  output.append(`${slot} = Z_${spawned.value}_start(`);
+  try appendExpression(inout output, declaration, spawned.children[0]);
+  output.append(", task->executor");
+  try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, true);
+  output.append(");\n");
+  appendBorrowedTemporaryCleanups(inout output, declaration, expression, depth);
+  // A hot child: it runs on this executor once the parent suspends.
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task == NULL) abort();\n`);
+  appendIndent(inout output, depth);
+  output.append(`if (!${slot}.task->completed) z_stage1_async_enqueue(task->executor, ${slot}.task);\n`);
+  const live = view declaration.statements[statementIndex].liveFlag;
+  if (live.byteLength > 0) {
+    appendIndent(inout output, depth);
+    output.append(`${live} = true;\n`);
+  }
+  appendIndent(inout output, depth);
+  output.append("}\n");
+}
+
+// Joins a spawn slot and opens the block holding its result temporary, as
+// appendYieldFrameAwait does for an awaited child.
+function appendYieldFrameJoin(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
+  statementIndex: usize, expression: usize, in resultType: LoweredType, depth: usize
+): void throws String {
+  const slot = try yieldFrameJoinSlot(declaration, expression);
+  const frameName = yieldFrameName(declaration);
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task == NULL) abort();\n`);
+  appendIndent(inout output, depth);
+  output.append(`frame->state = ${statementIndex + 1};\n`);
+  appendIndent(inout output, depth);
+  output.append(`if (!${slot}.task->completed) {\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`if (${slot}.task->waiter != NULL) abort();\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`${slot}.task->waiter = task;\n`);
+  appendIndent(inout output, depth + 1);
+  output.append("return;\n");
+  appendIndent(inout output, depth);
+  output.append(`}\n_z_resume_${statementIndex}:;\n`);
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task == NULL || !${slot}.task->completed) abort();\n`);
+  // A child cancelled under this parent cancels the parent, as for awaits.
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task->cancelled) { frame->unwinding = true; frame->cancel_children = true; ${frameName}_release_slot(task, &${slot}); goto _z_finish; }\n`);
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.failed != NULL && ${slot}.failed(${slot}.task)) abort();\n`);
+  appendIndent(inout output, depth);
+  output.append("{\n");
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    appendIndent(inout output, depth + 1);
+    output.append(try cType(resultType));
+    output.append(` _z_child_result_${statementIndex} = {};\n`);
+  }
+  appendIndent(inout output, depth + 1);
+  output.append(`if (${slot}.take_result == NULL) abort();\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`${slot}.take_result(${slot}.task, `);
+  if (resultType.kind == LoweredTypeKind.voidType) output.append("NULL");
+  else output.append(`&_z_child_result_${statementIndex}`);
+  output.append(");\n");
+  appendIndent(inout output, depth + 1);
+  output.append(`${frameName}_release_slot(task, &${slot});\n`);
+  const task = declaration.expressions[expression].children[0];
+  appendFrameTaskLiveDisarm(inout output, declaration, declaration.expressions[task].value, depth + 1);
+}
+
+function appendFrameTaskLiveDisarm(
+  inout output: TextBuffer, in declaration: LoweredFunction, in name: String, depth: usize
+): void {
+  for (const statement of declaration.statements) {
+    if (statement.kind != LoweredStatementKind.localStatement || statement.name != name) continue;
+    if (statement.liveFlag.byteLength == 0) return;
+    appendIndent(inout output, depth);
+    output.append(`${statement.liveFlag} = false;\n`);
+    return;
+  }
+}
+
+function appendYieldFrameCancel(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  statementIndex: usize, expression: usize, depth: usize
+): void throws String {
+  const slot = try yieldFrameJoinSlot(declaration, expression);
+  appendIndent(inout output, depth);
+  output.append(`if (${slot}.task != NULL) {\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`z_stage1_async_request_cancel(${slot}.task);\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`frame->state = ${statementIndex + 1};\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`if (!${slot}.task->completed) { ${slot}.task->waiter = task; return; }\n`);
+  output.append(`_z_resume_${statementIndex}:;\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`${yieldFrameName(declaration)}_release_slot(task, &${slot});\n`);
+  const task = declaration.expressions[expression].children[0];
+  appendFrameTaskLiveDisarm(inout output, declaration, declaration.expressions[task].value, depth + 1);
+  appendIndent(inout output, depth);
+  output.append("}\n");
+}
+
+// The child function type of an `await f(...)` in a frame.
+function yieldFrameChildFunctionType(
+  in program: LoweredProgram, in declaration: LoweredFunction, expression: usize
+): LoweredFunctionType throws String {
+  for (const functionType of program.functionTypes) {
+    if (functionType.name == declaration.expressions[expression].value) return copy functionType;
+  }
+  throw "native yield frame lost its child callable signature";
+}
+
+function yieldFrameArgumentBorrowed(in expression: LoweredExpression, argument: usize): boolean {
+  if (expression.labels.length < argument) return false;
+  const mode = view expression.labels[argument - 1];
+  return mode == "in" || mode == "inout" || mode == "out";
+}
+
+// Storage that outlives a suspension: frame locals, parameters, and fields.
+function yieldFrameBorrowPlace(in declaration: LoweredFunction, index: usize): boolean {
+  const kind = declaration.expressions[index].kind;
+  if (kind == LoweredExpressionKind.localValue || kind == LoweredExpressionKind.parameterValue
+    || kind == LoweredExpressionKind.receiverValue) return true;
+  if (kind == LoweredExpressionKind.fieldValue && declaration.expressions[index].children.length == 1) {
+    return yieldFrameBorrowPlace(declaration, declaration.expressions[index].children[0]);
+  }
+  return false;
+}
+
+// A fresh value borrowed by an awaited child lives in the parent frame until
+// the child completes (Stage 0's address-stable borrow temporaries).
+function yieldFrameBorrowTemporaryName(statementIndex: usize, argument: usize): String {
+  return `_z_await_borrow_${statementIndex}_${argument}`;
+}
+
+function appendYieldFrameChildArguments(
+  inout output: TextBuffer, in declaration: LoweredFunction,
+  statementIndex: usize, expression: usize, spawn: boolean
+): void throws String {
+  const call = view declaration.expressions[expression];
+  let argument: usize = 1;
+  while (argument < call.children.length) {
+    output.append(", ");
+    const value = call.children[argument];
+    if (!yieldFrameArgumentBorrowed(call, argument)) {
+      try appendExpression(inout output, declaration, value);
+    } else if (yieldFrameBorrowPlace(declaration, value)) {
+      try appendAddressOf(inout output, declaration, value);
+    } else if (spawn || call.labels[argument - 1] != "in") {
+      throw "native async frame borrows of temporaries are executable only for `in` arguments of awaited calls";
+    } else {
+      output.append("&");
+      const temporary = yieldFrameBorrowTemporaryName(statementIndex, argument);
+      appendAsyncFrameBindingName(inout output, declaration, temporary);
+    }
+    argument = argument + 1;
+  }
+}
+
+function appendYieldFrameBorrowTemporaries(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
+  statementIndex: usize, expression: usize, depth: usize, release: boolean
+): void throws String {
+  const call = view declaration.expressions[expression];
+  const functionType = try yieldFrameChildFunctionType(program, declaration, expression);
+  let argument: usize = 1;
+  while (argument < call.children.length) {
+    const value = call.children[argument];
+    if (yieldFrameArgumentBorrowed(call, argument) && !yieldFrameBorrowPlace(declaration, value)) {
+      const name = yieldFrameBorrowTemporaryName(statementIndex, argument);
+      const needsDeinit = loweredTypeNeedsDeinit(program, functionType.parameters[argument - 1].type);
+      if (release) {
+        if (needsDeinit) {
+          const cleanup = LoweredCleanup({
+            name: copy name, type: copy functionType.parameters[argument - 1].type, guard: `${name}_live`,
+          });
+          appendAsyncFrameCleanup(inout output, declaration, cleanup, depth);
+          appendIndent(inout output, depth);
+          output.append(`${name}_live = false;\n`);
+        }
+      } else {
+        appendIndent(inout output, depth);
+        appendAsyncFrameBindingName(inout output, declaration, name);
+        output.append(" = ");
+        try appendExpression(inout output, declaration, value);
+        output.append(";\n");
+        if (needsDeinit) {
+          appendIndent(inout output, depth);
+          output.append(`${name}_live = true;\n`);
+        }
+      }
+    }
+    argument = argument + 1;
+  }
 }
 
 function appendYieldFrameAwait(
@@ -10933,16 +11520,12 @@ function appendYieldFrameAwait(
   try appendBorrowedTemporaryInitializers(inout output, declaration, expression, depth);
   appendIndent(inout output, depth);
   output.append("if (frame->child.task != NULL) abort();\n");
+  try appendYieldFrameBorrowTemporaries(inout output, program, declaration, statementIndex, expression, depth, false);
   appendIndent(inout output, depth);
   output.append(`frame->child = Z_${awaited.value}_start(`);
   try appendExpression(inout output, declaration, awaited.children[0]);
   output.append(", task->executor");
-  let argument: usize = 1;
-  while (argument < awaited.children.length) {
-    output.append(", ");
-    try appendExpression(inout output, declaration, awaited.children[argument]);
-    argument = argument + 1;
-  }
+  try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, false);
   output.append(");\n");
   appendBorrowedTemporaryCleanups(inout output, declaration, expression, depth);
   appendIndent(inout output, depth);
@@ -10974,7 +11557,7 @@ function appendYieldFrameAwait(
   if (resultType.kind != LoweredTypeKind.voidType) {
     appendIndent(inout output, depth + 1);
     output.append(try cType(resultType));
-    output.append(` _z_child_result_${statementIndex} = {0};\n`);
+    output.append(` _z_child_result_${statementIndex} = {};\n`);
   }
   appendIndent(inout output, depth + 1);
   output.append("if (frame->child.take_result == NULL) abort();\n");
@@ -10986,6 +11569,7 @@ function appendYieldFrameAwait(
   appendIndent(inout output, depth + 1);
   const frameName = yieldFrameName(declaration);
   output.append(`${frameName}_release_child(frame);\n`);
+  try appendYieldFrameBorrowTemporaries(inout output, program, declaration, statementIndex, expression, depth + 1, true);
 }
 
 function appendYieldFrameTry(
@@ -10997,7 +11581,7 @@ function appendYieldFrameTry(
   appendIndent(inout output, depth);
   output.append(`if (${temporary}.tag == Z_${statement.name}Tag_failure) {\n`);
   appendIndent(inout output, depth + 1);
-  output.append(`frame->result = (Z_${statement.labels[1]}){.tag = Z_${statement.labels[1]}Tag_failure, .payload.failure = ${temporary}.payload.failure};\n`);
+  output.append(`frame->result = (Z_${statement.labels[1]}){.tag = Z_${statement.labels[1]}Tag_failure, .payload = { .failure = ${temporary}.payload.failure }};\n`);
   appendYieldFrameLexicalCleanups(inout output, declaration, statement.cleanups, depth + 1);
   appendIndent(inout output, depth + 1);
   output.append("goto _z_complete;\n");
@@ -11095,20 +11679,50 @@ function appendYieldFrameStatement(
     output.append(`return;\n_z_resume_${index}:;\n`);
     return;
   }
+  if (statement.kind == LoweredStatementKind.delayStatement) {
+    const milliseconds = match (in statement.expression) {
+      some(value) => value;
+      none => throw "native async frame received a detached delay statement";
+    };
+    appendIndent(inout output, depth);
+    output.append(`frame->state = ${index + 1};\n`);
+    appendIndent(inout output, depth);
+    output.append("z_stage1_async_schedule_delay(task, (uint64_t)(");
+    try appendExpression(inout output, declaration, milliseconds);
+    output.append("));\n");
+    appendIndent(inout output, depth);
+    output.append(`return;\n_z_resume_${index}:;\n`);
+    return;
+  }
   if (statement.kind == LoweredStatementKind.matchStatement) {
     try appendYieldFrameMatch(inout output, program, declaration, index, depth);
     return;
   }
+  const spawned = yieldFrameSpawnExpression(declaration, index);
+  if (spawned < declaration.expressions.length) {
+    try appendYieldFrameSpawn(inout output, declaration, index, spawned, depth);
+    return;
+  }
+  const cancelled = yieldFrameCancelExpression(declaration, index);
+  if (cancelled < declaration.expressions.length) {
+    try appendYieldFrameCancel(inout output, declaration, index, cancelled, depth);
+    return;
+  }
   const awaited = yieldFrameAwaitExpression(declaration, index);
-  if (awaited < declaration.expressions.length) {
-    const resultType = try yieldFrameAwaitType(program, declaration, awaited);
+  const joined = yieldFrameJoinExpression(declaration, index);
+  if (awaited < declaration.expressions.length || joined < declaration.expressions.length) {
+    const resultType = awaited < declaration.expressions.length
+      ? try yieldFrameAwaitType(program, declaration, awaited)
+      : try taskResultType(program, declaration.expressions[joined].value);
     if (statement.kind != LoweredStatementKind.localStatement
       && statement.kind != LoweredStatementKind.expressionStatement
       && statement.kind != LoweredStatementKind.returnStatement
       && statement.kind != LoweredStatementKind.tryStatement) {
       throw "native yield-frame child awaits require a local, return, or expression statement";
     }
-    try appendYieldFrameAwait(inout output, program, declaration, index, awaited, depth);
+    if (awaited < declaration.expressions.length) {
+      try appendYieldFrameAwait(inout output, program, declaration, index, awaited, depth);
+    } else try appendYieldFrameJoin(inout output, program, declaration, index, joined, resultType, depth);
     const temporary = `_z_child_result_${index}`;
     if (statement.kind == LoweredStatementKind.tryStatement) {
       try appendYieldFrameTry(inout output, program, declaration, index, temporary, depth + 1);
@@ -11162,7 +11776,8 @@ function appendYieldFrameStatement(
   if (statement.kind == LoweredStatementKind.localStatement) {
     match (in statement.expression) {
       none => {
-        if (statement.children.length == 0) throw "native yield frames require initialized locals";
+        // An uninitialized local: zeroed frame storage, not live yet.
+        if (statement.children.length == 0) return;
         for (const child of statement.children) {
           try appendYieldFrameStatement(inout output, program, declaration, child, depth);
         }
@@ -11223,6 +11838,22 @@ function appendYieldFrameStatement(
     for (const child of statement.children) {
       try appendYieldFrameStatement(inout output, program, declaration, child, depth);
     }
+    // Leaving an `async scope` joins the children started directly in it.
+    const scopeSpawns = yieldFrameScopeSpawns(declaration, index);
+    for (const site of scopeSpawns) {
+      const slot = yieldFrameSpawnSlot(declaration, site);
+      appendIndent(inout output, depth);
+      output.append(`if (${slot}.task != NULL) {\n`);
+      appendIndent(inout output, depth + 1);
+      output.append(`frame->state = ${yieldFrameScopeJoinState(declaration, site)};\n`);
+      appendIndent(inout output, depth + 1);
+      output.append(`if (!${slot}.task->completed) { ${slot}.task->waiter = task; return; }\n`);
+      output.append(`_z_scope_join_${site}:;\n`);
+      appendIndent(inout output, depth + 1);
+      output.append(`${yieldFrameName(declaration)}_release_slot(task, &${slot});\n`);
+      appendIndent(inout output, depth);
+      output.append("}\n");
+    }
     appendYieldFrameCleanups(inout output, program, declaration, statement.cleanups, depth);
     return;
   }
@@ -11262,11 +11893,17 @@ function appendYieldFrameHelpers(
     const name = yieldFrameName(source);
     const resultNeedsDeinit = loweredTypeNeedsDeinit(program, source.returnType);
     let hasChild = false;
+    let hasTimer = false;
+    // Spawn sites in statement (source) order: one invocation slot each.
+    let spawnSites = Array<usize>();
     let childStatement: usize = 0;
     while (childStatement < source.statements.length) {
       if (yieldFrameAwaitExpression(source, childStatement) < source.expressions.length) hasChild = true;
+      if (source.statements[childStatement].kind == LoweredStatementKind.delayStatement) hasTimer = true;
+      if (yieldFrameSpawnExpression(source, childStatement) < source.expressions.length) spawnSites.push(childStatement);
       childStatement = childStatement + 1;
     }
+    const hasSpawns = spawnSites.length > 0;
     let declaration = copy source;
     for (const parameter of source.parameters) {
       declaration.asyncFrameBindings.push(copy parameter.name);
@@ -11289,20 +11926,58 @@ function appendYieldFrameHelpers(
     for (const parameter of source.parameters) {
       output.append("  ");
       output.append(try cType(parameter.type));
+      if (parameter.mode == LoweredParameterMode.input) output.append(" const *");
+      else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
       output.append(" _z_binding_");
       appendCBindingName(inout output, parameter.name);
       output.append(";\n");
       const guard = yieldFrameParameterGuard(source, parameter.name);
       if (guard.byteLength > 0) output.append(`  bool ${guard};\n`);
     }
+    if (hasSpawns) output.append("  bool cancel_children;\n  bool unwinding;\n");
+    // Frame borrow temporaries of awaited `in` arguments.
+    let borrowNames = Array<String>();
+    let borrowTypes = Array<LoweredType>();
+    let borrowStatement: usize = 0;
+    while (borrowStatement < source.statements.length) {
+      const awaitedCall = yieldFrameAwaitExpression(source, borrowStatement);
+      if (awaitedCall < source.expressions.length) {
+        const childType = try yieldFrameChildFunctionType(program, source, awaitedCall);
+        let argument: usize = 1;
+        while (argument < source.expressions[awaitedCall].children.length) {
+          if (yieldFrameArgumentBorrowed(source.expressions[awaitedCall], argument)
+            && !yieldFrameBorrowPlace(source, source.expressions[awaitedCall].children[argument])) {
+            const borrowName = yieldFrameBorrowTemporaryName(borrowStatement, argument);
+            const borrowType = copy childType.parameters[argument - 1].type;
+            output.append(`  ${try cType(borrowType)} _z_binding_${borrowName};\n`);
+            if (loweredTypeNeedsDeinit(program, borrowType)) output.append(`  bool ${borrowName}_live;\n`);
+            declaration.asyncFrameBindings.push(copy borrowName);
+            borrowNames.push(borrowName);
+            borrowTypes.push(borrowType);
+          }
+          argument = argument + 1;
+        }
+      }
+      borrowStatement = borrowStatement + 1;
+    }
+    for (const site of spawnSites) {
+      if (source.statements[site].kind == LoweredStatementKind.expressionStatement) {
+        output.append(`  Z_AsyncInvocation _z_spawn_${site};\n`);
+      }
+    }
+    let localStatement: usize = 0;
     for (const statement of source.statements) {
+      const spawnLocal = yieldFrameSpawnExpression(source, localStatement) < source.expressions.length;
+      localStatement = localStatement + 1;
       if (statement.kind != LoweredStatementKind.localStatement) continue;
       const type = match (in statement.type) {
         some(value) => copy value;
         none => throw "native yield frame lost local type evidence";
       };
       output.append("  ");
-      output.append(try cType(type));
+      // A spawned task local is its invocation slot.
+      if (spawnLocal) output.append("Z_AsyncInvocation");
+      else output.append(try cType(type));
       output.append(" _z_binding_");
       appendCBindingName(inout output, statement.name);
       output.append(";\n");
@@ -11313,6 +11988,14 @@ function appendYieldFrameHelpers(
       }
     }
     output.append(`} ${name};\n`);
+    let borrowMacro: usize = 0;
+    while (borrowMacro < borrowNames.length) {
+      output.append(`#define _z_stage1_frame_binding_${borrowNames[borrowMacro]} (frame->_z_binding_${borrowNames[borrowMacro]})\n`);
+      if (loweredTypeNeedsDeinit(program, borrowTypes[borrowMacro])) {
+        output.append(`#define ${borrowNames[borrowMacro]}_live (frame->${borrowNames[borrowMacro]}_live)\n`);
+      }
+      borrowMacro = borrowMacro + 1;
+    }
     for (const parameter of source.parameters) {
       output.append("#define _z_stage1_frame_binding_");
       appendCBindingName(inout output, parameter.name);
@@ -11336,13 +12019,17 @@ function appendYieldFrameHelpers(
     output.append(`static void ${name}_cleanup(${name} *frame) {\n  (void)frame;\n`);
     let cleanup = Array<LoweredCleanup>();
     for (const parameter of source.parameters) {
+      if (parameter.mode != LoweredParameterMode.value) continue;
       const guard = yieldFrameParameterGuard(source, parameter.name);
       if (guard.byteLength > 0 || typeContainsObjectiveCStrongSlot(program, parameter.type)) cleanup.push(LoweredCleanup({
         name: copy parameter.name, type: copy parameter.type, guard,
       }));
     }
+    let cleanupStatement: usize = 0;
     for (const statement of source.statements) {
-      if (statement.kind != LoweredStatementKind.localStatement) continue;
+      const spawnLocal = yieldFrameSpawnExpression(source, cleanupStatement) < source.expressions.length;
+      cleanupStatement = cleanupStatement + 1;
+      if (statement.kind != LoweredStatementKind.localStatement || spawnLocal) continue;
       const type = match (in statement.type) {
         some(value) => copy value;
         none => throw "native yield frame lost cleanup type evidence";
@@ -11351,23 +12038,71 @@ function appendYieldFrameHelpers(
         && !typeContainsObjectiveCStrongSlot(program, type)) continue;
       cleanup.push(LoweredCleanup({ name: copy statement.name, type, guard: copy statement.liveFlag }));
     }
+    let borrowCleanup: usize = 0;
+    while (borrowCleanup < borrowNames.length) {
+      if (loweredTypeNeedsDeinit(program, borrowTypes[borrowCleanup])) {
+        cleanup.push(LoweredCleanup({
+          name: copy borrowNames[borrowCleanup], type: copy borrowTypes[borrowCleanup],
+          guard: `${borrowNames[borrowCleanup]}_live`,
+        }));
+      }
+      borrowCleanup = borrowCleanup + 1;
+    }
     appendYieldFrameCleanups(inout output, program, declaration, cleanup, 1);
-    if (hasChild) {
-    output.append(`}\nstatic void ${name}_release_child(${name} *frame) {\n  if (frame->child.task == NULL) return;\n  if (!frame->child.task->completed) abort();\n  frame->child.task->waiter = NULL;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n`);
-    output.append(`}\nstatic void ${name}_cancel(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n`);
+    if (hasSpawns) {
+      // Joins a completed slot, or (on destroy) cancels and drains a live one.
+      output.append(`}\nstatic void ${name}_release_slot(Z_AsyncTask *task, Z_AsyncInvocation *slot) {\n  if (slot->task == NULL) return;\n  if (!slot->task->completed) {\n    z_stage1_async_request_cancel(slot->task);\n    slot->task->waiter = NULL;\n    while (!slot->task->completed) { if (!z_stage1_async_drive_one(task->executor)) abort(); }\n  }\n  slot->task->waiter = NULL;\n  z_stage1_async_remove_queued(slot->task);\n  if (slot->destroy != NULL) slot->destroy(slot->task);\n  if (slot->release_context != NULL) slot->release_context(slot->callable_context);\n  *slot = (Z_AsyncInvocation){};\n`);
+    }
+    if (hasChild || hasTimer || hasSpawns) {
+    if (hasChild) output.append(`}\nstatic void ${name}_release_child(${name} *frame) {\n  if (frame->child.task == NULL) return;\n  if (!frame->child.task->completed) abort();\n  frame->child.task->waiter = NULL;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){};\n`);
+    output.append(`}\nstatic void ${name}_cancel(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n  (void)frame;\n`);
+    if (hasChild) output.append("  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n");
+    // A sleeping frame observes cancellation now, not when its timer fires.
+    if (hasTimer) output.append("  if (task->timer_scheduled) {\n    z_stage1_async_remove_timer(task);\n    if (!task->queued && !task->completed) z_stage1_async_enqueue(task->executor, task);\n  }\n");
+    // Cancelling the parent cancels its spawned children; each wakes the
+    // parent through its waiter, and the parent then joins them all.
+    for (const site of spawnSites) {
+      const slot = yieldFrameSpawnSlot(source, site);
+      output.append(`  if (${slot}.task != NULL) z_stage1_async_request_cancel(${slot}.task);\n`);
+    }
     }
     output.append(`}\nstatic void ${name}_poll(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n`);
-    if (hasChild) {
+    if (hasSpawns) {
+      // Cancellation unwinds through the shared finish path, which cancels and
+      // joins every live spawn slot before the frame completes.
+      output.append("  if (!frame->unwinding && (task->cancellation_requested");
+      if (hasChild) output.append(" || (frame->child.task != NULL && frame->child.task->cancelled)");
+      output.append(")) {\n");
+      if (hasChild) output.append(`    if (frame->child.task != NULL && !frame->child.task->completed) {\n      z_stage1_async_request_cancel(frame->child.task);\n      return;\n    }\n    ${name}_release_child(frame);\n`);
+      if (hasTimer) output.append("    z_stage1_async_remove_timer(task);\n");
+      output.append("    frame->unwinding = true;\n    frame->cancel_children = true;\n    goto _z_finish;\n  }\n  switch (frame->state) {\n    case 0: break;\n");
+    } else if (hasChild) {
     output.append(`  if (task->cancellation_requested && frame->child.task != NULL && !frame->child.task->completed) {\n    z_stage1_async_request_cancel(frame->child.task);\n    return;\n  }\n`);
-    output.append(`  if (task->cancellation_requested || (frame->child.task != NULL && frame->child.task->cancelled)) {\n    ${name}_release_child(frame);\n    ${name}_cleanup(frame);\n    task->cancelled = true; task->completed = true; return;\n  }\n  switch (frame->state) {\n    case 0: break;\n`);
-    } else output.append(`  if (task->cancellation_requested) { ${name}_cleanup(frame); task->cancelled = true; task->completed = true; return; }\n  switch (frame->state) {\n    case 0: break;\n`);
+    output.append(`  if (task->cancellation_requested || (frame->child.task != NULL && frame->child.task->cancelled)) {\n    ${hasTimer ? "z_stage1_async_remove_timer(task);\n    " : ""}${name}_release_child(frame);\n    ${name}_cleanup(frame);\n    task->cancelled = true; task->completed = true; return;\n  }\n  switch (frame->state) {\n    case 0: break;\n`);
+    } else output.append(`  if (task->cancellation_requested) { ${hasTimer ? "z_stage1_async_remove_timer(task); " : ""}${name}_cleanup(frame); task->cancelled = true; task->completed = true; return; }\n  switch (frame->state) {\n    case 0: break;\n`);
     let index: usize = 0;
     while (index < declaration.statements.length) {
       if (declaration.statements[index].kind == LoweredStatementKind.schedulerYieldStatement
-        || yieldFrameAwaitExpression(declaration, index) < declaration.expressions.length) {
+        || declaration.statements[index].kind == LoweredStatementKind.delayStatement
+        || yieldFrameAwaitExpression(declaration, index) < declaration.expressions.length
+        || yieldFrameJoinExpression(declaration, index) < declaration.expressions.length
+        || yieldFrameCancelExpression(declaration, index) < declaration.expressions.length) {
         output.append(`    case ${index + 1}: goto _z_resume_${index};\n`);
       }
       index = index + 1;
+    }
+    let finishState: usize = 0;
+    while (finishState < spawnSites.length) {
+      output.append(`    case ${declaration.statements.length + 1 + finishState}: goto _z_finish_${finishState};\n`);
+      finishState = finishState + 1;
+    }
+    let scopeStatement: usize = 0;
+    while (scopeStatement < declaration.statements.length) {
+      const scopeSpawns = yieldFrameScopeSpawns(declaration, scopeStatement);
+      for (const site of scopeSpawns) {
+        output.append(`    case ${yieldFrameScopeJoinState(declaration, site)}: goto _z_scope_join_${site};\n`);
+      }
+      scopeStatement = scopeStatement + 1;
     }
     output.append("    default: abort();\n  }\n");
     for (const root of declaration.roots) {
@@ -11383,8 +12118,31 @@ function appendYieldFrameHelpers(
     }
     output.append("_z_complete: __attribute__((unused));\n");
     if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
-    output.append(`  ${name}_cleanup(frame);\n  task->completed = true;\n}\n`);
+    if (hasSpawns) {
+      // A failure (throw or `try`) cancels the children it leaves behind.
+      if (source.throwsError) {
+        output.append(`  if (frame->result.tag == Z_${source.returnType.name}Tag_failure) frame->cancel_children = true;\n`);
+      }
+      output.append("_z_finish: __attribute__((unused));\n");
+      let site: usize = 0;
+      while (site < spawnSites.length) {
+        const slot = yieldFrameSpawnSlot(source, spawnSites[site]);
+        output.append(`  if (${slot}.task != NULL) {\n    if (frame->cancel_children) z_stage1_async_request_cancel(${slot}.task);\n    frame->state = ${declaration.statements.length + 1 + site};\n    if (!${slot}.task->completed) { ${slot}.task->waiter = task; return; }\n_z_finish_${site}:;\n    ${name}_release_slot(task, &${slot});\n  }\n`);
+        site = site + 1;
+      }
+      output.append("  if (frame->unwinding) task->cancelled = true;\n");
+    }
+    // Frame owners are released when the frame is destroyed (at its join),
+    // not at completion, as in Stage 0: a finished spawned child keeps its
+    // locals until the parent joins it.
+    output.append("  task->completed = true;\n}\n");
     output.append(`static void ${name}_destroy(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n  z_stage1_async_remove_queued(task);\n`);
+    if (hasTimer) output.append("  z_stage1_async_remove_timer(task);\n");
+    let releasedSite = spawnSites.length;
+    while (releasedSite > 0) {
+      releasedSite = releasedSite - 1;
+      output.append(`  ${name}_release_slot(task, &${yieldFrameSpawnSlot(source, spawnSites[releasedSite])});\n`);
+    }
     if (hasChild) output.append(`  if (frame->child.task != NULL && !frame->child.task->completed) {\n    z_stage1_async_request_cancel(task);\n    frame->child.task->waiter = NULL;\n    while (!frame->child.task->completed) { if (!z_stage1_async_drive_one(task->executor)) abort(); }\n  }\n  ${name}_release_child(frame);\n`);
     output.append(`  ${name}_cleanup(frame);\n`);
     if (resultNeedsDeinit) {
@@ -11398,7 +12156,7 @@ function appendYieldFrameHelpers(
     if (typeContainsObjectiveCStrongSlot(program, source.returnType)) {
       output.append("  frame->result = (Z_");
       output.append(source.returnType.name);
-      output.append("){0};\n");
+      output.append("){};\n");
     }
     output.append("  free(frame);\n}\n");
     for (const parameter of source.parameters) {
@@ -11415,6 +12173,12 @@ function appendYieldFrameHelpers(
       output.append("\n");
       if (statement.liveFlag.byteLength > 0) output.append(`#undef ${statement.liveFlag}\n`);
     }
+    let borrowUndef: usize = 0;
+    while (borrowUndef < borrowNames.length) {
+      output.append(`#undef _z_stage1_frame_binding_${borrowNames[borrowUndef]}\n`);
+      if (loweredTypeNeedsDeinit(program, borrowTypes[borrowUndef])) output.append(`#undef ${borrowNames[borrowUndef]}_live\n`);
+      borrowUndef = borrowUndef + 1;
+    }
     output.append(`static void ${name}_take(Z_AsyncTask *task, void *output) {\n  if (!task->completed || task->cancelled) abort();\n`);
     if (source.returnType.kind != LoweredTypeKind.voidType) {
       if (resultNeedsDeinit) output.append(`  if (!((${name} *)task)->live_result) abort();\n`);
@@ -11425,8 +12189,8 @@ function appendYieldFrameHelpers(
     } else output.append("  (void)output;\n");
     output.append(`}\nstatic __attribute__((unused)) Z_AsyncInvocation ${name}_start(Z_AsyncExecutor *executor`);
     try appendYieldFrameParameters(inout output, source.parameters);
-    output.append(`) {\n  if (executor == NULL) abort();\n  ${name} *frame = calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.executor = executor;\n  frame->task.poll = ${name}_poll;\n`);
-    if (hasChild) output.append(`  frame->task.request_cancel = ${name}_cancel;\n`);
+    output.append(`) {\n  if (executor == NULL) abort();\n  ${name} *frame = (__typeof__(frame))calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.executor = executor;\n  frame->task.poll = ${name}_poll;\n`);
+    if (hasChild || hasTimer || hasSpawns) output.append(`  frame->task.request_cancel = ${name}_cancel;\n`);
     let argument: usize = 0;
     for (const parameter of source.parameters) {
       output.append("  frame->_z_binding_");
@@ -11456,7 +12220,7 @@ function appendYieldFrameDriver(
   if (declaration.name == "main" && processArguments) {
     output.append("  z_stage1_process_argc = argc;\n  z_stage1_process_argv = argv;\n");
   }
-  output.append("  Z_AsyncExecutor executor = {0};\n");
+  output.append("  Z_AsyncExecutor executor = {};\n");
   if (programUsesObjectiveCAsyncCompletion(program) || programUsesAsyncThreadAwait(program)) {
     output.append("  z_stage1_async_executor_init_external(&executor);\n");
   }
@@ -11500,7 +12264,7 @@ function appendPersistentAsyncParentDriver(
     output.append("  z_stage1_process_argc = argc;\n");
     output.append("  z_stage1_process_argv = argv;\n");
   }
-  output.append("  Z_AsyncExecutor executor = {0};\n  ");
+  output.append("  Z_AsyncExecutor executor = {};\n  ");
   if (
     programUsesObjectiveCAsyncCompletion(program)
     || programUsesAsyncThreadAwait(program)
@@ -12246,7 +13010,7 @@ function appendFunction(
     } else if (declaration.compilerIntrinsic == "objcZMethod") {
       output.append("  if (!self->_z_native_subclass_ready) { fputs(\"Z runtime error: native Z-only method requires a Ready receiver\\n\", stderr); abort(); }\n");
       output.append("  __attribute__((objc_precise_lifetime)) id const _z_native_subclass_owner = self;\n  (void)_z_native_subclass_owner;\n");
-      output.append("  _z_native_subclass_access_guard _z_native_subclass_loan __attribute__((cleanup(_z_native_subclass_access_end))) = {0};\n");
+      output.append("  _z_native_subclass_access_guard _z_native_subclass_loan __attribute__((cleanup(_z_native_subclass_access_end))) = {};\n");
       output.append("  if (_z_native_subclass_parent_loan) {\n    if (_z_native_subclass_parent_loan->state != &self->_z_native_subclass_access\n      || (_z_native_subclass_parent_loan->exclusive ? self->_z_native_subclass_access != -1 : self->_z_native_subclass_access <= 0) || ");
       output.append(declaration.receiverMode == LoweredParameterMode.inputOutput ? "!_z_native_subclass_parent_loan->exclusive" : "false");
       output.append(") abort();\n  } else _z_native_subclass_loan = _z_native_subclass_access_begin(&self->_z_native_subclass_access, ");
@@ -12727,7 +13491,7 @@ function appendCallableOwnerHelpers(
         candidate = candidate + 1;
       }
       if (functionTypeIndex >= program.functionTypes.length) {
-        throw "native callable helper could not resolve its function type";
+        throw `native callable helper could not resolve its function type ${expression.labels[0]}`;
       }
       const functionType = view program.functionTypes[functionTypeIndex];
       const noClosureParameterNames = Array<String>();
@@ -13255,7 +14019,7 @@ function appendCallableOwnerHelpers(
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n}\n\nstatic void ");
+          output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){};\n}\n\nstatic void ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_cancel(Z_AsyncTask *task) {\n  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
@@ -13402,7 +14166,7 @@ function appendCallableOwnerHelpers(
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n}\n\nstatic void ");
+          output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){};\n}\n\nstatic void ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_cancel(Z_AsyncTask *task) {\n  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
@@ -13606,7 +14370,7 @@ function appendCallableOwnerHelpers(
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n}\n\nstatic void ");
+          output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){};\n}\n\nstatic void ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_cancel(Z_AsyncTask *task) {\n  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
@@ -13691,9 +14455,9 @@ function appendCallableOwnerHelpers(
             output.append(outerResult);
             output.append("){.tag = Z_");
             output.append(outerResult);
-            output.append("Tag_failure, .payload.failure = _z_stage1_async_try_");
+            output.append("Tag_failure, .payload = { .failure = _z_stage1_async_try_");
             output.append(`${shape.statementIndex}`);
-            output.append(".payload.failure};\n");
+            output.append(".payload.failure }};\n");
             if (resultNeedsDeinit) {
               output.append("    frame->live_result = true;\n");
             }
@@ -13791,7 +14555,7 @@ function appendCallableOwnerHelpers(
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n}\n\nstatic void ");
+          output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){};\n}\n\nstatic void ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_cancel(Z_AsyncTask *task) {\n  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
@@ -14139,7 +14903,7 @@ function appendCallableOwnerHelpers(
         if (typeContainsObjectiveCStrongSlot(program, functionType.returnType)) {
           output.append("  frame->result = ");
           if (functionType.returnType.kind == LoweredTypeKind.foreignObjCType) output.append("nil");
-          else output.append(`(${returnType}){0}`);
+          else output.append(`(${returnType}){}`);
           output.append(";\n");
         }
         if (persistentSuspension) {
@@ -14151,7 +14915,7 @@ function appendCallableOwnerHelpers(
               if (stored.type.kind == LoweredTypeKind.foreignObjCType) output.append("nil");
               else {
                 const type = try cType(stored.type);
-                output.append(`(${type}){0}`);
+                output.append(`(${type}){}`);
               }
               output.append(";\n");
             }
@@ -14282,7 +15046,7 @@ function appendCallableOwnerHelpers(
             appendCallableHelperName(inout output, owner, expressionIndex);
             output.append("_cancel;\n");
             if (!directMainDelay) {
-              output.append("  frame->child = (Z_AsyncInvocation){0};\n");
+              output.append("  frame->child = (Z_AsyncInvocation){};\n");
             }
           }
           if (
@@ -14459,13 +15223,13 @@ function appendCallableOwnerHelpers(
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_start, .context = NULL, .retain = NULL, .release = NULL };\n}\n\n");
         } else {
-          output.append("static const Z_");
+          output.append("Z_INTERNAL_DEFINE_BEGIN Z_INTERNAL const Z_");
           output.append(functionType.name);
           output.append(" ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_value = { .start = ");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_start, .context = NULL, .retain = NULL, .release = NULL };\n\n");
+          output.append("_start, .context = NULL, .retain = NULL, .release = NULL }; Z_INTERNAL_DEFINE_END\n\n");
         }
         if (directTailAwait) {
           const undefShape = match (tailAwaitShape) {
@@ -14642,11 +15406,11 @@ function appendCallableOwnerHelpers(
             output.append(returnType);
             output.append("){ .tag = Z_");
             output.append(functionType.returnType.name);
-            output.append("Tag_success, .payload.success = ");
+            output.append("Tag_success, .payload = { .success = ");
           }
         }
         try appendExpression(inout output, owner, borrowedBody);
-        if (expression.labels[2] == "throwing") output.append(" }");
+        if (expression.labels[2] == "throwing") output.append(" } }");
         output.append(";\n");
         appendBorrowedTemporaryCleanups(
           inout output,
@@ -14680,6 +15444,9 @@ function appendCallableOwnerHelpers(
             output.append(functionType.returnType.name);
             output.append("Tag_success };\n");
           } else if (expression.closureReturnType == "void") output.append("  return;\n");
+        } else if (functionType.returnType.kind == LoweredTypeKind.voidType) {
+          // C forbids `return` with a value, even a void one, from a void function.
+          output.append("  ");
         } else {
           output.append("  return ");
         }
@@ -14705,11 +15472,11 @@ function appendCallableOwnerHelpers(
             output.append(returnType);
             output.append("){ .tag = Z_");
             output.append(functionType.returnType.name);
-            output.append("Tag_success, .payload.success = ");
+            output.append("Tag_success, .payload = { .success = ");
           }
           const body = expression.children[0];
           try appendExpression(inout output, owner, body);
-          if (expression.labels[2] == "throwing") output.append(" }");
+          if (expression.labels[2] == "throwing") output.append(" } }");
         }
         if (!expression.closureBlockBody) output.append(";\n");
       }
@@ -14792,13 +15559,13 @@ function appendCallableOwnerHelpers(
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_call, .context = NULL, .retain = NULL, .release = NULL };\n}\n\n");
       } else {
-        output.append("static const Z_");
+        output.append("Z_INTERNAL_DEFINE_BEGIN Z_INTERNAL const Z_");
         output.append(functionType.name);
         output.append(" ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_value = { .call = ");
         appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_call, .context = NULL, .retain = NULL, .release = NULL };\n\n");
+        output.append("_call, .context = NULL, .retain = NULL, .release = NULL }; Z_INTERNAL_DEFINE_END\n\n");
       }
       expressionIndex = expressionIndex + 1;
     }
@@ -14843,12 +15610,13 @@ function appendCallableOwnerValuePrototypes(
       }
       // Block closures are discovered before the nested callable values in
       // their bodies. Declare construction surfaces first so helper order
-      // never becomes a source-language restriction.
-      output.append("static ");
-      if (
-        expression.kind == LoweredExpressionKind.closureValue
-        && expression.captureTypes.length == 0
-      ) output.append("const ");
+      // never becomes a source-language restriction. A capture-free value is
+      // an object; C++ has no tentative definitions, so it is declared through
+      // Z_INTERNAL_DECLARE.
+      const constantValue = expression.kind == LoweredExpressionKind.closureValue
+        && expression.captureTypes.length == 0;
+      if (constantValue) output.append("Z_INTERNAL_DECLARE(const ");
+      else output.append("static ");
       output.append("Z_");
       output.append(expression.labels[0]);
       output.append(" ");
@@ -14868,7 +15636,7 @@ function appendCallableOwnerValuePrototypes(
         output.append(");\n");
       } else if (expression.kind == LoweredExpressionKind.directFunctionValue) {
         output.append("_value(void);\n");
-      } else output.append("_value;\n");
+      } else output.append("_value)\n");
       emitted = true;
       expressionIndex = expressionIndex + 1;
     }
@@ -15042,7 +15810,7 @@ function appendTaskScopeRuntime(
   output.append("static void z_stage1_task_scope_unlock(Z_TaskScope *scope) {\n#if defined(_WIN32)\n  LeaveCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_unlock(&scope->mutex) != 0) abort();\n#endif\n}\n\n");
   output.append("static Z_TaskScope *Z_TaskScope_retain(Z_TaskScope *scope) {\n  if (scope != NULL) __atomic_add_fetch(&scope->refcount, 1, __ATOMIC_RELAXED);\n  return scope;\n}\n\n");
   output.append("static Z_TaskControl *Z_TaskControl_retain(Z_TaskControl *control) {\n  if (control != NULL) __atomic_add_fetch(&control->refcount, 1, __ATOMIC_RELAXED);\n  return control;\n}\n\n");
-  output.append("static void z_stage1_task_scope_release_invocation(Z_AsyncInvocation *invocation) {\n  if (invocation == NULL || invocation->task == NULL) return;\n  if (invocation->destroy != NULL) invocation->destroy(invocation->task);\n  if (invocation->release_context != NULL) invocation->release_context(invocation->callable_context);\n  *invocation = (Z_AsyncInvocation){0};\n}\n\n");
+  output.append("static void z_stage1_task_scope_release_invocation(Z_AsyncInvocation *invocation) {\n  if (invocation == NULL || invocation->task == NULL) return;\n  if (invocation->destroy != NULL) invocation->destroy(invocation->task);\n  if (invocation->release_context != NULL) invocation->release_context(invocation->callable_context);\n  *invocation = (Z_AsyncInvocation){};\n}\n\n");
   output.append("static void z_stage1_task_scope_discard_jobs(Z_TaskScope *scope) {\n  Z_TaskScopeJob *job = scope->jobs;\n  scope->jobs = NULL;\n  while (job != NULL) {\n    Z_TaskScopeJob *next = job->scope_next;\n    if (job->child.task != NULL) abort();\n    free(job);\n    job = next;\n  }\n}\n\n");
   output.append("static void Z_TaskScope_release(Z_TaskScope *scope) {\n  if (scope == NULL) return;\n  if (__atomic_fetch_sub(&scope->refcount, 1, __ATOMIC_ACQ_REL) != 1) return;\n  if (scope->pending != 0 || scope->external_head != NULL) abort();\n  z_stage1_task_scope_discard_jobs(scope);\n");
   if (usesExternalCompletion) {
@@ -15136,14 +15904,14 @@ function appendAsyncCallableAwaitHelpers(
         );
         parameter = parameter + 1;
       }
-      output.append(") {\n  Z_AsyncExecutor executor = {0};\n  ");
+      output.append(") {\n  Z_AsyncExecutor executor = {};\n  ");
       if (
         programUsesObjectiveCAsyncCompletion(program)
         || programUsesAsyncThreadAwait(program)
       ) {
         output.append("z_stage1_async_executor_init_external(&executor);\n  ");
       }
-      output.append("Z_AsyncAwaiter awaiter = {0};\n  Z_AsyncInvocation invocation = Z_");
+      output.append("Z_AsyncAwaiter awaiter = {};\n  Z_AsyncInvocation invocation = Z_");
       output.append(functionType.name);
       output.append("_start(callable, &executor");
       for (const functionParameter of functionType.parameters) {
@@ -15379,7 +16147,7 @@ function appendAsyncObjectiveCMethodAwaitHelper(
     output.append(functionType.returnType.name);
     output.append("){ .tag = Z_");
     output.append(functionType.returnType.name);
-    output.append("Tag_failure, .payload.failure = ");
+    output.append("Tag_failure, .payload = { .failure = ");
     match (in failurePayload) {
       some(type) => appendAsyncObjectiveCStoredValue(
         inout output,
@@ -15388,7 +16156,7 @@ function appendAsyncObjectiveCMethodAwaitHelper(
       );
       none => throw "native async Objective-C helper lost its error payload";
     }
-    output.append(" };\n    } else {\n      frame->result = (Z_");
+    output.append(" } };\n    } else {\n      frame->result = (Z_");
     output.append(functionType.returnType.name);
     output.append("){ .tag = Z_");
     output.append(functionType.returnType.name);
@@ -15398,12 +16166,13 @@ function appendAsyncObjectiveCMethodAwaitHelper(
         if (resultParameter >= callbackParameterTypes.length) {
           throw "native async Objective-C helper lost its success payload";
         }
-        output.append(", .payload.success = ");
+        output.append(", .payload = { .success = ");
         appendAsyncObjectiveCStoredValue(
           inout output,
           type,
           `callback_value_${resultParameter}`
         );
+        output.append(" }");
       }
       none => {}
     }
@@ -15541,7 +16310,7 @@ function appendAsyncObjectiveCMethodAwaitHelper(
     );
     parameter = parameter + 1;
   }
-  output.append(") {\n  Z_AsyncExecutor executor = {0};\n  z_stage1_async_executor_init_external(&executor);\n  Z_AsyncInvocation invocation = ");
+  output.append(") {\n  Z_AsyncExecutor executor = {};\n  z_stage1_async_executor_init_external(&executor);\n  Z_AsyncInvocation invocation = ");
   appendAsyncCallableAwaitHelperName(inout output, owner, expressionIndex);
   output.append("_start_invocation(&executor, receiver");
   for (const argument of functionType.parameters) {
@@ -16100,7 +16869,7 @@ function appendAsyncMethodAwaitHelpers(
           owner,
           expressionIndex
         );
-        output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n}\n\nstatic void ");
+        output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){};\n}\n\nstatic void ");
         appendAsyncCallableAwaitHelperName(
           inout output,
           owner,
@@ -16367,7 +17136,7 @@ function appendAsyncMethodAwaitHelpers(
           owner,
           expressionIndex
         );
-        output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n}\n\nstatic void ");
+        output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){};\n}\n\nstatic void ");
         appendAsyncCallableAwaitHelperName(
           inout output,
           owner,
@@ -16485,9 +17254,9 @@ function appendAsyncMethodAwaitHelpers(
           output.append(outerResult);
           output.append("){.tag = Z_");
           output.append(outerResult);
-          output.append("Tag_failure, .payload.failure = _z_stage1_async_try_");
+          output.append("Tag_failure, .payload = { .failure = _z_stage1_async_try_");
           output.append(`${shape.statementIndex}`);
-          output.append(".payload.failure};\n");
+          output.append(".payload.failure }};\n");
           if (resultNeedsDeinit) output.append("    frame->live_result = true;\n");
           output.append("    ");
           appendAsyncCallableAwaitHelperName(
@@ -16614,7 +17383,7 @@ function appendAsyncMethodAwaitHelpers(
           owner,
           expressionIndex
         );
-        output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n}\n\nstatic void ");
+        output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){};\n}\n\nstatic void ");
         appendAsyncCallableAwaitHelperName(
           inout output,
           owner,
@@ -17156,7 +17925,7 @@ function appendAsyncMethodAwaitHelpers(
         );
         output.append("_cancel;\n");
         if (directTailAwait || directLinearAwait || directDoubleAwait) {
-          output.append("  frame->child = (Z_AsyncInvocation){0};\n");
+          output.append("  frame->child = (Z_AsyncInvocation){};\n");
         }
       }
       parameter = 0;
@@ -17231,7 +18000,7 @@ function appendAsyncMethodAwaitHelpers(
         );
         parameter = parameter + 1;
       }
-      output.append(") {\n  Z_AsyncExecutor executor = {0};\n  ");
+      output.append(") {\n  Z_AsyncExecutor executor = {};\n  ");
       if (
         programUsesObjectiveCAsyncCompletion(program)
         || programUsesAsyncThreadAwait(program)
@@ -17279,7 +18048,7 @@ function appendAsyncMethodAwaitHelpers(
         );
         output.append("_cancel;\n");
         if (directTailAwait || directLinearAwait || directDoubleAwait) {
-          output.append("  frame->child = (Z_AsyncInvocation){0};\n");
+          output.append("  frame->child = (Z_AsyncInvocation){};\n");
         }
       }
       parameter = 0;
@@ -17549,7 +18318,7 @@ function appendPersistentAsyncParentHelpers(
         output.append("  z_stage1_async_remove_queued(frame->child.task);\n");
         output.append("  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n");
         output.append("  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n");
-        output.append("  frame->child = (Z_AsyncInvocation){0};\n}\n\n");
+        output.append("  frame->child = (Z_AsyncInvocation){};\n}\n\n");
         output.append("static void ");
         appendPersistentAsyncParentName(inout output, declaration);
         output.append("_cleanup_owned(");
@@ -18245,7 +19014,7 @@ function appendMainFrameRootCleanups(
       if (localType.kind == LoweredTypeKind.foreignObjCType) output.append("nil");
       else {
         const type = try cType(localType);
-        output.append(`(${type}){0}`);
+        output.append(`(${type}){}`);
       }
       output.append(";\n");
     }
@@ -18295,7 +19064,7 @@ function appendMainTaskSegmentHelpers(
     try appendMainFrameSaves(inout output, program, target, segment + 1, 1);
     output.append("  *completed = false;\n  return");
     if (functionType.returnType.kind != LoweredTypeKind.voidType) {
-      output.append(` (${nativeResult}){0}`);
+      output.append(` (${nativeResult}){}`);
     }
     output.append(";\n}\n\n");
     segment = segment + 1;
@@ -18593,7 +19362,7 @@ function appendThreadMainStructuredCancellation(
   } else {
     output.append("    return (");
     output.append(nativeResultType);
-    output.append("){0};\n");
+    output.append("){};\n");
   }
 }
 
@@ -20737,7 +21506,7 @@ function appendThreadMainCallHelpers(
         } else {
           output.append("    return (");
           output.append(nativeResultType);
-          output.append("){0};\n  }\n");
+          output.append("){};\n  }\n");
         }
         segmentIndex = segmentIndex + 1;
       }
@@ -20910,7 +21679,7 @@ function appendThreadYieldAwaitBody(
   const awaited = view declaration.expressions[awaitedIndex];
   const external = programUsesObjectiveCAsyncCompletion(program)
     || programUsesAsyncThreadAwait(program);
-  output.append("  Z_AsyncExecutor executor = {0};\n");
+  output.append("  Z_AsyncExecutor executor = {};\n");
   if (external) output.append("  z_stage1_async_executor_init_external(&executor);\n");
   output.append(`  Z_AsyncInvocation invocation = Z_${awaited.value}_start(`);
   try appendExpression(inout output, declaration, awaited.children[0]);
@@ -20927,7 +21696,7 @@ function appendThreadYieldAwaitBody(
   if (resultType.kind != LoweredTypeKind.voidType) {
     output.append("  ");
     output.append(try cType(resultType));
-    output.append(" result = {0};\n");
+    output.append(" result = {};\n");
   }
   output.append("  if (!cancelled) {\n    if (invocation.failed != NULL && invocation.failed(invocation.task)) abort();\n    if (invocation.take_result != NULL) invocation.take_result(invocation.task, ");
   output.append(resultType.kind == LoweredTypeKind.voidType ? "NULL" : "&result");
@@ -22639,7 +23408,7 @@ function appendCopyHelper(
     });
     output.append("  ");
     output.append(storageType);
-    output.append(" result = {0};\n");
+    output.append(" result = {};\n");
     output.append("  for (size_t index = 0; index < ");
     output.append(program.fixedArrays[index].length);
     output.append("; index += 1) {\n    result.data[index] = ");
@@ -22756,7 +23525,7 @@ function appendCopyHelper(
   }
   output.append("  ");
   output.append(storageType);
-  output.append(" result = { 0 };\n  result.tag = source.tag;\n  switch (source.tag) {\n");
+  output.append(" result = {};\n  result.tag = source.tag;\n  switch (source.tag) {\n");
   for (const variant of program.enums[index].variants) {
     match (in variant.payload) {
       some(payload) => {
@@ -23019,7 +23788,9 @@ function appendEnumDefinition(
   output.append(program.enums[index].name);
   if (program.enums[index].payloadBearing) output.append("Tag");
   output.append(";\n\n");
-  if (program.enums[index].payloadBearing) {
+  if (program.enums[index].payloadBearing && program.enums[index].cxxPayloads) {
+    try appendCxxPayloadEnum(inout output, program.enums[index]);
+  } else if (program.enums[index].payloadBearing) {
     output.append("typedef struct Z_");
     output.append(program.enums[index].name);
     output.append(" {\n  Z_");
@@ -23746,6 +24517,9 @@ function loweredIntrinsicIdentity(in type: LoweredType): String throws String {
     || type.kind == LoweredTypeKind.classType
     || type.kind == LoweredTypeKind.enumType
   ) return type.name.copyBytes(0, type.name.byteLength);
+  // A foreign record or C++ value: lowering's escaped identity, so the names
+  // of its Option types agree with lowering.
+  if (type.kind == LoweredTypeKind.foreignStructType) return loweredTypeIdentity(type);
   throw "native C emission cannot form an intrinsic identity for this type";
 }
 
@@ -23904,9 +24678,9 @@ function appendMapRuntime(
       output.append(ownedOptionName);
       output.append("){ .tag = Z_");
       output.append(ownedOptionName);
-      output.append("Tag_some, .payload.some = Z_");
+      output.append("Tag_some, .payload = { .some = Z_");
       output.append(declaration.valueType.name);
-      output.append("_retain(self->entries[stored - 1].value) }");
+      output.append("_retain(self->entries[stored - 1].value) } }");
     } else output.append("&(self->entries[stored - 1].value)");
     output.append(";\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
@@ -23955,7 +24729,9 @@ function appendMapRuntime(
         output.append("_release(self->entries[stored - 1].value);\n");
       } else output.append("_deinit(&self->entries[stored - 1].value);\n");
     }
-    output.append("      self->entries[stored - 1].value = value;\n");
+    if (declaration.cxxValues) {
+      output.append("      self->entries[stored - 1].value = std::move_if_noexcept(value);\n");
+    } else output.append("      self->entries[stored - 1].value = value;\n");
     output.append("      return;\n    }\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
     output.append("  }\n");
@@ -23972,18 +24748,34 @@ function appendMapRuntime(
     output.append("    if (next > SIZE_MAX / sizeof(Z_");
     output.append(declaration.name);
     output.append("_Entry)) abort();\n");
-    output.append("    void *storage = realloc(self->entries, next * sizeof(Z_");
-    output.append(declaration.name);
-    output.append("_Entry));\n");
-    output.append("    if (storage == NULL) abort();\n");
-    output.append("    self->entries = (Z_");
-    output.append(declaration.name);
-    output.append("_Entry *)storage;\n");
+    if (declaration.cxxValues) {
+      // C++ values relocate by move (copy-only: copy) construction.
+      output.append(`    Z_${declaration.name}_Entry *storage = (Z_${declaration.name}_Entry *)malloc(next * sizeof(Z_${declaration.name}_Entry));\n`);
+      output.append("    if (storage == NULL) abort();\n");
+      output.append("    for (size_t index = 0; index < self->length; index += 1) {\n");
+      output.append("      std::construct_at(&storage[index], std::move_if_noexcept(self->entries[index]));\n");
+      output.append("      std::destroy_at(&self->entries[index]);\n");
+      output.append("    }\n");
+      output.append("    free(self->entries);\n");
+      output.append("    self->entries = storage;\n");
+    } else {
+      output.append("    void *storage = realloc(self->entries, next * sizeof(Z_");
+      output.append(declaration.name);
+      output.append("_Entry));\n");
+      output.append("    if (storage == NULL) abort();\n");
+      output.append("    self->entries = (Z_");
+      output.append(declaration.name);
+      output.append("_Entry *)storage;\n");
+    }
     output.append("    self->capacity = next;\n");
     output.append("  }\n");
-    output.append("  self->entries[self->length] = (Z_");
-    output.append(declaration.name);
-    output.append("_Entry){ .key = key, .value = value };\n");
+    if (declaration.cxxValues) {
+      output.append(`  std::construct_at(&self->entries[self->length], Z_${declaration.name}_Entry{ .key = key, .value = std::move_if_noexcept(value) });\n`);
+    } else {
+      output.append("  self->entries[self->length] = (Z_");
+      output.append(declaration.name);
+      output.append("_Entry){ .key = key, .value = value };\n");
+    }
     output.append("  self->length += 1;\n");
     output.append("  self->buckets[slot] = self->length;\n");
     output.append("}\n\n");
@@ -23997,11 +24789,10 @@ function appendMapRuntime(
       output.append(" *self, ");
       output.append(keyType);
       output.append(" key) {\n");
-      output.append("  if (self->bucketCount == 0) return (Z_");
-      output.append(ownedOptionName);
-      output.append("){ .tag = Z_");
-      output.append(ownedOptionName);
-      output.append("Tag_none };\n");
+      const noneOption = declaration.cxxValues
+        ? `Z_${ownedOptionName}::make_none()`
+        : `(Z_${ownedOptionName}){ .tag = Z_${ownedOptionName}Tag_none }`;
+      output.append(`  if (self->bucketCount == 0) return ${noneOption};\n`);
       output.append("  size_t slot = Z_");
       output.append(declaration.name);
       output.append("_hash(key) & (self->bucketCount - 1);\n");
@@ -24022,11 +24813,15 @@ function appendMapRuntime(
       }
       output.append("      ");
       output.append(valueType);
-      output.append(" value = self->entries[entry].value;\n");
+      if (declaration.cxxValues) {
+        output.append(" value = std::move_if_noexcept(self->entries[entry].value);\n");
+      } else output.append(" value = self->entries[entry].value;\n");
       output.append("      self->buckets[slot] = SIZE_MAX;\n");
       output.append("      self->tombstones += 1;\n");
       output.append("      if (entry != last) {\n");
-      output.append("        self->entries[entry] = self->entries[last];\n");
+      if (declaration.cxxValues) {
+        output.append("        self->entries[entry] = std::move_if_noexcept(self->entries[last]);\n");
+      } else output.append("        self->entries[entry] = self->entries[last];\n");
       output.append("        size_t movedSlot = Z_");
       output.append(declaration.name);
       output.append("_hash(self->entries[entry].key) & (self->bucketCount - 1);\n");
@@ -24039,19 +24834,21 @@ function appendMapRuntime(
       output.append("        }\n");
       output.append("      }\n");
       output.append("      self->length = last;\n");
-      output.append("      return (Z_");
-      output.append(ownedOptionName);
-      output.append("){ .tag = Z_");
-      output.append(ownedOptionName);
-      output.append("Tag_some, .payload.some = value };\n");
+      if (declaration.cxxValues) {
+        // The vacated last slot holds a moved-from entry.
+        output.append("      std::destroy_at(&self->entries[last]);\n");
+        output.append(`      return Z_${ownedOptionName}::make_some(std::move_if_noexcept(value));\n`);
+      } else {
+        output.append("      return (Z_");
+        output.append(ownedOptionName);
+        output.append("){ .tag = Z_");
+        output.append(ownedOptionName);
+        output.append("Tag_some, .payload = { .some = value } };\n");
+      }
       output.append("    }\n");
       output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
       output.append("  }\n");
-      output.append("  return (Z_");
-      output.append(ownedOptionName);
-      output.append("){ .tag = Z_");
-      output.append(ownedOptionName);
-      output.append("Tag_none };\n");
+      output.append(`  return ${noneOption};\n`);
       output.append("}\n\n");
     }
     output.append("static __attribute__((unused)) bool Z_");
@@ -24090,7 +24887,9 @@ function appendMapRuntime(
     output.append("      self->buckets[slot] = SIZE_MAX;\n");
     output.append("      self->tombstones += 1;\n");
     output.append("      if (entry != last) {\n");
-    output.append("        self->entries[entry] = self->entries[last];\n");
+    if (declaration.cxxValues) {
+      output.append("        self->entries[entry] = std::move_if_noexcept(self->entries[last]);\n");
+    } else output.append("        self->entries[entry] = self->entries[last];\n");
     output.append("        size_t movedSlot = Z_");
     output.append(declaration.name);
     output.append("_hash(self->entries[entry].key) & (self->bucketCount - 1);\n");
@@ -24103,6 +24902,7 @@ function appendMapRuntime(
     output.append("        }\n");
     output.append("      }\n");
     output.append("      self->length = last;\n");
+    if (declaration.cxxValues) output.append("      std::destroy_at(&self->entries[last]);\n");
     output.append("      return true;\n");
     output.append("    }\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
@@ -24130,6 +24930,7 @@ function appendMapRuntime(
         output.append("_release(self->entries[self->length].value);\n");
       } else output.append("_deinit(&self->entries[self->length].value);\n");
     }
+    if (declaration.cxxValues) output.append("    std::destroy_at(&self->entries[self->length]);\n");
     output.append("  }\n");
     output.append("  if (self->bucketCount > 0) memset(self->buckets, 0, self->bucketCount * sizeof(size_t));\n");
     output.append("  self->tombstones = 0;\n");
@@ -24152,6 +24953,17 @@ function appendArrayPopRuntime(
     }
     if (!supported) continue;
     const elementType = try cType(declaration.elementType);
+    if (declaration.cxxElements) {
+      // The C++ element moves into the Option; its moved-from slot is destroyed.
+      output.append(`static __attribute__((unused)) Z_${optionName} Z_${declaration.name}_pop(Z_${declaration.name} *self) {\n`);
+      output.append(`  if (self->length == 0) return Z_${optionName}::make_none();\n`);
+      output.append("  self->length -= 1;\n");
+      output.append(`  ${elementType} *items = (${elementType} *)self->data;\n`);
+      output.append(`  Z_${optionName} result = Z_${optionName}::make_some(std::move_if_noexcept(items[self->length]));\n`);
+      output.append("  std::destroy_at(&items[self->length]);\n");
+      output.append("  return result;\n}\n\n");
+      continue;
+    }
     output.append(`static __attribute__((unused)) Z_${optionName} Z_${declaration.name}_pop(Z_${declaration.name} *self) {\n`);
     output.append(`  if (self->length == 0) return (Z_${optionName}){ .tag = Z_${optionName}Tag_none };\n`);
     output.append("  self->length -= 1;\n");
@@ -24365,7 +25177,7 @@ function appendSetRuntime(
       output.append(optionName);
       output.append("){ .tag = Z_");
       output.append(optionName);
-      output.append("Tag_some, .payload.some = removed };\n");
+      output.append("Tag_some, .payload = { .some = removed } };\n");
       output.append("    }\n");
       output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
       output.append("  }\n");
@@ -24543,6 +25355,8 @@ function arenaValueIdentity(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.f32Type) return "f32";
   if (type.kind == LoweredTypeKind.f64Type) return "f64";
   if (type.kind == LoweredTypeKind.stringType) return "String";
+  // A C++ spelling uses lowering's escaped identity, as the call sites do.
+  if (type.kind == LoweredTypeKind.foreignStructType) return loweredTypeIdentity(type);
   if (type.name.byteLength > 0) {
     return type.name.copyBytes(0, type.name.byteLength);
   }
@@ -24558,11 +25372,15 @@ function appendArenaCreateHelpers(
     const nativeType = try cType(type);
     const identity = try arenaValueIdentity(type);
     const symbol = arenaTypeSymbol(identity);
-    if (loweredTypeNeedsDeinit(program, type)) {
+    // A C++ value is constructed in Arena storage and destroyed on reset.
+    const cxxValue = loweredTypeHoldsCxx(program.cxxValueTypes, program.structs, program.enums, type, 0);
+    const needsCleanup = loweredTypeNeedsDeinit(program, type) || cxxValue;
+    if (needsCleanup) {
       output.append("static __attribute__((unused)) void z_stage1_arena_cleanup_");
       output.append(symbol);
       output.append("(void *value) {\n");
-      try appendArenaValueCleanup(inout output, type);
+      if (loweredTypeNeedsDeinit(program, type)) try appendArenaValueCleanup(inout output, type);
+      if (cxxValue) output.append(`  std::destroy_at((${nativeType} *)value);\n`);
       output.append("}\n\n");
     }
     output.append("static inline __attribute__((unused)) const ");
@@ -24581,8 +25399,9 @@ function appendArenaCreateHelpers(
     output.append("), _Alignof(");
     output.append(nativeType);
     output.append("));\n");
-    output.append("  *stored = value;\n");
-    if (loweredTypeNeedsDeinit(program, type)) {
+    if (cxxValue) output.append("  std::construct_at(stored, std::move_if_noexcept(value));\n");
+    else output.append("  *stored = value;\n");
+    if (needsCleanup) {
       output.append("  z_stage1_arena_register_cleanup(arena, stored, z_stage1_arena_cleanup_");
       output.append(symbol);
       output.append(");\n");
@@ -24852,6 +25671,10 @@ function programUsesMainDelay(in program: LoweredProgram): boolean {
       || declaration.mainDelayMatches.length > 0
       || declaration.mainDelayLoops.length > 0
     ) return true;
+    if (declaration.asyncSuspension != "yield-frame") continue;
+    for (const statement of declaration.statements) {
+      if (statement.kind == LoweredStatementKind.delayStatement) return true;
+    }
   }
   return false;
 }
@@ -24871,10 +25694,10 @@ function appendSystemStandardRuntime(
   if (programUsesStandardCall(program, "String.fromBytes")) {
     output.append("static __attribute__((unused)) Z___z_Result_String___z_std_text_Utf8Error z_stage1_string_from_bytes(Z___z_Slice_u8 bytes) {\n");
     output.append("  const size_t offset = z_stage1_string_utf8_valid_prefix((const char *)bytes.data, bytes.length);\n");
-    output.append("  if (offset != bytes.length) return (Z___z_Result_String___z_std_text_Utf8Error){ .tag = Z___z_Result_String___z_std_text_Utf8ErrorTag_failure, .payload.failure = { .byteOffset = offset } };\n");
+    output.append("  if (offset != bytes.length) return (Z___z_Result_String___z_std_text_Utf8Error){ .tag = Z___z_Result_String___z_std_text_Utf8ErrorTag_failure, .payload = { .failure = { .byteOffset = offset } } };\n");
     output.append("  Z_String text = { NULL, 0, 0 };\n");
     output.append("  z_string_append_bytes(&text, (const char *)bytes.data, bytes.length);\n");
-    output.append("  return (Z___z_Result_String___z_std_text_Utf8Error){ .tag = Z___z_Result_String___z_std_text_Utf8ErrorTag_success, .payload.success = text };\n}\n\n");
+    output.append("  return (Z___z_Result_String___z_std_text_Utf8Error){ .tag = Z___z_Result_String___z_std_text_Utf8ErrorTag_success, .payload = { .success = text } };\n}\n\n");
   }
   const usesLock = programUsesStandardCall(program, "fs.lock");
   const usesReadBytes = programUsesStandardCall(program, "fs.readBytes");
@@ -24906,7 +25729,7 @@ function appendSystemStandardRuntime(
     output.append("#if defined(_WIN32)\n");
     output.append("  HANDLE handle = (HANDLE)lock->native;\n");
     output.append("  if (handle == NULL || handle == INVALID_HANDLE_VALUE) return;\n");
-    output.append("  OVERLAPPED range = {0};\n");
+    output.append("  OVERLAPPED range = {};\n");
     output.append("  (void)UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &range);\n");
     output.append("  (void)CloseHandle(handle);\n");
     output.append("  lock->native = 0;\n");
@@ -24920,54 +25743,54 @@ function appendSystemStandardRuntime(
     output.append("}\n\n");
     output.append("static __attribute__((unused)) Z___z_Result_FsLock_String z_stage1_fs_lock(const Z_String *path) {\n");
     output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
-    output.append("    return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("    return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") } };\n");
     output.append("  }\n");
     output.append("  const char *native_path = path->data != NULL ? path->data : \"\";\n");
     output.append("#if defined(_WIN32)\n");
     output.append("  HANDLE handle = CreateFileA(native_path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);\n");
-    output.append("  if (handle == INVALID_HANDLE_VALUE) return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not open filesystem lock\") };\n");
-    output.append("  OVERLAPPED range = {0};\n");
+    output.append("  if (handle == INVALID_HANDLE_VALUE) return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"could not open filesystem lock\") } };\n");
+    output.append("  OVERLAPPED range = {};\n");
     output.append("  if (!LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &range)) {\n");
     output.append("    (void)CloseHandle(handle);\n");
-    output.append("    return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not acquire filesystem lock\") };\n");
+    output.append("    return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"could not acquire filesystem lock\") } };\n");
     output.append("  }\n");
-    output.append("  return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_success, .payload.success = (Z_FsLock){ .native = (intptr_t)handle } };\n");
+    output.append("  return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_success, .payload = { .success = (Z_FsLock){ .native = (intptr_t)handle } } };\n");
     output.append("#else\n");
     output.append("  const int descriptor = open(native_path, O_CREAT | O_RDWR, 0666);\n");
-    output.append("  if (descriptor < 0) return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (descriptor < 0) return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
     output.append("  int status;\n");
     output.append("  do { status = flock(descriptor, LOCK_EX); } while (status != 0 && errno == EINTR);\n");
     output.append("  if (status != 0) {\n");
     output.append("    const int code = errno;\n");
     output.append("    (void)close(descriptor);\n");
-    output.append("    return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
-    output.append("  return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_success, .payload.success = (Z_FsLock){ .native = (intptr_t)descriptor } };\n");
+    output.append("  return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_success, .payload = { .success = (Z_FsLock){ .native = (intptr_t)descriptor } } };\n");
     output.append("#endif\n");
     output.append("}\n\n");
   }
   if (usesReadBytes) {
     output.append("static __attribute__((unused)) Z___z_Result___z_Array_u8_String z_stage1_fs_read_bytes(const Z_String *path) {\n");
     output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
-    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") } };\n");
     output.append("  }\n");
     output.append("  const char *native_path = path->data != NULL ? path->data : \"\";\n");
     output.append("  FILE *file = fopen(native_path, \"rb\");\n");
-    output.append("  if (file == NULL) return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (file == NULL) return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
     output.append("  if (fseek(file, 0, SEEK_END) != 0) {\n");
     output.append("    const int code = errno;\n");
     output.append("    fclose(file);\n");
-    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
     output.append("  const long measured = ftell(file);\n");
     output.append("  if (measured < 0 || fseek(file, 0, SEEK_SET) != 0) {\n");
     output.append("    const int code = errno;\n");
     output.append("    fclose(file);\n");
-    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
     output.append("  Z___z_Array_u8 contents = { NULL, 0, 0 };\n");
     output.append("  if (measured > 0) {\n");
-    output.append("    contents.data = malloc((size_t)measured);\n");
+    output.append("    contents.data = (__typeof__(contents.data))malloc((size_t)measured);\n");
     output.append("    if (contents.data == NULL) abort();\n");
     output.append("    contents.length = (size_t)measured;\n");
     output.append("    contents.capacity = contents.length;\n");
@@ -24975,35 +25798,35 @@ function appendSystemStandardRuntime(
     output.append("      const int code = ferror(file) ? errno : EIO;\n");
     output.append("      fclose(file);\n");
     output.append("      free(contents.data);\n");
-    output.append("      return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("      return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("    }\n");
     output.append("  }\n");
     output.append("  if (fclose(file) != 0) {\n");
     output.append("    const int code = errno;\n");
     output.append("    free(contents.data);\n");
-    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
-    output.append("  return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_success, .payload.success = contents };\n");
+    output.append("  return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_success, .payload = { .success = contents } };\n");
     output.append("}\n\n");
   }
   if (usesReadText) {
     output.append("static __attribute__((unused)) Z___z_Result_String_String z_stage1_fs_read_text(const Z_String *path) {\n");
     output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
-    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") } };\n");
     output.append("  }\n");
     output.append("  const char *native_path = path->data != NULL ? path->data : \"\";\n");
     output.append("  FILE *file = fopen(native_path, \"rb\");\n");
-    output.append("  if (file == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (file == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
     output.append("  if (fseek(file, 0, SEEK_END) != 0) {\n");
     output.append("    const int code = errno;\n");
     output.append("    fclose(file);\n");
-    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
     output.append("  const long measured = ftell(file);\n");
     output.append("  if (measured < 0 || fseek(file, 0, SEEK_SET) != 0) {\n");
     output.append("    const int code = errno;\n");
     output.append("    fclose(file);\n");
-    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
     output.append("  Z_String contents = { NULL, 0, 0 };\n");
     output.append("  if (measured > 0) {\n");
@@ -25013,7 +25836,7 @@ function appendSystemStandardRuntime(
     output.append("      const int code = ferror(file) ? errno : EIO;\n");
     output.append("      fclose(file);\n");
     output.append("      Z_String_deinit(&contents);\n");
-    output.append("      return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("      return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("    }\n");
     output.append("    contents.length = count;\n");
     output.append("    ((char *)contents.data)[contents.length] = '\\0';\n");
@@ -25021,69 +25844,69 @@ function appendSystemStandardRuntime(
     output.append("  if (fclose(file) != 0) {\n");
     output.append("    const int code = errno;\n");
     output.append("    Z_String_deinit(&contents);\n");
-    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
     output.append("  if (!z_stage1_string_is_valid_utf8(contents.data != NULL ? contents.data : \"\", contents.length)) {\n");
     output.append("    Z_String_deinit(&contents);\n");
-    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"file is not valid UTF-8\") };\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"file is not valid UTF-8\") } };\n");
     output.append("  }\n");
-    output.append("  return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_success, .payload.success = contents };\n");
+    output.append("  return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_success, .payload = { .success = contents } };\n");
     output.append("}\n\n");
   }
   if (usesWriteText) {
     output.append("static __attribute__((unused)) Z___z_Result_void_String z_stage1_fs_write_text(const Z_String *path, const Z_String *contents) {\n");
     output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
-    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") } };\n");
     output.append("  }\n");
     output.append("  const char *native_path = path->data != NULL ? path->data : \"\";\n");
     output.append("  FILE *file = fopen(native_path, \"wb\");\n");
-    output.append("  if (file == NULL) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (file == NULL) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
     output.append("  const char *data = contents != NULL && contents->data != NULL ? contents->data : \"\";\n");
     output.append("  const size_t length = contents != NULL ? contents->length : 0;\n");
     output.append("  if (length > 0 && fwrite(data, 1, length, file) != length) {\n");
     output.append("    const int code = errno;\n");
     output.append("    fclose(file);\n");
-    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
-    output.append("  if (fclose(file) != 0) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (fclose(file) != 0) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
     output.append("  return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_success };\n");
     output.append("}\n\n");
   }
   if (usesWriteBytes) {
     output.append("static __attribute__((unused)) Z___z_Result_void_String z_stage1_fs_write_bytes(const Z_String *path, const Z___z_Array_u8 *bytes) {\n");
     output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
-    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") } };\n");
     output.append("  }\n");
     output.append("  const char *native_path = path->data != NULL ? path->data : \"\";\n");
     output.append("  FILE *file = fopen(native_path, \"wb\");\n");
-    output.append("  if (file == NULL) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (file == NULL) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
     output.append("  const size_t length = bytes != NULL ? bytes->length : 0;\n");
     output.append("  if (length > 0 && fwrite(bytes->data, 1, length, file) != length) {\n");
     output.append("    const int code = errno;\n");
     output.append("    fclose(file);\n");
-    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
-    output.append("  if (fclose(file) != 0) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (fclose(file) != 0) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
     output.append("  return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_success };\n");
     output.append("}\n\n");
   }
   if (usesReplace) {
     output.append("static __attribute__((unused)) Z___z_Result_void_String z_stage1_fs_replace(const Z_String *source, const Z_String *destination) {\n");
     output.append("  if (source == NULL || (source->length > 0 && memchr(source->data, '\\0', source->length) != NULL)) {\n");
-    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"source path contains an embedded null byte\") };\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"source path contains an embedded null byte\") } };\n");
     output.append("  }\n");
     output.append("  if (destination == NULL || (destination->length > 0 && memchr(destination->data, '\\0', destination->length) != NULL)) {\n");
-    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"destination path contains an embedded null byte\") };\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"destination path contains an embedded null byte\") } };\n");
     output.append("  }\n");
     output.append("  const char *native_source = source->data != NULL ? source->data : \"\";\n");
     output.append("  const char *native_destination = destination->data != NULL ? destination->data : \"\";\n");
     output.append("#if defined(_WIN32)\n");
     output.append("  if (!MoveFileExA(native_source, native_destination, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {\n");
-    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not atomically replace filesystem path\") };\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"could not atomically replace filesystem path\") } };\n");
     output.append("  }\n");
     output.append("#else\n");
     output.append("  if (rename(native_source, native_destination) != 0) {\n");
-    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
     output.append("  }\n");
     output.append("#endif\n");
     output.append("  return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_success };\n");
@@ -25138,12 +25961,12 @@ function appendSystemStandardRuntime(
     output.append("}\n\n");
     output.append("static __attribute__((unused)) Z___z_Result_void_String z_stage1_fs_create_directories(const Z_String *path) {\n");
     output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
-    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") } };\n");
     output.append("  }\n");
     output.append("  if (path->length == 0) {\n");
-    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"directory path cannot be empty\") };\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"directory path cannot be empty\") } };\n");
     output.append("  }\n");
-    output.append("  char *buffer = malloc(path->length + 1);\n");
+    output.append("  char *buffer = (__typeof__(buffer))malloc(path->length + 1);\n");
     output.append("  if (buffer == NULL) abort();\n");
     output.append("  memcpy(buffer, path->data, path->length);\n");
     output.append("  buffer[path->length] = '\\0';\n");
@@ -25174,7 +25997,7 @@ function appendSystemStandardRuntime(
     output.append("  if (code == 0) code = z_stage1_fs_create_one_directory(buffer);\n");
     output.append("  free(buffer);\n");
     output.append("  if (code != 0) {\n");
-    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
     output.append("  return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_success };\n");
     output.append("}\n\n");
@@ -25182,22 +26005,22 @@ function appendSystemStandardRuntime(
   if (usesRealPath) {
     output.append("static __attribute__((unused)) Z___z_Result_String_String z_stage1_fs_real_path(const Z_String *path) {\n");
     output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
-    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") } };\n");
     output.append("  }\n");
     output.append("#if defined(_WIN32)\n");
     output.append("  char *resolved = _fullpath(NULL, path->data != NULL ? path->data : \"\", 0);\n");
     output.append("#else\n");
     output.append("  char *resolved = realpath(path->data != NULL ? path->data : \"\", NULL);\n");
     output.append("#endif\n");
-    output.append("  if (resolved == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (resolved == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
     output.append("  const size_t length = strlen(resolved);\n");
     output.append("  if (!z_stage1_string_is_valid_utf8(resolved, length)) {\n");
     output.append("    free(resolved);\n");
-    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"canonical path is not valid UTF-8\") };\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"canonical path is not valid UTF-8\") } };\n");
     output.append("  }\n");
     output.append("  Z_String result = z_stage1_string_from_cstring(resolved);\n");
     output.append("  free(resolved);\n");
-    output.append("  return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_success, .payload.success = result };\n");
+    output.append("  return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_success, .payload = { .success = result } };\n");
     output.append("}\n\n");
   }
   if (usesProcessArgs) {
@@ -25206,7 +26029,7 @@ function appendSystemStandardRuntime(
     output.append("  if (z_stage1_process_argc <= 1 || z_stage1_process_argv == NULL) return result;\n");
     output.append("  result.length = (size_t)(z_stage1_process_argc - 1);\n");
     output.append("  result.capacity = result.length;\n");
-    output.append("  result.data = calloc(result.capacity, sizeof(Z_String));\n");
+    output.append("  result.data = (__typeof__(result.data))calloc(result.capacity, sizeof(Z_String));\n");
     output.append("  if (result.data == NULL) abort();\n");
     output.append("  Z_String *items = (Z_String *)result.data;\n");
     output.append("  for (size_t index = 0; index < result.length; index += 1) items[index] = z_stage1_string_from_cstring(z_stage1_process_argv[index + 1]);\n");
@@ -25221,18 +26044,18 @@ function appendSystemStandardRuntime(
     output.append("  wchar_t *wide = NULL;\n");
     output.append("  DWORD length = 0;\n");
     output.append("  for (;;) {\n");
-    output.append("    wide = malloc((size_t)capacity * sizeof(wchar_t));\n");
+    output.append("    wide = (__typeof__(wide))malloc((size_t)capacity * sizeof(wchar_t));\n");
     output.append("    if (wide == NULL) abort();\n");
     output.append("    length = GetModuleFileNameW(NULL, wide, capacity);\n");
-    output.append("    if (length == 0) { free(wide); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not locate the current executable\") }; }\n");
+    output.append("    if (length == 0) { free(wide); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"could not locate the current executable\") } }; }\n");
     output.append("    if (length < capacity) break;\n");
     output.append("    free(wide); wide = NULL;\n");
     output.append("    if (capacity > UINT32_MAX / 2) abort();\n");
     output.append("    capacity *= 2;\n");
     output.append("  }\n");
     output.append("  const int utf8_length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, (int)length, NULL, 0, NULL, NULL);\n");
-    output.append("  if (utf8_length <= 0) { free(wide); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"the current executable path is not valid UTF-8\") }; }\n");
-    output.append("  resolved = malloc((size_t)utf8_length + 1);\n");
+    output.append("  if (utf8_length <= 0) { free(wide); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"the current executable path is not valid UTF-8\") } }; }\n");
+    output.append("  resolved = (__typeof__(resolved))malloc((size_t)utf8_length + 1);\n");
     output.append("  if (resolved == NULL) abort();\n");
     output.append("  (void)WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, (int)length, resolved, utf8_length, NULL, NULL);\n");
     output.append("  resolved[utf8_length] = '\\0';\n");
@@ -25240,47 +26063,47 @@ function appendSystemStandardRuntime(
     output.append("#elif defined(__APPLE__)\n");
     output.append("  uint32_t capacity = 0;\n");
     output.append("  (void)_NSGetExecutablePath(NULL, &capacity);\n");
-    output.append("  if (capacity == 0) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not locate the current executable\") };\n");
-    output.append("  char *candidate = malloc((size_t)capacity);\n");
+    output.append("  if (capacity == 0) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"could not locate the current executable\") } };\n");
+    output.append("  char *candidate = (__typeof__(candidate))malloc((size_t)capacity);\n");
     output.append("  if (candidate == NULL) abort();\n");
-    output.append("  if (_NSGetExecutablePath(candidate, &capacity) != 0) { free(candidate); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not locate the current executable\") }; }\n");
+    output.append("  if (_NSGetExecutablePath(candidate, &capacity) != 0) { free(candidate); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"could not locate the current executable\") } }; }\n");
     output.append("  resolved = realpath(candidate, NULL);\n");
     output.append("  free(candidate);\n");
-    output.append("  if (resolved == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (resolved == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
     output.append("#elif defined(__linux__)\n");
     output.append("  size_t capacity = 256;\n");
     output.append("  for (;;) {\n");
-    output.append("    resolved = malloc(capacity);\n");
+    output.append("    resolved = (__typeof__(resolved))malloc(capacity);\n");
     output.append("    if (resolved == NULL) abort();\n");
     output.append("    const ssize_t length = readlink(\"/proc/self/exe\", resolved, capacity - 1);\n");
-    output.append("    if (length < 0) { const int code = errno; free(resolved); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) }; }\n");
+    output.append("    if (length < 0) { const int code = errno; free(resolved); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } }; }\n");
     output.append("    if ((size_t)length < capacity - 1) { resolved[length] = '\\0'; break; }\n");
     output.append("    free(resolved); resolved = NULL;\n");
     output.append("    if (capacity > SIZE_MAX / 2) abort();\n");
     output.append("    capacity *= 2;\n");
     output.append("  }\n");
     output.append("#else\n");
-    output.append("  if (z_stage1_process_argc <= 0 || z_stage1_process_argv == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not locate the current executable\") };\n");
+    output.append("  if (z_stage1_process_argc <= 0 || z_stage1_process_argv == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"could not locate the current executable\") } };\n");
     output.append("  resolved = realpath(z_stage1_process_argv[0], NULL);\n");
-    output.append("  if (resolved == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (resolved == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
     output.append("#endif\n");
     output.append("  const size_t length = strlen(resolved);\n");
-    output.append("  if (!z_stage1_string_is_valid_utf8(resolved, length)) { free(resolved); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"the current executable path is not valid UTF-8\") }; }\n");
+    output.append("  if (!z_stage1_string_is_valid_utf8(resolved, length)) { free(resolved); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"the current executable path is not valid UTF-8\") } }; }\n");
     output.append("  Z_String result = z_stage1_string_from_cstring(resolved);\n");
     output.append("  free(resolved);\n");
-    output.append("  return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_success, .payload.success = result };\n");
+    output.append("  return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_success, .payload = { .success = result } };\n");
     output.append("}\n\n");
   }
   if (usesProcessRun) {
     output.append("static __attribute__((unused)) Z___z_Result_i32_String z_stage1_process_run(const Z_String *program, Z___z_Slice_String arguments) {\n");
     output.append("  if (program == NULL || (program->length > 0 && memchr(program->data, '\\0', program->length) != NULL)) {\n");
-    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"program contains an embedded null byte\") };\n");
+    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"program contains an embedded null byte\") } };\n");
     output.append("  }\n");
     output.append("  Z_String *items = (Z_String *)arguments.data;\n");
     output.append("  for (size_t index = 0; index < arguments.length; index += 1) {\n");
-    output.append("    if (items[index].length > 0 && memchr(items[index].data, '\\0', items[index].length) != NULL) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"process argument contains an embedded null byte\") };\n");
+    output.append("    if (items[index].length > 0 && memchr(items[index].data, '\\0', items[index].length) != NULL) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(\"process argument contains an embedded null byte\") } };\n");
     output.append("  }\n");
-    output.append("  char **native_argv = calloc(arguments.length + 2, sizeof(char *));\n");
+    output.append("  char **native_argv = (__typeof__(native_argv))calloc(arguments.length + 2, sizeof(char *));\n");
     output.append("  if (native_argv == NULL) abort();\n");
     output.append("  native_argv[0] = (char *)(program->data != NULL ? program->data : \"\");\n");
     output.append("  for (size_t index = 0; index < arguments.length; index += 1) native_argv[index + 1] = (char *)(items[index].data != NULL ? items[index].data : \"\");\n");
@@ -25288,24 +26111,24 @@ function appendSystemStandardRuntime(
     output.append("  const intptr_t status = _spawnvp(_P_WAIT, native_argv[0], (const char * const *)native_argv);\n");
     output.append("  if (status == -1) {\n");
     output.append("    const int code = errno; free(native_argv);\n");
-    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
     output.append("  free(native_argv);\n");
-    output.append("  return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_success, .payload.success = (int32_t)status };\n");
+    output.append("  return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_success, .payload = { .success = (int32_t)status } };\n");
     output.append("#else\n");
     output.append("  int error_pipe[2];\n");
     output.append("  if (pipe(error_pipe) != 0) {\n");
     output.append("    const int code = errno; free(native_argv);\n");
-    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
     output.append("  if (fcntl(error_pipe[1], F_SETFD, FD_CLOEXEC) == -1) {\n");
     output.append("    const int code = errno; close(error_pipe[0]); close(error_pipe[1]); free(native_argv);\n");
-    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
     output.append("  const pid_t child = fork();\n");
     output.append("  if (child < 0) {\n");
     output.append("    const int code = errno; close(error_pipe[0]); close(error_pipe[1]); free(native_argv);\n");
-    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(code)) } };\n");
     output.append("  }\n");
     output.append("  if (child == 0) {\n");
     output.append("    close(error_pipe[0]); execvp(native_argv[0], native_argv);\n");
@@ -25318,11 +26141,11 @@ function appendSystemStandardRuntime(
     output.append("  int status = 0; pid_t waited;\n");
     output.append("  do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);\n");
     output.append("  free(native_argv);\n");
-    output.append("  if (waited < 0) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
-    output.append("  if (pipe_error != 0) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(pipe_error)) };\n");
-    output.append("  if (error_bytes == (ssize_t)sizeof(exec_error)) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(exec_error)) };\n");
+    output.append("  if (waited < 0) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(errno)) } };\n");
+    output.append("  if (pipe_error != 0) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(pipe_error)) } };\n");
+    output.append("  if (error_bytes == (ssize_t)sizeof(exec_error)) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload = { .failure = z_stage1_string_from_cstring(strerror(exec_error)) } };\n");
     output.append("  const int32_t exit_code = WIFEXITED(status) ? (int32_t)WEXITSTATUS(status) : WIFSIGNALED(status) ? (int32_t)(128 + WTERMSIG(status)) : 1;\n");
-    output.append("  return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_success, .payload.success = exit_code };\n");
+    output.append("  return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_success, .payload = { .success = exit_code } };\n");
     output.append("#endif\n");
     output.append("}\n\n");
   }
@@ -26382,6 +27205,7 @@ function emitLoweredC(
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
   output.append("#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n");
+  if (programUsesCxxMoves(program)) output.append("#if defined(__cplusplus)\n#include <memory>\n#include <utility>\n#endif\n");
   if (usesObjectiveCDataCopy || usesObjectiveCDataBorrow) {
     output.append("#import <Foundation/Foundation.h>\n");
   }
@@ -26718,7 +27542,10 @@ function emitLoweredC(
   output.append("    double f64_value;\n");
   output.append("  } value;\n");
   output.append("} Z_TemplatePart;\n\n");
-  output.append("#define Z_STRING_LITERAL(value) ((Z_String){ .data = (value), .length = sizeof(value) - 1, .capacity = 0 })\n\n");
+  output.append("#define Z_STRING_LITERAL(value) ((Z_String){ .data = (value), .length = sizeof(value) - 1, .capacity = 0 })\n");
+  output.append("#if defined(__cplusplus)\n#define Z_INTERNAL_DECLARE(declaration) namespace { extern declaration; }\n#define Z_INTERNAL_DEFINE_BEGIN namespace {\n#define Z_INTERNAL_DEFINE_END }\n#define Z_INTERNAL\n#else\n#define Z_INTERNAL_DECLARE(declaration) static declaration;\n#define Z_INTERNAL_DEFINE_BEGIN\n#define Z_INTERNAL_DEFINE_END\n#define Z_INTERNAL static\n#endif\n");
+  output.append("#if defined(__cplusplus)\ntemplate <typename Z_Temporary> static inline Z_Temporary *z_temporary_address(Z_Temporary &&value) { return &value; }\n#define Z_TEMPORARY_ADDRESS(type, ...) (z_temporary_address((type){__VA_ARGS__}))\n#else\n#define Z_TEMPORARY_ADDRESS(type, ...) ((type[]){__VA_ARGS__})\n#endif\n");
+  output.append("#define Z_STRING_LITERAL_ADDRESS(value) (__extension__ ({ static const Z_String z_string_literal = { (value), sizeof(value) - 1, 0 }; &z_string_literal; }))\n\n");
   output.append("static inline __attribute__((unused)) void Z_String_deinit(Z_String *self) {\n");
   output.append("  if (self->capacity > 0) free((void *)self->data);\n");
   output.append("  self->data = NULL;\n");
@@ -27034,7 +27861,7 @@ function emitLoweredC(
         output.append(declaration.name);
         output.append("){ .tag = Z_");
         output.append(declaration.name);
-        output.append("Tag_some, .payload.some = value };\n}\n\n");
+        output.append("Tag_some, .payload = { .some = value } };\n}\n\n");
       }
       none => {}
     }
@@ -27152,7 +27979,7 @@ function emitLoweredC(
     output.append(foreign.resultType);
     output.append("){ .tag = Z_");
     output.append(foreign.resultType);
-    output.append("Tag_failure, .payload.failure = status };\n}\n\n");
+    output.append("Tag_failure, .payload = { .failure = status } };\n}\n\n");
   }
   appendSystemStandardRuntime(inout output, program);
   // Custom class constructors execute before ordinary function definitions
@@ -27324,6 +28151,10 @@ function emitLoweredC(
       output.append(elementType);
       output.append(" const __strong *)values;\n");
       output.append("  for (size_t index = 0; index < length; index += 1) storage[index] = source[index];\n");
+    } else if (declaration.cxxElements) {
+      // C++ elements: move (or, copy-only, copy) each one out of the temporary array.
+      output.append(`  ${elementType} *source = (${elementType} *)values;\n`);
+      output.append(`  for (size_t index = 0; index < length; index += 1) std::construct_at(&((${elementType} *)storage)[index], std::move_if_noexcept(source[index]));\n`);
     } else {
       output.append("  memcpy(storage, values, length * sizeof(");
       output.append(elementType);
@@ -27418,6 +28249,17 @@ function emitLoweredC(
       output.append("    for (size_t index = 0; index < self->length; index += 1) { storage[index] = previous[index]; previous[index] = nil; }\n");
       output.append("    free(previous);\n");
       output.append("    self->data = storage;\n");
+    } else if (declaration.cxxElements) {
+      // C++ elements are relocated by move (copy-only: copy) construction, never realloc.
+      output.append(`    ${elementType} *storage = (${elementType} *)malloc(next * sizeof(${elementType}));\n`);
+      output.append("    if (storage == NULL) abort();\n");
+      output.append(`    ${elementType} *previous = (${elementType} *)self->data;\n`);
+      output.append("    for (size_t index = 0; index < self->length; index += 1) {\n");
+      output.append("      std::construct_at(&storage[index], std::move_if_noexcept(previous[index]));\n");
+      output.append("      std::destroy_at(&previous[index]);\n");
+      output.append("    }\n");
+      output.append("    free(previous);\n");
+      output.append("    self->data = storage;\n");
     } else {
       output.append("    void *storage = realloc(self->data, next * sizeof(");
       output.append(elementType);
@@ -27431,7 +28273,23 @@ function emitLoweredC(
     output.append(`static inline __attribute__((unused)) Z_${declaration.name} Z_${declaration.name}_withCapacity(size_t minimumCapacity) {\n`);
     output.append(`  Z_${declaration.name} result = { .data = NULL, .length = 0, .capacity = 0 };\n`);
     output.append(`  Z_${declaration.name}_reserveCapacity(&result, minimumCapacity);\n  return result;\n}\n\n`);
-    if (!objectiveCElements) {
+    if (!objectiveCElements && declaration.cxxElements && !declaration.cxxMoveOnlyElements) {
+      // Copyable C++ elements are copy-constructed into place.
+      output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_append(Z_${declaration.name} *self, Z_${declaration.sliceName} items) {\n`);
+      output.append("  if (items.length == 0) return;\n");
+      output.append("  if (items.length > SIZE_MAX - self->length) abort();\n");
+      output.append(`  if (self->length + items.length > self->capacity) Z_${declaration.name}_reserveCapacity(self, self->length + items.length);\n`);
+      output.append(`  for (size_t index = 0; index < items.length; index += 1) std::construct_at(&((${elementType} *)self->data)[self->length + index], ((${elementType} const *)items.data)[index]);\n`);
+      output.append("  self->length += items.length;\n");
+      output.append("}\n\n");
+      output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_appendRepeated(Z_${declaration.name} *self, ${elementType} value, size_t count) {\n`);
+      output.append("  if (count == 0) return;\n");
+      output.append("  if (count > SIZE_MAX - self->length) abort();\n");
+      output.append(`  if (self->length + count > self->capacity) Z_${declaration.name}_reserveCapacity(self, self->length + count);\n`);
+      output.append(`  for (size_t index = 0; index < count; index += 1) std::construct_at(&((${elementType} *)self->data)[self->length + index], value);\n`);
+      output.append("  self->length += count;\n");
+      output.append("}\n\n");
+    } else if (!objectiveCElements && !declaration.cxxElements) {
       // Array.append: the checker admits only cleanup-free elements and keeps
       // the source out of the receiver's storage, so one copy suffices. A
       // short run is copied inline, where a memcpy call costs more.
@@ -27472,11 +28330,16 @@ function emitLoweredC(
     output.append("  if (self->length == self->capacity) {\n");
     output.append("    if (self->length == SIZE_MAX) abort();\n");
     output.append(`    Z_${declaration.name}_reserveCapacity(self, self->capacity == 0 ? 8 : self->length + 1);\n  }\n`);
-    output.append("  ((");
-    output.append(elementType);
-    if (objectiveCElements) {
-      output.append(" __strong *)self->data)[self->length] = value;\n");
-    } else output.append(" *)self->data)[self->length] = value;\n");
+    if (declaration.cxxElements) {
+      // A copy-only C++ type (deleted move) is copied; a movable one moved.
+      output.append(`  std::construct_at(&((${elementType} *)self->data)[self->length], std::move_if_noexcept(value));\n`);
+    } else {
+      output.append("  ((");
+      output.append(elementType);
+      if (objectiveCElements) {
+        output.append(" __strong *)self->data)[self->length] = value;\n");
+      } else output.append(" *)self->data)[self->length] = value;\n");
+    }
     output.append("  self->length += 1;\n");
     output.append("}\n\n");
     output.append("static inline __attribute__((unused)) void Z_");
@@ -27494,6 +28357,8 @@ function emitLoweredC(
       output.append("    self->length -= 1;\n");
       output.append("    items[self->length] = nil;\n");
       output.append("  }\n");
+    } else if (declaration.cxxElements) {
+      appendCxxElementDestruction(inout output, program, declaration, elementType);
     } else if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
       output.append("  ");
       output.append(elementType);
@@ -27596,7 +28461,10 @@ function emitLoweredC(
     output.append("_deinit(Z_");
     output.append(declaration.name);
     output.append(" *self) {\n");
-    if (declaration.elementType.kind == LoweredTypeKind.foreignObjCType) {
+    if (declaration.cxxElements) {
+      const elementType = try cType(declaration.elementType);
+      appendCxxElementDestruction(inout output, program, declaration, elementType);
+    } else if (declaration.elementType.kind == LoweredTypeKind.foreignObjCType) {
       const elementType = try cType(declaration.elementType);
       output.append("  ");
       output.append(elementType);
@@ -27657,6 +28525,7 @@ function emitLoweredC(
         output.append("_deinit(&self->entries[self->length].value);\n");
       }
     }
+    if (declaration.cxxValues) output.append("    std::destroy_at(&self->entries[self->length]);\n");
     output.append("  }\n");
     output.append("  free(self->entries);\n");
     output.append("  free(self->buckets);\n");

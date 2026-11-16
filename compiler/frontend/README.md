@@ -108,8 +108,10 @@ recursive path.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `foreign-declaration-protocol.zs` decodes the versioned producer-facing
-  `ZFDCL` stream into owned flat Z declarations. Version 15 covers scalar
-  typedef evidence, nominal and flag enums, typed native constants, record layouts and
+  `ZFDCL` stream into owned flat Z declarations. Version 16 covers the
+  target's C `long` width, C++ value types (copy/move/deinit and thread facts,
+  constructors, static methods, and methods with receiver access, all as native
+  spellings), scalar typedef evidence, nominal and flag enums, typed native constants, record layouts and
   fields, canonical C record identity across typedef aliases, Objective-C
   interfaces/protocols/methods, method-parameter `id<Protocol>` qualifiers,
   semantic Objective-C type identity/nullability beside each ABI spelling and
@@ -345,7 +347,8 @@ current model for closing a lowering slice: the positive path executes, its
 invalid safety boundary rejects, and destruction follows the same affinity.
 
 The standalone executable subset is intentionally narrower than the native
-parser and semantic graph. Unplaced genuinely suspending async functions, traits, generic
+parser and semantic graph. Unplaced suspending async functions outside the native
+frame (methods, suspension in match arms or nested locals), traits, generic
 methods, fixed arrays, and callable combinations beyond the first synchronous
 direct-function/expression-closure tier still stop before C emission. Ordinary
 transparent aliases, first-class synchronous callable values, and direct calls

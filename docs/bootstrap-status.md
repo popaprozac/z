@@ -199,9 +199,11 @@ selecting Z class retain/release helpers. Native heap-frame cleanup clears
 Objective-C locals and owned parameters on completion/cancellation, including
 strong fields inside value structs. Cross-thread native subclass captures and
 async overrides remain rejected. Main-isolated helpers mixing timers with
-arbitrary child awaits, main-isolated `scheduler.yield`, direct timer awaits in native
-`main`, and direct named-task creation outside the native callable-task tier
-remain separate native async composition work; this is not general async parity.
+arbitrary child awaits, main-isolated `scheduler.yield`, direct timer awaits in a native
+`main` declared `on thread.main`, and named-task creation outside the general
+native frame remain separate native async composition work; this is not general
+async parity. A plain `async function main()` with direct timer awaits or
+named-function task spawns runs as a general native frame on a root executor.
 
 The related-family close checkpoint (2026-09-13) extends native linear main-task
 timer frames to `match`-initialized owned locals and direct `TaskScope.close()` /
@@ -1389,9 +1391,26 @@ The immediate consumer-driven prerequisite is Zapp's lifecycle-owned launch
 listener, before enabling automatic secondary-instance forwarding. Its reduced
 `async-launch-listener.zs` and `async-launch-owned-destructure.zs` fixtures now
 execute through both compiler paths. The native executor-local yield frame
-supports `void`/`i32` helpers, including supported typed errors, without explicit declaration affinity,
-owned Z-value parameters, root initialized Z-owned locals/destructuring, and
-`scheduler.yield()` inside nested `if`/`while` control flow. Cancellation before
+supports helpers without explicit declaration affinity, owned Z-value parameters,
+root initialized Z-owned locals/destructuring, and `scheduler.yield()` or
+`await delay(ms)` (any `u64` expression) inside nested `if`/`while` control flow.
+A helper with a `scheduler.yield()` returns `void`/`i32`. A suspending free
+function that no other native async shape claims takes the same frame without
+one, with any result type the frame can store, including typed errors.
+Cancellation wakes a frame asleep on a timer at once. The frame also runs
+`task f(args)` spawns of named functions (root statements, or directly inside an
+unnamed `async scope`): each spawn owns an invocation slot, starts a hot child
+that runs once the parent suspends, and `await t`, `try`/`attempt await t`, and
+`await t.cancel()` join it. A scope's exit and the function's exit join leftover
+children in spawn order; a failure or cancellation of the parent cancels them
+first. As in Stage 0, a frame releases its owners when it is destroyed at its
+join, not when it completes, and a spawned non-suspending function takes the
+frame so its body waits for the executor. This general frame also takes
+`in`/`inout`/`out` and `Slice` parameters: they point into the suspended
+caller's storage, a caller passes the address of its own frame storage, and a
+fresh `in` argument of an awaited call lives in the caller's frame until the
+child completes. `let x: T;` locals are zeroed frame storage that is not yet
+live. Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument
@@ -1415,8 +1434,7 @@ returning or throwing arms leave the destination uninitialized, with cleanup
 tested before and after frame entry. Awaited subjects, suspension inside arms,
 and destructured patterns remain outside this native frame tier. Borrowed child arguments, method/placed
 awaits, nested awaited expressions, and nested source locals remain separate
-yield-frame boundaries. The frame still requires an explicit `scheduler.yield()`;
-these reductions alone do not establish application integration. The broader
+yield-frame boundaries. These reductions alone do not establish application integration. The broader
 `async-owned-destructure.zs` probe covers explicit copy/move, awaited producers,
 scoped child borrows, errors, and cancellation before or after initialization.
 Cleanup-bearing branch/loop locals still require an explicit `async scope`,

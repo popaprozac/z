@@ -1,4 +1,5 @@
 import { chmodSync, copyFileSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   ApiNoteConflictError,
   DiagnosticError,
@@ -654,12 +655,12 @@ test("keeps optional struct fields ownership-safe through native parsing and emi
   assert.match(emission.stdout, /\.payload = \(Z___z_Option_Resource\)\{\.tag = Z___z_Option_ResourceTag_none\}/);
   assert.match(
     emission.stdout,
-    /\.payload = \(Z___z_Option_Resource\)\{\.tag = Z___z_Option_ResourceTag_some, \.payload\.some = \(_z_stage1_live_resource = false, resource\)\}/,
+    /\.payload = \(Z___z_Option_Resource\)\{\.tag = Z___z_Option_ResourceTag_some, \.payload = \{ \.some = \(_z_stage1_live_resource = false, resource\)\}\}/,
   );
   assert.match(emission.stdout, /\.payload = \(_z_stage1_live_option = false, option\)/);
   assert.doesNotMatch(
     emission.stdout,
-    /\.payload\.some = option/,
+    /\.payload = \{ \.some = option/,
   );
   // The source owner is disarmed at transfer; shared cleanup may remain, but
   // must be conditional rather than destroying the moved value again.
@@ -1253,7 +1254,7 @@ test("copies and moves owned fields through native object destructuring", () => 
   );
   assert.match(
     emission.stdout,
-    /_z_destructure_\d+\.path = \(__typeof__\(_z_destructure_\d+\.path\)\)\{0\}/,
+    /_z_destructure_\d+\.path = \(__typeof__\(_z_destructure_\d+\.path\)\)\{\}/,
   );
   assert.match(
     emission.stdout,
@@ -1324,7 +1325,7 @@ test("materializes concrete generic value structs through native ownership", () 
   );
   assert.match(
     emission.stdout,
-    /_z_destructure_\d+\.first = \(__typeof__\(_z_destructure_\d+\.first\)\)\{0\}/,
+    /_z_destructure_\d+\.first = \(__typeof__\(_z_destructure_\d+\.first\)\)\{\}/,
   );
   assert.match(
     emission.stdout,
@@ -1979,7 +1980,7 @@ test("keeps typed worker try propagation inside the worker result context", () =
     assert.equal(emission.status, 0, emission.stderr);
     assert.doesNotMatch(
       emission.stdout,
-      /\.payload\.success = _z_function_\d+_loadText\(/,
+      /\.payload = \{ \.success = _z_function_\d+_loadText\(/,
     );
     assert.doesNotMatch(
       emission.stdout,
@@ -3519,7 +3520,7 @@ test("emits static struct and class methods as direct native calls", () => {
   );
   assert.match(
     emission.stdout,
-    /\.payload\.success = Z_Range_normalized\(left, right\)/,
+    /\.payload = \{ \.success = Z_Range_normalized\(left, right\)/,
   );
   assert.match(
     emission.stdout,
@@ -4208,7 +4209,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     defaultsEmission.stdout,
-    /Z_RequestOptions patient = \(Z_RequestOptions\)\{\.timeoutMilliseconds = 5000, \.retries = 3/,
+    /Z_RequestOptions patient = \(Z_RequestOptions\)\{\.retries = 3, \.timeoutMilliseconds = 5000/,
   );
   const defaultsExecutable = resolve(directory, "defaults");
   const defaultsCompilation = spawnSync(
@@ -4347,7 +4348,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     moduleEmission.stdout,
-    /int32_t main\(void\) \{.*?Z_Point point = _z_function_\d+_makePoint\(20, 20\);.*?Z_Point directPoint = \(Z_Point\)\{\.x = 1, \.y = 1\};.*?Z_Resource resource = _z_function_\d+_makeResource\(0\);.*?Z_Session session = \(Z_Session\)\{\.resource = resource\};.*?Z_ResourceState current = _z_function_\d+_makeState\(0\);.*?Z_ResourceState direct = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_ready, \.payload\.ready = _z_function_\d+_makeResource\(0\)\};.*?Z_ResourceState empty = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_empty\};/s,
+    /int32_t main\(void\) \{.*?Z_Point point = _z_function_\d+_makePoint\(20, 20\);.*?Z_Point directPoint = \(Z_Point\)\{\.x = 1, \.y = 1\};.*?Z_Resource resource = _z_function_\d+_makeResource\(0\);.*?Z_Session session = \(Z_Session\)\{\.resource = resource\};.*?Z_ResourceState current = _z_function_\d+_makeState\(0\);.*?Z_ResourceState direct = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_ready, \.payload = \{ \.ready = _z_function_\d+_makeResource\(0\)\}\};.*?Z_ResourceState empty = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_empty\};/s,
   );
   assert.equal(
     moduleEmission.stdout.match(/Z_Resource_deinit\(&self->resource\);/g)?.length,
@@ -4696,7 +4697,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     nativeStringEmission.stdout,
-    /_z_function_\d+_borrowedLength\(&\(Z_STRING_LITERAL\("ok"\)\)\)/,
+    /_z_function_\d+_borrowedLength\(Z_STRING_LITERAL_ADDRESS\("ok"\)\)/,
   );
   assert.match(nativeStringEmission.stdout, /z_text_buffer_append\(&\(output\), Z_STRING_LITERAL\("he"\)\)/);
   assert.match(nativeStringEmission.stdout, /z_text_buffer_append_bytes\(&\(output\), Z_STRING_LITERAL\("llo!"\), (?:0|UINT64_C\(0\)), (?:1|UINT64_C\(1\))\)/);
@@ -4805,7 +4806,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     payloadEnumEmission.stdout,
-    /return \(Z_Reading\)\{\.tag = Z_ReadingTag_count, \.payload\.count = value\};/,
+    /return \(Z_Reading\)\{\.tag = Z_ReadingTag_count, \.payload = \{ \.count = value\}\};/,
   );
   assert.match(
     payloadEnumEmission.stdout,
@@ -4842,7 +4843,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /return \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some, \.payload\.some = value\};/,
+    /return \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some, \.payload = \{ \.some = value\}\};/,
   );
   assert.match(
     optionEmission.stdout,
@@ -4866,7 +4867,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /Z___z_Option_i32 scalar = \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some, \.payload\.some = 42\};/,
+    /Z___z_Option_i32 scalar = \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some, \.payload = \{ \.some = 42\}\};/,
   );
   assert.match(
     optionEmission.stdout,
@@ -4874,7 +4875,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /present \? \(Z___z_Option_String\)\{\.tag = Z___z_Option_StringTag_some, \.payload\.some = Z_STRING_LITERAL\("z"\)\} : \(Z___z_Option_String\)\{\.tag = Z___z_Option_StringTag_none\}/,
+    /present \? \(Z___z_Option_String\)\{\.tag = Z___z_Option_StringTag_some, \.payload = \{ \.some = Z_STRING_LITERAL\("z"\)\}\} : \(Z___z_Option_String\)\{\.tag = Z___z_Option_StringTag_none\}/,
   );
   assert.match(
     optionEmission.stdout,
@@ -4882,7 +4883,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /Z___z_Option_User storedUser = .*?\.payload\.some = Z_User_retain\(user\)/s,
+    /Z___z_Option_User storedUser = .*?\.payload = \{ \.some = Z_User_retain\(user\)/s,
   );
   assert.match(
     optionEmission.stdout,
@@ -4912,11 +4913,11 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(resultEmission.stdout, /typedef enum Z___z_Result_i32_ProblemTag/);
   assert.match(
     resultEmission.stdout,
-    /return \(Z___z_Result_i32_Problem\)\{\.tag = Z___z_Result_i32_ProblemTag_failure, \.payload\.failure = \(Z_Problem\)\{\.code = 7\}\};/,
+    /return \(Z___z_Result_i32_Problem\)\{\.tag = Z___z_Result_i32_ProblemTag_failure, \.payload = \{ \.failure = \(Z_Problem\)\{\.code = 7\}\}\};/,
   );
   assert.match(
     resultEmission.stdout,
-    /return \(Z___z_Result_i32_Problem\)\{\.tag = Z___z_Result_i32_ProblemTag_success, \.payload\.success = 42\};/,
+    /return \(Z___z_Result_i32_Problem\)\{\.tag = Z___z_Result_i32_ProblemTag_success, \.payload = \{ \.success = 42\}\};/,
   );
   assert.match(
     resultEmission.stdout,
@@ -4948,7 +4949,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     resultEmission.stdout,
-    /validate\(bool shouldFail\).*?return \(Z___z_Result_void_Problem\)\{\.tag = Z___z_Result_void_ProblemTag_failure, \.payload\.failure = .*?return \(Z___z_Result_void_Problem\)\{\.tag = Z___z_Result_void_ProblemTag_success\};/s,
+    /validate\(bool shouldFail\).*?return \(Z___z_Result_void_Problem\)\{\.tag = Z___z_Result_void_ProblemTag_failure, \.payload = \{ \.failure = .*?return \(Z___z_Result_void_Problem\)\{\.tag = Z___z_Result_void_ProblemTag_success\};/s,
   );
   assert.match(
     resultEmission.stdout,
@@ -6009,9 +6010,10 @@ test("emits, joins, and cleans up a native worker task", () => {
       { encoding: "utf8" },
     );
     assert.equal(unshareable.status, 1);
+    // The native resolver now reports Stage 0's Z0704 reason before lowering.
     assert.match(
       unshareable.stderr,
-      /thread\.spawn cannot retain non-shareable ARC capture snapshot of type MutableSnapshot yet/,
+      /error\[Z0704\]: capture "snapshot" of type MutableSnapshot cannot cross a native thread boundary: MutableSnapshot exposes mutable method "increment"/,
     );
 
     for (const [fixture, binding, type] of [[
@@ -6029,7 +6031,7 @@ test("emits, joins, and cleans up a native worker task", () => {
       assert.match(
         result.stderr,
         new RegExp(
-          `thread\\.spawn cannot retain non-shareable ARC capture ${binding} of type ${type} yet`,
+          `capture "${binding}" of type ${type} cannot cross a native thread boundary: ${type} has a custom deinit whose thread affinity is unknown`,
         ),
       );
     }
@@ -6185,7 +6187,7 @@ test("transfers and discards owned native worker results exactly once", () => {
     assert.equal(invalid.status, 1);
     assert.match(
       invalid.stderr,
-      /native thread\.spawn cannot transfer worker result AffineResource to its owner thread yet/,
+      /error\[Z0704\]: thread\.spawn result type "AffineResource" cannot cross a native thread boundary yet/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -6469,7 +6471,7 @@ test("propagates an owned worker failure through native try await", () => {
     );
     assert.match(
       emission.stdout,
-      /Z___z_Result_i32_OwnedErrorTag_failure, \.payload\.failure = _z_stage1_try_\d+\.payload\.failure/,
+      /Z___z_Result_i32_OwnedErrorTag_failure, \.payload = \{ \.failure = _z_stage1_try_\d+\.payload\.failure/,
     );
     assert.match(
       emission.stdout,
@@ -9632,7 +9634,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     );
     assert.match(
       objcEmission,
-      /\.payload\.success = z_stage1_objc_owned\(\[NativeOwner sharedOwner\]\)/,
+      /\.payload = \{ \.success = z_stage1_objc_owned\(\[NativeOwner sharedOwner\]\)/,
     );
     assert.match(
       objcEmission,
@@ -9906,8 +9908,8 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     objectiveC: false,
     cPlusPlus: false,
   };
-  const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL000000000000000f\nM/);
+  const encoded = encodeForeignFunctionDeclarationStream(declarations, 8);
+  assert.match(encoded, /^ZFDCL0000000000000010\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -9916,7 +9918,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
         ["unsupported", {} as never],
       ]),
       objectTypes: new Map([["unsupported", {} as never]]),
-    }),
+    }, 8),
     encoded,
   );
 
@@ -10035,7 +10037,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     [directory],
   ).get("native");
   assert.ok(objcStream);
-  assert.match(objcStream, /^ZFDCL000000000000000f\nM/);
+  assert.match(objcStream, /^ZFDCL0000000000000010\nM/);
   assert.match(objcStream, /\nQ/);
   assert.match(objcStream, /\nI/);
   assert.match(objcStream, /\nJ/);
@@ -10049,6 +10051,20 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     { encoding: "utf8" },
   );
   assert.equal(objcExecution.status, 0, objcExecution.stderr);
+
+  const cppFixture = resolve(projectRoot, "tests/fixtures/foreign-values.hpp");
+  const cppStream = resolveForeignFunctionDeclarationStreams(
+    [{ ...objcImport, header: basename(cppFixture) }],
+    fixture,
+    [dirname(cppFixture)],
+  ).get("native");
+  assert.ok(cppStream);
+  assert.match(cppStream, /\nX/);
+  assert.match(cppStream, /\nY/);
+  const cppPath = resolve(directory, "cpp.zfdcl");
+  writeFileSync(cppPath, cppStream);
+  const cppExecution = spawnSync(executable, [cppPath, "cpp"], { encoding: "utf8" });
+  assert.equal(cppExecution.status, 0, cppExecution.stderr);
 
   const contractFixture = resolve(
     projectRoot,
@@ -10240,7 +10256,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   assert.match(
     objcDirectEmission,
-    /\[owner removeHandlerForName: z_stage1_string_cstring\(/,
+    /\[owner removeHandlerForName: "zapp"\]/,
   );
   const objcDirectCompilation = spawnSync(
     "clang",
@@ -10653,33 +10669,6 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   assert.equal(invalidForeignEnum.status, 3, invalidForeignEnum.stderr);
 
-  const uncontractedForeignFunctionPath = resolve(
-    directory,
-    "uncontracted-foreign-function.zs",
-  );
-  writeFileSync(
-    uncontractedForeignFunctionPath,
-    [
-      'import { z_foreign_measure as measure } from "foreign-functions-only.h";',
-      "function main(): i32 {",
-      '  measure(1, "label");',
-      "  return 0;",
-      "}",
-      "",
-    ].join("\n"),
-  );
-  const uncontractedForeignFunction = spawnSync(
-    contractExecutable,
-    [
-      clangPath,
-      contractPath,
-      uncontractedForeignFunctionPath,
-      emittedForeignPath,
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(uncontractedForeignFunction.status, 3);
-
   const unsupportedContractPath = resolve(directory, "unsupported.zd");
   writeFileSync(
     unsupportedContractPath,
@@ -10961,6 +10950,287 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(contentHashRun.status, 0, contentHashRun.stderr);
 
+  // C variadic calls: promoted scalars, String and template text lent as
+  // cstrings, and fixed-array length, with Stage 0's output and diagnostics.
+  const variadicFixture = resolve(projectRoot, "tests/fixtures/native-variadic-calls.zs");
+  const variadicExpected = "plain\n3 1.5 0.5 1\nzed|literal|tmpl3\n7 -2147483647 4 4\nloop 0;loop 1;loop 2;\n";
+  const stage0Variadic = spawnSync(process.execPath, [cli, "run", variadicFixture], { encoding: "utf8" });
+  assert.equal(stage0Variadic.status, 0, stage0Variadic.stderr);
+  assert.equal(stage0Variadic.stdout, variadicExpected);
+  const variadicProgram = resolve(directory, "variadic");
+  const variadicBuild = spawnSync(driver, ["build", variadicFixture, variadicProgram], {
+    encoding: "utf8", env: foreignAdapterEnvironment, timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(variadicBuild.status, 0, variadicBuild.stderr);
+  // Each loop iteration's template temporary is destroyed exactly once.
+  const sanitizedVariadic = resolve(directory, "variadic-sanitized");
+  const sanitizedVariadicBuild = spawnSync("clang", [
+    "-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
+    "-fno-sanitize-recover=all", `${variadicProgram}.c`, "-o", sanitizedVariadic,
+  ], { encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
+  assert.equal(sanitizedVariadicBuild.status, 0, sanitizedVariadicBuild.stderr);
+  for (const program of [variadicProgram, sanitizedVariadic]) {
+    const run = spawnSync(program, [], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, variadicExpected);
+  }
+  const variadicRejections: [string, string][] = [
+    ["stdio.printf();", 'C function "printf" expects at least 1 argument(s), found 0'],
+    ['stdio.printf("%d", Point({ x: 1 }));', 'unsupported variadic argument type Point for C function "printf"'],
+    ['stdio.printf("%d", inout counter);', "inout is only valid for a classified imported C record-pointer parameter"],
+    ['stdio.printf("%lld", 5000000000);', "variadic integer literal 5000000000 does not fit default i32; bind it to an explicit integer type first"],
+  ];
+  const variadicRejection = resolve(directory, "variadic-rejection.zs");
+  for (const [statement, message] of variadicRejections) {
+    writeFileSync(variadicRejection, [
+      'import stdio from "stdio.h";',
+      "struct Point { x: i32; }",
+      "function main(): i32 {",
+      "  let counter: i32 = 1;",
+      `  ${statement}`,
+      "  return counter - 1;",
+      "}",
+      "",
+    ].join("\n"));
+    const stage0Rejection = spawnSync(process.execPath, [cli, "check", variadicRejection], { encoding: "utf8" });
+    const nativeRejection = spawnSync(driver, ["check", variadicRejection], {
+      encoding: "utf8", env: foreignAdapterEnvironment,
+    });
+    for (const [tier, result] of [["stage0", stage0Rejection], ["native", nativeRejection]] as const) {
+      assert.equal(result.status, 1, `${tier}: ${statement}`);
+      assert.ok(result.stderr.includes(`5:`) && result.stderr.includes(message), `${tier}: ${result.stderr}`);
+    }
+  }
+
+  // Programs the parity census found broken natively now match Stage 0:
+  // destructor lifetimes, view results and captures, literal conversions,
+  // exported enum aliases, imported frameworks, and objc.connect closures.
+  const parityRuns = [
+    "tests/fixtures/native-ownership-lifetimes.zs",
+    "tests/fixtures/native-view-results.zs",
+    "tests/fixtures/native-numeric-conversion-literals.zs",
+    "tests/fixtures/native-exported-enum-alias/main.zs",
+    "tests/fixtures/self-host-imported-function-value",
+    "tests/fixtures/objc-class-protocol-collision.zs",
+    "tests/fixtures/objc-notification-main-callback.zs",
+    "tests/fixtures/objc-connection-array.zs",
+    "examples/language/ownership/consuming-methods.zs",
+    "examples/language/ownership/replacement.zs",
+    "examples/language/ownership/optional-views.zs",
+    "examples/language/ownership/parameter-views.zs",
+    "examples/interop/c/native-out.zs",
+    "examples/interop/c/deployment-target",
+    // Native crashes the census found, now executed.
+    "examples/interop/objc/target-action.zs",
+    "tests/fixtures/objc-autorelease-pool.zs",
+    "tests/fixtures/self-host-program-metadata-alias-constructor.zs",
+    "tests/fixtures/native-imported-callable-alias/main.zs",
+    // Copyable C++ values: inline storage, constructors, static and member
+    // calls, with C++ copy and destruction counts matching Stage 0.
+    "examples/interop/cpp/foreign-values.zs",
+    "examples/interop/cpp/cpp-callables.zs",
+    // Move-only C++ values: std::move at Z move points and C++ references,
+    // with C++ move counts matching Stage 0.
+    "examples/interop/cpp/cpp-move-only.zs",
+    "examples/interop/cpp/cpp-references.zs",
+    "tests/fixtures/native-cpp-option.zs",
+    "examples/language/collections/map-native-values.zs",
+    "examples/interop/cpp/cpp-arena.zs",
+    "examples/applications/document-workspace/main.zs",
+    "tests/fixtures/native-element-mutation.zs",
+    "tests/fixtures/native-view-receiver.zs",
+  ];
+  for (const entry of parityRuns) {
+    const path = resolve(projectRoot, entry);
+    const stage0Run = spawnSync(process.execPath, [cli, "run", path], { encoding: "utf8", timeout: 120_000 });
+    assert.equal(stage0Run.status, 0, `${entry} stage0: ${stage0Run.stderr}`);
+    const nativeRun = spawnSync(driver, ["run", path], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(nativeRun.status, 0, `${entry} native: ${nativeRun.stderr}`);
+    assert.equal(nativeRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), stage0Run.stdout, entry);
+  }
+  // A void expression closure runs its body as a statement.
+  const voidClosureRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-void-expression-closure.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(voidClosureRun.status, 0, voidClosureRun.stderr);
+  assert.equal(voidClosureRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "applied\nannounced\n");
+  // Stage 0 stops at an async-frame tier limit here; native runs it.
+  const importedAliasRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/self-host-imported-thread-main-alias/main.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(importedAliasRun.status, 0, importedAliasRun.stderr);
+  // Native tier limits are located diagnostics, not lowering failures.
+  const tierLimits: [string, RegExp][] = [
+    ["examples/interop/objc/protocol-conformance.zs", /error\[Z1000\]: objc\.bind is not executable in the native compiler yet/],
+    ["tests/fixtures/objc-autorelease-pool-async.zs", /error\[Z1000\]: objc\.pool with an expression-bodied closure is not executable in the native compiler yet/],
+    ["examples/async/member-affinity.zs", /error\[Z1000\]: thread\.spawn cannot carry main-isolated capture "application" of type Application in the native compiler yet/],
+    // Namespaces and overloads check natively; aggregate interpolation is a separate tier.
+    ["examples/interop/cpp/cpp-interop.zs", /12:121: error\[Z1000\]: template interpolation of "cpp\.zcpp\.Point" is not executable in the native compiler yet/],
+  ];
+  for (const [entry, message] of tierLimits) {
+    const result = spawnSync(driver, ["check", resolve(projectRoot, entry)], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 60_000, killSignal: "SIGKILL",
+    });
+    assert.equal(result.status, 1, `${entry}: ${result.stderr}`);
+    assert.match(result.stderr, message, entry);
+    assert.doesNotMatch(result.stderr, /internal compiler error/, entry);
+  }
+  // Emitted C is also valid C++20, so a C++ header import compiles the
+  // program as C++ (this header is not valid C).
+  const cppHeaderRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-cpp-header/main.zs")], {
+    encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+  });
+  assert.equal(cppHeaderRun.status, 0, cppHeaderRun.stderr);
+  assert.equal(cppHeaderRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "total=42\n");
+  // C++ namespaces and overloads follow Stage 0: qualified paths, unique leaf
+  // aliases, selective namespace imports, and per-call overload choice.
+  const cppNamespaces = resolve(projectRoot, "tests/fixtures/native-cpp-namespaces/main.zs");
+  for (const [entry, expected] of [
+    [cppNamespaces, "area=42 tag=40 narrow=42 wide=5\nsigned=4 unsigned=6 deep=203 local=6 span=21\n"],
+    [resolve(projectRoot, "examples/interop/cpp/cpp-selective-interop.zs"), "selective cpp=42, adjusted=40\n"],
+  ]) {
+    const run = spawnSync(driver, ["run", entry], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(run.status, 0, `${entry}: ${run.stderr}`);
+    assert.equal(run.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), expected, entry);
+  }
+  const cppNamespaceSource = readFileSync(cppNamespaces, "utf8");
+  copyFileSync(resolve(dirname(cppNamespaces), "shapes.hpp"), resolve(directory, "shapes.hpp"));
+  const cppNamespaceVariant = resolve(directory, "cpp-namespace-variant.zs");
+  for (const [from, to, message] of [
+    ["shapes.geometry.pick(u64(5))", "shapes.geometry.pick(5)", '11:45: error[Z0803]: call to foreign function "geometry.pick" is ambiguous'],
+    ['g.widen(2.0)', 'g.widen("x")', '9:28: error[Z0803]: no overload of foreign function "geometry.widen" accepts these arguments'],
+    ["labels.Point({ id: 4 })", "shapes.Point({ id: 4 })", '7:24: error: native type "Point" is ambiguous across C++ namespaces'],
+    ["labels.Point({ id: 4 })", 'labels.Point({ id: "x" })', "7:36: error: expected i32, found String"],
+    ["const point: shapes.geometry.Point", "const point: shapes.labels.Point", "6:59: error: expected shapes.labels.Point, found shapes.geometry.Point"],
+    ["shapes.geometry.inner.depth(1)", "shapes.geometry.missing(1)", '12:32: error: native contract for "shapes.hpp" has no checked function "geometry.missing"'],
+  ]) {
+    assert.ok(cppNamespaceSource.includes(from), from);
+    writeFileSync(cppNamespaceVariant, cppNamespaceSource.replace(from, to));
+    const rejection = spawnSync(driver, ["check", cppNamespaceVariant], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 60_000, killSignal: "SIGKILL",
+    });
+    assert.equal(rejection.status, 1, `${to}: ${rejection.stderr}`);
+    assert.ok(rejection.stderr.includes(`${cppNamespaceVariant}:${message}`), `${to}: ${rejection.stderr}`);
+  }
+  // C++ value members follow Stage 0's overload choice, receiver access, and
+  // messages; C++ values in union or heap storage are a later tier.
+  const foreignValuesEntry = resolve(projectRoot, "examples/interop/cpp/foreign-values.zs");
+  const foreignValuesSource = readFileSync(foreignValuesEntry, "utf8")
+    .replace("../../../tests/fixtures/foreign-values.hpp", resolve(projectRoot, "tests/fixtures/foreign-values.hpp"));
+  const foreignValuesVariant = resolve(directory, "foreign-values-variant.zs");
+  for (const [from, to, expected] of [
+    ["copied.value.value()", "copied.value.plus(0)", "answer=42, copies=2, drops=3, live=0\n"],
+    ["copied.value.value()", "copied.value.plus(2.5) > 1.0 ? 1 : 0", "answer=1, copies=2, drops=3, live=0\n"],
+    ["copied.value.value()", 'copied.value.plus("no")', '13:27: error[Z0803]: no overload of native method "zcpp.ManagedValue.plus" accepts these arguments'],
+    ["let copied = owner;", "const copied = owner;", '12:10: error: mutable native method "add" requires addressable let storage'],
+    ["struct NativeOwner {", "class NativeOwner {", '10:9: error[Z1000]: C++ value "zcpp::ManagedValue" stored in a class, Option, Result, enum payload, or collection is not executable in the native compiler yet'],
+  ]) {
+    assert.ok(foreignValuesSource.includes(from), from);
+    let variantSource = foreignValuesSource.replace(from, to);
+    if (to.startsWith("class ")) variantSource = variantSource.replace("NativeOwner({", "new NativeOwner({");
+    writeFileSync(foreignValuesVariant, variantSource);
+    const run = spawnSync(driver, ["run", foreignValuesVariant], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+    });
+    if (expected.endsWith("\n")) {
+      assert.equal(run.status, 0, `${to}: ${run.stderr}`);
+      assert.equal(run.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), expected, to);
+    } else {
+      assert.notEqual(run.status, 0, `${to}: ${run.stdout}`);
+      assert.ok(run.stderr.includes(`${foreignValuesVariant}:${expected}`), `${to}: ${run.stderr}`);
+    }
+  }
+  // A conditional move of Z-cleanup + move-only C++ storage clears the Z
+  // liveness flag and C++-moves the value (Stage 0 cannot compile this one).
+  const mixedMove = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-cpp-move-mixed.zs")], {
+    encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+  });
+  assert.equal(mixedMove.status, 0, mixedMove.stderr);
+  assert.equal(mixedMove.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "taken=53 kept=1 moves=1 live=0\n");
+  // Arrays construct, relocate, and destroy C++ elements in place. Move counts
+  // depend on the growth policy (Stage 0 starts at 4, native at 8), so the
+  // count is matched as Stage 0's own test does. Stage 0's clear() leaks
+  // copyable C++ elements, so the copyable fixture is native-only.
+  for (const [entry, expected] of [
+    ["examples/interop/cpp/cpp-move-only-array.zs", /^array answer=42, moves=[1-9][0-9]*, live=0\n$/],
+    // C++-payload enums elide a staged replacement move Stage 0 performs.
+    ["examples/interop/cpp/cpp-move-only-enum.zs", /^enum answer=42, moves=[1-9][0-9]*, live=0\n$/],
+    ["tests/fixtures/native-cpp-array-values.zs", /^len=1 copies=3 drops=5 live=1\n$/],
+  ] as const) {
+    const run = spawnSync(driver, ["run", resolve(projectRoot, entry)], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(run.status, 0, `${entry}: ${run.stderr}`);
+    assert.match(run.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), expected, entry);
+  }
+  // Move-only native storage follows Stage 0's ownership rules (Z0240).
+  const moveOnlyProbe = resolve(directory, "move-only-probe.zs");
+  for (const [body, message] of [
+    ["function main(): i32 {\n  const first = native.zcpp.UniqueValue(42);\n  const second = first;\n  return first.value();\n}\n", '5:10: error: use of moved value "first"'],
+    ["class Session {\n  value: native.zcpp.UniqueValue;\n}\nfunction main(): i32 { return 0; }\n", "3:10: error[Z0240]: ARC class fields cannot store move-only native values in the first C++ ownership tier"],
+    ["function main(): i32 {\n  let value: native.zcpp.UniqueValue;\n  return 0;\n}\n", "3:14: error[Z0240]: move-only native values must be initialized when their storage is declared"],
+    ["function fill(out value: native.zcpp.UniqueValue): void {\n}\nfunction main(): i32 { return 0; }\n", '2:19: error[Z0240]: out parameter "value" cannot use move-only native storage in the first C++ ownership tier'],
+  ]) {
+    writeFileSync(moveOnlyProbe, `import native from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};\n${body}`);
+    const checked = spawnSync(driver, ["check", moveOnlyProbe], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 60_000, killSignal: "SIGKILL",
+    });
+    assert.equal(checked.status, 1, `${body}: ${checked.stderr}`);
+    assert.ok(checked.stderr.includes(`${moveOnlyProbe}:${message}`), `${body}: ${checked.stderr}`);
+  }
+  // C++ value-type `.zd` facts (`copy;`, bare `deinit;`, `thread { }`) parse
+  // with Stage 0's validation, code, and locations.
+  copyFileSync(resolve(projectRoot, "tests/fixtures/move-only.hpp"), resolve(directory, "move-only.hpp"));
+  const valueContractEntry = resolve(directory, "value-contract.zs");
+  writeFileSync(valueContractEntry, 'import native from "move-only.hpp";\nfunction main(): i32 {\n  return 0;\n}\n');
+  const valueContractPath = resolve(directory, "move-only.hpp.zd");
+  for (const [facts, message] of [
+    ["move;\n    deinit;\n    thread {\n      transfer;\n      deinit;\n    }", ""],
+    ["copy;\n    copy;\n    deinit;", '4:5: error[Z0801]: foreign type "zcpp.UniqueValue" cannot declare copy more than once'],
+    ["move;", '2:10: error[Z0801]: foreign value type "zcpp.UniqueValue" must declare deterministic deinit'],
+    ["deinit;", '2:10: error[Z0801]: foreign value type "zcpp.UniqueValue" must declare copy or move'],
+    ["move;\n    deinit;\n    flip;", '5:5: error[Z0801]: expected "copy", "move", "deinit", "thread", "project", or "discriminant" in foreign type contract, found "flip"'],
+    ["move;\n    deinit;\n    thread {\n      transfer;\n      share;\n    }", '7:7: error[Z0801]: foreign type "zcpp.UniqueValue" thread contract cannot declare both transfer and share; share already implies transfer'],
+    ["move;\n    deinit;\n    thread {\n      deinit;\n    }", '5:5: error[Z0801]: foreign type "zcpp.UniqueValue" thread contract requires transfer or share'],
+  ]) {
+    writeFileSync(valueContractPath, `declare module "move-only.hpp" {\n  export type zcpp.UniqueValue {\n    ${facts}\n  }\n}\n`);
+    const checked = spawnSync(driver, ["check", valueContractEntry], {
+      encoding: "utf8", env: foreignAdapterEnvironment, timeout: 60_000, killSignal: "SIGKILL",
+    });
+    if (message.length === 0) {
+      assert.equal(checked.status, 0, `${facts}: ${checked.stderr}`);
+    } else {
+      assert.equal(checked.status, 1, `${facts}: ${checked.stderr}`);
+      assert.ok(checked.stderr.includes(`${valueContractPath}:${message}`), `${facts}: ${checked.stderr}`);
+    }
+  }
+  for (const entry of [
+    "compiler/driver/main.zs",
+    "tests/fixtures/borrowed-aggregate-temporaries.zs",
+    "tests/fixtures/native-ownership-lifetimes.zs",
+    "tests/fixtures/self-host-channel-sync.zs",
+    "tests/fixtures/async-linear-scope-join.zs",
+    "examples/language/basics/closures.zs",
+    "examples/language/basics/mutable-methods.zs",
+    "examples/language/control-flow/result.zs",
+  ]) {
+    const emitted = spawnSync(driver, ["emit", resolve(projectRoot, entry)], {
+      encoding: "utf8", env: foreignAdapterEnvironment, maxBuffer: 64 * 1024 * 1024, timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(emitted.status, 0, `${entry}: ${emitted.stderr}`);
+    for (const language of [["-x", "c", "-std=c11"], ["-x", "c++", "-std=c++20", "-Wc99-designator"]]) {
+      const checked = spawnSync("clang", [
+        ...language, "-Wall", "-Wextra", "-Werror", "-fsyntax-only",
+        "-I", dirname(resolve(projectRoot, entry)), "-",
+      ], { input: emitted.stdout, encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL" });
+      assert.equal(checked.status, 0, `${entry} as ${language[1]}: ${checked.stderr}`);
+    }
+  }
+
   const internalProject = resolve(directory, "internal-project");
   const internalFramework = resolve(internalProject, "framework");
   const internalApplication = resolve(internalProject, "application");
@@ -11233,7 +11503,7 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(
     foreignContractInspection.stdout,
-    /normalized 5 foreign function contracts for foreign-functions-only\.h/,
+    /normalized 6 foreign function contracts for foreign-functions-only\.h/,
   );
   const mismatchedEnumContract = resolve(
     directory,
@@ -11318,7 +11588,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(incompleteNativeStatusInspection.status, 1);
   assert.match(
     incompleteNativeStatusInspection.stderr,
-    /incomplete-native-status\.zd:2:\d+: error: a native status contract requires at least one success value/,
+    /incomplete-native-status\.zd:2:\d+: error\[Z0801\]: a native status contract requires at least one success value/,
   );
 
   const nativeCallbackExample = resolve(
@@ -13293,7 +13563,8 @@ function main(): i32 {
   );
   assert.match(
     emittedHandleSource,
-    /z_owned_handle_matches_label\(owner, z_stage1_string_cstring\(Z_STRING_LITERAL\("value"\)\)\)/,
+    // A literal is already NUL-terminated static storage, passed as a C literal.
+    /z_owned_handle_matches_label\(owner, "value"\)/,
   );
   assert.match(
     emittedHandleSource,
@@ -14837,7 +15108,7 @@ test("lowers the complete native frontend graph to C", () => {
   );
   assert.match(
     emission.stdout,
-    /\.payload\.success = \(Z_ParsedModuleBatch\)\{\.arena = arena, \.modules = storedModules\}/,
+    /\.payload = \{ \.success = \(Z_ParsedModuleBatch\)\{\.arena = arena, \.modules = storedModules\}/,
   );
   const parsedBatchDestructor = emission.stdout.match(
     /static __attribute__\(\(unused\)\) void Z_ParsedModuleBatch_deinit\(Z_ParsedModuleBatch \*self\) \{[^]*?\n\}/,
@@ -18254,7 +18525,7 @@ test("polls and resumes a stored async closure across scheduler.yield", () => {
   assert.match(emission.stdout, /frame->child\.task->waiter = task;/);
   assert.match(
     emission.stdout,
-    /int32_t main\(void\) \{\n  Z_AsyncExecutor executor = \{0\};\n  z_stage1_async_parent_main \*frame/,
+    /int32_t main\(void\) \{\n  Z_AsyncExecutor executor = \{\};\n  z_stage1_async_parent_main \*frame/,
   );
   assert.doesNotMatch(
     emission.stdout,
@@ -18960,7 +19231,7 @@ test("propagates an owned error from an executor-placed async function local", (
   );
   assert.match(
     emission.stdout,
-    /\.payload\.failure = _z_stage1_async_try_\d+\.payload\.failure/,
+    /\.payload = \{ \.failure = _z_stage1_async_try_\d+\.payload\.failure/,
   );
   assert.match(
     emission.stdout,
@@ -19384,8 +19655,8 @@ test("resolves aggregate members through exported transparent aliases natively",
     { encoding: "utf8" },
   );
   assert.equal(emission.status, 0, emission.stderr);
-  assert.match(emission.stdout, /\.value\.i32_value = .*\.code/);
-  assert.match(emission.stdout, /\.value\.string_value = .*\.message/);
+  assert.match(emission.stdout, /\.value = \{ \.i32_value = .*\.code/);
+  assert.match(emission.stdout, /\.value = \{ \.string_value = .*\.message/);
 });
 
 test("preserves callable identities nested in Map values", () => {
@@ -19868,7 +20139,7 @@ hostToolchainTest("preserves first-tier struct spread capability evidence native
   );
   assert.equal(emitted.status, 0, emitted.stderr);
   assert.match(emitted.stdout, /\.first = 21, \.second = baseline\.second/);
-  assert.match(emitted.stdout, /\.second = 23, \.first = baseline\.first/);
+  assert.match(emitted.stdout, /\.first = baseline\.first, \.second = 23/);
   assert.match(emitted.stdout, /\.value = z_string_copy\(copySource\.value\)/);
   assert.match(
     emitted.stdout,
