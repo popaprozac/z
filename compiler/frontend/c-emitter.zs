@@ -111,6 +111,7 @@ function cType(in type: LoweredType): String throws String {
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.channelEndpointType
     || type.kind == LoweredTypeKind.taskType
+    || type.kind == LoweredTypeKind.generatorType
   ) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.enumType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.foreignEnumType) {
@@ -6361,6 +6362,15 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.generatorNext) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed generator step";
+    }
+    output.append(`Z_${declaration.expressions[index].value}_next(`);
+    try appendAddressOf(inout output, declaration, declaration.expressions[index].children[0]);
+    output.append(")");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.weakUpgrade) {
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received a malformed weak upgrade";
@@ -8508,7 +8518,8 @@ function appendLocalStatementStorage(
         && storageType.kind != LoweredTypeKind.mutexType
         && storageType.kind != LoweredTypeKind.channelEndpointType
         && storageType.kind != LoweredTypeKind.taskType
-        && storageType.kind != LoweredTypeKind.functionType;
+        && storageType.kind != LoweredTypeKind.functionType
+        && storageType.kind != LoweredTypeKind.generatorType;
     }
     none => false;
   };
@@ -9630,6 +9641,11 @@ function appendStatement(
     if (threaded) output.append("#endif\n");
     return;
   }
+  if (declaration.statements[index].kind == LoweredStatementKind.forStatement
+    && labelsContain(declaration.statements[index].labels, "generator")) {
+    try appendGeneratorForStatement(inout output, declaration, index, depth);
+    return;
+  }
   if (declaration.statements[index].kind == LoweredStatementKind.forStatement) {
     if (
       declaration.statements[index].children.length != 1
@@ -9770,6 +9786,78 @@ function appendStatement(
     return;
   }
   throw "native C emission does not support this lowered statement yet";
+}
+
+// Whether a statement or anything nested in it leaves the function.
+function statementTreeExits(in declaration: LoweredFunction, index: usize): boolean {
+  const kind = declaration.statements[index].kind;
+  if (kind == LoweredStatementKind.returnStatement || kind == LoweredStatementKind.tryStatement) return true;
+  for (const child of declaration.statements[index].children) {
+    if (statementTreeExits(declaration, child)) return true;
+  }
+  return false;
+}
+
+// `for (const x of generator)`: step it until it reports none. A named
+// generator advances in place; a fresh one belongs to the loop.
+function appendGeneratorForStatement(
+  inout output: TextBuffer, in declaration: LoweredFunction, index: usize, depth: usize
+): void throws String {
+  const statement = view declaration.statements[index];
+  if (statement.children.length != 1) throw "native C emission received a malformed generator loop";
+  const handle = view statement.labels[0];
+  const step = generatorStepName(handle);
+  const elementType = match (in statement.type) {
+    some(type) => copy type;
+    none => throw "native C emission received an untyped generator loop binding";
+  };
+  const iterable = match (in statement.expression) {
+    some(value) => value;
+    none => throw "native C emission received a generator loop without its generator";
+  };
+  const kind = declaration.expressions[iterable].kind;
+  const place = kind == LoweredExpressionKind.localValue || kind == LoweredExpressionKind.parameterValue
+    || kind == LoweredExpressionKind.fieldValue;
+  const body = statement.children[0];
+  if (!place && statementTreeExits(declaration, body)) {
+    throw "native C emission cannot leave a loop over a temporary generator early yet";
+  }
+  const generator = `_z_stage1_generator_${index}`;
+  appendIndent(inout output, depth);
+  output.append("{\n");
+  appendIndent(inout output, depth + 1);
+  if (place) {
+    output.append(`Z_${handle} *${generator} = `);
+    try appendAddressOf(inout output, declaration, iterable);
+    output.append(";\n");
+  } else {
+    output.append(`Z_${handle} ${generator}_owned = `);
+    try appendExpression(inout output, declaration, iterable);
+    output.append(`;\n`);
+    appendIndent(inout output, depth + 1);
+    output.append(`Z_${handle} *${generator} = &${generator}_owned;\n`);
+  }
+  appendIndent(inout output, depth + 1);
+  output.append("for (;;) {\n");
+  appendIndent(inout output, depth + 2);
+  output.append(`Z_${step} ${generator}_step = Z_${handle}_next(${generator});\n`);
+  appendIndent(inout output, depth + 2);
+  output.append(`if (${generator}_step.tag != Z_${step}Tag_some) break;\n`);
+  appendIndent(inout output, depth + 2);
+  output.append(`__attribute__((unused)) const ${try cType(elementType)} `);
+  appendCBindingName(inout output, statement.name);
+  output.append(` = ${generator}_step.payload.some;\n`);
+  try appendBranch(inout output, declaration, body, depth + 2);
+  appendIndent(inout output, depth + 1);
+  output.append("}\n");
+  appendIndent(inout output, depth + 1);
+  output.append(`_z_stage1_loop_exit_${index}: __attribute__((unused));\n`);
+  if (!place) {
+    appendIndent(inout output, depth + 1);
+    output.append(`Z_${handle}_deinit(&${generator}_owned);\n`);
+  }
+  appendIndent(inout output, depth);
+  output.append("}\n");
 }
 
 function isThrowingMain(in declaration: LoweredFunction): boolean {
@@ -11364,7 +11452,8 @@ function yieldFrameHoistMovesIntoValue(in declaration: LoweredFunction, statemen
 function yieldFrameStatementSuspends(in declaration: LoweredFunction, index: usize): boolean {
   const statement = view declaration.statements[index];
   if (statement.kind == LoweredStatementKind.delayStatement
-    || statement.kind == LoweredStatementKind.schedulerYieldStatement) return true;
+    || statement.kind == LoweredStatementKind.schedulerYieldStatement
+    || statement.kind == LoweredStatementKind.yieldStatement) return true;
   const none = declaration.expressions.length;
   if (yieldFrameAwaitExpression(declaration, index) < none || yieldFrameJoinExpression(declaration, index) < none
     || yieldFrameCancelExpression(declaration, index) < none || yieldFrameSpawnExpression(declaration, index) < none) return true;
@@ -12030,6 +12119,10 @@ function appendYieldFrameStatement(
   index: usize, depth: usize
 ): void throws String {
   const statement = view declaration.statements[index];
+  if (statement.kind == LoweredStatementKind.yieldStatement) {
+    try appendGeneratorYield(inout output, program, declaration, index, depth);
+    return;
+  }
   if (statement.kind == LoweredStatementKind.schedulerYieldStatement) {
     appendIndent(inout output, depth);
     output.append(`frame->state = ${index + 1};\n`);
@@ -12301,6 +12394,319 @@ function appendYieldFrameStatement(
   try appendStatement(inout output, declaration, index, depth);
   appendIndent(inout output, depth);
   output.append("}\n");
+}
+
+// Synchronous generators, as in Stage 0: the function returns a handle
+// (`Z___z_Generator_<step>`) over a heap frame; `next()` runs the frame's
+// advance function to the next `yield` or to completion. The frame body reuses
+// the async frame statement emitter: `return`/`throw`/`try` store
+// `frame->result` and jump to `_z_complete`, which turns it into the final step.
+function generatorStepName(in handle: String): String {
+  return handle.copyBytes(14, handle.byteLength);
+}
+
+function generatorFrameName(in declaration: LoweredFunction): String {
+  let name = TextBuffer();
+  name.append("_z_stage1_generator_");
+  appendCBindingName(inout name, declaration.name);
+  return name.finish();
+}
+
+// The step's shape: an Option<Y> or GeneratorStep<Y, R> (`inner`), possibly
+// inside Result<inner, E> (`outer`, empty when the generator cannot throw).
+struct GeneratorStepShape {
+  outer: String;
+  inner: String;
+  completes: boolean;
+}
+
+function generatorStepShape(in program: LoweredProgram, in handle: String): GeneratorStepShape throws String {
+  const step = generatorStepName(handle);
+  const index = match (loweredEnumIndex(program, step)) {
+    some(found) => found;
+    none => throw `native generator lost its step type ${step}`;
+  };
+  let outer = "";
+  let inner = copy step;
+  for (const variant of program.enums[index].variants) {
+    if (variant.name != "success") continue;
+    outer = copy step;
+    match (in variant.payload) {
+      some(payload) => inner = copy payload.name;
+      none => throw "native generator step lost its success payload";
+    }
+  }
+  let completes = false;
+  match (loweredEnumIndex(program, inner)) {
+    some(innerIndex) => {
+      for (const variant of program.enums[innerIndex].variants) {
+        if (variant.name == "complete") completes = true;
+      }
+    }
+    none => throw `native generator lost its inner step type ${inner}`;
+  }
+  return GeneratorStepShape({ outer, inner, completes });
+}
+
+// `(Z_<inner>){ .tag = some|yielded, ... }`, wrapped in success when it throws.
+function appendGeneratorStep(
+  inout output: TextBuffer, in shape: GeneratorStepShape, in variant: String, in payload: String
+): void {
+  if (shape.outer.byteLength > 0) {
+    output.append(`(Z_${shape.outer}){ .tag = Z_${shape.outer}Tag_success, .payload = { .success = `);
+  }
+  output.append(`(Z_${shape.inner}){ .tag = Z_${shape.inner}Tag_${variant}`);
+  if (payload.byteLength > 0) output.append(`, .payload = { .${variant} = ${payload} }`);
+  output.append(" }");
+  if (shape.outer.byteLength > 0) output.append(" } }");
+}
+
+function appendGeneratorYield(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
+  index: usize, depth: usize
+): void throws String {
+  const value = match (in declaration.statements[index].expression) {
+    some(expression) => expression;
+    none => throw "native generator received a yield without a value";
+  };
+  const shape = try generatorStepShape(program, declaration.returnType.name);
+  appendIndent(inout output, depth);
+  output.append("{\n");
+  try appendBorrowedTemporaryInitializers(inout output, declaration, value, depth);
+  let yielded = TextBuffer();
+  try appendExpression(inout yielded, declaration, value);
+  const yieldedValue = yielded.finish();
+  appendIndent(inout output, depth);
+  output.append(`Z_${generatorStepName(declaration.returnType.name)} _z_generator_step = `);
+  const variant = shape.completes ? "yielded" : "some";
+  appendGeneratorStep(inout output, shape, variant, yieldedValue);
+  output.append(";\n");
+  appendBorrowedTemporaryCleanups(inout output, declaration, value, depth);
+  appendIndent(inout output, depth);
+  output.append(`frame->state = ${index + 1};\n`);
+  appendIndent(inout output, depth);
+  output.append("return _z_generator_step;\n");
+  appendIndent(inout output, depth);
+  output.append(`}\n_z_resume_${index}:;\n`);
+}
+
+function appendGeneratorTypeName(inout names: Array<String>, in type: LoweredType): void {
+  if (type.kind != LoweredTypeKind.generatorType) return;
+  for (const existing of names) {
+    if (existing == type.name) return;
+  }
+  names.push(copy type.name);
+}
+
+function programGeneratorTypeNames(in program: LoweredProgram): Array<String> {
+  let names = Array<String>();
+  for (const declaration of program.functions) {
+    appendGeneratorTypeName(inout names, declaration.returnType);
+    for (const parameter of declaration.parameters) {
+      appendGeneratorTypeName(inout names, parameter.type);
+    }
+    for (const statement of declaration.statements) {
+      match (in statement.type) {
+        some(type) => appendGeneratorTypeName(inout names, type);
+        none => {}
+      }
+      if (statement.kind == LoweredStatementKind.forStatement && labelsContain(statement.labels, "generator")) {
+        appendGeneratorTypeName(inout names, LoweredType({ kind: LoweredTypeKind.generatorType, name: copy statement.labels[0] }));
+      }
+    }
+    for (const expression of declaration.expressions) {
+      if (expression.kind == LoweredExpressionKind.generatorNext) {
+        appendGeneratorTypeName(inout names, LoweredType({ kind: LoweredTypeKind.generatorType, name: copy expression.value }));
+      }
+    }
+  }
+  return names;
+}
+
+// The handle erases its advance function's type, so it can be declared before
+// its step type is complete; `next` restores it.
+function appendGeneratorHandleTypes(inout output: TextBuffer, in program: LoweredProgram): void {
+  const handles = programGeneratorTypeNames(program);
+  for (const handle of handles) {
+    output.append(`typedef struct Z_${handle} {\n  void *context;\n  void (*advance)(void);\n  void (*destroy)(void *context);\n} Z_${handle};\n`);
+    output.append(`static inline __attribute__((unused)) void Z_${handle}_deinit(Z_${handle} *self);\n\n`);
+  }
+}
+
+function appendGeneratorHandleHelpers(inout output: TextBuffer, in program: LoweredProgram): void {
+  const handles = programGeneratorTypeNames(program);
+  for (const handle of handles) {
+    const step = generatorStepName(handle);
+    output.append(`static inline __attribute__((unused)) Z_${step} Z_${handle}_next(Z_${handle} *self) {\n  if (self->context == NULL) abort();\n  return ((Z_${step} (*)(void *))self->advance)(self->context);\n}\n`);
+    output.append(`static inline __attribute__((unused)) void Z_${handle}_deinit(Z_${handle} *self) {\n  if (self->context == NULL) return;\n  self->destroy(self->context);\n  self->context = NULL;\n}\n\n`);
+  }
+}
+
+function appendGeneratorHelpers(
+  inout output: TextBuffer, in program: LoweredProgram
+): void throws String {
+  for (const source of program.functions) {
+    let isGenerator = false;
+    let completion = LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
+    match (in source.generatorResult) {
+      some(type) => {
+        isGenerator = true;
+        completion = copy type;
+      }
+      none => {}
+    }
+    if (!isGenerator) continue;
+    const name = generatorFrameName(source);
+    const step = generatorStepName(source.returnType.name);
+    const shape = try generatorStepShape(program, source.returnType.name);
+    let declaration = copy source;
+    for (const parameter of source.parameters) {
+      if (parameter.mode != LoweredParameterMode.value) {
+        throw "native generators take owned value parameters in this tier";
+      }
+      declaration.asyncFrameBindings.push(copy parameter.name);
+    }
+    let localIndex: usize = 0;
+    for (const statement of source.statements) {
+      if (statement.kind == LoweredStatementKind.localStatement) {
+        if (asyncFrameBinds(declaration, statement.name)) {
+          throw "native generators cannot reuse a local binding name yet";
+        }
+        declaration.asyncFrameBindings.push(copy statement.name);
+      }
+      if (statement.kind == LoweredStatementKind.matchArmStatement && yieldFrameStatementSuspends(source, localIndex)) {
+        throw "native generators cannot yield inside a match arm yet";
+      }
+      localIndex = localIndex + 1;
+    }
+    output.append(`typedef struct ${name} {\n  uint32_t state;\n`);
+    if (completion.kind != LoweredTypeKind.voidType) output.append(`  ${try cType(completion)} result;\n`);
+    for (const parameter of source.parameters) {
+      output.append(`  ${try cType(parameter.type)} ${yieldFrameBindingField(parameter.name)};\n`);
+      const guard = yieldFrameParameterGuard(source, parameter.name);
+      if (guard.byteLength > 0) output.append(`  bool ${guard};\n`);
+    }
+    for (const statement of source.statements) {
+      if (statement.kind != LoweredStatementKind.localStatement) continue;
+      const type = match (in statement.type) {
+        some(value) => copy value;
+        none => throw "native generator lost local type evidence";
+      };
+      output.append(`  ${try cType(type)} ${yieldFrameBindingField(statement.name)};\n`);
+      if (statement.liveFlag.byteLength > 0) output.append(`  bool ${statement.liveFlag};\n`);
+    }
+    output.append(`} ${name};\n`);
+    for (const parameter of source.parameters) {
+      output.append("#define _z_stage1_frame_binding_");
+      appendCBindingName(inout output, parameter.name);
+      output.append(` (frame->${yieldFrameBindingField(parameter.name)})\n`);
+      const guard = yieldFrameParameterGuard(source, parameter.name);
+      if (guard.byteLength > 0) output.append(`#define ${guard} (frame->${guard})\n`);
+    }
+    for (const statement of source.statements) {
+      if (statement.kind != LoweredStatementKind.localStatement) continue;
+      output.append("#define _z_stage1_frame_binding_");
+      appendCBindingName(inout output, statement.name);
+      output.append(` (frame->${yieldFrameBindingField(statement.name)})\n`);
+      if (statement.liveFlag.byteLength > 0) output.append(`#define ${statement.liveFlag} (frame->${statement.liveFlag})\n`);
+    }
+    // Owners still live when the body completes or the handle is dropped.
+    output.append(`static void ${name}_cleanup(${name} *frame) {\n  (void)frame;\n`);
+    let cleanup = Array<LoweredCleanup>();
+    for (const parameter of source.parameters) {
+      const guard = yieldFrameParameterGuard(source, parameter.name);
+      if (guard.byteLength > 0) cleanup.push(LoweredCleanup({ name: copy parameter.name, type: copy parameter.type, guard }));
+    }
+    for (const statement of source.statements) {
+      if (statement.kind != LoweredStatementKind.localStatement || statement.liveFlag.byteLength == 0) continue;
+      match (in statement.type) {
+        some(type) => cleanup.push(LoweredCleanup({ name: copy statement.name, type: copy type, guard: copy statement.liveFlag }));
+        none => {}
+      }
+    }
+    appendYieldFrameCleanups(inout output, program, declaration, cleanup, 1);
+    output.append(`}\nstatic Z_${step} ${name}_advance(void *context) {\n  ${name} *frame = (${name} *)context;\n  switch (frame->state) {\n    case 0: break;\n`);
+    let resume: usize = 0;
+    while (resume < declaration.statements.length) {
+      if (declaration.statements[resume].kind == LoweredStatementKind.yieldStatement) {
+        output.append(`    case ${resume + 1}: goto _z_resume_${resume};\n`);
+      }
+      resume = resume + 1;
+    }
+    // A finished generator keeps reporting completion.
+    output.append("    default:\n");
+    if (shape.completes) output.append("      abort();\n");
+    else {
+      output.append("      return ");
+      appendGeneratorStep(inout output, shape, "none", "");
+      output.append(";\n");
+    }
+    output.append("  }\n");
+    for (const root of declaration.roots) {
+      try appendYieldFrameStatement(inout output, program, declaration, root, 1);
+    }
+    match (in declaration.fallthroughExpression) {
+      some(expression) => {
+        output.append("  frame->result = ");
+        try appendExpression(inout output, declaration, expression);
+        output.append(";\n");
+      }
+      none => {}
+    }
+    output.append(`_z_complete: __attribute__((unused));\n  frame->state = UINT32_MAX;\n  ${name}_cleanup(frame);\n`);
+    let completed = TextBuffer();
+    if (shape.completes) {
+      completed.append(shape.outer.byteLength > 0 ? "frame->result.payload.success" : "frame->result");
+    }
+    const completedValue = completed.finish();
+    if (shape.outer.byteLength > 0) {
+      output.append(`  if (frame->result.tag == Z_${completion.name}Tag_failure) {\n`);
+      output.append(`    return (Z_${shape.outer}){ .tag = Z_${shape.outer}Tag_failure, .payload = { .failure = frame->result.payload.failure } };\n  }\n`);
+    }
+    output.append("  return ");
+    const finalVariant = shape.completes ? "complete" : "none";
+    appendGeneratorStep(inout output, shape, finalVariant, completedValue);
+    output.append(`;\n}\nstatic void ${name}_destroy(void *context) {\n  ${name} *frame = (${name} *)context;\n  ${name}_cleanup(frame);\n  free(frame);\n}\n`);
+    for (const parameter of source.parameters) {
+      output.append("#undef _z_stage1_frame_binding_");
+      appendCBindingName(inout output, parameter.name);
+      output.append("\n");
+      const guard = yieldFrameParameterGuard(source, parameter.name);
+      if (guard.byteLength > 0) output.append(`#undef ${guard}\n`);
+    }
+    for (const statement of source.statements) {
+      if (statement.kind != LoweredStatementKind.localStatement) continue;
+      output.append("#undef _z_stage1_frame_binding_");
+      appendCBindingName(inout output, statement.name);
+      output.append("\n");
+      if (statement.liveFlag.byteLength > 0) output.append(`#undef ${statement.liveFlag}\n`);
+    }
+    output.append("\n");
+  }
+}
+
+// A generator function builds its frame and returns the handle; the body
+// first runs on the first `next()`.
+function appendGeneratorConstructor(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction
+): void throws String {
+  const name = generatorFrameName(declaration);
+  let entry = copy declaration;
+  let parameter: usize = 0;
+  while (parameter < entry.parameters.length) {
+    entry.parameters[parameter].name = `_z_argument_${parameter}`;
+    parameter = parameter + 1;
+  }
+  try appendFunctionSignature(inout output, entry, false);
+  output.append(` {\n  ${name} *frame = (${name} *)calloc(1, sizeof(${name}));\n  if (frame == NULL) abort();\n`);
+  let argument: usize = 0;
+  for (const source of declaration.parameters) {
+    output.append(`  frame->${yieldFrameBindingField(source.name)} = _z_argument_${argument};\n`);
+    const guard = yieldFrameParameterGuard(declaration, source.name);
+    if (guard.byteLength > 0) output.append(`  frame->${guard} = true;\n`);
+    argument = argument + 1;
+  }
+  output.append(`  return (Z_${declaration.returnType.name}){ .context = frame, .advance = (void (*)(void))${name}_advance, .destroy = ${name}_destroy };\n}\n\n`);
 }
 
 function appendYieldFrameHelpers(
@@ -13625,6 +14031,13 @@ function appendFunction(
     try appendYieldFrameDriver(inout output, program, declaration, processArguments);
     appendThrowingMainWrapper(inout output, program, declaration, processArguments);
     return;
+  }
+  match (in declaration.generatorResult) {
+    some(_) => {
+      try appendGeneratorConstructor(inout output, program, declaration);
+      return;
+    }
+    none => {}
   }
   if (declaration.compilerIntrinsic == "jsonDecode") {
     try appendDerivedJsonDecode(
@@ -23885,6 +24298,7 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.taskControlType
     || type.kind == LoweredTypeKind.arenaType
     || type.kind == LoweredTypeKind.functionType
+    || type.kind == LoweredTypeKind.generatorType
   ) return true;
   if (type.kind == LoweredTypeKind.fixedArrayType) {
     match (loweredFixedArrayIndex(program, type.name)) {
@@ -24948,6 +25362,7 @@ function appendTypeDefinitions(
     output.append(taskName);
     output.append(";\n\n");
   }
+  appendGeneratorHandleTypes(inout output, program);
   const mutexNames = programMutexTypeNames(program);
   for (const aggregate of program.structs) {
     if (channelIdentityKind(aggregate.name) != "Closed") continue;
@@ -29164,6 +29579,8 @@ function emitLoweredC(
   try appendTaskScopeScheduleHelpers(inout output, program);
   try appendAsyncMethodAwaitStartPrototypes(inout output, program);
   try appendYieldFrameHelpers(inout output, program);
+  appendGeneratorHandleHelpers(inout output, program);
+  try appendGeneratorHelpers(inout output, program);
   try appendCallableHelpers(inout output, program);
   try appendAsyncCallableAwaitHelpers(inout output, program);
   try appendAsyncMethodAwaitHelpers(inout output, program);

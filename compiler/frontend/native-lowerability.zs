@@ -468,16 +468,6 @@ function validateNativeType(
       type.name.byteLength
     );
   }
-  if (typeUsesGeneric(type.name, "Generator")) {
-    throw loweringBoundary(
-      path,
-      "Z1000",
-      `generator type "${type.name}" is not executable in the native compiler yet`,
-      type.line,
-      type.column,
-      type.name.byteLength
-    );
-  }
 }
 
 function stableOptionalChainSource(
@@ -2908,15 +2898,11 @@ function validateNativeBody(
       );
       none => {}
     }
-    if (statement.kind == StatementKind.yieldStatement) {
-      const code = asynchronous ? "Z0700" : "Z1000";
-      const summary = asynchronous
-        ? "async-generator yield is not executable in the native compiler yet"
-        : "generator yield is not executable in the native compiler yet";
+    if (statement.kind == StatementKind.yieldStatement && asynchronous) {
       throw loweringBoundary(
         path,
-        code,
-        summary,
+        "Z0700",
+        "async-generator yield is not executable in the native compiler yet",
         statement.line,
         statement.column,
         5
@@ -3045,6 +3031,7 @@ function validateNativeBody(
               && !typeUsesGeneric(iterableType, "Array")
               && !typeUsesGeneric(iterableType, "Map")
               && iterableType != "Slice<u8>"
+              && !stringStartsWith(iterableType, "Generator<")
               && !nativeFixedArrayTypeSupported(iterableType)
             ) {
               throw loweringBoundary(

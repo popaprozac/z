@@ -85,6 +85,7 @@ import {
   collectionMethodSignature,
   numericBitsType,
   sourceCollectionTypeName,
+  throwingGeneratorHandleType,
 } from "./semantic-intrinsics.zs";
 import { Map, Set } from "std/collections";
 import {
@@ -145,6 +146,8 @@ export enum LoweredTypeKind {
   foreignHandleType,
   foreignObjCType,
   functionType,
+  // A synchronous Generator<Y, R, E> handle, named by its step type.
+  generatorType,
 }
 
 export struct LoweredType {
@@ -283,6 +286,8 @@ export enum LoweredExpressionKind {
   retainValue,
   weakValue,
   weakUpgrade,
+  // `generator.next()` on a synchronous Generator handle (value: the handle).
+  generatorNext,
   viewProjection,
   borrowedTemporary,
   unaryOperation,
@@ -507,6 +512,8 @@ export enum LoweredStatementKind {
   testExpectationStatement,
   delayStatement,
   schedulerYieldStatement,
+  // `yield value` in a synchronous generator: the frame returns a step.
+  yieldStatement,
 }
 
 export struct LoweredStatement {
@@ -587,6 +594,9 @@ export struct LoweredFunction {
   receiverMode: LoweredParameterMode;
   parameters: Array<LoweredParameter>;
   returnType: LoweredType;
+  // A synchronous generator returns its handle (`returnType`); its body
+  // returns this completion value (R, or Result<R, E> when it throws).
+  generatorResult: Option<LoweredType> = Option<LoweredType>.none;
   // A `view T` result is returned as a pointer to the borrowed value.
   returnsView: boolean = false;
   fallthroughExpression: Option<usize>;
@@ -3411,6 +3421,69 @@ export function decodedObjCProtocolIdentity(in identity: String): Option<String>
   return Option.some(name);
 }
 
+// `Generator<Y, R, E>.next()` returns its step: Option<Y> when R is void,
+// GeneratorStep<Y, R> otherwise, and Result<step, E> when the generator throws.
+export function generatorStepTypeName(in arguments: Array<String>): String {
+  let step = arguments.length == 1 || arguments[1] == "void"
+    ? `Option<${arguments[0]}>`
+    : `GeneratorStep<${arguments[0]}, ${arguments[1]}>`;
+  if (arguments.length == 3) step = `Result<${step}, ${arguments[2]}>`;
+  return step;
+}
+
+export function intrinsicGeneratorName(in step: LoweredType): String {
+  const identity = loweredTypeIdentity(step);
+  return `__z_Generator_${identity}`;
+}
+
+function intrinsicGeneratorStepName(in yielded: LoweredType, in completion: LoweredType): String {
+  const yieldedIdentity = loweredTypeIdentity(yielded);
+  const completionIdentity = loweredTypeIdentity(completion);
+  return `__z_GeneratorStep_${yieldedIdentity}_${completionIdentity}`;
+}
+
+function isSomeString(in value: Option<String>): boolean {
+  return match (in value) {
+    some(_) => true;
+    none => false;
+  };
+}
+
+// The payload types of a `__z_GeneratorStep_<Y>_<R>` name. Identities may
+// contain underscores, so each split is checked by rebuilding the name.
+function moduleGeneratorStepPayloads(
+  in program: Program, in importedTypes: Array<LoweredImportedType>, in name: String
+): Option<Array<LoweredType>> {
+  const prefix = "__z_GeneratorStep_";
+  if (!stringStartsWith(name, prefix)) return Option<Array<LoweredType>>.none;
+  const suffix = name.copyBytes(prefix.byteLength, name.byteLength);
+  let split: usize = 1;
+  while (split + 1 < suffix.byteLength) {
+    if (suffix.byteAt(split) == 95) {
+      const yieldedName = suffix.copyBytes(0, split);
+      const completionName = suffix.copyBytes(split + 1, suffix.byteLength);
+      const yielded = attempt lowerModuleTypeName(program, importedTypes, yieldedName);
+      const completion = attempt lowerModuleTypeName(program, importedTypes, completionName);
+      match (yielded) {
+        success(yieldedType) => match (completion) {
+          success(completionType) => {
+            if (intrinsicGeneratorStepName(yieldedType, completionType) == name) {
+              let payloads = Array<LoweredType>();
+              payloads.push(yieldedType);
+              payloads.push(completionType);
+              return Option.some(payloads);
+            }
+          }
+          failure(_) => {}
+        }
+        failure(_) => {}
+      }
+    }
+    split = split + 1;
+  }
+  return Option<Array<LoweredType>>.none;
+}
+
 function intrinsicOptionName(in payload: LoweredType): String {
   const identity = loweredTypeIdentity(payload);
   return `__z_Option_${identity}`;
@@ -3676,6 +3749,12 @@ function lowerTypeName(
       name: name.copyBytes(0, name.byteLength),
     });
   }
+  if (stringStartsWith(name, "__z_GeneratorStep_")) {
+    return LoweredType({ kind: LoweredTypeKind.enumType, name: copy name });
+  }
+  if (stringStartsWith(name, "__z_Generator_")) {
+    return LoweredType({ kind: LoweredTypeKind.generatorType, name: copy name });
+  }
   if (stringStartsWith(name, "Task_")) {
     return LoweredType({
       kind: LoweredTypeKind.taskType,
@@ -3866,6 +3945,16 @@ function lowerTypeName(
             ? intrinsicViewOptionName(payload)
             : intrinsicOptionName(payload),
         });
+      }
+      if (generic.base == "Generator" && generic.arguments.length >= 1 && generic.arguments.length <= 3) {
+        const stepName = generatorStepTypeName(generic.arguments);
+        const step = try lowerTypeName(program, stepName);
+        return LoweredType({ kind: LoweredTypeKind.generatorType, name: intrinsicGeneratorName(step) });
+      }
+      if (generic.base == "GeneratorStep" && generic.arguments.length == 2) {
+        const yielded = try lowerTypeName(program, generic.arguments[0]);
+        const completion = try lowerTypeName(program, generic.arguments[1]);
+        return LoweredType({ kind: LoweredTypeKind.enumType, name: intrinsicGeneratorStepName(yielded, completion) });
       }
       if (generic.base == "Weak" && generic.arguments.length == 1) {
         const targetType = try lowerTypeName(program, generic.arguments[0]);
@@ -4101,6 +4190,12 @@ function lowerModuleTypeName(
       name: name.copyBytes(0, name.byteLength),
     });
   }
+  if (stringStartsWith(name, "__z_GeneratorStep_")) {
+    return LoweredType({ kind: LoweredTypeKind.enumType, name: copy name });
+  }
+  if (stringStartsWith(name, "__z_Generator_")) {
+    return LoweredType({ kind: LoweredTypeKind.generatorType, name: copy name });
+  }
   if (stringStartsWith(name, "Task_")) {
     return LoweredType({
       kind: LoweredTypeKind.taskType,
@@ -4240,6 +4335,16 @@ function lowerModuleTypeName(
             ? intrinsicViewOptionName(payload)
             : intrinsicOptionName(payload),
         });
+      }
+      if (generic.base == "Generator" && generic.arguments.length >= 1 && generic.arguments.length <= 3) {
+        const stepName = generatorStepTypeName(generic.arguments);
+        const step = try lowerModuleTypeName(program, importedTypes, stepName);
+        return LoweredType({ kind: LoweredTypeKind.generatorType, name: intrinsicGeneratorName(step) });
+      }
+      if (generic.base == "GeneratorStep" && generic.arguments.length == 2) {
+        const yielded = try lowerModuleTypeName(program, importedTypes, generic.arguments[0]);
+        const completion = try lowerModuleTypeName(program, importedTypes, generic.arguments[1]);
+        return LoweredType({ kind: LoweredTypeKind.enumType, name: intrinsicGeneratorStepName(yielded, completion) });
       }
       if (generic.base == "Weak" && generic.arguments.length == 1) {
         const targetType = try lowerModuleTypeName(
@@ -4709,6 +4814,7 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.taskControlType
     || type.kind == LoweredTypeKind.arenaType
     || type.kind == LoweredTypeKind.functionType
+    || type.kind == LoweredTypeKind.generatorType
   ) return true;
   if (type.kind == LoweredTypeKind.fixedArrayType) {
     match (intrinsicFixedArrayElementIdentity(type.name)) {
@@ -4740,6 +4846,15 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
           success(lowered) => typeNeedsCleanup(program, lowered);
           failure(_) => false;
         };
+      }
+      none => {}
+    }
+    match (moduleGeneratorStepPayloads(program, Array<LoweredImportedType>(), type.name)) {
+      some(payloads) => {
+        for (const payload of payloads) {
+          if (typeNeedsCleanup(program, payload)) return true;
+        }
+        return false;
       }
       none => {}
     }
@@ -4912,6 +5027,7 @@ function moduleTypeNeedsCleanupDepth(
     || type.kind == LoweredTypeKind.taskControlType
     || type.kind == LoweredTypeKind.arenaType
     || type.kind == LoweredTypeKind.functionType
+    || type.kind == LoweredTypeKind.generatorType
   ) return true;
   if (type.kind == LoweredTypeKind.fixedArrayType) {
     match (intrinsicFixedArrayElementIdentity(type.name)) {
@@ -4971,6 +5087,15 @@ function moduleTypeNeedsCleanupDepth(
           );
           failure(_) => false;
         };
+      }
+      none => {}
+    }
+    match (moduleGeneratorStepPayloads(program, importedTypes, type.name)) {
+      some(payloads) => {
+        for (const payload of payloads) {
+          if (moduleTypeNeedsCleanupDepth(program, importedTypes, payload, depth + 1)) return true;
+        }
+        return false;
       }
       none => {}
     }
@@ -5733,6 +5858,30 @@ function intrinsicEnumDeclaration(
     some(declaration) => return Option.some(move declaration);
     none => {}
   }
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (generic.base == "GeneratorStep" && generic.arguments.length == 2) {
+        const yielded = try lowerModuleTypeName(program, importedTypes, generic.arguments[0]);
+        const completion = try lowerModuleTypeName(program, importedTypes, generic.arguments[1]);
+        let variants = Array<LoweredVariant>();
+        variants.push(LoweredVariant({ name: "yielded", payload: Option.some(copy yielded) }));
+        variants.push(LoweredVariant({
+          name: "complete",
+          payload: completion.kind == LoweredTypeKind.voidType ? Option<LoweredType>.none : Option.some(copy completion),
+        }));
+        return Option.some(LoweredEnum({
+          name: intrinsicGeneratorStepName(yielded, completion),
+          nativeCName: "",
+          nativeCUnderlyingType: "",
+          variants,
+          payloadBearing: true,
+          needsDeinit: moduleEnumPayloadNeedsCleanup(program, importedTypes, yielded)
+            || moduleEnumPayloadNeedsCleanup(program, importedTypes, completion),
+        }));
+      }
+    }
+    none => {}
+  }
   const directResult = try intrinsicResultDeclaration(
     program,
     importedTypes,
@@ -5810,12 +5959,38 @@ function semanticMethodOwnerMatches(
   return true;
 }
 
+// A synchronous generator (a `yield` in a body declared to return
+// Generator<Y, R, E>) lowers its body as returning R ("void" for
+// Generator<Y>); the emitter wraps it in a frame that `next()` steps.
+export function generatorCompletionTypeName(in declaration: FunctionDeclaration): Option<String> {
+  if (declaration.asynchronous) return Option<String>.none;
+  let yields = false;
+  for (const node of declaration.body.nodes) {
+    if (node.kind == StatementKind.yieldStatement) yields = true;
+  }
+  if (!yields) return Option<String>.none;
+  match (genericTypeShape(declaration.returnType.name)) {
+    some(generic) => {
+      if (generic.base != "Generator" || generic.arguments.length == 0 || generic.arguments.length > 3) {
+        return Option<String>.none;
+      }
+      if (generic.arguments.length == 1) return Option.some("void");
+      return Option.some(copy generic.arguments[1]);
+    }
+    none => return Option<String>.none;
+  }
+}
+
 function ownerReturnTypeName(
   in program: Program,
   in ownerName: String
 ): Option<String> {
   for (const declaration of program.functions) {
     if (declaration.name == ownerName) {
+      match (generatorCompletionTypeName(declaration)) {
+        some(completion) => return Option.some(completion);
+        none => {}
+      }
       return Option.some(declaration.returnType.name.copyBytes(
         0,
         declaration.returnType.name.byteLength
@@ -5853,10 +6028,10 @@ function throwingFunctionResult(
     if (declaration.name == ownerName) {
       match (in declaration.errorType) {
         some(errorType) => {
-          const returnName = declaration.returnType.name.copyBytes(
-            0,
-            declaration.returnType.name.byteLength
-          );
+          const returnName = match (generatorCompletionTypeName(declaration)) {
+            some(completion) => completion;
+            none => declaration.returnType.name.copyBytes(0, declaration.returnType.name.byteLength);
+          };
           const errorName = errorType.name.copyBytes(0, errorType.name.byteLength);
           const resultName = `Result<${returnName}, ${errorName}>`;
           return try intrinsicResultDeclaration(
@@ -14809,6 +14984,31 @@ function lowerExpressionNode(
     }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].value == "next"
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[index].children.length == 1
+    ) {
+      const generatorInput: usize = tree.nodes[calleeInput].children[0];
+      const generatorTypeName = match (evidenceResolvedExpressionTypeName(
+        program, importedTypes, evidence, tree, generatorInput
+      )) {
+        some(name) => name;
+        none => "";
+      };
+      const generatorType = attempt lowerModuleTypeName(program, importedTypes, generatorTypeName);
+      const handle = match (generatorType) {
+        success(type) => type.kind == LoweredTypeKind.generatorType ? copy type.name : "";
+        failure(_) => "";
+      };
+      if (handle.byteLength > 0) {
+        const receiver: usize = try lowerExpression(program, importedTypes, evidence, tree, generatorInput, inout output);
+        markMutableStorage(inout output, receiver);
+        return pushExpression(inout output, LoweredExpressionKind.generatorNext, handle,
+          Array<usize>(receiver), Array<String>());
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].value == "spawn"
       && tree.nodes[calleeInput].children.length == 1
       && tree.nodes[index].children.length == 2
@@ -20881,6 +21081,21 @@ function directThrowingCallResult(
         some(name) => match (genericTypeShape(name)) {
           some(shape) => if (channelTypeKind(program, shape.base) == "SyncSender" && shape.arguments.length == 1) {
             return try intrinsicResultDeclaration(program, importedTypes, `Result<void, ChannelClosed<${shape.arguments[0]}>>`);
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
+    // A throwing generator's step: Result<Option<Y> or GeneratorStep<Y, R>, E>.
+    if (tree.nodes[callee].kind == ExpressionKind.memberExpression && tree.nodes[callee].value == "next"
+      && tree.nodes[callee].children.length == 1 && tree.nodes[index].children.length == 1) {
+      const receiver = tree.nodes[callee].children[0];
+      match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, receiver)) {
+        some(name) => match (genericTypeShape(name)) {
+          some(shape) => if (shape.base == "Generator" && shape.arguments.length == 3) {
+            const stepName = generatorStepTypeName(shape.arguments);
+            return try intrinsicResultDeclaration(program, importedTypes, stepName);
           }
           none => {}
         }
@@ -27456,6 +27671,8 @@ function lowerStatementCore(
     kind = LoweredStatementKind.returnStatement;
   } else if (arena.nodes[index].kind == StatementKind.throwStatement) {
     kind = LoweredStatementKind.returnStatement;
+  } else if (arena.nodes[index].kind == StatementKind.yieldStatement) {
+    kind = LoweredStatementKind.yieldStatement;
   } else if (arena.nodes[index].kind == StatementKind.expressionStatement) {
     kind = LoweredStatementKind.expressionStatement;
   } else if (
@@ -28149,8 +28366,26 @@ function lowerStatementCore(
             && iterableType.kind != LoweredTypeKind.fixedArrayType
             && iterableType.kind != LoweredTypeKind.sliceType
             && iterableType.kind != LoweredTypeKind.mapType
+            && iterableType.kind != LoweredTypeKind.generatorType
           ) {
-            throw `native lowering only supports Array, fixed arrays, Slice, and Map for iteration, found ${typeName}`;
+            throw `native lowering only supports Array, fixed arrays, Slice, Map, and Generator for iteration, found ${typeName}`;
+          }
+          if (iterableType.kind == LoweredTypeKind.generatorType) {
+            // Each step advances the generator in place.
+            match (in expression) {
+              some(iterable) => markMutableStorage(inout expressions, iterable);
+              none => {}
+            }
+            // shortcut: a yielded value the loop binding owns has no release
+            // point yet; loops over cleanup-free elements only.
+            match (in type) {
+              some(elementType) => {
+                if (moduleTypeNeedsCleanup(program, importedTypes, elementType)) {
+                  throw "native generator loops over owned yielded values remain a later tier";
+                }
+              }
+              none => {}
+            }
           }
           const missingElementType = match (in type) {
             some(_) => false;
@@ -28171,8 +28406,8 @@ function lowerStatementCore(
             match (genericTypeShape(typeName)) {
               some(generic) => {
                 if (
-                  (generic.base == "Array" || generic.base == "Slice")
-                  && generic.arguments.length == 1
+                  (generic.base == "Array" || generic.base == "Slice" || generic.base == "Generator")
+                  && generic.arguments.length >= 1
                 ) {
                   const elementType = try lowerModuleTypeName(
                     program,
@@ -28234,6 +28469,7 @@ function lowerStatementCore(
           if (iterableType.kind == LoweredTypeKind.mapType) {
             labels.push("map");
           }
+          if (iterableType.kind == LoweredTypeKind.generatorType) labels.push("generator");
           if (viewIterable) labels.push("view");
         }
         none => throw "native lowering cannot iterate an opaque expression";
@@ -29689,6 +29925,10 @@ function lowerFunction(
     && (functionContainsFrameDelay(program, declaration) || functionContainsFrameSpawn(declaration))
     && functionUsesGeneralFrame(program, declaration)) generalFrame = true;
   if ((yieldFrame || generalFrame) && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
+  // A synchronous generator's body is a frame too: its owners live there and
+  // are released through live flags when it completes or is dropped.
+  const generatorBody = generatorCompletionTypeName(declaration);
+  const frameOwners = asyncSuspension == "yield-frame" || isSomeString(generatorBody);
   let parameters = Array<LoweredParameter>();
   let ownedParameters = Array<LoweredCleanup>();
   let liveFlags = Array<LoweredLiveFlag>();
@@ -29939,7 +30179,7 @@ function lowerFunction(
       );
       let guard = "";
       if (
-        asyncSuspension == "yield-frame"
+        frameOwners
         || (moved && (
           declaration.asynchronous
           || hasMainDelayMatch
@@ -30007,7 +30247,7 @@ function lowerFunction(
     );
   }
   const rootLoopCleanups = Array<LoweredCleanup>();
-  if (asyncSuspension == "yield-frame") {
+  if (frameOwners) {
     let frameLocals = Array<usize>();
     let index: usize = 0;
     while (index < statements.length) {
@@ -30126,7 +30366,7 @@ function lowerFunction(
   appendCleanupCopies(inout fallthroughCleanups, ownedParameters);
   appendCleanupCopies(inout fallthroughCleanups, introduced);
   attachMoveLiveFlags(inout expressions, liveFlags);
-  if (asyncSuspension == "yield-frame") {
+  if (frameOwners) {
     // A normalized field transfer clears that field, not the temporary owner.
     // Its remaining unselected fields still require destruction.
     for (const statement of statements) {
@@ -30146,11 +30386,20 @@ function lowerFunction(
     }
   }
   rewriteParameterValues(parameters, inout expressions);
+  const generatorCompletion = generatorCompletionTypeName(declaration);
   let returnType = try lowerModuleType(
     program,
     importedTypes,
     declaration.returnType
   );
+  let bodyReturnName = declaration.returnType.name.copyBytes(0, declaration.returnType.name.byteLength);
+  match (in generatorCompletion) {
+    some(completion) => {
+      bodyReturnName = copy completion;
+      returnType = try lowerModuleTypeName(program, importedTypes, completion);
+    }
+    none => {}
+  }
   let fallthroughExpression = Option<usize>.none;
   const resultType = try throwingFunctionResult(
     program,
@@ -30163,7 +30412,7 @@ function lowerFunction(
         kind: LoweredTypeKind.enumType,
         name: result.name.copyBytes(0, result.name.byteLength),
       });
-      if (declaration.returnType.name == "void") {
+      if (bodyReturnName == "void") {
         let labels = Array<String>();
         labels.push("success");
         labels.push("tagged");
@@ -30190,7 +30439,25 @@ function lowerFunction(
       name: receiverName.copyBytes(0, receiverName.byteLength),
     }));
   }
-  const throwsError = match (in declaration.errorType) { some(_) => true; none => false; };
+  let throwsError = match (in declaration.errorType) { some(_) => true; none => false; };
+  let generatorResult = Option<LoweredType>.none;
+  match (in generatorCompletion) {
+    some(_) => {
+      // The function returns its handle; a thrown error reaches `next()`.
+      generatorResult = Option.some(copy returnType);
+      let handleName = declaration.returnType.name.copyBytes(0, declaration.returnType.name.byteLength);
+      match (in declaration.errorType) {
+        some(errorType) => match (throwingGeneratorHandleType(declaration.returnType.name, errorType.name)) {
+          some(handle) => handleName = handle;
+          none => {}
+        }
+        none => {}
+      }
+      returnType = try lowerModuleTypeName(program, importedTypes, handleName);
+      throwsError = false;
+    }
+    none => {}
+  }
   const returnsView = isPointerViewTypeName(declaration.returnType.name)
     && returnType.kind == LoweredTypeKind.structType;
   if (asyncSuspension == "yield-frame") markFrameTaskJoins(inout expressions, statements);
@@ -30225,6 +30492,7 @@ function lowerFunction(
     receiverMode: lowerReceiverMode(receiverSourceMode),
     parameters,
     returnType: move returnType,
+    generatorResult,
     returnsView,
     fallthroughExpression,
     expressions,
@@ -31270,6 +31538,11 @@ function collectIntrinsicTypeName(
             inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
         }
       }
+      if (generic.base == "Generator" && generic.arguments.length >= 1 && generic.arguments.length <= 3) {
+        const stepName = generatorStepTypeName(generic.arguments);
+        try collectIntrinsicTypeName(program, importedTypes, stepName,
+          inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
+      }
       if (generic.base == "Task" && generic.arguments.length == 2) {
         const resultName = `Result<${generic.arguments[0]}, ${generic.arguments[1]}>`;
         try collectIntrinsicTypeName(
@@ -31535,10 +31808,23 @@ function collectFunctionIntrinsicTypes(
         inout enums,
         inout structs
       );
-      const returnName = declaration.returnType.name.copyBytes(
+      // A throwing generator's body completes with Result<R, E>; its handle
+      // carries E into each step.
+      let returnName = declaration.returnType.name.copyBytes(
         0,
         declaration.returnType.name.byteLength
       );
+      match (generatorCompletionTypeName(declaration)) {
+        some(completion) => {
+          match (throwingGeneratorHandleType(declaration.returnType.name, type.name)) {
+            some(handle) => try collectIntrinsicTypeName(program, importedTypes, handle,
+              inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
+            none => {}
+          }
+          returnName = completion;
+        }
+        none => {}
+      }
       const errorName = type.name.copyBytes(0, type.name.byteLength);
       const resultName = `Result<${returnName}, ${errorName}>`;
       try collectIntrinsicTypeName(

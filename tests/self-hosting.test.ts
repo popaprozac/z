@@ -11047,6 +11047,12 @@ test("compiles a multi-module Z application through the standalone native driver
     "examples/async/async-native-aggregate.zs",
     "examples/async/async-borrowing.zs",
     "examples/async/async-caller-cancellation.zs",
+    // Synchronous generators: lazy start, `next()` steps, `for...of`,
+    // completion values, thrown errors, and owner release on completion or drop.
+    "examples/language/control-flow/generators.zs",
+    "examples/language/control-flow/generator-return.zs",
+    "examples/language/control-flow/generator-throws.zs",
+    "tests/fixtures/native-generator-frames.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
@@ -12073,20 +12079,6 @@ test("compiles a multi-module Z application through the standalone native driver
       marker: "^^^^^",
       code: "Z0700",
       summary: 'suspending async function "invoke" is not executable in the native compiler yet',
-    },
-    {
-      name: "generator",
-      source: [
-        'import { Generator } from "std/iteration";',
-        "function values(): Generator<i32> { yield 42; }",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      line: 2,
-      column: 20,
-      marker: "^^^^^^^^^^^^^^",
-      code: "Z1000",
-      summary: 'generator type "Generator<i32>" is not executable in the native compiler yet',
     },
     {
       name: "async-scope",
