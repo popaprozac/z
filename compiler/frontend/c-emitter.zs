@@ -5109,6 +5109,9 @@ function programUsesCxxMoves(in program: LoweredProgram): boolean {
   for (const declaration of program.enums) {
     if (declaration.cxxPayloads) return true;
   }
+  for (const declaration of program.maps) {
+    if (declaration.cxxValues) return true;
+  }
   for (const function_ of program.functions) {
     for (const expression of function_.expressions) {
       if (
@@ -5179,9 +5182,11 @@ function appendExpression(
     // C++ binds each argument as the member declares it (value or reference).
     const children = view declaration.expressions[index].children;
     if (children.length == 0) throw "native C++ method call lost its receiver";
-    output.append("(");
+    const viewReceiver = declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "view-receiver";
+    output.append(viewReceiver ? "(*(" : "(");
     try appendExpression(inout output, declaration, children[0]);
-    output.append(").");
+    output.append(viewReceiver ? "))." : ").");
     output.append(declaration.expressions[index].value);
     output.append("(");
     let argument: usize = 1;
@@ -6738,6 +6743,7 @@ function appendExpression(
     const receiver = declaration.expressions[index].children[0];
     const classReceiver = declaration.expressions[index].labels.length > 0
       && (declaration.expressions[index].labels[0] == "class"
+        || declaration.expressions[index].labels[0] == "viewStruct"
         || declaration.expressions[index].labels[0] == "nativeHelper"
         || declaration.expressions[index].labels[0] == "nativeHelperSelf");
     const moveReceiver = declaration.expressions[index].labels.length > 1
@@ -9029,7 +9035,8 @@ function appendEnumMatchArmStart(
           || type.kind == LoweredTypeKind.foreignObjCType
           || cTypeIsPointer(payloadType)
         );
-      const cppPayload = declaration.statements[index].cppPayload;
+      // A niche view Option is a plain pointer, not a C++-payload enum.
+      const cppPayload = declaration.statements[index].cppPayload && !nicheViewOption;
       const cppConsumed = cppPayload && declaration.statements[index].matchConsumesSubject;
       if (
         !declaration.statements[arm].matchBindingNeedsCleanup
@@ -24033,6 +24040,9 @@ function loweredIntrinsicIdentity(in type: LoweredType): String throws String {
     || type.kind == LoweredTypeKind.classType
     || type.kind == LoweredTypeKind.enumType
   ) return type.name.copyBytes(0, type.name.byteLength);
+  // A foreign record or C++ value: lowering's escaped identity, so the names
+  // of its Option types agree with lowering.
+  if (type.kind == LoweredTypeKind.foreignStructType) return loweredTypeIdentity(type);
   throw "native C emission cannot form an intrinsic identity for this type";
 }
 
@@ -24242,7 +24252,9 @@ function appendMapRuntime(
         output.append("_release(self->entries[stored - 1].value);\n");
       } else output.append("_deinit(&self->entries[stored - 1].value);\n");
     }
-    output.append("      self->entries[stored - 1].value = value;\n");
+    if (declaration.cxxValues) {
+      output.append("      self->entries[stored - 1].value = std::move_if_noexcept(value);\n");
+    } else output.append("      self->entries[stored - 1].value = value;\n");
     output.append("      return;\n    }\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
     output.append("  }\n");
@@ -24259,18 +24271,34 @@ function appendMapRuntime(
     output.append("    if (next > SIZE_MAX / sizeof(Z_");
     output.append(declaration.name);
     output.append("_Entry)) abort();\n");
-    output.append("    void *storage = realloc(self->entries, next * sizeof(Z_");
-    output.append(declaration.name);
-    output.append("_Entry));\n");
-    output.append("    if (storage == NULL) abort();\n");
-    output.append("    self->entries = (Z_");
-    output.append(declaration.name);
-    output.append("_Entry *)storage;\n");
+    if (declaration.cxxValues) {
+      // C++ values relocate by move (copy-only: copy) construction.
+      output.append(`    Z_${declaration.name}_Entry *storage = (Z_${declaration.name}_Entry *)malloc(next * sizeof(Z_${declaration.name}_Entry));\n`);
+      output.append("    if (storage == NULL) abort();\n");
+      output.append("    for (size_t index = 0; index < self->length; index += 1) {\n");
+      output.append("      std::construct_at(&storage[index], std::move_if_noexcept(self->entries[index]));\n");
+      output.append("      std::destroy_at(&self->entries[index]);\n");
+      output.append("    }\n");
+      output.append("    free(self->entries);\n");
+      output.append("    self->entries = storage;\n");
+    } else {
+      output.append("    void *storage = realloc(self->entries, next * sizeof(Z_");
+      output.append(declaration.name);
+      output.append("_Entry));\n");
+      output.append("    if (storage == NULL) abort();\n");
+      output.append("    self->entries = (Z_");
+      output.append(declaration.name);
+      output.append("_Entry *)storage;\n");
+    }
     output.append("    self->capacity = next;\n");
     output.append("  }\n");
-    output.append("  self->entries[self->length] = (Z_");
-    output.append(declaration.name);
-    output.append("_Entry){ .key = key, .value = value };\n");
+    if (declaration.cxxValues) {
+      output.append(`  std::construct_at(&self->entries[self->length], Z_${declaration.name}_Entry{ .key = key, .value = std::move_if_noexcept(value) });\n`);
+    } else {
+      output.append("  self->entries[self->length] = (Z_");
+      output.append(declaration.name);
+      output.append("_Entry){ .key = key, .value = value };\n");
+    }
     output.append("  self->length += 1;\n");
     output.append("  self->buckets[slot] = self->length;\n");
     output.append("}\n\n");
@@ -24284,11 +24312,10 @@ function appendMapRuntime(
       output.append(" *self, ");
       output.append(keyType);
       output.append(" key) {\n");
-      output.append("  if (self->bucketCount == 0) return (Z_");
-      output.append(ownedOptionName);
-      output.append("){ .tag = Z_");
-      output.append(ownedOptionName);
-      output.append("Tag_none };\n");
+      const noneOption = declaration.cxxValues
+        ? `Z_${ownedOptionName}::make_none()`
+        : `(Z_${ownedOptionName}){ .tag = Z_${ownedOptionName}Tag_none }`;
+      output.append(`  if (self->bucketCount == 0) return ${noneOption};\n`);
       output.append("  size_t slot = Z_");
       output.append(declaration.name);
       output.append("_hash(key) & (self->bucketCount - 1);\n");
@@ -24309,11 +24336,15 @@ function appendMapRuntime(
       }
       output.append("      ");
       output.append(valueType);
-      output.append(" value = self->entries[entry].value;\n");
+      if (declaration.cxxValues) {
+        output.append(" value = std::move_if_noexcept(self->entries[entry].value);\n");
+      } else output.append(" value = self->entries[entry].value;\n");
       output.append("      self->buckets[slot] = SIZE_MAX;\n");
       output.append("      self->tombstones += 1;\n");
       output.append("      if (entry != last) {\n");
-      output.append("        self->entries[entry] = self->entries[last];\n");
+      if (declaration.cxxValues) {
+        output.append("        self->entries[entry] = std::move_if_noexcept(self->entries[last]);\n");
+      } else output.append("        self->entries[entry] = self->entries[last];\n");
       output.append("        size_t movedSlot = Z_");
       output.append(declaration.name);
       output.append("_hash(self->entries[entry].key) & (self->bucketCount - 1);\n");
@@ -24326,19 +24357,21 @@ function appendMapRuntime(
       output.append("        }\n");
       output.append("      }\n");
       output.append("      self->length = last;\n");
-      output.append("      return (Z_");
-      output.append(ownedOptionName);
-      output.append("){ .tag = Z_");
-      output.append(ownedOptionName);
-      output.append("Tag_some, .payload = { .some = value } };\n");
+      if (declaration.cxxValues) {
+        // The vacated last slot holds a moved-from entry.
+        output.append("      std::destroy_at(&self->entries[last]);\n");
+        output.append(`      return Z_${ownedOptionName}::make_some(std::move_if_noexcept(value));\n`);
+      } else {
+        output.append("      return (Z_");
+        output.append(ownedOptionName);
+        output.append("){ .tag = Z_");
+        output.append(ownedOptionName);
+        output.append("Tag_some, .payload = { .some = value } };\n");
+      }
       output.append("    }\n");
       output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
       output.append("  }\n");
-      output.append("  return (Z_");
-      output.append(ownedOptionName);
-      output.append("){ .tag = Z_");
-      output.append(ownedOptionName);
-      output.append("Tag_none };\n");
+      output.append(`  return ${noneOption};\n`);
       output.append("}\n\n");
     }
     output.append("static __attribute__((unused)) bool Z_");
@@ -24377,7 +24410,9 @@ function appendMapRuntime(
     output.append("      self->buckets[slot] = SIZE_MAX;\n");
     output.append("      self->tombstones += 1;\n");
     output.append("      if (entry != last) {\n");
-    output.append("        self->entries[entry] = self->entries[last];\n");
+    if (declaration.cxxValues) {
+      output.append("        self->entries[entry] = std::move_if_noexcept(self->entries[last]);\n");
+    } else output.append("        self->entries[entry] = self->entries[last];\n");
     output.append("        size_t movedSlot = Z_");
     output.append(declaration.name);
     output.append("_hash(self->entries[entry].key) & (self->bucketCount - 1);\n");
@@ -24390,6 +24425,7 @@ function appendMapRuntime(
     output.append("        }\n");
     output.append("      }\n");
     output.append("      self->length = last;\n");
+    if (declaration.cxxValues) output.append("      std::destroy_at(&self->entries[last]);\n");
     output.append("      return true;\n");
     output.append("    }\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
@@ -24417,6 +24453,7 @@ function appendMapRuntime(
         output.append("_release(self->entries[self->length].value);\n");
       } else output.append("_deinit(&self->entries[self->length].value);\n");
     }
+    if (declaration.cxxValues) output.append("    std::destroy_at(&self->entries[self->length]);\n");
     output.append("  }\n");
     output.append("  if (self->bucketCount > 0) memset(self->buckets, 0, self->bucketCount * sizeof(size_t));\n");
     output.append("  self->tombstones = 0;\n");
@@ -28000,6 +28037,7 @@ function emitLoweredC(
         output.append("_deinit(&self->entries[self->length].value);\n");
       }
     }
+    if (declaration.cxxValues) output.append("    std::destroy_at(&self->entries[self->length]);\n");
     output.append("  }\n");
     output.append("  free(self->entries);\n");
     output.append("  free(self->buckets);\n");

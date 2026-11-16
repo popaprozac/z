@@ -11034,6 +11034,10 @@ test("compiles a multi-module Z application through the standalone native driver
     "examples/interop/cpp/cpp-move-only.zs",
     "examples/interop/cpp/cpp-references.zs",
     "tests/fixtures/native-cpp-option.zs",
+    "examples/language/collections/map-native-values.zs",
+    "examples/applications/document-workspace/main.zs",
+    "tests/fixtures/native-element-mutation.zs",
+    "tests/fixtures/native-view-receiver.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
@@ -11064,7 +11068,6 @@ test("compiles a multi-module Z application through the standalone native driver
     // Namespaces and overloads check natively; aggregate interpolation is a separate tier.
     ["examples/interop/cpp/cpp-interop.zs", /12:121: error\[Z1000\]: template interpolation of "cpp\.zcpp\.Point" is not executable in the native compiler yet/],
     // C++ values in union, collection, or Arena storage are a later tier.
-    ["examples/language/collections/map-native-values.zs", /5:7: error\[Z1000\]: C\+\+ value "zcpp::UniqueValue" stored in a class, Option, Result, enum payload, or collection is not executable in the native compiler yet/],
     ["examples/interop/cpp/cpp-arena.zs", /11:30: error\[Z1000\]: C\+\+ values stored in an Arena are not executable in the native compiler yet/],
   ];
   for (const [entry, message] of tierLimits) {

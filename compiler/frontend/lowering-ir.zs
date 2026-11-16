@@ -202,6 +202,8 @@ export struct LoweredMap {
   name: String;
   keyType: LoweredType;
   valueType: LoweredType;
+  // Values hold C++ values: entries are constructed, moved, and destroyed.
+  cxxValues: boolean = false;
 }
 
 export struct LoweredSet {
@@ -5493,10 +5495,12 @@ function intrinsicMapDeclaration(
         importedTypes,
         generic.arguments[1]
       );
+      const cxxValues = moduleTypeHoldsCxx(program, importedTypes, valueType, 0, false);
       return Option.some(LoweredMap({
         name: intrinsicMapName(keyType, valueType),
         keyType,
         valueType,
+        cxxValues,
       }));
     }
     none => return Option<LoweredMap>.none;
@@ -7986,9 +7990,30 @@ function markCxxEnumStorage(
   in cxxMoveOnlyNames: Array<String>,
   in structs: Array<LoweredStruct>,
   inout enums: Array<LoweredEnum>,
+  inout arrays: Array<LoweredArray>,
+  inout maps: Array<LoweredMap>,
   inout functions: Array<LoweredFunction>
 ): void {
   if (cxxValueNames.length == 0) return;
+  // Program-wide: an element or value type may be a Z struct from another
+  // module whose field holds the C++ value.
+  let arrayIndex: usize = 0;
+  while (arrayIndex < arrays.length) {
+    if (loweredTypeHoldsCxx(cxxValueNames, structs, enums, arrays[arrayIndex].elementType, 0)) {
+      arrays[arrayIndex].cxxElements = true;
+      if (loweredTypeHoldsCxx(cxxMoveOnlyNames, structs, enums, arrays[arrayIndex].elementType, 0)) {
+        arrays[arrayIndex].cxxMoveOnlyElements = true;
+      }
+    }
+    arrayIndex = arrayIndex + 1;
+  }
+  let mapIndex: usize = 0;
+  while (mapIndex < maps.length) {
+    if (loweredTypeHoldsCxx(cxxValueNames, structs, enums, maps[mapIndex].valueType, 0)) {
+      maps[mapIndex].cxxValues = true;
+    }
+    mapIndex = mapIndex + 1;
+  }
   let cxxEnumNames = Array<String>();
   let index: usize = 0;
   while (index < enums.length) {
@@ -8003,7 +8028,7 @@ function markCxxEnumStorage(
         none => {}
       }
     }
-    if (holds) {
+    if (holds && !stringStartsWith(enums[index].name, "__z_NicheViewOption_")) {
       enums[index].cxxPayloads = true;
       enums[index].cxxMoveOnlyPayloads = moveOnly;
       cxxEnumNames.push(copy enums[index].name);
@@ -8186,10 +8211,11 @@ function moduleTypeHoldsCxx(
             none => {}
           }
         }
+        return false;
       }
       none => {}
     }
-    return false;
+    return importedTypeHoldsCxx(program, importedTypes, type, depth, moveOnly);
   }
   if (type.kind != LoweredTypeKind.structType) return false;
   match (structIndex(program, type.name)) {
@@ -8203,8 +8229,36 @@ function moduleTypeHoldsCxx(
           failure(_) => {}
         }
       }
+      return false;
     }
     none => {}
+  }
+  return importedTypeHoldsCxx(program, importedTypes, type, depth, moveOnly);
+}
+
+// A Z struct or enum declared in another module, through its imported shape.
+function importedTypeHoldsCxx(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in type: LoweredType,
+  depth: usize,
+  moveOnly: boolean
+): boolean {
+  for (const imported of importedTypes) {
+    if (imported.kind != type.kind) continue;
+    if (imported.localName != type.name && imported.targetName != type.name) continue;
+    for (const field of imported.fields) {
+      if (moduleTypeHoldsCxx(program, importedTypes, field.type, depth + 1, moveOnly)) return true;
+    }
+    for (const variant of imported.variants) {
+      match (in variant.payload) {
+        some(payload) => {
+          if (moduleTypeHoldsCxx(program, importedTypes, payload, depth + 1, moveOnly)) return true;
+        }
+        none => {}
+      }
+    }
+    return false;
   }
   return false;
 }
@@ -8427,6 +8481,31 @@ function resolvedObjectiveCSelector(
   );
 }
 
+// How a method receiver is passed: a class or Objective-C handle as is, a
+// struct by address, and a struct view (already a pointer, such as a
+// borrowed Option or Map payload) as is.
+function methodReceiverLabel(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  receiverInput: usize,
+  in receiverType: LoweredType
+): String {
+  if (receiverType.kind == LoweredTypeKind.foreignObjCType) {
+    return tree.nodes[receiverInput].kind == ExpressionKind.identifierExpression
+      && tree.nodes[receiverInput].value == "this" ? "nativeHelperSelf" : "nativeHelper";
+  }
+  if (receiverType.kind == LoweredTypeKind.classType) return "class";
+  match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, receiverInput)) {
+    some(typeName) => {
+      if (stringStartsWith(typeName, "view ")) return "viewStruct";
+    }
+    none => {}
+  }
+  return "struct";
+}
+
 function resolvedCxxMethodName(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
@@ -8453,6 +8532,7 @@ function lowerCxxMethodCall(
   let children = Array<usize>();
   let labels = Array<String>();
   let receiver = try lowerExpression(program, importedTypes, evidence, tree, receiverInput, inout output);
+  if (resolvedCallReceiverMode(evidence, tree, index) == "inout") markMutableStorage(inout output, receiver);
   // An `&&`-qualified member consumes its receiver: std::move(receiver).member().
   if (resolvedCallReceiverMode(evidence, tree, index) == "move") {
     let moveChildren = Array<usize>();
@@ -8462,7 +8542,15 @@ function lowerCxxMethodCall(
     receiver = pushExpression(inout output, LoweredExpressionKind.moveValue, "", move moveChildren, move moveLabels);
   }
   children.push(receiver);
-  labels.push("receiver");
+  // A view receiver (for example a borrowed Map value) is a pointer.
+  let receiverLabel = "receiver";
+  match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, receiverInput)) {
+    some(receiverType) => {
+      if (stringStartsWith(receiverType, "view ")) receiverLabel = "view-receiver";
+    }
+    none => {}
+  }
+  labels.push(receiverLabel);
   const parameterModes = resolvedCallParameterModes(program, evidence, tree, index);
   const parameterTypes = resolvedCallParameterTypes(program, evidence, tree, index);
   let argument: usize = 1;
@@ -17885,6 +17973,8 @@ function lowerExpressionNode(
           Array<String>()
         );
       }
+      // A mutating receiver (`array[index].method()`) needs mutable element access.
+      if (receiverMode == "inout") markMutableStorage(inout output, receiver);
       // A borrowed value receiver that is a literal has no storage of its own.
       if (
         receiverType.kind != LoweredTypeKind.classType
@@ -17906,12 +17996,7 @@ function lowerExpressionNode(
         index
       );
       let labels = Array<String>();
-      labels.push(receiverType.kind == LoweredTypeKind.foreignObjCType
-        ? (tree.nodes[receiverInput].kind == ExpressionKind.identifierExpression
-          && tree.nodes[receiverInput].value == "this" ? "nativeHelperSelf" : "nativeHelper")
-        : receiverType.kind == LoweredTypeKind.classType
-        ? "class"
-        : "struct");
+      labels.push(methodReceiverLabel(program, importedTypes, evidence, tree, receiverInput, receiverType));
       if (receiverMode.byteLength > 0) {
         labels.push(receiverMode.copyBytes(0, receiverMode.byteLength));
       } else labels.push("in");
@@ -32371,6 +32456,38 @@ function graphObjectiveCTypesForLowering(
 ): Array<LoweredImportedType> throws String {
   let types = Array<LoweredImportedType>();
   let foreignObjCTypeNames = Set<String>();
+  // C++ value types cross module boundaries inside public Z aggregates the
+  // same way; keyed by native spelling so they never shadow a Z name.
+  for (const candidateModule of graph.modules) {
+    for (const symbol of candidateModule.symbols) {
+      if (symbol.kind != ModuleSymbolKind.structSymbol || symbol.foreignHeader.byteLength == 0) continue;
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          if (signature.foreignKind != "value" && signature.foreignKind != "moveValue") continue;
+          if (foreignObjCTypeNames.has(signature.foreignNativeName)) continue;
+          foreignObjCTypeNames.add(copy signature.foreignNativeName);
+          types.push(LoweredImportedType({
+            localName: copy signature.foreignNativeName,
+            targetName: copy signature.foreignNativeName,
+            nativeTypeName: copy signature.foreignNativeName,
+            kind: LoweredTypeKind.foreignStructType,
+            executorBound: false,
+            threadShareable: false,
+            workerDestructible: true,
+            needsDeinit: false,
+            resourceRelease: "",
+            fields: Array<LoweredField>(),
+            variants: Array<LoweredVariant>(),
+            payloadBearing: false,
+            underlyingType: "",
+            cxxMoveOnly: signature.foreignKind == "moveValue",
+            cxxValue: true,
+          }));
+        }
+        none => {}
+      }
+    }
+  }
   for (const candidateModule of graph.modules) {
     for (const symbol of candidateModule.symbols) {
       if (
@@ -35969,7 +36086,7 @@ function lowerProgramUnchecked(
   let cxxValueNames = Array<String>();
   let cxxMoveOnlyNames = Array<String>();
   collectCxxTypeNames(importedTypes, inout cxxValueNames, inout cxxMoveOnlyNames);
-  markCxxEnumStorage(cxxValueNames, cxxMoveOnlyNames, structs, inout enums, inout functions);
+  markCxxEnumStorage(cxxValueNames, cxxMoveOnlyNames, structs, inout enums, inout arrays, inout maps, inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
@@ -36691,7 +36808,7 @@ function lowerModulesIncludingTests(
   rewriteNativeCExportCallTargets(inout functions);
   annotateObjectiveCEnumPayloads(enums, inout functions);
   markCxxMovedLocals(inout functions);
-  markCxxEnumStorage(cxxValueNames, cxxMoveOnlyNames, structs, inout enums, inout functions);
+  markCxxEnumStorage(cxxValueNames, cxxMoveOnlyNames, structs, inout enums, inout arrays, inout maps, inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,

@@ -292,6 +292,13 @@ function cxxValueTierLimit(
       // Option or Result is a C++-payload enum like a Z enum.
       const elementStorage = (generic.base == "Array" && generic.arguments.length == 1)
         || generic.base == "Option" || generic.base == "Result";
+      // A Map constructs, moves, and destroys C++ values in its entries; its
+      // keys hash and compare Z values only.
+      if (generic.base == "Map" && generic.arguments.length == 2) {
+        const keyLimit = cxxValueTierLimit(graph, moduleIndex, generic.arguments[0], true, depth + 1);
+        if (keyLimit.byteLength > 0) return keyLimit;
+        return cxxValueTierLimit(graph, moduleIndex, generic.arguments[1], false, depth + 1);
+      }
       for (const argument of generic.arguments) {
         const limit = cxxValueTierLimit(graph, moduleIndex, argument, !elementStorage, depth + 1);
         if (limit.byteLength > 0) return limit;
