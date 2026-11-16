@@ -11064,6 +11064,11 @@ test("compiles a multi-module Z application through the standalone native driver
     "examples/async/executor-placement.zs",
     "examples/async/appkit-main-result.zs",
     "tests/fixtures/native-main-placement.zs",
+    // `thread.spawn` workers joined from async functions and general frames:
+    // results, typed errors, and cancelling joins.
+    "examples/async/thread-errors.zs",
+    "examples/async/thread-spawn.zs",
+    "tests/fixtures/native-frame-thread-awaits.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
@@ -12203,25 +12208,6 @@ test("compiles a multi-module Z application through the standalone native driver
       marker: "^^^^^",
       code: "Z1000",
       summary: 'template interpolation of "f32" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, all integer types, and f64',
-    },
-    {
-      name: "template-unresolved-evidence",
-      source: [
-        'import console from "std/console";',
-        'import { thread } from "std/thread";',
-        "async function main(): i32 {",
-        "  const worker = thread.spawn((): i32 => 42);",
-        "  const revision = await worker;",
-        "  console.log(`revision=${revision}`);",
-        "  return revision - 42;",
-        "}",
-        "",
-      ].join("\n"),
-      line: 6,
-      column: 27,
-      marker: "^^^^^^^^",
-      code: "Z1000",
-      summary: "the native compiler cannot yet prove this template interpolation's type",
     },
   ] as const;
   for (const boundary of nativeLoweringBoundaries) {

@@ -15111,10 +15111,26 @@ function lowerExpressionNode(
               == ExpressionKind.closureParameterExpression
           ) throw "native thread.spawn lowering currently requires a zero-parameter closure";
         }
-        const resultTypeName = tree.nodes[closureInput].labels[0].copyBytes(
+        let resultTypeName = tree.nodes[closureInput].labels[0].copyBytes(
           0,
           tree.nodes[closureInput].labels[0].byteLength
         );
+        let workerErrorName = copy tree.nodes[closureInput].labels[1];
+        // An undeclared worker result is its inferred handle's: Task<T, E>.
+        if (resultTypeName.byteLength == 0) {
+          match (evidenceResolvedExpressionTypeName(program, importedTypes, evidence, tree, index)) {
+            some(handleName) => match (genericTypeShape(handleName)) {
+              some(handle) => {
+                if (handle.base == "Task" && handle.arguments.length >= 1) {
+                  resultTypeName = copy handle.arguments[0];
+                  if (handle.arguments.length == 2) workerErrorName = copy handle.arguments[1];
+                }
+              }
+              none => {}
+            }
+            none => {}
+          }
+        }
         if (resultTypeName.byteLength == 0) {
           throw "native thread.spawn lowering currently requires an explicit worker result type";
         }
@@ -15132,10 +15148,7 @@ function lowerExpressionNode(
         )) {
           throw `native thread.spawn cannot transfer worker result ${resultTypeName} to its owner thread yet`;
         }
-        const errorTypeName = tree.nodes[closureInput].labels[1].copyBytes(
-          0,
-          tree.nodes[closureInput].labels[1].byteLength
-        );
+        const errorTypeName = copy workerErrorName;
         let storageResultType = LoweredType({
           kind: resultType.kind,
           name: resultType.name.copyBytes(0, resultType.name.byteLength),
@@ -23410,7 +23423,13 @@ function completeNativeClosureBlocks(
         .byteLength > 0
         ? `Result<${expressions[expressionIndex].labels[5]}, ${expressions[expressionIndex].labels[3]}>`
         : "";
-      const workerContext = CallableReturnContext({ resultType: copy workerResultName });
+      // A non-throwing worker owns its return boundary too: it must not
+      // inherit a throwing owner's Result.
+      const workerReturnName = expressions[expressionIndex].labels[5].byteLength > 0
+        ? copy expressions[expressionIndex].labels[5] : "void";
+      const workerContext = workerResultName.byteLength > 0
+        ? CallableReturnContext({ resultType: copy workerResultName })
+        : CallableReturnContext({ returnType: workerReturnName });
       for (const source of sourceStatements) {
         const lowered = try lowerStatementWithResult(
           program,

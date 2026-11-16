@@ -11264,12 +11264,13 @@ function appendYieldFrameChildResult(
   in invocation: String, index: usize, depth: usize
 ): void throws String {
   appendIndent(inout output, depth);
-  output.append(`if (${invocation}.take_result == NULL) abort();\n`);
-  appendIndent(inout output, depth);
+  // A void child may have nothing to take (a join that discards its result).
   if (resultType.kind == LoweredTypeKind.voidType) {
-    output.append(`${invocation}.take_result(${invocation}.task, NULL);\n`);
+    output.append(`if (${invocation}.take_result != NULL) ${invocation}.take_result(${invocation}.task, NULL);\n`);
     return;
   }
+  output.append(`if (${invocation}.take_result == NULL) abort();\n`);
+  appendIndent(inout output, depth);
   const type = try cType(resultType);
   if (yieldFrameHoldsCxx(program, resultType)) {
     output.append(`${type} _z_child_result_${index} = Z_FrameCxx<${type}>::take(${invocation}.take_result, ${invocation}.task);\n`);
@@ -11368,7 +11369,21 @@ function yieldFrameStatementAwaitsRoot(in declaration: LoweredFunction, index: u
 
 function yieldFrameIsAwait(in declaration: LoweredFunction, index: usize): boolean {
   const kind = declaration.expressions[index].kind;
-  return kind == LoweredExpressionKind.asyncFunctionAwait || kind == LoweredExpressionKind.frameTaskJoin;
+  return yieldFrameAwaitsChild(declaration.expressions[index]) || kind == LoweredExpressionKind.frameTaskJoin;
+}
+
+// An await that starts a child invocation in `frame->child`: a call, a
+// method, an async generator step, or a `thread.spawn` worker's join.
+function yieldFrameAwaitsChild(in expression: LoweredExpression): boolean {
+  return expression.kind == LoweredExpressionKind.asyncFunctionAwait
+    || expression.kind == LoweredExpressionKind.threadAwait
+    || expression.kind == LoweredExpressionKind.threadCancel;
+}
+
+// A worker join (`await t`, `await t.cancel()` on a `thread.spawn` task).
+function yieldFrameAwaitsWorker(in expression: LoweredExpression): boolean {
+  return expression.kind == LoweredExpressionKind.threadAwait
+    || expression.kind == LoweredExpressionKind.threadCancel;
 }
 
 function collectYieldFrameAwaits(
@@ -11493,7 +11508,7 @@ function yieldFrameHoistedState(in declaration: LoweredFunction, site: usize): u
 function yieldFrameAwaitExpression(in declaration: LoweredFunction, index: usize): usize {
   if (!yieldFrameStatementAwaitsRoot(declaration, index)) return declaration.expressions.length;
   return match (in declaration.statements[index].expression) {
-    some(expression) => declaration.expressions[expression].kind == LoweredExpressionKind.asyncFunctionAwait
+    some(expression) => yieldFrameAwaitsChild(declaration.expressions[expression])
       ? expression : declaration.expressions.length;
     none => declaration.expressions.length;
   };
@@ -11519,6 +11534,11 @@ function yieldFrameAwaitType(
   const awaited = view declaration.expressions[expression];
   if (yieldFrameAwaitsStream(awaited)) {
     return LoweredType({ kind: LoweredTypeKind.enumType, name: generatorStepName(awaited.value) });
+  }
+  if (awaited.kind == LoweredExpressionKind.threadCancel) return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
+  if (awaited.kind == LoweredExpressionKind.threadAwait) {
+    const taskName = try awaitedTaskName(declaration, expression);
+    return try taskResultType(program, taskName);
   }
   if (awaited.labels.length > 0 && awaited.labels[0] == "method") {
     // A method child: its result type is its callable type's.
@@ -11628,7 +11648,7 @@ function appendYieldFrameHoistedAwait(
 ): void throws String {
   const moved = declaration.expressions[site].hoistedAwait - 1;
   const virtual = yieldFrameHoistedState(declaration, site);
-  const awaitsCall = declaration.expressions[moved].kind == LoweredExpressionKind.asyncFunctionAwait;
+  const awaitsCall = yieldFrameAwaitsChild(declaration.expressions[moved]);
   const resultType = awaitsCall
     ? try yieldFrameAwaitType(program, declaration, moved)
     : try taskResultType(program, declaration.expressions[moved].value);
@@ -11925,7 +11945,7 @@ function appendYieldFrameBorrowTemporaries(
   statementIndex: usize, expression: usize, depth: usize, release: boolean
 ): void throws String {
   const call = view declaration.expressions[expression];
-  if (yieldFrameAwaitsStream(call)) return;
+  if (yieldFrameAwaitsStream(call) || yieldFrameAwaitsWorker(call)) return;
   const functionType = try yieldFrameChildFunctionType(program, declaration, expression);
   let argument: usize = 1;
   while (argument < call.children.length) {
@@ -11980,6 +12000,19 @@ function appendYieldFrameAwait(
     output.append(`frame->child = Z_${awaited.value}_start_next(`);
     try appendAddressOf(inout output, declaration, awaited.children[0]);
     output.append(", task->executor);\n");
+  } else if (yieldFrameAwaitsWorker(awaited)) {
+    // The worker completes through the executor's external queue; a
+    // cancelling join discards its result and releases the worker.
+    const taskName = try awaitedTaskName(declaration, expression);
+    if (awaited.kind == LoweredExpressionKind.threadAwait) {
+      output.append(`frame->child = z_stage1_async_thread_await_${taskName}_start(task->executor, `);
+      try appendAddressOf(inout output, declaration, awaited.children[0]);
+      output.append(");\n");
+    } else {
+      output.append(`frame->child = z_stage1_async_thread_join_${taskName}_start(task->executor, `);
+      try appendAddressOf(inout output, declaration, awaited.children[0]);
+      output.append(", true);\n");
+    }
   } else if (awaited.labels.length > 0 && awaited.labels[0] == "method") {
     // A method child starts through its await-site helper (generated for the
     // original expression, before any hoisting moved it).
@@ -12974,10 +13007,10 @@ function appendYieldFrameHelpers(
       for (const site of nestedAwaits) {
         const moved = declaration.expressions.length;
         declaration.expressions.push(copy declaration.expressions[site]);
-        const resultType = declaration.expressions[moved].kind == LoweredExpressionKind.asyncFunctionAwait
+        const resultType = yieldFrameAwaitsChild(declaration.expressions[moved])
           ? try yieldFrameAwaitType(program, declaration, moved)
           : try taskResultType(program, declaration.expressions[moved].value);
-        if (declaration.expressions[moved].kind == LoweredExpressionKind.asyncFunctionAwait) hasChild = true;
+        if (yieldFrameAwaitsChild(declaration.expressions[moved])) hasChild = true;
         // A value whose root (an assignment's value, a returned or initialized
         // value, a match arm's selection) is the await, or wraps it only in
         // enum or move construction, takes the result with no suspension
@@ -13113,7 +13146,8 @@ function appendYieldFrameHelpers(
     let borrowStatement: usize = 0;
     while (borrowStatement < source.statements.length) {
       const awaitedCall = yieldFrameAwaitExpression(source, borrowStatement);
-      if (awaitedCall < source.expressions.length && !yieldFrameAwaitsStream(source.expressions[awaitedCall])) {
+      if (awaitedCall < source.expressions.length && !yieldFrameAwaitsStream(source.expressions[awaitedCall])
+        && !yieldFrameAwaitsWorker(source.expressions[awaitedCall])) {
         const childType = try yieldFrameChildFunctionType(program, source, awaitedCall);
         let argument: usize = 1;
         while (argument < source.expressions[awaitedCall].children.length) {
@@ -20176,6 +20210,9 @@ function appendThreadTaskRuntime(
         output.append("  (void)destination;\n  Z_");
         output.append(taskName);
         output.append("_await(frame->worker);\n");
+      } else if (loweredTypeHoldsCxx(program.cxxValueTypes, program.structs, program.enums, resultType, 0)) {
+        // `destination` is raw storage for a C++ result: construct it.
+        output.append(`  if (destination == NULL) abort();\n  ::new (destination) ${nativeResultType}(Z_${taskName}_await(frame->worker));\n`);
       } else {
         output.append("  if (destination == NULL) abort();\n  *( (");
         output.append(nativeResultType);

@@ -1450,7 +1450,13 @@ in place (`in` captures read-only, `inout` and `move` captures updated in
 place; a moved capture stays owned by `main` until its scope ends). Placement
 in other functions keeps the worker-to-main tiers; placed blocks that throw or
 select an Objective-C value, and placement inside synchronous `thread.spawn`
-closures, remain staged. Cancellation before
+closures, remain staged. A general frame also joins `thread.spawn` workers held
+in root locals: `await t` (including `try`/`attempt` for `Task<T, E>`)
+suspends the frame until the worker reports through the executor's external
+queue, and `await t.cancel()` cancels the worker, joins it, and releases it.
+Native semantics types `thread.spawn(...)` as `Task<T>` or `Task<T, E>` from
+the worker closure's declared or inferred signature, as Stage 0 does.
+Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument
