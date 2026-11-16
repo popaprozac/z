@@ -440,6 +440,10 @@ export struct LoweredExpression {
   objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
   // A call whose result is `view T`: a pointer to the borrowed value.
   resultView: boolean = false;
+  // C emission of a general async frame: this node reads the frame temporary
+  // of an await hoisted ahead of its statement; the await moved to the
+  // expression at this one-based index.
+  hoistedAwait: usize = 0;
   // A struct value's children in declaration order, when that differs from
   // `children` (evaluation order). C++ requires ordered designators.
   fieldOrder: Array<usize> = Array<usize>();

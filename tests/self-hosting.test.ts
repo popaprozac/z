@@ -12046,25 +12046,6 @@ test("compiles a multi-module Z application through the standalone native driver
 
   const nativeLoweringBoundaries = [
     {
-      name: "nested-await-in-yield-frame",
-      source: [
-        'import { scheduler } from "std/async"; import { delay } from "std/time";',
-        "async function deferred(): i32 {",
-        "  await scheduler.yield();",
-        "  await delay(1);",
-        "  return 40 + await duration();",
-        "}",
-        "async function duration(): i32 { return 2; }",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      line: 3,
-      column: 3,
-      marker: "^^^^^",
-      code: "Z0700",
-      summary: "scheduler.yield() in this function requires unsupported native frame composition; use root owned locals and standalone direct child awaits in the current tier",
-    },
-    {
       name: "synchronous-placed-method-tail",
       source: [
         'import { thread } from "std/thread";',

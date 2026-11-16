@@ -1431,9 +1431,12 @@ children, borrowed matches, wildcard cleanup, early return/throw/`try`, and
 loop exits. Match payloads stay in lexical storage and finish before the next
 suspension. Root owned locals may also be initialized by a synchronous match;
 returning or throwing arms leave the destination uninitialized, with cleanup
-tested before and after frame entry. Awaited subjects, suspension inside arms,
-and destructured patterns remain outside this native frame tier. Borrowed child arguments, method/placed
-awaits, nested awaited expressions, and nested source locals remain separate
+tested before and after frame entry. Awaits nested in an expression (operands,
+assignment values, `if` conditions, and match subjects) run first, in evaluation
+order, into frame temporaries, as in Stage 0; like Stage 0, the frame rejects an
+ownership-bearing nested await result, and it also does not yet hoist owned
+Results. Suspension inside arms and destructured patterns remain outside this
+native frame tier. Method/placed awaits and nested source locals remain separate
 yield-frame boundaries. These reductions alone do not establish application integration. The broader
 `async-owned-destructure.zs` probe covers explicit copy/move, awaited producers,
 scoped child borrows, errors, and cancellation before or after initialization.

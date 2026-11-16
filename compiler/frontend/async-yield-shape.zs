@@ -92,6 +92,61 @@ function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): bo
   return true;
 }
 
+// An await that a frame can run before its statement: a named call with
+// synchronous arguments, or a task-local join.
+function frameAwaitOperandIsSupported(in tree: ExpressionTree, index: usize): boolean {
+  if (tree.nodes[index].children.length != 1) return false;
+  const operand = tree.nodes[index].children[0];
+  if (tree.nodes[operand].kind == ExpressionKind.identifierExpression) return true;
+  if (frameTaskCancelReceiver(tree, operand) < tree.nodes.length) return false;
+  if (tree.nodes[operand].kind != ExpressionKind.callExpression
+    || tree.nodes[operand].children.length == 0) return false;
+  if (tree.nodes[tree.nodes[operand].children[0]].kind != ExpressionKind.identifierExpression) return false;
+  for (const child of tree.nodes[operand].children) {
+    if (!frameExpressionIsSynchronous(tree, child)) return false;
+  }
+  return true;
+}
+
+function frameTreeContainsAwait(in tree: ExpressionTree, index: usize): boolean {
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
+  if (tree.nodes[index].kind == ExpressionKind.awaitExpression
+    || tree.nodes[index].kind == ExpressionKind.spawnExpression) return true;
+  for (const child of tree.nodes[index].children) {
+    if (frameTreeContainsAwait(tree, child)) return true;
+  }
+  return false;
+}
+
+// Awaits nested in an expression run first, in evaluation order, into frame
+// temporaries (Stage 0's nested await operations). Lazy and selected
+// branches (`&&`, `||`, `?:`, value `if`, match arms) cannot hoist an await.
+export function frameExpressionHoistsAwaits(in tree: ExpressionTree, index: usize): boolean {
+  const node = view tree.nodes[index];
+  if (node.kind == ExpressionKind.closureExpression) return true;
+  if (node.kind == ExpressionKind.awaitExpression) return frameAwaitOperandIsSupported(tree, index);
+  if (node.kind == ExpressionKind.attemptExpression && node.children.length == 1
+    && tree.nodes[node.children[0]].kind == ExpressionKind.awaitExpression) {
+    return frameAwaitOperandIsSupported(tree, node.children[0]);
+  }
+  if (node.kind == ExpressionKind.spawnExpression || node.kind == ExpressionKind.tryExpression
+    || node.kind == ExpressionKind.attemptExpression
+    || node.kind == ExpressionKind.executorPlacementExpression
+    || node.kind == ExpressionKind.executorOnExpression) {
+    return !frameTreeContainsAwait(tree, index) && frameExpressionIsSynchronous(tree, index);
+  }
+  const lazy = node.kind == ExpressionKind.ifExpression || node.kind == ExpressionKind.matchExpression
+    || node.kind == ExpressionKind.conditionalExpression
+    || node.kind == ExpressionKind.unsafeExpression || node.kind == ExpressionKind.valueBlockExpression
+    || node.kind == ExpressionKind.whileExpression || node.kind == ExpressionKind.forExpression
+    || (node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||"));
+  if (lazy) return !frameTreeContainsAwait(tree, index) && frameExpressionIsSynchronous(tree, index);
+  for (const child of node.children) {
+    if (!frameExpressionHoistsAwaits(tree, child)) return false;
+  }
+  return true;
+}
+
 // `task f(args)`: a named callee with synchronous arguments.
 function frameSpawnIsSupported(in tree: ExpressionTree, index: usize): boolean {
   if (tree.nodes[index].children.length != 1) return false;
@@ -186,7 +241,10 @@ function frameStatementIsSupported(
           if (tree.nodes[root].kind != ExpressionKind.matchExpression
             || tree.nodes[root].children.length < 2) return false;
           const subject = tree.nodes[root].children[0];
-          if (!frameExpressionIsSynchronous(tree, subject)) return false;
+          // A subject's awaits run just before the match, wherever it is.
+          if (synchronousOnly) {
+            if (!frameExpressionIsSynchronous(tree, subject)) return false;
+          } else if (!frameExpressionHoistsAwaits(tree, subject)) return false;
           let armIndex: usize = 1;
           while (armIndex < tree.nodes[root].children.length) {
             const arm = tree.nodes[root].children[armIndex];
@@ -254,10 +312,13 @@ function frameStatementIsSupported(
             || tree.nodes[root].kind == ExpressionKind.attemptExpression)
             && tree.nodes[root].children.length == 1) expression = tree.nodes[root].children[0];
           if (!frameExpressionIsSynchronous(tree, expression)) return false;
-        } else if (kind == StatementKind.ifStatement || kind == StatementKind.whileStatement
-          || kind == StatementKind.throwStatement || kind == StatementKind.destructureStatement) {
+        } else if (kind == StatementKind.whileStatement || kind == StatementKind.destructureStatement) {
+          // A loop condition re-runs each iteration: it cannot hoist an await.
           if (!frameExpressionIsSynchronous(tree, root)) return false;
-        } else if (!frameExpressionIsSupported(tree, root)) return false;
+        } else if (kind == StatementKind.ifStatement || kind == StatementKind.throwStatement) {
+          if (!frameExpressionHoistsAwaits(tree, root)) return false;
+        } else if (!frameExpressionIsSupported(tree, root)
+          && !frameExpressionHoistsAwaits(tree, root)) return false;
       }
       none => return false;
     }
@@ -267,7 +328,9 @@ function frameStatementIsSupported(
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
         const root = tree.root;
-        if (!frameExpressionIsSynchronous(tree, root)) return false;
+        if (synchronousOnly) {
+          if (!frameExpressionIsSynchronous(tree, root)) return false;
+        } else if (!frameExpressionHoistsAwaits(tree, root)) return false;
       }
       none => return false;
     }
@@ -462,13 +525,24 @@ function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration): boolea
       }
       none => {}
     }
+    // An assignment value may join a task (`x = await t`) too.
     match (in statement.secondExpression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
+          for (const node of tree.nodes) {
+            if (node.kind != ExpressionKind.awaitExpression || node.children.length != 1) continue;
+            const operand = node.children[0];
+            if (tree.nodes[operand].kind != ExpressionKind.identifierExpression) continue;
+            let known = false;
+            for (const task of tasks) { if (task == tree.nodes[operand].value) known = true; }
+            if (!known) return false;
+          }
           for (const task of tasks) {
+            let uses: usize = 0;
             for (const node of tree.nodes) {
-              if (node.kind == ExpressionKind.identifierExpression && node.value == task) return false;
+              if (node.kind == ExpressionKind.identifierExpression && node.value == task) uses = uses + 1;
             }
+            if (uses != frameTaskJoinUses(tree, task)) return false;
           }
         }
         none => {}

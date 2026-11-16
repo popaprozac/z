@@ -101,15 +101,19 @@ async function main(): i32 {
     });
     assert.equal(lent.status, 0, lent.stderr);
     execute(lent.stdout, "");
-    const cases = [
-      {
-        source: `async function child(): i32 { return 0; }
+    // An await nested in an expression runs first into a frame temporary.
+    writeFileSync(input, `import { scheduler } from "std/async";
+async function child(): i32 { return 41; }
 async function main(): i32 {
   await scheduler.yield();
-  return (await child()) + 1;
-}`,
-        diagnostic: /Z0700/,
-      },
+  return (await child()) + 1 - 42;
+}`);
+    const nested = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.equal(nested.status, 0, nested.stderr);
+    execute(nested.stdout, "");
+    const cases = [
       {
         source: `class Reader { async function read(): i32 { return 0; } }
 async function main(): i32 {

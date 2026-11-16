@@ -9,6 +9,7 @@ import {
   ParameterMode,
   Program,
   ReceiverMode,
+  Statement,
   StatementArena,
   StatementKind,
   TypeNameReference,
@@ -3193,6 +3194,50 @@ function validateYieldFrameStorage(
   }
 }
 
+// An await the frame hoists ahead of its statement holds its result in a
+// frame temporary; as in Stage 0, that result must be cleanup-free (Stage 0
+// also hoists owned Results, which this tier does not yet).
+function validateHoistedAwaitResults(
+  in path: String,
+  moduleIndex: usize,
+  in graph: ModuleGraph,
+  in statement: Statement,
+  in tree: ExpressionTree,
+  statementRoot: boolean
+): void throws ModuleResolveError {
+  let handled = tree.nodes.length;
+  if (statementRoot && (statement.kind == StatementKind.variableStatement
+    || statement.kind == StatementKind.expressionStatement
+    || statement.kind == StatementKind.returnStatement)) {
+    handled = tree.root;
+    if ((tree.nodes[handled].kind == ExpressionKind.tryExpression
+      || tree.nodes[handled].kind == ExpressionKind.attemptExpression)
+      && tree.nodes[handled].children.length == 1) handled = tree.nodes[handled].children[0];
+  }
+  let index: usize = 0;
+  while (index < tree.nodes.length) {
+    const node = view tree.nodes[index];
+    if (node.kind == ExpressionKind.awaitExpression && index != handled) {
+      // `attempt await f()` hoists the materialized Result.
+      let valueNode = index;
+      let parent: usize = 0;
+      while (parent < tree.nodes.length) {
+        if (tree.nodes[parent].kind == ExpressionKind.attemptExpression
+          && tree.nodes[parent].children.length == 1 && tree.nodes[parent].children[0] == index) valueNode = parent;
+        parent = parent + 1;
+      }
+      const typeName = resolvedExpressionType(graph, moduleIndex, tree, valueNode);
+      const visiting = Array<String>();
+      if (typeName.byteLength == 0 || typeHasCleanup(graph.modules, moduleIndex, typeName, visiting)) {
+        throw loweringBoundary(path, "Z0700",
+          "an ownership-bearing nested await result is not executable yet",
+          node.line, node.column, 5);
+      }
+    }
+    index = index + 1;
+  }
+}
+
 function validateGeneralFrameStorage(
   in path: String,
   moduleIndex: usize,
@@ -3201,6 +3246,22 @@ function validateGeneralFrameStorage(
   in declaration: FunctionDeclaration
 ): void throws ModuleResolveError {
   try validateYieldFrameStorage(path, moduleIndex, modules, graph, declaration);
+  for (const statement of declaration.body.nodes) {
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => try validateHoistedAwaitResults(path, moduleIndex, graph, statement, tree, true);
+        none => {}
+      }
+      none => {}
+    }
+    match (in statement.secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => try validateHoistedAwaitResults(path, moduleIndex, graph, statement, tree, false);
+        none => {}
+      }
+      none => {}
+    }
+  }
   const visiting = Array<String>();
   if (declaration.returnType.name != "void"
     && !nativeYieldFrameStorageSupported(modules, graph, moduleIndex, declaration.returnType.name, visiting)) {

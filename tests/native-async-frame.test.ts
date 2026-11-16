@@ -1,6 +1,6 @@
 import {
   assert, cli, compileToC, mkdtempSync, projectRoot, readFileSync,
-  resolve, rmSync, spawnSync, test, bindGeneratedNames,
+  resolve, rmSync, spawnSync, test, bindGeneratedNames, writeFileSync,
 } from "./support/bootstrap.ts";
 
 // General native async frames: suspending functions that no shape tier claims.
@@ -139,4 +139,38 @@ test("passes borrowed parameters and frame borrow temporaries to general native 
   const source = emit(fixture);
   assert.match(source, /_z_await_borrow_\d+_1_live = true;/);
   execute(source, expected);
+}, 240_000);
+
+test("hoists awaits nested in expressions ahead of their statement in general native frames", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/native-async-frame-hoisted.zs");
+  const expected = "baseline 0 missing -3 sum 42 total 42 joined 6\nexpected\nunexpected\n";
+  execute(compileToC(readFileSync(fixture, "utf8"), fixture), expected);
+  const source = emit(fixture);
+  assert.match(source, /_z_stage1_frame_binding__z_await_value_\d+ = _z_child_result_\d+;/);
+  execute(source, expected);
+
+  // An owned nested result needs a frame slot handoff: both compilers reject it.
+  const directory = mkdtempSync("/tmp/z-async-frame-hoist-boundary-");
+  try {
+    const input = resolve(directory, "main.zs");
+    const program = `import { delay } from "std/time";
+function size(text: String): usize { return text.byteLength; }
+async function name(): String {
+  await delay(1);
+  return "named";
+}
+async function main(): i32 {
+  await delay(1);
+  const count = size(await name());
+  return i32(count) - 5;
+}`;
+    writeFileSync(input, program);
+    assert.throws(() => compileToC(program, input), /an ownership-bearing nested await result is not executable yet/);
+    const result = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /main\.zs:9:22: error\[Z0700\]: an ownership-bearing nested await result is not executable yet/);
+    assert.doesNotMatch(result.stderr, /internal compiler error/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
