@@ -227,6 +227,34 @@ function frameStatementIsSupported(
   if (isFrameSchedulerYield(program, arena, index)
     || isFrameDelay(program, arena, index)) return !synchronousOnly;
   const kind = arena.nodes[index].kind;
+  // An async generator's `yield` completes the current advancement and
+  // suspends the frame until the next `next()`.
+  // `for await` suspends on each step; its iterable is evaluated once, before.
+  if (kind == StatementKind.forAwaitStatement || kind == StatementKind.forTryAwaitStatement) {
+    if (synchronousOnly || arena.nodes[index].objectBindings.length > 0) return false;
+    const iterableIsSynchronous = match (in arena.nodes[index].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => frameExpressionIsSynchronous(tree, tree.root);
+        none => false;
+      }
+      none => false;
+    };
+    if (!iterableIsSynchronous) return false;
+    for (const child of arena.nodes[index].children) {
+      if (!frameStatementIsSupported(program, arena, child, true, false)) return false;
+    }
+    return true;
+  }
+  if (kind == StatementKind.yieldStatement) {
+    if (synchronousOnly) return false;
+    return match (in arena.nodes[index].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => frameExpressionIsSynchronous(tree, tree.root);
+        none => false;
+      }
+      none => false;
+    };
+  }
   // Match-initialized root owners use the same non-suspending arm lowering as
   // statement matches. The selected value becomes live only after the match;
   // an arm that returns/throws never initializes the destination frame slot.
@@ -399,6 +427,8 @@ export function functionUsesGeneralFrame(
   if (!declaration.asynchronous || declaration.executorAffinity.byteLength != 0) return false;
   let suspends = false;
   for (const statement of declaration.body.nodes) {
+    if (statement.kind == StatementKind.yieldStatement || statement.kind == StatementKind.forAwaitStatement
+      || statement.kind == StatementKind.forTryAwaitStatement) suspends = true;
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
@@ -424,10 +454,21 @@ export function functionUsesGeneralFrame(
 function frameLocalNamesAreUnique(in declaration: FunctionDeclaration): boolean {
   let names = Array<String>();
   for (const parameter of declaration.parameters) { names.push(copy parameter.name); }
+  // A `for await` binding lives in the frame too; loops may share one.
+  let loopNames = Array<String>();
   for (const statement of declaration.body.nodes) {
+    if (statement.kind == StatementKind.forAwaitStatement || statement.kind == StatementKind.forTryAwaitStatement) {
+      let seen = false;
+      for (const name of loopNames) { if (name == statement.name) seen = true; }
+      if (!seen) loopNames.push(copy statement.name);
+      continue;
+    }
     if (statement.kind != StatementKind.variableStatement) continue;
     for (const name of names) { if (name == statement.name) return false; }
     names.push(copy statement.name);
+  }
+  for (const loopName of loopNames) {
+    for (const name of names) { if (name == loopName) return false; }
   }
   return true;
 }
@@ -596,6 +637,33 @@ export function functionContainsFrameSpawn(in declaration: FunctionDeclaration):
 
 // A direct `await delay(ms)` statement anywhere in the body. Native `main`
 // has no resumable entry outside the general frame, so this selects it.
+// `await stream.next()` or `for await`: only the general frame resumes an
+// async generator's stream (any `.next()` await counts; a class method named
+// `next` also runs there).
+export function functionAwaitsStreamStep(in declaration: FunctionDeclaration): boolean {
+  if (!declaration.asynchronous) return false;
+  for (const statement of declaration.body.nodes) {
+    if (statement.kind == StatementKind.forAwaitStatement
+      || statement.kind == StatementKind.forTryAwaitStatement) return true;
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          for (const node of tree.nodes) {
+            if (node.kind != ExpressionKind.awaitExpression || node.children.length != 1) continue;
+            const call = view tree.nodes[node.children[0]];
+            if (call.kind != ExpressionKind.callExpression || call.children.length != 1) continue;
+            const callee = view tree.nodes[call.children[0]];
+            if (callee.kind == ExpressionKind.memberExpression && callee.value == "next") return true;
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  return false;
+}
+
 export function functionContainsFrameDelay(
   in program: Program, in declaration: FunctionDeclaration
 ): boolean {

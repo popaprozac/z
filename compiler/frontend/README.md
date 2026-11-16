@@ -348,8 +348,8 @@ invalid safety boundary rejects, and destruction follows the same affinity.
 
 The standalone executable subset is intentionally narrower than the native
 parser and semantic graph. Unplaced suspending async functions outside the native
-frame (Objective-C or C++ frame storage, and locals in nested blocks outside
-an `async scope`), traits, generic
+frame (Objective-C frame storage, C++ locals declared without an initializer,
+and locals in nested blocks outside an `async scope`), traits, generic
 methods, fixed arrays, and callable combinations beyond the first synchronous
 direct-function/expression-closure tier still stop before C emission. Ordinary
 transparent aliases, first-class synchronous callable values, and direct calls
@@ -383,7 +383,7 @@ the backend still contains hard stops that must be classified. The first
 source-mapped lowerability preflight now reports suspending ordinary async as `Z0700` and
 valid non-async shapes without a current native representation as `Z1000`;
 custom constructors on generic aggregates and independently generic methods,
-traits, generators,
+traits,
 value-producing loops, `async scope`,
 unsafe expressions, and the syntactically decidable optional-chain boundaries
 no longer fall into resolver-internal messages. Public lowering and C-emission
