@@ -11059,6 +11059,11 @@ test("compiles a multi-module Z application through the standalone native driver
     "examples/language/control-flow/async-for-await.zs",
     "examples/language/control-flow/async-for-await-errors.zs",
     "tests/fixtures/native-async-generator-frames.zs",
+    // `on thread.main` placement from `main`: placed calls, awaits, tasks, and
+    // `using` blocks run where they are, as in Stage 0.
+    "examples/async/executor-placement.zs",
+    "examples/async/appkit-main-result.zs",
+    "tests/fixtures/native-main-placement.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);

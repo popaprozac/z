@@ -2,8 +2,223 @@
 // This is an implementation boundary, not a second set of ownership rules.
 import {
   ExpressionKind, ExpressionTree, FunctionDeclaration, ParameterMode, Program,
-  StatementArena, StatementKind,
+  ExpressionSyntax, StatementArena, StatementKind, TypeReference,
 } from "./parser.zs";
+
+// Local names of `thread` imported from std/thread.
+export function mainPlacementThreadNames(in program: Program): Array<String> {
+  let names = Array<String>();
+  for (const imported of program.imports) {
+    if (imported.header != "std/thread") continue;
+    for (const binding of imported.bindings) {
+      if (binding.importedName == "thread") names.push(copy binding.localName);
+    }
+  }
+  return names;
+}
+
+// The call of `await|task on thread.main call(...)`, or the tree length.
+function mainPlacementCall(in tree: ExpressionTree, index: usize, in threadNames: Array<String>): usize {
+  const node = view tree.nodes[index];
+  if (node.kind != ExpressionKind.executorPlacementExpression || node.labels.length < 3
+    || node.labels[2] != "call" || node.children.length != 3) return tree.nodes.length;
+  const executor = node.children[1];
+  if (tree.nodes[executor].kind != ExpressionKind.memberExpression || tree.nodes[executor].value != "main"
+    || tree.nodes[executor].children.length != 1) return tree.nodes.length;
+  const namespace = tree.nodes[executor].children[0];
+  if (tree.nodes[namespace].kind != ExpressionKind.identifierExpression) return tree.nodes.length;
+  let threadBinding = false;
+  for (const name of threadNames) {
+    if (name == tree.nodes[namespace].value) threadBinding = true;
+  }
+  if (!threadBinding) return tree.nodes.length;
+  const call = node.children[2];
+  if (tree.nodes[call].kind != ExpressionKind.callExpression) return tree.nodes.length;
+  return call;
+}
+
+// `await on thread.main using (...) { ... }`: a synchronous placed block.
+function mainPlacementBlock(in tree: ExpressionTree, index: usize, in threadNames: Array<String>): boolean {
+  const node = view tree.nodes[index];
+  if (node.kind != ExpressionKind.executorPlacementExpression || node.value != "await"
+    || node.labels.length < 3 || node.labels[2] != "" || node.children.length < 2) return false;
+  const executor = node.children[1];
+  if (tree.nodes[executor].kind != ExpressionKind.memberExpression || tree.nodes[executor].value != "main"
+    || tree.nodes[executor].children.length != 1) return false;
+  const namespace = tree.nodes[executor].children[0];
+  if (tree.nodes[namespace].kind != ExpressionKind.identifierExpression) return false;
+  for (const name of threadNames) {
+    if (name == tree.nodes[namespace].value) return true;
+  }
+  return false;
+}
+
+// A tree with its main placements replaced by the placed operations; none
+// when it has none. Nodes inside closures keep their placements. A placed
+// block becomes `inline` (it runs where it is); its statements are reported.
+function normalizedPlacementTree(
+  in tree: ExpressionTree, in threadNames: Array<String>, in asyncCallOffsets: Array<usize>,
+  inout inlineStatements: Array<usize>
+): Option<ExpressionTree> {
+  let reachable = Array<usize>();
+  reachable.push(tree.root);
+  let cursor: usize = 0;
+  while (cursor < reachable.length) {
+    const index = reachable[cursor];
+    cursor = cursor + 1;
+    if (tree.nodes[index].kind == ExpressionKind.closureExpression) continue;
+    for (const child of tree.nodes[index].children) {
+      reachable.push(child);
+    }
+  }
+  let updated = copy tree;
+  let changed = false;
+  for (const index of reachable) {
+    if (mainPlacementBlock(tree, index, threadNames)) {
+      updated.nodes[index].value = "inline";
+      for (const statement of tree.nodes[index].statements) {
+        inlineStatements.push(statement);
+      }
+      changed = true;
+      continue;
+    }
+    const call = mainPlacementCall(tree, index, threadNames);
+    if (call >= tree.nodes.length) continue;
+    let asyncCall = false;
+    for (const offset of asyncCallOffsets) {
+      if (offset == tree.nodes[call].offset) asyncCall = true;
+    }
+    if (asyncCall) {
+      // `await f()` / `task f()`, keeping the placement's position and type.
+      updated.nodes[index].kind = tree.nodes[index].value == "spawn"
+        ? ExpressionKind.spawnExpression
+        : ExpressionKind.awaitExpression;
+      updated.nodes[index].value = "";
+      updated.nodes[index].children = Array<usize>(call);
+      updated.nodes[index].labels = Array<String>();
+      updated.nodes[index].statements = Array<usize>();
+      updated.nodes[index].typeReferences = Array<TypeReference>();
+      changed = true;
+    } else if (tree.nodes[index].value == "await") {
+      // A synchronous function placed where it already runs is a plain call.
+      updated.nodes[index] = copy tree.nodes[call];
+      changed = true;
+    }
+  }
+  if (!changed) return Option<ExpressionTree>.none;
+  return Option.some(updated);
+}
+
+function collectForeignStatements(in tree: ExpressionTree, inout pending: Array<usize>): void {
+  for (const node of tree.nodes) {
+    // Closure bodies may run on another thread; a placed block is 3b's tier.
+    if (node.kind == ExpressionKind.closureExpression || node.kind == ExpressionKind.executorPlacementExpression) {
+      for (const statement of node.statements) {
+        pending.push(statement);
+      }
+    }
+  }
+}
+
+// Placement onto `thread.main` from code already on the main executor is the
+// placed operation itself, as in Stage 0: `await on thread.main f()` awaits
+// `f` (or calls it when `f` is synchronous) and `task on thread.main f()`
+// spawns it. Statements in closure bodies keep their placements: a closure
+// may run on a worker thread.
+export function normalizeMainPlacements(
+  inout body: StatementArena, in threadNames: Array<String>, in asyncCallOffsets: Array<usize>
+): void {
+  if (threadNames.length == 0) return;
+  let pending = Array<usize>();
+  for (const statement of body.nodes) {
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => collectForeignStatements(tree, inout pending);
+        none => {}
+      }
+      none => {}
+    }
+    match (in statement.secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => collectForeignStatements(tree, inout pending);
+        none => {}
+      }
+      none => {}
+    }
+  }
+  let foreign = Array<boolean>();
+  while (foreign.length < body.nodes.length) {
+    foreign.push(false);
+  }
+  let cursor: usize = 0;
+  while (cursor < pending.length) {
+    const statement = pending[cursor];
+    cursor = cursor + 1;
+    if (statement >= foreign.length || foreign[statement]) continue;
+    foreign[statement] = true;
+    for (const child of body.nodes[statement].children) {
+      pending.push(child);
+    }
+  }
+  let inlineStatements = Array<usize>();
+  let index: usize = 0;
+  while (index < body.nodes.length) {
+    if (!foreign[index]) {
+      let expression = Option<ExpressionSyntax>.none;
+      match (in body.nodes[index].expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => match (normalizedPlacementTree(tree, threadNames, asyncCallOffsets, inout inlineStatements)) {
+            some(updated) => {
+              let replaced = copy syntax;
+              replaced.tree = Option.some(updated);
+              expression = Option.some(replaced);
+            }
+            none => {}
+          }
+          none => {}
+        }
+        none => {}
+      }
+      match (expression) {
+        some(replaced) => body.nodes[index].expression = Option.some(replaced);
+        none => {}
+      }
+      let second = Option<ExpressionSyntax>.none;
+      match (in body.nodes[index].secondExpression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => match (normalizedPlacementTree(tree, threadNames, asyncCallOffsets, inout inlineStatements)) {
+            some(updated) => {
+              let replaced = copy syntax;
+              replaced.tree = Option.some(updated);
+              second = Option.some(replaced);
+            }
+            none => {}
+          }
+          none => {}
+        }
+        none => {}
+      }
+      match (second) {
+        some(replaced) => body.nodes[index].secondExpression = Option.some(replaced);
+        none => {}
+      }
+    }
+    index = index + 1;
+  }
+  // An inline block's helper returns the value its own `select` produces
+  // (selects inside its match arms still select arm values).
+  let blockCursor: usize = 0;
+  while (blockCursor < inlineStatements.length) {
+    const statement = inlineStatements[blockCursor];
+    blockCursor = blockCursor + 1;
+    if (body.nodes[statement].kind == StatementKind.selectStatement) {
+      body.nodes[statement].kind = StatementKind.returnStatement;
+    }
+    for (const child of body.nodes[statement].children) {
+      inlineStatements.push(child);
+    }
+  }
+}
 
 export function isFrameSchedulerYield(
   in program: Program, in arena: StatementArena, index: usize
@@ -73,6 +288,8 @@ export function isFrameDelay(
 
 function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): boolean {
   const kind = tree.nodes[index].kind;
+  // A placed block `main` runs where it is: a synchronous helper call.
+  if (kind == ExpressionKind.executorPlacementExpression && tree.nodes[index].value == "inline") return true;
   if (kind == ExpressionKind.awaitExpression
     || kind == ExpressionKind.tryExpression
     || kind == ExpressionKind.spawnExpression
@@ -479,8 +696,12 @@ function bodySpawnsFunction(in body: StatementArena, in name: String): boolean {
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
           for (const node of tree.nodes) {
-            if (node.kind != ExpressionKind.spawnExpression || node.children.length != 1) continue;
-            const call = node.children[0];
+            // `task on thread.main f()` spawns `f` too.
+            let call = tree.nodes.length;
+            if (node.kind == ExpressionKind.spawnExpression && node.children.length == 1) call = node.children[0];
+            if (node.kind == ExpressionKind.executorPlacementExpression && node.value == "spawn"
+              && node.children.length == 3) call = node.children[2];
+            if (call >= tree.nodes.length) continue;
             if (tree.nodes[call].kind != ExpressionKind.callExpression
               || tree.nodes[call].children.length == 0) continue;
             const callee = tree.nodes[call].children[0];
