@@ -2275,35 +2275,6 @@ function validateNativeObjCCall(
   );
 }
 
-// Arena reset frees its storage without C++ destructors, so a C++ value
-// placed in an Arena is a later tier.
-function validateNativeCxxArenaStorage(
-  in path: String,
-  moduleIndex: usize,
-  in graph: ModuleGraph,
-  in tree: ExpressionTree,
-  index: usize
-): void throws ModuleResolveError {
-  const node = view tree.nodes[index];
-  if (node.kind != ExpressionKind.callExpression || node.children.length != 2) return;
-  const callee = node.children[0];
-  if (
-    tree.nodes[callee].kind != ExpressionKind.memberExpression
-    || tree.nodes[callee].value != "create"
-    || tree.nodes[callee].children.length != 1
-  ) return;
-  if (!moduleUsesCxxValues(graph, moduleIndex)) return;
-  const argumentType = resolvedExpressionType(graph, moduleIndex, tree, node.children[1]);
-  const elementType = argumentType.byteLength > 0
-    ? argumentType
-    : resolvedExpressionType(graph, moduleIndex, tree, index);
-  const limit = cxxValueTierLimit(graph, moduleIndex, elementType, true, 0);
-  if (limit.byteLength == 0) return;
-  throw loweringBoundary(path, "Z1000",
-    "C++ values stored in an Arena are not executable in the native compiler yet",
-    node.line, node.column, 1);
-}
-
 function validateNativeExpressionTree(
   in path: String,
   moduleIndex: usize,
@@ -2322,7 +2293,6 @@ function validateNativeExpressionTree(
       try validateNativeType(path, type);
     }
     try validateNativeObjCCall(path, modules[moduleIndex].program, tree, index);
-    try validateNativeCxxArenaStorage(path, moduleIndex, graph, tree, index);
     if (node.kind == ExpressionKind.arrayExpression && moduleUsesCxxValues(graph, moduleIndex)) {
       const literalType = resolvedExpressionType(graph, moduleIndex, tree, index);
       match (genericTypeShape(literalType)) {

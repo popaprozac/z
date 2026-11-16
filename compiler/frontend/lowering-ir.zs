@@ -689,6 +689,8 @@ export struct LoweredProgram {
   structs: Array<LoweredStruct>;
   enums: Array<LoweredEnum>;
   functions: Array<LoweredFunction>;
+  // Native spellings of the C++ value types the program uses.
+  cxxValueTypes: Array<String> = Array<String>();
 }
 
 function collectForeignResources(
@@ -7947,7 +7949,7 @@ function collectCxxTypeNames(
   }
 }
 
-function loweredTypeHoldsCxx(
+export function loweredTypeHoldsCxx(
   in cxxNames: Array<String>,
   in structs: Array<LoweredStruct>,
   in enums: Array<LoweredEnum>,
@@ -36105,6 +36107,7 @@ function lowerProgramUnchecked(
     structs,
     enums,
     functions,
+    cxxValueTypes: cxxValueNames,
   });
 }
 
@@ -36828,5 +36831,6 @@ function lowerModulesIncludingTests(
     structs,
     enums,
     functions,
+    cxxValueTypes: cxxValueNames,
   });
 }

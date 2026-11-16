@@ -26,6 +26,7 @@ import {
   lowerModules,
   lowerProgram,
   lowerTestModules,
+  loweredTypeHoldsCxx,
   loweredTypeIdentity,
   viewPayloadLoadsAsValue,
   decodedObjCProtocolIdentity,
@@ -3945,6 +3946,13 @@ function loweredTypeForIdentity(
       name: identity.copyBytes(0, identity.byteLength),
     });
   }
+  for (const name of program.cxxValueTypes) {
+    const escaped = loweredTypeIdentity(LoweredType({ kind: LoweredTypeKind.foreignStructType, name: copy name }));
+    if (name == identity || escaped == identity) return LoweredType({
+      kind: LoweredTypeKind.foreignStructType,
+      name: copy name,
+    });
+  }
   throw `native C emission cannot resolve intrinsic type identity ${identity}`;
 }
 
@@ -5112,6 +5120,7 @@ function programUsesCxxMoves(in program: LoweredProgram): boolean {
   for (const declaration of program.maps) {
     if (declaration.cxxValues) return true;
   }
+  if (program.cxxValueTypes.length > 0) return true;
   for (const function_ of program.functions) {
     for (const expression of function_.expressions) {
       if (
@@ -24878,6 +24887,8 @@ function arenaValueIdentity(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.f32Type) return "f32";
   if (type.kind == LoweredTypeKind.f64Type) return "f64";
   if (type.kind == LoweredTypeKind.stringType) return "String";
+  // A C++ spelling uses lowering's escaped identity, as the call sites do.
+  if (type.kind == LoweredTypeKind.foreignStructType) return loweredTypeIdentity(type);
   if (type.name.byteLength > 0) {
     return type.name.copyBytes(0, type.name.byteLength);
   }
@@ -24893,11 +24904,15 @@ function appendArenaCreateHelpers(
     const nativeType = try cType(type);
     const identity = try arenaValueIdentity(type);
     const symbol = arenaTypeSymbol(identity);
-    if (loweredTypeNeedsDeinit(program, type)) {
+    // A C++ value is constructed in Arena storage and destroyed on reset.
+    const cxxValue = loweredTypeHoldsCxx(program.cxxValueTypes, program.structs, program.enums, type, 0);
+    const needsCleanup = loweredTypeNeedsDeinit(program, type) || cxxValue;
+    if (needsCleanup) {
       output.append("static __attribute__((unused)) void z_stage1_arena_cleanup_");
       output.append(symbol);
       output.append("(void *value) {\n");
-      try appendArenaValueCleanup(inout output, type);
+      if (loweredTypeNeedsDeinit(program, type)) try appendArenaValueCleanup(inout output, type);
+      if (cxxValue) output.append(`  std::destroy_at((${nativeType} *)value);\n`);
       output.append("}\n\n");
     }
     output.append("static inline __attribute__((unused)) const ");
@@ -24916,8 +24931,9 @@ function appendArenaCreateHelpers(
     output.append("), _Alignof(");
     output.append(nativeType);
     output.append("));\n");
-    output.append("  *stored = value;\n");
-    if (loweredTypeNeedsDeinit(program, type)) {
+    if (cxxValue) output.append("  std::construct_at(stored, std::move_if_noexcept(value));\n");
+    else output.append("  *stored = value;\n");
+    if (needsCleanup) {
       output.append("  z_stage1_arena_register_cleanup(arena, stored, z_stage1_arena_cleanup_");
       output.append(symbol);
       output.append(");\n");
