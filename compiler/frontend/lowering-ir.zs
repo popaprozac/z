@@ -102,7 +102,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { mainPlacementThreadNames, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { closureOwnedStatements, isMainHopNode, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -435,6 +435,9 @@ export struct LoweredExpression {
   // An async `thread.spawn` worker whose body runs as this lifted general
   // frame (a program function) on the worker's executor; empty otherwise.
   workerFrameName: String = "";
+  // An awaited child started on another executor (`thread.main`): a placed
+  // block's lifted frame, hopped there and awaited across executors.
+  placedExecutor: String = "";
   closureParameterCount: usize = 0;
   closureParameterModes: Array<String> = Array<String>();
   closureParameterTypes: Array<LoweredType> = Array<LoweredType>();
@@ -14290,6 +14293,9 @@ function lowerExpressionNode(
       throw "native lowering received a malformed await expression";
     }
     const taskInput = tree.nodes[index].children[0];
+    if (isMainHopNode(tree.nodes[taskInput])) {
+      return try lowerMainHopAwait(program, importedTypes, tree, taskInput, inout output);
+    }
     if (
       tree.nodes[taskInput].kind == ExpressionKind.callExpression
       && tree.nodes[taskInput].children.length == 1
@@ -21234,6 +21240,19 @@ function directThrowingCallResult(
     && tree.nodes[index].children.length == 1
   ) {
     const task = tree.nodes[index].children[0];
+    // A throwing hopped block: its lifted function declares the result.
+    if (isMainHopNode(tree.nodes[task])) {
+      const hopName = mainHopName(tree.nodes[task].offset);
+      for (const declaration of program.functions) {
+        if (declaration.name != hopName) continue;
+        match (in declaration.errorType) {
+          some(errorType) => return try intrinsicResultDeclaration(program, importedTypes,
+            `Result<${declaration.returnType.name}, ${errorType.name}>`);
+          none => return Option<LoweredEnum>.none;
+        }
+      }
+      throw "native placed block lost its lifted main-executor function";
+    }
     match (evidenceResolvedExpressionTypeName(
       program,
       importedTypes,
@@ -23195,7 +23214,10 @@ function liftedWorkerDeclaration(
   const sourceStatements = copy tree.nodes[closure].statements;
   const first = view arena.nodes[sourceStatements[0]];
   const bodyOffset = first.offset;
-  const body = extractStatementArena(arena, sourceStatements);
+  let body = extractStatementArena(arena, sourceStatements);
+  // The worker runs off the main executor: its placed blocks hop there.
+  const threadNames = mainPlacementThreadNames(program);
+  normalizeMainHops(inout body, threadNames);
   const closureOffset = tree.nodes[closure].offset;
   const captures = try liftedWorkerCaptures(program, importedTypes, evidence, ownerName, closureOffset);
   let parameters = Array<Parameter>();
@@ -23334,6 +23356,241 @@ function attachLiftedWorker(
   expressions[expressionIndex].statements = Array<usize>();
   expressions[expressionIndex].labels[0] = "lowered-block";
   expressions[expressionIndex].workerFrameName = name;
+}
+
+function mainHopName(offset: usize): String {
+  return `__z_executor_main_${offset}`;
+}
+
+// `await on thread.main { ... }` outside `main` (normalized to a hop node):
+// the block becomes a synthesized async function run as a general frame on
+// the main executor. Its parameters are the block's checked captures, typed
+// by the bindings visible at the block; its own `select` returns the result.
+function liftedMainHopDeclaration(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in owner: FunctionDeclaration,
+  in tree: ExpressionTree,
+  hop: usize,
+  in threadNames: Array<String>
+): FunctionDeclaration throws String {
+  const node = view tree.nodes[hop];
+  const offset = node.offset;
+  if (node.statements.length == 0) throw "native placed block lowering requires a non-empty block";
+  let body = extractStatementArena(owner.body, node.statements);
+  let resultName = copy node.labels[0];
+  const errorName = copy node.labels[1];
+  // An undeclared result is the final `select`'s checked type, as in Stage 0.
+  if (resultName.byteLength == 0) {
+    const last = body.roots[body.roots.length - 1];
+    if (body.nodes[last].kind == StatementKind.selectStatement) {
+      match (in body.nodes[last].expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(selected) => match (resolvedExpressionTypeName(evidence, selected, selected.root)) {
+            some(name) => resultName = move name;
+            none => {}
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
+  }
+  if (resultName.byteLength == 0) resultName = "void";
+  let pending = copy body.roots;
+  let cursor: usize = 0;
+  while (cursor < pending.length) {
+    const statement = pending[cursor];
+    cursor = cursor + 1;
+    if (body.nodes[statement].kind == StatementKind.selectStatement) {
+      body.nodes[statement].kind = StatementKind.returnStatement;
+    }
+    for (const child of body.nodes[statement].children) {
+      pending.push(child);
+    }
+  }
+  normalizeMainHops(inout body, threadNames);
+  let found = false;
+  let parameters = Array<Parameter>();
+  for (const entry of evidence.closureCaptures) {
+    if (entry.offset != offset) continue;
+    found = true;
+    for (const name of entry.names) {
+      if (name == "this") throw "native placed blocks cannot capture `this` yet";
+      const typeName = match (namedValueTypeName(program, evidence, owner.name, name, offset)) {
+        some(value) => value;
+        none => throw `native placed block cannot resolve capture ${name}`;
+      };
+      parameters.push(Parameter({
+        name: copy name,
+        mode: ParameterMode.value,
+        type: TypeReference({ name: typeName, references: Array<TypeNameReference>(),
+          offset, line: node.line, column: node.column }),
+        offset, line: node.line, column: node.column,
+      }));
+    }
+  }
+  if (!found) throw "native placed block lost its checked captures";
+  let errorType = Option<TypeReference>.none;
+  if (errorName.byteLength > 0) {
+    errorType = Option.some(TypeReference({ name: errorName, references: Array<TypeNameReference>(),
+      offset, line: node.line, column: node.column }));
+  }
+  return FunctionDeclaration({
+    name: mainHopName(offset),
+    testDeclaration: false,
+    testName: "",
+    nativeCExport: false,
+    asynchronous: true,
+    staticMethod: false,
+    visibility: Visibility.privateVisibility,
+    typeParameters: Array<TypeParameter>(),
+    receiverMode: ReceiverMode.none,
+    parameters,
+    returnType: TypeReference({ name: resultName, references: Array<TypeNameReference>(),
+      offset, line: node.line, column: node.column }),
+    errorType,
+    executorAffinity: "",
+    threadContract: "",
+    liftedFromOffset: offset,
+    body,
+    offset,
+    line: node.line,
+    column: node.column,
+  });
+}
+
+// The hops of a function's own statements. Closure bodies and hopped blocks
+// are other functions' statements: a nested hop is lifted from its block's
+// lifted function.
+function collectMainHops(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in declaration: FunctionDeclaration,
+  in threadNames: Array<String>,
+  inout lifted: Array<FunctionDeclaration>
+): void throws String {
+  if (!declaration.asynchronous) return;
+  const owned = closureOwnedStatements(declaration.body);
+  let statementIndex: usize = 0;
+  while (statementIndex < declaration.body.nodes.length) {
+    if (!owned[statementIndex]) {
+      match (in declaration.body.nodes[statementIndex].expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => try collectTreeMainHops(program, evidence, declaration, tree, threadNames, inout lifted);
+          none => {}
+        }
+        none => {}
+      }
+      match (in declaration.body.nodes[statementIndex].secondExpression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => try collectTreeMainHops(program, evidence, declaration, tree, threadNames, inout lifted);
+          none => {}
+        }
+        none => {}
+      }
+    }
+    statementIndex = statementIndex + 1;
+  }
+}
+
+function collectTreeMainHops(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in declaration: FunctionDeclaration,
+  in tree: ExpressionTree,
+  in threadNames: Array<String>,
+  inout lifted: Array<FunctionDeclaration>
+): void throws String {
+  let index: usize = 0;
+  while (index < tree.nodes.length) {
+    if (isMainHopNode(tree.nodes[index])) {
+      lifted.push(try liftedMainHopDeclaration(program, evidence, declaration, tree, index, threadNames));
+    }
+    index = index + 1;
+  }
+}
+
+// The call shape of `__z_executor_main_<offset>(captures)`, which lowering
+// synthesizes from the lifted function: its callable type comes from it.
+function mainHopCallResolution(in hop: FunctionDeclaration): ModuleCallResolution {
+  let modes = Array<String>();
+  let types = Array<String>();
+  for (const parameter of hop.parameters) {
+    modes.push("value");
+    types.push(copy parameter.type.name);
+  }
+  const errorName = match (in hop.errorType) {
+    some(type) => copy type.name;
+    none => "";
+  };
+  return ModuleCallResolution({
+    offset: hop.liftedFromOffset,
+    line: hop.line,
+    column: hop.column,
+    targetModuleIndex: 0,
+    targetSymbolIndex: 0,
+    kind: "function",
+    targetName: copy hop.name,
+    asynchronous: true,
+    receiverMode: "",
+    callableTypeParameterCount: 0,
+    typeParameters: Array<String>(),
+    typeArguments: Array<String>(),
+    parameterModes: modes,
+    parameterTypes: types,
+    returnType: copy hop.returnType.name,
+    errorType: errorName,
+    foreignHeader: "",
+    foreignSuccessValues: Array<String>(),
+    foreignArguments: Array<ModuleForeignArgument>(),
+  });
+}
+
+// `await <hop>`: awaits the block's lifted frame, started for the main
+// executor with copies of the captured values.
+function lowerMainHopAwait(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in tree: ExpressionTree,
+  hop: usize,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const name = mainHopName(tree.nodes[hop].offset);
+  let declarationIndex = program.functions.length;
+  let index: usize = 0;
+  while (index < program.functions.length) {
+    if (program.functions[index].name == name) declarationIndex = index;
+    index = index + 1;
+  }
+  if (declarationIndex == program.functions.length) {
+    throw "native placed block lost its lifted main-executor function";
+  }
+  const parameters = copy program.functions[declarationIndex].parameters;
+  const resolution = mainHopCallResolution(program.functions[declarationIndex]);
+  const identity = try moduleCallFunctionTypeIdentity(program, importedTypes, resolution);
+  const callable = pushExpression(inout output, LoweredExpressionKind.directFunctionValue, name,
+    Array<usize>(), Array<String>(copy identity));
+  let children = Array<usize>(callable);
+  let labels = Array<String>();
+  for (const parameter of parameters) {
+    const type = try lowerModuleTypeName(program, importedTypes, parameter.type.name);
+    let value = pushExpression(inout output, LoweredExpressionKind.localValue, parameter.name,
+      Array<usize>(), Array<String>());
+    // The block runs on another thread: it gets its own copy.
+    if (type.kind == LoweredTypeKind.stringType) {
+      value = pushExpression(inout output, LoweredExpressionKind.copyValue, "String",
+        Array<usize>(value), Array<String>());
+    } else if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+      throw `native placed blocks capture plain values and String in this tier; ${parameter.name} needs another transfer`;
+    }
+    children.push(value);
+    labels.push("value");
+  }
+  const awaited = pushExpression(inout output, LoweredExpressionKind.asyncFunctionAwait, identity,
+    children, labels);
+  output[awaited].placedExecutor = "thread.main";
+  return awaited;
 }
 
 function completeNativeClosureBlocks(
@@ -35531,7 +35788,37 @@ function appendLoweredProgram(
   for (const declaration of program.functions) {
     try collectLiftedWorkers(program, importedTypes, evidence, declaration, inout lifted);
   }
-  if (lifted.length == 0) {
+  // Outside `main`, a placed block hops to the main executor.
+  const threadNames = mainPlacementThreadNames(program);
+  let hoppedIndices = Array<usize>();
+  let hopped = Array<FunctionDeclaration>();
+  let functionIndex: usize = 0;
+  while (functionIndex < program.functions.length) {
+    if (program.functions[functionIndex].asynchronous && program.functions[functionIndex].name != "main"
+      && program.functions[functionIndex].executorAffinity.byteLength == 0) {
+      let candidate = copy program.functions[functionIndex];
+      if (normalizeMainHops(inout candidate.body, threadNames)) {
+        hoppedIndices.push(functionIndex);
+        hopped.push(move candidate);
+      }
+    }
+    functionIndex = functionIndex + 1;
+  }
+  let liftedHops = false;
+  for (const worker of lifted) {
+    for (const node of worker.body.nodes) {
+      match (in node.expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => for (const expression of tree.nodes) {
+            if (isMainHopNode(expression)) liftedHops = true;
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
+  }
+  if (lifted.length == 0 && hopped.length == 0) {
     try appendLoweredProgramBody(program, sourcePath, inout importedTypes, genericStructUses, genericMethodUses,
       genericFunctionUses, structInstances, evidence, nativeCExportNames, privateTypeCollisionNames, moduleIndex,
       entryIndex, includeTests, inout embeddedBytes, inout constants, inout fixedArrays, inout arrays, inout slices,
@@ -35539,8 +35826,37 @@ function appendLoweredProgram(
     return;
   }
   let extended = copy program;
+  let hoppedIndex: usize = 0;
+  while (hoppedIndex < hoppedIndices.length) {
+    extended.functions[hoppedIndices[hoppedIndex]] = copy hopped[hoppedIndex];
+    hoppedIndex = hoppedIndex + 1;
+  }
   for (const worker of lifted) {
     extended.functions.push(copy worker);
+  }
+  if (hopped.length == 0 && !liftedHops) {
+    try appendLoweredProgramBody(extended, sourcePath, inout importedTypes, genericStructUses, genericMethodUses,
+      genericFunctionUses, structInstances, evidence, nativeCExportNames, privateTypeCollisionNames, moduleIndex,
+      entryIndex, includeTests, inout embeddedBytes, inout constants, inout fixedArrays, inout arrays, inout slices,
+      inout maps, inout sets, inout functionTypes, inout structs, inout enums, inout functions);
+    return;
+  }
+  // Each hopped block, including a lifted worker's and a nested one, lowers as
+  // a function of its own, called through checked call evidence of its shape.
+  let hops = Array<FunctionDeclaration>();
+  for (const declaration of extended.functions) {
+    try collectMainHops(extended, evidence, declaration, threadNames, inout hops);
+  }
+  let hopCursor: usize = 0;
+  while (hopCursor < hops.length) {
+    const nested = copy hops[hopCursor];
+    try collectMainHops(extended, evidence, nested, threadNames, inout hops);
+    hopCursor = hopCursor + 1;
+  }
+  for (const hop of hops) {
+    const resolution = mainHopCallResolution(hop);
+    try collectProgramAsyncCallFunctionType(extended, importedTypes, resolution, inout functionTypes);
+    extended.functions.push(copy hop);
   }
   try appendLoweredProgramBody(extended, sourcePath, inout importedTypes, genericStructUses, genericMethodUses,
     genericFunctionUses, structInstances, evidence, nativeCExportNames, privateTypeCollisionNames, moduleIndex,

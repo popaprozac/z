@@ -19,7 +19,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { mainPlacementThreadNames, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -3271,7 +3271,8 @@ function validateHoistedAwaitResults(
   in graph: ModuleGraph,
   in statement: Statement,
   in tree: ExpressionTree,
-  statementRoot: boolean
+  statementRoot: boolean,
+  placedSelect: boolean
 ): void throws ModuleResolveError {
   let handled = tree.nodes.length;
   // A whole assigned or selected value moves straight into its destination.
@@ -3279,9 +3280,12 @@ function validateHoistedAwaitResults(
     || (!statementRoot && statement.kind == StatementKind.assignmentStatement)) {
     handled = tree.root;
   }
+  // A placed block's `select` returns from the block's own function.
+  const returns = statement.kind == StatementKind.returnStatement
+    || (placedSelect && statement.kind == StatementKind.selectStatement);
   if (statementRoot && (statement.kind == StatementKind.variableStatement
     || statement.kind == StatementKind.expressionStatement
-    || statement.kind == StatementKind.returnStatement)) {
+    || returns)) {
     handled = tree.root;
     if ((tree.nodes[handled].kind == ExpressionKind.tryExpression
       || tree.nodes[handled].kind == ExpressionKind.attemptExpression)
@@ -3311,6 +3315,41 @@ function validateHoistedAwaitResults(
   }
 }
 
+// Statements of `on thread.main` blocks (and their nested statements):
+// lowering runs each block as its own function, whose `select` returns.
+function placedBlockStatements(in arena: StatementArena): Array<boolean> {
+  let pending = Array<usize>();
+  for (const statement of arena.nodes) {
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => for (const node of tree.nodes) {
+          if (node.kind != ExpressionKind.executorPlacementExpression) continue;
+          for (const owned of node.statements) {
+            pending.push(owned);
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  let placed = Array<boolean>();
+  while (placed.length < arena.nodes.length) {
+    placed.push(false);
+  }
+  let cursor: usize = 0;
+  while (cursor < pending.length) {
+    const statement = pending[cursor];
+    cursor = cursor + 1;
+    if (statement >= placed.length || placed[statement]) continue;
+    placed[statement] = true;
+    for (const child of arena.nodes[statement].children) {
+      pending.push(child);
+    }
+  }
+  return placed;
+}
+
 function validateGeneralFrameStorage(
   in path: String,
   moduleIndex: usize,
@@ -3319,17 +3358,21 @@ function validateGeneralFrameStorage(
   in declaration: FunctionDeclaration
 ): void throws ModuleResolveError {
   try validateYieldFrameStorage(path, moduleIndex, modules, graph, declaration);
+  const placed = placedBlockStatements(declaration.body);
+  let statementIndex: usize = 0;
   for (const statement of declaration.body.nodes) {
+    const placedSelect = placed[statementIndex];
+    statementIndex = statementIndex + 1;
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
-        some(tree) => try validateHoistedAwaitResults(path, moduleIndex, graph, statement, tree, true);
+        some(tree) => try validateHoistedAwaitResults(path, moduleIndex, graph, statement, tree, true, placedSelect);
         none => {}
       }
       none => {}
     }
     match (in statement.secondExpression) {
       some(syntax) => match (in syntax.tree) {
-        some(tree) => try validateHoistedAwaitResults(path, moduleIndex, graph, statement, tree, false);
+        some(tree) => try validateHoistedAwaitResults(path, moduleIndex, graph, statement, tree, false, placedSelect);
         none => {}
       }
       none => {}
@@ -3819,6 +3862,16 @@ export function validateNativeLowerability(
         normalizeMainPlacements(inout normalized.body, threadNames, asyncCallOffsets);
         try validateNativeFunction(module.path, graphModuleIndex, modules, graph, normalized, "", Array<String>());
         continue;
+      }
+      // Elsewhere a placed block hops to the main executor, as lowering
+      // normalizes it.
+      if (declaration.asynchronous && declaration.executorAffinity.byteLength == 0) {
+        let hopped = copy declaration;
+        const threadNames = mainPlacementThreadNames(module.program);
+        if (normalizeMainHops(inout hopped.body, threadNames)) {
+          try validateNativeFunction(module.path, graphModuleIndex, modules, graph, hopped, "", Array<String>());
+          continue;
+        }
       }
       try validateNativeFunction(
         module.path,

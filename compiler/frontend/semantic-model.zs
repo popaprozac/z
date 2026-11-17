@@ -90,8 +90,8 @@ export struct ModuleMatchSubjectType {
   payloads: boolean;
 }
 
-// The enclosing-scope values a closure uses, by the closure's offset, as the
-// resolver's scoped capture analysis found them.
+// The enclosing-scope values a closure or an `on thread.main` block uses, by
+// its offset, as the resolver's scoped capture analysis found them.
 export struct ModuleClosureCaptures {
   offset: usize;
   names: Array<String>;

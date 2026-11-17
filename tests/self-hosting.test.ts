@@ -11073,6 +11073,11 @@ test("compiles a multi-module Z application through the standalone native driver
     // executor: awaits, delays, spawned children, owned captures, typed
     // errors, and prompt cancellation of a sleeping worker.
     "tests/fixtures/native-async-worker-frames.zs",
+    // Outside `main`, `await on thread.main { ... }` hops: the block runs as
+    // its own frame on the main executor and is awaited across executors,
+    // with copied captures, typed errors, and cancellation routed to main.
+    "examples/async/thread-affine-worker.zs",
+    "tests/fixtures/native-main-hops.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);

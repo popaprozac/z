@@ -7381,6 +7381,12 @@ function inferExpressionNodeType(
       );
     }
     const statements = copyIndices(node.statements);
+    // A block hopped to the main executor carries these values there.
+    let placedLocals = Array<String>();
+    let placedCaptures = Array<String>();
+    collectClosureStatementCaptures(arena, tree, statements, bindings,
+      inout placedLocals, inout placedCaptures);
+    recordClosureCaptures(node.offset, placedCaptures, inout evidence);
     const expectedReturn = valueBindingType(
       bindings,
       "__z_native_return_type"
