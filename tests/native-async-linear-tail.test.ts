@@ -624,9 +624,9 @@ async function main(): i32 on thread.main { return await startup(false); }`;
     const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
       encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
     });
-    assert.notEqual(emitted.status, 0);
-    assert.match(emitted.stderr, /Z0700.*early terminal awaits followed by one awaited local/);
-    assert.doesNotMatch(emitted.stderr, /await delay|unnamed.*Task/);
+    // A main-affine function no shape tier takes runs as a general frame.
+    assert.equal(emitted.status, 0, emitted.stderr);
+    execute(emitted.stdout);
     const ownedScope = `import { TaskScope as Scope } from "std/async";
 import { thread } from "std/thread";
 async function operation(): i32 { return 0; }
@@ -669,11 +669,18 @@ async function startup(early: boolean, other: Other): i32 on thread.main {
 async function main(): i32 on thread.main { return await startup(false, new Other({})); }`;
       compileToC(ordinaryReceiver, input);
       writeFileSync(input, ordinaryReceiver);
-      const rejected = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      const emittedReceiver = spawnSync(process.execPath, [cli, "self-host-emit", input], {
         encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
       });
-      assert.notEqual(rejected.status, 0);
-      assert.match(rejected.stderr, /Z0700.*broader continuation frame/);
+      if (method === "close") {
+        // The main-affine function takes the general frame.
+        assert.equal(emittedReceiver.status, 0, emittedReceiver.stderr);
+        execute(emittedReceiver.stdout);
+      } else {
+        // The frame reads `other.cancel()` as a task join; it stays explicit.
+        assert.notEqual(emittedReceiver.status, 0);
+        assert.match(emittedReceiver.stderr, /Z0700.*broader continuation frame/);
+      }
     }
     const nested = `import { thread } from "std/thread";
 struct Request { text: String; }

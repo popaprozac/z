@@ -13633,39 +13633,34 @@ function appendYieldFrameDriver(
   if (declaration.name == "main" && processArguments) {
     output.append("  z_stage1_process_argc = argc;\n  z_stage1_process_argv = argv;\n");
   }
-  output.append("  Z_AsyncExecutor executor = {};\n");
-  if (programUsesAsyncExternalCompletion(program)) {
-    output.append("  z_stage1_async_executor_init_external(&executor);\n");
+  // `main` runs on the program's main executor when work can be posted to it.
+  const onMain = declaration.name == "main" && programUsesExecutorHop(program);
+  const executor = onMain ? "z_stage1_main_executor" : "&executor";
+  if (onMain) output.append("  z_stage1_async_main_executor_start();\n");
+  else {
+    output.append("  Z_AsyncExecutor executor = {};\n");
+    if (programUsesAsyncExternalCompletion(program)) {
+      output.append("  z_stage1_async_executor_init_external(&executor);\n");
+    }
   }
-  appendMainExecutorRegistration(inout output, program, declaration, "&executor");
-  output.append(`  Z_AsyncInvocation invocation = ${name}_start(&executor`);
+  output.append(`  Z_AsyncInvocation invocation = ${name}_start(${executor}`);
   // A method's synchronous entry hands its receiver to the frame.
   match (in declaration.receiverType) {
     some(_) => output.append(", self");
     none => {}
   }
   appendYieldFrameArguments(inout output, program, declaration.parameters);
-  output.append(");\n  z_stage1_async_enqueue(&executor, invocation.task);\n  while (!invocation.task->completed) { if (!z_stage1_async_drive_one(&executor)) abort(); }\n");
+  output.append(`);\n  z_stage1_async_enqueue(${executor}, invocation.task);\n  while (!invocation.task->completed) { if (!z_stage1_async_drive_one(${executor})) abort(); }\n`);
   if (declaration.returnType.kind != LoweredTypeKind.voidType) {
     const resultType = try cType(declaration.returnType);
     appendInvocationResultTake(inout output, program, declaration.returnType, resultType);
   } else output.append("  invocation.take_result(invocation.task, NULL);\n");
   output.append("  invocation.destroy(invocation.task);\n");
-  appendMainExecutorRegistration(inout output, program, declaration, "NULL");
-  if (programUsesAsyncExternalCompletion(program)) {
+  if (!onMain && programUsesAsyncExternalCompletion(program)) {
     output.append("  z_stage1_async_executor_destroy_external(&executor);\n");
   }
   if (declaration.returnType.kind != LoweredTypeKind.voidType) output.append("  return result;\n");
   output.append("}\n\n");
-}
-
-// `main`'s driver executor is the program's main executor while it runs:
-// hopped blocks are posted to it.
-function appendMainExecutorRegistration(
-  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction, in executor: String
-): void {
-  if (declaration.name != "main" || !programUsesExecutorHop(program)) return;
-  output.append(`  z_stage1_main_executor = ${executor};\n`);
 }
 
 function appendPersistentAsyncParentDriver(
@@ -13692,30 +13687,32 @@ function appendPersistentAsyncParentDriver(
     output.append("  z_stage1_process_argc = argc;\n");
     output.append("  z_stage1_process_argv = argv;\n");
   }
-  output.append("  Z_AsyncExecutor executor = {};\n  ");
-  if (
-    programUsesAsyncExternalCompletion(program)
-  ) {
-    output.append("z_stage1_async_executor_init_external(&executor);\n  ");
+  const onMain = declaration.name == "main" && programUsesExecutorHop(program);
+  const executor = onMain ? "z_stage1_main_executor" : "&executor";
+  if (onMain) output.append("  z_stage1_async_main_executor_start();\n  ");
+  else {
+    output.append("  Z_AsyncExecutor executor = {};\n  ");
+    if (
+      programUsesAsyncExternalCompletion(program)
+    ) {
+      output.append("z_stage1_async_executor_init_external(&executor);\n  ");
+    }
   }
-  appendMainExecutorRegistration(inout output, program, declaration, "&executor");
   appendPersistentAsyncParentName(inout output, declaration);
   output.append(" *frame = ");
   appendPersistentAsyncParentName(inout output, declaration);
-  output.append("_start(&executor);\n");
-  output.append("  z_stage1_async_enqueue(&executor, &frame->task);\n");
+  output.append(`_start(${executor});\n`);
+  output.append(`  z_stage1_async_enqueue(${executor}, &frame->task);\n`);
   output.append("  while (!frame->task.completed) {\n");
-  output.append("    if (!z_stage1_async_drive_one(&executor)) abort();\n");
+  output.append(`    if (!z_stage1_async_drive_one(${executor})) abort();\n`);
   output.append("  }\n  if (frame->task.cancelled) abort();\n  const ");
   output.append(resultType);
   output.append(" result = frame->result;\n  ");
   if (resultNeedsDeinit) output.append("frame->live_result = false;\n  ");
   appendPersistentAsyncParentName(inout output, declaration);
-  output.append("_destroy(frame);\n");
-  appendMainExecutorRegistration(inout output, program, declaration, "NULL");
-  output.append("  ");
+  output.append("_destroy(frame);\n  ");
   if (
-    programUsesAsyncExternalCompletion(program)
+    !onMain && programUsesAsyncExternalCompletion(program)
   ) {
     output.append("z_stage1_async_executor_destroy_external(&executor);\n  ");
   }
@@ -14492,6 +14489,9 @@ function appendFunction(
   ) {
     output.append("  z_stage1_process_argc = argc;\n");
     output.append("  z_stage1_process_argv = argv;\n");
+  }
+  if (declaration.name == "main" && programUsesExecutorHop(program)) {
+    output.append("  z_stage1_async_main_executor_start();\n");
   }
   if (declaration.rawLanguage.byteLength > 0) {
     output.append("#line ");
@@ -17207,7 +17207,28 @@ function appendAsyncCallableRuntime(
     // that executor's completion queue, after draining every cancellation
     // posted for it, so nothing posted can reach the task once its waiter's
     // thread may destroy it.
-    output.append(`static Z_AsyncExecutor *z_stage1_main_executor = NULL;
+    output.append(`static __attribute__((unused)) void z_stage1_async_main_executor_start(void) {
+  if (z_stage1_main_executor != NULL) return;
+  z_stage1_async_executor_init_external(&z_stage1_main_executor_storage);
+#if defined(_WIN32)
+  z_stage1_main_thread = GetCurrentThreadId();
+#else
+  z_stage1_main_thread = pthread_self();
+#endif
+  z_stage1_main_executor = &z_stage1_main_executor_storage;
+}
+
+// A blocking wait on the main thread drives the main executor, so work posted
+// to main keeps running; never from inside one of its polls, which would run
+// a frame that is still executing.
+static __attribute__((unused)) bool z_stage1_async_main_thread_waits(void) {
+  if (z_stage1_main_executor == NULL || z_stage1_main_executor_polls != 0) return false;
+#if defined(_WIN32)
+  return GetCurrentThreadId() == z_stage1_main_thread;
+#else
+  return pthread_equal(pthread_self(), z_stage1_main_thread) != 0;
+#endif
+}
 
 static __attribute__((unused)) Z_AsyncExecutor *z_stage1_async_main_executor(void) {
   if (z_stage1_main_executor == NULL) abort();
@@ -17336,7 +17357,9 @@ static void z_stage1_async_wake_remote(Z_AsyncExecutor *executor, Z_AsyncTask *t
     output.append("    Z_AsyncExecutor *previous_executor = z_stage1_current_executor;\n");
     output.append("    z_stage1_current_executor = executor;\n");
   }
+  if (usesHop) output.append("    const bool main_poll = executor == z_stage1_main_executor;\n    if (main_poll) z_stage1_main_executor_polls += 1;\n");
   output.append("    task->poll(task);\n");
+  if (usesHop) output.append("    if (main_poll) z_stage1_main_executor_polls -= 1;\n");
   if (usesTaskScope) {
     output.append("    z_stage1_current_executor = previous_executor;\n");
   }
@@ -17425,11 +17448,21 @@ static void z_stage1_async_hop_destroy(Z_AsyncTask *task) {
   free(hop);
 }
 
-// Awaits a child from an executor: directly when the child is already that
-// executor's, otherwise through a hop.
+// Awaits a child created for the main executor from an executor: through a
+// hop from another thread; directly from the main thread, whichever of its
+// executors (the main executor, a scope's, a foreign helper's) is awaiting.
+// Retargeting is sound because the child has only been created.
 static __attribute__((unused)) Z_AsyncInvocation z_stage1_async_hop_start(Z_AsyncExecutor *executor, Z_AsyncInvocation child) {
   if (executor == NULL || child.task == NULL || child.task->executor == NULL) abort();
-  if (child.task->executor == executor) return child;
+#if defined(_WIN32)
+  const bool on_main_thread = GetCurrentThreadId() == z_stage1_main_thread;
+#else
+  const bool on_main_thread = pthread_equal(pthread_self(), z_stage1_main_thread) != 0;
+#endif
+  if (child.task->executor == executor || on_main_thread) {
+    child.task->executor = executor;
+    return child;
+  }
   Z_AsyncHop *hop = (Z_AsyncHop *)calloc(1, sizeof(*hop));
   if (hop == NULL) abort();
   hop->task.poll = z_stage1_async_hop_poll;
@@ -20211,6 +20244,7 @@ function appendThreadTaskRuntime(
   const taskNames = programTaskTypeNames(program);
   const usesMainDelay = programUsesMainDelay(program);
   const usesAsyncThreadAwait = programUsesAsyncThreadAwait(program);
+  const usesHop = programUsesExecutorHop(program);
   for (const taskName of taskNames) {
     const resultType = try taskResultType(program, taskName);
     const nativeResultType = try cType(resultType);
@@ -20301,13 +20335,22 @@ function appendThreadTaskRuntime(
       output.append("  if (async_waiter != NULL) z_stage1_async_report_external_completion(async_waiter);\n");
     }
     output.append("}\n\n");
+    if (usesHop) {
+      output.append(`static Z_AsyncInvocation z_stage1_async_thread_await_${taskName}_start(Z_AsyncExecutor *executor, Z_${taskName} *worker);\n\n`);
+    }
     output.append("static void Z_");
     output.append(taskName);
     output.append("_join(Z_");
     output.append(taskName);
     output.append(" *task) {\n  if (task == NULL || task->storage == NULL) abort();\n  Z_");
     output.append(taskName);
-    output.append("Storage *storage = task->storage;\n  if (!storage->joined) {\n#if defined(_WIN32)\n    if (GetCurrentThreadId() != storage->owner_thread) abort();\n#else\n    if (!pthread_equal(pthread_self(), storage->owner_thread)) abort();\n#endif\n    Z_");
+    output.append("Storage *storage = task->storage;\n  if (!storage->joined) {\n#if defined(_WIN32)\n    if (GetCurrentThreadId() != storage->owner_thread) abort();\n#else\n    if (!pthread_equal(pthread_self(), storage->owner_thread)) abort();\n#endif\n");
+    if (usesHop) {
+      // Joining on the main thread keeps the main executor running: the
+      // worker may be waiting on work it posted there.
+      output.append(`    if (z_stage1_async_main_thread_waits()) {\n      Z_AsyncInvocation wait = z_stage1_async_thread_await_${taskName}_start(z_stage1_main_executor, task);\n      z_stage1_async_enqueue(z_stage1_main_executor, wait.task);\n      while (!wait.task->completed) { if (!z_stage1_async_drive_one(z_stage1_main_executor)) abort(); }\n      wait.destroy(wait.task);\n    }\n`);
+    }
+    output.append("    Z_");
     output.append(taskName);
     output.append("_lock(storage);\n    while (!storage->finished) {\n      if (!storage->main_request_pending) { Z_");
     output.append(taskName);
@@ -25973,6 +26016,11 @@ function appendTypeDefinitions(
       output.append("static __attribute__((unused)) void z_stage1_async_wake_executor(Z_AsyncExecutor *executor);\n\n");
     }
     if (usesAsyncThreadAwait) output.append("static void z_stage1_async_enqueue(Z_AsyncExecutor *executor, Z_AsyncTask *task);\nstatic void z_stage1_async_request_cancel(Z_AsyncTask *task);\nstatic void z_stage1_async_remove_queued(Z_AsyncTask *task);\nstatic bool z_stage1_async_drive_one(Z_AsyncExecutor *executor);\n\n");
+    if (usesExecutorHop) {
+      // The program's main executor: `main` starts it on the main thread
+      // before any worker can post to it, and it lives for the program.
+      output.append("static Z_AsyncExecutor z_stage1_main_executor_storage;\nstatic Z_AsyncExecutor *z_stage1_main_executor = NULL;\nstatic size_t z_stage1_main_executor_polls = 0;\n#if defined(_WIN32)\nstatic DWORD z_stage1_main_thread;\n#else\nstatic pthread_t z_stage1_main_thread;\n#endif\nstatic __attribute__((unused)) void z_stage1_async_main_executor_start(void);\nstatic __attribute__((unused)) bool z_stage1_async_main_thread_waits(void);\n\n");
+    }
   }
   if (usesTaskScope) {
     output.append("typedef struct Z_TaskScopeJob Z_TaskScopeJob;\n");
@@ -28878,6 +28926,11 @@ function programUsesAsyncExternalCompletion(in program: LoweredProgram): boolean
 function programUsesAsyncThreadAwait(
   in program: LoweredProgram
 ): boolean {
+  // A program that hops to main joins its workers through the main executor.
+  if (programUsesExecutorHop(program)) {
+    const taskNames = programTaskTypeNames(program);
+    if (taskNames.length > 0) return true;
+  }
   for (const declaration of program.functions) {
     if (!declaration.asynchronous) continue;
     for (const expression of declaration.expressions) {
@@ -29122,10 +29175,12 @@ function emitLoweredC(
     || usesOnce
     || usesThreads
     || usesObjectiveCAsyncCompletion
+    || programUsesExecutorHop(program)
   ) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <pthread.h>\n#endif\n");
   }
-  if (usesTaskScope || usesObjectiveCAsyncCompletion || programUsesAsyncThreadAwait(program)) {
+  if (usesTaskScope || usesObjectiveCAsyncCompletion || programUsesAsyncThreadAwait(program)
+    || programUsesExecutorHop(program)) {
     output.append("#if defined(__APPLE__)\n#include <dispatch/dispatch.h>\n#endif\n");
   }
   if (usesSleep || usesMainDelay) {
