@@ -369,7 +369,24 @@ export function collectClosureExpressionCaptures(
   inout captures: Array<String>
 ): void {
   const kind = tree.nodes[index].kind;
-  if (kind == ExpressionKind.closureExpression) return;
+  if (kind == ExpressionKind.closureExpression) {
+    // A nested closure's enclosing-scope uses are this closure's captures
+    // too: it carries them to the nested closure.
+    let nestedNames = copyBindings(localNames);
+    for (const child of tree.nodes[index].children) {
+      if (tree.nodes[child].kind == ExpressionKind.closureParameterExpression) {
+        addUniqueString(inout nestedNames, tree.nodes[child].value);
+      }
+    }
+    for (const child of tree.nodes[index].children) {
+      if (tree.nodes[child].kind == ExpressionKind.closureParameterExpression) continue;
+      collectClosureExpressionCaptures(arena, tree, child, outerBindings, nestedNames, inout captures);
+    }
+    const nestedStatements = copyIndices(tree.nodes[index].statements);
+    collectClosureStatementCaptures(arena, tree, nestedStatements, outerBindings,
+      inout nestedNames, inout captures);
+    return;
+  }
   if (
     kind == ExpressionKind.identifierExpression
     || kind == ExpressionKind.argumentBindingExpression

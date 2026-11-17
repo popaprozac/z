@@ -266,6 +266,7 @@ import {
   ModuleForeignUnionMatchVariant,
   ModuleGraph,
   ModuleMatchSubjectType,
+  ModuleClosureCaptures,
   ModuleObjCProtocolMethodResolution,
   ModuleObjCAdapterResolution,
   ModuleObjCRegistrationResolution,
@@ -1227,6 +1228,24 @@ function requireWritableAssignmentAncestors(
     }
     current = receiver;
   }
+}
+
+// Expected-type inference can check a closure more than once; the last
+// check's scope is the closure's.
+function recordClosureCaptures(
+  offset: usize,
+  in captures: Array<String>,
+  inout evidence: ModuleSemanticEvidence
+): void {
+  let index: usize = 0;
+  while (index < evidence.closureCaptures.length) {
+    if (evidence.closureCaptures[index].offset == offset) {
+      evidence.closureCaptures[index].names = copy captures;
+      return;
+    }
+    index = index + 1;
+  }
+  evidence.closureCaptures.push(ModuleClosureCaptures({ offset, names: copy captures }));
 }
 
 function closureCaptureNames(
@@ -7362,6 +7381,12 @@ function inferExpressionNodeType(
       );
     }
     const statements = copyIndices(node.statements);
+    // A block hopped to the main executor carries these values there.
+    let placedLocals = Array<String>();
+    let placedCaptures = Array<String>();
+    collectClosureStatementCaptures(arena, tree, statements, bindings,
+      inout placedLocals, inout placedCaptures);
+    recordClosureCaptures(node.offset, placedCaptures, inout evidence);
     const expectedReturn = valueBindingType(
       bindings,
       "__z_native_return_type"
@@ -9180,6 +9205,7 @@ function inferExpressionNodeType(
       closureSignature.returnType.byteLength
     );
     const captures = closureCaptureNames(arena, tree, index, bindings);
+    recordClosureCaptures(node.offset, captures, inout evidence);
     if (bodyKind == "block" && returnType.byteLength == 0) {
       throw resolutionError(
         ModuleResolveErrorKind.typeMismatch,

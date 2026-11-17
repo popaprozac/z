@@ -1,19 +1,20 @@
 // Shared admission rule for the first general, executor-local yield frame.
 // This is an implementation boundary, not a second set of ownership rules.
 import {
-  ExpressionKind, ExpressionTree, FunctionDeclaration, ParameterMode, Program,
+  ExpressionKind, ExpressionNode, ExpressionTree, FunctionDeclaration, ParameterMode, Program,
   ExpressionSyntax, StatementArena, StatementKind, TypeReference,
 } from "./parser.zs";
 
-// Statements of closure bodies: they run in their own invocation (a worker
-// thread, a callback), not in the enclosing function's frame.
+// Statements of closure bodies and hopped placement blocks: they run in their
+// own invocation (a worker thread, a callback, the main executor), not in the
+// enclosing function's frame.
 export function closureOwnedStatements(in arena: StatementArena): Array<boolean> {
   let pending = Array<usize>();
   for (const statement of arena.nodes) {
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => for (const node of tree.nodes) {
-          if (node.kind != ExpressionKind.closureExpression) continue;
+          if (node.kind != ExpressionKind.closureExpression && !isMainHopNode(node)) continue;
           for (const owned of node.statements) {
             pending.push(owned);
           }
@@ -153,6 +154,87 @@ function collectForeignStatements(in tree: ExpressionTree, inout pending: Array<
       }
     }
   }
+}
+
+// `await on thread.main { ... }` outside `main`: the operand of an `await`
+// that runs the block on the main executor (a lifted function hopped there).
+export function isMainHopNode(in node: ExpressionNode): boolean {
+  return node.kind == ExpressionKind.executorPlacementExpression && node.value == "hop";
+}
+
+// Rewrites each placed block `await on thread.main { ... }` into
+// `await <hop>`: the hop node keeps the placement's offset, labels, and
+// statements, so its checked type, captures, and body stay attached. Code
+// outside `main` may run on any executor; the hop is correct on each (on the
+// main executor it awaits the block's frame directly). Closure bodies keep
+// their placements: they are lowered as their own functions.
+export function normalizeMainHops(inout body: StatementArena, in threadNames: Array<String>): boolean {
+  if (threadNames.length == 0) return false;
+  const owned = closureOwnedStatements(body);
+  let changed = false;
+  let index: usize = 0;
+  while (index < body.nodes.length) {
+    if (owned[index]) {
+      index = index + 1;
+      continue;
+    }
+    let expression = Option<ExpressionSyntax>.none;
+    match (in body.nodes[index].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => match (hoppedPlacementTree(tree, threadNames)) {
+          some(updated) => {
+            let replaced = copy syntax;
+            replaced.tree = Option.some(updated);
+            expression = Option.some(replaced);
+          }
+          none => {}
+        }
+        none => {}
+      }
+      none => {}
+    }
+    match (expression) {
+      some(replaced) => {
+        body.nodes[index].expression = Option.some(replaced);
+        changed = true;
+      }
+      none => {}
+    }
+    index = index + 1;
+  }
+  return changed;
+}
+
+function hoppedPlacementTree(in tree: ExpressionTree, in threadNames: Array<String>): Option<ExpressionTree> {
+  let reachable = Array<usize>();
+  reachable.push(tree.root);
+  let cursor: usize = 0;
+  while (cursor < reachable.length) {
+    const index = reachable[cursor];
+    cursor = cursor + 1;
+    if (tree.nodes[index].kind == ExpressionKind.closureExpression) continue;
+    for (const child of tree.nodes[index].children) {
+      reachable.push(child);
+    }
+  }
+  let updated = copy tree;
+  let changed = false;
+  for (const index of reachable) {
+    if (!mainPlacementBlock(tree, index, threadNames)) continue;
+    let hop = copy tree.nodes[index];
+    hop.value = "hop";
+    const hopIndex = updated.nodes.length;
+    updated.nodes.push(move hop);
+    updated.nodes[index].kind = ExpressionKind.awaitExpression;
+    updated.nodes[index].value = "";
+    updated.nodes[index].children = Array<usize>(hopIndex);
+    updated.nodes[index].labels = Array<String>();
+    updated.nodes[index].statements = Array<usize>();
+    updated.nodes[index].typeReferences = Array<TypeReference>();
+    changed = true;
+  }
+  if (!changed) return Option<ExpressionTree>.none;
+  return Option.some(updated);
 }
 
 // Placement onto `thread.main` from code already on the main executor is the
@@ -358,6 +440,7 @@ function frameAwaitOperandIsSupported(in tree: ExpressionTree, index: usize): bo
   if (tree.nodes[index].children.length != 1) return false;
   const operand = tree.nodes[index].children[0];
   if (tree.nodes[operand].kind == ExpressionKind.identifierExpression) return true;
+  if (isMainHopNode(tree.nodes[operand])) return true;
   if (frameTaskCancelReceiver(tree, operand) < tree.nodes.length) return false;
   if (tree.nodes[operand].kind != ExpressionKind.callExpression
     || tree.nodes[operand].children.length == 0) return false;
@@ -460,6 +543,7 @@ function frameExpressionIsSupported(in tree: ExpressionTree, index: usize): bool
   // Joins of task locals: `await t` and `await t.cancel()`. The function's
   // task-local rule checks that `t` names a root spawn local.
   if (tree.nodes[call].kind == ExpressionKind.identifierExpression) return true;
+  if (isMainHopNode(tree.nodes[call])) return true;
   if (frameTaskCancelReceiver(tree, call) < tree.nodes.length) return true;
   if (tree.nodes[call].kind != ExpressionKind.callExpression
     || tree.nodes[call].children.length == 0) return false;
@@ -699,7 +783,10 @@ export function functionUsesGeneralFrame(
   // A spawned child must not run its body at `task f()`: Stage 0 starts it
   // when the parent suspends. A non-suspending spawned function takes the
   // frame too, so starting it only creates the frame.
-  if (!suspends && !programSpawnsFunction(program, declaration.name)) return false;
+  // A lifted body (a worker, a hopped block) is started on one thread and
+  // run on another: starting it must only create the frame.
+  if (!suspends && !programSpawnsFunction(program, declaration.name)
+    && declaration.liftedFromOffset == 0) return false;
   if (!frameLocalNamesAreUnique(declaration)) return false;
   for (const root of declaration.body.roots) {
     if (!frameStatementIsSupported(program, declaration.body, root, false, false)) return false;

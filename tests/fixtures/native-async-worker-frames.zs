@@ -22,6 +22,10 @@ async function check(value: i32): i32 throws WorkError {
   return value;
 }
 
+function applyTo(value: i32, transform: (value: i32) => i32): i32 {
+  return transform(value);
+}
+
 async function main(): i32 {
   // A worker frame: awaits, a delay, a spawned child, and an owned capture.
   const job = Job({ id: 7, label: "report" });
@@ -47,6 +51,15 @@ async function main(): i32 {
     failure(error) => error.code;
   };
   console.log(`failure ${code}`);
+
+  // A value only a nested closure uses is still a worker capture.
+  const offset = 5;
+  const nested = thread.spawn(async move (): i32 => {
+    await delay(1);
+    return applyTo(37, move (value: i32): i32 => value + offset);
+  });
+  const nestedTotal = await nested;
+  console.log(`nested ${nestedTotal}`);
 
   // A worker cancelled while its frame is asleep releases what it owns.
   const name = "sleeper";

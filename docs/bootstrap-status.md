@@ -1458,13 +1458,26 @@ Native semantics types `thread.spawn(...)` as `Task<T>` or `Task<T, E>` from
 the worker closure's declared or inferred signature, as Stage 0 does. An async
 `thread.spawn` worker whose block body is more than one `return await f()`
 runs as a general frame of its own: lowering lifts the body into a
-synthesized async function (its captures become owned parameters, moved in
-from the worker context) and the worker thread drives that frame on its
-private executor. A worker blocked on its executor's timer or external wait
+synthesized async function (its captures, the resolver's checked closure
+captures including values only a nested closure uses, become owned
+parameters, moved in from the worker context) and the worker thread drives
+that frame on its private executor. A worker blocked on its executor's timer or external wait
 is woken when its task storage is, so `await t.cancel()` reaches a sleeping
 worker frame at once. Workers that capture a `TaskScope` keep the
-terminal-await tier; placed `thread.main` work inside a worker frame remains
-staged. Cancellation before
+terminal-await tier. Outside `main`, `await on thread.main { ... }` hops to
+the main executor (the executor of `main`'s driver), as in Stage 0: lowering
+lifts the block into a synthesized async function whose parameters are the
+block's checked captures (plain values and copied `String`s in this tier) and
+whose `select` returns its result, and the enclosing general frame awaits it
+through a hop. The hop is a local proxy task: its first poll posts the
+block's frame to the main executor's cross-thread queue, and the block's
+completion reports the proxy complete through the awaiting executor's
+completion queue; cancelling the proxy queues the cancellation for the main
+thread, where it runs before the block's completion is reported. A frame
+already on the main executor awaits the block directly. This applies to
+lifted worker frames and to ordinary async functions, wherever they run;
+blocking `on thread.main` work from synchronous workers keeps its tier.
+Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument

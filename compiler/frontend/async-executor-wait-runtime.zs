@@ -3,7 +3,7 @@ import { TextBuffer } from "std/text";
 // The owner thread manages timers; external publishers share only the completion
 // queue and count under external_mutex. Wait on either source, never read that
 // queue unlocked or treat a spurious wake as executor exhaustion.
-export function asyncExecutorWaitRuntime(timers: boolean): String {
+export function asyncExecutorWaitRuntime(timers: boolean, hops: boolean): String {
   let output = TextBuffer();
   output.append(`
 static void z_stage1_async_init_condition(Z_AsyncExecutor *executor) {
@@ -29,12 +29,16 @@ static bool z_stage1_async_wait_for_work(Z_AsyncExecutor *executor) {
   if (executor->external_completions == NULL && executor->active_external_callbacks == 0
 `);
   if (timers) output.append("      && executor->timers == NULL\n");
+  // Posted tasks and cross-thread cancellations are work too.
+  if (hops) output.append("      && executor->posted_head == NULL && executor->cancellations == NULL\n");
   output.append(`
   ) {
     z_stage1_async_external_unlock(executor);
     return false;
   }
-  if (executor->external_completions == NULL) {
+  if (executor->external_completions == NULL`);
+  if (hops) output.append(" && executor->posted_head == NULL && executor->cancellations == NULL");
+  output.append(`) {
 `);
   if (timers) {
     output.append(`
