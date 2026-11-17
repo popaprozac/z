@@ -23137,73 +23137,31 @@ function extractStatementArena(in arena: StatementArena, in roots: Array<usize>)
   return StatementArena({ nodes, roots: newRoots });
 }
 
-function collectDeclaredNames(in tree: ExpressionTree, inout declared: Array<String>): void {
-  for (const node of tree.nodes) {
-    if (node.kind == ExpressionKind.closureParameterExpression
-      || node.kind == ExpressionKind.matchArmExpression) declared.push(copy node.value);
-  }
-}
-
-// A lifted worker's captures: names its body uses that it does not declare
-// and that name a value visible where the closure is written.
+// A lifted worker's captures: the closure's checked captures (the resolver's
+// scoped analysis), typed by the binding visible where the closure is written.
 function liftedWorkerCaptures(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in ownerName: String,
-  in body: StatementArena,
-  useOffset: usize
+  closureOffset: usize
 ): Array<LoweredClosureCapture> throws String {
-  let declared = Array<String>();
-  for (const statement of body.nodes) {
-    if (statement.name.byteLength > 0) declared.push(copy statement.name);
-    match (in statement.expression) {
-      some(syntax) => match (in syntax.tree) {
-        some(tree) => collectDeclaredNames(tree, inout declared);
-        none => {}
-      }
-      none => {}
-    }
-  }
+  let found = false;
   let captures = Array<LoweredClosureCapture>();
-  for (const statement of body.nodes) {
-    let trees = Array<ExpressionTree>();
-    match (in statement.expression) {
-      some(syntax) => match (in syntax.tree) {
-        some(tree) => trees.push(copy tree);
-        none => {}
-      }
-      none => {}
-    }
-    match (in statement.secondExpression) {
-      some(syntax) => match (in syntax.tree) {
-        some(tree) => trees.push(copy tree);
-        none => {}
-      }
-      none => {}
-    }
-    for (const tree of trees) {
-      for (const node of tree.nodes) {
-        if (node.kind != ExpressionKind.identifierExpression) continue;
-        if (node.value == "this") throw "native async worker frames cannot capture `this` yet";
-        let skip = false;
-        for (const name of declared) {
-          if (name == node.value) skip = true;
-        }
-        for (const capture of captures) {
-          if (capture.name == node.value) skip = true;
-        }
-        if (skip) continue;
-        const typeName = match (namedValueTypeName(program, evidence, ownerName, node.value, useOffset)) {
-          some(name) => name;
-          none => "";
-        };
-        if (typeName.byteLength == 0) continue;
-        const type = try lowerModuleTypeName(program, importedTypes, typeName);
-        captures.push(try threadClosureCapture(program, importedTypes, node.value, type, true));
-      }
+  for (const entry of evidence.closureCaptures) {
+    if (entry.offset != closureOffset) continue;
+    found = true;
+    for (const name of entry.names) {
+      if (name == "this") throw "native async worker frames cannot capture `this` yet";
+      const typeName = match (namedValueTypeName(program, evidence, ownerName, name, closureOffset)) {
+        some(value) => value;
+        none => throw `native async worker frame cannot resolve capture ${name}`;
+      };
+      const type = try lowerModuleTypeName(program, importedTypes, typeName);
+      captures.push(try threadClosureCapture(program, importedTypes, name, type, true));
     }
   }
+  if (!found) throw "native async worker frame lost its checked closure captures";
   return captures;
 }
 
@@ -23238,7 +23196,8 @@ function liftedWorkerDeclaration(
   const first = view arena.nodes[sourceStatements[0]];
   const bodyOffset = first.offset;
   const body = extractStatementArena(arena, sourceStatements);
-  const captures = try liftedWorkerCaptures(program, importedTypes, evidence, ownerName, body, bodyOffset);
+  const closureOffset = tree.nodes[closure].offset;
+  const captures = try liftedWorkerCaptures(program, importedTypes, evidence, ownerName, closureOffset);
   let parameters = Array<Parameter>();
   for (const capture of captures) {
     parameters.push(Parameter({
@@ -23286,6 +23245,7 @@ function liftedWorkerDeclaration(
     errorType,
     executorAffinity: "",
     threadContract: "",
+    liftedFromOffset: closureOffset,
     body,
     offset: bodyOffset,
     line: first.line,
@@ -23359,9 +23319,12 @@ function attachLiftedWorker(
 ): void throws String {
   const sourceStatements = copy expressions[expressionIndex].statements;
   const name = liftedWorkerName(arena, sourceStatements);
-  const body = extractStatementArena(arena, sourceStatements);
-  const captures = try liftedWorkerCaptures(program, importedTypes, evidence, ownerName, body,
-    arena.nodes[sourceStatements[0]].offset);
+  let closureOffset: usize = 0;
+  for (const declaration of program.functions) {
+    if (declaration.name == name) closureOffset = declaration.liftedFromOffset;
+  }
+  if (closureOffset == 0) throw "native async worker frame lost its lifted declaration";
+  const captures = try liftedWorkerCaptures(program, importedTypes, evidence, ownerName, closureOffset);
   for (const capture of captures) {
     expressions[expressionIndex].labels.push(copy capture.name);
     expressions[expressionIndex].labels.push(loweredTypeIdentity(capture.type));
@@ -30187,7 +30150,7 @@ function lowerFunction(
     // general frame: skip the shape tiers.
     const asyncGeneratorBody = generatorCompletionTypeName(declaration);
     const cxxFrame = asyncSignatureHoldsCxx(program, importedTypes, declaration) || isSomeString(asyncGeneratorBody)
-      || functionAwaitsStreamStep(declaration) || stringStartsWith(declaration.name, "__z_worker_");
+      || functionAwaitsStreamStep(declaration) || declaration.liftedFromOffset != 0;
     const firstTierSchedulerYield = !cxxFrame && executorAffinity != "thread.main"
       && functionUsesFirstTierSchedulerYield(program, declaration);
     const firstTierDoubleAwait = functionUsesFirstTierDoubleAwait(

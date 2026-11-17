@@ -1458,9 +1458,10 @@ Native semantics types `thread.spawn(...)` as `Task<T>` or `Task<T, E>` from
 the worker closure's declared or inferred signature, as Stage 0 does. An async
 `thread.spawn` worker whose block body is more than one `return await f()`
 runs as a general frame of its own: lowering lifts the body into a
-synthesized async function (its captures become owned parameters, moved in
-from the worker context) and the worker thread drives that frame on its
-private executor. A worker blocked on its executor's timer or external wait
+synthesized async function (its captures, the resolver's checked closure
+captures including values only a nested closure uses, become owned
+parameters, moved in from the worker context) and the worker thread drives
+that frame on its private executor. A worker blocked on its executor's timer or external wait
 is woken when its task storage is, so `await t.cancel()` reaches a sleeping
 worker frame at once. Workers that capture a `TaskScope` keep the
 terminal-await tier; placed `thread.main` work inside a worker frame remains

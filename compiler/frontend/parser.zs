@@ -249,6 +249,9 @@ export struct FunctionDeclaration {
   rawSource: String = "";
   rawLine: usize = 0;
   rawColumn: usize = 0;
+  // Nonzero when lowering synthesized this function from a closure body: the
+  // closure's source offset. Such a function always runs as a general frame.
+  liftedFromOffset: usize = 0;
   body: StatementArena;
   offset: usize;
   line: usize;

@@ -90,6 +90,13 @@ export struct ModuleMatchSubjectType {
   payloads: boolean;
 }
 
+// The enclosing-scope values a closure uses, by the closure's offset, as the
+// resolver's scoped capture analysis found them.
+export struct ModuleClosureCaptures {
+  offset: usize;
+  names: Array<String>;
+}
+
 export struct ModuleSemanticEvidence {
   callResolutions: Array<ModuleCallResolution>;
   // Derived lookup state; callResolutions remains the protocol truth.
@@ -97,6 +104,7 @@ export struct ModuleSemanticEvidence {
   bindingResolutions: Array<ModuleBindingResolution>;
   expressionResolutions: Array<ModuleExpressionResolution>;
   matchSubjectTypes: Array<ModuleMatchSubjectType> = Array<ModuleMatchSubjectType>();
+  closureCaptures: Array<ModuleClosureCaptures> = Array<ModuleClosureCaptures>();
   // Derived lookup state; expressionResolutions remains the protocol truth.
   expressionResolutionIndices: Map<usize, usize> = Map<usize, usize>();
   // Borrowing is determined in the lexical scope, including closure parameters
