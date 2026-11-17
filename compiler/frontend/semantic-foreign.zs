@@ -718,6 +718,19 @@ function foreignFunctionSignature(
     }
     none => {}
   }
+  // A call-scoped callback paired with a context is the header's
+  // promise that C does not keep it: for a closure that captures by
+  // borrow, the proof a Z callee's body gives.
+  let nonEscapingParameters = Array<usize>();
+  for (const callback of contract.callbacks) {
+    if (
+      callback.lifetime == "call"
+      && callback.parameterIndex < nativeToVisible.length
+      && nativeToVisible[callback.parameterIndex] < contract.parameters.length
+    ) {
+      nonEscapingParameters.push(nativeToVisible[callback.parameterIndex]);
+    }
+  }
   return ModuleFunctionSignature({
     asynchronous: false,
     executorAffinity: "",
@@ -726,6 +739,7 @@ function foreignFunctionSignature(
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,
     parameterTypes,
+    nonEscapingParameters,
     viewParameter,
     invalidatesParameters,
     invalidatesLifetimes,

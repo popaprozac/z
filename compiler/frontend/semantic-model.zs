@@ -524,7 +524,8 @@ export function moduleTypeSignatureWithMethods(
 }
 
 export struct ModuleFunctionSignature {
-  // Source-body proof; deliberately absent from structural function types.
+  // Source-body proof, or a foreign contract's call-scoped callback;
+  // deliberately absent from structural function types.
   nonEscapingParameters: Array<usize> = Array<usize>();
   // Internal provenance of an inferred lexical closure, not source syntax or ABI.
   borrowedEnvironment: boolean = false;

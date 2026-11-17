@@ -27,6 +27,10 @@ static inline int32_t z_apply_context_i32(int32_t value, void *context, ZContext
   return callback(value, context);
 }
 
+static inline int32_t z_apply_context_twice_i32(int32_t value, void *context, ZContextCallback callback) {
+  return callback(callback(value, context), context);
+}
+
 static inline void z_register_context_callback(
   ZContextCallback callback,
   void *context,

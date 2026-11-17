@@ -2704,6 +2704,27 @@ test("passes contextual inline closures directly to imported C callbacks", () =>
   assert.equal(result.stdout, "inline-escape-drop=2\n");
 });
 
+test("lends C a closure that captures by borrow through a call-scoped context", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/callbacks-borrowed-context.zs");
+  const source = readFileSync(fixture, "utf8");
+  assert.deepEqual(diagnostics(source, fixture), []);
+
+  const generated = compileToC(source, fixture);
+  assert.match(generated, /z_apply_context_twice_i32\(0, \(void \*\)&\(_z_argument_[0-9]+\), __z_c_callback_/);
+  assert.doesNotMatch(generated, /_c_escape_box\(/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "borrowed-context=5,17,76 total=13 calls=9 local=17\n");
+
+  // The contract's call lifetime is the non-escape proof in the native
+  // resolver too; it used to answer Z0212 here.
+  const native = spawnSync(process.execPath, [cli, "self-host-resolve", fixture], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+  });
+  assert.equal(native.status, 0, native.stderr || String(native.error ?? native.signal));
+}, 240_000);
+
 test("routes an escaping C callback through a class-owned Z handler map", () => {
   const example = resolve(
     projectRoot,
