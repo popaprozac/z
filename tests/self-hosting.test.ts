@@ -11691,6 +11691,77 @@ test("compiles a multi-module Z application through the standalone native driver
     /__atomic_add_fetch\(&environment->_z_refcount, 1, __ATOMIC_RELAXED\)/,
   );
 
+  // A call-scoped callback context: C is lent a closure that captures by
+  // borrow, at the address of its function value in the caller's frame.
+  const borrowedContextExample = resolve(
+    projectRoot,
+    "tests/fixtures/callbacks-borrowed-context.zs",
+  );
+  const borrowedContextRun = spawnSync(
+    driver,
+    ["run", borrowedContextExample],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(borrowedContextRun.status, 0, borrowedContextRun.stderr);
+  assert.match(
+    borrowedContextRun.stdout,
+    /borrowed-context=5,17,76 total=13 calls=9 local=17\n$/,
+  );
+  const borrowedContextC = readFileSync(
+    resolve(
+      projectRoot,
+      "tests/fixtures/.z-cache/run/program.c",
+    ),
+    "utf8",
+  );
+  assert.match(
+    borrowedContextC,
+    /z_apply_context_i32\(amount, \(void \*\)Z_TEMPORARY_ADDRESS\(Z_Function_[0-9a-f]+, [^;]*&\(\(\*counter\)\)\)\), z_stage1_c_callback_Z_Function_/,
+  );
+  assert.doesNotMatch(
+    borrowedContextC,
+    /z_apply_context(?:_twice)?_i32\([^;]*_c_escape_box\(/,
+  );
+  // Other callback values in that position are refused, not miscompiled.
+  const namedContextDirectory = resolve(directory, "named-context");
+  mkdirSync(namedContextDirectory);
+  for (const file of ["callbacks.h", "callbacks.h.zd"]) {
+    copyFileSync(
+      resolve(projectRoot, "tests/fixtures", file),
+      resolve(namedContextDirectory, file),
+    );
+  }
+  for (const [name, call] of [
+    ["named", "callbacks.z_apply_context_i32(41, plus)"],
+    ["moved", "callbacks.z_apply_context_i32(41, move (value) => value + offset)"],
+  ]) {
+    const refused = resolve(namedContextDirectory, `${name}.zs`);
+    writeFileSync(refused, `import callbacks from "callbacks.h";
+function plus(value: i32): i32 { return value + 1; }
+function main(): i32 {
+  const offset = 1;
+  return ${call} == 42 ? 0 : 1;
+}
+`);
+    const refusedRun = spawnSync(
+      driver,
+      ["run", refused],
+      {
+        encoding: "utf8",
+        env: foreignAdapterEnvironment,
+      },
+    );
+    assert.equal(refusedRun.status, 1, name);
+    assert.match(
+      refusedRun.stderr,
+      /call-scoped callback context only for a closure written at the call without move yet/,
+      name,
+    );
+  }
+
   const recursiveDriver = resolve(directory, "z-native-generation-2");
   const recursiveCompilation = spawnSync(
     driver,

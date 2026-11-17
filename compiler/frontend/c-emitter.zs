@@ -5189,7 +5189,16 @@ function appendExpression(
         output.append(")");
         return;
       }
-      throw "native fixed-point C emission does not execute call-scoped callback contexts yet";
+      // Call-scoped, first native tier: a closure written at the call that
+      // is not `move`. C is lent the address of its function value, which
+      // lives in the caller's storage for the call; the adapter reads it
+      // back and calls it, and nothing is boxed, retained, or released.
+      if (!isInlineBorrowedCallableTemporary(declaration, callbackValue)) {
+        throw "native fixed-point C emission executes a call-scoped callback context only for a closure written at the call without move yet";
+      }
+      output.append("(void *)");
+      try appendAddressOf(inout output, declaration, callbackValue);
+      return;
     }
     if (role == "callbackDirect") {
       throw "native fixed-point C emission does not execute context-free callbacks yet";
@@ -14586,6 +14595,26 @@ function programUsesThreadAnyForeignCallbackType(
   return false;
 }
 
+// Whether a call lends C a function value of this type as a call-scoped
+// context: the bare value's address, not a box.
+function programUsesCallScopedForeignCallbackType(
+  in program: LoweredProgram,
+  in name: String
+): boolean {
+  for (const declaration of program.functions) {
+    for (const expression of declaration.expressions) {
+      if (
+        expression.kind == LoweredExpressionKind.foreignCallbackValue
+        && expression.value == name
+        && expression.labels.length >= 2
+        && expression.labels[0] == "callbackContext"
+        && expression.labels[1] == "call"
+      ) return true;
+    }
+  }
+  return false;
+}
+
 function programUsesThreadAnyForeignCallbacks(
   in program: LoweredProgram
 ): boolean {
@@ -14611,6 +14640,15 @@ function appendForeignCallbackHelpers(
     program,
     declaration.name
   );
+  // An any-thread adapter reads its context as a box that carries the
+  // runtime's thread entry; a call-scoped context is the bare function
+  // value, which that adapter would misread.
+  if (
+    anyThread
+    && programUsesCallScopedForeignCallbackType(program, declaration.name)
+  ) {
+    throw "native fixed-point C emission does not lend a call-scoped callback context of a function type that an any-thread callback also uses yet";
+  }
   if (anyThread) {
     output.append("typedef struct Z_");
     output.append(declaration.name);

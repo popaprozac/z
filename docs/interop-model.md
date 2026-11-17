@@ -663,6 +663,16 @@ invokes its `call` entry with the owned environment. Since the lifetime is
 call-only, the caller keeps the ARC owner alive and no native retain/release
 protocol is invented.
 
+A closure written at the call may capture by borrow, an `inout` parameter or a
+local it assigns included. The call-only lifetime is the proof that the borrow
+ends with the call, the same proof a Z callee's body gives for a non-escaping
+callback parameter. C may invoke the callback as often as the contract's
+cardinality allows, and the callback may call back into C through the same
+borrow. Cost: no allocation and no reference counting; C receives the address
+of the function value in the caller's frame. The fixed-point compiler runs this
+for a closure written at the call without `move`; a named function, a stored
+function value, or a `move` closure in this position is Stage 0 only for now.
+
 The first escaping tier requires the C API to accept a destroy callback and
 declares the full ownership relationship in the same block:
 
