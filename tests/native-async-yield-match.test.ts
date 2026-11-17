@@ -90,7 +90,7 @@ int main(void) {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);
 
-test("reports unsupported native-main timer frames before attempting a Task join", () => {
+test("runs a direct timer await in a main-affine main frame", () => {
   const directory = mkdtempSync("/tmp/z-main-timer-boundary-");
   try {
     const input = resolve(directory, "main.zs");
@@ -101,15 +101,14 @@ async function main(): i32 on thread.main {
   return 0;
 }`;
     writeFileSync(input, source);
-    // The source and its semantics are valid; only standalone native emission
-    // needs a richer entry frame. Keep that distinction out of the type system.
     assert.ok(compileToC(source, input).length > 0);
+    // A main-affine `main` with a direct timer is a general frame on the main
+    // executor, as an unplaced one is.
     const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
       encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL",
     });
-    assert.notEqual(native.status, 0);
-    assert.match(native.stderr, /Z0700.*direct timer awaits in main require a resumable native entry frame/);
-    assert.doesNotMatch(native.stderr, /internal compiler error|named Task<T> binding/);
+    assert.equal(native.status, 0, native.stderr);
+    execute(native.stdout, "");
 
     // Existing suspending callee frames still compile: the restriction is on
     // a direct timer in the entry body, not all timer use reachable from main.

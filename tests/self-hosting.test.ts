@@ -2662,21 +2662,16 @@ test("routes a service result before publishing it on the main executor", () => 
       { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
     assert.equal(emission.status, 0, emission.stderr);
+    // `handle` is a general frame: both results live in it across suspension,
+    // and the placed call hops to the main executor (directly when `handle`
+    // already runs there).
     assert.match(
       emission.stdout,
-      /uint32_t _z_resume_state;[\s\S]*Z_RoutedResponse _z_local_routed;[\s\S]*Z_PublishedResponse _z_local_published;[\s\S]*Z_AsyncInvocation child;/,
+      /Z_RoutedResponse _z_binding_routed;[\s\S]*Z_PublishedResponse _z_binding_published;/,
     );
     assert.match(
       emission.stdout,
-      /frame->_z_resume_state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_routed\);[\s\S]*frame->_z_resume_state = 2;/,
-    );
-    assert.match(
-      emission.stdout,
-      /_start_invocation\(task->executor, router, &\(frame->argument1\)\)/,
-    );
-    assert.match(
-      emission.stdout,
-      /frame->_z_resume_state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_published\);[\s\S]*frame->_z_resume_state = 3;/,
+      /frame->child = z_stage1_async_hop_start\(task->executor, Z_\w+_start\(z_stage1_callable_\w+_value\(\), z_stage1_async_main_executor\(\)/,
     );
     const compilation = spawnSync(
       "clang",
@@ -6091,10 +6086,10 @@ test("runs the Zapp worker and main-thread publication natively", () => {
       { encoding: "utf8" },
     );
     assert.equal(emission.status, 0, emission.stderr);
-    assert.match(emission.stdout, /Z_Task_\S+_run_on_main/);
-    assert.match(emission.stdout, /main_request_pending/);
-    assert.match(emission.stdout, /z_stage1_thread_main_call_main_\d+/);
-    assert.match(emission.stdout, /_suspend_for\(storage, 1\)/);
+    // The worker frame hops its placed call to the main executor, which
+    // `main` starts and drives while it waits.
+    assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
+    assert.match(emission.stdout, /z_stage1_async_main_executor_start\(\);/);
     assert.match(emission.stdout, /z_stage1_sleep\(10\)/);
 
     const executable = resolve(directory, "zapp");
@@ -6746,16 +6741,23 @@ test("returns scalar, owned, and typed-error values through native thread.main p
         { encoding: "utf8" },
       );
       assert.equal(emission.status, 0, emission.stderr);
-      assert.match(emission.stdout, /_Context \{[\s\S]* result;/);
-      assert.match(
-        emission.stdout,
-        /context->result = .*_continue\(context\)/,
-      );
-      assert.match(
-        emission.stdout,
-        /result = context->result;[\s\S]*return result;/,
-      );
-      assert.match(emission.stdout, /_suspend_for\(storage, 1\)/);
+      if (fixture === "self-host-emit-thread-main-error.zs") {
+        // The callee takes the general frame: the worker frame hops to it.
+        assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
+      } else {
+        // The callee keeps its delay-segment tier: the worker-to-main bridge
+        // runs each segment on main and the delay on the worker.
+        assert.match(emission.stdout, /_Context \{[\s\S]* result;/);
+        assert.match(
+          emission.stdout,
+          /context->result = .*_continue\(context\)/,
+        );
+        assert.match(
+          emission.stdout,
+          /result = context->result;[\s\S]*return result;/,
+        );
+        assert.match(emission.stdout, /_suspend_for\(storage, 1\)/);
+      }
 
       const executable = resolve(directory, fixture.replace(/\.zs$/, ""));
       const compilation = spawnSync(
@@ -6789,11 +6791,8 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       { encoding: "utf8" },
     );
     assert.equal(synchronousEmission.status, 0, synchronousEmission.stderr);
-    assert.match(synchronousEmission.stdout, /_Context context = \{/);
-    assert.doesNotMatch(
-      synchronousEmission.stdout,
-      /_Context \*context = \([^)]*_Context \*\)calloc\(1, sizeof\(/,
-    );
+    // A synchronous placed callee runs in a lifted frame hopped to main.
+    assert.match(synchronousEmission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
     const synchronousExecutable = resolve(directory, "thread-main-sync");
     const synchronousCompilation = spawnSync(
       "clang",
@@ -6995,12 +6994,9 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       { encoding: "utf8" },
     );
     assert.equal(structuredIfEmission.status, 0, structuredIfEmission.stderr);
-    assert.match(structuredIfEmission.stdout, /bool branch_0;/);
-    assert.match(structuredIfEmission.stdout, /_choose\(void \*raw_context\)/);
-    assert.match(
-      structuredIfEmission.stdout,
-      /if \(context->branch_0\)[\s\S]*_then_segment_0[\s\S]*else[\s\S]*_else_segment_0/,
-    );
+    // The callee's suspending `if` runs in its general frame, hopped to main.
+    assert.match(structuredIfEmission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
+    assert.doesNotMatch(structuredIfEmission.stdout, /bool branch_0;/);
     const structuredIfExecutable = resolve(directory, "thread-main-if");
     const structuredIfCompilation = spawnSync(
       "clang",
@@ -7112,21 +7108,9 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       0,
       structuredMatchEmission.stderr,
     );
-    assert.match(structuredMatchEmission.stdout, /size_t arm_0;/);
-    assert.equal(
-      structuredMatchEmission.stdout.match(
-        /context->match_subject = _z_function_\d+_chooseDirection\(direction\)/g,
-      )?.length,
-      3,
-    );
-    assert.match(
-      structuredMatchEmission.stdout,
-      /switch \(context->match_subject\)[\s\S]*context->arm_0 = 0[\s\S]*context->arm_0 = 1[\s\S]*context->arm_0 = 2/,
-    );
-    assert.match(
-      structuredMatchEmission.stdout,
-      /switch \(context->arm_0\)[\s\S]*_arm_0_segment_0[\s\S]*_arm_1_segment_0/,
-    );
+    // The callee's suspending `match` runs in its general frame, hopped to main.
+    assert.match(structuredMatchEmission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
+    assert.doesNotMatch(structuredMatchEmission.stdout, /size_t arm_0;/);
     const structuredMatchExecutable = resolve(directory, "thread-main-match");
     const structuredMatchCompilation = spawnSync(
       "clang",
@@ -7373,10 +7357,6 @@ test("returns scalar, owned, and typed-error values through native thread.main p
         "self-host-emit-thread-main-uninitialized-local-invalid.zs",
         /requires local staged to be initialized before it crosses a suspension/,
       ],
-      [
-        "self-host-emit-thread-main-nested-if-suspension-invalid.zs",
-        /requires every suspension.*directly inside its supported statement sequence/,
-      ],
     ] as const) {
       const input = resolve(projectRoot, "tests/fixtures", fixture);
       const emission = spawnSync(
@@ -7434,20 +7414,30 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       generatorBorrowResolution.stderr,
     );
 
-    const nonTailInput = resolve(
-      projectRoot,
-      "tests/fixtures/self-host-emit-thread-main-nontail-suspension-invalid.zs",
-    );
-    const nonTail = spawnSync(
-      process.execPath,
-      [cli, "self-host-emit", nonTailInput],
-      { encoding: "utf8" },
-    );
-    assert.equal(nonTail.status, 1);
-    assert.match(
-      nonTail.stderr,
-      /:11:23: error\[Z0700\]: a suspending thread\.main call must be the worker closure's tail return in the current native compiler tier/,
-    );
+    // A worker frame with a suspension inside an `if`, or a non-tail placed
+    // call, hops to main; both run as in Stage 0.
+    for (const [fixture, status] of [
+      ["self-host-emit-thread-main-nested-if-suspension.zs", 42],
+      ["self-host-emit-thread-main-nontail-suspension.zs", 0],
+    ] as const) {
+      const hopInput = resolve(projectRoot, "tests/fixtures", fixture);
+      const hopEmission = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", hopInput],
+        { encoding: "utf8" },
+      );
+      assert.equal(hopEmission.status, 0, hopEmission.stderr);
+      assert.match(hopEmission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
+      const hopExecutable = resolve(directory, fixture.replace(/\.zs$/, ""));
+      const hopCompilation = spawnSync(
+        "clang",
+        ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread", "-", "-o", hopExecutable],
+        { encoding: "utf8", input: hopEmission.stdout },
+      );
+      assert.equal(hopCompilation.status, 0, hopCompilation.stderr);
+      const hopExecution = spawnSync(hopExecutable, [], { encoding: "utf8" });
+      assert.equal(hopExecution.status, status, hopExecution.stderr);
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -7455,28 +7445,34 @@ test("returns scalar, owned, and typed-error values through native thread.main p
 
 test("preserves while iteration, loop control, and owned locals across main suspension", () => {
   const directory = mkdtempSync("/tmp/z-self-host-thread-main-while-");
+  // A callee the general frame takes runs as a frame hopped to main; one with
+  // owned locals inside its suspending loop keeps the worker-to-main bridge.
   const fixtures = [
-    ["self-host-emit-thread-main-while.zs", ""],
-    ["self-host-emit-thread-main-while-control.zs", ""],
+    ["self-host-emit-thread-main-while.zs", "", "hop"],
+    ["self-host-emit-thread-main-while-control.zs", "", "hop"],
     [
       "self-host-emit-thread-main-while-owned.zs",
       "released iteration 1\nreleased iteration 2\nreleased iteration 3\nreleased iteration 4\n",
+      "bridge",
     ],
     [
       "self-host-emit-thread-main-while-return.zs",
       "released return iteration 1\nreleased return iteration 1\nreleased return iteration 2\n",
+      "bridge",
     ],
     [
       "self-host-emit-thread-main-while-throw.zs",
       "released throw iteration 1\nreleased throw iteration 2\n",
+      "bridge",
     ],
     [
       "self-host-emit-thread-main-while-try.zs",
       "released try iteration 1\nreleased try iteration 2\nreleased try iteration 1\nreleased try iteration 1\nreleased try iteration 2\n",
+      "bridge",
     ],
   ] as const;
   try {
-    for (const [fixture, expectedOutput] of fixtures) {
+    for (const [fixture, expectedOutput, path] of fixtures) {
       const input = resolve(projectRoot, "tests/fixtures", fixture);
       const parity = spawnSync(
         process.execPath,
@@ -7491,13 +7487,18 @@ test("preserves while iteration, loop control, and owned locals across main susp
         { encoding: "utf8" },
       );
       assert.equal(emission.status, 0, emission.stderr);
-      assert.match(emission.stdout, /bool loop_condition;/);
-      assert.match(emission.stdout, /int loop_control;/);
-      assert.match(
-        emission.stdout,
-        /while \(true\) \{[\s\S]*_condition, context\)[\s\S]*_finish_iteration, context\)/,
-      );
-      if (fixture.endsWith("-control.zs")) {
+      if (path === "hop") {
+        assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
+        assert.doesNotMatch(emission.stdout, /bool loop_condition;/);
+      } else {
+        assert.match(emission.stdout, /bool loop_condition;/);
+        assert.match(emission.stdout, /int loop_control;/);
+        assert.match(
+          emission.stdout,
+          /while \(true\) \{[\s\S]*_condition, context\)[\s\S]*_finish_iteration, context\)/,
+        );
+      }
+      if (fixture.endsWith("-control.zs") && path === "bridge") {
         assert.match(emission.stdout, /context->loop_control = 1;/);
         assert.match(emission.stdout, /context->loop_control = 2;/);
       }
@@ -7612,18 +7613,19 @@ test("requests native worker cancellation and joins owned cleanup", () => {
         );
       }
 
-      if (fixture.includes("thread-cancel-main")) {
+      if (fixture == "self-host-emit-thread-cancel-main-match.zs") {
+        // The callee takes the general frame: the worker frame hops to it,
+        // and cancelling the worker cancels the hopped frame on main.
+        assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
+        assert.match(emission.stdout, /z_stage1_async_cancel_from_thread\(hop->child\.task\)/);
+        assert.match(emission.stdout, /z_stage1_sleep\(10\);/);
+      } else if (fixture.includes("thread-cancel-main")) {
         assert.match(emission.stdout, /main_request_pending = true;/);
         assert.match(emission.stdout, /request\(context\);/);
         assert.match(emission.stdout, /z_stage1_sleep\(10\);/);
         assert.match(emission.stdout, /_suspend_for\(storage, 1000\)/);
         assert.match(emission.stdout, /continuation_cancelled = true;/);
-        if (fixture == "self-host-emit-thread-cancel-main-match.zs") {
-          assert.match(
-            emission.stdout,
-            /_cancel_suspended[\s\S]*if \(context->match_subject_live\) \{ Z_Route_deinit\(&context->match_subject\)/,
-          );
-        } else if (fixture == "self-host-emit-thread-cancel-main-while.zs") {
+        if (fixture == "self-host-emit-thread-cancel-main-while.zs") {
           assert.match(
             emission.stdout,
             /_cancel_suspended[\s\S]*Z_LoopResource_deinit\(&context->frame_local_\d+\)/,
@@ -9187,22 +9189,19 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   );
   assert.equal(jsonRun.status, 0, jsonRun.stderr);
 
+  // A non-tail placed call in a worker frame hops to main.
   const nonTailChecking = spawnSync(
     executable,
     [
       "check",
       resolve(
         projectRoot,
-        "tests/fixtures/self-host-emit-thread-main-nontail-suspension-invalid.zs",
+        "tests/fixtures/self-host-emit-thread-main-nontail-suspension.zs",
       ),
     ],
     { encoding: "utf8" },
   );
-  assert.equal(nonTailChecking.status, 1);
-  assert.match(
-    nonTailChecking.stderr,
-    /:11:23: error\[Z0700\]: a suspending thread\.main call must be the worker closure's tail return in the current native compiler tier/,
-  );
+  assert.equal(nonTailChecking.status, 0, nonTailChecking.stderr);
 
   const nativeTests = spawnSync(
     executable,
@@ -11078,6 +11077,10 @@ test("compiles a multi-module Z application through the standalone native driver
     // with copied captures, typed errors, and cancellation routed to main.
     "examples/async/thread-affine-worker.zs",
     "tests/fixtures/native-main-hops.zs",
+    // `await on thread.main f(...)` outside `main` hops too: synchronous,
+    // throwing, and main-affine looping callees, from main and a worker.
+    "tests/fixtures/native-main-hop-calls.zs",
+    "examples/async/thread-main-loop.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
@@ -19071,25 +19074,46 @@ test("propagates cancellation through an executor-placed async function tail", (
   rmSync(directory, { recursive: true, force: true });
 }, 60_000);
 
-test("keeps structured placed async function suspension behind a native boundary", () => {
+test("rejects a worker frame awaiting a function whose placed tier runs where it runs", () => {
+  // `dispatch` keeps its placed tier (a lexical local in a suspending match
+  // arm); its placed call would run on the worker thread.
+  const input = resolve(projectRoot, "tests/fixtures/native-worker-placed-tier-invalid.zs");
+  const native = spawnSync(process.execPath, [cli, "self-host-emit", input], { encoding: "utf8" });
+  assert.notEqual(native.status, 0);
+  assert.match(native.stderr, /native worker frames cannot await dispatch yet/);
+});
+
+test("runs structured placed async function suspension through a hop", () => {
   const input = resolve(
     projectRoot,
-    "tests/fixtures/self-host-emit-async-function-main-placement-structured-invalid.zs",
+    "tests/fixtures/self-host-emit-async-function-main-placement-structured.zs",
   );
-  const stage0 = spawnSync(
-    process.execPath,
-    [cli, "check", input],
-    { encoding: "utf8" },
-  );
-  assert.equal(stage0.status, 0, stage0.stderr);
-  const native = spawnSync(
+  const stage0 = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(stage0.status, 42, stage0.stderr);
+  const emission = spawnSync(
     process.execPath,
     [cli, "self-host-emit", input],
     { encoding: "utf8" },
   );
-  assert.notEqual(native.status, 0);
-  assert.match(native.stderr, /error\[Z0700\]/);
-  assert.match(native.stderr, /requires a directly taskifiable callee/);
+  assert.equal(emission.status, 0, emission.stderr);
+  // `invoke` takes the general frame and awaits its placed call through a hop
+  // (directly, since it runs on the main thread).
+  assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
+  const directory = mkdtempSync("/tmp/z-async-function-main-placement-structured-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 42, execution.stderr);
+    assert.equal(execution.stdout, stage0.stdout);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("resumes synchronous work after an executor-placed async function local", () => {
@@ -19110,7 +19134,8 @@ test("resumes synchronous work after an executor-placed async function local", (
   );
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(emission.stdout, /frame->child = Z_.*_start\(.*task->executor/);
-  assert.match(emission.stdout, /frame->_z_resume_state = 2/);
+  // The placed call is a hop from `invoke`'s general frame.
+  assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
   assert.match(emission.stdout, /z_stage1_async_schedule_delay\(task, 1\)/);
 
   const directory = mkdtempSync("/tmp/z-async-function-main-placement-local-");
@@ -19216,10 +19241,9 @@ test("propagates an owned error from an executor-placed async function local", (
     emission.stdout,
     /\.tag == Z___z_Result_i32_PublishErrorTag_failure/,
   );
-  assert.match(
-    emission.stdout,
-    /\.payload = \{ \.failure = _z_stage1_async_try_\d+\.payload\.failure/,
-  );
+  // The placed call is a hop from the caller's general frame, which cancels
+  // the hopped child with itself.
+  assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
   assert.match(
     emission.stdout,
     /if \(frame->child\.task != NULL\) z_stage1_async_request_cancel\(frame->child\.task\)/,
@@ -19334,14 +19358,13 @@ test("materializes a synchronous main-isolated error through taskification", () 
     { encoding: "utf8" },
   );
   assert.equal(emission.status, 0, emission.stderr);
+  // `dispatch` is a general frame: the materialized Result lives in it, and
+  // the placed call is a hop.
   assert.match(
     emission.stdout,
-    /Z___z_Result_i32_OperationError _z_local_called;/,
+    /Z___z_Result_i32_OperationError _z_binding_called;/,
   );
-  assert.match(
-    emission.stdout,
-    /frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_called\);/,
-  );
+  assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
   assert.match(
     emission.stdout,
     /z_id = _z_stage1_try_\d+\.payload\.success/,

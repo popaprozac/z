@@ -156,15 +156,17 @@ function collectForeignStatements(in tree: ExpressionTree, inout pending: Array<
   }
 }
 
-// `await on thread.main { ... }` outside `main`: the operand of an `await`
-// that runs the block on the main executor (a lifted function hopped there).
+// `await on thread.main { ... }` or `await on thread.main f(...)` outside
+// `main`: the operand of an `await` that runs the block or call on the main
+// executor (a lifted function hopped there).
 export function isMainHopNode(in node: ExpressionNode): boolean {
   return node.kind == ExpressionKind.executorPlacementExpression && node.value == "hop";
 }
 
-// Rewrites each placed block `await on thread.main { ... }` into
-// `await <hop>`: the hop node keeps the placement's offset, labels, and
-// statements, so its checked type, captures, and body stay attached. Code
+// Rewrites each placed block `await on thread.main { ... }` and placed call
+// `await on thread.main f(...)` into `await <hop>`: the hop node keeps the
+// placement's offset, labels, children, and statements, so its checked type,
+// captures, and body (or call) stay attached. Code
 // outside `main` may run on any executor; the hop is correct on each (on the
 // main executor it awaits the block's frame directly). Closure bodies keep
 // their placements: they are lowered as their own functions.
@@ -220,7 +222,9 @@ function hoppedPlacementTree(in tree: ExpressionTree, in threadNames: Array<Stri
   let updated = copy tree;
   let changed = false;
   for (const index of reachable) {
-    if (!mainPlacementBlock(tree, index, threadNames)) continue;
+    const placedCall = tree.nodes[index].value == "await"
+      && mainPlacementCall(tree, index, threadNames) < tree.nodes.length;
+    if (!mainPlacementBlock(tree, index, threadNames) && !placedCall) continue;
     let hop = copy tree.nodes[index];
     hop.value = "hop";
     const hopIndex = updated.nodes.length;
@@ -235,6 +239,177 @@ function hoppedPlacementTree(in tree: ExpressionTree, in threadNames: Array<Stri
   }
   if (!changed) return Option<ExpressionTree>.none;
   return Option.some(updated);
+}
+
+// An async `thread.spawn` worker body runs as a lifted general frame unless it
+// is one terminal `return await f()`.
+export function threadWorkerNeedsFrame(in arena: StatementArena, in statements: Array<usize>): boolean {
+  if (statements.length != 1) return true;
+  const only = view arena.nodes[statements[0]];
+  if (only.kind != StatementKind.returnStatement) return true;
+  return match (in only.expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => tree.nodes[tree.root].kind != ExpressionKind.awaitExpression;
+      none => true;
+    }
+    none => true;
+  };
+}
+
+// A statement suspends somewhere in it: its expressions, the statements its
+// expressions own (value blocks, match arms), or its child statements.
+function statementTreeSuspends(in arena: StatementArena, index: usize): boolean {
+  const kind = arena.nodes[index].kind;
+  if (kind == StatementKind.yieldStatement || kind == StatementKind.forAwaitStatement
+    || kind == StatementKind.forTryAwaitStatement || kind == StatementKind.asyncScopeStatement) return true;
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        if (frameExpressionSuspends(tree, tree.root)) return true;
+        for (const node of tree.nodes) {
+          if (node.kind == ExpressionKind.closureExpression) continue;
+          for (const owned of node.statements) {
+            if (statementTreeSuspends(arena, owned)) return true;
+          }
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+  for (const child of arena.nodes[index].children) {
+    if (statementTreeSuspends(arena, child)) return true;
+  }
+  return false;
+}
+
+// A main-affine async function whose suspensions are all top-level delays
+// keeps its linear delay-segment tier, which both main callers and the
+// worker-to-main bridge run. Any other suspending shape takes the general
+// frame when it fits; the bridge's loop/if/match segments remain only for
+// bodies the general frame does not take yet (lexical locals in suspending
+// branches).
+export function mainAffineUsesGeneralFrame(in program: Program, in declaration: FunctionDeclaration): boolean {
+  if (!declaration.asynchronous || declaration.executorAffinity != "thread.main") return false;
+  if (functionContainsFrameDelay(program, declaration)) {
+    let linear = true;
+    for (const root of declaration.body.roots) {
+      const kind = declaration.body.nodes[root].kind;
+      if ((kind == StatementKind.whileStatement || kind == StatementKind.ifStatement
+        || kind == StatementKind.matchStatement)
+        && statementTreeSuspends(declaration.body, root)) linear = false;
+    }
+    if (linear) return false;
+  }
+  return functionUsesGeneralFrame(program, declaration);
+}
+
+// A worker whose tail is `return [try] await on thread.main f(...)` of a
+// main-affine `f` that keeps its delay-segment tier runs through the
+// worker-to-main bridge, which drives those segments; any other worker frame
+// hops instead.
+export function workerUsesMainBridge(in program: Program, in arena: StatementArena, in statements: Array<usize>): boolean {
+  if (statements.length == 0) return false;
+  const tail = statements[statements.length - 1];
+  if (arena.nodes[tail].kind != StatementKind.returnStatement) return false;
+  return match (in arena.nodes[tail].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        let placement = tree.root;
+        if ((tree.nodes[placement].kind == ExpressionKind.tryExpression
+          || tree.nodes[placement].kind == ExpressionKind.attemptExpression)
+          && tree.nodes[placement].children.length == 1) placement = tree.nodes[placement].children[0];
+        const node = view tree.nodes[placement];
+        if (node.kind != ExpressionKind.executorPlacementExpression || node.value != "await"
+          || node.labels.length < 3 || node.labels[2] != "call" || node.children.length != 3) return false;
+        const call = node.children[2];
+        if (tree.nodes[call].kind != ExpressionKind.callExpression || tree.nodes[call].children.length == 0) return false;
+        const callee = tree.nodes[call].children[0];
+        if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) return false;
+        for (const declaration of program.functions) {
+          if (declaration.name == tree.nodes[callee].value && declaration.asynchronous
+            && declaration.executorAffinity == "thread.main") return !mainAffineUsesGeneralFrame(program, declaration);
+        }
+        select false;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
+// The statements of async worker bodies that run as lifted frames, where
+// lowering hops their placements: rewrites those placements as
+// normalizeMainHops does for a whole function.
+export function normalizeWorkerHops(
+  inout body: StatementArena, in program: Program, in threadNames: Array<String>
+): boolean {
+  if (threadNames.length == 0) return false;
+  let pending = Array<usize>();
+  for (const statement of body.nodes) {
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          let index: usize = 0;
+          while (index < tree.nodes.length) {
+            if (isThreadSpawnCall(tree, index, threadNames) && tree.nodes[index].children.length == 2) {
+              const closure = tree.nodes[index].children[1];
+              if (tree.nodes[closure].kind == ExpressionKind.closureExpression
+                && tree.nodes[closure].labels.length >= 4 && tree.nodes[closure].labels[2] == "block"
+                && tree.nodes[closure].labels[3] == "async"
+                && threadWorkerNeedsFrame(body, tree.nodes[closure].statements)
+                && !workerUsesMainBridge(program, body, tree.nodes[closure].statements)) {
+                for (const owned of tree.nodes[closure].statements) {
+                  pending.push(owned);
+                }
+              }
+            }
+            index = index + 1;
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  let changed = false;
+  let seen = Array<boolean>();
+  while (seen.length < body.nodes.length) {
+    seen.push(false);
+  }
+  let cursor: usize = 0;
+  while (cursor < pending.length) {
+    const statement = pending[cursor];
+    cursor = cursor + 1;
+    if (statement >= seen.length || seen[statement]) continue;
+    seen[statement] = true;
+    for (const child of body.nodes[statement].children) {
+      pending.push(child);
+    }
+    let expression = Option<ExpressionSyntax>.none;
+    match (in body.nodes[statement].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => match (hoppedPlacementTree(tree, threadNames)) {
+          some(updated) => {
+            let replaced = copy syntax;
+            replaced.tree = Option.some(updated);
+            expression = Option.some(replaced);
+          }
+          none => {}
+        }
+        none => {}
+      }
+      none => {}
+    }
+    match (expression) {
+      some(replaced) => {
+        body.nodes[statement].expression = Option.some(replaced);
+        changed = true;
+      }
+      none => {}
+    }
+  }
+  return changed;
 }
 
 // Placement onto `thread.main` from code already on the main executor is the
@@ -761,7 +936,10 @@ export function functionUsesGeneralFrame(
 ): boolean {
   // Borrowed parameters are pointers into the caller's storage, which stays
   // in place while the caller is suspended on this frame.
-  if (!declaration.asynchronous || declaration.executorAffinity.byteLength != 0) return false;
+  // A main-affine function's frame runs on the main executor: its callers are
+  // there, or hop there.
+  if (!declaration.asynchronous || (declaration.executorAffinity.byteLength != 0
+    && declaration.executorAffinity != "thread.main")) return false;
   const closureOwned = closureOwnedStatements(declaration.body);
   let suspends = false;
   let suspendIndex: usize = 0;

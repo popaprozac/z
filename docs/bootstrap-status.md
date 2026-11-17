@@ -1464,19 +1464,33 @@ parameters, moved in from the worker context) and the worker thread drives
 that frame on its private executor. A worker blocked on its executor's timer or external wait
 is woken when its task storage is, so `await t.cancel()` reaches a sleeping
 worker frame at once. Workers that capture a `TaskScope` keep the
-terminal-await tier. Outside `main`, `await on thread.main { ... }` hops to
-the main executor (the executor of `main`'s driver), as in Stage 0: lowering
-lifts the block into a synthesized async function whose parameters are the
-block's checked captures (plain values and copied `String`s in this tier) and
-whose `select` returns its result, and the enclosing general frame awaits it
-through a hop. The hop is a local proxy task: its first poll posts the
-block's frame to the main executor's cross-thread queue, and the block's
-completion reports the proxy complete through the awaiting executor's
-completion queue; cancelling the proxy queues the cancellation for the main
-thread, where it runs before the block's completion is reported. A frame
-already on the main executor awaits the block directly. This applies to
-lifted worker frames and to ordinary async functions, wherever they run;
-blocking `on thread.main` work from synchronous workers keeps its tier.
+terminal-await tier. Outside `main`, `await on thread.main { ... }` and
+`await on thread.main f(...)` hop to the program's main executor, as in
+Stage 0. C `main` starts that executor for a program with hops; an async
+`main` driver runs on it, and a blocking worker join on the main thread
+drives it through an async thread-await task (never from inside one of its
+own polls). Lowering lifts a placed block into a synthesized async function
+whose parameters are the block's checked captures and whose `select` returns
+its result; a placed call becomes a synthesized `return [try] [await]
+f(...)` over the original, checked call. Captures are plain values, copied
+`String`s, retained shareable classes, and, for a placed call, the values it
+passes by value, which move under the worker capture transfer rule. The
+enclosing general frame awaits the lifted function through a hop: a local
+proxy task whose first poll posts the function's frame to the main
+executor's cross-thread queue; the frame's completion reports the proxy
+complete through the awaiting executor's completion queue, and cancelling
+the proxy queues the cancellation for the main thread, where it runs before
+the completion is reported. A frame already on the main thread, on any of
+its executors (the main executor, a `TaskScope`'s, a foreign helper's),
+awaits the lifted frame directly. Main-affine async functions take the
+general frame when no shape tier does, except that one whose only suspensions
+are top-level delays keeps its linear delay-segment tier. A function the
+general frame cannot take yet (a lexical local inside a suspending branch)
+keeps its placed tier, which runs placed work where it runs, so a worker
+frame awaiting it is a lowering error. A worker whose tail is a placed call
+of a main-affine function on the delay-segment tier keeps the worker-to-main
+bridge, which runs each segment on main. Blocking `on thread.main` work from
+synchronous workers keeps its tier.
 Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted

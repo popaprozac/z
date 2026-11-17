@@ -7300,6 +7300,11 @@ function inferExpressionNodeType(
     }
     if (bodyKind == "call" && children.length > 2) {
       const callIndex = children[children.length - 1];
+      // A call hopped to the main executor carries its arguments' values.
+      let callLocals = Array<String>();
+      let callCaptures = Array<String>();
+      collectClosureExpressionCaptures(arena, tree, callIndex, bindings, callLocals, inout callCaptures);
+      recordClosureCaptures(node.offset, callCaptures, inout evidence);
       let placedBindings = copyValueBindings(bindings);
       addValueBinding(
         inout placedBindings,

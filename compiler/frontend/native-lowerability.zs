@@ -19,7 +19,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -2474,9 +2474,10 @@ function validateNativeExpressionTree(
         );
       }
     }
+    // A hop (value "hop") runs as an awaited frame on the main executor.
     if (
       node.kind == ExpressionKind.executorPlacementExpression
-      && node.value != "spawn"
+      && node.value == "await"
       && node.labels.length > 2
       && node.labels[2] == "call"
       && node.children.length > 0
@@ -3860,6 +3861,7 @@ export function validateNativeLowerability(
         let normalized = copy declaration;
         const threadNames = mainPlacementThreadNames(module.program);
         normalizeMainPlacements(inout normalized.body, threadNames, asyncCallOffsets);
+        normalizeWorkerHops(inout normalized.body, module.program, threadNames);
         try validateNativeFunction(module.path, graphModuleIndex, modules, graph, normalized, "", Array<String>());
         continue;
       }
@@ -3868,7 +3870,10 @@ export function validateNativeLowerability(
       if (declaration.asynchronous && declaration.executorAffinity.byteLength == 0) {
         let hopped = copy declaration;
         const threadNames = mainPlacementThreadNames(module.program);
-        if (normalizeMainHops(inout hopped.body, threadNames)) {
+        const workerHops = normalizeWorkerHops(inout hopped.body, module.program, threadNames);
+        const mainHops = normalizeMainHops(inout hopped.body, threadNames);
+        // As in lowering: hops only where the general frame takes the body.
+        if ((mainHops && functionUsesGeneralFrame(module.program, hopped)) || (!mainHops && workerHops)) {
           try validateNativeFunction(module.path, graphModuleIndex, modules, graph, hopped, "", Array<String>());
           continue;
         }
