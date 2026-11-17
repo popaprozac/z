@@ -5,6 +5,41 @@ import {
   ExpressionSyntax, StatementArena, StatementKind, TypeReference,
 } from "./parser.zs";
 
+// Statements of closure bodies: they run in their own invocation (a worker
+// thread, a callback), not in the enclosing function's frame.
+export function closureOwnedStatements(in arena: StatementArena): Array<boolean> {
+  let pending = Array<usize>();
+  for (const statement of arena.nodes) {
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => for (const node of tree.nodes) {
+          if (node.kind != ExpressionKind.closureExpression) continue;
+          for (const owned of node.statements) {
+            pending.push(owned);
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  let owned = Array<boolean>();
+  while (owned.length < arena.nodes.length) {
+    owned.push(false);
+  }
+  let cursor: usize = 0;
+  while (cursor < pending.length) {
+    const statement = pending[cursor];
+    cursor = cursor + 1;
+    if (statement >= owned.length || owned[statement]) continue;
+    owned[statement] = true;
+    for (const child of arena.nodes[statement].children) {
+      pending.push(child);
+    }
+  }
+  return owned;
+}
+
 // Local names of `thread` imported from std/thread.
 export function mainPlacementThreadNames(in program: Program): Array<String> {
   let names = Array<String>();
@@ -643,8 +678,12 @@ export function functionUsesGeneralFrame(
   // Borrowed parameters are pointers into the caller's storage, which stays
   // in place while the caller is suspended on this frame.
   if (!declaration.asynchronous || declaration.executorAffinity.byteLength != 0) return false;
+  const closureOwned = closureOwnedStatements(declaration.body);
   let suspends = false;
+  let suspendIndex: usize = 0;
   for (const statement of declaration.body.nodes) {
+    suspendIndex = suspendIndex + 1;
+    if (closureOwned[suspendIndex - 1]) continue;
     if (statement.kind == StatementKind.yieldStatement || statement.kind == StatementKind.forAwaitStatement
       || statement.kind == StatementKind.forTryAwaitStatement) suspends = true;
     match (in statement.expression) {
@@ -675,7 +714,11 @@ function frameLocalNamesAreUnique(in declaration: FunctionDeclaration): boolean 
   for (const parameter of declaration.parameters) { names.push(copy parameter.name); }
   // A `for await` binding lives in the frame too; loops may share one.
   let loopNames = Array<String>();
+  const closureOwned = closureOwnedStatements(declaration.body);
+  let statementIndex: usize = 0;
   for (const statement of declaration.body.nodes) {
+    statementIndex = statementIndex + 1;
+    if (closureOwned[statementIndex - 1]) continue;
     if (statement.kind == StatementKind.forAwaitStatement || statement.kind == StatementKind.forTryAwaitStatement) {
       let seen = false;
       for (const name of loopNames) { if (name == statement.name) seen = true; }
@@ -780,12 +823,14 @@ function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration, in thre
     if (statement.kind != StatementKind.asyncScopeStatement || statement.children.length != 1) continue;
     for (const child of declaration.body.nodes[statement.children[0]].children) { frameLevel.push(child); }
   }
+  const closureOwned = closureOwnedStatements(declaration.body);
   let spawnIndex: usize = 0;
   while (spawnIndex < declaration.body.nodes.length) {
     const statement = view declaration.body.nodes[spawnIndex];
     let root = false;
     for (const candidate of frameLevel) { if (candidate == spawnIndex) root = true; }
     spawnIndex = spawnIndex + 1;
+    if (closureOwned[spawnIndex - 1]) continue;
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
@@ -812,7 +857,10 @@ function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration, in thre
       none => {}
     }
   }
+  let joinIndex: usize = 0;
   for (const statement of declaration.body.nodes) {
+    joinIndex = joinIndex + 1;
+    if (closureOwned[joinIndex - 1]) continue;
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => {

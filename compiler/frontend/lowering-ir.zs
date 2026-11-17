@@ -19,13 +19,17 @@ import {
   FieldDeclaration,
   FunctionDeclaration,
   ModuleConstantDeclaration,
+  Parameter,
   ParameterMode,
   Program,
   ReceiverMode,
   Statement,
   StatementArena,
   StatementKind,
+  TypeNameReference,
+  TypeParameter,
   TypeReference,
+  Visibility,
   expressionKindName,
   statementKindName,
 } from "./parser.zs";
@@ -428,6 +432,9 @@ export struct LoweredExpression {
   placedInline: boolean = false;
   // Its `inout` and `move` captures, which the helper may update in place.
   placedMutableCaptures: Array<String> = Array<String>();
+  // An async `thread.spawn` worker whose body runs as this lifted general
+  // frame (a program function) on the worker's executor; empty otherwise.
+  workerFrameName: String = "";
   closureParameterCount: usize = 0;
   closureParameterModes: Array<String> = Array<String>();
   closureParameterTypes: Array<LoweredType> = Array<LoweredType>();
@@ -10139,6 +10146,21 @@ function collectThreadClosureCaptures(
         );
       }
     };
+    captures.push(try threadClosureCapture(program, importedTypes, captureName, type, false));
+    index = index + 1;
+  }
+  return captures;
+}
+
+// The thread transfer rule for one capture: which types may cross, and
+// which the worker owns (moved in) rather than shares.
+function threadClosureCapture(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in captureName: String,
+  in type: LoweredType,
+  framed: boolean
+): LoweredClosureCapture throws String {
     const needsCleanup = moduleTypeNeedsCleanup(
       program,
       importedTypes,
@@ -10163,8 +10185,10 @@ function collectThreadClosureCaptures(
     ) {
       throw `native thread.spawn cannot retain non-shareable ARC capture ${captureName} of type ${type.name} yet`;
     }
+    // A framed worker owns a moved value as a frame parameter.
     if (
       needsCleanup
+      && !framed
       && type.kind != LoweredTypeKind.stringType
       && !sharedArc
       && !sharedScope
@@ -10173,14 +10197,11 @@ function collectThreadClosureCaptures(
     ) {
       throw `native thread.spawn does not support ownership-bearing capture ${captureName} yet`;
     }
-    captures.push(LoweredClosureCapture({
-      name: move captureName,
-      type,
+    return LoweredClosureCapture({
+      name: copy captureName,
+      type: copy type,
       owned: needsCleanup && !sharedArc && !sharedScope,
-    }));
-    index = index + 1;
-  }
-  return captures;
+    });
 }
 
 // Walk executable roots, not the flattened expression arena: another closure's
@@ -23014,6 +23035,344 @@ function callableOwnerIsAsynchronous(in program: Program, in ownerName: String):
   return false;
 }
 
+// An async worker body that is more than one `return await f()` (which the
+// worker drives directly) runs as a general frame of its own.
+function threadWorkerNeedsFrame(in arena: StatementArena, in statements: Array<usize>): boolean {
+  if (statements.length != 1) return true;
+  const only = view arena.nodes[statements[0]];
+  if (only.kind != StatementKind.returnStatement) return true;
+  return match (in only.expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => tree.nodes[tree.root].kind != ExpressionKind.awaitExpression;
+      none => true;
+    }
+    none => true;
+  };
+}
+
+function remappedSyntax(in syntax: Option<ExpressionSyntax>, in mapped: Array<usize>): Option<ExpressionSyntax> {
+  return match (in syntax) {
+    some(value) => {
+      let updated = copy value;
+      match (in value.tree) {
+        some(tree) => {
+          let remapped = copy tree;
+          let node: usize = 0;
+          while (node < remapped.nodes.length) {
+            let statements = Array<usize>();
+            for (const statement of tree.nodes[node].statements) {
+              statements.push(mapped[statement] - 1);
+            }
+            remapped.nodes[node].statements = statements;
+            node = node + 1;
+          }
+          updated.tree = Option.some(remapped);
+        }
+        none => {}
+      }
+      select Option.some(updated);
+    }
+    none => Option<ExpressionSyntax>.none;
+  };
+}
+
+// The statements reachable from `roots` (through statement children and the
+// statements of expression nodes) as an arena of their own, re-indexed.
+function extractStatementArena(in arena: StatementArena, in roots: Array<usize>): StatementArena {
+  let mapped = Array<usize>();
+  while (mapped.length < arena.nodes.length) {
+    mapped.push(0);
+  }
+  let order = Array<usize>();
+  let pending = copy roots;
+  let cursor: usize = 0;
+  while (cursor < pending.length) {
+    const old = pending[cursor];
+    cursor = cursor + 1;
+    if (mapped[old] > 0) continue;
+    order.push(old);
+    mapped[old] = order.length;
+    for (const child of arena.nodes[old].children) {
+      pending.push(child);
+    }
+    match (in arena.nodes[old].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => for (const node of tree.nodes) {
+          for (const statement of node.statements) {
+            pending.push(statement);
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+    match (in arena.nodes[old].secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => for (const node of tree.nodes) {
+          for (const statement of node.statements) {
+            pending.push(statement);
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  let nodes = Array<Statement>();
+  for (const old of order) {
+    let node = copy arena.nodes[old];
+    let children = Array<usize>();
+    for (const child of arena.nodes[old].children) {
+      children.push(mapped[child] - 1);
+    }
+    node.children = children;
+    node.expression = remappedSyntax(arena.nodes[old].expression, mapped);
+    node.secondExpression = remappedSyntax(arena.nodes[old].secondExpression, mapped);
+    nodes.push(node);
+  }
+  let newRoots = Array<usize>();
+  for (const root of roots) {
+    newRoots.push(mapped[root] - 1);
+  }
+  return StatementArena({ nodes, roots: newRoots });
+}
+
+function collectDeclaredNames(in tree: ExpressionTree, inout declared: Array<String>): void {
+  for (const node of tree.nodes) {
+    if (node.kind == ExpressionKind.closureParameterExpression
+      || node.kind == ExpressionKind.matchArmExpression) declared.push(copy node.value);
+  }
+}
+
+// A lifted worker's captures: names its body uses that it does not declare
+// and that name a value visible where the closure is written.
+function liftedWorkerCaptures(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in ownerName: String,
+  in body: StatementArena,
+  useOffset: usize
+): Array<LoweredClosureCapture> throws String {
+  let declared = Array<String>();
+  for (const statement of body.nodes) {
+    if (statement.name.byteLength > 0) declared.push(copy statement.name);
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => collectDeclaredNames(tree, inout declared);
+        none => {}
+      }
+      none => {}
+    }
+  }
+  let captures = Array<LoweredClosureCapture>();
+  for (const statement of body.nodes) {
+    let trees = Array<ExpressionTree>();
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => trees.push(copy tree);
+        none => {}
+      }
+      none => {}
+    }
+    match (in statement.secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => trees.push(copy tree);
+        none => {}
+      }
+      none => {}
+    }
+    for (const tree of trees) {
+      for (const node of tree.nodes) {
+        if (node.kind != ExpressionKind.identifierExpression) continue;
+        if (node.value == "this") throw "native async worker frames cannot capture `this` yet";
+        let skip = false;
+        for (const name of declared) {
+          if (name == node.value) skip = true;
+        }
+        for (const capture of captures) {
+          if (capture.name == node.value) skip = true;
+        }
+        if (skip) continue;
+        const typeName = match (namedValueTypeName(program, evidence, ownerName, node.value, useOffset)) {
+          some(name) => name;
+          none => "";
+        };
+        if (typeName.byteLength == 0) continue;
+        const type = try lowerModuleTypeName(program, importedTypes, typeName);
+        captures.push(try threadClosureCapture(program, importedTypes, node.value, type, true));
+      }
+    }
+  }
+  return captures;
+}
+
+function liftedWorkerName(in arena: StatementArena, in statements: Array<usize>): String {
+  if (statements.length == 0) return "";
+  return `__z_worker_${arena.nodes[statements[0]].offset}`;
+}
+
+function programLiftsWorker(in program: Program, in arena: StatementArena, in statements: Array<usize>): boolean {
+  const name = liftedWorkerName(arena, statements);
+  if (name.byteLength == 0) return false;
+  for (const declaration of program.functions) {
+    if (declaration.name == name) return true;
+  }
+  return false;
+}
+
+// `thread.spawn(async () => { ... })`: the body becomes a general frame of its
+// own, a synthesized async function whose parameters are the captures; the
+// worker thread drives it on its private executor. Its nodes keep their
+// source offsets, so the module's semantic evidence still describes them.
+function liftedWorkerDeclaration(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in tree: ExpressionTree,
+  closure: usize
+): FunctionDeclaration throws String {
+  const sourceStatements = copy tree.nodes[closure].statements;
+  const first = view arena.nodes[sourceStatements[0]];
+  const bodyOffset = first.offset;
+  const body = extractStatementArena(arena, sourceStatements);
+  const captures = try liftedWorkerCaptures(program, importedTypes, evidence, ownerName, body, bodyOffset);
+  let parameters = Array<Parameter>();
+  for (const capture of captures) {
+    parameters.push(Parameter({
+      name: copy capture.name,
+      mode: ParameterMode.value,
+      type: TypeReference({ name: loweredTypeIdentity(capture.type), references: Array<TypeNameReference>(),
+        offset: bodyOffset, line: first.line, column: first.column }),
+      offset: bodyOffset, line: first.line, column: first.column,
+    }));
+  }
+  const declaredResult = tree.nodes[closure].labels[0].copyBytes(0, tree.nodes[closure].labels[0].byteLength);
+  let resultName = declaredResult.byteLength > 0 ? copy declaredResult : "void";
+  let errorName = copy tree.nodes[closure].labels[1];
+  // An undeclared result is the inferred worker handle's: Task<T, E>.
+  if (declaredResult.byteLength == 0) {
+    for (const resolution of evidence.expressionResolutions) {
+      if (resolution.offset != tree.nodes[closure].offset) continue;
+      match (nativeFunctionSignature(resolution.typeName)) {
+        some(signature) => {
+          resultName = copy signature.returnType;
+          errorName = copy signature.errorType;
+        }
+        none => {}
+      }
+    }
+  }
+  let errorType = Option<TypeReference>.none;
+  if (errorName.byteLength > 0) {
+    errorType = Option.some(TypeReference({ name: errorName, references: Array<TypeNameReference>(),
+      offset: bodyOffset, line: first.line, column: first.column }));
+  }
+  return FunctionDeclaration({
+    name: liftedWorkerName(arena, sourceStatements),
+    testDeclaration: false,
+    testName: "",
+    nativeCExport: false,
+    asynchronous: true,
+    staticMethod: false,
+    visibility: Visibility.privateVisibility,
+    typeParameters: Array<TypeParameter>(),
+    receiverMode: ReceiverMode.none,
+    parameters,
+    returnType: TypeReference({ name: resultName, references: Array<TypeNameReference>(),
+      offset: bodyOffset, line: first.line, column: first.column }),
+    errorType,
+    executorAffinity: "",
+    threadContract: "",
+    body,
+    offset: bodyOffset,
+    line: first.line,
+    column: first.column,
+  });
+}
+
+// The async workers of a function body that run as lifted frames.
+function collectLiftedWorkers(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in declaration: FunctionDeclaration,
+  inout lifted: Array<FunctionDeclaration>
+): void throws String {
+  for (const statement of declaration.body.nodes) {
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          let index: usize = 0;
+          while (index < tree.nodes.length) {
+            const node = view tree.nodes[index];
+            let closure = tree.nodes.length;
+            if (node.kind == ExpressionKind.callExpression && node.children.length == 2) {
+              const callee = node.children[0];
+              if (tree.nodes[callee].kind == ExpressionKind.memberExpression && tree.nodes[callee].value == "spawn"
+                && tree.nodes[callee].children.length == 1) {
+                const namespace = tree.nodes[callee].children[0];
+                if (tree.nodes[namespace].kind == ExpressionKind.identifierExpression
+                  && isImportedStandardBinding(program, "std/thread", "thread", tree.nodes[namespace].value)) {
+                  closure = node.children[1];
+                }
+              }
+            }
+            if (closure < tree.nodes.length && tree.nodes[closure].kind == ExpressionKind.closureExpression
+              && tree.nodes[closure].labels.length >= 4 && tree.nodes[closure].labels[2] == "block"
+              && tree.nodes[closure].labels[3] == "async"
+              && threadWorkerNeedsFrame(declaration.body, tree.nodes[closure].statements)) {
+              const worker = try liftedWorkerDeclaration(program, importedTypes, evidence, declaration.body,
+                declaration.name, tree, closure);
+              // A TaskScope capture keeps the worker tier that propagates
+              // child cancellation through the scope.
+              let capturesScope = false;
+              for (const parameter of worker.parameters) {
+                if (parameter.type.name == "TaskScope") capturesScope = true;
+              }
+              // Only a body the general frame runs is lifted; others (such as
+              // `thread.main` placement inside the worker) keep their tiers.
+              if (!capturesScope && functionUsesGeneralFrame(program, worker)) lifted.push(worker);
+            }
+            index = index + 1;
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+}
+
+// The worker's spawn passes its captures and names the lifted frame instead
+// of lowering the body inline.
+function attachLiftedWorker(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  expressionIndex: usize,
+  inout expressions: Array<LoweredExpression>
+): void throws String {
+  const sourceStatements = copy expressions[expressionIndex].statements;
+  const name = liftedWorkerName(arena, sourceStatements);
+  const body = extractStatementArena(arena, sourceStatements);
+  const captures = try liftedWorkerCaptures(program, importedTypes, evidence, ownerName, body,
+    arena.nodes[sourceStatements[0]].offset);
+  for (const capture of captures) {
+    expressions[expressionIndex].labels.push(copy capture.name);
+    expressions[expressionIndex].labels.push(loweredTypeIdentity(capture.type));
+    const captureValue = pushThreadCaptureValue(inout expressions, capture);
+    expressions[expressionIndex].children.push(captureValue);
+  }
+  expressions[expressionIndex].statements = Array<usize>();
+  expressions[expressionIndex].labels[0] = "lowered-block";
+  expressions[expressionIndex].workerFrameName = name;
+}
+
 function completeNativeClosureBlocks(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -23405,6 +23764,19 @@ function completeNativeClosureBlocks(
       expressionIndex,
       inout expressions
     );
+    }
+    if (
+      expressions[expressionIndex].kind == LoweredExpressionKind.threadSpawn
+      && expressions[expressionIndex].labels.length >= 6
+      && expressions[expressionIndex].labels[0] == "block"
+      && expressions[expressionIndex].labels[2] == "async"
+      && threadWorkerNeedsFrame(arena, expressions[expressionIndex].statements)
+      && programLiftsWorker(program, arena, expressions[expressionIndex].statements)
+    ) {
+      try attachLiftedWorker(program, importedTypes, evidence, arena, ownerName, expressionIndex, inout expressions);
+      try resolveThreadCaptureBindingOffsets(program, arena, ownerName, closureUseOffset, expressionIndex, inout expressions);
+      expressionIndex = expressionIndex + 1;
+      continue;
     }
     if (
       expressions[expressionIndex].kind
@@ -29815,7 +30187,7 @@ function lowerFunction(
     // general frame: skip the shape tiers.
     const asyncGeneratorBody = generatorCompletionTypeName(declaration);
     const cxxFrame = asyncSignatureHoldsCxx(program, importedTypes, declaration) || isSomeString(asyncGeneratorBody)
-      || functionAwaitsStreamStep(declaration);
+      || functionAwaitsStreamStep(declaration) || stringStartsWith(declaration.name, "__z_worker_");
     const firstTierSchedulerYield = !cxxFrame && executorAffinity != "thread.main"
       && functionUsesFirstTierSchedulerYield(program, declaration);
     const firstTierDoubleAwait = functionUsesFirstTierDoubleAwait(
@@ -31191,6 +31563,12 @@ function rewriteModuleCallTargets(
 ): void {
   let index: usize = 0;
   while (index < lowered.expressions.length) {
+    // A lifted worker frame is a module function too.
+    const workerFrame = copy lowered.expressions[index].workerFrameName;
+    if (workerFrame.byteLength > 0
+      && functionNeedsNativeNamespace(program, collisionNames, moduleIndex, entryIndex, workerFrame)) {
+      lowered.expressions[index].workerFrameName = emittedModuleFunctionName(moduleIndex, workerFrame);
+    }
     if (
       lowered.expressions[index].kind
         == LoweredExpressionKind.directFunctionValue
@@ -35160,6 +35538,54 @@ function lowerInstanceMethod(
 }
 
 function appendLoweredProgram(
+  in program: Program,
+  in sourcePath: String,
+  inout importedTypes: Array<LoweredImportedType>,
+  in genericStructUses: Array<LoweredGenericStructUse>,
+  in genericMethodUses: Array<LoweredGenericMethodUse>,
+  in genericFunctionUses: Array<LoweredGenericFunctionUse>,
+  in structInstances: Array<LoweredStructInstanceEvidence>,
+  in evidence: ModuleSemanticEvidence,
+  in nativeCExportNames: Array<String>,
+  in privateTypeCollisionNames: Array<String>,
+  moduleIndex: usize,
+  entryIndex: usize,
+  includeTests: boolean,
+  inout embeddedBytes: Array<LoweredEmbeddedBytes>,
+  inout constants: Array<LoweredConstant>,
+  inout fixedArrays: Array<LoweredFixedArray>,
+  inout arrays: Array<LoweredArray>,
+  inout slices: Array<LoweredSlice>,
+  inout maps: Array<LoweredMap>,
+  inout sets: Array<LoweredSet>,
+  inout functionTypes: Array<LoweredFunctionType>,
+  inout structs: Array<LoweredStruct>,
+  inout enums: Array<LoweredEnum>,
+  inout functions: Array<LoweredFunction>
+): void throws String {
+  // Async worker bodies that need frames lower as functions of their own.
+  let lifted = Array<FunctionDeclaration>();
+  for (const declaration of program.functions) {
+    try collectLiftedWorkers(program, importedTypes, evidence, declaration, inout lifted);
+  }
+  if (lifted.length == 0) {
+    try appendLoweredProgramBody(program, sourcePath, inout importedTypes, genericStructUses, genericMethodUses,
+      genericFunctionUses, structInstances, evidence, nativeCExportNames, privateTypeCollisionNames, moduleIndex,
+      entryIndex, includeTests, inout embeddedBytes, inout constants, inout fixedArrays, inout arrays, inout slices,
+      inout maps, inout sets, inout functionTypes, inout structs, inout enums, inout functions);
+    return;
+  }
+  let extended = copy program;
+  for (const worker of lifted) {
+    extended.functions.push(copy worker);
+  }
+  try appendLoweredProgramBody(extended, sourcePath, inout importedTypes, genericStructUses, genericMethodUses,
+    genericFunctionUses, structInstances, evidence, nativeCExportNames, privateTypeCollisionNames, moduleIndex,
+    entryIndex, includeTests, inout embeddedBytes, inout constants, inout fixedArrays, inout arrays, inout slices,
+    inout maps, inout sets, inout functionTypes, inout structs, inout enums, inout functions);
+}
+
+function appendLoweredProgramBody(
   in program: Program,
   in sourcePath: String,
   inout importedTypes: Array<LoweredImportedType>,

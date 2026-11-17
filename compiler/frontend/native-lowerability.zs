@@ -1825,7 +1825,8 @@ function requireNativeThreadCaptureType(
   in captureName: String,
   in typeName: String,
   line: usize,
-  column: usize
+  column: usize,
+  framed: boolean
 ): void throws ModuleResolveError {
   const actualType = transparentTypeName(graph.modules, moduleIndex, typeName);
   // An endpoint crosses only with a message type that can; an optional one
@@ -1884,7 +1885,8 @@ function requireNativeThreadCaptureType(
           length
         );
       }
-      if (!sharedClassCandidate) {
+      // A framed worker owns a moved value as a frame parameter.
+      if (!sharedClassCandidate && !framed) {
         let length = captureName.byteLength;
         if (length == 0) length = 1;
         throw loweringBoundary(
@@ -1916,7 +1918,7 @@ function validateNativeThreadCaptureExpression(
     && !closureParameterNamed(tree, closureIndex, node.value)
   ) {
     const typeName = resolvedLocalBindingType(graph, moduleIndex, node.value, node.offset);
-    try requireNativeThreadCaptureType(path, moduleIndex, graph, node.value, typeName, node.line, node.column);
+    try requireNativeThreadCaptureType(path, moduleIndex, graph, node.value, typeName, node.line, node.column, false);
   }
   let childIndex: usize = 0;
   while (childIndex < node.children.length) {
@@ -1940,6 +1942,8 @@ struct ThreadBlockScope {
   start: usize;
   parameters: Array<Parameter>;
   closureOffset: usize;
+  // An async worker body runs as a general frame that owns its captures.
+  framed: boolean = false;
 }
 
 // The type a name used inside a block-bodied thread closure carries across:
@@ -2041,7 +2045,7 @@ function validateThreadBlockSyntaxCaptures(
             const typeName = threadBlockCaptureType(graph, moduleIndex, body, enclosing, node.value, node.offset);
             if (typeName.byteLength > 0) {
               try requireNativeThreadCaptureType(path, moduleIndex, graph, node.value, typeName, node.line,
-                node.column);
+                node.column, enclosing.framed);
             }
           }
           for (const statement of node.statements) {
@@ -2109,6 +2113,7 @@ function validateThreadSpawnBlocks(
               start: scopeStart,
               parameters: copy parameters,
               closureOffset: tree.nodes[closure].offset,
+              framed: tree.nodes[closure].labels.length >= 4 && tree.nodes[closure].labels[3] == "async",
             });
             for (const statement of tree.nodes[closure].statements) {
               try validateThreadBlockStatementCaptures(path, moduleIndex, graph, body, enclosing, statement);
