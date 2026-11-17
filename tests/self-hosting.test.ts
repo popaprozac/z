@@ -11069,6 +11069,10 @@ test("compiles a multi-module Z application through the standalone native driver
     "examples/async/thread-errors.zs",
     "examples/async/thread-spawn.zs",
     "tests/fixtures/native-frame-thread-awaits.zs",
+    // Async worker bodies run as lifted general frames on the worker's
+    // executor: awaits, delays, spawned children, owned captures, typed
+    // errors, and prompt cancellation of a sleeping worker.
+    "tests/fixtures/native-async-worker-frames.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);

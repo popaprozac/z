@@ -1455,8 +1455,16 @@ in root locals: `await t` (including `try`/`attempt` for `Task<T, E>`)
 suspends the frame until the worker reports through the executor's external
 queue, and `await t.cancel()` cancels the worker, joins it, and releases it.
 Native semantics types `thread.spawn(...)` as `Task<T>` or `Task<T, E>` from
-the worker closure's declared or inferred signature, as Stage 0 does.
-Cancellation before
+the worker closure's declared or inferred signature, as Stage 0 does. An async
+`thread.spawn` worker whose block body is more than one `return await f()`
+runs as a general frame of its own: lowering lifts the body into a
+synthesized async function (its captures become owned parameters, moved in
+from the worker context) and the worker thread drives that frame on its
+private executor. A worker blocked on its executor's timer or external wait
+is woken when its task storage is, so `await t.cancel()` reaches a sleeping
+worker frame at once. Workers that capture a `TaskScope` keep the
+terminal-await tier; placed `thread.main` work inside a worker frame remains
+staged. Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted
 invocation or cancelling before entry still destroys them. Implicit ARC argument

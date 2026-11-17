@@ -17137,6 +17137,7 @@ function appendAsyncCallableRuntime(
     output.append("static __attribute__((unused)) void z_stage1_async_executor_init_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL) abort();\n  executor->external_completions = NULL;\n  executor->active_external_callbacks = 0;\n#if defined(_WIN32)\n  InitializeCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_mutex_init(&executor->external_mutex, NULL) != 0) abort();\n#endif\n  z_stage1_async_init_condition(executor);\n  z_stage1_async_host_init(executor);\n}\n\n");
     output.append("static __attribute__((unused)) void z_stage1_async_executor_destroy_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL || executor->external_completions != NULL || executor->active_external_callbacks != 0) abort();\n  z_stage1_async_host_destroy(executor);\n#if defined(_WIN32)\n  DeleteCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_cond_destroy(&executor->external_condition) != 0) abort();\n  if (pthread_mutex_destroy(&executor->external_mutex) != 0) abort();\n#endif\n}\n\n");
     output.append("static void z_stage1_async_begin_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL || task->external_completion) abort();\n  task->external_completion = true;\n  z_stage1_async_external_lock(task->executor);\n  task->executor->active_external_callbacks += 1;\n  z_stage1_async_external_unlock(task->executor);\n}\n\n");
+    output.append("static __attribute__((unused)) void z_stage1_async_wake_executor(Z_AsyncExecutor *executor) {\n  if (executor == NULL) return;\n  z_stage1_async_external_lock(executor);\n  z_stage1_async_host_signal(executor);\n#if defined(_WIN32)\n  WakeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_cond_signal(&executor->external_condition) != 0) abort();\n#endif\n  z_stage1_async_external_unlock(executor);\n}\n\n");
     output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL) abort();\n  Z_AsyncExecutor *executor = task->executor;\n  z_stage1_async_external_lock(executor);\n  if (!task->external_completion || task->completion_queued || executor->active_external_callbacks == 0) abort();\n  executor->active_external_callbacks -= 1;\n  if (!task->external_resume) {\n    task->cancelled = task->cancellation_requested;\n    task->completed = true;\n  }\n  task->completion_queued = true;\n  task->completion_next = executor->external_completions;\n  executor->external_completions = task;\n  z_stage1_async_host_signal(executor);\n#if defined(_WIN32)\n  WakeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_cond_signal(&executor->external_condition) != 0) abort();\n#endif\n  z_stage1_async_external_unlock(executor);\n}\n\n");
   }
   output.append("static __attribute__((unused)) void z_stage1_async_enqueue(Z_AsyncExecutor *executor, Z_AsyncTask *task) {\n");
@@ -20010,7 +20011,9 @@ function appendThreadTaskRuntime(
     output.append(taskName);
     output.append("_wake(Z_");
     output.append(taskName);
-    output.append("Storage *storage) {\n#if defined(_WIN32)\n  WakeAllConditionVariable(&storage->state_condition);\n#else\n  if (pthread_cond_broadcast(&storage->state_condition) != 0) abort();\n#endif\n}\n\n");
+    output.append("Storage *storage) {\n#if defined(_WIN32)\n  WakeAllConditionVariable(&storage->state_condition);\n#else\n  if (pthread_cond_broadcast(&storage->state_condition) != 0) abort();\n#endif\n");
+    if (usesAsyncThreadAwait) output.append("  z_stage1_async_wake_executor(storage->worker_executor);\n");
+    output.append("}\n\n");
     output.append("static __attribute__((unused)) bool Z_");
     output.append(taskName);
     output.append("_is_cancellation_requested(Z_");
@@ -23143,6 +23146,77 @@ function workerStatementContainsAwait(in declaration: LoweredFunction, index: us
   return false;
 }
 
+// An async worker whose body is a lifted general frame: the worker thread
+// starts the frame on its private executor with the captures (an owned
+// capture moves in), drives it with worker cancellation, and returns its
+// result to the task storage.
+function appendThreadFrameBody(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  in spawn: LoweredExpression,
+  bodyChildCount: usize,
+  in resultType: LoweredType
+): void throws String {
+  const external = programUsesObjectiveCAsyncCompletion(program)
+    || programUsesAsyncThreadAwait(program);
+  output.append("  Z_AsyncExecutor executor = {};\n");
+  if (external) output.append("  z_stage1_async_executor_init_external(&executor);\n");
+  appendWorkerExecutorRegistration(inout output, program, spawn.value, "&executor");
+  output.append("  Z_AsyncInvocation invocation = _z_stage1_yield_");
+  appendCBindingName(inout output, spawn.workerFrameName);
+  output.append("_start(&executor");
+  let captureLabel: usize = 6;
+  let moved = Array<usize>();
+  while (captureLabel + 1 < spawn.labels.length) {
+    const captureIndex = (captureLabel - 6) / 2;
+    const captureType = try loweredTypeForIdentity(program, spawn.labels[captureLabel + 1]);
+    output.append(", ");
+    if (threadSpawnOwnsCapture(declaration, spawn, bodyChildCount, captureIndex)) {
+      moved.push(captureIndex);
+      output.append("*");
+    } else if (loweredTypeNeedsDeinit(program, captureType)) {
+      // A shared capture stays the context's; the frame holds its own reference.
+      if (captureType.kind != LoweredTypeKind.classType) {
+        throw "native async worker frames share only class captures in this tier";
+      }
+      output.append(`Z_${captureType.name}_retain(*`);
+      appendCBindingName(inout output, spawn.labels[captureLabel]);
+      output.append(")");
+      captureLabel = captureLabel + 2;
+      continue;
+    } else output.append("*");
+    appendCBindingName(inout output, spawn.labels[captureLabel]);
+    captureLabel = captureLabel + 2;
+  }
+  output.append(");\n");
+  for (const captureIndex of moved) {
+    output.append(`  *_z_stage1_capture_live_${captureIndex} = false;\n`);
+  }
+  output.append("  if (invocation.task == NULL) abort();\n  z_stage1_async_enqueue(&executor, invocation.task);\n  while (!invocation.task->completed) {\n");
+  output.append(`    if (Z_${spawn.value}_is_cancellation_requested(_z_stage1_task_storage)) z_stage1_async_request_cancel(invocation.task);\n`);
+  output.append("    if (!z_stage1_async_drive_one(&executor)) abort();\n  }\n  const bool cancelled = invocation.task->cancelled;\n");
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    output.append(`  ${try cType(resultType)} result = {};\n  if (!cancelled && invocation.take_result != NULL) invocation.take_result(invocation.task, &result);\n`);
+  } else {
+    output.append("  if (!cancelled && invocation.take_result != NULL) invocation.take_result(invocation.task, NULL);\n");
+  }
+  output.append("  if (invocation.destroy != NULL) invocation.destroy(invocation.task);\n  if (executor.head != NULL || executor.tail != NULL) abort();\n");
+  appendWorkerExecutorRegistration(inout output, program, spawn.value, "NULL");
+  if (external) output.append("  z_stage1_async_executor_destroy_external(&executor);\n");
+  output.append("  if (cancelled) _z_stage1_task_storage->continuation_cancelled = true;\n");
+  if (resultType.kind != LoweredTypeKind.voidType) output.append("  return result;\n");
+}
+
+// While an async worker drives its private executor, waking its task storage
+// (a cancellation request) also wakes that executor's wait.
+function appendWorkerExecutorRegistration(
+  inout output: TextBuffer, in program: LoweredProgram, in taskName: String, in executor: String
+): void {
+  if (!programUsesAsyncThreadAwait(program)) return;
+  output.append(`  Z_${taskName}_lock(_z_stage1_task_storage);\n  _z_stage1_task_storage->worker_executor = ${executor};\n  Z_${taskName}_unlock(_z_stage1_task_storage);\n`);
+}
+
 function appendThreadYieldAwaitBody(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -23156,6 +23230,7 @@ function appendThreadYieldAwaitBody(
     || programUsesAsyncThreadAwait(program);
   output.append("  Z_AsyncExecutor executor = {};\n");
   if (external) output.append("  z_stage1_async_executor_init_external(&executor);\n");
+  appendWorkerExecutorRegistration(inout output, program, spawn.value, "&executor");
   output.append(`  Z_AsyncInvocation invocation = Z_${awaited.value}_start(`);
   try appendExpression(inout output, declaration, awaited.children[0]);
   output.append(", &executor");
@@ -23176,6 +23251,7 @@ function appendThreadYieldAwaitBody(
   output.append("  if (!cancelled) {\n    if (invocation.failed != NULL && invocation.failed(invocation.task)) abort();\n    if (invocation.take_result != NULL) invocation.take_result(invocation.task, ");
   output.append(resultType.kind == LoweredTypeKind.voidType ? "NULL" : "&result");
   output.append(");\n  }\n  if (invocation.destroy != NULL) invocation.destroy(invocation.task);\n  if (invocation.release_context != NULL) invocation.release_context(invocation.callable_context);\n  if (executor.head != NULL || executor.tail != NULL) abort();\n");
+  appendWorkerExecutorRegistration(inout output, program, spawn.value, "NULL");
   if (external) output.append("  z_stage1_async_executor_destroy_external(&executor);\n");
   output.append("  if (cancelled) _z_stage1_task_storage->continuation_cancelled = true;\n");
   if (resultType.kind != LoweredTypeKind.voidType) output.append("  return result;\n");
@@ -23352,8 +23428,12 @@ function appendThreadSpawnHelpers(
         );
         captureLabel = captureLabel + 2;
       }
-      const yieldAwait = threadYieldAwaitIndex(program, declaration, expression);
-      if (yieldAwait == declaration.expressions.length) {
+      const yieldAwait = expression.workerFrameName.byteLength > 0
+        ? declaration.expressions.length
+        : threadYieldAwaitIndex(program, declaration, expression);
+      if (expression.workerFrameName.byteLength > 0) {
+        try appendThreadFrameBody(inout output, program, declaration, expression, bodyChildCount, resultType);
+      } else if (yieldAwait == declaration.expressions.length) {
         let capturesScope = false;
         let capture: usize = 7;
         while (capture < expression.labels.length) {
@@ -23386,7 +23466,9 @@ function appendThreadSpawnHelpers(
           }
         }
       }
-      if (yieldAwait < declaration.expressions.length) {
+      if (expression.workerFrameName.byteLength > 0) {
+        // The lifted frame's body was emitted above.
+      } else if (yieldAwait < declaration.expressions.length) {
         try appendThreadYieldAwaitBody(
           inout output, program, declaration, expression, yieldAwait, resultType
         );
@@ -25661,7 +25743,8 @@ function appendTypeDefinitions(
     if (usesExternalCompletion) {
       output.append("#if defined(__APPLE__)\ntypedef struct Z_AsyncHostWake Z_AsyncHostWake;\n#endif\n");
       output.append("static void z_stage1_async_begin_external_completion(Z_AsyncTask *task);\n");
-      output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task);\n\n");
+      output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task);\n");
+      output.append("static __attribute__((unused)) void z_stage1_async_wake_executor(Z_AsyncExecutor *executor);\n\n");
     }
     if (usesAsyncThreadAwait) output.append("static void z_stage1_async_enqueue(Z_AsyncExecutor *executor, Z_AsyncTask *task);\nstatic void z_stage1_async_request_cancel(Z_AsyncTask *task);\nstatic void z_stage1_async_remove_queued(Z_AsyncTask *task);\nstatic bool z_stage1_async_drive_one(Z_AsyncExecutor *executor);\n\n");
   }
@@ -25980,7 +26063,9 @@ function appendTypeDefinitions(
     output.append(taskName);
     output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool result_live;\n  bool cancellation_requested;\n  bool continuation_cancelled;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n");
     if (usesAsyncThreadAwait) {
-      output.append("  Z_AsyncTask *async_waiter;\n");
+      // An async worker's private executor, woken when the storage is (so a
+      // cancellation reaches a worker frame asleep on a timer).
+      output.append("  Z_AsyncTask *async_waiter;\n  Z_AsyncExecutor *worker_executor;\n");
     }
     output.append("  void *context;\n  ");
     if (resultType.kind != LoweredTypeKind.voidType) {
