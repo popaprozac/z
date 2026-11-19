@@ -5781,6 +5781,21 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.arrayCopyWithin) {
+    if (declaration.expressions[index].children.length != 4) {
+      throw "native C emission received a malformed Array.copyWithin";
+    }
+    output.append(`Z_${declaration.expressions[index].value}_copyWithin(&(`);
+    try appendExpression(inout output, declaration, declaration.expressions[index].children[0]);
+    output.append("), ");
+    try appendExpression(inout output, declaration, declaration.expressions[index].children[1]);
+    output.append(", ");
+    try appendExpression(inout output, declaration, declaration.expressions[index].children[2]);
+    output.append(", ");
+    try appendExpression(inout output, declaration, declaration.expressions[index].children[3]);
+    output.append(")");
+    return;
+  }
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.arrayWithCapacity
   ) {
@@ -30239,6 +30254,26 @@ function emitLoweredC(
       output.append("    default: for (size_t index = 0; index < count; index += 1) target[index] = value;\n");
       output.append("  }\n");
       output.append("  self->length += count;\n");
+      output.append("}\n\n");
+      // Array.copyWithin: the elements in [start, end) moved to target as
+      // if through a temporary, checked against the length, never growing.
+      // A short run is copied inline in the direction that keeps an overlap
+      // intact, where a memmove call costs more; the storage is read into a
+      // local so a store through a byte pointer cannot make the loop reload it.
+      output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_copyWithin(Z_${declaration.name} *self, size_t target, size_t start, size_t end) {\n`);
+      output.append("  if (start > end || end > self->length || target > self->length - (end - start)) abort();\n");
+      output.append("  const size_t count = end - start;\n");
+      output.append("  if (count == 0 || target == start) return;\n");
+      output.append(`  ${elementType} *data = (${elementType} *)self->data;\n`);
+      output.append("  if (count <= 16) {\n");
+      output.append("    if (target < start) {\n");
+      output.append("      for (size_t index = 0; index < count; index += 1) data[target + index] = data[start + index];\n");
+      output.append("    } else {\n");
+      output.append("      for (size_t index = count; index > 0; index -= 1) data[target + index - 1] = data[start + index - 1];\n");
+      output.append("    }\n");
+      output.append("  } else {\n");
+      output.append(`    memmove(data + target, data + start, count * sizeof(${elementType}));\n`);
+      output.append("  }\n");
       output.append("}\n\n");
     }
     output.append(`static inline __attribute__((unused)) void Z_${declaration.name}_push(Z_${declaration.name} *self, ${elementType} value) {\n`);

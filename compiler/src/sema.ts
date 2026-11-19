@@ -492,6 +492,7 @@ export type SemanticInfo = {
   readonly dynamicArrayPushTypes: ReadonlySet<string>;
   readonly dynamicArrayAppendTypes: ReadonlySet<string>;
   readonly dynamicArrayAppendRepeatedTypes: ReadonlySet<string>;
+  readonly dynamicArrayCopyWithinTypes: ReadonlySet<string>;
   readonly arenaCreateCalls: ReadonlyMap<number, string>;
   readonly arenaResetCalls: ReadonlySet<number>;
   readonly memoryReplaceBindings: ReadonlySet<string>;
@@ -681,6 +682,7 @@ type AnalysisState = {
   readonly dynamicArrayPushTypes: Set<string>;
   readonly dynamicArrayAppendTypes: Set<string>;
   readonly dynamicArrayAppendRepeatedTypes: Set<string>;
+  readonly dynamicArrayCopyWithinTypes: Set<string>;
   readonly unboundStoredViewContainerInitializers: Set<number>;
   readonly arenaCreateCalls: Map<number, string>;
   readonly arenaResetCalls: Set<number>;
@@ -1400,6 +1402,7 @@ export function analyze(
     dynamicArrayPushTypes: new Set(),
     dynamicArrayAppendTypes: new Set(),
     dynamicArrayAppendRepeatedTypes: new Set(),
+    dynamicArrayCopyWithinTypes: new Set(),
     unboundStoredViewContainerInitializers: new Set(),
     arenaCreateCalls: new Map(),
     arenaResetCalls: new Set(),
@@ -13875,6 +13878,7 @@ function inferExpressionInner(
             && expression.callee.property !== "reserveCapacity"
             && expression.callee.property !== "append"
             && expression.callee.property !== "appendRepeated"
+            && expression.callee.property !== "copyWithin"
           ) {
             throw new DiagnosticError(fileName, expression.callee.location, `Array has no method ${JSON.stringify(expression.callee.property)}`);
           }
@@ -13900,7 +13904,8 @@ function inferExpressionInner(
           const reserving = expression.callee.property === "reserveCapacity";
           const appending = expression.callee.property === "append";
           const repeating = expression.callee.property === "appendRepeated";
-          const expectedArguments = clearing || popping ? 0 : repeating ? 2 : 1;
+          const copying = expression.callee.property === "copyWithin";
+          const expectedArguments = clearing || popping ? 0 : repeating ? 2 : copying ? 3 : 1;
           if (expression.arguments.length !== expectedArguments) {
             throw new DiagnosticError(
               fileName,
@@ -13935,11 +13940,15 @@ function inferExpressionInner(
                     ? "Array.clear destroys the element currently being visited"
                     : popping
                     ? "Array.pop may remove the element currently being visited"
+                    : copying
+                    ? "Array.copyWithin may overwrite the element currently being visited"
                     : `Array.${expression.callee.property} may reallocate storage and invalidate the element currently being visited`],
                   helps: [clearing
                     ? "finish the loop before clearing the Array"
                     : popping
                     ? "finish the loop before popping from the Array"
+                    : copying
+                    ? "finish the loop before copying within the Array"
                     : "finish the loop before growing the Array, or iterate a separate snapshot"],
                 },
               );
@@ -14029,6 +14038,26 @@ function inferExpressionInner(
             const actualCount = inferExpression(count, locals, globals, structs, enums, fileName, state, false, "usize");
             requireAssignable("usize", actualCount, count, fileName, structs, enums, state);
             state.dynamicArrayAppendRepeatedTypes.add(String(receiverValueType));
+            return "void";
+          }
+          if (copying) {
+            // The elements in [start, end) copied to `target` as one block
+            // move, so the first tier admits only cleanup-free elements, as
+            // append does. The three positions are plain values; the range
+            // and its destination are checked against the length at run time.
+            const elementType = dynamic.elementType;
+            if (!isCleanupFreeElementType(elementType, structs, enums, state)) {
+              throw new DiagnosticError(fileName, expression.callee.location, `Array.copyWithin requires a cleanup-free element type, found ${displayAssignableType(elementType, state)}`, {
+                length: "copyWithin".length,
+                notes: ["copyWithin moves elements as a block; an element that owns storage needs its own copy"],
+                helps: ["assign each element with an explicit copy"],
+              });
+            }
+            for (const position of expression.arguments) {
+              const actualPosition = inferExpression(position, locals, globals, structs, enums, fileName, state, false, "usize");
+              requireAssignable("usize", actualPosition, position, fileName, structs, enums, state);
+            }
+            state.dynamicArrayCopyWithinTypes.add(String(receiverValueType));
             return "void";
           }
           if (popping) {

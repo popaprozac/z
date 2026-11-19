@@ -8102,6 +8102,11 @@ function emitFrameExpressionInner(
           const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
           return `Z_DynamicArray_${asyncNativeSymbolPart(writableTypeName(receiverType))}_appendRepeated(&(${receiver}), ${emitFrameExpression(expression.arguments[0], plan, fileName)}, ${emitFrameExpression(expression.arguments[1], plan, fileName)})`;
         }
+        if (parseDynamicArrayType(receiverType) && expression.callee.property === "copyWithin") {
+          const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+          const positions = expression.arguments.map((position) => emitFrameExpression(position, plan, fileName)).join(", ");
+          return `Z_DynamicArray_${asyncNativeSymbolPart(writableTypeName(receiverType))}_copyWithin(&(${receiver}), ${positions})`;
+        }
         if (parseDynamicArrayType(receiverType) && expression.callee.property === "push") {
           const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
           const argument = emitFrameExpression(expression.arguments[0], plan, fileName);

@@ -1164,3 +1164,34 @@ unchanged.
 
 Raw figures: ZJS `z/bench/speed/results/2026-10-02-inline.json`.
 
+
+## Moving a run within an Array in the ZJS engine — 2026-11-18
+
+`Array.copyWithin(target, start, end)` came from the ZJS engine's compaction of
+its small-string byte arena, which slides each live string's bytes down over
+dead ones in arena order. Without it the move was a byte loop: an Array cannot
+`append` a slice of itself (the receiver's `inout` loan meets the slice's `in`
+loan), and clang made no block copy of an element-by-element loop over one
+array, about 1.4 cycles a byte even with `uncheckedAt`/`uncheckedSet` on a
+local.
+
+bench-v8 Splay (setup and 4000 runs) keeps 353K live strings, 16.2 MB of a
+46 MB arena, and compacts every full collection when the arena is measured
+against what that collection reached. A prototype of the compaction (one pass
+over the cell table, a radix sort of the strings by start, new starts written
+back in handle order) against ZJS main `2c4c31a`, which compacts every third
+full collection:
+
+| Move | Per compaction | Instructions | Peak RSS |
+|---|---|---|---|
+| main, every third collection | 22 ms | 80.67G | 422 MB |
+| byte loop, every collection | 14.8 ms (move 7.4) | 82.81G (+2.6%) | 320 MB |
+| copy into a fresh arena by `append`, every collection | 11.4 ms (move 4.0) | 81.05G (+0.46%) | 368 MB |
+| `copyWithin`, every collection | 12.2 ms (move 3.2) | 80.98G (+0.39%) | 323-327 MB |
+
+The fresh arena gives most of the speed back but frees a 46 MB block every
+cycle, which macOS's allocator keeps resident; sized to what is live, it
+regrows by realloc and peaked at 898 MB. Moving in place with one `memmove` a
+run keeps both: the memory of the byte loop at the speed of block copies.
+(The cell-table pass took 6.1 ms in that build against 4.5 ms in the others,
+with the same source; the move is what `copyWithin` changes.)

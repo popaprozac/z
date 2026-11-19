@@ -384,6 +384,7 @@ export enum LoweredExpressionKind {
   arrayReserveCapacity,
   arrayAppend,
   arrayAppendRepeated,
+  arrayCopyWithin,
   sliceRange,
   uncheckedStore,
   mapEmpty,
@@ -16995,6 +16996,36 @@ function lowerExpressionNode(
               countInput, "usize", inout output);
             return pushExpression(inout output, LoweredExpressionKind.arrayAppendRepeated,
               receiverType.name, Array<usize>(receiver, value, count), Array<String>());
+          }
+        }
+        none => {}
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].value == "copyWithin"
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[index].children.length == 4
+    ) {
+      // `values.copyWithin(target, start, end)`: the three positions are
+      // evaluated once, in order, then the emitted helper checks the range
+      // and moves it.
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+        some(receiverTypeName) => {
+          const receiverType = try lowerModuleTypeName(program, importedTypes, receiverTypeName);
+          if (receiverType.kind == LoweredTypeKind.arrayType) {
+            const receiver = try lowerExpression(program, importedTypes, evidence, tree,
+              receiverInput, inout output);
+            markMutableStorage(inout output, receiver);
+            const target = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+              tree.nodes[index].children[1], "usize", inout output);
+            const start = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+              tree.nodes[index].children[2], "usize", inout output);
+            const end = try lowerExpressionExpected(program, importedTypes, evidence, tree,
+              tree.nodes[index].children[3], "usize", inout output);
+            return pushExpression(inout output, LoweredExpressionKind.arrayCopyWithin,
+              receiverType.name, Array<usize>(receiver, target, start, end), Array<String>());
           }
         }
         none => {}

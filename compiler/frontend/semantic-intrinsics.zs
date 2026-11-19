@@ -597,6 +597,14 @@ export function collectionMethodSignature(
       parameterModes.push("value");
       parameterTypes.push("usize");
       returnType = "void";
+    } else if (!readonlyCollection && methodName == "copyWithin") {
+      parameterModes.push("value");
+      parameterTypes.push("usize");
+      parameterModes.push("value");
+      parameterTypes.push("usize");
+      parameterModes.push("value");
+      parameterTypes.push("usize");
+      returnType = "void";
     } else if (!readonlyCollection && methodName == "pop") {
       returnType = `Option<${elementType}>`;
     } else if (!readonlyCollection && methodName == "freeze") {
@@ -758,7 +766,8 @@ export function collectionMethodMutates(
   return match (genericTypeShape(ownerType)) {
     some(generic) => generic.base == "Array"
       ? methodName == "push" || methodName == "clear" || methodName == "pop" || methodName == "reserveCapacity"
-        || methodName == "append" || methodName == "appendRepeated" || methodName == "uncheckedSet"
+        || methodName == "append" || methodName == "appendRepeated" || methodName == "copyWithin"
+        || methodName == "uncheckedSet"
       : generic.base == "Map"
       ? methodName == "set"
         || methodName == "remove"

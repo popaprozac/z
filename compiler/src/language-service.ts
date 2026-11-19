@@ -2211,6 +2211,12 @@ export function hover(source: string, fileName: string, offset: number): Hover |
           source, word.start, word.end,
         );
       }
+      if (!dynamic.readonly && word.text === "copyWithin") {
+        return markdownHover(
+          "copyWithin(target: usize, start: usize, end: usize): void\n// moves the elements in [start, end) to target, overlap allowed; checks the range against the length; never grows; cleanup-free elements only; requires exclusive mutable storage",
+          source, word.start, word.end,
+        );
+      }
       if (!dynamic.readonly && word.text === "freeze") {
         return markdownHover(
           `freeze(): readonly Array<${displayType(dynamic.elementType, context.typeDisplayNames)}>  // consumes without copying`,
@@ -6221,6 +6227,11 @@ function memberCompletions(
           kind: completionKinds.method,
           detail: `appendRepeated(value: ${displayType(dynamic.elementType, context.typeDisplayNames)}, count: usize): void  // stores the value count times in one step; may reallocate`,
           insertText: "appendRepeated()",
+        }, {
+          label: "copyWithin",
+          kind: completionKinds.method,
+          detail: "copyWithin(target: usize, start: usize, end: usize): void  // moves [start, end) to target in one step; never grows",
+          insertText: "copyWithin()",
         }, {
           label: "freeze",
           kind: completionKinds.method,

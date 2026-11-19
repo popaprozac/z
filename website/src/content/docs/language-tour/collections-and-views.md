@@ -84,6 +84,17 @@ buckets.appendRepeated(0, size);
 It takes the value and a `usize` count, has the same cleanup-free element rule
 as `append`, and only ever adds elements.
 
+Move a run of elements within one array with `copyWithin(target, start, end)`:
+
+```z
+// Close the gap at `index`, then forget the last element.
+items.copyWithin(index, index + 1, items.length);
+```
+
+The ranges may overlap. It has the same cleanup-free element rule, never grows
+or shortens the array, and traps when `[start, end)` or the run moved to
+`target` would pass the end; unlike JavaScript it does not clamp positions.
+
 Indexing is always checked. Where a program has already proven an index in
 bounds, `uncheckedAt` and `uncheckedSet` inside `unsafe` skip the check in
 release builds; see [unsafe native calls](/interop/unsafe-native-calls/).
@@ -284,7 +295,7 @@ There is no element copy, retain pass, or implicit thaw.
 :::note[Cost model]
 Fixed arrays are inline. `Array<T>` may allocate and move elements when it
 grows. `append` performs one capacity check, at most one growth, and one block
-copy; `appendRepeated` the same check and growth, then one store per element. `slice(start, end)` is one bounds check and a two-word descriptor. `Slice<T>` and local rest views are two-word borrowed descriptors. Maps
+copy; `appendRepeated` the same check and growth, then one store per element; `copyWithin` three comparisons and one block move, never allocating. `slice(start, end)` is one bounds check and a two-word descriptor. `Slice<T>` and local rest views are two-word borrowed descriptors. Maps
 and sets own hash buckets; lookup is expected constant time but may compare or
 hash user values. Safe indexing remains bounds-checked.
 :::

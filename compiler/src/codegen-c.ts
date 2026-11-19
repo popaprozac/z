@@ -485,7 +485,7 @@ export function generateC(
   }
   if (usesString || [...semanticInfo.numericConversions.values()].some(conversion => conversion.bitReinterpretation)
     || [...semanticInfo.integerOperations.values()].some(operation => operation.kind === "wrappingShiftLeft")
-    || semanticInfo.dynamicArrayAppendTypes.size > 0) {
+    || semanticInfo.dynamicArrayAppendTypes.size > 0 || semanticInfo.dynamicArrayCopyWithinTypes.size > 0) {
     lines.push("#include <string.h>");
     includedHeaders.add("string.h");
   }
@@ -924,6 +924,9 @@ export function generateC(
   }
   for (const type of semanticInfo.dynamicArrayAppendRepeatedTypes) {
     lines.push(generateDynamicArrayAppendRepeated(type, structs, enums, semanticInfo.foreignNamedTypes), "");
+  }
+  for (const type of semanticInfo.dynamicArrayCopyWithinTypes) {
+    lines.push(generateDynamicArrayCopyWithin(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const declaration of program.structs) {
     if (hasSemanticCleanupType(declaration.name, structs, enums, semanticInfo)) {
@@ -5305,6 +5308,39 @@ ${dynamicArrayShortFillCases}
     default: for (uintptr_t index = 0; index < count; index += 1) target[index] = value;
   }
   self->length += count;
+}`;
+}
+
+// Array.copyWithin for a cleanup-free element type: the elements in
+// [start, end) moved to `target` as if through a temporary, so the two ranges
+// may overlap; the range and its destination are checked against the length,
+// and nothing grows. A short run is copied inline in the direction that keeps
+// an overlap intact, where a memmove call costs more than the copy; a longer
+// one is one memmove. The storage is read into a local first: a store through
+// a byte pointer could otherwise change it, and the loop would reload it.
+function generateDynamicArrayCopyWithin(
+  name: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const dynamic = parseDynamicArrayType(name)!;
+  const arrayType = dynamicArrayName(name);
+  const elementType = mapType(dynamic.elementType, structs, enums, foreignNamedTypes);
+  return `static Z_UNUSED_FUNCTION void ${arrayType}_copyWithin(${arrayType} *self, uintptr_t target, uintptr_t start, uintptr_t end) {
+  if (start > end || end > self->length || target > self->length - (end - start)) abort();
+  const uintptr_t count = end - start;
+  if (count == 0 || target == start) return;
+  ${elementType} *data = self->data;
+  if (count <= 16) {
+    if (target < start) {
+      for (uintptr_t index = 0; index < count; index += 1) data[target + index] = data[start + index];
+    } else {
+      for (uintptr_t index = count; index > 0; index -= 1) data[target + index - 1] = data[start + index - 1];
+    }
+  } else {
+    memmove(data + target, data + start, count * sizeof(${elementType}));
+  }
 }`;
 }
 
@@ -12609,6 +12645,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           }
           if (expression.callee.property === "appendRepeated") {
             return `${dynamicArrayName(receiverValueType)}_appendRepeated(&(${receiver}), ${generateCallArgument(expression.arguments[0], context)}, ${generateExpression(expression.arguments[1], context)})`;
+          }
+          if (expression.callee.property === "copyWithin") {
+            return `${dynamicArrayName(receiverValueType)}_copyWithin(&(${receiver}), ${expression.arguments.map((position) => generateExpression(position, context)).join(", ")})`;
           }
           const argument = generateCallArgument(expression.arguments[0], context);
           return `${dynamicArrayPushName(receiverValueType)}(&(${receiver}), ${argument})`;

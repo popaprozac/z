@@ -3260,6 +3260,105 @@ test("surfaces Array.appendRepeated in hover and completion", () => {
   assert.ok(completions(source, "array-append-repeated-hover.zs", offset + "appendRepeated".length).some((entry) => entry.label === "appendRepeated"));
 });
 
+test("moves a run within an Array across both compilers and async frames", () => {
+  const directory = mkdtempSync("/tmp/z-array-copy-within-");
+  try {
+    for (const name of ["array-copy-within", "array-copy-within-async"]) {
+      const input = resolve(projectRoot, `tests/fixtures/${name}.zs`);
+      const stage0 = compileToC(readFileSync(input, "utf8"), input);
+      const checked = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(checked.status, 0, checked.stderr);
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(native.status, 0, native.stderr);
+      for (const [tier, generated] of [["stage0", stage0], ["native", native.stdout]]) {
+        // The range and its destination checked against the length, a short
+        // run copied inline in the direction an overlap needs, a longer one
+        // one memmove.
+        assert.match(generated, /void \w+_copyWithin\([^)]*\*self, [^)]*target, [^)]*start, [^)]*end\) \{\s+if \(start > end \|\| end > self->length \|\| target > self->length - \(end - start\)\) abort\(\);/, tier);
+        assert.match(generated, /if \(target < start\) \{\s+for \([^)]*\) data\[target \+ index\] = data\[start \+ index\];\s+\} else \{\s+for \([^)]*index > 0[^)]*\) data\[target \+ index - 1\] = data\[start \+ index - 1\];/, tier);
+        assert.match(generated, /memmove\(data \+ target, data \+ start, count \* sizeof\(/, tier);
+        for (const optimization of ["-O0", "-O2"]) {
+          const executable = resolve(directory, `${name}-${tier}${optimization}`);
+          const built = spawnSync("clang", ["-x", "c", "-std=c11", optimization,
+            "-Wall", "-Wextra", "-Werror", "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+            encoding: "utf8", input: generated, timeout: 30_000,
+          });
+          assert.equal(built.status, 0, built.stderr);
+          const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+          assert.equal(run.status, 0, `${name} ${tier}${optimization}: ${run.stderr}`);
+          assert.equal(run.stdout, "");
+        }
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("Array.copyWithin traps a range or a destination past the length", () => {
+  const directory = mkdtempSync("/tmp/z-array-copy-within-bounds-");
+  try {
+    // start <= end <= length and target + (end - start) <= length, or a
+    // trap; an empty run at the end is valid.
+    for (const [positions, status] of [["0, 0, 4", null], ["0, 2, 1", null], ["2, 0, 2", null], ["4, 0, 0", null], ["3, 3, 3", 0], ["1, 0, 2", 0]] as const) {
+      const source = `function main(): i32 { let values = Array<i32>(1, 2, 3); values.copyWithin(${positions}); return values[0] + values[1] + values[2] == 6 || values[1] == 1 ? 0 : 1; }`;
+      const file = resolve(directory, "bounds.zs");
+      writeFileSync(file, source);
+      const emitted = spawnSync(process.execPath, [cli, "self-host-emit", file], {
+        encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(emitted.status, 0, emitted.stderr);
+      for (const [tier, generated] of [["stage0", compileToC(source, file)], ["native", emitted.stdout]]) {
+        const executable = resolve(directory, `bounds-${tier}`);
+        const built = spawnSync("clang", ["-x", "c", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-", "-o", executable], {
+          encoding: "utf8", input: generated, timeout: 30_000,
+        });
+        assert.equal(built.status, 0, `${tier}: ${built.stderr}`);
+        const result = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+        if (status === null) assert.equal(result.signal, "SIGABRT", `${tier} copyWithin(${positions})`);
+        else assert.equal(result.status, status, `${tier} copyWithin(${positions})`);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("checks Array.copyWithin element types, storage, arity, and argument types", () => {
+  const cases: [string, RegExp][] = [
+    ["const values = Array<u8>(1); values.copyWithin(0, 0, 1);", /requires addressable let storage/],
+    ["let values = Array<u8>(1); const frozen = values.freeze(); frozen.copyWithin(0, 0, 1);", /readonly Array has no mutating method "copyWithin"/],
+    ["let names = Array<String>(\"a\", \"b\"); names.copyWithin(0, 1, 2);", /Array\.copyWithin requires a cleanup-free element type, found String/],
+    ["let values = Array<u8>(1, 2); const first = view values[0]; values.copyWithin(0, 1, 2); console.log(first);", /cannot mutate "values" while view "first" is live/],
+    ["let values = Array<u8>(1, 2); for (const value of values) { values.copyWithin(0, 1, 2); }", /cannot structurally mutate Array "values" while for\.\.\.of is borrowing it/],
+    ["let values = Array<u8>(1, 2); values.copyWithin(true, 0, 1);", /expected usize, found boolean/],
+    ["let values = Array<u8>(1, 2); const at: i32 = 0; values.copyWithin(at, 0, 1);", /expected usize, found i32/],
+    ["let values = Array<u8>(1, 2); values.copyWithin(0, 1);", /expects 3 arguments, received 2/],
+    ["let values = Array<u8>(1, 2); values.copyWithin(0, 1, 2, 3);", /expects 3 arguments, received 4/],
+  ];
+  const directory = mkdtempSync("/tmp/z-array-copy-within-invalid-");
+  try {
+    for (const [body, message] of cases) {
+      const source = `import console from "std/console"; function main(): i32 { ${body} return 0; }`;
+      assert.throws(() => compileToC(source, "array-copy-within-invalid.zs"), message);
+      const input = resolve(directory, "invalid.zs");
+      writeFileSync(input, source);
+      const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], {
+        encoding: "utf8", timeout: 120_000,
+      });
+      assert.equal(native.status, 1, `${body}\n${native.stderr}`);
+      assert.match(native.stderr, /addressable|readonly|cleanup-free|view|expected usize|argument/);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 300_000);
+
+test("surfaces Array.copyWithin in hover and completion", () => {
+  const source = "function main(): i32 { let values = Array<u8>(1, 2); values.copyWithin(0, 1, 2); return 0; }";
+  const offset = source.indexOf("copyWithin");
+  assert.match(hover(source, "array-copy-within-hover.zs", offset)?.contents.value ?? "", /copyWithin\(target: usize, start: usize, end: usize\): void/);
+  assert.ok(completions(source, "array-copy-within-hover.zs", offset + "copyWithin".length).some((entry) => entry.label === "copyWithin"));
+});
+
 test("compiles loops whose binding is never read with every warning an error in both compilers", () => {
   const directory = mkdtempSync("/tmp/z-unused-for-binding-");
   // Native iterates Arrays and fixed arrays; Stage 0 also Slices, Maps, Sets, and record destructuring.

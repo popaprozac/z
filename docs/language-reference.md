@@ -2620,6 +2620,31 @@ stores. A run of sixteen or fewer is stored inline; a longer one is a fill loop
 the C compiler may vectorize or hand to its library. A count of zero does
 nothing. Capacity-size overflow and allocation failure trap as for `push`.
 
+`copyWithin(target: usize, start: usize, end: usize): void` copies the
+elements in `[start, end)` to the positions from `target` on, as if through a
+temporary, so the two ranges may overlap: the form a compaction that slides
+live entries down over dead ones takes, or a shift that opens or closes a gap.
+
+```z
+// Close the gap at `index`, then forget the last element.
+items.copyWithin(index, index + 1, items.length);
+
+// Slide a live run down to where the kept data ends.
+bytes.copyWithin(cursor, origin, origin + length);
+```
+
+It has the same first tier as `append`: a cleanup-free element type, and
+addressable mutable `let` storage for the receiver. The three positions are
+ordinary `usize` arguments. The method neither grows nor shortens the Array:
+`start <= end <= length` and `target + (end - start) <= length` must hold, or
+it traps, as an out-of-range index does. Unlike JavaScript's `copyWithin`, it
+neither clamps positions nor counts them from the end.
+
+Cost: three comparisons, then the move: a run of sixteen or fewer is copied
+inline, front to back or back to front as the overlap needs; a longer one is
+one `memmove`. It never allocates. An empty run, or one moved onto itself,
+does nothing after the checks.
+
 `Array<T>` supports move-only native C++ values. `push(value)` transfers the
 element into the buffer. Growth allocates native storage, move-constructs each
 live element into the new allocation, destroys the old elements, and releases

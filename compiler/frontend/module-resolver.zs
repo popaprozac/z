@@ -6995,9 +6995,9 @@ function requireIntrinsicArrayMethodRules(
       );
     }
   }
-  if (methodName == "append" || methodName == "appendRepeated") {
-    // The first tier copies elements as a block, or stores one value many
-    // times, so only cleanup-free element types are accepted.
+  if (methodName == "append" || methodName == "appendRepeated" || methodName == "copyWithin") {
+    // The first tier copies or moves elements as a block, or stores one
+    // value many times, so only cleanup-free element types are accepted.
     const appendOwnerType = sourceCollectionTypeName(in ownerType);
     match (genericTypeShape(appendOwnerType)) {
       some(arrayShape) => {
