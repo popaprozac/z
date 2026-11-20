@@ -2,11 +2,13 @@ import {
   NativeInitializationState,
   NativeOwnershipState,
   NativeValueBinding,
+  activeTaskLoanConflict,
   addValueBinding,
   arenaBundleMoveIsAllowed,
   expressionCopiesObjectiveCString,
   liveViewBindingForOwner,
   setValueBindingOwnership,
+  taskLoansAreLive,
   valueBindingType,
   valueBindingInitialization,
   valueBindingIsBorrowed,
@@ -257,6 +259,21 @@ export function consumeOwnedExpressionNode(
   }
   const root = expressionStorageRootName(tree, index);
   if (root.byteLength == 0) return;
+  const childLoan = taskLoansAreLive(bindings)
+    && !arenaBundleMoveIsAllowed(bindings, tree.nodes[index].offset)
+    ? activeTaskLoanConflict(bindings, root, root, false)
+    : "";
+  if (childLoan.byteLength > 0) {
+    throw codedModuleResolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      "Z0704",
+      module.path,
+      `cannot move "${root}" while a child task borrows it`,
+      tree.nodes[index].line,
+      tree.nodes[index].column,
+      1
+    );
+  }
   const liveView = liveViewBindingForOwner(bindings, root);
   if (
     liveView.byteLength > 0
