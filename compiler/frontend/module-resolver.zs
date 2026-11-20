@@ -205,6 +205,7 @@ import {
   equivalentTypes,
   rebaseTypeName,
   semanticTypeIdentity,
+  sourceTypeDisplayName,
   transparentTypeLocation,
   transparentTypeName,
   typeSatisfiesTrait,
@@ -9966,6 +9967,20 @@ function inferExpressionNodeType(
     match (constructionLocation) {
       some(location) => {
         const constructionKind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
+        // Z classes, native subclasses included, are references built with `new`.
+        if (
+          constructionKind == ModuleSymbolKind.classSymbol
+          && !isNativeObjectiveCObjectType(modules, moduleIndex, constructionType)
+        ) {
+          const displayed = sourceTypeDisplayName(modules, moduleIndex, constructionType);
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `class construction requires new ${displayed}({ ... })`,
+            tree.nodes[calleeIndex].line,
+            tree.nodes[calleeIndex].column
+          );
+        }
         if (isForeignUnionType(modules, moduleIndex, constructionType)) {
           throw resolutionError(
             ModuleResolveErrorKind.typeMismatch,

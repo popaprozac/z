@@ -56,6 +56,7 @@ import {
   typeContainsStoredView,
   typeContainsSlice,
   typeIsArenaOwnerBundle,
+  typeIsNativeObjCReference,
   typeIsRetainedParameterViewAggregate,
   typeIsThreadTransferable,
   typeIsThreadShareable,
@@ -368,6 +369,32 @@ function validateGenericTypeConstraints(
   }
 }
 
+// Mirrors Stage 0: `T | null` is an imported Objective-C reference or a
+// nullable native handle; optional Z values use Option<T>. A foreign name
+// with no attached contract stays unchecked here, as in hasTypeName.
+function nullableTargetSupported(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in target: String
+): boolean {
+  if (typeIsNativeObjCReference(modules, moduleIndex, target)) return true;
+  const actual = transparentTypeName(modules, moduleIndex, target);
+  if (isIntrinsicTypeName(actual)) return false;
+  match (genericTypeShape(actual)) {
+    some(generic) => {
+      if (isIntrinsicTypeName(generic.base)) return false;
+    }
+    none => {}
+  }
+  return match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+      some(signature) => signature.foreignKind == "handle";
+      none => false;
+    }
+    none => true;
+  };
+}
+
 function validateTypeNameShape(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -378,8 +405,24 @@ function validateTypeNameShape(
   column: usize,
   allowInferredGeneric: boolean
 ): void throws ModuleResolveError {
+  // `(A) => B | null` is a function type whose return is nullable.
+  const functionType = match (nativeFunctionSignature(name)) {
+    some(_) => true;
+    none => false;
+  };
   const nullableTarget = nullableTargetType(name);
-  if (nullableTarget.byteLength > 0) {
+  if (nullableTarget.byteLength > 0 && !functionType) {
+    if (!nullableTargetSupported(modules, moduleIndex, nullableTarget)) {
+      const resolvedTarget = transparentTypeName(modules, moduleIndex, nullableTarget);
+      const displayed = sourceTypeDisplayName(modules, moduleIndex, resolvedTarget);
+      throw validationError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `"${displayed} | null" currently requires an imported Objective-C reference type`,
+        line,
+        column
+      );
+    }
     try validateTypeNameShape(
       module,
       modules,

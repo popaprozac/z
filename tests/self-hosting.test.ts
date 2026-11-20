@@ -3764,6 +3764,67 @@ test("rejects readonly intermediate assignment paths in both semantic frontends"
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 180_000);
 
+test("rejects class construction without new and non-reference T | null in both semantic frontends", () => {
+  const directory = mkdtempSync("/tmp/z-native-construction-nullability-");
+  const input = resolve(directory, "main.zs");
+  const rejected: Array<[string, RegExp]> = [
+    [`class Box {
+  value: i32;
+}
+function main(): i32 {
+  const box = Box({ value: 1 });
+  return box.value - 1;
+}`, /:5:15: (error: )?class construction requires new Box\(\{ \.\.\. \}\)/],
+    [`class Holder<T> { value: T; }
+type Alias = Holder<i32>;
+function main(): i32 { const held = Alias({ value: 1 }); return held.value - 1; }`,
+    /:3:37: (error: )?class construction requires new Holder<i32>\(\{ \.\.\. \}\)/],
+    [`class Box { value: i32; constructor(value: i32) { this.value = value; } }
+function main(): i32 { const box = Box(1); return box.value - 1; }`,
+    /:2:36: (error: )?class construction requires new Box\(\{ \.\.\. \}\)/],
+    [`struct Point { x: i32; }
+function take(value: Point | null): i32 { return 0; }
+function main(): i32 { return 0; }`,
+    /:2:22: (error: )?"Point \| null" currently requires an imported Objective-C reference type/],
+    [`class Box { value: i32; }
+struct Holder { box: Box | null; }
+function main(): i32 { return 0; }`,
+    /:2:22: (error: )?"Box \| null" currently requires an imported Objective-C reference type/],
+    [`function main(): i32 { const value: i32 | null = null; return 0; }`,
+    /:1:37: (error: )?"i32 \| null" currently requires an imported Objective-C reference type/],
+    [`struct Point { x: i32; }
+function visit(callback: (value: i32) => Point | null): i32 { return 0; }
+function main(): i32 { return 0; }`,
+    /:2:26: (error: )?"Point \| null" currently requires an imported Objective-C reference type/],
+  ];
+  const accepted = `class Box { value: i32; }
+struct Point { x: i32; }
+function main(): i32 {
+  const box = new Box({ value: 1 });
+  const point = Point({ x: 1 });
+  return box.value - point.x;
+}`;
+  try {
+    for (const [source, expected] of rejected) {
+      writeFileSync(input, source);
+      for (const command of ["check", "self-host-resolve"]) {
+        const result = spawnSync(process.execPath, [cli, command, input], {
+          encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+        });
+        assert.equal(result.status, 1, `${command}\n${source}\n${result.stderr}`);
+        assert.match(result.stderr, expected, `${command}\n${source}`);
+      }
+    }
+    writeFileSync(input, accepted);
+    for (const command of ["check", "self-host-resolve"]) {
+      const result = spawnSync(process.execPath, [cli, command, input], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+      });
+      assert.equal(result.status, 0, `${command}\n${result.stderr}`);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 180_000);
+
 hostToolchainTest("preserves valid Array methods and readonly reference operations natively", () => {
   const input = resolve(projectRoot, "tests/fixtures/self-host-array-readonly-controls.zs");
   const directory = mkdtempSync("/tmp/z-native-readonly-controls-");
