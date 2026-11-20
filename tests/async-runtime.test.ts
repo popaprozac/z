@@ -1481,6 +1481,149 @@ test("mutably borrows caller storage through scoped task and releases it on join
   assert.equal(cancelled.status, 0, cancelled.stderr);
 });
 
+test("borrows disjoint struct fields through scoped tasks and releases each on its join", () => {
+  const program = (body: string): string => `
+    import { delay } from "std/time";
+    struct Point { x: i32; y: i32; }
+    async function bumpAfterDelay(inout value: i32): void {
+      await delay(1);
+      value = value + 1;
+    }
+    async function bumpBoth(inout first: i32, inout second: i32): void {
+      await delay(1);
+      first = first + 1;
+      second = second + 1;
+    }
+    async function replace(inout point: Point): void { point.x = 0; }
+    async function main(): i32 {
+      let point = Point({ x: 40, y: 41 });
+      ${body}
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-async-scoped-field-inout-");
+  const runs = (name: string, source: string): void => {
+    const input = resolve(directory, `${name}.zs`);
+    writeFileSync(input, source);
+    const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+    assert.equal(result.status, 0, `${name}\n${result.stderr}`);
+  };
+  try {
+    const acceptance = program(`
+      async scope {
+        const x = task bumpAfterDelay(inout point.x);
+        task bumpAfterDelay(inout point.y);
+        await x;
+        point.x = point.x + 1;
+      }
+      return (point.x == 42 && point.y == 42) ? 0 : 1;
+    `);
+    const generated = compileToNative(acceptance, "async-scoped-field-inout.zs").source;
+    assert.match(generated, /z_async_start_bumpAfterDelay\(frame->task\.executor, &\(\(\(frame->value_point\)\.x\)\)\)/);
+    assert.match(generated, /z_async_start_bumpAfterDelay\(frame->task\.executor, &\(\(\(frame->value_point\)\.y\)\)\)/);
+    runs("acceptance", acceptance);
+
+    const bothFields = program(`
+      async scope {
+        const both = task bumpBoth(inout point.x, inout point.y);
+        await both;
+        point.x = point.x + 1;
+      }
+      return (point.x == 42 && point.y == 42) ? 0 : 1;
+    `);
+    assert.match(
+      compileToNative(bothFields, "async-scoped-two-field-inout.zs").source,
+      /z_async_start_bumpBoth\(frame->task\.executor, &\(\(\(frame->value_point\)\.x\)\), &\(\(\(frame->value_point\)\.y\)\)\)/,
+    );
+    runs("both-fields", bothFields);
+    runs("direct-await", program(`
+      await bumpAfterDelay(inout point.x);
+      await bumpAfterDelay(inout point.x);
+      return point.x == 42 ? 0 : 1;
+    `));
+    runs("cancel", program(`
+      async scope {
+        const x = task bumpAfterDelay(inout point.x);
+        await x.cancel();
+        point.x = 42;
+      }
+      return point.x == 42 ? 0 : 1;
+    `));
+    runs("scope-exit", program(`
+      async scope {
+        task bumpAfterDelay(inout point.x);
+        task bumpAfterDelay(inout point.y);
+      }
+      point.x = point.x + 1;
+      return (point.x == 42 && point.y == 42) ? 0 : 1;
+    `));
+    runs("sibling", program(`
+      async scope {
+        const x = task bumpAfterDelay(inout point.x);
+        point.y = point.y + 1;
+        await x;
+      }
+      return (point.x == 41 && point.y == 42) ? 0 : 1;
+    `));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+
+  const rejected: Array<[string, string, RegExp]> = [
+    ["same-field", `
+      async scope {
+        task bumpAfterDelay(inout point.x);
+        task bumpAfterDelay(inout point.x);
+      }
+      return 0;
+    `, /cannot borrow "point\.x" as inout while an active inout loan exists/],
+    ["whole-borrow", `
+      async scope {
+        task bumpAfterDelay(inout point.x);
+        task replace(inout point);
+      }
+      return 0;
+    `, /cannot borrow "point" as inout while an active inout loan exists/],
+    ["whole-read", `
+      async scope {
+        task bumpAfterDelay(inout point.x);
+        const copied = point;
+      }
+      return 0;
+    `, /cannot read "point" while a child task mutably borrows it/],
+    ["whole-replace", `
+      async scope {
+        task bumpAfterDelay(inout point.x);
+        point = Point({ x: 0, y: 0 });
+      }
+      return 0;
+    `, /cannot mutate "point" while a child task borrows it/],
+    ["one-branch-join", `
+      const join = true;
+      async scope {
+        const x = task bumpAfterDelay(inout point.x);
+        if (join) { await x; }
+        point.x = 1;
+      }
+      return 0;
+    `, /cannot read "point\.x" while a child task mutably borrows it/],
+    ["other-loan-after-join", `
+      async scope {
+        const x = task bumpAfterDelay(inout point.x);
+        task bumpAfterDelay(inout point.y);
+        await x;
+        point.x = point.x + 1;
+        point.y = 0;
+      }
+      return 0;
+    `, /cannot read "point\.y" while a child task mutably borrows it/],
+  ];
+  for (const [name, body, expected] of rejected) {
+    const diagnostic = diagnostics(program(body), `async-scoped-field-${name}.zs`)[0];
+    assert.equal(diagnostic?.code, "Z0704", name);
+    assert.match(diagnostic.message, expected, name);
+  }
+});
+
 test("requires loop-created child tasks to join before the back-edge", () => {
   const unsafeFanOut = `
     import { delay } from "std/time";
