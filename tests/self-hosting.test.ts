@@ -4026,6 +4026,121 @@ function touch(inout point: Point): void { point.x = 2; }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 600_000);
 
+test("runs scoped async field borrows natively as Stage 0 does", () => {
+  const directory = mkdtempSync("/tmp/z-native-field-borrows-");
+  const prelude = `import { delay } from "std/time";
+struct Point { x: i32; y: i32; }
+struct Inner { x: i32; y: i32; }
+struct Holder { inner: Inner; count: i32; }
+async function bump(inout value: i32): void { await delay(1); value = value + 1; }
+async function bumpBoth(inout first: i32, inout second: i32): void { await delay(1); first = first + 1; second = second + 1; }
+async function bumpLater(inout value: i32): void { await delay(1000); value = value + 100; }
+async function bumpOrFail(inout value: i32, fail: boolean): void throws i32 {
+  await delay(1);
+  value = value + 1;
+  if (fail) throw 7;
+}
+async function both(inout point: Point): void {
+  async scope {
+    task bump(inout point.x);
+    task bump(inout point.y);
+  }
+}
+async function directHelper(): i32 {
+  let point = Point({ x: 41, y: 0 });
+  await bump(inout point.x);
+  return point.x;
+}
+async function observe(in value: i32): i32 { await delay(1); return value; }
+`;
+  // Each body becomes `main` and must return 0 from both compilers.
+  const cases: Array<[string, string]> = [
+    ["acceptance", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    const x = task bump(inout point.x);
+    task bump(inout point.y);
+    await x;
+    point.x = point.x + 1;
+  }
+  return (point.x == 42 && point.y == 42) ? 0 : 1;`],
+    ["two-fields-one-child", `let point = Point({ x: 41, y: 41 });
+  async scope {
+    const pair = task bumpBoth(inout point.x, inout point.y);
+    await pair;
+  }
+  return (point.x == 42 && point.y == 42) ? 0 : 1;`],
+    ["nested-fields", `let holder = Holder({ inner: Inner({ x: 41, y: 41 }), count: 0 });
+  async scope {
+    const x = task bump(inout holder.inner.x);
+    task bump(inout holder.inner.y);
+    holder.count = 5;
+    await x;
+  }
+  return (holder.inner.x == 42 && holder.inner.y == 42 && holder.count == 5) ? 0 : 1;`],
+    ["borrowed-parameter-root", `let point = Point({ x: 41, y: 41 });
+  await both(inout point);
+  return (point.x == 42 && point.y == 42) ? 0 : 1;`],
+    ["throwing-child", `let point = Point({ x: 41, y: 41 });
+  async scope {
+    const x = task bumpOrFail(inout point.x, true);
+    task bump(inout point.y);
+    const outcome = attempt await x;
+    const code = match (outcome) {
+      success => 0;
+      failure(error) => error;
+    };
+    if (code != 7) return 2;
+  }
+  return (point.x == 42 && point.y == 42) ? 0 : 1;`],
+    ["cancel-in-flight", `let point = Point({ x: 41, y: 41 });
+  async scope {
+    const x = task bumpLater(inout point.x);
+    task bump(inout point.y);
+    await delay(1);
+    await x.cancel();
+    point.x = point.x + 1;
+  }
+  return (point.x == 42 && point.y == 42) ? 0 : 1;`],
+    ["direct-await-helper", `const value = await directHelper();
+  return value == 42 ? 0 : 1;`],
+    ["implicit-in-field", `let point = Point({ x: 42, y: 0 });
+  async scope {
+    const seen = task observe(point.x);
+    point.y = 42;
+    const value = await seen;
+    point.y = point.y - value;
+  }
+  return point.y;`],
+  ];
+  try {
+    for (const [name, body] of cases) {
+      const input = resolve(directory, `${name}.zs`);
+      writeFileSync(input, `${prelude}async function main(): i32 {\n  ${body}\n}\n`);
+      const stage0 = spawnSync(process.execPath, [cli, "run", input], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+      });
+      assert.equal(stage0.status, 0, `stage0 ${name}\n${stage0.stderr}`);
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(native.status, 0, `native ${name}\n${native.stderr}`);
+      if (name === "acceptance") {
+        // The child borrows the field in place, not a copy of it.
+        assert.match(native.stdout, /&\(_z_stage1_frame_binding_point\.x\)/);
+        assert.match(native.stdout, /&\(_z_stage1_frame_binding_point\.y\)/);
+      }
+      const executable = resolve(directory, name);
+      const built = spawnSync("clang", ["-x", "c", "-std=c11", "-O0", "-Wall", "-Wextra", "-Werror", "-pthread",
+        "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        encoding: "utf8", input: native.stdout, timeout: 60_000,
+      });
+      assert.equal(built.status, 0, `${name}\n${built.stderr}`);
+      const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+      assert.equal(run.status, 0, `native ${name}\n${run.stderr}`);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 600_000);
+
 hostToolchainTest("preserves valid Array methods and readonly reference operations natively", () => {
   const input = resolve(projectRoot, "tests/fixtures/self-host-array-readonly-controls.zs");
   const directory = mkdtempSync("/tmp/z-native-readonly-controls-");
