@@ -4112,18 +4112,47 @@ test("borrows disjoint fixed-layout value-struct fields independently", () => {
   assert.equal(storedClassInDiagnostic.code, "Z0301");
   assert.match(storedClassInDiagnostic.message, /cannot borrow ARC class identity/);
 
+  // A value-struct field may cross a suspension on its own; ARC class storage
+  // and another executor keep the projected borrow synchronous.
   const asyncProjection = `
+    import { thread } from "std/thread";
     struct Point { x: i32; }
+    class Counter { value: i32; }
+    struct Inner { counter: Counter; }
+    struct Holder { inner: Inner; count: i32; }
     async function increment(inout value: i32): void { value = value + 1; }
+    async function observe(in value: i32): i32 { return value; }
+    async function reset(inout inner: Inner): void { return; }
     async function main(): i32 {
-      let point = Point({ x: 41 });
+      let point = Point({ x: 40 });
       await increment(inout point.x);
-      return point.x;
+      const observed = await observe(in point.x);
+      return observed - point.x;
     }
   `;
-  const asyncDiagnostic = diagnostics(asyncProjection, "projected-async-inout.zs")[0];
-  assert.equal(asyncDiagnostic.code, "Z0704");
-  assert.match(asyncDiagnostic.message, /projected inout cannot cross an async suspension/);
+  check(asyncProjection, "projected-async-inout.zs");
+  const asyncProjectionRejections: Array<[string, string, RegExp]> = [
+    [
+      "await increment(inout point.x);",
+      "await on thread.main increment(inout point.x);",
+      /a projected field borrow cannot cross to another executor/,
+    ],
+    [
+      "await increment(inout point.x);",
+      "let counter = new Counter({ value: 1 });\n      await increment(inout counter.value);",
+      /a projected borrow across an async suspension requires a stored value-struct field without ARC class or view storage/,
+    ],
+    [
+      "await increment(inout point.x);",
+      "let holder = Holder({ inner: Inner({ counter: new Counter({ value: 1 }) }), count: 0 });\n      await reset(inout holder.inner);",
+      /a projected borrow across an async suspension requires a stored value-struct field without ARC class or view storage/,
+    ],
+  ];
+  for (const [from, to, expected] of asyncProjectionRejections) {
+    const asyncDiagnostic = diagnostics(asyncProjection.replace(from, to), "projected-async-inout-rejected.zs")[0];
+    assert.equal(asyncDiagnostic?.code, "Z0704", to);
+    assert.match(asyncDiagnostic.message, expected);
+  }
 
   const viewedFieldMutation = source.replace(
     "document.revision = document.revision + 1;",

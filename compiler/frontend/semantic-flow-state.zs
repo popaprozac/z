@@ -1156,6 +1156,11 @@ export function mergeBindingFlowStates(
         ? "inout"
         : "in";
       replaceBindingType(inout target, index, mergedCaptureMode);
+    } else if (target[index].name == "__z_native_task_loans") {
+      // A child-task loan stays live after a merge if any continuing path
+      // still holds it.
+      const mergedLoans = mergeTaskLoanText(left[index].typeName, right[index].typeName);
+      replaceBindingType(inout target, index, mergedLoans);
     } else if (left[index].typeName == right[index].typeName) {
       replaceBindingType(inout target, index, left[index].typeName);
     }
@@ -1209,6 +1214,225 @@ export function mergeBindingFlowStates(
       index,
       mergedOwnership(left[index].ownership, right[index].ownership)
     );
+    index = index + 1;
+  }
+}
+
+// Child-task loans. Each explicit `async scope` opens one task-loan binding
+// whose type text lists that scope's live loans: a `loans` header, then one
+// line per borrowed argument, `spawn\tmode\troot\tpath\thandle`. The path is
+// the root alone for a whole-value loan or `root.field...` for a stored-field
+// loan. The handle is the task binding that joins the child, empty until a
+// `const` names it. Scope exit drops the binding, which releases the rest.
+export function openTaskLoanScope(inout bindings: Array<NativeValueBinding>): void {
+  addValueBinding(inout bindings, "__z_native_task_loans", "loans");
+}
+
+export function taskLoanScopeIsOpen(in bindings: Array<NativeValueBinding>): boolean {
+  const loans = valueBindingType(bindings, "__z_native_task_loans");
+  return loans.byteLength > 0;
+}
+
+export function taskLoansAreLive(in bindings: Array<NativeValueBinding>): boolean {
+  for (const binding of bindings) {
+    if (binding.name == "__z_native_task_loans" && binding.typeName.byteLength > 5) return true;
+  }
+  return false;
+}
+
+function taskLoanLines(in loans: String): Array<String> {
+  let lines = Array<String>();
+  let start: usize = 0;
+  while (start < loans.byteLength && loans.byteAt(start) != 10) {
+    start = start + 1;
+  }
+  while (start < loans.byteLength) {
+    start = start + 1;
+    let end = start;
+    while (end < loans.byteLength && loans.byteAt(end) != 10) {
+      end = end + 1;
+    }
+    lines.push(loans.copyBytes(start, end));
+    start = end;
+  }
+  return lines;
+}
+
+function taskLoanText(in lines: Array<String>): String {
+  let text = "loans";
+  for (const line of lines) {
+    text = `${text}\n${line}`;
+  }
+  return text;
+}
+
+function taskLoanField(in line: String, field: usize): String {
+  let start: usize = 0;
+  let current: usize = 0;
+  let index: usize = 0;
+  while (index <= line.byteLength) {
+    if (index == line.byteLength || line.byteAt(index) == 9) {
+      if (current == field) return line.copyBytes(start, index);
+      current = current + 1;
+      start = index + 1;
+    }
+    index = index + 1;
+  }
+  return "";
+}
+
+function mergeTaskLoanText(in left: String, in right: String): String {
+  if (left == right) return left.copyBytes(0, left.byteLength);
+  let lines = taskLoanLines(left);
+  const loanLines1 = taskLoanLines(right);
+  for (const line of loanLines1) {
+    let present = false;
+    for (const existing of lines) {
+      if (existing == line) present = true;
+    }
+    if (!present) lines.push(line.copyBytes(0, line.byteLength));
+  }
+  return taskLoanText(lines);
+}
+
+// Dotted storage paths under one root overlap when one is a whole-segment
+// prefix of the other: `p` covers `p.x`, and `p.x` and `p.y` are disjoint.
+function taskLoanPathsOverlap(in left: String, in right: String): boolean {
+  const shared = left.byteLength < right.byteLength ? left.byteLength : right.byteLength;
+  let index: usize = 0;
+  while (index < shared) {
+    if (left.byteAt(index) != right.byteAt(index)) return false;
+    index = index + 1;
+  }
+  if (left.byteLength == right.byteLength) return true;
+  if (left.byteLength > right.byteLength) return left.byteAt(shared) == 46;
+  return right.byteAt(shared) == 46;
+}
+
+// The first live child-task loan on `root` that overlaps `path`, as
+// `mode\tloanPath`, or "". `mutableOnly` considers only inout loans, the
+// ones that exclude even a read.
+export function activeTaskLoanConflict(
+  in bindings: Array<NativeValueBinding>,
+  in root: String,
+  in path: String,
+  mutableOnly: boolean
+): String {
+  for (const binding of bindings) {
+    if (binding.name != "__z_native_task_loans") continue;
+    const loanLines2 = taskLoanLines(binding.typeName);
+    for (const line of loanLines2) {
+      if (taskLoanField(line, 2) != root) continue;
+      const mode = taskLoanField(line, 1);
+      if (mutableOnly && mode != "inout") continue;
+      const loanPath = taskLoanField(line, 3);
+      if (!taskLoanPathsOverlap(loanPath, path)) continue;
+      return `${mode}\t${loanPath}`;
+    }
+  }
+  return "";
+}
+
+export function taskLoanConflictIsField(in conflict: String, in root: String): boolean {
+  const loanPath = taskLoanField(conflict, 1);
+  return loanPath.byteLength > root.byteLength;
+}
+
+// Records one argument's loan for the child started at `spawn` in the
+// innermost task-loan scope. Returns the mode of a live loan that excludes
+// it (a child-task loan, or a view, which reads as `in`), or "" once it is
+// recorded. Recording the same spawn and path again changes nothing.
+export function recordTaskLoan(
+  inout bindings: Array<NativeValueBinding>,
+  in spawn: String,
+  in mode: String,
+  in root: String,
+  in path: String
+): String {
+  for (const binding of bindings) {
+    if (binding.name != "__z_native_task_loans") continue;
+    const loanLines3 = taskLoanLines(binding.typeName);
+    for (const line of loanLines3) {
+      if (taskLoanField(line, 0) == spawn && taskLoanField(line, 2) == root
+        && taskLoanField(line, 3) == path) return "";
+    }
+  }
+  for (const binding of bindings) {
+    if (binding.name != "__z_native_task_loans") continue;
+    const loanLines4 = taskLoanLines(binding.typeName);
+    for (const line of loanLines4) {
+      if (taskLoanField(line, 2) != root) continue;
+      const existing = taskLoanField(line, 1);
+      if (mode != "inout" && existing != "inout") continue;
+      const existingPath = taskLoanField(line, 3);
+      if (taskLoanPathsOverlap(existingPath, path)) return existing;
+    }
+  }
+  const view = mode == "inout" ? liveViewBindingForStoragePath(bindings, root, path) : "";
+  if (view.byteLength > 0) return "in";
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name != "__z_native_task_loans") continue;
+    const recorded = `${bindings[index].typeName}\n${spawn}\t${mode}\t${root}\t${path}\t`;
+    replaceBindingType(inout bindings, index, recorded);
+    return "";
+  }
+  return "";
+}
+
+// Names the task binding that joins the child started at `spawn`.
+export function bindTaskLoanHandle(
+  inout bindings: Array<NativeValueBinding>,
+  in spawn: String,
+  in handle: String
+): void {
+  let index: usize = 0;
+  while (index < bindings.length) {
+    if (bindings[index].name == "__z_native_task_loans") {
+      let lines = Array<String>();
+      const loanLines5 = taskLoanLines(bindings[index].typeName);
+      for (const line of loanLines5) {
+        if (taskLoanField(line, 0) != spawn) {
+          lines.push(line.copyBytes(0, line.byteLength));
+          continue;
+        }
+        const field0 = taskLoanField(line, 0);
+        const field1 = taskLoanField(line, 1);
+        const field2 = taskLoanField(line, 2);
+        const field3 = taskLoanField(line, 3);
+        lines.push(`${field0}\t${field1}\t${field2}\t${field3}\t${handle}`);
+      }
+      const rebound = taskLoanText(lines);
+      replaceBindingType(inout bindings, index, rebound);
+    }
+    index = index + 1;
+  }
+}
+
+// Joining or cancelling a child releases every loan it holds. Inside a loop
+// the release waits for the scope join, as in Stage 0: the next iteration may
+// reach the same spawn site before this join.
+export function releaseTaskLoans(
+  inout bindings: Array<NativeValueBinding>,
+  in handle: String
+): void {
+  if (handle.byteLength == 0) return;
+  const region = valueBindingType(bindings, "__z_native_region_control_flow");
+  if (region == "loop") return;
+  let index: usize = 0;
+  while (index < bindings.length) {
+    if (bindings[index].name == "__z_native_task_loans") {
+      let lines = Array<String>();
+      const loanLines6 = taskLoanLines(bindings[index].typeName);
+      for (const line of loanLines6) {
+        if (taskLoanField(line, 4) != handle) {
+          lines.push(line.copyBytes(0, line.byteLength));
+        }
+      }
+      const released = taskLoanText(lines);
+      replaceBindingType(inout bindings, index, released);
+    }
     index = index + 1;
   }
 }

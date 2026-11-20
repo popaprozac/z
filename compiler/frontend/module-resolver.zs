@@ -110,6 +110,14 @@ import {
   expressionViewOrigin,
   liveViewBindingForOwner,
   liveViewBindingForStoragePath,
+  activeTaskLoanConflict,
+  bindTaskLoanHandle,
+  openTaskLoanScope,
+  recordTaskLoan,
+  releaseTaskLoans,
+  taskLoanConflictIsField,
+  taskLoanScopeIsOpen,
+  taskLoansAreLive,
   mergeViewOwners,
   invalidateContainedClassAlias,
   markObjectiveCStringCopy,
@@ -5642,6 +5650,343 @@ function asyncBorrowNamesStorage(in tree: ExpressionTree, index: usize): boolean
 // name storage, which stays in place until the child completes. A fresh
 // struct value passed to a directly awaited call is held by the caller's
 // frame instead.
+function parentExpressionNode(in tree: ExpressionTree, child: usize): usize {
+  let index: usize = 0;
+  while (index < tree.nodes.length) {
+    for (const candidate of tree.nodes[index].children) {
+      if (candidate == child) return index;
+    }
+    index = index + 1;
+  }
+  return tree.nodes.length;
+}
+
+// A read of storage a child task holds `inout` is rejected, as in Stage 0. A
+// member read conflicts only with loans on an overlapping stored-field path:
+// the identifier's chain of member reads, stopping before a called method.
+function requireNoChildTaskMutableLoan(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>,
+  in name: String
+): void throws ModuleResolveError {
+  if (!taskLoansAreLive(bindings)) return;
+  let path = name.copyBytes(0, name.byteLength);
+  let parent = parentExpressionNode(tree, index);
+  while (
+    parent < tree.nodes.length
+    && tree.nodes[parent].kind == ExpressionKind.memberExpression
+    && tree.nodes[parent].children.length == 1
+    && !tree.nodes[parent].optionalAccess
+  ) {
+    const grandparent = parentExpressionNode(tree, parent);
+    if (
+      grandparent < tree.nodes.length
+      && tree.nodes[grandparent].kind == ExpressionKind.callExpression
+      && tree.nodes[grandparent].children.length > 0
+      && tree.nodes[grandparent].children[0] == parent
+    ) break;
+    path = `${path}.${tree.nodes[parent].value}`;
+    parent = grandparent;
+  }
+  // An inout or out target is checked as a mutation or as the child's loan.
+  if (
+    parent < tree.nodes.length
+    && tree.nodes[parent].kind == ExpressionKind.argumentReferenceExpression
+    && (tree.nodes[parent].value == "inout" || tree.nodes[parent].value == "out")
+  ) return;
+  const conflict = activeTaskLoanConflict(bindings, name, path, true);
+  if (conflict.byteLength == 0) return;
+  const readPath = taskLoanConflictIsField(conflict, name) ? path.copyBytes(0, path.byteLength)
+    : name.copyBytes(0, name.byteLength);
+  throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `cannot read "${readPath}" while a child task mutably borrows it`,
+    tree.nodes[index].line, tree.nodes[index].column, name.byteLength);
+}
+
+// Mutating, replacing, or moving storage a child task borrows is rejected.
+// The message names the mutated field path when the child holds a field.
+function requireNoChildTaskLoanForMutation(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>,
+  in root: String,
+  in path: String,
+  in action: String
+): void throws ModuleResolveError {
+  if (!taskLoansAreLive(bindings)) return;
+  const conflict = activeTaskLoanConflict(bindings, root, path, false);
+  if (conflict.byteLength == 0) return;
+  const borrowed = taskLoanConflictIsField(conflict, root) ? path.copyBytes(0, path.byteLength)
+    : root.copyBytes(0, root.byteLength);
+  throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `cannot ${action} "${borrowed}" while a child task borrows it`,
+    tree.nodes[index].line, tree.nodes[index].column, 1);
+}
+
+// The stored-field path a child task may borrow on its own, as Stage 0's
+// asyncFieldBorrowPath: named value-struct fields whose borrowed storage
+// holds no ARC class identity or view. Empty when the loan must cover the
+// whole root.
+function asyncFieldBorrowPath(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): String {
+  let current = index;
+  if (
+    tree.nodes[current].kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[current].children.length == 1
+  ) current = tree.nodes[current].children[0];
+  let reversed = Array<String>();
+  while (
+    tree.nodes[current].kind == ExpressionKind.memberExpression
+    && tree.nodes[current].children.length == 1
+    && !tree.nodes[current].optionalAccess
+  ) {
+    reversed.push(tree.nodes[current].value.copyBytes(0, tree.nodes[current].value.byteLength));
+    current = tree.nodes[current].children[0];
+  }
+  if (
+    reversed.length == 0
+    || (
+      tree.nodes[current].kind != ExpressionKind.identifierExpression
+      && tree.nodes[current].kind != ExpressionKind.argumentBindingExpression
+    )
+  ) return "";
+  const root = identifierLookupName(tree.nodes[current].value);
+  let ownerType = valueBindingType(bindings, root);
+  let path = root.copyBytes(0, root.byteLength);
+  let fieldIndex = reversed.length;
+  while (fieldIndex > 0) {
+    fieldIndex = fieldIndex - 1;
+    ownerType = transparentTypeName(modules, moduleIndex, ownerType);
+    if (typeIsClassReference(module, modules, moduleIndex, ownerType)) return "";
+    match (aggregateFieldShape(modules, moduleIndex, ownerType, reversed[fieldIndex])) {
+      some(field) => {
+        if (field.objectiveCGetter.byteLength > 0) return "";
+        ownerType = field.typeName.copyBytes(0, field.typeName.byteLength);
+      }
+      none => return "";
+    }
+    path = `${path}.${reversed[fieldIndex]}`;
+  }
+  let visiting = Array<String>();
+  if (typeContainsClassReferenceStorage(module, modules, moduleIndex, ownerType, inout visiting)) return "";
+  const noViews = Array<String>();
+  if (typeContainsStoredView(modules, moduleIndex, ownerType, noViews)) return "";
+  return path;
+}
+
+// Where Stage 0 reports an argument: the projected field of `inout p.x`, or
+// the capability keyword of a whole-binding argument.
+function argumentDiagnosticNode(in tree: ExpressionTree, index: usize): usize {
+  if (
+    tree.nodes[index].kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[index].children.length == 1
+    && tree.nodes[tree.nodes[index].children[0]].kind == ExpressionKind.memberExpression
+  ) return tree.nodes[index].children[0];
+  return index;
+}
+
+function requireAsyncFieldBorrowPath(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  callIndex: usize,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  const at = argumentDiagnosticNode(tree, index);
+  if (callIsExecutorPlaced(tree, callIndex)) {
+    throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+      "a projected field borrow cannot cross to another executor in this tier",
+      tree.nodes[at].line, tree.nodes[at].column, 1);
+  }
+  const path = asyncFieldBorrowPath(module, modules, moduleIndex, tree, index, bindings);
+  if (path.byteLength > 0) return;
+  throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    "a projected borrow across an async suspension requires a stored value-struct field without ARC class or view storage",
+    tree.nodes[at].line, tree.nodes[at].column, 1);
+}
+
+// A spawned `inout` or `out` argument, after its ordinary capability checks.
+function recordChildTaskCapabilityLoan(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  spawnNode: usize,
+  in mode: String,
+  in bindingName: String,
+  inout bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  const at = argumentDiagnosticNode(tree, index);
+  if (mode == "out") {
+    throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+      `child-task output borrow of "${bindingName}" is not supported`,
+      tree.nodes[at].line, tree.nodes[at].column, 1);
+  }
+  if (!taskLoanScopeIsOpen(bindings)) {
+    throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+      `child-task mutable borrow of "${bindingName}" requires an explicit async scope`,
+      tree.nodes[at].line, tree.nodes[at].column, 1);
+  }
+  const path = projectedFieldCount(tree, index) > 0 ? expressionDirectFieldPath(tree, index)
+    : bindingName.copyBytes(0, bindingName.byteLength);
+  const conflict = recordTaskLoan(inout bindings, `${tree.nodes[spawnNode].offset}`, "inout", bindingName, path);
+  if (conflict.byteLength == 0) return;
+  throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `cannot borrow "${path}" as inout while an active ${conflict} loan exists`,
+    tree.nodes[at].line, tree.nodes[at].column, 1);
+}
+
+// A spawned `in` or Slice argument. A field read the child may hold on its
+// own borrows that field; anything else borrows its whole root.
+function recordChildTaskBorrowLoan(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  callIndex: usize,
+  index: usize,
+  spawnNode: usize,
+  inMode: boolean,
+  inout bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  let borrowedNode = index;
+  match (sliceRangeReceiverNode(tree, index)) {
+    some(receiver) => borrowedNode = receiver;
+    none => {}
+  }
+  const root = expressionStorageRootName(tree, borrowedNode);
+  const at = argumentDiagnosticNode(tree, index);
+  const kind = inMode ? "borrow" : "Slice borrow";
+  if (!taskLoanScopeIsOpen(bindings)) {
+    const named = root.byteLength > 0 ? root.copyBytes(0, root.byteLength) : "value";
+    throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+      `child-task ${kind} of "${named}" requires an explicit async scope`,
+      tree.nodes[at].line, tree.nodes[at].column, 1);
+  }
+  if (root.byteLength == 0) {
+    throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+      `an async child-task ${kind} requires named storage`,
+      tree.nodes[at].line, tree.nodes[at].column, 1);
+  }
+  let path = root.copyBytes(0, root.byteLength);
+  if (inMode && !callIsExecutorPlaced(tree, callIndex)) {
+    const fieldPath = asyncFieldBorrowPath(module, modules, moduleIndex, tree, borrowedNode, bindings);
+    if (fieldPath.byteLength > 0) path = move fieldPath;
+  }
+  const conflict = recordTaskLoan(inout bindings, `${tree.nodes[spawnNode].offset}`, "in", root, path);
+  if (conflict.byteLength == 0) return;
+  throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `cannot borrow "${path}" as in while an active ${conflict} loan exists`,
+    tree.nodes[at].line, tree.nodes[at].column, 1);
+}
+
+// A `task on <executor> using (in a, inout b) { ... }` child holds its
+// borrowed captures until it joins, as an argument borrow would.
+function recordPlacedCaptureLoans(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  inout bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  for (const capture of tree.nodes[index].children) {
+    const node = view tree.nodes[capture];
+    if (node.kind != ExpressionKind.executorCaptureExpression || node.labels.length == 0) continue;
+    if (node.value != "in" && node.value != "inout") continue;
+    const name = node.labels[0].copyBytes(0, node.labels[0].byteLength);
+    // shortcut: Stage 0 reports the captured name; this assumes one space
+    // after the capability keyword until capture nodes record the name token.
+    const column = node.column + node.value.byteLength + 1;
+    if (!taskLoanScopeIsOpen(bindings)) {
+      throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+        `child-task ${node.value} capture of "${name}" requires an explicit async scope`,
+        node.line, column, name.byteLength);
+    }
+    const conflict = recordTaskLoan(inout bindings, `${tree.nodes[index].offset}`, node.value, name, name);
+    if (conflict.byteLength > 0) {
+      throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+        `cannot borrow "${name}" as ${node.value} while an active ${conflict} loan exists`,
+        node.line, column, name.byteLength);
+    }
+  }
+}
+
+// `const child = task f(...)` names the handle whose join releases the
+// child's loans, as in Stage 0's task-borrow spawn map.
+function bindSpawnedTaskHandle(
+  in arena: StatementArena,
+  index: usize,
+  inout bindings: Array<NativeValueBinding>
+): void {
+  if (!taskLoansAreLive(bindings)) return;
+  match (in arena.nodes[index].expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = view tree.nodes[tree.root];
+        const spawned = root.kind == ExpressionKind.spawnExpression
+          || (root.kind == ExpressionKind.executorPlacementExpression && root.value == "spawn");
+        if (spawned) bindTaskLoanHandle(inout bindings, `${root.offset}`, arena.nodes[index].name);
+      }
+      none => {}
+    }
+    none => {}
+  }
+}
+
+// `await child.cancel()` joins the child, so it releases the child's loans.
+function releaseCancelledTaskLoans(
+  in tree: ExpressionTree,
+  index: usize,
+  inout bindings: Array<NativeValueBinding>
+): void {
+  const node = view tree.nodes[index];
+  if (node.kind != ExpressionKind.callExpression || node.children.length != 1) return;
+  const callee = view tree.nodes[node.children[0]];
+  if (callee.kind != ExpressionKind.memberExpression || callee.value != "cancel"
+    || callee.children.length != 1) return;
+  const receiver = view tree.nodes[callee.children[0]];
+  if (receiver.kind != ExpressionKind.identifierExpression) return;
+  const name = identifierLookupName(receiver.value);
+  const handleType = valueBindingType(bindings, name);
+  if (!stringStartsWith(handleType, "Task<")) return;
+  releaseTaskLoans(inout bindings, name);
+}
+
+// The `task` or `task on` node whose direct call is `callIndex`, or the tree
+// length when the call is not spawned.
+function spawnNodeForCall(in tree: ExpressionTree, callIndex: usize): usize {
+  let index: usize = 0;
+  while (index < tree.nodes.length) {
+    const node = view tree.nodes[index];
+    if (node.kind == ExpressionKind.spawnExpression && node.children.length == 1
+      && node.children[0] == callIndex) return index;
+    if (node.kind == ExpressionKind.executorPlacementExpression && node.value == "spawn"
+      && node.labels.length > 2 && node.labels[2] == "call" && node.children.length > 0
+      && node.children[node.children.length - 1] == callIndex) return index;
+    index = index + 1;
+  }
+  return tree.nodes.length;
+}
+
+// Whether `callIndex` is the direct call of an `on <executor>` placement.
+function callIsExecutorPlaced(in tree: ExpressionTree, callIndex: usize): boolean {
+  for (const node of tree.nodes) {
+    if (node.kind == ExpressionKind.executorPlacementExpression
+      && node.labels.length > 2 && node.labels[2] == "call" && node.children.length > 0
+      && node.children[node.children.length - 1] == callIndex) return true;
+  }
+  return false;
+}
+
 function requireAsyncBorrowStorage(
   in module: ParsedModule,
   in tree: ExpressionTree,
@@ -5726,6 +6071,8 @@ function inferSignatureCallType(
     );
   }
   let accesses = Array<NativeCallAccess>();
+  const spawnNode = signature.asynchronous ? spawnNodeForCall(tree, callIndex) : tree.nodes.length;
+  const spawnedCall = spawnNode < tree.nodes.length;
   if (receiverRoot.byteLength > 0 && receiverMode.byteLength > 0) {
     let receiverIdentity = valueBindingClassAlias(bindings, receiverRoot);
     let receiverPath = receiverRoot.copyBytes(0, receiverRoot.byteLength);
@@ -5773,6 +6120,11 @@ function inferSignatureCallType(
         mutationPath = expressionOwnedMutationPath(module, modules, moduleIndex, tree,
           receiverNode, bindings, true);
       }
+      let receiverAt = calleeIndex;
+      if (tree.nodes[calleeIndex].kind == ExpressionKind.memberExpression
+        && tree.nodes[calleeIndex].children.length == 1) receiverAt = tree.nodes[calleeIndex].children[0];
+      try requireNoChildTaskLoanForMutation(module, tree, receiverAt, bindings, receiverRoot,
+        receiverRoot, "mutate");
       const liveView = liveViewBindingForStoragePath(bindings, receiverRoot, mutationPath);
       if (liveView.byteLength > 0) {
         const action = receiverMode == "move" ? "move" : "mutate";
@@ -5860,7 +6212,14 @@ function inferSignatureCallType(
       const mutationPath = capability == "inout"
         ? accessPath.copyBytes(0, accessPath.byteLength)
         : root.copyBytes(0, root.byteLength);
-      const liveView = liveViewBindingForStoragePath(
+      // A spawned inout borrow is checked as the child's loan instead.
+      const childLoan = spawnedCall && capability == "inout";
+      if (!childLoan) {
+        const action = capability == "move" ? "move" : "mutate";
+        try requireNoChildTaskLoanForMutation(module, tree, argumentDiagnosticNode(tree, nodeIndex),
+          bindings, root, mutationPath, action);
+      }
+      const liveView = childLoan ? "" : liveViewBindingForStoragePath(
         bindings,
         root,
         mutationPath
@@ -6031,13 +6390,6 @@ function inferSignatureCallType(
       }
       if (mode == "inout") {
         if (projectedFieldCount(tree, nodeIndex) > 0) {
-          if (signature.asynchronous) throw resolutionError(
-            ModuleResolveErrorKind.typeMismatch,
-            module.path,
-            "projected inout cannot cross an async suspension in this shape-stability tier",
-            tree.nodes[nodeIndex].line,
-            tree.nodes[nodeIndex].column
-          );
           try requireProjectedCapabilityValuePath(
             module,
             modules,
@@ -6047,6 +6399,9 @@ function inferSignatureCallType(
             bindings,
             true
           );
+          if (signature.asynchronous) {
+            try requireAsyncFieldBorrowPath(module, modules, moduleIndex, tree, callIndex, nodeIndex, bindings);
+          }
         }
         const initialization = valueBindingInitialization(bindings, bindingName);
         if (initialization != NativeInitializationState.initialized) {
@@ -6108,6 +6463,10 @@ function inferSignatureCallType(
           );
         }
       }
+      if (spawnedCall) {
+        try recordChildTaskCapabilityLoan(module, tree, nodeIndex, spawnNode, mode, bindingName,
+          inout bindings);
+      }
       argumentTypes.push(move bindingType);
     } else {
       if (access.byteLength > 0 && !(mode == "in" && access == "in")) {
@@ -6128,17 +6487,6 @@ function inferSignatureCallType(
       const inferredNode = access == "in" && projectedFieldCount(tree, nodeIndex) == 0
         ? bindingIndex
         : nodeIndex;
-      if (
-        access == "in"
-        && projectedFieldCount(tree, nodeIndex) > 0
-        && signature.asynchronous
-      ) throw resolutionError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        "a projected field borrow cannot cross an async suspension in this shape-stability tier",
-        tree.nodes[nodeIndex].line,
-        tree.nodes[nodeIndex].column
-      );
       if (access == "in" && projectedFieldCount(tree, nodeIndex) > 0) {
         try requireProjectedCapabilityValuePath(
           module,
@@ -6225,6 +6573,13 @@ function inferSignatureCallType(
         inout bindings,
         inout evidence
       );
+      if (signature.asynchronous && access == "in" && projectedFieldCount(tree, nodeIndex) > 0) {
+        try requireAsyncFieldBorrowPath(module, modules, moduleIndex, tree, callIndex, nodeIndex, bindings);
+      }
+      if (spawnedCall && (mode == "in" || stringStartsWith(signature.parameterTypes[argumentIndex], "Slice<"))) {
+        try recordChildTaskBorrowLoan(module, modules, moduleIndex, tree, callIndex, nodeIndex, spawnNode,
+          mode == "in", inout bindings);
+      }
       // Z declarations only: a foreign callee's `in` is its own contract.
       if (
         mode == "in"
@@ -7134,6 +7489,7 @@ function inferExpressionNodeType(
     const lookup = identifierLookupName(value);
     const bindingType = valueBindingType(bindings, lookup);
     if (bindingType.byteLength > 0) {
+      try requireNoChildTaskMutableLoan(module, tree, index, bindings, lookup);
       try requireInitializedBinding(module, tree, index, bindings, lookup);
       return bindingType;
     }
@@ -7410,6 +7766,9 @@ function inferExpressionNodeType(
     if (node.value != "spawn") {
       copyBindingFlowStates(inout bindings, blockBindings);
     }
+    if (node.value == "spawn") {
+      try recordPlacedCaptureLoans(module, tree, index, inout bindings);
+    }
     applyExecutorCaptureMoves(movedCaptures, inout bindings);
     if (node.value == "spawn") {
       return taskEffectType(declaredReturn, declaredError);
@@ -7449,6 +7808,7 @@ function inferExpressionNodeType(
       inout bindings,
       inout evidence
     );
+    releaseCancelledTaskLoans(tree, children[0], inout bindings);
     if (outcome.byteLength == 0) return "";
     match (genericTypeShape(outcome)) {
       some(task) => {
@@ -7466,6 +7826,10 @@ function inferExpressionNodeType(
             false,
             inout bindings
           );
+          if (tree.nodes[children[0]].kind == ExpressionKind.identifierExpression) {
+            const joined = identifierLookupName(tree.nodes[children[0]].value);
+            releaseTaskLoans(inout bindings, joined);
+          }
           if (task.arguments.length == 2) {
             return pendingThrowingCallType(
               task.arguments[0],
@@ -13713,6 +14077,7 @@ function inferStatement(
       );
       none => {}
     }
+    bindSpawnedTaskHandle(arena, index, inout bindings);
     return true;
   }
   if (kind == StatementKind.destructureStatement) {
@@ -14035,6 +14400,8 @@ function inferStatement(
                 }
               }
               markClosureCaptureMutation(inout bindings, mutationRoot);
+              try requireNoChildTaskLoanForMutation(module, tree, root, bindings, mutationRoot,
+                mutationPath, "mutate");
               const liveView = liveViewBindingForStoragePath(
                 bindings,
                 mutationRoot,
@@ -14873,6 +15240,7 @@ function inferStatement(
         arena.nodes[index].line, arena.nodes[index].column, 1);
     }
     let scopeBindings = copyValueBindings(bindings);
+    openTaskLoanScope(inout scopeBindings);
     if (arena.nodes[index].name.byteLength > 0) {
       addValueBinding(inout scopeBindings, arena.nodes[index].name, "TaskScope");
     }
