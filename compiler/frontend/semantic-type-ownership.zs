@@ -16,6 +16,7 @@ import {
 import {
   fixedArrayShape,
   genericTypeShape,
+  isNumericTypeName,
   nativeFunctionSignature,
   nativeObjCObjectTypeName,
   nullableTargetType,
@@ -1688,6 +1689,74 @@ export function typeContainsForeignValueStorage(
     none => {}
   }
   return false;
+}
+
+// Whether an undeclared executor capture of this type is a private snapshot,
+// as in Stage 0: a String, or a cleanup-free value made of scalars (fixed
+// arrays, structs without a deinit, enums). Anything else crosses only under
+// an explicit `using (...)` capability.
+export function typeIsImplicitPlacementCopy(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  const actual = transparentTypeName(modules, moduleIndex, typeName);
+  if (actual == "String" || actual == "void" || actual == "boolean" || isNumericTypeName(actual)) return true;
+  match (fixedArrayShape(actual)) {
+    some(array) => return typeIsImplicitPlacementCopy(modules, moduleIndex, array.elementType, visiting);
+    none => {}
+  }
+  let arguments = Array<String>();
+  match (genericTypeShape(actual)) {
+    some(generic) => {
+      // The built-in enums are snapshots when their payloads are.
+      if ((generic.base == "Option" && generic.arguments.length == 1)
+        || (generic.base == "Result" && generic.arguments.length == 2)) {
+        for (const argument of generic.arguments) {
+          if (!typeIsImplicitPlacementCopy(modules, moduleIndex, argument, visiting)) return false;
+        }
+        return true;
+      }
+      for (const argument of generic.arguments) {
+        arguments.push(argument.copyBytes(0, argument.byteLength));
+      }
+    }
+    none => {}
+  }
+  const location = match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(found) => found;
+    none => return false;
+  };
+  const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+  if (symbol.kind == ModuleSymbolKind.classSymbol) return false;
+  const identity = semanticTypeIdentity(modules, moduleIndex, actual);
+  if (containsString(visiting, identity)) return true;
+  let nextVisiting = copyStrings(visiting);
+  nextVisiting.push(identity);
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      if (signature.foreignNativeName.byteLength > 0 || signature.customDeinit) return false;
+      let substitutions = Array<NativeValueBinding>();
+      let typeIndex: usize = 0;
+      while (typeIndex < signature.typeParameters.length && typeIndex < arguments.length) {
+        const argument = rebaseTypeName(modules, moduleIndex, location.moduleIndex, arguments[typeIndex]);
+        addValueBinding(inout substitutions, signature.typeParameters[typeIndex], argument);
+        typeIndex = typeIndex + 1;
+      }
+      for (const field of signature.fields) {
+        const fieldType = substituteGenericType(field.typeName, substitutions);
+        if (!typeIsImplicitPlacementCopy(modules, location.moduleIndex, fieldType, nextVisiting)) return false;
+      }
+      for (const variant of signature.variants) {
+        if (variant.payloadType.byteLength == 0) continue;
+        const payloadType = substituteGenericType(variant.payloadType, substitutions);
+        if (!typeIsImplicitPlacementCopy(modules, location.moduleIndex, payloadType, nextVisiting)) return false;
+      }
+      return true;
+    }
+    none => return false;
+  }
 }
 
 export function typeHasCustomConstructor(

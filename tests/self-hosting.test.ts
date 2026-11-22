@@ -11409,6 +11409,9 @@ test("compiles a multi-module Z application through the standalone native driver
     // A worker's placed child runs while `main` is inside the Darwin main
     // run loop: work posted to the main executor also wakes the main queue.
     "examples/async/darwin-main-run-loop.zs",
+    // A hopped block's `using (in|inout|move ...)` captures: the caller's
+    // storage is lent for the block, or the value moves to it.
+    "tests/fixtures/native-main-hop-capabilities.zs",
     // A synchronous worker owns its captures: copies it may assign, and
     // moved Array, String, TextBuffer, and aggregate owners released once.
     "examples/async/thread-text.zs",

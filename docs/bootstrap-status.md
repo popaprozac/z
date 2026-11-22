@@ -1476,7 +1476,13 @@ is woken when its task storage is, so `await t.cancel()` reaches a sleeping
 worker frame at once. Workers that capture a `TaskScope` keep the
 terminal-await tier. Outside `main`, `await on thread.main { ... }` and
 `await on thread.main f(...)` hop to the program's main executor, as in
-Stage 0. C `main` starts that executor for a program with hops; an async
+Stage 0. A placed block's undeclared captures are private snapshots: native
+semantics requires an explicit `using (...)` capability for anything but a
+String or a cleanup-free value, and rejects an `await` inside a block that
+holds an `in` or `inout` capture, as Stage 0 does (Z0704). A hopped block's
+`in` and `inout` captures are borrowed parameters of its lifted frame (the
+caller's own storage, lent while the caller awaits the block or holds the
+task), and a `move` capture is an owned one. C `main` starts that executor for a program with hops; an async
 `main` driver runs on it, and a blocking worker join on the main thread
 drives it through an async thread-await task (never from inside one of its
 own polls). Lowering lifts a placed block into a synthesized async function

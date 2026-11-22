@@ -23429,7 +23429,7 @@ function liftedMainHopDeclaration(
     }
   }
   normalizeMainHops(inout body, threadNames);
-  const parameters = try mainHopParameters(program, evidence, owner, offset, node.line, node.column);
+  const parameters = try mainHopParameters(program, evidence, owner, tree, hop);
   let errorType = Option<TypeReference>.none;
   if (errorName.byteLength > 0) {
     errorType = Option.some(TypeReference({ name: errorName, references: Array<TypeNameReference>(),
@@ -23544,7 +23544,7 @@ function liftedMainHopCallDeclaration(
     visibility: Visibility.privateVisibility,
     typeParameters: Array<TypeParameter>(),
     receiverMode: ReceiverMode.none,
-    parameters: try mainHopParameters(program, evidence, owner, offset, node.line, node.column),
+    parameters: try mainHopParameters(program, evidence, owner, tree, hop),
     returnType: TypeReference({ name: copy resolution.returnType, references: Array<TypeNameReference>(),
       offset, line: node.line, column: node.column }),
     errorType,
@@ -23560,14 +23560,28 @@ function liftedMainHopCallDeclaration(
 
 // A hop's parameters: the placement's checked captures, typed by the
 // bindings visible at the placement.
+// The capability a placed block declares for a capture in `using (...)`:
+// "in", "inout", or "move"; empty for an undeclared capture, a snapshot.
+function mainHopCapability(in tree: ExpressionTree, hop: usize, in name: String): String {
+  for (const child of tree.nodes[hop].children) {
+    if (tree.nodes[child].kind == ExpressionKind.executorCaptureExpression
+      && tree.nodes[child].labels.length > 0 && tree.nodes[child].labels[0] == name) {
+      return copy tree.nodes[child].value;
+    }
+  }
+  return "";
+}
+
 function mainHopParameters(
   in program: Program,
   in evidence: ModuleSemanticEvidence,
   in owner: FunctionDeclaration,
-  offset: usize,
-  line: usize,
-  column: usize
+  in tree: ExpressionTree,
+  hop: usize
 ): Array<Parameter> throws String {
+  const offset = tree.nodes[hop].offset;
+  const line = tree.nodes[hop].line;
+  const column = tree.nodes[hop].column;
   let found = false;
   let parameters = Array<Parameter>();
   for (const entry of evidence.closureCaptures) {
@@ -23579,9 +23593,15 @@ function mainHopParameters(
         some(value) => value;
         none => throw `native placed block cannot resolve capture ${name}`;
       };
+      // A borrowed capture is the caller's storage, which outlives the block:
+      // the caller awaits it, or holds the loan until the task is joined.
+      const capability = mainHopCapability(tree, hop, name);
+      let mode = ParameterMode.value;
+      if (capability == "in") mode = ParameterMode.input;
+      if (capability == "inout") mode = ParameterMode.inputOutput;
       parameters.push(Parameter({
         name: copy name,
-        mode: ParameterMode.value,
+        mode,
         type: TypeReference({ name: typeName, references: Array<TypeNameReference>(), offset, line, column }),
         offset, line, column,
       }));
@@ -23652,7 +23672,8 @@ function mainHopCallResolution(in hop: FunctionDeclaration): ModuleCallResolutio
   let modes = Array<String>();
   let types = Array<String>();
   for (const parameter of hop.parameters) {
-    modes.push("value");
+    modes.push(parameter.mode == ParameterMode.input ? "in"
+      : parameter.mode == ParameterMode.inputOutput ? "inout" : "value");
     types.push(copy parameter.type.name);
   }
   const errorName = match (in hop.errorType) {
@@ -23715,23 +23736,28 @@ function lowerMainHop(
     const type = try lowerModuleTypeName(program, importedTypes, parameter.type.name);
     let value = pushExpression(inout output, LoweredExpressionKind.localValue, parameter.name,
       Array<usize>(), Array<String>());
-    let consumed = false;
+    if (parameter.mode != ParameterMode.value) {
+      children.push(value);
+      labels.push(parameter.mode == ParameterMode.input ? "in" : "inout");
+      continue;
+    }
+    let consumed = mainHopCapability(tree, hop, parameter.name) == "move";
     for (const movedName of moved) {
       if (movedName == parameter.name) consumed = true;
     }
     const needsCleanup = moduleTypeNeedsCleanup(program, importedTypes, type);
-    if (type.kind == LoweredTypeKind.classType && needsCleanup) {
+    if (consumed && type.kind != LoweredTypeKind.classType) {
+      // `using (move x)`, or a value argument of the placed call, moves to
+      // the main executor under the same transfer rule as a worker capture.
+      const capture = try threadClosureCapture(program, importedTypes, parameter.name, type);
+      value = pushThreadCaptureValue(inout output, capture);
+    } else if (type.kind == LoweredTypeKind.classType && needsCleanup) {
       // A shareable class is shared with the main executor: the hop's frame
       // holds its own reference (the transfer rule rejects other classes).
       const capture = try threadClosureCapture(program, importedTypes, parameter.name, type);
       if (capture.owned) throw `native placed calls cannot transfer ${parameter.name} of type ${type.name}`;
       value = pushExpression(inout output, LoweredExpressionKind.retainValue, type.name,
         Array<usize>(value), Array<String>());
-    } else if (consumed) {
-      // A value argument of the placed call moves to the main executor, under
-      // the same transfer rule as a worker capture.
-      const capture = try threadClosureCapture(program, importedTypes, parameter.name, type);
-      value = pushThreadCaptureValue(inout output, capture);
     } else if (type.kind == LoweredTypeKind.stringType) {
       // The block runs on another thread: it gets its own copy.
       value = pushExpression(inout output, LoweredExpressionKind.copyValue, "String",

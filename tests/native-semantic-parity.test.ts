@@ -48,6 +48,7 @@ for (const [fixture, expected] of [
   ["channel-local-class-payload", "3\n"],
   ["view-field-borrows", "8\n"],
   ["thread-block-captures", "16\n"],
+  ["executor-capture-snapshots", "sum 3 7 5 14\ntotal 29\n"],
   ["lock-callback-function-value", "11\n"],
   ["array-capacity-field", "true 1 true true\n"],
   ["console-closure-argument", "3\nheld 4 after 6\n"],
@@ -818,6 +819,47 @@ test("checks a channel's message type where an endpoint crosses threads", () => 
       return 0;
     }
   `, /capture "holder" of type Holder cannot cross a native thread boundary/);
+}, 240_000);
+
+test("holds executor captures to their capabilities in both compilers", () => {
+  // An undeclared capture of a placed block is a private snapshot, which only
+  // a String or a cleanup-free value can be, in `main` and outside it.
+  for (const [declarations, setup, use] of [
+    ["", "let held = Array<i32>(); held.push(1);", "held.length"],
+    ["struct Batch { names: Array<String>; }", "const held = Batch({ names: Array<String>() });", "held.names.length"],
+    ["readonly class Frozen { value: i32; }", "const held = new Frozen({ value: 1 });", "usize(held.value)"],
+  ]) {
+    for (const [owner, call] of [["main", ""], ["work", "const result = await work();"]]) {
+      const body = `${setup}
+        const size = await on thread.main: usize { select ${use}; };
+        return 0;`;
+      rejects(`
+        import { thread } from "std/thread";
+        ${declarations}
+        ${owner == "main" ? "" : `async function work(): i32 { ${body} }`}
+        async function main(): i32 {
+          ${owner == "main" ? body : `${call} return result;`}
+        }
+      `, /ownership-bearing executor capture "held" requires an explicit capability/);
+    }
+  }
+  // A borrowed capture lends the caller's storage for the block only, so the
+  // block cannot suspend while it holds one.
+  for (const capability of ["in", "inout"]) {
+    for (const [owner, call] of [["main", ""], ["work", "const result = await work();"]]) {
+      const body = `let count = 1;
+        const seen = await on thread.main using (${capability} count): i32 { await delay(1); select count; };
+        return seen - 1;`;
+      rejects(`
+        import { thread } from "std/thread";
+        import { delay } from "std/time";
+        ${owner == "main" ? "" : `async function work(): i32 { ${body} }`}
+        async function main(): i32 {
+          ${owner == "main" ? body : `${call} return result;`}
+        }
+      `, /cannot await while borrowed storage "count" is live/);
+    }
+  }
 }, 240_000);
 
 test("moves aggregates holding endpoints into block-bodied thread workers", () => {

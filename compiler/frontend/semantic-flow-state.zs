@@ -198,6 +198,26 @@ export function addBorrowedValueBinding(
   }));
 }
 
+// A mutable borrow its holder may not suspend with, such as an `inout`
+// executor capture: the caller's storage is lent for the block only.
+export function addSuspensionBoundBorrow(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String,
+  in typeName: String
+): void {
+  bindings.push(NativeValueBinding({
+    name: name.copyBytes(0, name.byteLength),
+    typeName: typeName.copyBytes(0, typeName.byteLength),
+    mutableBinding: true,
+    borrowedBinding: true,
+    matchBorrowedBinding: false,
+    suspensionBorrowRoot: name.copyBytes(0, name.byteLength),
+    initialization: NativeInitializationState.initialized,
+    ownership: NativeOwnershipState.available,
+    outputParameter: false,
+  }));
+}
+
 export function addMatchBorrowedValueBinding(
   inout bindings: Array<NativeValueBinding>,
   in name: String,

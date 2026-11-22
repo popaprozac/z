@@ -262,6 +262,7 @@ import {
   typeIsNativeObjCReference,
   typeIsForeignViewOnlyRecord,
   typeIsRetainedParameterViewAggregate,
+  typeIsImplicitPlacementCopy,
   typeIsThreadShareable,
   typeIsThreadTransferable,
   typeIsArenaOwnerBundle,
@@ -4986,6 +4987,30 @@ function requireThreadSpawnClassCapture(
   }
 }
 
+// Moves the position to this tree's use of `name` when it is the earliest
+// seen (offset zero means none yet), and queues the statements its
+// expressions own.
+function earliestNameUse(
+  in tree: ExpressionTree,
+  in name: String,
+  inout pending: Array<usize>,
+  inout offset: usize,
+  inout line: usize,
+  inout column: usize
+): void {
+  for (const node of tree.nodes) {
+    for (const owned of node.statements) {
+      pending.push(owned);
+    }
+    if (node.kind == ExpressionKind.identifierExpression && node.value == name
+      && (offset == 0 || node.offset < offset)) {
+      offset = node.offset;
+      line = node.line;
+      column = node.column;
+    }
+  }
+}
+
 // A value captured by thread.spawn moves to the worker, so it must be
 // transferable, as in Stage 0 (Z0704): no custom deinit of unknown thread
 // affinity and no unshareable class identity in its storage. A captured class
@@ -7796,6 +7821,52 @@ function inferExpressionNodeType(
     collectClosureStatementCaptures(arena, tree, statements, bindings,
       inout placedLocals, inout placedCaptures);
     recordClosureCaptures(node.offset, placedCaptures, inout evidence);
+    // An undeclared capture is the block's private snapshot, so it must be
+    // one a snapshot can be, as in Stage 0 (Z0704).
+    for (const captured of placedCaptures) {
+      let declared = false;
+      for (const child of children) {
+        if (tree.nodes[child].kind == ExpressionKind.executorCaptureExpression
+          && tree.nodes[child].labels.length > 0 && tree.nodes[child].labels[0] == captured) declared = true;
+      }
+      const capturedType = valueBindingType(bindings, captured);
+      if (declared || capturedType.byteLength == 0
+        || typeMentionsActiveTypeParameter(bindings, capturedType)) continue;
+      const copyVisiting = Array<String>();
+      if (typeIsImplicitPlacementCopy(modules, moduleIndex, capturedType, copyVisiting)) continue;
+      // Reported at the capture's first use in the block, as Stage 0 does.
+      let useOffset: usize = 0;
+      let useLine = node.line;
+      let useColumn = node.column;
+      let pending = copyIndices(statements);
+      let cursor: usize = 0;
+      while (cursor < pending.length) {
+        const statement = view arena.nodes[pending[cursor]];
+        cursor = cursor + 1;
+        for (const child of statement.children) {
+          pending.push(child);
+        }
+        match (in statement.expression) {
+          some(syntax) => match (in syntax.tree) {
+            some(owned) => earliestNameUse(owned, captured, inout pending, inout useOffset, inout useLine, inout useColumn);
+            none => {}
+          }
+          none => {}
+        }
+        match (in statement.secondExpression) {
+          some(syntax) => match (in syntax.tree) {
+            some(owned) => earliestNameUse(owned, captured, inout pending, inout useOffset, inout useLine, inout useColumn);
+            none => {}
+          }
+          none => {}
+        }
+      }
+      throw codedModuleResolutionError(
+        ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+        `ownership-bearing executor capture "${captured}" requires an explicit capability`,
+        useLine, useColumn, captured.byteLength
+      );
+    }
     const expectedReturn = valueBindingType(
       bindings,
       "__z_native_return_type"
