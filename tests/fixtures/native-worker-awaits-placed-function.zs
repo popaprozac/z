@@ -43,8 +43,9 @@ async function dispatch(
   };
 }
 
-// A worker frame runs off the main thread: awaiting `dispatch`, whose placed
-// call runs where `dispatch` runs (its placed tier), is rejected.
+// A worker frame awaits `dispatch`, an ordinary async function with a placed
+// call and owned locals in a match arm: the placed call hops to main from
+// the worker's executor.
 async function main(): i32 {
   const worker = thread.spawn(async (): i32 => {
     await delay(1);

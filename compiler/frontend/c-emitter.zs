@@ -4894,6 +4894,37 @@ function appendAsyncFrameCleanup(
   output.append(");\n");
 }
 
+// Leaving a lexical scope inside a frame (`break`, `continue`): each owner
+// that has a live flag is destroyed only while live, and the flag is cleared,
+// so the frame's own cleanup never destroys it again.
+function appendFrameScopeExitCleanups(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  in cleanups: Array<LoweredCleanup>,
+  depth: usize
+): void {
+  let remaining = cleanups.length;
+  while (remaining > 0) {
+    remaining = remaining - 1;
+    let flag = "";
+    for (const live of declaration.liveFlags) {
+      if (live.owner == cleanups[remaining].name && !live.parameter) flag = copy live.name;
+    }
+    if (flag.byteLength == 0 || (cleanups[remaining].guard.byteLength > 0 && cleanups[remaining].guard != flag)) {
+      appendAsyncFrameCleanup(inout output, declaration, cleanups[remaining], depth);
+      continue;
+    }
+    appendIndent(inout output, depth);
+    output.append(`if (${flag}) {\n`);
+    const unguarded = LoweredCleanup({ name: copy cleanups[remaining].name, type: copy cleanups[remaining].type, guard: "" });
+    appendAsyncFrameCleanup(inout output, declaration, unguarded, depth + 1);
+    appendIndent(inout output, depth + 1);
+    output.append(`${flag} = false;\n`);
+    appendIndent(inout output, depth);
+    output.append("}\n");
+  }
+}
+
 function appendAsyncFrameCleanups(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -9779,7 +9810,9 @@ function appendStatement(
     declaration.statements[index].kind == LoweredStatementKind.breakStatement
     || declaration.statements[index].kind == LoweredStatementKind.continueStatement
   ) {
-    appendCleanups(inout output, declaration.statements[index].cleanups, depth);
+    if (declaration.asyncFrameBindings.length > 0) {
+      appendFrameScopeExitCleanups(inout output, declaration, declaration.statements[index].cleanups, depth);
+    } else appendCleanups(inout output, declaration.statements[index].cleanups, depth);
     // In a dispatch handler, the loop's own break leaves it and its own
     // continue jumps to the next instruction's handler.
     if (declaration.dispatchLoop > 0) {
@@ -11722,6 +11755,14 @@ function appendYieldFrameSpawn(
       argument = argument + 1;
     }
     output.append(");\n");
+  } else if (spawned.placedExecutor == "thread.main") {
+    // `task on thread.main ...`: the child's frame is created for the main
+    // executor and joined through a hop, like an awaited placement.
+    output.append(`${slot} = z_stage1_async_hop_start(task->executor, Z_${spawned.value}_start(`);
+    try appendExpression(inout output, declaration, spawned.children[0]);
+    output.append(", z_stage1_async_main_executor()");
+    try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, true);
+    output.append("));\n");
   } else {
     output.append(`${slot} = Z_${spawned.value}_start(`);
     try appendExpression(inout output, declaration, spawned.children[0]);
@@ -12005,6 +12046,23 @@ function appendYieldFrameBorrowTemporaries(
   }
 }
 
+// The earliest statement of an arm or anything nested in it: lowering lowers
+// an arm's body before the arm itself.
+function yieldFrameEarliestStatement(in declaration: LoweredFunction, index: usize): usize {
+  let earliest = index;
+  let pending = Array<usize>(index);
+  let cursor: usize = 0;
+  while (cursor < pending.length) {
+    const current = pending[cursor];
+    cursor = cursor + 1;
+    if (current < earliest) earliest = current;
+    for (const child of declaration.statements[current].children) {
+      pending.push(child);
+    }
+  }
+  return earliest;
+}
+
 function appendYieldFrameAwait(
   inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
   statementIndex: usize, expression: usize, helperExpression: usize, depth: usize
@@ -12155,11 +12213,37 @@ function appendYieldFrameTry(
     }
     return;
   }
-  if (statement.labels.length == 3) throw "native yield-frame try replacement remains a later tier";
   const successType = match (in statement.type) {
     some(type) => copy type;
     none => LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
   };
+  // A `try` assigned over an owned value destroys the old value first. A
+  // frame local may have been moved out: its live flag says, and the new
+  // value makes it live again.
+  let replacedFlag = "";
+  if (statement.labels.length == 3) {
+    if (statement.labels[2] != "replace" || sourceCxx) {
+      throw "native yield-frame try replacement supports owned Z values only";
+    }
+    const wholeBinding = match (in statement.secondExpression) {
+      some(target) => declaration.expressions[target].kind == LoweredExpressionKind.localValue
+        && declaration.expressions[target].value == statement.labels[0];
+      none => true;
+    };
+    if (wholeBinding) {
+      for (const live of declaration.liveFlags) {
+        if (live.owner == statement.labels[0]) replacedFlag = copy live.name;
+      }
+    }
+    appendIndent(inout output, depth);
+    if (replacedFlag.byteLength > 0) output.append(`if (${replacedFlag}) `);
+    output.append(`Z_${successType.name}_${successType.kind == LoweredTypeKind.classType ? "release(" : "deinit(&"}`);
+    match (in statement.secondExpression) {
+      some(target) => try appendExpression(inout output, declaration, target);
+      none => appendAsyncFrameBindingName(inout output, declaration, statement.labels[0]);
+    }
+    output.append(");\n");
+  }
   if (sourceCxx && yieldFrameHoldsCxx(program, successType)) {
     match (in statement.secondExpression) {
       some(_) => throw "native async frame cannot assign a C++ `try` result to existing storage yet";
@@ -12186,6 +12270,10 @@ function appendYieldFrameTry(
     output.append(`(${type})z_stage1_objc_take(&${temporary}.payload.success)`);
   } else output.append(`${temporary}.payload.success`);
   output.append(";\n");
+  if (replacedFlag.byteLength > 0) {
+    appendIndent(inout output, depth);
+    output.append(`${replacedFlag} = true;\n`);
+  }
 }
 
 function appendYieldFrameLexicalCleanups(
@@ -13067,6 +13155,7 @@ function appendYieldFrameHelpers(
     // Payloads of match arms that suspend live in the frame; an owned one has
     // a live flag that its moves clear and frame cleanup honors.
     let payloadNames = Array<String>();
+    let payloadArms = Array<usize>();
     let payloadTypes = Array<LoweredType>();
     let payloadOwned = Array<boolean>();
     let payloadMatch: usize = 0;
@@ -13105,6 +13194,7 @@ function appendYieldFrameHelpers(
             }
           }
           payloadNames.push(payloadName);
+          payloadArms.push(yieldFrameEarliestStatement(declaration, arm));
           payloadTypes.push(payloadType);
           payloadOwned.push(ownsPayload);
         }
@@ -13338,8 +13428,21 @@ function appendYieldFrameHelpers(
         name: copy parameter.name, type: copy parameter.type, guard,
       }));
     }
+    // Locals and match payloads in binding order: an arm's payload binds
+    // before anything in the arm (lowering places the arm after its body),
+    // so cleanup runs newest first, as at a scope's end.
     let cleanupStatement: usize = 0;
     for (const statement of source.statements) {
+      let payloadCleanup: usize = 0;
+      while (payloadCleanup < payloadNames.length) {
+        if (payloadArms[payloadCleanup] == cleanupStatement && payloadOwned[payloadCleanup]) {
+          cleanup.push(LoweredCleanup({
+            name: copy payloadNames[payloadCleanup], type: copy payloadTypes[payloadCleanup],
+            guard: `_z_stage1_live_${payloadNames[payloadCleanup]}`,
+          }));
+        }
+        payloadCleanup = payloadCleanup + 1;
+      }
       const spawnLocal = yieldFrameSpawnExpression(source, cleanupStatement) < source.expressions.length;
       cleanupStatement = cleanupStatement + 1;
       if (statement.kind != LoweredStatementKind.localStatement || spawnLocal) continue;
@@ -13350,16 +13453,6 @@ function appendYieldFrameHelpers(
       if (statement.liveFlag.byteLength == 0
         && !typeContainsObjectiveCStrongSlot(program, type)) continue;
       cleanup.push(LoweredCleanup({ name: copy statement.name, type, guard: copy statement.liveFlag }));
-    }
-    let payloadCleanup: usize = 0;
-    while (payloadCleanup < payloadNames.length) {
-      if (payloadOwned[payloadCleanup]) {
-        cleanup.push(LoweredCleanup({
-          name: copy payloadNames[payloadCleanup], type: copy payloadTypes[payloadCleanup],
-          guard: `_z_stage1_live_${payloadNames[payloadCleanup]}`,
-        }));
-      }
-      payloadCleanup = payloadCleanup + 1;
     }
     let borrowCleanup: usize = 0;
     while (borrowCleanup < borrowNames.length) {
@@ -17213,7 +17306,7 @@ function appendAsyncCallableRuntime(
     output.append(`static __attribute__((unused)) void z_stage1_async_executor_destroy_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL || executor->external_completions != NULL || executor->active_external_callbacks != 0) abort();\n${usesHop ? "  if (executor->posted_head != NULL || executor->cancellations != NULL) abort();\n" : ""}  z_stage1_async_host_destroy(executor);\n#if defined(_WIN32)\n  DeleteCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_cond_destroy(&executor->external_condition) != 0) abort();\n  if (pthread_mutex_destroy(&executor->external_mutex) != 0) abort();\n#endif\n}\n\n`);
     output.append("static void z_stage1_async_begin_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL || task->external_completion) abort();\n  task->external_completion = true;\n  z_stage1_async_external_lock(task->executor);\n  task->executor->active_external_callbacks += 1;\n  z_stage1_async_external_unlock(task->executor);\n}\n\n");
     output.append("static __attribute__((unused)) void z_stage1_async_wake_executor(Z_AsyncExecutor *executor) {\n  if (executor == NULL) return;\n  z_stage1_async_external_lock(executor);\n  z_stage1_async_host_signal(executor);\n#if defined(_WIN32)\n  WakeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_cond_signal(&executor->external_condition) != 0) abort();\n#endif\n  z_stage1_async_external_unlock(executor);\n}\n\n");
-    output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL) abort();\n  Z_AsyncExecutor *executor = task->executor;\n  z_stage1_async_external_lock(executor);\n  if (!task->external_completion || task->completion_queued || executor->active_external_callbacks == 0) abort();\n  executor->active_external_callbacks -= 1;\n  if (!task->external_resume) {\n    task->cancelled = task->cancelled || task->cancellation_requested;\n    task->completed = true;\n  }\n  task->completion_queued = true;\n  task->completion_next = executor->external_completions;\n  executor->external_completions = task;\n  z_stage1_async_host_signal(executor);\n#if defined(_WIN32)\n  WakeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_cond_signal(&executor->external_condition) != 0) abort();\n#endif\n  z_stage1_async_external_unlock(executor);\n}\n\n");
+    output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL) abort();\n  Z_AsyncExecutor *executor = task->executor;\n  z_stage1_async_external_lock(executor);\n  if (!task->external_completion || task->completion_queued || executor->active_external_callbacks == 0) abort();\n  executor->active_external_callbacks -= 1;\n  task->completion_queued = true;\n  task->completion_next = executor->external_completions;\n  executor->external_completions = task;\n  z_stage1_async_host_signal(executor);\n#if defined(_WIN32)\n  WakeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_cond_signal(&executor->external_condition) != 0) abort();\n#endif\n  z_stage1_async_external_unlock(executor);\n}\n\n");
   }
   if (usesHop) {
     // Cross-executor scheduling, as in Stage 0: another thread posts a task to
@@ -17225,6 +17318,9 @@ function appendAsyncCallableRuntime(
     output.append(`static __attribute__((unused)) void z_stage1_async_main_executor_start(void) {
   if (z_stage1_main_executor != NULL) return;
   z_stage1_async_executor_init_external(&z_stage1_main_executor_storage);
+  // On Apple hosts, work posted to main also wakes the main queue, so it
+  // runs while main is inside the host's run loop.
+  z_stage1_async_host_enable(&z_stage1_main_executor_storage);
 #if defined(_WIN32)
   z_stage1_main_thread = GetCurrentThreadId();
 #else
@@ -17273,8 +17369,9 @@ static void z_stage1_async_post(Z_AsyncExecutor *executor, Z_AsyncTask *task) {
   z_stage1_async_external_unlock(executor);
 }
 
-static void z_stage1_async_cancel_from_thread(Z_AsyncTask *task) {
-  Z_AsyncExecutor *executor = task->executor;
+// The caller names the task's executor: once posted, the task's own fields
+// belong to that executor's thread.
+static void z_stage1_async_cancel_from_thread(Z_AsyncExecutor *executor, Z_AsyncTask *task) {
   if (executor == NULL) abort();
   z_stage1_async_external_lock(executor);
   if (!task->cross_wake_sent && !task->cancel_queued) {
@@ -17323,7 +17420,7 @@ static void z_stage1_async_wake_remote(Z_AsyncExecutor *executor, Z_AsyncTask *t
   else output.append("  (void)executor;\n  (void)task;\n");
   output.append("  z_stage1_async_enqueue(waiter->executor, waiter);\n}\n\n");
   if (usesExternalCompletion) {
-    output.append(`static bool z_stage1_async_drain_external_completions(Z_AsyncExecutor *executor) {\n  z_stage1_async_external_lock(executor);\n  Z_AsyncTask *completed = executor->external_completions;\n  executor->external_completions = NULL;\n  for (Z_AsyncTask *task = completed; task != NULL; task = task->completion_next) task->completion_queued = false;\n${usesHop ? "  Z_AsyncTask *posted = executor->posted_head;\n  executor->posted_head = NULL;\n  executor->posted_tail = NULL;\n  Z_AsyncTask *cancelled = executor->cancellations;\n  executor->cancellations = NULL;\n  for (Z_AsyncTask *task = cancelled; task != NULL; task = task->cancel_next) task->cancel_queued = false;\n" : ""}  z_stage1_async_external_unlock(executor);\n${usesHop ? "  const bool observed = completed != NULL || posted != NULL || cancelled != NULL;\n  z_stage1_async_run_cancellations(cancelled);\n  while (posted != NULL) {\n    Z_AsyncTask *task = posted;\n    posted = task->posted_next;\n    task->posted_next = NULL;\n    z_stage1_async_enqueue(executor, task);\n  }\n" : "  const bool observed = completed != NULL;\n"}  while (completed != NULL) {\n    Z_AsyncTask *task = completed;\n    completed = task->completion_next;\n    task->completion_next = NULL;\n    if (task->external_resume) {\n      task->external_completion = false;\n      z_stage1_async_enqueue(task->executor, task);\n    } else if (task->waiter != NULL) {\n      Z_AsyncTask *waiter = task->waiter;\n      task->waiter = NULL;\n      z_stage1_async_wake_waiter(executor, task, waiter);\n    }\n  }\n  return observed;\n}\n\n`);
+    output.append(`static bool z_stage1_async_drain_external_completions(Z_AsyncExecutor *executor) {\n  z_stage1_async_external_lock(executor);\n  Z_AsyncTask *completed = executor->external_completions;\n  executor->external_completions = NULL;\n  for (Z_AsyncTask *task = completed; task != NULL; task = task->completion_next) task->completion_queued = false;\n${usesHop ? "  Z_AsyncTask *posted = executor->posted_head;\n  executor->posted_head = NULL;\n  executor->posted_tail = NULL;\n  Z_AsyncTask *cancelled = executor->cancellations;\n  executor->cancellations = NULL;\n  for (Z_AsyncTask *task = cancelled; task != NULL; task = task->cancel_next) task->cancel_queued = false;\n" : ""}  z_stage1_async_external_unlock(executor);\n${usesHop ? "  const bool observed = completed != NULL || posted != NULL || cancelled != NULL;\n  z_stage1_async_run_cancellations(cancelled);\n  while (posted != NULL) {\n    Z_AsyncTask *task = posted;\n    posted = task->posted_next;\n    task->posted_next = NULL;\n    z_stage1_async_enqueue(executor, task);\n  }\n" : "  const bool observed = completed != NULL;\n"}  while (completed != NULL) {\n    Z_AsyncTask *task = completed;\n    completed = task->completion_next;\n    task->completion_next = NULL;\n    if (task->external_resume) {\n      task->external_completion = false;\n      z_stage1_async_enqueue(task->executor, task);\n      continue;\n    }\n    // A reported task completes here, on its own executor and already off\n    // the completion list, so whoever sees it completed may free it.\n    task->cancelled = task->cancelled || task->cancellation_requested;\n    task->completed = true;\n    if (task->waiter != NULL) {\n      Z_AsyncTask *waiter = task->waiter;\n      task->waiter = NULL;\n      z_stage1_async_wake_waiter(executor, task, waiter);\n    }\n  }\n  return observed;\n}\n\n`);
   }
   if (usesDelay) {
     output.append("static __attribute__((unused)) void z_stage1_async_schedule_delay(Z_AsyncTask *task, uint64_t milliseconds) {\n  if (task == NULL || task->executor == NULL || task->queued || task->completed) abort();\n  z_stage1_async_remove_timer(task);\n  const uint64_t now = z_stage1_async_now_ms();\n  task->wake_at_ms = milliseconds > UINT64_MAX - now ? UINT64_MAX : now + milliseconds;\n  task->timer_scheduled = true;\n  Z_AsyncTask **link = &task->executor->timers;\n  while (*link != NULL && (*link)->wake_at_ms <= task->wake_at_ms) link = &(*link)->timer_next;\n  task->timer_next = *link;\n  *link = task;\n}\n\n");
@@ -17406,6 +17503,7 @@ function appendExecutorHopRuntime(inout output: TextBuffer): void {
   output.append(`typedef struct Z_AsyncHop {
   Z_AsyncTask task;
   Z_AsyncInvocation child;
+  Z_AsyncExecutor *target;
   bool posted;
 } Z_AsyncHop;
 
@@ -17420,12 +17518,12 @@ static void z_stage1_async_hop_poll(Z_AsyncTask *task) {
   hop->posted = true;
   z_stage1_async_begin_external_completion(task);
   hop->child.task->waiter = task;
-  z_stage1_async_post(hop->child.task->executor, hop->child.task);
+  z_stage1_async_post(hop->target, hop->child.task);
 }
 
 static void z_stage1_async_hop_cancel(Z_AsyncTask *task) {
   Z_AsyncHop *hop = (Z_AsyncHop *)task;
-  if (hop->posted) z_stage1_async_cancel_from_thread(hop->child.task);
+  if (hop->posted) z_stage1_async_cancel_from_thread(hop->target, hop->child.task);
 }
 
 static bool z_stage1_async_hop_failed(Z_AsyncTask *task) {
@@ -17484,6 +17582,7 @@ static __attribute__((unused)) Z_AsyncInvocation z_stage1_async_hop_start(Z_Asyn
   hop->task.request_cancel = z_stage1_async_hop_cancel;
   hop->task.executor = executor;
   hop->child = child;
+  hop->target = child.task->executor;
   return (Z_AsyncInvocation){ .task = &hop->task, .failed = z_stage1_async_hop_failed,
     .take_result = z_stage1_async_hop_take_result, .take_error = z_stage1_async_hop_take_error,
     .destroy = z_stage1_async_hop_destroy };
@@ -23670,16 +23769,9 @@ function appendThreadSpawnHelpers(
           program,
           expression.labels[captureLabel + 1]
         );
-        const nativeCaptureType = try cType(captureType);
-        if (captureType.kind == LoweredTypeKind.classType
-          || captureType.kind == LoweredTypeKind.taskScopeType) {
-          output.append(nativeCaptureType);
-          output.append(" const *");
-        } else {
-          output.append("const ");
-          output.append(nativeCaptureType);
-          output.append(" *");
-        }
+        // The worker context owns each capture, so the body may assign it.
+        output.append(try cType(captureType));
+        output.append(" *");
         appendCBindingName(inout output, expression.labels[captureLabel]);
         const bodyCaptureIndex = (captureLabel - 6) / 2;
         if (threadSpawnOwnsCapture(

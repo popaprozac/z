@@ -210,9 +210,11 @@ timer frames to `match`-initialized owned locals and direct `TaskScope.close()` 
 `cancel()` joins between timers. A failed initializer, `try`, or early return
 finishes the task with the ordinary ownership-planned cleanup; it cannot return
 a value from a `void` poll or accidentally continue to the next timer. Cancellation
-cleans only initialized frame owners. Dedicated-worker-to-main timer segments
-with early completion still need completion forwarding and are rejected before
-C emission. Stage 0 additionally prepares closures in consuming match subjects,
+cleans only initialized frame owners. A worker block awaiting such a function
+hops to the main executor, so early completion needs no forwarding there; the
+worker shapes that do not hop yet (expression-bodied async workers, workers
+capturing a `TaskScope`, async methods) still reject it before C emission.
+Stage 0 additionally prepares closures in consuming match subjects,
 recovers explicitly borrowed class-field types, and transfers an inline
 `attempt await` Result into a known owned synchronous parameter exactly once.
 
@@ -1455,7 +1457,15 @@ in root locals: `await t` (including `try`/`attempt` for `Task<T, E>`)
 suspends the frame until the worker reports through the executor's external
 queue, and `await t.cancel()` cancels the worker, joins it, and releases it.
 Native semantics types `thread.spawn(...)` as `Task<T>` or `Task<T, E>` from
-the worker closure's declared or inferred signature, as Stage 0 does. An async
+the worker closure's declared or inferred signature, as Stage 0 does. A worker
+owns its captures: a value without cleanup is a copy the body may assign, and
+a moved owner (an Array, String, TextBuffer, or an aggregate of transferable
+owners) lives in the worker context and is released there unless the body
+hands it on. Native semantics rejects a captured value that cannot cross, as
+Stage 0 does (Z0704): one holding a custom deinit of unknown thread affinity
+or an unshareable class identity. An owner a synchronous worker's context
+is not known to carry (a C++ value, a type whose transfer native semantics
+cannot classify) remains a native tier limit (Z1000). An async
 `thread.spawn` worker whose block body is more than one `return await f()`
 runs as a general frame of its own: lowering lifts the body into a
 synthesized async function (its captures, the resolver's checked closure
@@ -1466,7 +1476,13 @@ is woken when its task storage is, so `await t.cancel()` reaches a sleeping
 worker frame at once. Workers that capture a `TaskScope` keep the
 terminal-await tier. Outside `main`, `await on thread.main { ... }` and
 `await on thread.main f(...)` hop to the program's main executor, as in
-Stage 0. C `main` starts that executor for a program with hops; an async
+Stage 0. A placed block's undeclared captures are private snapshots: native
+semantics requires an explicit `using (...)` capability for anything but a
+String or a cleanup-free value, and rejects an `await` inside a block that
+holds an `in` or `inout` capture, as Stage 0 does (Z0704). A hopped block's
+`in` and `inout` captures are borrowed parameters of its lifted frame (the
+caller's own storage, lent while the caller awaits the block or holds the
+task), and a `move` capture is an owned one. C `main` starts that executor for a program with hops; an async
 `main` driver runs on it, and a blocking worker join on the main thread
 drives it through an async thread-await task (never from inside one of its
 own polls). Lowering lifts a placed block into a synthesized async function
@@ -1480,17 +1496,40 @@ proxy task whose first poll posts the function's frame to the main
 executor's cross-thread queue; the frame's completion reports the proxy
 complete through the awaiting executor's completion queue, and cancelling
 the proxy queues the cancellation for the main thread, where it runs before
-the completion is reported. A frame already on the main thread, on any of
+the completion is reported. A task reported through a completion queue
+becomes completed on its own executor, when that executor drains the report:
+only the owning thread writes the flag, and a task seen completed is already
+off the queue and may be freed. A frame already on the main thread, on any of
 its executors (the main executor, a `TaskScope`'s, a foreign helper's),
 awaits the lifted frame directly. Main-affine async functions take the
 general frame when no shape tier does, except that one whose only suspensions
-are top-level delays keeps its linear delay-segment tier. A function the
-general frame cannot take yet (a lexical local inside a suspending branch)
-keeps its placed tier, which runs placed work where it runs, so a worker
-frame awaiting it is a lowering error. A worker whose tail is a placed call
-of a main-affine function on the delay-segment tier keeps the worker-to-main
-bridge, which runs each segment on main. Blocking `on thread.main` work from
-synchronous workers keeps its tier.
+are top-level delays keeps its linear delay-segment tier; a worker's hop
+awaits either on main. Every async `thread.spawn` worker that is more than
+one `return await f()` runs as a lifted frame, and every placed block or call
+outside `main` hops: placed work is never run in place off the main thread.
+The general frame holds owned locals declared inside suspending blocks
+(`if`, `while`, match arms): each has a frame slot and a live flag, is
+destroyed at its block's end, on `break`/`continue` (which clear the flag),
+and on `return`/`throw`/cancellation by the frame's cleanup, newest binding
+first with a match arm's payload ordered before the arm's own locals; a
+`try` assigned over an owned frame local destroys the old value while it is
+live. Stage 0 does not execute these conditional owned locals yet.
+`task on thread.main { ... }` and `task on thread.main f(...)` spawn the
+hopped work as a child that the frame joins on exit: in a non-`main` async
+function, in an async worker, in `main` (a child frame on its own executor),
+and, as Stage 0 allows, directly in a synchronous `thread.spawn` closure,
+whose body then runs as a lifted frame so the worker joins its main children
+before it completes. The checker accepts the same placement in a closure
+nested in a worker body, as Stage 0's does; native reports `Z0700` for it,
+since that closure has no frame to own the child. On Apple hosts the main
+executor's host wake is enabled for hop programs: work posted to it also
+dispatches one coalesced ticket to the main queue, so it runs while `main`
+is inside the host's run loop, and the driver links CoreFoundation for a
+program whose threads place work on an executor, as Stage 0 does. Three
+shapes still use the
+older worker-to-main tiers: an expression-bodied async worker
+(`async (): T => await on thread.main f()`), a worker that captures a
+`TaskScope`, and an async method that places a free-function call.
 Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted

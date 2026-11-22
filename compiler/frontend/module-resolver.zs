@@ -250,6 +250,7 @@ import {
   substituteGenericType,
   typeContainsForeignValueStorage,
   typeContainsNativeObjCStorage,
+  typeHoldsThreadBoundStorage,
   typeHoldsUntransferableEndpoint,
   typeContainsStoredView,
   typeContainsSlice,
@@ -261,6 +262,7 @@ import {
   typeIsNativeObjCReference,
   typeIsForeignViewOnlyRecord,
   typeIsRetainedParameterViewAggregate,
+  typeIsImplicitPlacementCopy,
   typeIsThreadShareable,
   typeIsThreadTransferable,
   typeIsArenaOwnerBundle,
@@ -1307,6 +1309,10 @@ function closureCaptureNames(
     }
   }
   return captures;
+}
+
+function threadBodyClosureBindingName(offset: usize): String {
+  return `__z_native_thread_body_closure_${offset}`;
 }
 
 function closureCaptureModeBindingName(in capture: String): String {
@@ -4981,6 +4987,63 @@ function requireThreadSpawnClassCapture(
   }
 }
 
+// Moves the position to this tree's use of `name` when it is the earliest
+// seen (offset zero means none yet), and queues the statements its
+// expressions own.
+function earliestNameUse(
+  in tree: ExpressionTree,
+  in name: String,
+  inout pending: Array<usize>,
+  inout offset: usize,
+  inout line: usize,
+  inout column: usize
+): void {
+  for (const node of tree.nodes) {
+    for (const owned of node.statements) {
+      pending.push(owned);
+    }
+    if (node.kind == ExpressionKind.identifierExpression && node.value == name
+      && (offset == 0 || node.offset < offset)) {
+      offset = node.offset;
+      line = node.line;
+      column = node.column;
+    }
+  }
+}
+
+// A value captured by thread.spawn moves to the worker, so it must be
+// transferable, as in Stage 0 (Z0704): no custom deinit of unknown thread
+// affinity and no unshareable class identity in its storage. A captured class
+// reports its own reasons above. Only what this can name rejects here: a type
+// it cannot classify (a foreign type, a standard handle under any import
+// name) is left to native lowering.
+function requireThreadSpawnValueCapture(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  closureIndex: usize,
+  in capture: String,
+  in captureType: String
+): void throws ModuleResolveError {
+  let actual = transparentTypeName(modules, moduleIndex, captureType);
+  const nullableTarget = nullableTargetType(actual);
+  if (nullableTarget.byteLength > 0) actual = transparentTypeName(modules, moduleIndex, nullableTarget);
+  match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => {
+      if (modules[location.moduleIndex].symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol) return;
+    }
+    none => {}
+  }
+  const visiting = Array<String>();
+  if (!typeHoldsThreadBoundStorage(modules, moduleIndex, actual, visiting)) return;
+  throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `capture "${capture}" of type ${captureType} cannot cross a native thread boundary yet`,
+    tree.nodes[closureIndex].line, tree.nodes[closureIndex].column, 1
+  );
+}
+
 // The worker's declared result returns to the owner thread, so it must be
 // transferable, as in Stage 0.
 function requireThreadSpawnResult(
@@ -7607,13 +7670,22 @@ function inferExpressionNodeType(
       bindings,
       "__z_native_async_context"
     );
-    if (asyncContext.byteLength == 0) {
-      throw resolutionError(
+    // `task on thread.main` may also sit directly in a synchronous worker
+    // body: the worker joins it before it completes.
+    const workerTask = node.value == "spawn"
+      && valueBindingType(bindings, "__z_native_thread_body") == "true";
+    if (asyncContext.byteLength == 0 && !workerTask) {
+      const message = node.value == "spawn"
+        ? "task on thread.main requires an enclosing async function or a direct synchronous thread.spawn closure"
+        : "await on thread.main requires an enclosing async function";
+      throw codedModuleResolutionError(
         ModuleResolveErrorKind.typeMismatch,
+        "Z0711",
         module.path,
-        "executor placement requires an enclosing async function",
+        message,
         node.line,
-        node.column
+        node.column,
+        node.value == "spawn" ? 4 : 5
       );
     }
     let declaredReturn = "";
@@ -7749,6 +7821,52 @@ function inferExpressionNodeType(
     collectClosureStatementCaptures(arena, tree, statements, bindings,
       inout placedLocals, inout placedCaptures);
     recordClosureCaptures(node.offset, placedCaptures, inout evidence);
+    // An undeclared capture is the block's private snapshot, so it must be
+    // one a snapshot can be, as in Stage 0 (Z0704).
+    for (const captured of placedCaptures) {
+      let declared = false;
+      for (const child of children) {
+        if (tree.nodes[child].kind == ExpressionKind.executorCaptureExpression
+          && tree.nodes[child].labels.length > 0 && tree.nodes[child].labels[0] == captured) declared = true;
+      }
+      const capturedType = valueBindingType(bindings, captured);
+      if (declared || capturedType.byteLength == 0
+        || typeMentionsActiveTypeParameter(bindings, capturedType)) continue;
+      const copyVisiting = Array<String>();
+      if (typeIsImplicitPlacementCopy(modules, moduleIndex, capturedType, copyVisiting)) continue;
+      // Reported at the capture's first use in the block, as Stage 0 does.
+      let useOffset: usize = 0;
+      let useLine = node.line;
+      let useColumn = node.column;
+      let pending = copyIndices(statements);
+      let cursor: usize = 0;
+      while (cursor < pending.length) {
+        const statement = view arena.nodes[pending[cursor]];
+        cursor = cursor + 1;
+        for (const child of statement.children) {
+          pending.push(child);
+        }
+        match (in statement.expression) {
+          some(syntax) => match (in syntax.tree) {
+            some(owned) => earliestNameUse(owned, captured, inout pending, inout useOffset, inout useLine, inout useColumn);
+            none => {}
+          }
+          none => {}
+        }
+        match (in statement.secondExpression) {
+          some(syntax) => match (in syntax.tree) {
+            some(owned) => earliestNameUse(owned, captured, inout pending, inout useOffset, inout useLine, inout useColumn);
+            none => {}
+          }
+          none => {}
+        }
+      }
+      throw codedModuleResolutionError(
+        ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+        `ownership-bearing executor capture "${captured}" requires an explicit capability`,
+        useLine, useColumn, captured.byteLength
+      );
+    }
     const expectedReturn = valueBindingType(
       bindings,
       "__z_native_return_type"
@@ -9612,6 +9730,12 @@ function inferExpressionNodeType(
       "__z_native_async_context",
       closureAsyncContext
     );
+    // A `thread.spawn` closure's body is a worker body, and so are closures
+    // nested in it (as in Stage 0); helper functions are not.
+    const threadBodyMarker = threadBodyClosureBindingName(node.offset);
+    const threadBody = valueBindingType(bindings, threadBodyMarker) == "true"
+      || valueBindingType(bindings, "__z_native_thread_body") == "true" ? "true" : "";
+    addValueBinding(inout closureBindings, "__z_native_thread_body", threadBody);
     const objectiveCCallbackExecutor = valueBindingType(
       bindings, `__z_native_objc_callback_executor_${node.offset}`
     );
@@ -11357,6 +11481,7 @@ function inferExpressionNodeType(
               }
               if (!typeMentionsActiveTypeParameter(bindings, captureType)) {
                 try requireThreadSpawnClassCapture(module, modules, moduleIndex, tree, argument, capture, captureType);
+                try requireThreadSpawnValueCapture(module, modules, moduleIndex, tree, argument, capture, captureType);
               }
             }
             try requireThreadSpawnResult(module, modules, moduleIndex, tree, argument);
@@ -11366,6 +11491,12 @@ function inferExpressionNodeType(
             "__z_native_executor_context",
             ""
           );
+          // Each closure argument is the worker's own body.
+          for (const argument of children) {
+            if (tree.nodes[argument].kind != ExpressionKind.closureExpression) continue;
+            const bodyMarker = threadBodyClosureBindingName(tree.nodes[argument].offset);
+            addValueBinding(inout workerBindings, bodyMarker, "true");
+          }
           try inferUnclassifiedCallArguments(
             module,
             modules,
@@ -14806,7 +14937,9 @@ function inferStatement(
           // scope. It does not discard the child's lifetime or skip its join.
           let scopeOwnsTask = false;
           match (in expression.tree) {
-            some(tree) => scopeOwnsTask = tree.nodes[tree.root].kind == ExpressionKind.spawnExpression;
+            some(tree) => scopeOwnsTask = tree.nodes[tree.root].kind == ExpressionKind.spawnExpression
+              || (tree.nodes[tree.root].kind == ExpressionKind.executorPlacementExpression
+                && tree.nodes[tree.root].value == "spawn");
             none => {}
           }
           let visiting = Array<String>();
