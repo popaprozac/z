@@ -210,9 +210,11 @@ timer frames to `match`-initialized owned locals and direct `TaskScope.close()` 
 `cancel()` joins between timers. A failed initializer, `try`, or early return
 finishes the task with the ordinary ownership-planned cleanup; it cannot return
 a value from a `void` poll or accidentally continue to the next timer. Cancellation
-cleans only initialized frame owners. Dedicated-worker-to-main timer segments
-with early completion still need completion forwarding and are rejected before
-C emission. Stage 0 additionally prepares closures in consuming match subjects,
+cleans only initialized frame owners. A worker block awaiting such a function
+hops to the main executor, so early completion needs no forwarding there; the
+worker shapes that do not hop yet (expression-bodied async workers, workers
+capturing a `TaskScope`, async methods) still reject it before C emission.
+Stage 0 additionally prepares closures in consuming match subjects,
 recovers explicitly borrowed class-field types, and transfers an inline
 `attempt await` Result into a known owned synchronous parameter exactly once.
 
@@ -1484,13 +1486,18 @@ the completion is reported. A frame already on the main thread, on any of
 its executors (the main executor, a `TaskScope`'s, a foreign helper's),
 awaits the lifted frame directly. Main-affine async functions take the
 general frame when no shape tier does, except that one whose only suspensions
-are top-level delays keeps its linear delay-segment tier. A function the
-general frame cannot take yet (a lexical local inside a suspending branch)
-keeps its placed tier, which runs placed work where it runs, so a worker
-frame awaiting it is a lowering error. A worker whose tail is a placed call
-of a main-affine function on the delay-segment tier keeps the worker-to-main
-bridge, which runs each segment on main. Blocking `on thread.main` work from
-synchronous workers keeps its tier.
+are top-level delays keeps its linear delay-segment tier; a worker's hop
+awaits either on main. Every async `thread.spawn` worker that is more than
+one `return await f()` runs as a lifted frame, and every placed block or call
+outside `main` hops: placed work is never run in place off the main thread.
+The general frame holds owned locals declared inside suspending blocks
+(`if`, `while`, match arms): each has a frame slot and a live flag, is
+destroyed at its block's end, on `break`/`continue` (which clear the flag),
+and on `return`/`throw`/cancellation by the frame's cleanup, newest binding
+first with a match arm's payload ordered before the arm's own locals; a
+`try` assigned over an owned frame local destroys the old value while it is
+live. Stage 0 does not execute these conditional owned locals yet. Blocking
+`on thread.main` work from synchronous workers keeps its tier.
 Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted

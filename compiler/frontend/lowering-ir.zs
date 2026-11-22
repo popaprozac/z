@@ -105,7 +105,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, threadWorkerNeedsFrame, workerUsesMainBridge, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, threadWorkerNeedsFrame, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -23326,8 +23326,7 @@ function collectLiftedWorkers(
             if (closure < tree.nodes.length && tree.nodes[closure].kind == ExpressionKind.closureExpression
               && tree.nodes[closure].labels.length >= 4 && tree.nodes[closure].labels[2] == "block"
               && tree.nodes[closure].labels[3] == "async"
-              && threadWorkerNeedsFrame(declaration.body, tree.nodes[closure].statements)
-              && !workerUsesMainBridge(program, declaration.body, tree.nodes[closure].statements)) {
+              && threadWorkerNeedsFrame(declaration.body, tree.nodes[closure].statements)) {
               const worker = try liftedWorkerDeclaration(program, importedTypes, evidence, declaration.body,
                 declaration.name, tree, closure);
               // A TaskScope capture keeps the worker tier that propagates
@@ -23378,32 +23377,6 @@ function attachLiftedWorker(
   expressions[expressionIndex].statements = Array<usize>();
   expressions[expressionIndex].labels[0] = "lowered-block";
   expressions[expressionIndex].workerFrameName = name;
-}
-
-// A worker frame runs off the main thread: it cannot await a function whose
-// placed work runs where the function runs (its placed tier).
-function requireWorkerAvoidsMainBound(in worker: FunctionDeclaration, in mainBound: Array<String>): void throws String {
-  if (mainBound.length == 0) return;
-  for (const statement of worker.body.nodes) {
-    match (in statement.expression) {
-      some(syntax) => match (in syntax.tree) {
-        some(tree) => for (const node of tree.nodes) {
-          if (node.kind != ExpressionKind.awaitExpression || node.children.length != 1) continue;
-          const call = node.children[0];
-          if (tree.nodes[call].kind != ExpressionKind.callExpression || tree.nodes[call].children.length == 0) continue;
-          const callee = tree.nodes[call].children[0];
-          if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) continue;
-          for (const name of mainBound) {
-            if (name == tree.nodes[callee].value) {
-              throw `native worker frames cannot await ${name} yet: its placed work runs only from the main executor until the general frame takes its body (lexical locals in suspending branches)`;
-            }
-          }
-        }
-        none => {}
-      }
-      none => {}
-    }
-  }
 }
 
 function mainHopName(offset: usize): String {
@@ -35995,29 +35968,22 @@ function appendLoweredProgram(
   for (const declaration of program.functions) {
     try collectLiftedWorkers(program, importedTypes, evidence, declaration, inout lifted);
   }
-  // Outside `main`, placed work hops to the main executor. A function whose
-  // hopped body the general frame does not take yet keeps its placed tier,
-  // which runs placed work where the function runs: only main may await it.
+  // Outside `main`, placed work hops to the main executor: the function may
+  // run on any executor, so its placed work is never run in place.
   const threadNames = mainPlacementThreadNames(program);
   let hoppedIndices = Array<usize>();
   let hopped = Array<FunctionDeclaration>();
-  let mainBound = Array<String>();
   let functionIndex: usize = 0;
   while (functionIndex < program.functions.length) {
     if (program.functions[functionIndex].asynchronous && program.functions[functionIndex].name != "main"
       && program.functions[functionIndex].executorAffinity.byteLength == 0) {
       let candidate = copy program.functions[functionIndex];
       if (normalizeMainHops(inout candidate.body, threadNames)) {
-        if (functionUsesGeneralFrame(program, candidate)) {
-          hoppedIndices.push(functionIndex);
-          hopped.push(move candidate);
-        } else mainBound.push(copy program.functions[functionIndex].name);
+        hoppedIndices.push(functionIndex);
+        hopped.push(move candidate);
       }
     }
     functionIndex = functionIndex + 1;
-  }
-  for (const worker of lifted) {
-    try requireWorkerAvoidsMainBound(worker, mainBound);
   }
   let liftedHops = false;
   for (const worker of lifted) {

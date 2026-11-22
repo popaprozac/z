@@ -235,15 +235,13 @@ int main(void) {
     + "retry\nreleased endpoint outer\nreleased error retry\n");
 }, 240_000);
 
-test("keeps destructured payloads and arm locals outside the native yielding tier, and runs awaited subjects and suspending arms", () => {
+test("keeps destructured payloads outside the native yielding tier, and runs awaited subjects, arm locals, and suspending arms", () => {
   const directory = mkdtempSync("/tmp/z-yield-match-boundary-");
   try {
     const input = resolve(directory, "main.zs");
     const cases = [
       `const option = Option.some(Item({ count: 1 }));
        match (option) { some({ count }) => {} none => {} }`,
-      `const option = Option.some(1);
-       match (option) { some(value) => { const local = value + 1; } none => {} }`,
     ];
     for (const body of cases) {
       const source = `import { scheduler } from "std/async";
@@ -263,9 +261,10 @@ async function main(): i32 {
       assert.match(result.stderr, /Z0700/, `${source}\n${result.stderr}`);
     }
     // An awaited subject runs into a frame temporary before the match, and an
-    // arm may suspend with its payload kept in the frame.
+    // arm may declare locals or suspend with its payload kept in the frame.
     for (const body of [
       "match (await child()) { some(value) => {} none => {} }",
+      "const option = Option.some(1);\n  match (option) { some(value) => { const local = value + 1; } none => {} }",
       "const option = Option.some(1);\n  match (option) { some(value) => { await scheduler.yield(); } none => {} }",
     ]) {
       writeFileSync(input, `import { scheduler } from "std/async";

@@ -284,66 +284,34 @@ function statementTreeSuspends(in arena: StatementArena, index: usize): boolean 
 }
 
 // A main-affine async function whose suspensions are all top-level delays
-// keeps its linear delay-segment tier, which both main callers and the
-// worker-to-main bridge run. Any other suspending shape takes the general
-// frame when it fits; the bridge's loop/if/match segments remain only for
-// bodies the general frame does not take yet (lexical locals in suspending
-// branches).
+// with only plain statements ahead of them keeps its linear delay-segment
+// tier, which both main callers and the worker-to-main bridge run. Any other
+// suspending shape takes the general frame when it fits; the bridge's
+// loop/if/match segments remain only for bodies the general frame does not
+// take yet.
 export function mainAffineUsesGeneralFrame(in program: Program, in declaration: FunctionDeclaration): boolean {
   if (!declaration.asynchronous || declaration.executorAffinity != "thread.main") return false;
   if (functionContainsFrameDelay(program, declaration)) {
     let linear = true;
+    let structured = false;
     for (const root of declaration.body.roots) {
       const kind = declaration.body.nodes[root].kind;
-      if ((kind == StatementKind.whileStatement || kind == StatementKind.ifStatement
-        || kind == StatementKind.matchStatement)
-        && statementTreeSuspends(declaration.body, root)) linear = false;
+      const control = kind == StatementKind.whileStatement || kind == StatementKind.ifStatement
+        || kind == StatementKind.matchStatement;
+      // The delay tier resumes neither into control flow nor past it.
+      if ((control || structured) && statementTreeSuspends(declaration.body, root)) linear = false;
+      if (kind != StatementKind.expressionStatement && kind != StatementKind.variableStatement
+        && kind != StatementKind.assignmentStatement) structured = true;
     }
     if (linear) return false;
   }
   return functionUsesGeneralFrame(program, declaration);
 }
 
-// A worker whose tail is `return [try] await on thread.main f(...)` of a
-// main-affine `f` that keeps its delay-segment tier runs through the
-// worker-to-main bridge, which drives those segments; any other worker frame
-// hops instead.
-export function workerUsesMainBridge(in program: Program, in arena: StatementArena, in statements: Array<usize>): boolean {
-  if (statements.length == 0) return false;
-  const tail = statements[statements.length - 1];
-  if (arena.nodes[tail].kind != StatementKind.returnStatement) return false;
-  return match (in arena.nodes[tail].expression) {
-    some(syntax) => match (in syntax.tree) {
-      some(tree) => {
-        let placement = tree.root;
-        if ((tree.nodes[placement].kind == ExpressionKind.tryExpression
-          || tree.nodes[placement].kind == ExpressionKind.attemptExpression)
-          && tree.nodes[placement].children.length == 1) placement = tree.nodes[placement].children[0];
-        const node = view tree.nodes[placement];
-        if (node.kind != ExpressionKind.executorPlacementExpression || node.value != "await"
-          || node.labels.length < 3 || node.labels[2] != "call" || node.children.length != 3) return false;
-        const call = node.children[2];
-        if (tree.nodes[call].kind != ExpressionKind.callExpression || tree.nodes[call].children.length == 0) return false;
-        const callee = tree.nodes[call].children[0];
-        if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) return false;
-        for (const declaration of program.functions) {
-          if (declaration.name == tree.nodes[callee].value && declaration.asynchronous
-            && declaration.executorAffinity == "thread.main") return !mainAffineUsesGeneralFrame(program, declaration);
-        }
-        select false;
-      }
-      none => false;
-    }
-    none => false;
-  };
-}
-
 // The statements of async worker bodies that run as lifted frames, where
 // lowering hops their placements: rewrites those placements as
 // normalizeMainHops does for a whole function.
-export function normalizeWorkerHops(
-  inout body: StatementArena, in program: Program, in threadNames: Array<String>
-): boolean {
+export function normalizeWorkerHops(inout body: StatementArena, in threadNames: Array<String>): boolean {
   if (threadNames.length == 0) return false;
   let pending = Array<usize>();
   for (const statement of body.nodes) {
@@ -357,8 +325,7 @@ export function normalizeWorkerHops(
               if (tree.nodes[closure].kind == ExpressionKind.closureExpression
                 && tree.nodes[closure].labels.length >= 4 && tree.nodes[closure].labels[2] == "block"
                 && tree.nodes[closure].labels[3] == "async"
-                && threadWorkerNeedsFrame(body, tree.nodes[closure].statements)
-                && !workerUsesMainBridge(program, body, tree.nodes[closure].statements)) {
+                && threadWorkerNeedsFrame(body, tree.nodes[closure].statements)) {
                 for (const owned of tree.nodes[closure].statements) {
                   pending.push(owned);
                 }
@@ -835,8 +802,11 @@ function frameStatementIsSupported(
   }
   if (kind == StatementKind.variableStatement
     || kind == StatementKind.destructureStatement) {
-    // Keep lexical local storage expansion separate from root frame storage.
-    if (nested || arena.nodes[index].arrayBindings.length != 0) return false;
+    // A nested local takes a frame slot like a root one; its live flag and
+    // lexical cleanup carry it across suspensions inside its block.
+    // Destructuring stays root-only.
+    if ((nested && kind == StatementKind.destructureStatement)
+      || arena.nodes[index].arrayBindings.length != 0) return false;
     // `let x: T;` is zeroed frame storage whose live flag starts false.
     match (in arena.nodes[index].expression) {
       some(_) => {}
@@ -878,9 +848,19 @@ function frameStatementIsSupported(
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
         const root = tree.root;
+        // A whole assigned value's synchronous `try`/`attempt` propagates as
+        // an initializer's does.
+        let value = root;
+        if (kind == StatementKind.assignmentStatement
+          && (tree.nodes[root].kind == ExpressionKind.tryExpression
+            || tree.nodes[root].kind == ExpressionKind.attemptExpression)
+          && tree.nodes[root].children.length == 1
+          && frameExpressionIsSynchronous(tree, tree.nodes[root].children[0])) {
+          value = tree.nodes[root].children[0];
+        }
         if (synchronousOnly) {
-          if (!frameExpressionIsSynchronous(tree, root)) return false;
-        } else if (!frameExpressionHoistsAwaits(tree, root)) return false;
+          if (!frameExpressionIsSynchronous(tree, value)) return false;
+        } else if (!frameExpressionHoistsAwaits(tree, value)) return false;
       }
       none => return false;
     }

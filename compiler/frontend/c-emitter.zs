@@ -4894,6 +4894,37 @@ function appendAsyncFrameCleanup(
   output.append(");\n");
 }
 
+// Leaving a lexical scope inside a frame (`break`, `continue`): each owner
+// that has a live flag is destroyed only while live, and the flag is cleared,
+// so the frame's own cleanup never destroys it again.
+function appendFrameScopeExitCleanups(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  in cleanups: Array<LoweredCleanup>,
+  depth: usize
+): void {
+  let remaining = cleanups.length;
+  while (remaining > 0) {
+    remaining = remaining - 1;
+    let flag = "";
+    for (const live of declaration.liveFlags) {
+      if (live.owner == cleanups[remaining].name && !live.parameter) flag = copy live.name;
+    }
+    if (flag.byteLength == 0 || (cleanups[remaining].guard.byteLength > 0 && cleanups[remaining].guard != flag)) {
+      appendAsyncFrameCleanup(inout output, declaration, cleanups[remaining], depth);
+      continue;
+    }
+    appendIndent(inout output, depth);
+    output.append(`if (${flag}) {\n`);
+    const unguarded = LoweredCleanup({ name: copy cleanups[remaining].name, type: copy cleanups[remaining].type, guard: "" });
+    appendAsyncFrameCleanup(inout output, declaration, unguarded, depth + 1);
+    appendIndent(inout output, depth + 1);
+    output.append(`${flag} = false;\n`);
+    appendIndent(inout output, depth);
+    output.append("}\n");
+  }
+}
+
 function appendAsyncFrameCleanups(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -9779,7 +9810,9 @@ function appendStatement(
     declaration.statements[index].kind == LoweredStatementKind.breakStatement
     || declaration.statements[index].kind == LoweredStatementKind.continueStatement
   ) {
-    appendCleanups(inout output, declaration.statements[index].cleanups, depth);
+    if (declaration.asyncFrameBindings.length > 0) {
+      appendFrameScopeExitCleanups(inout output, declaration, declaration.statements[index].cleanups, depth);
+    } else appendCleanups(inout output, declaration.statements[index].cleanups, depth);
     // In a dispatch handler, the loop's own break leaves it and its own
     // continue jumps to the next instruction's handler.
     if (declaration.dispatchLoop > 0) {
@@ -12005,6 +12038,23 @@ function appendYieldFrameBorrowTemporaries(
   }
 }
 
+// The earliest statement of an arm or anything nested in it: lowering lowers
+// an arm's body before the arm itself.
+function yieldFrameEarliestStatement(in declaration: LoweredFunction, index: usize): usize {
+  let earliest = index;
+  let pending = Array<usize>(index);
+  let cursor: usize = 0;
+  while (cursor < pending.length) {
+    const current = pending[cursor];
+    cursor = cursor + 1;
+    if (current < earliest) earliest = current;
+    for (const child of declaration.statements[current].children) {
+      pending.push(child);
+    }
+  }
+  return earliest;
+}
+
 function appendYieldFrameAwait(
   inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
   statementIndex: usize, expression: usize, helperExpression: usize, depth: usize
@@ -12155,11 +12205,37 @@ function appendYieldFrameTry(
     }
     return;
   }
-  if (statement.labels.length == 3) throw "native yield-frame try replacement remains a later tier";
   const successType = match (in statement.type) {
     some(type) => copy type;
     none => LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
   };
+  // A `try` assigned over an owned value destroys the old value first. A
+  // frame local may have been moved out: its live flag says, and the new
+  // value makes it live again.
+  let replacedFlag = "";
+  if (statement.labels.length == 3) {
+    if (statement.labels[2] != "replace" || sourceCxx) {
+      throw "native yield-frame try replacement supports owned Z values only";
+    }
+    const wholeBinding = match (in statement.secondExpression) {
+      some(target) => declaration.expressions[target].kind == LoweredExpressionKind.localValue
+        && declaration.expressions[target].value == statement.labels[0];
+      none => true;
+    };
+    if (wholeBinding) {
+      for (const live of declaration.liveFlags) {
+        if (live.owner == statement.labels[0]) replacedFlag = copy live.name;
+      }
+    }
+    appendIndent(inout output, depth);
+    if (replacedFlag.byteLength > 0) output.append(`if (${replacedFlag}) `);
+    output.append(`Z_${successType.name}_${successType.kind == LoweredTypeKind.classType ? "release(" : "deinit(&"}`);
+    match (in statement.secondExpression) {
+      some(target) => try appendExpression(inout output, declaration, target);
+      none => appendAsyncFrameBindingName(inout output, declaration, statement.labels[0]);
+    }
+    output.append(");\n");
+  }
   if (sourceCxx && yieldFrameHoldsCxx(program, successType)) {
     match (in statement.secondExpression) {
       some(_) => throw "native async frame cannot assign a C++ `try` result to existing storage yet";
@@ -12186,6 +12262,10 @@ function appendYieldFrameTry(
     output.append(`(${type})z_stage1_objc_take(&${temporary}.payload.success)`);
   } else output.append(`${temporary}.payload.success`);
   output.append(";\n");
+  if (replacedFlag.byteLength > 0) {
+    appendIndent(inout output, depth);
+    output.append(`${replacedFlag} = true;\n`);
+  }
 }
 
 function appendYieldFrameLexicalCleanups(
@@ -13067,6 +13147,7 @@ function appendYieldFrameHelpers(
     // Payloads of match arms that suspend live in the frame; an owned one has
     // a live flag that its moves clear and frame cleanup honors.
     let payloadNames = Array<String>();
+    let payloadArms = Array<usize>();
     let payloadTypes = Array<LoweredType>();
     let payloadOwned = Array<boolean>();
     let payloadMatch: usize = 0;
@@ -13105,6 +13186,7 @@ function appendYieldFrameHelpers(
             }
           }
           payloadNames.push(payloadName);
+          payloadArms.push(yieldFrameEarliestStatement(declaration, arm));
           payloadTypes.push(payloadType);
           payloadOwned.push(ownsPayload);
         }
@@ -13338,8 +13420,21 @@ function appendYieldFrameHelpers(
         name: copy parameter.name, type: copy parameter.type, guard,
       }));
     }
+    // Locals and match payloads in binding order: an arm's payload binds
+    // before anything in the arm (lowering places the arm after its body),
+    // so cleanup runs newest first, as at a scope's end.
     let cleanupStatement: usize = 0;
     for (const statement of source.statements) {
+      let payloadCleanup: usize = 0;
+      while (payloadCleanup < payloadNames.length) {
+        if (payloadArms[payloadCleanup] == cleanupStatement && payloadOwned[payloadCleanup]) {
+          cleanup.push(LoweredCleanup({
+            name: copy payloadNames[payloadCleanup], type: copy payloadTypes[payloadCleanup],
+            guard: `_z_stage1_live_${payloadNames[payloadCleanup]}`,
+          }));
+        }
+        payloadCleanup = payloadCleanup + 1;
+      }
       const spawnLocal = yieldFrameSpawnExpression(source, cleanupStatement) < source.expressions.length;
       cleanupStatement = cleanupStatement + 1;
       if (statement.kind != LoweredStatementKind.localStatement || spawnLocal) continue;
@@ -13350,16 +13445,6 @@ function appendYieldFrameHelpers(
       if (statement.liveFlag.byteLength == 0
         && !typeContainsObjectiveCStrongSlot(program, type)) continue;
       cleanup.push(LoweredCleanup({ name: copy statement.name, type, guard: copy statement.liveFlag }));
-    }
-    let payloadCleanup: usize = 0;
-    while (payloadCleanup < payloadNames.length) {
-      if (payloadOwned[payloadCleanup]) {
-        cleanup.push(LoweredCleanup({
-          name: copy payloadNames[payloadCleanup], type: copy payloadTypes[payloadCleanup],
-          guard: `_z_stage1_live_${payloadNames[payloadCleanup]}`,
-        }));
-      }
-      payloadCleanup = payloadCleanup + 1;
     }
     let borrowCleanup: usize = 0;
     while (borrowCleanup < borrowNames.length) {

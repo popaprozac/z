@@ -3861,7 +3861,7 @@ export function validateNativeLowerability(
         let normalized = copy declaration;
         const threadNames = mainPlacementThreadNames(module.program);
         normalizeMainPlacements(inout normalized.body, threadNames, asyncCallOffsets);
-        normalizeWorkerHops(inout normalized.body, module.program, threadNames);
+        normalizeWorkerHops(inout normalized.body, threadNames);
         try validateNativeFunction(module.path, graphModuleIndex, modules, graph, normalized, "", Array<String>());
         continue;
       }
@@ -3870,10 +3870,9 @@ export function validateNativeLowerability(
       if (declaration.asynchronous && declaration.executorAffinity.byteLength == 0) {
         let hopped = copy declaration;
         const threadNames = mainPlacementThreadNames(module.program);
-        const workerHops = normalizeWorkerHops(inout hopped.body, module.program, threadNames);
+        const workerHops = normalizeWorkerHops(inout hopped.body, threadNames);
         const mainHops = normalizeMainHops(inout hopped.body, threadNames);
-        // As in lowering: hops only where the general frame takes the body.
-        if ((mainHops && functionUsesGeneralFrame(module.program, hopped)) || (!mainHops && workerHops)) {
+        if (mainHops || workerHops) {
           try validateNativeFunction(module.path, graphModuleIndex, modules, graph, hopped, "", Array<String>());
           continue;
         }
