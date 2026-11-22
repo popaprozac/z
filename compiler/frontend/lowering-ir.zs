@@ -10153,7 +10153,7 @@ function collectThreadClosureCaptures(
         );
       }
     };
-    captures.push(try threadClosureCapture(program, importedTypes, captureName, type, false));
+    captures.push(try threadClosureCapture(program, importedTypes, captureName, type));
     index = index + 1;
   }
   return captures;
@@ -10165,18 +10165,20 @@ function threadClosureCapture(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in captureName: String,
-  in type: LoweredType,
-  framed: boolean
+  in type: LoweredType
 ): LoweredClosureCapture throws String {
     const needsCleanup = moduleTypeNeedsCleanup(
       program,
       importedTypes,
       type
     );
+    // A worker is lifted before this module's own classes are registered, so
+    // their declarations answer for them.
+    const shareVisiting = Array<String>();
     const sharedArc = type.kind == LoweredTypeKind.classType
-      && importedTypeThreadShareable(importedTypes, type);
+      && (importedTypeThreadShareable(importedTypes, type)
+        || moduleTypeIsThreadShareable(program, importedTypes, type.name, shareVisiting));
     const sharedScope = type.kind == LoweredTypeKind.taskScopeType;
-    const channelEndpoint = type.kind == LoweredTypeKind.channelEndpointType;
     const onceLifetime = type.kind == LoweredTypeKind.onceLifetimeType;
     if (onceLifetime) {
       const payload = type.name.copyBytes(13, type.name.byteLength);
@@ -10191,18 +10193,6 @@ function threadClosureCapture(
       && !sharedArc
     ) {
       throw `native thread.spawn cannot retain non-shareable ARC capture ${captureName} of type ${type.name} yet`;
-    }
-    // A framed worker owns a moved value as a frame parameter.
-    if (
-      needsCleanup
-      && !framed
-      && type.kind != LoweredTypeKind.stringType
-      && !sharedArc
-      && !sharedScope
-      && !channelEndpoint
-      && !onceLifetime
-    ) {
-      throw `native thread.spawn does not support ownership-bearing capture ${captureName} yet`;
     }
     return LoweredClosureCapture({
       name: copy captureName,
@@ -23203,7 +23193,7 @@ function liftedWorkerCaptures(
         none => throw `native async worker frame cannot resolve capture ${name}`;
       };
       const type = try lowerModuleTypeName(program, importedTypes, typeName);
-      captures.push(try threadClosureCapture(program, importedTypes, name, type, true));
+      captures.push(try threadClosureCapture(program, importedTypes, name, type));
     }
   }
   if (!found) throw "native async worker frame lost its checked closure captures";
@@ -23733,14 +23723,14 @@ function lowerMainHop(
     if (type.kind == LoweredTypeKind.classType && needsCleanup) {
       // A shareable class is shared with the main executor: the hop's frame
       // holds its own reference (the transfer rule rejects other classes).
-      const capture = try threadClosureCapture(program, importedTypes, parameter.name, type, true);
+      const capture = try threadClosureCapture(program, importedTypes, parameter.name, type);
       if (capture.owned) throw `native placed calls cannot transfer ${parameter.name} of type ${type.name}`;
       value = pushExpression(inout output, LoweredExpressionKind.retainValue, type.name,
         Array<usize>(value), Array<String>());
     } else if (consumed) {
       // A value argument of the placed call moves to the main executor, under
       // the same transfer rule as a worker capture.
-      const capture = try threadClosureCapture(program, importedTypes, parameter.name, type, true);
+      const capture = try threadClosureCapture(program, importedTypes, parameter.name, type);
       value = pushThreadCaptureValue(inout output, capture);
     } else if (type.kind == LoweredTypeKind.stringType) {
       // The block runs on another thread: it gets its own copy.

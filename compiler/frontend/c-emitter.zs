@@ -23766,16 +23766,9 @@ function appendThreadSpawnHelpers(
           program,
           expression.labels[captureLabel + 1]
         );
-        const nativeCaptureType = try cType(captureType);
-        if (captureType.kind == LoweredTypeKind.classType
-          || captureType.kind == LoweredTypeKind.taskScopeType) {
-          output.append(nativeCaptureType);
-          output.append(" const *");
-        } else {
-          output.append("const ");
-          output.append(nativeCaptureType);
-          output.append(" *");
-        }
+        // The worker context owns each capture, so the body may assign it.
+        output.append(try cType(captureType));
+        output.append(" *");
         appendCBindingName(inout output, expression.labels[captureLabel]);
         const bodyCaptureIndex = (captureLabel - 6) / 2;
         if (threadSpawnOwnsCapture(

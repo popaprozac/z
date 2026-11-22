@@ -1457,7 +1457,15 @@ in root locals: `await t` (including `try`/`attempt` for `Task<T, E>`)
 suspends the frame until the worker reports through the executor's external
 queue, and `await t.cancel()` cancels the worker, joins it, and releases it.
 Native semantics types `thread.spawn(...)` as `Task<T>` or `Task<T, E>` from
-the worker closure's declared or inferred signature, as Stage 0 does. An async
+the worker closure's declared or inferred signature, as Stage 0 does. A worker
+owns its captures: a value without cleanup is a copy the body may assign, and
+a moved owner (an Array, String, TextBuffer, or an aggregate of transferable
+owners) lives in the worker context and is released there unless the body
+hands it on. Native semantics rejects a captured value that cannot cross, as
+Stage 0 does (Z0704): one holding a custom deinit of unknown thread affinity
+or an unshareable class identity. An owner a synchronous worker's context
+is not known to carry (a C++ value, a type whose transfer native semantics
+cannot classify) remains a native tier limit (Z1000). An async
 `thread.spawn` worker whose block body is more than one `return await f()`
 runs as a general frame of its own: lowering lifts the body into a
 synthesized async function (its captures, the resolver's checked closure

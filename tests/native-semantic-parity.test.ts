@@ -116,6 +116,30 @@ test("checks thread.spawn captures and results in both compilers", () => {
     return resource.value;
   `), /thread\.spawn result type "Resource" cannot cross a native thread boundary yet/,
     undefined, ["self-host-resolve"]);
+  // A captured value is held to the same rule in a synchronous or an async
+  // worker: no custom deinit of unknown thread affinity and no unshareable
+  // class identity anywhere in its storage.
+  const managed = "struct Managed { label: String; deinit {} }";
+  for (const [declarations, setup, use, type] of [
+    [managed, 'const held = Managed({ label: "m" });', "held.label.byteLength", "Managed"],
+    [managed, 'let held = Array<Managed>(); held.push(Managed({ label: "m" }));', "held.length", "Array<Managed>"],
+    [`${managed}\n    struct Holder { inner: Managed; }`, 'const held = Holder({ inner: Managed({ label: "m" }) });',
+      "held.inner.label.byteLength", "Holder"],
+    ["class Mutable { value: i32; }\n    struct WithMutable { target: Mutable; }",
+      "const held = WithMutable({ target: new Mutable({ value: 1 }) });", "usize(held.target.value)", "WithMutable"],
+  ]) {
+    for (const [modifier, pause] of [["", ""], ["async ", "await delay(1);"]]) {
+      rejects(program(`
+        import { delay } from "std/time";
+        ${declarations}
+      `, `
+        ${setup}
+        const worker = thread.spawn(${modifier}move (): usize => { ${pause} return ${use}; });
+        const result = await worker;
+        return 0;
+      `), new RegExp(`capture "held" of type ${type} cannot cross a native thread boundary yet`));
+    }
+  }
 }, 240_000);
 
 test("requires `move this` on async struct methods, as Stage 0 does", () => {
@@ -796,14 +820,14 @@ test("checks a channel's message type where an endpoint crosses threads", () => 
   `, /capture "holder" of type Holder cannot cross a native thread boundary/);
 }, 240_000);
 
-test("reports block-bodied thread captures native cannot transfer as Z1000", () => {
+test("moves aggregates holding endpoints into block-bodied thread workers", () => {
   const directory = mkdtempSync("/tmp/z-native-thread-block-");
   try {
     const input = resolve(directory, "main.zs");
-    for (const [declaration, type] of [
-      ["const held = Holder({ sender: sender.sync() });", "Holder"],
-      ["let held = Array<SyncSender<u32>>(); held.push(sender.sync());", "Array<SyncSender<u32>>"],
-      ["const held: Option<SyncSender<u32>> = Option.some(sender.sync());", "Option<SyncSender<u32>>"],
+    for (const declaration of [
+      "const held = Holder({ sender: sender.sync() });",
+      "let held = Array<SyncSender<u32>>(); held.push(sender.sync());",
+      "const held: Option<SyncSender<u32>> = Option.some(sender.sync());",
     ]) {
       const source = `import { Channel, SyncSender } from "std/channel";
         import { thread } from "std/thread";
@@ -820,12 +844,10 @@ test("reports block-bodied thread captures native cannot transfer as Z1000", () 
         }`;
       writeFileSync(input, source);
       check(source, input);
+      // The worker context owns the moved aggregate and releases it there.
       const emitted = native("self-host-emit", input);
-      assert.equal(emitted.status, 1, emitted.stdout);
-      assert.ok(emitted.stderr.includes(
-        `error[Z1000]: ownership-bearing thread.spawn capture "held" of type "${type}" is not executable in the native compiler yet`,
-      ), emitted.stderr);
-      assert.doesNotMatch(emitted.stderr, /internal compiler error/);
+      assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+      execute(emitted.stdout, "", ["-pthread"]);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);

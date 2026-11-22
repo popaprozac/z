@@ -250,6 +250,7 @@ import {
   substituteGenericType,
   typeContainsForeignValueStorage,
   typeContainsNativeObjCStorage,
+  typeHoldsThreadBoundStorage,
   typeHoldsUntransferableEndpoint,
   typeContainsStoredView,
   typeContainsSlice,
@@ -4983,6 +4984,39 @@ function requireThreadSpawnClassCapture(
     }
     none => {}
   }
+}
+
+// A value captured by thread.spawn moves to the worker, so it must be
+// transferable, as in Stage 0 (Z0704): no custom deinit of unknown thread
+// affinity and no unshareable class identity in its storage. A captured class
+// reports its own reasons above. Only what this can name rejects here: a type
+// it cannot classify (a foreign type, a standard handle under any import
+// name) is left to native lowering.
+function requireThreadSpawnValueCapture(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  closureIndex: usize,
+  in capture: String,
+  in captureType: String
+): void throws ModuleResolveError {
+  let actual = transparentTypeName(modules, moduleIndex, captureType);
+  const nullableTarget = nullableTargetType(actual);
+  if (nullableTarget.byteLength > 0) actual = transparentTypeName(modules, moduleIndex, nullableTarget);
+  match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => {
+      if (modules[location.moduleIndex].symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol) return;
+    }
+    none => {}
+  }
+  const visiting = Array<String>();
+  if (!typeHoldsThreadBoundStorage(modules, moduleIndex, actual, visiting)) return;
+  throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `capture "${capture}" of type ${captureType} cannot cross a native thread boundary yet`,
+    tree.nodes[closureIndex].line, tree.nodes[closureIndex].column, 1
+  );
 }
 
 // The worker's declared result returns to the owner thread, so it must be
@@ -11376,6 +11410,7 @@ function inferExpressionNodeType(
               }
               if (!typeMentionsActiveTypeParameter(bindings, captureType)) {
                 try requireThreadSpawnClassCapture(module, modules, moduleIndex, tree, argument, capture, captureType);
+                try requireThreadSpawnValueCapture(module, modules, moduleIndex, tree, argument, capture, captureType);
               }
             }
             try requireThreadSpawnResult(module, modules, moduleIndex, tree, argument);

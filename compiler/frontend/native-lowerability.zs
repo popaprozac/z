@@ -1835,8 +1835,8 @@ function closureParameterNamed(
 }
 
 // A value of `typeName` captured into a thread.spawn closure moves to the
-// worker thread; native lowering transfers Strings, task scopes, endpoints
-// and lifetimes it can share, and values without cleanup.
+// worker thread, which then owns it; shareable classes, task scopes,
+// endpoints, and lifetimes are shared instead.
 function requireNativeThreadCaptureType(
   in path: String,
   moduleIndex: usize,
@@ -1904,8 +1904,12 @@ function requireNativeThreadCaptureType(
           length
         );
       }
-      // A framed worker owns a moved value as a frame parameter.
-      if (!sharedClassCandidate && !framed) {
+      // A framed worker owns a moved value as a frame parameter. A plain
+      // worker's context holds one it knows to be transferable, as C
+      // storage, which a C++ value cannot be.
+      const cxxLimit = cxxValueTierLimit(graph, moduleIndex, typeName, true, 0);
+      if (!sharedClassCandidate && !framed
+        && (cxxLimit.byteLength > 0 || !typeIsThreadTransferable(graph.modules, moduleIndex, actualType))) {
         let length = captureName.byteLength;
         if (length == 0) length = 1;
         throw loweringBoundary(

@@ -11409,6 +11409,11 @@ test("compiles a multi-module Z application through the standalone native driver
     // A worker's placed child runs while `main` is inside the Darwin main
     // run loop: work posted to the main executor also wakes the main queue.
     "examples/async/darwin-main-run-loop.zs",
+    // A synchronous worker owns its captures: copies it may assign, and
+    // moved Array, String, TextBuffer, and aggregate owners released once.
+    "examples/async/thread-text.zs",
+    "examples/async/thread-transfer.zs",
+    "tests/fixtures/native-worker-owned-captures.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
@@ -11436,6 +11441,8 @@ test("compiles a multi-module Z application through the standalone native driver
     ["examples/interop/objc/protocol-conformance.zs", /error\[Z1000\]: objc\.bind is not executable in the native compiler yet/],
     ["tests/fixtures/objc-autorelease-pool-async.zs", /error\[Z1000\]: objc\.pool with an expression-bodied closure is not executable in the native compiler yet/],
     ["examples/async/member-affinity.zs", /error\[Z1000\]: thread\.spawn cannot carry main-isolated capture "application" of type Application in the native compiler yet/],
+    // A synchronous worker's context is C storage, which cannot hold a C++ value.
+    ["examples/async/thread-native.zs", /error\[Z1000\]: ownership-bearing thread\.spawn capture "measurement" of type "native\.zcpp\.UniqueValue" is not executable in the native compiler yet/],
     // Namespaces and overloads check natively; aggregate interpolation is a separate tier.
     ["examples/interop/cpp/cpp-interop.zs", /12:121: error\[Z1000\]: template interpolation of "cpp\.zcpp\.Point" is not executable in the native compiler yet/],
   ];
@@ -12584,24 +12591,6 @@ function main(): i32 {
       marker: "^^^^^^",
       code: "Z1000",
       summary: 'Map value type "String" is not executable in the native compiler yet; only cleanup-free scalar values are supported',
-    },
-    {
-      name: "thread-ownership-bearing-capture",
-      source: [
-        'import { thread } from "std/thread";',
-        "struct Payload { text: String; }",
-        "async function main(): i32 {",
-        '  const payload = Payload({ text: "worker" });',
-        "  const worker = thread.spawn(move (): i32 => i32(payload.text.byteLength));",
-        "  return await worker - 6;",
-        "}",
-        "",
-      ].join("\n"),
-      line: 5,
-      column: 51,
-      marker: "^^^^^^^",
-      code: "Z1000",
-      summary: 'ownership-bearing thread.spawn capture "payload" of type "Payload" is not executable in the native compiler yet',
     },
     {
       name: "template-scalar-representation",
