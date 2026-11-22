@@ -17306,7 +17306,7 @@ function appendAsyncCallableRuntime(
     output.append(`static __attribute__((unused)) void z_stage1_async_executor_destroy_external(Z_AsyncExecutor *executor) {\n  if (executor == NULL || executor->external_completions != NULL || executor->active_external_callbacks != 0) abort();\n${usesHop ? "  if (executor->posted_head != NULL || executor->cancellations != NULL) abort();\n" : ""}  z_stage1_async_host_destroy(executor);\n#if defined(_WIN32)\n  DeleteCriticalSection(&executor->external_mutex);\n#else\n  if (pthread_cond_destroy(&executor->external_condition) != 0) abort();\n  if (pthread_mutex_destroy(&executor->external_mutex) != 0) abort();\n#endif\n}\n\n`);
     output.append("static void z_stage1_async_begin_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL || task->external_completion) abort();\n  task->external_completion = true;\n  z_stage1_async_external_lock(task->executor);\n  task->executor->active_external_callbacks += 1;\n  z_stage1_async_external_unlock(task->executor);\n}\n\n");
     output.append("static __attribute__((unused)) void z_stage1_async_wake_executor(Z_AsyncExecutor *executor) {\n  if (executor == NULL) return;\n  z_stage1_async_external_lock(executor);\n  z_stage1_async_host_signal(executor);\n#if defined(_WIN32)\n  WakeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_cond_signal(&executor->external_condition) != 0) abort();\n#endif\n  z_stage1_async_external_unlock(executor);\n}\n\n");
-    output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL) abort();\n  Z_AsyncExecutor *executor = task->executor;\n  z_stage1_async_external_lock(executor);\n  if (!task->external_completion || task->completion_queued || executor->active_external_callbacks == 0) abort();\n  executor->active_external_callbacks -= 1;\n  if (!task->external_resume) {\n    task->cancelled = task->cancelled || task->cancellation_requested;\n    task->completed = true;\n  }\n  task->completion_queued = true;\n  task->completion_next = executor->external_completions;\n  executor->external_completions = task;\n  z_stage1_async_host_signal(executor);\n#if defined(_WIN32)\n  WakeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_cond_signal(&executor->external_condition) != 0) abort();\n#endif\n  z_stage1_async_external_unlock(executor);\n}\n\n");
+    output.append("static void z_stage1_async_report_external_completion(Z_AsyncTask *task) {\n  if (task == NULL || task->executor == NULL) abort();\n  Z_AsyncExecutor *executor = task->executor;\n  z_stage1_async_external_lock(executor);\n  if (!task->external_completion || task->completion_queued || executor->active_external_callbacks == 0) abort();\n  executor->active_external_callbacks -= 1;\n  task->completion_queued = true;\n  task->completion_next = executor->external_completions;\n  executor->external_completions = task;\n  z_stage1_async_host_signal(executor);\n#if defined(_WIN32)\n  WakeConditionVariable(&executor->external_condition);\n#else\n  if (pthread_cond_signal(&executor->external_condition) != 0) abort();\n#endif\n  z_stage1_async_external_unlock(executor);\n}\n\n");
   }
   if (usesHop) {
     // Cross-executor scheduling, as in Stage 0: another thread posts a task to
@@ -17369,8 +17369,9 @@ static void z_stage1_async_post(Z_AsyncExecutor *executor, Z_AsyncTask *task) {
   z_stage1_async_external_unlock(executor);
 }
 
-static void z_stage1_async_cancel_from_thread(Z_AsyncTask *task) {
-  Z_AsyncExecutor *executor = task->executor;
+// The caller names the task's executor: once posted, the task's own fields
+// belong to that executor's thread.
+static void z_stage1_async_cancel_from_thread(Z_AsyncExecutor *executor, Z_AsyncTask *task) {
   if (executor == NULL) abort();
   z_stage1_async_external_lock(executor);
   if (!task->cross_wake_sent && !task->cancel_queued) {
@@ -17419,7 +17420,7 @@ static void z_stage1_async_wake_remote(Z_AsyncExecutor *executor, Z_AsyncTask *t
   else output.append("  (void)executor;\n  (void)task;\n");
   output.append("  z_stage1_async_enqueue(waiter->executor, waiter);\n}\n\n");
   if (usesExternalCompletion) {
-    output.append(`static bool z_stage1_async_drain_external_completions(Z_AsyncExecutor *executor) {\n  z_stage1_async_external_lock(executor);\n  Z_AsyncTask *completed = executor->external_completions;\n  executor->external_completions = NULL;\n  for (Z_AsyncTask *task = completed; task != NULL; task = task->completion_next) task->completion_queued = false;\n${usesHop ? "  Z_AsyncTask *posted = executor->posted_head;\n  executor->posted_head = NULL;\n  executor->posted_tail = NULL;\n  Z_AsyncTask *cancelled = executor->cancellations;\n  executor->cancellations = NULL;\n  for (Z_AsyncTask *task = cancelled; task != NULL; task = task->cancel_next) task->cancel_queued = false;\n" : ""}  z_stage1_async_external_unlock(executor);\n${usesHop ? "  const bool observed = completed != NULL || posted != NULL || cancelled != NULL;\n  z_stage1_async_run_cancellations(cancelled);\n  while (posted != NULL) {\n    Z_AsyncTask *task = posted;\n    posted = task->posted_next;\n    task->posted_next = NULL;\n    z_stage1_async_enqueue(executor, task);\n  }\n" : "  const bool observed = completed != NULL;\n"}  while (completed != NULL) {\n    Z_AsyncTask *task = completed;\n    completed = task->completion_next;\n    task->completion_next = NULL;\n    if (task->external_resume) {\n      task->external_completion = false;\n      z_stage1_async_enqueue(task->executor, task);\n    } else if (task->waiter != NULL) {\n      Z_AsyncTask *waiter = task->waiter;\n      task->waiter = NULL;\n      z_stage1_async_wake_waiter(executor, task, waiter);\n    }\n  }\n  return observed;\n}\n\n`);
+    output.append(`static bool z_stage1_async_drain_external_completions(Z_AsyncExecutor *executor) {\n  z_stage1_async_external_lock(executor);\n  Z_AsyncTask *completed = executor->external_completions;\n  executor->external_completions = NULL;\n  for (Z_AsyncTask *task = completed; task != NULL; task = task->completion_next) task->completion_queued = false;\n${usesHop ? "  Z_AsyncTask *posted = executor->posted_head;\n  executor->posted_head = NULL;\n  executor->posted_tail = NULL;\n  Z_AsyncTask *cancelled = executor->cancellations;\n  executor->cancellations = NULL;\n  for (Z_AsyncTask *task = cancelled; task != NULL; task = task->cancel_next) task->cancel_queued = false;\n" : ""}  z_stage1_async_external_unlock(executor);\n${usesHop ? "  const bool observed = completed != NULL || posted != NULL || cancelled != NULL;\n  z_stage1_async_run_cancellations(cancelled);\n  while (posted != NULL) {\n    Z_AsyncTask *task = posted;\n    posted = task->posted_next;\n    task->posted_next = NULL;\n    z_stage1_async_enqueue(executor, task);\n  }\n" : "  const bool observed = completed != NULL;\n"}  while (completed != NULL) {\n    Z_AsyncTask *task = completed;\n    completed = task->completion_next;\n    task->completion_next = NULL;\n    if (task->external_resume) {\n      task->external_completion = false;\n      z_stage1_async_enqueue(task->executor, task);\n      continue;\n    }\n    // A reported task completes here, on its own executor and already off\n    // the completion list, so whoever sees it completed may free it.\n    task->cancelled = task->cancelled || task->cancellation_requested;\n    task->completed = true;\n    if (task->waiter != NULL) {\n      Z_AsyncTask *waiter = task->waiter;\n      task->waiter = NULL;\n      z_stage1_async_wake_waiter(executor, task, waiter);\n    }\n  }\n  return observed;\n}\n\n`);
   }
   if (usesDelay) {
     output.append("static __attribute__((unused)) void z_stage1_async_schedule_delay(Z_AsyncTask *task, uint64_t milliseconds) {\n  if (task == NULL || task->executor == NULL || task->queued || task->completed) abort();\n  z_stage1_async_remove_timer(task);\n  const uint64_t now = z_stage1_async_now_ms();\n  task->wake_at_ms = milliseconds > UINT64_MAX - now ? UINT64_MAX : now + milliseconds;\n  task->timer_scheduled = true;\n  Z_AsyncTask **link = &task->executor->timers;\n  while (*link != NULL && (*link)->wake_at_ms <= task->wake_at_ms) link = &(*link)->timer_next;\n  task->timer_next = *link;\n  *link = task;\n}\n\n");
@@ -17502,6 +17503,7 @@ function appendExecutorHopRuntime(inout output: TextBuffer): void {
   output.append(`typedef struct Z_AsyncHop {
   Z_AsyncTask task;
   Z_AsyncInvocation child;
+  Z_AsyncExecutor *target;
   bool posted;
 } Z_AsyncHop;
 
@@ -17516,12 +17518,12 @@ static void z_stage1_async_hop_poll(Z_AsyncTask *task) {
   hop->posted = true;
   z_stage1_async_begin_external_completion(task);
   hop->child.task->waiter = task;
-  z_stage1_async_post(hop->child.task->executor, hop->child.task);
+  z_stage1_async_post(hop->target, hop->child.task);
 }
 
 static void z_stage1_async_hop_cancel(Z_AsyncTask *task) {
   Z_AsyncHop *hop = (Z_AsyncHop *)task;
-  if (hop->posted) z_stage1_async_cancel_from_thread(hop->child.task);
+  if (hop->posted) z_stage1_async_cancel_from_thread(hop->target, hop->child.task);
 }
 
 static bool z_stage1_async_hop_failed(Z_AsyncTask *task) {
@@ -17580,6 +17582,7 @@ static __attribute__((unused)) Z_AsyncInvocation z_stage1_async_hop_start(Z_Asyn
   hop->task.request_cancel = z_stage1_async_hop_cancel;
   hop->task.executor = executor;
   hop->child = child;
+  hop->target = child.task->executor;
   return (Z_AsyncInvocation){ .task = &hop->task, .failed = z_stage1_async_hop_failed,
     .take_result = z_stage1_async_hop_take_result, .take_error = z_stage1_async_hop_take_error,
     .destroy = z_stage1_async_hop_destroy };

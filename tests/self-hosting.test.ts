@@ -7964,7 +7964,7 @@ test("requests native worker cancellation and joins owned cleanup", () => {
         // The callee takes the general frame: the worker frame hops to it,
         // and cancelling the worker cancels the hopped frame on main.
         assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
-        assert.match(emission.stdout, /z_stage1_async_cancel_from_thread\(hop->child\.task\)/);
+        assert.match(emission.stdout, /z_stage1_async_cancel_from_thread\(hop->target, hop->child\.task\)/);
         assert.match(emission.stdout, /z_stage1_sleep\(10\);/);
       }
 
@@ -19536,6 +19536,37 @@ test("runs a worker frame awaiting a function with a placed call", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("joins and cancels hopped work without racing the executor that reports it", () => {
+  // A worker freed a hop whose completion the main executor had reported but
+  // the worker had not yet drained (abort at executor teardown), and a hop's
+  // cancellation read the posted child's executor field while main wrote it.
+  // Both showed up within a few sanitizer runs.
+  const directory = mkdtempSync("/tmp/z-native-hop-races-");
+  try {
+    for (const fixture of ["native-main-task-hops.zs", "self-host-emit-thread-cancel-main-match.zs"]) {
+      const input = resolve(projectRoot, "tests/fixtures", fixture);
+      const emission = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+      });
+      assert.equal(emission.status, 0, emission.stderr);
+      for (const sanitizer of ["address,undefined", ...(process.platform === "darwin" ? ["thread"] : [])]) {
+        const executable = resolve(directory, "program");
+        const compilation = spawnSync("clang", ["-x", "c", "-std=c11", "-O1", "-pthread",
+          `-fsanitize=${sanitizer}`, "-fno-sanitize-recover=all",
+          ...(process.platform === "darwin" ? ["-framework", "CoreFoundation"] : []), "-", "-o", executable],
+        { encoding: "utf8", input: emission.stdout });
+        assert.equal(compilation.status, 0, compilation.stderr);
+        for (let run = 0; run < 30; run += 1) {
+          const execution = spawnSync(executable, [], { encoding: "utf8", timeout: 20_000, killSignal: "SIGKILL" });
+          assert.equal(execution.status, 0, `${fixture} ${sanitizer} run ${run}: ${execution.stderr}`);
+        }
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
 
 test("runs structured placed async function suspension through a hop", () => {
   const input = resolve(

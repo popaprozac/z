@@ -1490,7 +1490,10 @@ proxy task whose first poll posts the function's frame to the main
 executor's cross-thread queue; the frame's completion reports the proxy
 complete through the awaiting executor's completion queue, and cancelling
 the proxy queues the cancellation for the main thread, where it runs before
-the completion is reported. A frame already on the main thread, on any of
+the completion is reported. A task reported through a completion queue
+becomes completed on its own executor, when that executor drains the report:
+only the owning thread writes the flag, and a task seen completed is already
+off the queue and may be freed. A frame already on the main thread, on any of
 its executors (the main executor, a `TaskScope`'s, a foreign helper's),
 awaits the lifted frame directly. Main-affine async functions take the
 general frame when no shape tier does, except that one whose only suspensions
