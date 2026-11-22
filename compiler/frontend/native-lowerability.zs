@@ -19,7 +19,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { mainPlacementThreadNames, nestedClosureMainTask, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -1799,6 +1799,25 @@ function resolvedLocalBindingType(
     }
   }
   return selectedType;
+}
+
+// Closures of this function that capture a `TaskScope`: lowering keeps such a
+// worker on the tier that propagates scope cancellation, not a lifted frame.
+function scopeCapturingClosures(
+  in graph: ModuleGraph, moduleIndex: usize, in declaration: FunctionDeclaration
+): Array<usize> {
+  let offsets = Array<usize>();
+  if (moduleIndex >= graph.modules.length) return offsets;
+  for (const entry of graph.modules[moduleIndex].semanticEvidence.closureCaptures) {
+    for (const name of entry.names) {
+      let typeName = resolvedLocalBindingType(graph, moduleIndex, name, entry.offset);
+      for (const parameter of declaration.parameters) {
+        if (parameter.name == name) typeName = copy parameter.type.name;
+      }
+      if (typeName == "TaskScope") offsets.push(entry.offset);
+    }
+  }
+  return offsets;
 }
 
 function closureParameterNamed(
@@ -3851,6 +3870,13 @@ export function validateNativeLowerability(
       }
     }
     for (const declaration of module.program.functions) {
+      const placementThreadNames = mainPlacementThreadNames(module.program);
+      const nestedTask = nestedClosureMainTask(declaration.body, placementThreadNames);
+      if (nestedTask < declaration.body.nodes.length) {
+        throw loweringBoundary(module.path, "Z0700",
+          "task on thread.main inside a closure nested in a worker is not executable in the native compiler yet; write it directly in the thread.spawn closure",
+          declaration.body.nodes[nestedTask].line, declaration.body.nodes[nestedTask].column, 4);
+      }
       // `main` runs on the main executor: its `on thread.main` placements are
       // the placed operations themselves, as lowering normalizes them.
       if (declaration.name == "main" && graphModuleIndex < graph.modules.length) {
@@ -3861,7 +3887,9 @@ export function validateNativeLowerability(
         let normalized = copy declaration;
         const threadNames = mainPlacementThreadNames(module.program);
         normalizeMainPlacements(inout normalized.body, threadNames, asyncCallOffsets);
-        normalizeWorkerHops(inout normalized.body, threadNames);
+        const keptWorkers = scopeCapturingClosures(graph, graphModuleIndex, declaration);
+        normalizeWorkerHops(inout normalized.body, threadNames, keptWorkers);
+        normalizeMainHops(inout normalized.body, threadNames);
         try validateNativeFunction(module.path, graphModuleIndex, modules, graph, normalized, "", Array<String>());
         continue;
       }
@@ -3870,7 +3898,8 @@ export function validateNativeLowerability(
       if (declaration.asynchronous && declaration.executorAffinity.byteLength == 0) {
         let hopped = copy declaration;
         const threadNames = mainPlacementThreadNames(module.program);
-        const workerHops = normalizeWorkerHops(inout hopped.body, threadNames);
+        const keptWorkers = scopeCapturingClosures(graph, graphModuleIndex, declaration);
+        const workerHops = normalizeWorkerHops(inout hopped.body, threadNames, keptWorkers);
         const mainHops = normalizeMainHops(inout hopped.body, threadNames);
         if (mainHops || workerHops) {
           try validateNativeFunction(module.path, graphModuleIndex, modules, graph, hopped, "", Array<String>());

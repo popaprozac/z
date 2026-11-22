@@ -105,7 +105,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, threadWorkerNeedsFrame, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, workerClosureLifts, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -14161,6 +14161,10 @@ function lowerExpressionNode(
       throw "native lowering received a malformed task expression";
     }
     const taskInput = tree.nodes[index].children[0];
+    if (isMainHopNode(tree.nodes[taskInput])) {
+      return try lowerMainHop(program, importedTypes, evidence, tree, taskInput,
+        LoweredExpressionKind.asyncFunctionTask, inout output);
+    }
     if (
       tree.nodes[taskInput].kind != ExpressionKind.callExpression
       || tree.nodes[taskInput].children.length == 0
@@ -14298,7 +14302,8 @@ function lowerExpressionNode(
     }
     const taskInput = tree.nodes[index].children[0];
     if (isMainHopNode(tree.nodes[taskInput])) {
-      return try lowerMainHopAwait(program, importedTypes, evidence, tree, taskInput, inout output);
+      return try lowerMainHop(program, importedTypes, evidence, tree, taskInput,
+        LoweredExpressionKind.asyncFunctionAwait, inout output);
     }
     if (
       tree.nodes[taskInput].kind == ExpressionKind.callExpression
@@ -23304,6 +23309,7 @@ function collectLiftedWorkers(
   in declaration: FunctionDeclaration,
   inout lifted: Array<FunctionDeclaration>
 ): void throws String {
+  const liftThreadNames = mainPlacementThreadNames(program);
   for (const statement of declaration.body.nodes) {
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
@@ -23323,10 +23329,8 @@ function collectLiftedWorkers(
                 }
               }
             }
-            if (closure < tree.nodes.length && tree.nodes[closure].kind == ExpressionKind.closureExpression
-              && tree.nodes[closure].labels.length >= 4 && tree.nodes[closure].labels[2] == "block"
-              && tree.nodes[closure].labels[3] == "async"
-              && threadWorkerNeedsFrame(declaration.body, tree.nodes[closure].statements)) {
+            if (closure < tree.nodes.length
+              && workerClosureLifts(declaration.body, tree, closure, liftThreadNames)) {
               const worker = try liftedWorkerDeclaration(program, importedTypes, evidence, declaration.body,
                 declaration.name, tree, closure);
               // A TaskScope capture keeps the worker tier that propagates
@@ -23466,7 +23470,8 @@ function liftedMainHopDeclaration(
 }
 
 // `await on thread.main f(...)` outside `main`: a synthesized async function
-// whose body is `return [try] [await] f(...)` over the original call, so its
+// whose body is `return [try] [await] f(...)` (or the bare call statement for
+// a void callee) over the original call, so its
 // checked call resolution still types it; it runs on the main executor, so a
 // main-affine `f` starts there.
 function liftedMainHopCallDeclaration(
@@ -23519,7 +23524,10 @@ function liftedMainHopCallDeclaration(
   }
   body.root = root;
   let statement = copy owner.body.nodes[statementIndex];
-  statement.kind = StatementKind.returnStatement;
+  // A void callee has no value to return: the call is the whole body.
+  statement.kind = resolution.returnType == "void"
+    ? StatementKind.expressionStatement
+    : StatementKind.returnStatement;
   statement.mutableBinding = false;
   statement.name = "";
   statement.typeAnnotation = Option<TypeReference>.none;
@@ -23684,14 +23692,15 @@ function mainHopCallResolution(in hop: FunctionDeclaration): ModuleCallResolutio
   });
 }
 
-// `await <hop>`: awaits the block's lifted frame, started for the main
-// executor with copies of the captured values.
-function lowerMainHopAwait(
+// `await <hop>` or `task <hop>`: awaits or spawns the block's lifted frame,
+// started for the main executor with copies of the captured values.
+function lowerMainHop(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   hop: usize,
+  kind: LoweredExpressionKind,
   inout output: Array<LoweredExpression>
 ): usize throws String {
   const name = mainHopName(tree.nodes[hop].offset);
@@ -23743,8 +23752,7 @@ function lowerMainHopAwait(
     children.push(value);
     labels.push("value");
   }
-  const awaited = pushExpression(inout output, LoweredExpressionKind.asyncFunctionAwait, identity,
-    children, labels);
+  const awaited = pushExpression(inout output, kind, identity, children, labels);
   output[awaited].placedExecutor = "thread.main";
   return awaited;
 }
@@ -24167,8 +24175,6 @@ function completeNativeClosureBlocks(
       expressions[expressionIndex].kind == LoweredExpressionKind.threadSpawn
       && expressions[expressionIndex].labels.length >= 6
       && expressions[expressionIndex].labels[0] == "block"
-      && expressions[expressionIndex].labels[2] == "async"
-      && threadWorkerNeedsFrame(arena, expressions[expressionIndex].statements)
       && programLiftsWorker(program, arena, expressions[expressionIndex].statements)
     ) {
       try attachLiftedWorker(program, importedTypes, evidence, arena, ownerName, expressionIndex, inout expressions);
@@ -35978,6 +35984,19 @@ function appendLoweredProgram(
     if (program.functions[functionIndex].asynchronous && program.functions[functionIndex].name != "main"
       && program.functions[functionIndex].executorAffinity.byteLength == 0) {
       let candidate = copy program.functions[functionIndex];
+      if (normalizeMainHops(inout candidate.body, threadNames)) {
+        hoppedIndices.push(functionIndex);
+        hopped.push(move candidate);
+      }
+    } else if (program.functions[functionIndex].asynchronous && program.functions[functionIndex].name == "main") {
+      // `main` runs its awaited placements in place; a `task on thread.main
+      // { ... }` block it spawns is a child frame on its own executor.
+      let asyncCallOffsets = Array<usize>();
+      for (const resolution of evidence.callResolutions) {
+        if (resolution.asynchronous) asyncCallOffsets.push(resolution.offset);
+      }
+      let candidate = copy program.functions[functionIndex];
+      normalizeMainPlacements(inout candidate.body, threadNames, asyncCallOffsets);
       if (normalizeMainHops(inout candidate.body, threadNames)) {
         hoppedIndices.push(functionIndex);
         hopped.push(move candidate);

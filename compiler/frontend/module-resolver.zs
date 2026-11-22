@@ -1309,6 +1309,10 @@ function closureCaptureNames(
   return captures;
 }
 
+function threadBodyClosureBindingName(offset: usize): String {
+  return `__z_native_thread_body_closure_${offset}`;
+}
+
 function closureCaptureModeBindingName(in capture: String): String {
   return `__z_native_closure_capture_mode_${capture}`;
 }
@@ -7607,13 +7611,22 @@ function inferExpressionNodeType(
       bindings,
       "__z_native_async_context"
     );
-    if (asyncContext.byteLength == 0) {
-      throw resolutionError(
+    // `task on thread.main` may also sit directly in a synchronous worker
+    // body: the worker joins it before it completes.
+    const workerTask = node.value == "spawn"
+      && valueBindingType(bindings, "__z_native_thread_body") == "true";
+    if (asyncContext.byteLength == 0 && !workerTask) {
+      const message = node.value == "spawn"
+        ? "task on thread.main requires an enclosing async function or a direct synchronous thread.spawn closure"
+        : "await on thread.main requires an enclosing async function";
+      throw codedModuleResolutionError(
         ModuleResolveErrorKind.typeMismatch,
+        "Z0711",
         module.path,
-        "executor placement requires an enclosing async function",
+        message,
         node.line,
-        node.column
+        node.column,
+        node.value == "spawn" ? 4 : 5
       );
     }
     let declaredReturn = "";
@@ -9612,6 +9625,12 @@ function inferExpressionNodeType(
       "__z_native_async_context",
       closureAsyncContext
     );
+    // A `thread.spawn` closure's body is a worker body, and so are closures
+    // nested in it (as in Stage 0); helper functions are not.
+    const threadBodyMarker = threadBodyClosureBindingName(node.offset);
+    const threadBody = valueBindingType(bindings, threadBodyMarker) == "true"
+      || valueBindingType(bindings, "__z_native_thread_body") == "true" ? "true" : "";
+    addValueBinding(inout closureBindings, "__z_native_thread_body", threadBody);
     const objectiveCCallbackExecutor = valueBindingType(
       bindings, `__z_native_objc_callback_executor_${node.offset}`
     );
@@ -11366,6 +11385,12 @@ function inferExpressionNodeType(
             "__z_native_executor_context",
             ""
           );
+          // Each closure argument is the worker's own body.
+          for (const argument of children) {
+            if (tree.nodes[argument].kind != ExpressionKind.closureExpression) continue;
+            const bodyMarker = threadBodyClosureBindingName(tree.nodes[argument].offset);
+            addValueBinding(inout workerBindings, bodyMarker, "true");
+          }
           try inferUnclassifiedCallArguments(
             module,
             modules,
@@ -14806,7 +14831,9 @@ function inferStatement(
           // scope. It does not discard the child's lifetime or skip its join.
           let scopeOwnsTask = false;
           match (in expression.tree) {
-            some(tree) => scopeOwnsTask = tree.nodes[tree.root].kind == ExpressionKind.spawnExpression;
+            some(tree) => scopeOwnsTask = tree.nodes[tree.root].kind == ExpressionKind.spawnExpression
+              || (tree.nodes[tree.root].kind == ExpressionKind.executorPlacementExpression
+                && tree.nodes[tree.root].value == "spawn");
             none => {}
           }
           let visiting = Array<String>();

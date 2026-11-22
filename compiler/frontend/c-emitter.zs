@@ -11755,6 +11755,14 @@ function appendYieldFrameSpawn(
       argument = argument + 1;
     }
     output.append(");\n");
+  } else if (spawned.placedExecutor == "thread.main") {
+    // `task on thread.main ...`: the child's frame is created for the main
+    // executor and joined through a hop, like an awaited placement.
+    output.append(`${slot} = z_stage1_async_hop_start(task->executor, Z_${spawned.value}_start(`);
+    try appendExpression(inout output, declaration, spawned.children[0]);
+    output.append(", z_stage1_async_main_executor()");
+    try appendYieldFrameChildArguments(inout output, declaration, statementIndex, expression, true);
+    output.append("));\n");
   } else {
     output.append(`${slot} = Z_${spawned.value}_start(`);
     try appendExpression(inout output, declaration, spawned.children[0]);

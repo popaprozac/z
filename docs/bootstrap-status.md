@@ -1496,8 +1496,18 @@ destroyed at its block's end, on `break`/`continue` (which clear the flag),
 and on `return`/`throw`/cancellation by the frame's cleanup, newest binding
 first with a match arm's payload ordered before the arm's own locals; a
 `try` assigned over an owned frame local destroys the old value while it is
-live. Stage 0 does not execute these conditional owned locals yet. Blocking
-`on thread.main` work from synchronous workers keeps its tier.
+live. Stage 0 does not execute these conditional owned locals yet.
+`task on thread.main { ... }` and `task on thread.main f(...)` spawn the
+hopped work as a child that the frame joins on exit: in a non-`main` async
+function, in an async worker, in `main` (a child frame on its own executor),
+and, as Stage 0 allows, directly in a synchronous `thread.spawn` closure,
+whose body then runs as a lifted frame so the worker joins its main children
+before it completes. The checker accepts the same placement in a closure
+nested in a worker body, as Stage 0's does; native reports `Z0700` for it,
+since that closure has no frame to own the child. Three shapes still use the
+older worker-to-main tiers: an expression-bodied async worker
+(`async (): T => await on thread.main f()`), a worker that captures a
+`TaskScope`, and an async method that places a free-function call.
 Cancellation before
 entry and after initialization has exact-once destructor and UBSan coverage.
 Owned inputs enter the cold frame before its first poll, so dropping an unstarted

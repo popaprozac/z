@@ -75,8 +75,15 @@ function mainPlacementCall(in tree: ExpressionTree, index: usize, in threadNames
 
 // `await on thread.main using (...) { ... }`: a synchronous placed block.
 function mainPlacementBlock(in tree: ExpressionTree, index: usize, in threadNames: Array<String>): boolean {
+  return mainPlacementBlockOf(tree, index, threadNames, "await");
+}
+
+// `await|task on thread.main { ... }` with the given mode.
+function mainPlacementBlockOf(
+  in tree: ExpressionTree, index: usize, in threadNames: Array<String>, in mode: String
+): boolean {
   const node = view tree.nodes[index];
-  if (node.kind != ExpressionKind.executorPlacementExpression || node.value != "await"
+  if (node.kind != ExpressionKind.executorPlacementExpression || node.value != mode
     || node.labels.length < 3 || node.labels[2] != "" || node.children.length < 2) return false;
   const executor = node.children[1];
   if (tree.nodes[executor].kind != ExpressionKind.memberExpression || tree.nodes[executor].value != "main"
@@ -164,9 +171,10 @@ export function isMainHopNode(in node: ExpressionNode): boolean {
 }
 
 // Rewrites each placed block `await on thread.main { ... }` and placed call
-// `await on thread.main f(...)` into `await <hop>`: the hop node keeps the
-// placement's offset, labels, children, and statements, so its checked type,
-// captures, and body (or call) stay attached. Code
+// `await on thread.main f(...)` into `await <hop>`, and the `task` forms into
+// `task <hop>`: the hop node keeps the placement's offset, labels, children,
+// and statements, so its checked type, captures, and body (or call) stay
+// attached. Code
 // outside `main` may run on any executor; the hop is correct on each (on the
 // main executor it awaits the block's frame directly). Closure bodies keep
 // their placements: they are lowered as their own functions.
@@ -222,14 +230,16 @@ function hoppedPlacementTree(in tree: ExpressionTree, in threadNames: Array<Stri
   let updated = copy tree;
   let changed = false;
   for (const index of reachable) {
-    const placedCall = tree.nodes[index].value == "await"
-      && mainPlacementCall(tree, index, threadNames) < tree.nodes.length;
-    if (!mainPlacementBlock(tree, index, threadNames) && !placedCall) continue;
+    const spawned = tree.nodes[index].value == "spawn";
+    if (!spawned && tree.nodes[index].value != "await") continue;
+    const placedCall = mainPlacementCall(tree, index, threadNames) < tree.nodes.length;
+    if (!mainPlacementBlockOf(tree, index, threadNames, tree.nodes[index].value) && !placedCall) continue;
     let hop = copy tree.nodes[index];
     hop.value = "hop";
     const hopIndex = updated.nodes.length;
     updated.nodes.push(move hop);
-    updated.nodes[index].kind = ExpressionKind.awaitExpression;
+    // `task on thread.main ...` spawns the hopped work as a child.
+    updated.nodes[index].kind = spawned ? ExpressionKind.spawnExpression : ExpressionKind.awaitExpression;
     updated.nodes[index].value = "";
     updated.nodes[index].children = Array<usize>(hopIndex);
     updated.nodes[index].labels = Array<String>();
@@ -308,10 +318,104 @@ export function mainAffineUsesGeneralFrame(in program: Program, in declaration: 
   return functionUsesGeneralFrame(program, declaration);
 }
 
+// A synchronous worker body that spawns work onto main (`task on thread.main
+// ...` directly in the closure, as Stage 0 allows) runs as a lifted frame
+// too: the frame joins that child before the worker completes.
+export function workerBodySpawnsOnMain(
+  in arena: StatementArena, in statements: Array<usize>, in threadNames: Array<String>
+): boolean {
+  for (const statement of statements) {
+    const spawns = match (in arena.nodes[statement].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => tree.nodes[tree.root].kind == ExpressionKind.executorPlacementExpression
+          && tree.nodes[tree.root].value == "spawn"
+          && (mainPlacementBlockOf(tree, tree.root, threadNames, "spawn")
+            || mainPlacementCall(tree, tree.root, threadNames) < tree.nodes.length);
+        none => false;
+      }
+      none => false;
+    };
+    if (spawns) return true;
+  }
+  return false;
+}
+
+// A `task on thread.main ...` statement owned by a closure that is not itself
+// a `thread.spawn` worker body (a closure nested in one): the statement's
+// index, or the arena's length. Such a closure runs as a plain function,
+// which has no frame to own the child.
+export function nestedClosureMainTask(in arena: StatementArena, in threadNames: Array<String>): usize {
+  for (const statement of arena.nodes) {
+    const found = match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          let workers = Array<usize>();
+          let index: usize = 0;
+          while (index < tree.nodes.length) {
+            if (isThreadSpawnCall(tree, index, threadNames) && tree.nodes[index].children.length == 2) {
+              workers.push(tree.nodes[index].children[1]);
+            }
+            index = index + 1;
+          }
+          let offender = arena.nodes.length;
+          index = 0;
+          while (index < tree.nodes.length) {
+            let worker = false;
+            for (const candidate of workers) {
+              if (candidate == index) worker = true;
+            }
+            if (tree.nodes[index].kind == ExpressionKind.closureExpression && !worker) {
+              let pending = copy tree.nodes[index].statements;
+              let cursor: usize = 0;
+              while (cursor < pending.length) {
+                const owned = pending[cursor];
+                cursor = cursor + 1;
+                const spawns = match (in arena.nodes[owned].expression) {
+                  some(ownedSyntax) => match (in ownedSyntax.tree) {
+                    some(ownedTree) => ownedTree.nodes[ownedTree.root].kind == ExpressionKind.executorPlacementExpression
+                      && ownedTree.nodes[ownedTree.root].value == "spawn";
+                    none => false;
+                  }
+                  none => false;
+                };
+                if (spawns) offender = owned;
+                for (const child of arena.nodes[owned].children) {
+                  pending.push(child);
+                }
+              }
+            }
+            index = index + 1;
+          }
+          select offender;
+        }
+        none => arena.nodes.length;
+      }
+      none => arena.nodes.length;
+    };
+    if (found < arena.nodes.length) return found;
+  }
+  return arena.nodes.length;
+}
+
+// Whether a `thread.spawn` block closure's body runs as a lifted frame.
+export function workerClosureLifts(
+  in arena: StatementArena, in tree: ExpressionTree, closure: usize, in threadNames: Array<String>
+): boolean {
+  if (tree.nodes[closure].kind != ExpressionKind.closureExpression
+    || tree.nodes[closure].labels.length < 3 || tree.nodes[closure].labels[2] != "block") return false;
+  const asynchronous = tree.nodes[closure].labels.length >= 4 && tree.nodes[closure].labels[3] == "async";
+  if (asynchronous) return threadWorkerNeedsFrame(arena, tree.nodes[closure].statements);
+  return workerBodySpawnsOnMain(arena, tree.nodes[closure].statements, threadNames);
+}
+
 // The statements of async worker bodies that run as lifted frames, where
 // lowering hops their placements: rewrites those placements as
 // normalizeMainHops does for a whole function.
-export function normalizeWorkerHops(inout body: StatementArena, in threadNames: Array<String>): boolean {
+// `keptClosures` are closure offsets lowering does not lift (a worker that
+// captures a `TaskScope` keeps its own tier).
+export function normalizeWorkerHops(
+  inout body: StatementArena, in threadNames: Array<String>, in keptClosures: Array<usize>
+): boolean {
   if (threadNames.length == 0) return false;
   let pending = Array<usize>();
   for (const statement of body.nodes) {
@@ -322,10 +426,11 @@ export function normalizeWorkerHops(inout body: StatementArena, in threadNames: 
           while (index < tree.nodes.length) {
             if (isThreadSpawnCall(tree, index, threadNames) && tree.nodes[index].children.length == 2) {
               const closure = tree.nodes[index].children[1];
-              if (tree.nodes[closure].kind == ExpressionKind.closureExpression
-                && tree.nodes[closure].labels.length >= 4 && tree.nodes[closure].labels[2] == "block"
-                && tree.nodes[closure].labels[3] == "async"
-                && threadWorkerNeedsFrame(body, tree.nodes[closure].statements)) {
+              let kept = false;
+              for (const offset of keptClosures) {
+                if (offset == tree.nodes[closure].offset) kept = true;
+              }
+              if (!kept && workerClosureLifts(body, tree, closure, threadNames)) {
                 for (const owned of tree.nodes[closure].statements) {
                   pending.push(owned);
                 }
@@ -636,6 +741,7 @@ export function frameExpressionHoistsAwaits(in tree: ExpressionTree, index: usiz
 function frameSpawnIsSupported(in tree: ExpressionTree, index: usize): boolean {
   if (tree.nodes[index].children.length != 1) return false;
   const call = tree.nodes[index].children[0];
+  if (isMainHopNode(tree.nodes[call])) return true;
   if (tree.nodes[call].kind != ExpressionKind.callExpression
     || tree.nodes[call].children.length == 0) return false;
   const callee = tree.nodes[call].children[0];

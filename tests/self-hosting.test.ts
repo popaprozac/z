@@ -3764,6 +3764,90 @@ test("rejects readonly intermediate assignment paths in both semantic frontends"
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 180_000);
 
+test("checks where task and await on thread.main may be written in both semantic frontends", () => {
+  const directory = mkdtempSync("/tmp/z-native-placement-context-");
+  const input = resolve(directory, "main.zs");
+  const rejected: Array<[string, RegExp]> = [
+    // A synchronous helper has no task scope to own the child.
+    [`import console from "std/console";
+import { thread } from "std/thread";
+function helper(): void {
+  task on thread.main {
+    console.log("nope");
+  }
+}
+async function main(): i32 {
+  const worker = thread.spawn((): void => {
+    helper();
+  });
+  await worker;
+  return 0;
+}`, /:4:3: (error(\[Z0711\])?: )?task on thread\.main requires an enclosing async function or a direct synchronous thread\.spawn closure/],
+    [`import { thread } from "std/thread";
+function value(): i32 { return 1; }
+function helper(): i32 {
+  return await on thread.main value();
+}
+function main(): i32 { return helper(); }`,
+    /:4:10: (error(\[Z0711\])?: )?await on thread\.main requires an enclosing async function/],
+  ];
+  // Directly in a synchronous worker body, and in a closure nested in one.
+  const accepted = [`import console from "std/console";
+import { thread } from "std/thread";
+async function main(): i32 {
+  const worker = thread.spawn((): void => {
+    task on thread.main {
+      console.log("direct");
+    }
+  });
+  await worker;
+  return 0;
+}`, `import console from "std/console";
+import { thread } from "std/thread";
+async function main(): i32 {
+  const worker = thread.spawn((): void => {
+    const nested = (): void => {
+      task on thread.main {
+        console.log("nested");
+      }
+    };
+    nested();
+  });
+  await worker;
+  return 0;
+}`];
+  try {
+    for (const [source, expected] of rejected) {
+      writeFileSync(input, source);
+      for (const command of ["check", "self-host-resolve"]) {
+        const result = spawnSync(process.execPath, [cli, command, input], {
+          encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+        });
+        assert.notEqual(result.status, 0, `${command}: ${source}`);
+        assert.match(result.stderr, expected, command);
+      }
+    }
+    for (const source of accepted) {
+      writeFileSync(input, source);
+      for (const command of ["check", "self-host-resolve"]) {
+        const result = spawnSync(process.execPath, [cli, command, input], {
+          encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+        });
+        assert.equal(result.status, 0, `${command}: ${result.stderr}`);
+      }
+    }
+    // The nested form has no frame to own the child natively yet.
+    writeFileSync(input, accepted[1]);
+    const nested = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.notEqual(nested.status, 0);
+    assert.match(nested.stderr, /:6:7: error\[Z0700\]: task on thread\.main inside a closure nested in a worker is not executable in the native compiler yet/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("rejects class construction without new and non-reference T | null in both semantic frontends", () => {
   const directory = mkdtempSync("/tmp/z-native-construction-nullability-");
   const input = resolve(directory, "main.zs");
@@ -11317,6 +11401,11 @@ test("compiles a multi-module Z application through the standalone native driver
     // throwing, and main-affine looping callees, from main and a worker.
     "tests/fixtures/native-main-hop-calls.zs",
     "examples/async/thread-main-loop.zs",
+    // `task on thread.main ...` spawns a hopped child that its frame joins:
+    // from a synchronous worker body (lifted to a frame), an async worker, an
+    // ordinary async function, and `main` itself.
+    "examples/async/thread-main-placement.zs",
+    "tests/fixtures/native-main-task-hops.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
