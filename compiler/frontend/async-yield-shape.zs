@@ -397,6 +397,35 @@ export function nestedClosureMainTask(in arena: StatementArena, in threadNames: 
   return arena.nodes.length;
 }
 
+// A module that both spawns threads and places work on an executor: on
+// Darwin such a program may drive the main run loop, and Stage 0 links
+// CoreFoundation for it.
+export function programPlacesWorkFromThreads(in program: Program): boolean {
+  const threadNames = mainPlacementThreadNames(program);
+  if (threadNames.length == 0) return false;
+  let places = false;
+  let spawns = false;
+  for (const declaration of program.functions) {
+    for (const statement of declaration.body.nodes) {
+      match (in statement.expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => {
+            let index: usize = 0;
+            while (index < tree.nodes.length) {
+              if (tree.nodes[index].kind == ExpressionKind.executorPlacementExpression) places = true;
+              if (isThreadSpawnCall(tree, index, threadNames)) spawns = true;
+              index = index + 1;
+            }
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
+  }
+  return places && spawns;
+}
+
 // Whether a `thread.spawn` block closure's body runs as a lifted frame.
 export function workerClosureLifts(
   in arena: StatementArena, in tree: ExpressionTree, closure: usize, in threadNames: Array<String>

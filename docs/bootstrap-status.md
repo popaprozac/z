@@ -1504,7 +1504,12 @@ and, as Stage 0 allows, directly in a synchronous `thread.spawn` closure,
 whose body then runs as a lifted frame so the worker joins its main children
 before it completes. The checker accepts the same placement in a closure
 nested in a worker body, as Stage 0's does; native reports `Z0700` for it,
-since that closure has no frame to own the child. Three shapes still use the
+since that closure has no frame to own the child. On Apple hosts the main
+executor's host wake is enabled for hop programs: work posted to it also
+dispatches one coalesced ticket to the main queue, so it runs while `main`
+is inside the host's run loop, and the driver links CoreFoundation for a
+program whose threads place work on an executor, as Stage 0 does. Three
+shapes still use the
 older worker-to-main tiers: an expression-bodied async worker
 (`async (): T => await on thread.main f()`), a worker that captures a
 `TaskScope`, and an async method that places a free-function call.

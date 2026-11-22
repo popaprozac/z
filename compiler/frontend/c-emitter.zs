@@ -17318,6 +17318,9 @@ function appendAsyncCallableRuntime(
     output.append(`static __attribute__((unused)) void z_stage1_async_main_executor_start(void) {
   if (z_stage1_main_executor != NULL) return;
   z_stage1_async_executor_init_external(&z_stage1_main_executor_storage);
+  // On Apple hosts, work posted to main also wakes the main queue, so it
+  // runs while main is inside the host's run loop.
+  z_stage1_async_host_enable(&z_stage1_main_executor_storage);
 #if defined(_WIN32)
   z_stage1_main_thread = GetCurrentThreadId();
 #else

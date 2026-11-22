@@ -11406,6 +11406,9 @@ test("compiles a multi-module Z application through the standalone native driver
     // ordinary async function, and `main` itself.
     "examples/async/thread-main-placement.zs",
     "tests/fixtures/native-main-task-hops.zs",
+    // A worker's placed child runs while `main` is inside the Darwin main
+    // run loop: work posted to the main executor also wakes the main queue.
+    "examples/async/darwin-main-run-loop.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
