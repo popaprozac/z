@@ -214,9 +214,12 @@ closure's captures. Any other block-bodied async closure is a reusable value:
 its captures stay in the closure's environment and each call lends them to its
 frame, so an assignment to a captured `let` is seen by the next call, while the
 closure's own parameters belong to the call. An expression-bodied async closure
-may lend a capture to the call it awaits the same way. A block-bodied async
-closure that throws, borrows its environment (captures without `move`), or
-places work on an executor is not lowered natively yet.
+may lend a capture to the call it awaits the same way. Such a closure may
+throw: its caller receives the typed error as the closure's result. A closure
+written in a method of a non-generic aggregate lifts the same way. A
+block-bodied async closure that borrows its environment (captures without
+`move`) or places work on an executor is not lowered natively yet, and no
+closure may capture `this` in either compiler.
 
 The related-family close checkpoint (2026-09-13) extends native linear main-task
 timer frames to `match`-initialized owned locals and direct `TaskScope.close()` /

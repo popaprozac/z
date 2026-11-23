@@ -11477,7 +11477,7 @@ test("compiles a multi-module Z application through the standalone native driver
   });
   assert.equal(closureOwnersRun.status, 0, closureOwnersRun.stderr);
   assert.equal(closureOwnersRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""),
-    "handled first 21\nhandled first 21\nhandler 42 42\nnamed ab 2\nnamed abc1 4\nnamer 2 4\ncollector 1 2\ntally 2\nshown 1 2\nshown 1 2\n");
+    "handled first 21\nhandled first 21\nhandler 42 42\nnamed ab 2\nnamed abc1 4\nnamer 2 4\ncollector 1 2\ntally 2\nshown 1 2\nshown 1 2\nloaded alpha\nfailed: loaded needs a name\n");
   // Stage 0 stops at an async-frame tier limit here; native runs it.
   const importedAliasRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/self-host-imported-thread-main-alias/main.zs")], {
     encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",

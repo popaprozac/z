@@ -15,10 +15,15 @@ class Tally {
   count: i32;
 }
 
+struct Problem {
+  reason: String;
+}
+
 type Handler = async (in request: Request) => i32;
 type Namer = async (name: String) => usize;
 type Collector = async (value: i32) => usize;
 type Reporter = async () => void;
+type Loader = async (name: String) => String throws Problem;
 
 function makeHandler(prefix: String): Handler {
   return async move (in request: Request): i32 => {
@@ -45,6 +50,15 @@ function makeCollector(): Collector {
     await delay(1);
     items.push(value);
     return items.length;
+  };
+}
+
+// A thrown error that owns storage reaches the caller intact.
+function makeLoader(prefix: String): Loader {
+  return async move (name: String): String throws Problem => {
+    await delay(1);
+    if (name.byteLength == 0) throw Problem({ reason: `${prefix} needs a name` });
+    return `${prefix} ${name}`;
   };
 }
 
@@ -87,5 +101,16 @@ async function main(): i32 {
   const shower = makeShower(`shown ${1}`, 2);
   await shower();
   await shower();
+  const loader = makeLoader("loaded");
+  const loaded = attempt await loader("alpha");
+  match (loaded) {
+    success(text) => console.log(text);
+    failure(problem) => console.log(`failed: ${problem.reason}`);
+  }
+  const unnamed = attempt await loader("");
+  match (unnamed) {
+    success(text) => console.log(text);
+    failure(problem) => console.log(`failed: ${problem.reason}`);
+  }
   return 0;
 }

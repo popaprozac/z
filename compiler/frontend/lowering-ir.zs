@@ -23615,6 +23615,14 @@ function liftedOperationCaptures(
               if (parameter.name == name) mutableBinding = parameter.mode == ParameterMode.inputOutput;
             }
           }
+          for (const aggregate of program.aggregates) {
+            for (const method of aggregate.methods) {
+              if (!semanticMethodOwnerMatches(ownerName, aggregate.name, method.name)) continue;
+              for (const parameter of method.parameters) {
+                if (parameter.name == name) mutableBinding = parameter.mode == ParameterMode.inputOutput;
+              }
+            }
+          }
         }
       }
       const owned = moduleTypeNeedsCleanup(program, importedTypes, type);
@@ -23638,6 +23646,7 @@ function collectLiftedOperations(
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in declaration: FunctionDeclaration,
+  in ownerName: String,
   inout lifted: Array<FunctionDeclaration>
 ): void throws String {
   let statementIndex: usize = 0;
@@ -23645,7 +23654,7 @@ function collectLiftedOperations(
     statementIndex = statementIndex + 1;
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
-        some(tree) => try collectLiftedTreeClosures(program, importedTypes, evidence, declaration,
+        some(tree) => try collectLiftedTreeClosures(program, importedTypes, evidence, declaration, ownerName,
           statementIndex - 1, tree, inout lifted);
         none => {}
       }
@@ -23653,7 +23662,7 @@ function collectLiftedOperations(
     }
     match (in statement.secondExpression) {
       some(syntax) => match (in syntax.tree) {
-        some(tree) => try collectLiftedTreeClosures(program, importedTypes, evidence, declaration,
+        some(tree) => try collectLiftedTreeClosures(program, importedTypes, evidence, declaration, ownerName,
           statementIndex - 1, tree, inout lifted);
         none => {}
       }
@@ -23684,7 +23693,6 @@ function reusableClosureFrameParameters(
     some(found) => found;
     none => return false;
   };
-  if (signature.errorType.byteLength > 0 || node.labels[1].byteLength > 0) return false;
   let captureIndex: usize = 0;
   for (const capture of captures) {
     // Owned storage and anything the body may assign is lent in place; a
@@ -23720,6 +23728,7 @@ function collectLiftedTreeClosures(
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in declaration: FunctionDeclaration,
+  in ownerName: String,
   statement: usize,
   in tree: ExpressionTree,
   inout lifted: Array<FunctionDeclaration>
@@ -23760,8 +23769,16 @@ function collectLiftedTreeClosures(
     let worker = false;
     for (const candidate of spawned) { if (candidate == index) worker = true; }
     if (worker) continue;
+    // The frame function is a free function: a block that needs `this`
+    // keeps the earlier limit.
+    let capturesReceiver = false;
+    for (const entry of evidence.closureCaptures) {
+      if (entry.offset != node.offset) continue;
+      for (const name of entry.names) { if (name == "this") capturesReceiver = true; }
+    }
+    if (capturesReceiver) continue;
     const captures = try liftedOperationCaptures(program, importedTypes, evidence, declaration.body,
-      declaration.name, statement, tree, index);
+      ownerName, statement, tree, index);
     let modes = valueCaptureModes(captures.length);
     let forwarded = Array<Parameter>();
     let name = liftedOperationName(node.offset);
@@ -23882,7 +23899,7 @@ function lowerLiftedOperationAwait(
     }
     return pushExpression(inout output, LoweredExpressionKind.asyncFunctionAwait, callableIdentity, children, labels);
   }
-  throw "native block-bodied async closures cannot yet throw, capture without `move`, or place work on an executor";
+  throw "native block-bodied async closures cannot yet capture `this`, capture without `move`, or place work on an executor";
 }
 
 // The worker's spawn passes its captures and names the lifted frame instead
@@ -36558,7 +36575,17 @@ function appendLoweredProgram(
   let lifted = Array<FunctionDeclaration>();
   for (const declaration of program.functions) {
     try collectLiftedWorkers(program, importedTypes, evidence, declaration, inout lifted);
-    try collectLiftedOperations(program, importedTypes, evidence, declaration, inout lifted);
+    try collectLiftedOperations(program, importedTypes, evidence, declaration, declaration.name, inout lifted);
+  }
+  // A closure written in a method lifts the same way. A generic aggregate's
+  // methods are checked per instance, so theirs keep the earlier limit.
+  for (const aggregate of program.aggregates) {
+    if (aggregate.typeParameters.length > 0) continue;
+    for (const method of aggregate.methods) {
+      if (method.typeParameters.length > 0) continue;
+      const methodOwner = semanticMethodOwnerName(aggregate.name, method.name);
+      try collectLiftedOperations(program, importedTypes, evidence, method, methodOwner, inout lifted);
+    }
   }
   // Outside `main`, placed work hops to the main executor: the function may
   // run on any executor, so its placed work is never run in place.
