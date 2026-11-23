@@ -7774,6 +7774,9 @@ function attachMoveLiveFlagsRange(
         || expressions[index].kind == LoweredExpressionKind.classOutputSlot)
       && expressions[index].children.length == 1
       && !expressionHasLabel(expressions[index], "worker-owned-scope")
+      // An async closure's move of its own capture clears the environment's
+      // flag, whatever the enclosing function tracks under that name.
+      && !expressionHasLabel(expressions[index], "environment-capture")
     ) {
       const operand = expressions[index].children[0];
       expressions[index].value = "";
@@ -20393,10 +20396,16 @@ function lowerExpressionExpected(
         if (parameterNames.length != signature.parameterTypes.length) {
           throw "native callable closure lost its parameter shape";
         }
-        if (bodyKind == "block") {
-          if (closureAsynchronous) {
-            throw "native block callable closures currently require a synchronous signature";
-          }
+        // An async block is a lifted frame function the closure awaits
+        // (see collectLiftedOperations); a synchronous one runs in place.
+        const bodyStart = output.length;
+        let liftedAwait = false;
+        let liftedBody: usize = 0;
+        if (bodyKind == "block" && closureAsynchronous) {
+          liftedBody = try lowerLiftedOperationAwait(program, importedTypes, tree, index, inout output);
+          liftedAwait = true;
+        }
+        if (bodyKind == "block" && !liftedAwait) {
           let labels = Array<String>();
           labels.push(functionType.name.copyBytes(
             0,
@@ -20445,12 +20454,13 @@ function lowerExpressionExpected(
             == "thread.any";
           return closure;
         }
-        if (bodyInput >= tree.nodes.length) {
+        if (!liftedAwait && bodyInput >= tree.nodes.length) {
           throw "native callable closure lost its expression body";
         }
         let asyncSuspension = "";
         let materializesAttemptAwait = false;
-        if (closureAsynchronous) {
+        if (liftedAwait) asyncSuspension = "method-await";
+        else if (closureAsynchronous) {
           if (expressionTreeContainsAwait(tree, bodyInput)) {
             let suspensionBody = bodyInput;
             if (
@@ -20486,7 +20496,8 @@ function lowerExpressionExpected(
           }
         }
         let body: usize = 0;
-        if (asyncSuspension == "scheduler-yield") {
+        if (liftedAwait) body = liftedBody;
+        else if (asyncSuspension == "scheduler-yield") {
           body = pushExpression(
             inout output,
             LoweredExpressionKind.booleanValue,
@@ -20582,6 +20593,29 @@ function lowerExpressionExpected(
           };
           captureNames.push(candidate.copyBytes(0, candidate.byteLength));
           captureTypes.push(move captureType);
+        }
+        // The body of an async `move` closure may move an owned capture on,
+        // into the call it awaits: the environment then no longer owns it.
+        if (closureAsynchronous && tree.nodes[index].value == "move") {
+          let moved = bodyStart;
+          const bodyEnd = output.length;
+          while (moved < bodyEnd) {
+            if (output[moved].kind == LoweredExpressionKind.moveValue && output[moved].children.length == 1) {
+              const operand = output[moved].children[0];
+              let movedCapture: usize = 0;
+              while (movedCapture < captureNames.length) {
+                if (output[operand].kind == LoweredExpressionKind.localValue
+                  && output[operand].value == captureNames[movedCapture]
+                  && moduleTypeNeedsCleanup(program, importedTypes, captureTypes[movedCapture])
+                  && !moduleTypeRetainsCapturedIdentity(captureTypes[movedCapture])) {
+                  output[moved].value = ownerLiveFlag(captureNames[movedCapture]);
+                  output[moved].labels.push("environment-capture");
+                }
+                movedCapture = movedCapture + 1;
+              }
+            }
+            moved = moved + 1;
+          }
         }
         let children = Array<usize>();
         children.push(body);
@@ -23231,15 +23265,30 @@ function liftedWorkerDeclaration(
   in tree: ExpressionTree,
   closure: usize
 ): FunctionDeclaration throws String {
+  const captures = try liftedWorkerCaptures(program, importedTypes, evidence, ownerName, tree.nodes[closure].offset);
+  const name = liftedWorkerName(arena, tree.nodes[closure].statements);
+  return liftedClosureDeclaration(program, evidence, arena, tree, closure, captures, name);
+}
+
+// A block closure's body as a synthesized async function: its parameters are
+// the closure's captures, and its nodes keep their source offsets.
+function liftedClosureDeclaration(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  closure: usize,
+  in captures: Array<LoweredClosureCapture>,
+  in name: String
+): FunctionDeclaration {
   const sourceStatements = copy tree.nodes[closure].statements;
   const first = view arena.nodes[sourceStatements[0]];
   const bodyOffset = first.offset;
   let body = extractStatementArena(arena, sourceStatements);
-  // The worker runs off the main executor: its placed blocks hop there.
+  // The body may run off the main executor: its placed blocks hop there.
   const threadNames = mainPlacementThreadNames(program);
   normalizeMainHops(inout body, threadNames);
   const closureOffset = tree.nodes[closure].offset;
-  const captures = try liftedWorkerCaptures(program, importedTypes, evidence, ownerName, closureOffset);
   let parameters = Array<Parameter>();
   for (const capture of captures) {
     parameters.push(Parameter({
@@ -23272,7 +23321,7 @@ function liftedWorkerDeclaration(
       offset: bodyOffset, line: first.line, column: first.column }));
   }
   return FunctionDeclaration({
-    name: liftedWorkerName(arena, sourceStatements),
+    name: copy name,
     testDeclaration: false,
     testName: "",
     nativeCExport: false,
@@ -23345,6 +23394,308 @@ function collectLiftedWorkers(
       none => {}
     }
   }
+}
+
+function liftedOperationName(closureOffset: usize): String {
+  return `__z_operation_${closureOffset}`;
+}
+
+// In `tree`, the closure whose block begins at statement `root`: its
+// parameter named `name`, or that of a closure around it in the same tree.
+function blockClosureParameterCapture(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  root: usize,
+  in name: String,
+  inout owns: boolean
+): Option<LoweredClosureCapture> throws String {
+  let node: usize = 0;
+  while (node < tree.nodes.length) {
+    if (tree.nodes[node].kind == ExpressionKind.closureExpression) {
+      for (const owned of tree.nodes[node].statements) {
+        if (owned != root) continue;
+        owns = true;
+        if (tree.nodes[node].children.length == 0) continue;
+        const inside = tree.nodes[node].children[0];
+        match (try enclosingClosureParameterCapture(program, importedTypes, evidence, tree, inside, name)) {
+          some(parameter) => return Option.some(parameter);
+          none => {}
+        }
+      }
+    }
+    node = node + 1;
+  }
+  return Option<LoweredClosureCapture>.none;
+}
+
+// `name` as a parameter of a block closure around `statement`. Such a
+// closure is written in another statement's expression, so its parameters
+// are not in the tree the capturing closure is in.
+function enclosingBlockClosureParameter(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  statement: usize,
+  in name: String
+): Option<LoweredClosureCapture> throws String {
+  let current = statement;
+  let hops: usize = 0;
+  while (hops < arena.nodes.length) {
+    hops = hops + 1;
+    // The outermost statement of the block that holds `current`.
+    let root = current;
+    let climbing = true;
+    while (climbing) {
+      climbing = false;
+      let candidate: usize = 0;
+      while (candidate < arena.nodes.length) {
+        for (const child of arena.nodes[candidate].children) {
+          if (child == root) climbing = true;
+        }
+        if (climbing) break;
+        candidate = candidate + 1;
+      }
+      if (climbing) root = candidate;
+    }
+    // The closure that owns that block, and the statement it is written in.
+    let owner = arena.nodes.length;
+    let written: usize = 0;
+    while (written < arena.nodes.length && owner == arena.nodes.length) {
+      let owns = false;
+      match (in arena.nodes[written].expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => match (try blockClosureParameterCapture(
+            program, importedTypes, evidence, tree, root, name, inout owns
+          )) {
+            some(parameter) => return Option.some(parameter);
+            none => {}
+          }
+          none => {}
+        }
+        none => {}
+      }
+      match (in arena.nodes[written].secondExpression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => match (try blockClosureParameterCapture(
+            program, importedTypes, evidence, tree, root, name, inout owns
+          )) {
+            some(parameter) => return Option.some(parameter);
+            none => {}
+          }
+          none => {}
+        }
+        none => {}
+      }
+      if (owns) owner = written;
+      written = written + 1;
+    }
+    if (owner == arena.nodes.length) return Option<LoweredClosureCapture>.none;
+    current = owner;
+  }
+  return Option<LoweredClosureCapture>.none;
+}
+
+// A lifted operation's captures, in the resolver's order. An enclosing
+// closure's parameter is typed by that closure, any other binding by the
+// function the operation is written in.
+function liftedOperationCaptures(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  statement: usize,
+  in tree: ExpressionTree,
+  closure: usize
+): Array<LoweredClosureCapture> throws String {
+  const closureOffset = tree.nodes[closure].offset;
+  let found = false;
+  let captures = Array<LoweredClosureCapture>();
+  for (const entry of evidence.closureCaptures) {
+    if (entry.offset != closureOffset) continue;
+    found = true;
+    for (const name of entry.names) {
+      if (name == "this") throw "native scheduled operation frames cannot capture `this` yet";
+      const sameTree = try enclosingClosureParameterCapture(program, importedTypes, evidence, tree, closure, name);
+      let enclosing = Option<LoweredClosureCapture>.none;
+      match (sameTree) {
+        some(parameter) => enclosing = Option.some(parameter);
+        none => enclosing = try enclosingBlockClosureParameter(program, importedTypes, evidence, arena, statement, name);
+      }
+      const type = match (enclosing) {
+        some(parameter) => copy parameter.type;
+        none => {
+          const typeName = match (namedValueTypeName(program, evidence, ownerName, name, closureOffset)) {
+            some(value) => value;
+            none => throw `native scheduled operation frame cannot resolve capture ${name}`;
+          };
+          select try lowerModuleTypeName(program, importedTypes, typeName);
+        }
+      };
+      const owned = moduleTypeNeedsCleanup(program, importedTypes, type);
+      captures.push(LoweredClosureCapture({ name: copy name, type, owned }));
+    }
+  }
+  if (!found) throw "native scheduled operation frame lost its checked closure captures";
+  return captures;
+}
+
+// `scope.schedule(thread.main, async move (): void => { ... })`: the block
+// becomes a general frame of its own, as an async worker's does, and the
+// operation is the await of that frame with its captures.
+function collectLiftedOperations(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in declaration: FunctionDeclaration,
+  inout lifted: Array<FunctionDeclaration>
+): void throws String {
+  let statementIndex: usize = 0;
+  for (const statement of declaration.body.nodes) {
+    statementIndex = statementIndex + 1;
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          let index: usize = 0;
+          while (index < tree.nodes.length) {
+            const node = view tree.nodes[index];
+            index = index + 1;
+            if (node.kind != ExpressionKind.callExpression || node.children.length != 3) continue;
+            const callee = node.children[0];
+            const closure = node.children[2];
+            if (tree.nodes[callee].kind != ExpressionKind.memberExpression || tree.nodes[callee].value != "schedule"
+              || tree.nodes[callee].children.length != 1
+              || tree.nodes[closure].kind != ExpressionKind.closureExpression
+              || tree.nodes[closure].labels.length < 4 || tree.nodes[closure].labels[2] != "block"
+              || tree.nodes[closure].labels[3] != "async" || tree.nodes[closure].statements.length == 0) continue;
+            const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+              program, importedTypes, evidence, tree, tree.nodes[callee].children[0]
+            )) {
+              some(name) => name;
+              none => "";
+            };
+            if (!importedAsyncHandleBinding(program, receiverTypeName, "TaskScope")) continue;
+            const captures = try liftedOperationCaptures(program, importedTypes, evidence, declaration.body,
+              declaration.name, statementIndex - 1, tree, closure);
+            const name = liftedOperationName(tree.nodes[closure].offset);
+            const operation = liftedClosureDeclaration(program, evidence, declaration.body, tree, closure, captures, name);
+            // The operation already runs on the scope's executor: a body that
+            // places work elsewhere keeps its own tier.
+            let places = false;
+            for (const owned of operation.body.nodes) {
+              match (in owned.expression) {
+                some(ownedSyntax) => match (in ownedSyntax.tree) {
+                  some(ownedTree) => for (const expression of ownedTree.nodes) {
+                    if (isMainHopNode(expression) || expression.kind == ExpressionKind.executorPlacementExpression) {
+                      places = true;
+                    }
+                  }
+                  none => {}
+                }
+                none => {}
+              }
+            }
+            if (!places && functionUsesGeneralFrame(program, operation)) lifted.push(operation);
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+}
+
+// The callable type of a lifted operation's frame function: each capture by
+// value. No source call names it, so call evidence does not register it.
+function liftedOperationFunctionType(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in declaration: FunctionDeclaration
+): LoweredFunctionType throws String {
+  let canonical = TextBuffer();
+  canonical.append("async ");
+  let parameters = Array<LoweredParameter>();
+  let position: usize = 0;
+  for (const parameter of declaration.parameters) {
+    const type = try lowerModuleType(program, importedTypes, parameter.type);
+    canonical.append("value:");
+    canonical.append(loweredTypeIdentity(type));
+    canonical.append(";");
+    parameters.push(LoweredParameter({ name: `argument${position}`, type, mode: LoweredParameterMode.value }));
+    position = position + 1;
+  }
+  canonical.append("=>");
+  let returnType = try lowerModuleType(program, importedTypes, declaration.returnType);
+  canonical.append(loweredTypeIdentity(returnType));
+  canonical.append(" throws ");
+  match (in declaration.errorType) {
+    some(error) => {
+      const errorType = try lowerModuleType(program, importedTypes, error);
+      canonical.append(loweredTypeIdentity(errorType));
+      returnType = LoweredType({ kind: LoweredTypeKind.enumType, name: intrinsicResultName(returnType, errorType) });
+    }
+    none => {}
+  }
+  const signature = canonical.finish();
+  return LoweredFunctionType({
+    name: encodedFunctionTypeIdentity(signature),
+    asynchronous: true,
+    parameters,
+    returnType,
+  });
+}
+
+// The lifted frame function of a scheduled block operation, awaited with the
+// closure's captures: owned values move on to the frame, shared identities
+// are retained for it.
+function lowerLiftedOperationAwait(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in tree: ExpressionTree,
+  closure: usize,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const name = liftedOperationName(tree.nodes[closure].offset);
+  for (const declaration of program.functions) {
+    if (declaration.name != name) continue;
+    const functionType = try liftedOperationFunctionType(program, importedTypes, declaration);
+    let arguments = Array<usize>();
+    let labels = Array<String>();
+    let position: usize = 0;
+    for (const parameter of declaration.parameters) {
+      const type = view functionType.parameters[position].type;
+      position = position + 1;
+      const local = pushExpression(
+        inout output, LoweredExpressionKind.localValue, parameter.name,
+        Array<usize>(), Array<String>(copy parameter.type.name)
+      );
+      let value = local;
+      if (moduleTypeRetainsCapturedIdentity(type)) {
+        value = pushExpression(inout output, LoweredExpressionKind.retainValue, type.name,
+          Array<usize>(local), Array<String>());
+      } else if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+        value = pushExpression(inout output, LoweredExpressionKind.moveValue, "",
+          Array<usize>(local), Array<String>());
+      }
+      arguments.push(value);
+      labels.push("value");
+    }
+    const callableIdentity = copy functionType.name;
+    const callable = pushExpression(
+      inout output, LoweredExpressionKind.directFunctionValue, name,
+      Array<usize>(), Array<String>(copy callableIdentity)
+    );
+    let children = Array<usize>();
+    children.push(callable);
+    for (const argument of arguments) {
+      children.push(argument);
+    }
+    return pushExpression(inout output, LoweredExpressionKind.asyncFunctionAwait, callableIdentity, children, labels);
+  }
+  throw "native block callable closures currently require a synchronous signature";
 }
 
 // The worker's spawn passes its captures and names the lifted frame instead
@@ -35828,6 +36179,10 @@ function collectProgramFunctionTypes(
       declaration,
       inout functionTypes
     );
+    if (declaration.liftedFromOffset != 0 && stringStartsWith(declaration.name, "__z_operation_")) {
+      const operationType = try liftedOperationFunctionType(program, importedTypes, declaration);
+      if (!containsLoweredFunctionType(functionTypes, operationType.name)) functionTypes.push(operationType);
+    }
   }
   for (const aggregate of program.aggregates) {
     if (aggregate.typeParameters.length > 0) continue;
@@ -36016,6 +36371,7 @@ function appendLoweredProgram(
   let lifted = Array<FunctionDeclaration>();
   for (const declaration of program.functions) {
     try collectLiftedWorkers(program, importedTypes, evidence, declaration, inout lifted);
+    try collectLiftedOperations(program, importedTypes, evidence, declaration, inout lifted);
   }
   // Outside `main`, placed work hops to the main executor: the function may
   // run on any executor, so its placed work is never run in place.

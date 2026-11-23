@@ -1250,6 +1250,27 @@ function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration, in thre
       none => {}
     }
   }
+  // `scope.cancel()` joins a scope, not a task local: a named scope's handle,
+  // or a local holding a `new` object (a task is never constructed).
+  let scopes = Array<String>();
+  let scopeIndex: usize = 0;
+  for (const statement of declaration.body.nodes) {
+    scopeIndex = scopeIndex + 1;
+    if (closureOwned[scopeIndex - 1]) continue;
+    if (statement.kind == StatementKind.asyncScopeStatement && statement.name.byteLength != 0) {
+      scopes.push(copy statement.name);
+    }
+    if (statement.kind != StatementKind.variableStatement) continue;
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          if (tree.nodes[tree.root].kind == ExpressionKind.newExpression) scopes.push(copy statement.name);
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
   let joinIndex: usize = 0;
   for (const statement of declaration.body.nodes) {
     joinIndex = joinIndex + 1;
@@ -1265,6 +1286,9 @@ function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration, in thre
             const receiver = frameTaskCancelReceiver(tree, operand);
             if (receiver < tree.nodes.length) joined = copy tree.nodes[receiver].value;
             if (joined.byteLength == 0) continue;
+            let joinsScope = false;
+            for (const name of scopes) { if (name == joined) joinsScope = true; }
+            if (joinsScope && receiver < tree.nodes.length) continue;
             let known = false;
             for (const task of tasks) { if (task == joined) known = true; }
             if (!known) return false;

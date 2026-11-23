@@ -11437,7 +11437,15 @@ function yieldFrameIsAwait(in declaration: LoweredFunction, index: usize): boole
 function yieldFrameAwaitsChild(in expression: LoweredExpression): boolean {
   return expression.kind == LoweredExpressionKind.asyncFunctionAwait
     || expression.kind == LoweredExpressionKind.threadAwait
-    || expression.kind == LoweredExpressionKind.threadCancel;
+    || expression.kind == LoweredExpressionKind.threadCancel
+    || yieldFrameAwaitsScope(expression);
+}
+
+// `await scope.close()` / `await scope.cancel()`: the frame waits on the
+// scope's join task, so the executor keeps running the scope's operations
+// instead of being driven from inside this poll.
+function yieldFrameAwaitsScope(in expression: LoweredExpression): boolean {
+  return expression.kind == LoweredExpressionKind.taskScopeClose;
 }
 
 // A worker join (`await t`, `await t.cancel()` on a `thread.spawn` task).
@@ -11602,7 +11610,9 @@ function yieldFrameAwaitType(
   if (yieldFrameAwaitsStream(awaited)) {
     return LoweredType({ kind: LoweredTypeKind.enumType, name: generatorStepName(awaited.value) });
   }
-  if (awaited.kind == LoweredExpressionKind.threadCancel) return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
+  if (awaited.kind == LoweredExpressionKind.threadCancel || yieldFrameAwaitsScope(awaited)) {
+    return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
+  }
   if (awaited.kind == LoweredExpressionKind.threadAwait) {
     const taskName = try awaitedTaskName(declaration, expression);
     return try taskResultType(program, taskName);
@@ -12124,7 +12134,7 @@ function appendYieldFrameBorrowTemporaries(
   statementIndex: usize, expression: usize, depth: usize, release: boolean
 ): void throws String {
   const call = view declaration.expressions[expression];
-  if (yieldFrameAwaitsStream(call) || yieldFrameAwaitsWorker(call)) return;
+  if (yieldFrameAwaitsStream(call) || yieldFrameAwaitsWorker(call) || yieldFrameAwaitsScope(call)) return;
   const functionType = try yieldFrameChildFunctionType(program, declaration, expression);
   let argument: usize = 1;
   while (argument < call.children.length) {
@@ -12195,6 +12205,12 @@ function appendYieldFrameAwait(
   if (yieldFrameAwaitsStream(awaited)) {
     output.append(`frame->child = Z_${awaited.value}_start_next(`);
     try appendAddressOf(inout output, declaration, awaited.children[0]);
+    output.append(", task->executor);\n");
+  } else if (yieldFrameAwaitsScope(awaited)) {
+    if (awaited.children.length != 1) throw "native async frame received a malformed TaskScope join";
+    output.append("frame->child = z_stage1_task_scope_join_start(");
+    try appendExpression(inout output, declaration, awaited.children[0]);
+    output.append(awaited.labels.length > 0 && awaited.labels[0] == "cancel" ? ", true" : ", false");
     output.append(", task->executor);\n");
   } else if (yieldFrameAwaitsWorker(awaited)) {
     // The worker completes through the executor's external queue; a
@@ -13485,7 +13501,8 @@ function appendYieldFrameHelpers(
     while (borrowStatement < source.statements.length) {
       const awaitedCall = yieldFrameAwaitExpression(source, borrowStatement);
       if (awaitedCall < source.expressions.length && !yieldFrameAwaitsStream(source.expressions[awaitedCall])
-        && !yieldFrameAwaitsWorker(source.expressions[awaitedCall])) {
+        && !yieldFrameAwaitsWorker(source.expressions[awaitedCall])
+        && !yieldFrameAwaitsScope(source.expressions[awaitedCall])) {
         const childType = try yieldFrameChildFunctionType(program, source, awaitedCall);
         let argument: usize = 1;
         while (argument < source.expressions[awaitedCall].children.length) {

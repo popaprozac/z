@@ -3914,8 +3914,11 @@ async function refresh(): void throws NetworkError {
 }
 ```
 
-Leaving a scope joins its children. Failure propagation cancels live siblings
-before the failing task completes. Domain errors remain `T throws E`;
+Leaving a scope joins its children. A `return` inside a scope evaluates its
+value first, so it may await one of the scope's own tasks; the scope then joins
+the children that value did not already join. Failure propagation, including a
+failed `try` inside a scope, cancels live siblings and a named scope's
+operations before the failing task completes. Domain errors remain `T throws E`;
 cancellation is a structural task outcome, not an invented member of `E`.
 
 Code performing long synchronous chunks inside an async task can cooperate

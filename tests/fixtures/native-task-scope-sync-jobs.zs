@@ -47,12 +47,15 @@ async function main(): i32 {
   const mixed = submitMixed(jobs, 41);
   const requested = submitThenRequestCancel(jobs);
   console.log(`accepted ${first} ${mixed} ${requested}`);
-  // A worker thread submits too; its job runs on main before the scope closes.
-  const worker = thread.spawn(move (): boolean => submit(jobs, 42));
-  const fromWorker = await worker;
   await jobs.close();
-  console.log(`closed ${fromWorker}`);
   const late = submit(jobs, 43);
-  console.log(`late ${late}`);
+  console.log(`closed, late ${late}`);
+  // A worker thread submits too; its job runs on main before that scope
+  // closes. The scope holds nothing else, so no other job races the worker.
+  const threaded = new TaskScope();
+  const worker = thread.spawn(move (): boolean => submit(threaded, 42));
+  const fromWorker = await worker;
+  await threaded.close();
+  console.log(`worker submitted ${fromWorker}`);
   return 0;
 }

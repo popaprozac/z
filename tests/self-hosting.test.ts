@@ -11425,6 +11425,12 @@ test("compiles a multi-module Z application through the standalone native driver
     // `TaskScope.schedule` with a synchronous operation: one job on the
     // scope's executor, from main and from a worker thread.
     "tests/fixtures/native-task-scope-sync-jobs.zs",
+    // A scheduled operation written as a block runs as a frame of its own;
+    // `await scope.close()` and `await scope.cancel()` suspend the function.
+    "tests/fixtures/native-async-block-operations.zs",
+    // A foreign thread's callbacks submit synchronous and block-bodied async
+    // operations to a named scope, after an explicit scope is cancelled.
+    "examples/async/task-scope-native-callback.zs",
     // A named `async scope` owns a `TaskScope` handle: every way out of the
     // scope joins its operations, and a throw or cancellation cancels them.
     "tests/fixtures/native-async-named-scope.zs",
@@ -11434,6 +11440,9 @@ test("compiles a multi-module Z application through the standalone native driver
     "tests/fixtures/native-async-scope-leave.zs",
     // A function joins each `new TaskScope()` it created before it completes.
     "tests/fixtures/native-async-owned-task-scope.zs",
+    // A failed `try` cancels and joins a named scope's operations; a `return`
+    // evaluates its value before the scope joins its children.
+    "tests/fixtures/native-async-scope-failure.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
@@ -11451,15 +11460,6 @@ test("compiles a multi-module Z application through the standalone native driver
   });
   assert.equal(voidClosureRun.status, 0, voidClosureRun.stderr);
   assert.equal(voidClosureRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "applied\nannounced\n");
-  // Stage 0 leaves a named scope's operations running when `try` fails inside
-  // it, and joins a scope's children before a `return` evaluates its value;
-  // native cancels and joins, and evaluates first.
-  const scopeFailureRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-scope-failure.zs")], {
-    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
-  });
-  assert.equal(scopeFailureRun.status, 0, scopeFailureRun.stderr);
-  assert.equal(scopeFailureRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""),
-    "operation 1 started\npropagates failed\nchild 3 started\nchild 4 started\nchild 3 finished\nchild 4 finished\njoinsOwn 3\n");
   // Stage 0 stops at an async-frame tier limit here; native runs it.
   const importedAliasRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/self-host-imported-thread-main-alias/main.zs")], {
     encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",

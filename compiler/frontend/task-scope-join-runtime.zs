@@ -98,6 +98,11 @@ static __attribute__((unused)) Z_AsyncInvocation z_stage1_task_scope_join_start(
   join->task.executor = executor;
   join->scope = Z_TaskScope_retain(scope);
   join->cancel = cancel;
+  // The await itself closes admission and forwards cancellation: operations
+  // already queued ahead of this join task must observe it before they run.
+  // Operations other threads submitted take their place in the queue now too.
+  z_stage1_task_scope_begin_join(scope, cancel);
+  if (scope->executor == executor) z_stage1_task_scope_drain_external(scope);
   return (Z_AsyncInvocation){ .task = &join->task, .destroy = z_stage1_task_scope_join_destroy };
 }
 `;

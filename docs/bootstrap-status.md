@@ -204,7 +204,13 @@ arbitrary child awaits, main-isolated `scheduler.yield`, direct timer awaits in 
 native frame remain separate native async composition work; this is not general
 async parity. A plain `async function main()` with direct timer awaits,
 named-function task spawns, or a named `async scope` runs as a general native
-frame on a root executor.
+frame on a root executor. In a general frame `await scope.close()` and
+`await scope.cancel()` suspend on the scope's join: the await itself closes
+admission and forwards cancellation, and the executor runs the remaining
+operations. A block-bodied `async move (): void => { ... }` passed to
+`TaskScope.schedule` runs as a frame function of its own that takes the
+closure's captures, so it may suspend repeatedly, keep locals, and join a
+worker; other block-bodied async closure values are not lowered natively yet.
 
 The related-family close checkpoint (2026-09-13) extends native linear main-task
 timer frames to `match`-initialized owned locals and direct `TaskScope.close()` /
@@ -1587,7 +1593,7 @@ closes it and joins the operations it accepted, while a `throw`, a failed `try`,
 or cancellation cancels them first. `break` and `continue` likewise join an
 unnamed scope's children before leaving it. A general frame also joins each
 `new TaskScope()` it created before it completes. A `return` inside a scope
-evaluates its value before the scope joins; Stage 0 joins first. UBSan probes cover pre-entry
+evaluates its value before the scope joins, as in Stage 0. UBSan probes cover pre-entry
 cancellation, repeated completion/cancellation/closed-scope rejection, destination
 thread assertions, and exact final scope reference counts. Unsupported
 scope-capturing worker await shapes remain explicit lowering errors; general
