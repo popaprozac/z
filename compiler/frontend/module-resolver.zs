@@ -12141,11 +12141,15 @@ function inferExpressionNodeType(
             ) throw resolutionError(
               ModuleResolveErrorKind.typeMismatch,
               module.path,
-              "TaskScope.schedule expects thread.main and one async closure",
+              "TaskScope.schedule expects thread.main and one closure",
               node.line,
               node.column
             );
             const closureIndex = argumentNodes[1];
+            // The scope's executor runs a synchronous operation as one job
+            // and an async one as a child frame.
+            const asyncOperation = tree.nodes[closureIndex].labels.length > 3
+              && tree.nodes[closureIndex].labels[3] == "async";
             const parameterModes = Array<String>();
             const parameterTypes = Array<String>();
             const contextualType = nativeClosureFunctionType(
@@ -12156,7 +12160,7 @@ function inferExpressionNodeType(
               "void",
               "",
               "",
-              true,
+              asyncOperation,
               false
             );
             let taskScopeBindings = copyValueBindings(bindings);
@@ -12180,14 +12184,14 @@ function inferExpressionNodeType(
             match (nativeFunctionSignature(closureType)) {
               some(signature) => {
                 if (
-                  !signature.asynchronous
+                  signature.asynchronous != asyncOperation
                   || signature.parameterTypes.length != 0
                   || signature.returnType != "void"
                   || signature.errorType.byteLength > 0
                 ) throw resolutionError(
                   ModuleResolveErrorKind.typeMismatch,
                   module.path,
-                  "TaskScope.schedule requires async () => void",
+                  "TaskScope.schedule requires () => void or async () => void",
                   tree.nodes[closureIndex].line,
                   tree.nodes[closureIndex].column
                 );
@@ -12195,9 +12199,46 @@ function inferExpressionNodeType(
               none => throw resolutionError(
                 ModuleResolveErrorKind.typeMismatch,
                 module.path,
-                "TaskScope.schedule could not resolve its async closure",
+                "TaskScope.schedule could not resolve its closure",
                 tree.nodes[closureIndex].line,
                 tree.nodes[closureIndex].column
+              );
+            }
+            // Accepted work may run after the submitter returns, on the
+            // scope's executor: it owns its captures, which must be
+            // shareable, as in Stage 0.
+            const scheduledCaptures = closureCaptureNames(arena, tree, closureIndex, bindings);
+            if (scheduledCaptures.length > 0 && tree.nodes[closureIndex].value != "move") {
+              const code = asyncOperation ? "Z0704" : "Z0212";
+              const message = asyncOperation
+                ? "TaskScope.schedule requires `move` for a capturing closure"
+                : "a borrowed capturing closure cannot become a function value; use move to own its environment";
+              throw codedModuleResolutionError(
+                ModuleResolveErrorKind.typeMismatch, code, module.path, message,
+                tree.nodes[closureIndex].line, tree.nodes[closureIndex].column, 1
+              );
+            }
+            for (const captured of scheduledCaptures) {
+              const capturedType = valueBindingType(bindings, captured);
+              if (capturedType.byteLength == 0 || isActiveTypeParameter(bindings, capturedType)
+                || importedStandardType(module, capturedType, "std/async", "TaskScope")
+                || importedStandardType(module, capturedType, "std/async", "TaskControl")
+                || typeIsThreadShareable(modules, moduleIndex, capturedType)) continue;
+              // A main-isolated value scheduled from main stays on main.
+              let remainsOnMain = false;
+              if (currentExecutorContext(bindings) == "thread.main") {
+                const expanded = transparentTypeName(modules, moduleIndex, capturedType);
+                match (typeSymbolLocation(modules, moduleIndex, expanded)) {
+                  some(location) => remainsOnMain = aggregateExecutorAffinity(
+                    modules, location.moduleIndex, location.symbolIndex) == "thread.main";
+                  none => {}
+                }
+              }
+              if (remainsOnMain) continue;
+              throw codedModuleResolutionError(
+                ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+                `capture "${captured}" of type ${capturedType} cannot cross to the scope executor`,
+                tree.nodes[closureIndex].line, tree.nodes[closureIndex].column, 1
               );
             }
             return "TaskControl";

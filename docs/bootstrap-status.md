@@ -1576,7 +1576,10 @@ in `thread.spawn(async move ...)`, with the parent keeping its handle. A termina
 await of a named nonthrowing `void`/`i32` yielding helper runs its cold child on
 the worker executor and propagates worker cancellation through nested child
 cleanup before join completes. Main work admitted by `schedule` stays owned by
-the scope and is joined/cancelled separately. UBSan probes cover pre-entry
+the scope and is joined/cancelled separately. `schedule` takes a synchronous
+`() => void` operation, run as one job on the scope's executor unless it is
+cancelled first, or an async one, run as a child frame; a capturing operation
+must be `move` and its captures shareable, as in Stage 0. UBSan probes cover pre-entry
 cancellation, repeated completion/cancellation/closed-scope rejection, destination
 thread assertions, and exact final scope reference counts. Unsupported
 scope-capturing worker await shapes remain explicit lowering errors; general

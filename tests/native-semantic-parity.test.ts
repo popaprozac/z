@@ -876,6 +876,35 @@ test("holds executor captures to their capabilities in both compilers", () => {
   }
 }, 240_000);
 
+test("holds scheduled TaskScope operations to their capture rules in both compilers", () => {
+  // Accepted work may run after its submitter returns, on the scope's
+  // executor: it owns its captures, and they must be shareable.
+  const program = (setup: string, operation: string) => `
+    import { TaskScope } from "std/async";
+    import { thread } from "std/thread";
+    function submit(jobs: TaskScope, value: i32): boolean {
+      ${setup}
+      const control = jobs.schedule(thread.main, ${operation});
+      return control.accepted;
+    }
+    async function work(value: i32): void { }
+    async function main(): i32 {
+      const jobs = new TaskScope();
+      const accepted = submit(jobs, 1);
+      await jobs.close();
+      return accepted ? 0 : 1;
+    }
+  `;
+  rejects(program("", "(): void => { const seen = value; }"),
+    /a borrowed capturing closure cannot become a function value/);
+  rejects(program("", "async (): void => await work(value)"),
+    /TaskScope\.schedule requires `move` for a capturing closure/);
+  for (const operation of ["move (): void => { const seen = names.length; }", "async move (): void => await work(i32(names.length))"]) {
+    rejects(program("let names = Array<String>(); names.push(\"one\");", operation),
+      /capture "names" of type .* cannot cross to the scope executor/);
+  }
+}, 240_000);
+
 test("moves aggregates holding endpoints into block-bodied thread workers", () => {
   const directory = mkdtempSync("/tmp/z-native-thread-block-");
   try {
