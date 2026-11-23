@@ -3121,6 +3121,8 @@ function nativeYieldFrameStorageSupported(
   }
   match (genericTypeShape(name)) {
     some(generic) => {
+      // The lifetime of a `Once` initialization holds the cell, not its value.
+      if (generic.base == "OnceLifetime" && generic.arguments.length == 1) return true;
       // A frame's Task<T> local is its spawn's invocation slot (the shape rule
       // admits only spawn-initialized task locals).
       if (generic.base != "Array" && generic.base != "Option"

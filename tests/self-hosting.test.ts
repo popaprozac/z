@@ -11428,6 +11428,8 @@ test("compiles a multi-module Z application through the standalone native driver
     // A named `async scope` owns a `TaskScope` handle: every way out of the
     // scope joins its operations, and a throw or cancellation cancels them.
     "tests/fixtures/native-async-named-scope.zs",
+    // A foreign thread's callback submits to a named scope that `main` joins.
+    "examples/async/foreign-thread-application-root.zs",
     // `break` and `continue` join an `async scope`'s children before leaving it.
     "tests/fixtures/native-async-scope-leave.zs",
     // A function joins each `new TaskScope()` it created before it completes.
