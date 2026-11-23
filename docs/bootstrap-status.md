@@ -1507,6 +1507,8 @@ are top-level delays keeps its linear delay-segment tier; a worker's hop
 awaits either on main. Every async `thread.spawn` worker that is more than
 one `return await f()` runs as a lifted frame, and every placed block or call
 outside `main` hops: placed work is never run in place off the main thread.
+A placed block with no declared result takes its final `select`'s type, in
+`main` and outside it.
 The general frame holds owned locals declared inside suspending blocks
 (`if`, `while`, match arms): each has a frame slot and a live flag, is
 destroyed at its block's end, on `break`/`continue` (which clear the flag),

@@ -1371,6 +1371,10 @@ function loopSelectTypeBindingName(): String {
   return "__z_native_loop_select_type";
 }
 
+function placedResultSelectBindingName(): String {
+  return "__z_native_placed_result_select";
+}
+
 function regionControlFlowBindingName(): String {
   return "__z_native_region_control_flow";
 }
@@ -7691,6 +7695,7 @@ function inferExpressionNodeType(
     let declaredReturn = "";
     let declaredError = "";
     let bodyKind = "";
+    let infersResult = false;
     if (node.labels.length > 0) {
       const label = node.labels[0].copyBytes(
         0,
@@ -7713,6 +7718,7 @@ function inferExpressionNodeType(
         );
       } else {
         declaredReturn = "void";
+        infersResult = true;
       }
     }
     if (node.labels.length > 1) {
@@ -7815,6 +7821,15 @@ function inferExpressionNodeType(
       );
     }
     const statements = copyIndices(node.statements);
+    // With no declared or contextual result, the block's final `select`
+    // decides it, as in Stage 0. The marker names that statement.
+    infersResult = infersResult && statements.length > 0
+      && arena.nodes[statements[statements.length - 1]].kind == StatementKind.selectStatement;
+    if (infersResult) {
+      const marker = placedResultSelectBindingName();
+      const finalSelect = `${statements[statements.length - 1]}`;
+      addValueBinding(inout blockBindings, marker, finalSelect);
+    }
     // A block hopped to the main executor carries these values there.
     let placedLocals = Array<String>();
     let placedCaptures = Array<String>();
@@ -7881,6 +7896,10 @@ function inferExpressionNodeType(
       inout evidence,
       expectedReturn
     );
+    if (infersResult) {
+      declaredReturn = valueBindingType(blockBindings, selectBinding);
+      if (declaredReturn.byteLength == 0) return "";
+    }
     if (node.value != "spawn") {
       copyBindingFlowStates(inout bindings, blockBindings);
     }
@@ -14982,11 +15001,17 @@ function inferStatement(
     match (in arena.nodes[index].expression) {
       some(expression) => {
         let contextualExpected = "";
+        let infersPlacedResult = false;
         if (kind == StatementKind.returnStatement) {
           contextualExpected = expectedReturn.copyBytes(0, expectedReturn.byteLength);
         } else {
-          const selectBinding = loopSelectTypeBindingName();
-          contextualExpected = valueBindingType(bindings, selectBinding);
+          const placedResult = `${index}`;
+          const marker = placedResultSelectBindingName();
+          infersPlacedResult = valueBindingType(bindings, marker) == placedResult;
+          if (!infersPlacedResult) {
+            const selectBinding = loopSelectTypeBindingName();
+            contextualExpected = valueBindingType(bindings, selectBinding);
+          }
         }
         const actual = try inferExpressionTypeExpected(
           module,
@@ -14998,6 +15023,10 @@ function inferStatement(
           inout bindings,
           inout evidence
         );
+        if (infersPlacedResult) {
+          const selectBinding = loopSelectTypeBindingName();
+          setValueBindingType(inout bindings, selectBinding, actual);
+        }
         if (
           kind == StatementKind.returnStatement
           && typeIsRetainedParameterViewAggregate(

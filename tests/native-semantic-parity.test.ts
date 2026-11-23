@@ -843,6 +843,20 @@ test("holds executor captures to their capabilities in both compilers", () => {
       `, /ownership-bearing executor capture "held" requires an explicit capability/);
     }
   }
+  // An undeclared result is the final `select`'s type, which its uses must
+  // accept.
+  for (const [owner, call] of [["main", ""], ["work", "const result = await work();"]]) {
+    const body = `const value = await on thread.main { select 2; };
+      const text: String = value;
+      return 0;`;
+    rejects(`
+      import { thread } from "std/thread";
+      ${owner == "main" ? "" : `async function work(): i32 { ${body} }`}
+      async function main(): i32 {
+        ${owner == "main" ? body : `${call} return result;`}
+      }
+    `, /expected String, found i32/);
+  }
   // A borrowed capture lends the caller's storage for the block only, so the
   // block cannot suspend while it holds one.
   for (const capability of ["in", "inout"]) {

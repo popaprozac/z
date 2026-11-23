@@ -11420,6 +11420,8 @@ test("compiles a multi-module Z application through the standalone native driver
     // An expression-bodied worker's await is the worker's, also when the
     // spawning function suspends in a frame of its own.
     "tests/fixtures/native-worker-expression-frame.zs",
+    // A placed block with no declared result takes its final `select`'s type.
+    "tests/fixtures/native-main-select-results.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);

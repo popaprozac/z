@@ -13022,7 +13022,7 @@ function lowerExpressionNode(
     tree.nodes[index].kind == ExpressionKind.executorPlacementExpression
     && tree.nodes[index].value == "inline"
   ) {
-    return try lowerInlinePlacedBlock(program, importedTypes, tree, index, inout output);
+    return try lowerInlinePlacedBlock(program, importedTypes, evidence, tree, index, inout output);
   }
   if (
     tree.nodes[index].kind
@@ -35877,13 +35877,22 @@ function lowerInstanceDeinitializer(
 function lowerInlinePlacedBlock(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize,
   inout output: Array<LoweredExpression>
 ): usize throws String {
   const node = view tree.nodes[index];
   if (node.labels[1].byteLength > 0) throw "native placed blocks cannot throw in this tier";
-  const returnName = node.labels[0].byteLength > 0 ? copy node.labels[0] : "void";
+  // An undeclared result is the block's checked type: its context's, or its
+  // final `select`'s.
+  let returnName = copy node.labels[0];
+  if (returnName.byteLength == 0) {
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(name) => returnName = move name;
+      none => returnName = "void";
+    }
+  }
   const returnType = try lowerModuleTypeName(program, importedTypes, returnName);
   if (returnType.kind == LoweredTypeKind.foreignObjCType) {
     throw "native placed blocks cannot select an Objective-C value in this tier";
