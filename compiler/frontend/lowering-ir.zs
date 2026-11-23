@@ -5165,6 +5165,14 @@ function loweredTypeSupportsCopyHelper(in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.enumType;
 }
 
+// A shared identity stays usable in its binding when that binding is passed
+// on, assigned, or returned: the destination takes a reference of its own.
+// A Mutex is shared by a capture, but passing its binding on moves it, as the
+// resolver's rule for owned uses has it (only an owned local can be passed).
+function moduleTypeSharesOnTransfer(in type: LoweredType): boolean {
+  return type.kind != LoweredTypeKind.mutexType && moduleTypeRetainsCapturedIdentity(type);
+}
+
 function moduleTypeRetainsCapturedIdentity(in type: LoweredType): boolean {
   if (type.kind == LoweredTypeKind.channelEndpointType) {
     const kind = channelIdentityKind(type.name);
@@ -6219,6 +6227,14 @@ function treeIsRetainedReference(
   for (const aggregate of program.aggregates) {
     if (aggregate.name == typeName
       && aggregate.kind == DeclarationKind.classDeclaration) return true;
+  }
+  // Every other shared identity (a TaskScope, TaskControl, or sending channel
+  // endpoint) is retained when a stored reference to it is passed on, by the
+  // same rule storage lowering applies. Calling that a move dropped the
+  // source's release while the destination still took a reference of its own.
+  match (attempt lowerModuleTypeName(program, importedTypes, typeName)) {
+    success(type) => if (moduleTypeSharesOnTransfer(type)) return true;
+    failure(_) => {}
   }
   // Imported class handles and callable aliases keep the same retain/release
   // semantics as local declarations. Native calls (including objc.register)
@@ -8594,7 +8610,7 @@ function wrapOwnedStorageZType(
     return value;
   }
   if (
-    moduleTypeRetainsCapturedIdentity(payloadType)
+    moduleTypeSharesOnTransfer(payloadType)
     && expressionBorrowsStoredReference(tree, input)
   ) {
     if (output[value].kind == LoweredExpressionKind.retainValue) {

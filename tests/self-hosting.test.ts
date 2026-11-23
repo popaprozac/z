@@ -11434,6 +11434,12 @@ test("compiles a multi-module Z application through the standalone native driver
     // A block-bodied async closure is a reusable value: each call runs the
     // block as a frame, and captured state carries over to the next call.
     "tests/fixtures/native-async-block-closures.zs",
+    // A Mutex passed on by value moves to the callee, which drops it; a
+    // channel sender is shared, and the channel is released with its last
+    // holder.
+    "tests/fixtures/native-shared-handle-release.zs",
+    // A scope and its controls passed on, returned, and captured.
+    "tests/fixtures/native-scope-handle-references.zs",
     // A named `async scope` owns a `TaskScope` handle: every way out of the
     // scope joins its operations, and a throw or cancellation cancels them.
     "tests/fixtures/native-async-named-scope.zs",
