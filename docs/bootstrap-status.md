@@ -207,10 +207,16 @@ named-function task spawns, or a named `async scope` runs as a general native
 frame on a root executor. In a general frame `await scope.close()` and
 `await scope.cancel()` suspend on the scope's join: the await itself closes
 admission and forwards cancellation, and the executor runs the remaining
-operations. A block-bodied `async move (): void => { ... }` passed to
-`TaskScope.schedule` runs as a frame function of its own that takes the
-closure's captures, so it may suspend repeatedly, keep locals, and join a
-worker; other block-bodied async closure values are not lowered natively yet.
+operations. A block-bodied async closure runs as a frame function of its own,
+so it may suspend repeatedly, keep locals, and join a worker. An operation
+passed to `TaskScope.schedule` runs at most once, and its frame owns the
+closure's captures. Any other block-bodied async closure is a reusable value:
+its captures stay in the closure's environment and each call lends them to its
+frame, so an assignment to a captured `let` is seen by the next call, while the
+closure's own parameters belong to the call. An expression-bodied async closure
+may lend a capture to the call it awaits the same way. A block-bodied async
+closure that throws, borrows its environment (captures without `move`), or
+places work on an executor is not lowered natively yet.
 
 The related-family close checkpoint (2026-09-13) extends native linear main-task
 timer frames to `match`-initialized owned locals and direct `TaskScope.close()` /

@@ -11431,6 +11431,9 @@ test("compiles a multi-module Z application through the standalone native driver
     // A foreign thread's callbacks submit synchronous and block-bodied async
     // operations to a named scope, after an explicit scope is cancelled.
     "examples/async/task-scope-native-callback.zs",
+    // A block-bodied async closure is a reusable value: each call runs the
+    // block as a frame, and captured state carries over to the next call.
+    "tests/fixtures/native-async-block-closures.zs",
     // A named `async scope` owns a `TaskScope` handle: every way out of the
     // scope joins its operations, and a throw or cancellation cancels them.
     "tests/fixtures/native-async-named-scope.zs",
@@ -11460,6 +11463,15 @@ test("compiles a multi-module Z application through the standalone native driver
   });
   assert.equal(voidClosureRun.status, 0, voidClosureRun.stderr);
   assert.equal(voidClosureRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "applied\nannounced\n");
+  // Owned captures and parameters of a reusable async closure: Stage 0 stops
+  // at its own limits here (it emits invalid C for an owned capture, and
+  // rejects `push` on a captured `let` collection).
+  const closureOwnersRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-block-closure-owners.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(closureOwnersRun.status, 0, closureOwnersRun.stderr);
+  assert.equal(closureOwnersRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""),
+    "handled first 21\nhandled first 21\nhandler 42 42\nnamed ab 2\nnamed abc1 4\nnamer 2 4\ncollector 1 2\ntally 2\nshown 1 2\nshown 1 2\n");
   // Stage 0 stops at an async-frame tier limit here; native runs it.
   const importedAliasRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/self-host-imported-thread-main-alias/main.zs")], {
     encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",

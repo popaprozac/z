@@ -15915,6 +15915,14 @@ function appendCallableOwnerHelpers(
             output.append(";\n");
             aliasParameter = aliasParameter + 1;
           }
+          // A capture lent to the awaited call is addressed in the
+          // environment, which outlives this poll; the copies below serve
+          // captures passed by value.
+          if (expression.captureTypes.length > 0) {
+            output.append("  ");
+            appendCallableHelperName(inout output, owner, expressionIndex);
+            output.append("_environment *const _z_stage1_callable_environment __attribute__((unused)) = frame->environment;\n");
+          }
           let capture: usize = 0;
           while (capture < expression.captureTypes.length) {
             output.append("  ");
@@ -15927,7 +15935,7 @@ function appendCallableOwnerHelpers(
               inout output,
               expression.labels[captureLabelStart + capture]
             );
-            output.append(" = frame->environment->");
+            output.append(" __attribute__((unused)) = frame->environment->");
             appendCBindingName(
               inout output,
               expression.labels[captureLabelStart + capture]
