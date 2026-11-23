@@ -905,6 +905,22 @@ test("holds scheduled TaskScope operations to their capture rules in both compil
   }
 }, 240_000);
 
+test("rejects a named async scope that repeats a binding in view in both compilers", () => {
+  // The handle is a binding of the function's: a frame stores one per name.
+  const program = (outer: string) => `
+    import { TaskScope } from "std/async";
+    function touch(jobs: TaskScope): void { }
+    async function main(): i32 {
+      ${outer}
+        async scope updates { touch(updates); }
+      ${outer.startsWith("async") ? "}" : ""}
+      return 0;
+    }
+  `;
+  rejects(program("async scope updates {"), /duplicate local "updates"/);
+  rejects(program("const updates = 1;"), /duplicate local "updates"/);
+}, 240_000);
+
 test("moves aggregates holding endpoints into block-bodied thread workers", () => {
   const directory = mkdtempSync("/tmp/z-native-thread-block-");
   try {

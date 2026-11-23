@@ -202,8 +202,9 @@ async overrides remain rejected. Main-isolated helpers mixing timers with
 arbitrary child awaits, main-isolated `scheduler.yield`, direct timer awaits in a native
 `main` declared `on thread.main`, and named-task creation outside the general
 native frame remain separate native async composition work; this is not general
-async parity. A plain `async function main()` with direct timer awaits or
-named-function task spawns runs as a general native frame on a root executor.
+async parity. A plain `async function main()` with direct timer awaits,
+named-function task spawns, or a named `async scope` runs as a general native
+frame on a root executor.
 
 The related-family close checkpoint (2026-09-13) extends native linear main-task
 timer frames to `match`-initialized owned locals and direct `TaskScope.close()` /
@@ -1579,7 +1580,13 @@ cleanup before join completes. Main work admitted by `schedule` stays owned by
 the scope and is joined/cancelled separately. `schedule` takes a synchronous
 `() => void` operation, run as one job on the scope's executor unless it is
 cancelled first, or an async one, run as a child frame; a capturing operation
-must be `move` and its captures shareable, as in Stage 0. UBSan probes cover pre-entry
+must be `move` and its captures shareable, as in Stage 0. A named
+`async scope updates {}` runs in the general native frame: the frame holds the
+handle, and every way out of the scope (its end, `return`, `break`, `continue`)
+closes it and joins the operations it accepted, while a `throw`, a failed `try`,
+or cancellation cancels them first. `break` and `continue` likewise join an
+unnamed scope's children before leaving it. A `return` inside a scope
+evaluates its value before the scope joins; Stage 0 joins first. UBSan probes cover pre-entry
 cancellation, repeated completion/cancellation/closed-scope rejection, destination
 thread assertions, and exact final scope reference counts. Unsupported
 scope-capturing worker await shapes remain explicit lowering errors; general

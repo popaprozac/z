@@ -3836,6 +3836,9 @@ function programUsesTaskScope(in program: LoweredProgram): boolean {
         some(type) => if (typeUsesTaskScope(type)) return true;
         none => {}
       }
+      // A named `async scope` owns a handle even when nothing reads it.
+      if (statement.kind == LoweredStatementKind.blockStatement && statement.name.byteLength > 0
+        && labelsContain(statement.labels, "async-scope")) return true;
     }
     if (expressionsUseTaskScope(declaration.expressions)) return true;
   }
@@ -11704,6 +11707,99 @@ function yieldFrameScopeJoinState(in declaration: LoweredFunction, site: usize):
   return declaration.statements.length * 2 + 1 + site;
 }
 
+// A named `async scope`: the frame holds its `TaskScope` handle and joins it
+// wherever the scope is left.
+function yieldFrameScopeHandle(in declaration: LoweredFunction, index: usize): boolean {
+  const statement = view declaration.statements[index];
+  return statement.kind == LoweredStatementKind.blockStatement
+    && labelsContain(statement.labels, "async-scope") && statement.children.length == 1
+    && statement.name.byteLength > 0;
+}
+
+function yieldFrameScopeHandleField(in name: String): String {
+  let field = TextBuffer();
+  field.append("frame->_z_binding_");
+  appendCBindingName(inout field, name);
+  return field.finish();
+}
+
+// Closes the handle's scope and waits for its operations through a join
+// task, so the executor keeps running them; a cancelled or failing frame
+// cancels them instead.
+function appendYieldFrameHandleJoin(
+  inout output: TextBuffer, in declaration: LoweredFunction, in handle: String,
+  state: usize, in label: String, depth: usize
+): void {
+  appendIndent(inout output, depth);
+  output.append(`if (${handle} != NULL) {\n`);
+  appendIndent(inout output, depth + 1);
+  output.append("if (frame->child.task != NULL) abort();\n");
+  appendIndent(inout output, depth + 1);
+  output.append(`frame->child = z_stage1_task_scope_join_start(${handle}, frame->cancel_children, task->executor);\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`frame->state = ${state};\n`);
+  appendIndent(inout output, depth + 1);
+  output.append("frame->child.task->waiter = task;\n");
+  appendIndent(inout output, depth + 1);
+  output.append("z_stage1_async_enqueue(task->executor, frame->child.task);\n");
+  appendIndent(inout output, depth + 1);
+  output.append(`return;\n${label}:;\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`${yieldFrameName(declaration)}_release_child(frame);\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`Z_TaskScope_release(${handle});\n`);
+  appendIndent(inout output, depth + 1);
+  output.append(`${handle} = NULL;\n`);
+  appendIndent(inout output, depth);
+  output.append("}\n");
+}
+
+// The statement holding `index` directly, or the statement count for a root.
+function yieldFrameStatementParent(in declaration: LoweredFunction, index: usize): usize {
+  let candidate: usize = 0;
+  while (candidate < declaration.statements.length) {
+    for (const child of declaration.statements[candidate].children) {
+      if (child == index) return candidate;
+    }
+    candidate = candidate + 1;
+  }
+  return declaration.statements.length;
+}
+
+// The `async scope` statements a `break` or `continue` leaves on its way to
+// its loop, innermost first: each joins what it started before control moves
+// on, so the loop never re-enters a scope whose children still run.
+function yieldFrameLeftScopes(in declaration: LoweredFunction, index: usize): Array<usize> {
+  let scopes = Array<usize>();
+  const statement = view declaration.statements[index];
+  if (statement.kind != LoweredStatementKind.breakStatement
+    && statement.kind != LoweredStatementKind.continueStatement) return scopes;
+  let ancestor = yieldFrameStatementParent(declaration, index);
+  while (ancestor < declaration.statements.length) {
+    const outer = view declaration.statements[ancestor];
+    const loop = outer.kind == LoweredStatementKind.whileStatement
+      || outer.kind == LoweredStatementKind.forStatement;
+    if (loop && (statement.name.byteLength == 0 || statement.name == `_z_stage1_loop_exit_${ancestor}`)) {
+      return scopes;
+    }
+    const started = yieldFrameScopeSpawns(declaration, ancestor);
+    if (yieldFrameScopeHandle(declaration, ancestor) || started.length > 0) scopes.push(ancestor);
+    ancestor = yieldFrameStatementParent(declaration, ancestor);
+  }
+  // No loop of this frame encloses it: there is nothing to leave.
+  return Array<usize>();
+}
+
+function yieldFrameLeavesScopes(in declaration: LoweredFunction): boolean {
+  let index: usize = 0;
+  while (index < declaration.statements.length) {
+    const left = yieldFrameLeftScopes(declaration, index);
+    if (left.length > 0) return true;
+    index = index + 1;
+  }
+  return false;
+}
+
 // Runs one hoisted await into its frame temporary, under a resume state of
 // its own past every statement-indexed state.
 function appendYieldFrameHoistedAwait(
@@ -12380,6 +12476,14 @@ function appendYieldFrameStatement(
   index: usize, depth: usize
 ): void throws String {
   const statement = view declaration.statements[index];
+  const leftScopes = yieldFrameLeftScopes(declaration, index);
+  if (leftScopes.length > 0) {
+    // The scopes join what they started, then send control back here.
+    appendIndent(inout output, depth);
+    output.append(`frame->scope_leave = ${index + 1};\n`);
+    appendIndent(inout output, depth);
+    output.append(`goto _z_scope_exit_${leftScopes[0]};\n_z_scope_left_${index}:;\n`);
+  }
   if (statement.kind == LoweredStatementKind.yieldStatement) {
     try appendGeneratorYield(inout output, program, declaration, index, depth);
     return;
@@ -12579,6 +12683,33 @@ function appendYieldFrameStatement(
     // An `async scope` runs its own statements, joins the children started in
     // it, and only then releases its locals (they may be lent to children).
     const asyncScope = labelsContain(statement.labels, "async-scope") && statement.children.length == 1;
+    const scopeHandle = yieldFrameScopeHandle(declaration, index);
+    // `break` and `continue` statements that leave this scope, with the next
+    // scope each leaves (or the statement count when this is the last).
+    let leavers = Array<usize>();
+    let leaverNext = Array<usize>();
+    if (asyncScope) {
+      let leaver: usize = 0;
+      while (leaver < declaration.statements.length) {
+        const left = yieldFrameLeftScopes(declaration, leaver);
+        let position: usize = 0;
+        while (position < left.length) {
+          if (left[position] == index) {
+            leavers.push(leaver);
+            leaverNext.push(position + 1 < left.length ? left[position + 1] : declaration.statements.length);
+          }
+          position = position + 1;
+        }
+        leaver = leaver + 1;
+      }
+    }
+    if (scopeHandle) {
+      const handle = yieldFrameScopeHandleField(statement.name);
+      appendIndent(inout output, depth);
+      output.append(`if (${handle} != NULL) abort();\n`);
+      appendIndent(inout output, depth);
+      output.append(`${handle} = z_stage1_task_scope_new(task->executor);\n`);
+    }
     if (asyncScope) {
       for (const child of declaration.statements[statement.children[0]].children) {
         try appendYieldFrameStatement(inout output, program, declaration, child, depth);
@@ -12588,6 +12719,7 @@ function appendYieldFrameStatement(
         try appendYieldFrameStatement(inout output, program, declaration, child, depth);
       }
     }
+    if (leavers.length > 0) output.append(`_z_scope_exit_${index}:;\n`);
     // Leaving an `async scope` joins the children started directly in it.
     const scopeSpawns = yieldFrameScopeSpawns(declaration, index);
     for (const site of scopeSpawns) {
@@ -12603,6 +12735,13 @@ function appendYieldFrameStatement(
       output.append(`${yieldFrameName(declaration)}_release_slot(task, &${slot});\n`);
       appendIndent(inout output, depth);
       output.append("}\n");
+    }
+    // A named scope then closes its handle and joins the operations it accepted.
+    if (scopeHandle) {
+      const handle = yieldFrameScopeHandleField(statement.name);
+      const resume = `_z_scope_join_${index}`;
+      appendYieldFrameHandleJoin(inout output, declaration, handle,
+        yieldFrameScopeJoinState(declaration, index), resume, depth);
     }
     if (asyncScope) {
       // The scope's locals live in the frame; release them at the scope's
@@ -12625,6 +12764,16 @@ function appendYieldFrameStatement(
       appendYieldFrameCleanups(inout output, program, declaration, declaration.statements[statement.children[0]].cleanups, depth);
     }
     appendYieldFrameCleanups(inout output, program, declaration, statement.cleanups, depth);
+    let dispatched: usize = 0;
+    while (dispatched < leavers.length) {
+      appendIndent(inout output, depth);
+      if (leaverNext[dispatched] < declaration.statements.length) {
+        output.append(`if (frame->scope_leave == ${leavers[dispatched] + 1}) goto _z_scope_exit_${leaverNext[dispatched]};\n`);
+      } else {
+        output.append(`if (frame->scope_leave == ${leavers[dispatched] + 1}) { frame->scope_leave = 0; goto _z_scope_left_${leavers[dispatched]}; }\n`);
+      }
+      dispatched = dispatched + 1;
+    }
     return;
   }
   if (statement.kind == LoweredStatementKind.ifStatement
@@ -13068,6 +13217,23 @@ function appendYieldFrameHelpers(
       childStatement = childStatement + 1;
     }
     const hasSpawns = spawnSites.length > 0;
+    // Named scopes' handles, one frame field per name: scopes that follow
+    // one another may share a name. Joining one goes through the child slot.
+    let scopeHandleNames = Array<String>();
+    let handleStatement: usize = 0;
+    while (handleStatement < source.statements.length) {
+      if (yieldFrameScopeHandle(source, handleStatement)) {
+        let named = false;
+        for (const existing of scopeHandleNames) {
+          if (existing == source.statements[handleStatement].name) named = true;
+        }
+        if (!named) scopeHandleNames.push(copy source.statements[handleStatement].name);
+      }
+      handleStatement = handleStatement + 1;
+    }
+    if (scopeHandleNames.length > 0) hasChild = true;
+    // The frame joins what it owns before it completes: spawn slots and handles.
+    const ownsChildren = hasSpawns || scopeHandleNames.length > 0;
     let declaration = copy source;
     for (const parameter of source.parameters) {
       declaration.asyncFrameBindings.push(copy parameter.name);
@@ -13078,6 +13244,12 @@ function appendYieldFrameHelpers(
         throw "native yield frames cannot reuse a local binding name yet";
       }
       declaration.asyncFrameBindings.push(copy statement.name);
+    }
+    for (const handleName of scopeHandleNames) {
+      if (asyncFrameBinds(declaration, handleName)) {
+        throw "native yield frames cannot reuse a local binding name yet";
+      }
+      declaration.asyncFrameBindings.push(copy handleName);
     }
     // `for await` loops keep their binding (and a stream they own) in the
     // frame; each step is a synthesized `await stream.next()` child.
@@ -13269,7 +13441,13 @@ function appendYieldFrameHelpers(
       output.append(classReceiver ? `  Z_${receiverTypeName} *_z_receiver;\n` : `  Z_${receiverTypeName} _z_receiver;\n`);
       if (receiverGuard.byteLength > 0) output.append(`  bool ${receiverGuard};\n`);
     }
-    if (hasSpawns) output.append("  bool cancel_children;\n  bool unwinding;\n");
+    if (ownsChildren) output.append("  bool cancel_children;\n  bool unwinding;\n");
+    if (yieldFrameLeavesScopes(source)) output.append("  uint32_t scope_leave;\n");
+    for (const handleName of scopeHandleNames) {
+      output.append("  Z_TaskScope *_z_binding_");
+      appendCBindingName(inout output, handleName);
+      output.append(";\n");
+    }
     // Frame borrow temporaries of awaited `in` arguments.
     let borrowNames = Array<String>();
     let borrowTypes = Array<LoweredType>();
@@ -13371,6 +13549,11 @@ function appendYieldFrameHelpers(
     if (receiverTypeName.byteLength > 0) {
       output.append("#define self (frame->_z_receiver)\n#define _z_stage1_frame_binding_this (frame->_z_receiver)\n");
       if (receiverGuard.byteLength > 0) output.append(`#define ${receiverGuard} (frame->${receiverGuard})\n`);
+    }
+    for (const handleName of scopeHandleNames) {
+      output.append("#define _z_stage1_frame_binding_");
+      appendCBindingName(inout output, handleName);
+      output.append(` (${yieldFrameScopeHandleField(handleName)})\n`);
     }
     let hoistedMacro: usize = 0;
     while (hoistedMacro < hoistedSites.length) {
@@ -13542,7 +13725,7 @@ function appendYieldFrameHelpers(
     }
     }
     output.append(`}\nstatic void ${name}_poll(Z_AsyncTask *task) {\n  ${name} *frame = (${name} *)task;\n`);
-    if (hasSpawns) {
+    if (ownsChildren) {
       // Cancellation unwinds through the shared finish path, which cancels and
       // joins every live spawn slot before the frame completes.
       output.append("  if (!frame->unwinding && (task->cancellation_requested");
@@ -13577,11 +13760,19 @@ function appendYieldFrameHelpers(
       output.append(`    case ${declaration.statements.length + 1 + finishState}: goto _z_finish_${finishState};\n`);
       finishState = finishState + 1;
     }
+    let finishHandle: usize = 0;
+    while (finishHandle < scopeHandleNames.length) {
+      output.append(`    case ${declaration.statements.length + 1 + spawnSites.length + finishHandle}: goto _z_finish_scope_${finishHandle};\n`);
+      finishHandle = finishHandle + 1;
+    }
     let scopeStatement: usize = 0;
     while (scopeStatement < declaration.statements.length) {
       const scopeSpawns = yieldFrameScopeSpawns(declaration, scopeStatement);
       for (const site of scopeSpawns) {
         output.append(`    case ${yieldFrameScopeJoinState(declaration, site)}: goto _z_scope_join_${site};\n`);
+      }
+      if (yieldFrameScopeHandle(declaration, scopeStatement)) {
+        output.append(`    case ${yieldFrameScopeJoinState(declaration, scopeStatement)}: goto _z_scope_join_${scopeStatement};\n`);
       }
       scopeStatement = scopeStatement + 1;
     }
@@ -13602,7 +13793,7 @@ function appendYieldFrameHelpers(
     output.append("_z_complete: __attribute__((unused));\n");
     if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
     if (streamStep.byteLength > 0) try appendAsyncGeneratorCompletion(inout output, program, source, frameResult);
-    if (hasSpawns) {
+    if (ownsChildren) {
       // A failure (throw or `try`) cancels the children it leaves behind.
       if (source.throwsError) {
         output.append(`  if (frame->result${yieldFrameHoldsCxx(program, source.returnType) ? ".get()" : ""}.tag == Z_${source.returnType.name}Tag_failure) frame->cancel_children = true;\n`);
@@ -13613,6 +13804,16 @@ function appendYieldFrameHelpers(
         const slot = yieldFrameSpawnSlot(source, spawnSites[site]);
         output.append(`  if (${slot}.task != NULL) {\n    if (frame->cancel_children) z_stage1_async_request_cancel(${slot}.task);\n    frame->state = ${declaration.statements.length + 1 + site};\n    if (!${slot}.task->completed) { ${slot}.task->waiter = task; return; }\n_z_finish_${site}:;\n    ${name}_release_slot(task, &${slot});\n  }\n`);
         site = site + 1;
+      }
+      // A scope left by `return`, a failure, or cancellation still holds its
+      // handle: close it (cancel it, on a failure) and join it, newest first.
+      let finished = scopeHandleNames.length;
+      while (finished > 0) {
+        finished = finished - 1;
+        const handle = yieldFrameScopeHandleField(scopeHandleNames[finished]);
+        const resume = `_z_finish_scope_${finished}`;
+        appendYieldFrameHandleJoin(inout output, source, handle,
+          declaration.statements.length + 1 + spawnSites.length + finished, resume, 1);
       }
       output.append("  if (frame->unwinding) task->cancelled = true;\n");
     }
@@ -13628,6 +13829,11 @@ function appendYieldFrameHelpers(
       output.append(`  ${name}_release_slot(task, &${yieldFrameSpawnSlot(source, spawnSites[releasedSite])});\n`);
     }
     if (hasChild) output.append(`  if (frame->child.task != NULL && !frame->child.task->completed) {\n    z_stage1_async_request_cancel(task);\n    frame->child.task->waiter = NULL;\n    while (!frame->child.task->completed) { if (!z_stage1_async_drive_one(task->executor)) abort(); }\n  }\n  ${name}_release_child(frame);\n`);
+    // A frame dropped before it finished still owns its scopes' operations.
+    for (const handleName of scopeHandleNames) {
+      const handle = yieldFrameScopeHandleField(handleName);
+      output.append(`  if (${handle} != NULL) {\n    z_stage1_task_scope_join(${handle}, true);\n    Z_TaskScope_release(${handle});\n    ${handle} = NULL;\n  }\n`);
+    }
     output.append(`  ${name}_cleanup(frame);\n`);
     const resultCxx = frameResult.kind != LoweredTypeKind.voidType && yieldFrameHoldsCxx(program, frameResult);
     if (resultNeedsDeinit) {
@@ -13648,6 +13854,11 @@ function appendYieldFrameHelpers(
     if (receiverTypeName.byteLength > 0) {
       output.append("#undef self\n#undef _z_stage1_frame_binding_this\n");
       if (receiverGuard.byteLength > 0) output.append(`#undef ${receiverGuard}\n`);
+    }
+    for (const handleName of scopeHandleNames) {
+      output.append("#undef _z_stage1_frame_binding_");
+      appendCBindingName(inout output, handleName);
+      output.append("\n");
     }
     for (const parameter of source.parameters) {
       output.append("#undef _z_stage1_frame_binding_");

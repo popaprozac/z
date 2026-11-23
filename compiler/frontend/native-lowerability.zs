@@ -19,7 +19,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { mainPlacementThreadNames, nestedClosureMainTask, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { mainPlacementThreadNames, nestedClosureMainTask, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -3470,7 +3470,8 @@ function validateNativeFunction(
   const generalMain = !yieldFrame && owner.byteLength == 0 && declaration.name == "main"
     && parsedModule < modules.length
     && (functionContainsFrameDelay(modules[parsedModule].program, declaration)
-      || functionContainsFrameSpawn(declaration) || functionAwaitsStreamStep(declaration))
+      || functionContainsFrameSpawn(declaration) || functionAwaitsStreamStep(declaration)
+      || functionContainsNamedScope(declaration))
     && functionUsesGeneralFrame(modules[parsedModule].program, declaration);
   if (generalMain) try validateGeneralFrameStorage(path, moduleIndex, modules, graph, declaration);
   if (owner.byteLength == 0 && declaration.name == "main" && parsedModule < modules.length
