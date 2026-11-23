@@ -11417,6 +11417,9 @@ test("compiles a multi-module Z application through the standalone native driver
     "examples/async/thread-text.zs",
     "examples/async/thread-transfer.zs",
     "tests/fixtures/native-worker-owned-captures.zs",
+    // An expression-bodied worker's await is the worker's, also when the
+    // spawning function suspends in a frame of its own.
+    "tests/fixtures/native-worker-expression-frame.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);

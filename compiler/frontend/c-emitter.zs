@@ -11443,10 +11443,17 @@ function yieldFrameAwaitsWorker(in expression: LoweredExpression): boolean {
     || expression.kind == LoweredExpressionKind.threadCancel;
 }
 
+// A closure's or worker's body runs elsewhere: its awaits are not this
+// frame's.
+function yieldFrameRunsElsewhere(in expression: LoweredExpression): boolean {
+  return expression.kind == LoweredExpressionKind.closureValue
+    || expression.kind == LoweredExpressionKind.threadSpawn;
+}
+
 function collectYieldFrameAwaits(
   in declaration: LoweredFunction, index: usize, skip: usize, inout found: Array<usize>
 ): void {
-  if (declaration.expressions[index].kind == LoweredExpressionKind.closureValue) return;
+  if (yieldFrameRunsElsewhere(declaration.expressions[index])) return;
   if (index != skip) {
     for (const child of declaration.expressions[index].children) {
       collectYieldFrameAwaits(declaration, child, skip, inout found);
@@ -11477,7 +11484,7 @@ function yieldFrameNestedAwaits(in declaration: LoweredFunction, index: usize): 
 function collectYieldFrameHoisted(
   in declaration: LoweredFunction, index: usize, inout found: Array<usize>
 ): void {
-  if (declaration.expressions[index].kind == LoweredExpressionKind.closureValue) return;
+  if (yieldFrameRunsElsewhere(declaration.expressions[index])) return;
   for (const child of declaration.expressions[index].children) {
     collectYieldFrameHoisted(declaration, child, inout found);
   }
@@ -11573,7 +11580,7 @@ function yieldFrameAwaitExpression(in declaration: LoweredFunction, index: usize
 
 function yieldFrameExpressionContainsAwait(in declaration: LoweredFunction, index: usize): boolean {
   const expression = view declaration.expressions[index];
-  if (expression.kind == LoweredExpressionKind.closureValue) return false;
+  if (yieldFrameRunsElsewhere(expression)) return false;
   if (expression.kind == LoweredExpressionKind.asyncFunctionAwait
     || expression.kind == LoweredExpressionKind.threadAwait
     || expression.kind == LoweredExpressionKind.frameTaskJoin
