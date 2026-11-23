@@ -4900,6 +4900,17 @@ function appendAsyncFrameCleanup(
 // Leaving a lexical scope inside a frame (`break`, `continue`): each owner
 // that has a live flag is destroyed only while live, and the flag is cleared,
 // so the frame's own cleanup never destroys it again.
+function yieldFrameTaskSlotLocal(in declaration: LoweredFunction, in name: String): boolean {
+  let index: usize = 0;
+  while (index < declaration.statements.length) {
+    if (declaration.statements[index].kind == LoweredStatementKind.localStatement
+      && declaration.statements[index].name == name
+      && yieldFrameSpawnExpression(declaration, index) < declaration.expressions.length) return true;
+    index = index + 1;
+  }
+  return false;
+}
+
 function appendFrameScopeExitCleanups(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -4909,6 +4920,9 @@ function appendFrameScopeExitCleanups(
   let remaining = cleanups.length;
   while (remaining > 0) {
     remaining = remaining - 1;
+    // A frame's task local is its spawn's slot: the scope that joins the
+    // child releases it, not the statement that leaves.
+    if (yieldFrameTaskSlotLocal(declaration, cleanups[remaining].name)) continue;
     let flag = "";
     for (const live of declaration.liveFlags) {
       if (live.owner == cleanups[remaining].name && !live.parameter) flag = copy live.name;
@@ -11795,9 +11809,19 @@ function yieldFrameLeftScopes(in declaration: LoweredFunction, index: usize): Ar
   const statement = view declaration.statements[index];
   if (statement.kind != LoweredStatementKind.breakStatement
     && statement.kind != LoweredStatementKind.continueStatement) return scopes;
+  // A value scope's `select` leaves every scope up to and including the one
+  // it gives a value to.
+  const selects = labelsContain(statement.labels, "scope-select");
   let ancestor = yieldFrameStatementParent(declaration, index);
   while (ancestor < declaration.statements.length) {
     const outer = view declaration.statements[ancestor];
+    if (selects) {
+      const joined = yieldFrameScopeSpawns(declaration, ancestor);
+      if (yieldFrameScopeHandle(declaration, ancestor) || joined.length > 0) scopes.push(ancestor);
+      if (labelsContain(outer.labels, "value-scope")) return scopes;
+      ancestor = yieldFrameStatementParent(declaration, ancestor);
+      continue;
+    }
     const loop = outer.kind == LoweredStatementKind.whileStatement
       || outer.kind == LoweredStatementKind.forStatement;
     if (loop && (statement.name.byteLength == 0 || statement.name == `_z_stage1_loop_exit_${ancestor}`)) {
@@ -11809,6 +11833,65 @@ function yieldFrameLeftScopes(in declaration: LoweredFunction, index: usize): Ar
   }
   // No loop of this frame encloses it: there is nothing to leave.
   return Array<usize>();
+}
+
+// The value-producing scope a `select` belongs to: the nearest one around it.
+function yieldFrameSelectScope(in declaration: LoweredFunction, index: usize): usize throws String {
+  let ancestor = yieldFrameStatementParent(declaration, index);
+  while (ancestor < declaration.statements.length) {
+    if (labelsContain(declaration.statements[ancestor].labels, "value-scope")) return ancestor;
+    ancestor = yieldFrameStatementParent(declaration, ancestor);
+  }
+  throw "native async frame `select` lost its value-producing scope";
+}
+
+// `select value;` in a value-producing scope. The value is stored first, so
+// it is evaluated before the scope joins; then every scope up to the
+// value's own is left through its exit, and control continues after it.
+function appendYieldFrameScopeSelect(
+  inout output: TextBuffer, in program: LoweredProgram, in declaration: LoweredFunction,
+  index: usize, in leftScopes: Array<usize>, depth: usize
+): void throws String {
+  const statement = view declaration.statements[index];
+  const value = match (in statement.expression) {
+    some(found) => found;
+    none => throw "native async frame `select` lost its value";
+  };
+  const type = match (in statement.type) {
+    some(found) => copy found;
+    none => throw "native async frame `select` lost its type";
+  };
+  if (statement.labels.length < 2) throw "native async frame `select` lost its destination";
+  const destination = view statement.labels[1];
+  const field = yieldFrameBindingField(destination);
+  appendIndent(inout output, depth);
+  output.append("{\n");
+  try appendBorrowedTemporaryInitializers(inout output, declaration, value, depth);
+  appendIndent(inout output, depth);
+  appendYieldFrameStoreStart(inout output, program, type, field);
+  try appendExpression(inout output, declaration, value);
+  appendYieldFrameStoreEnd(inout output, program, type);
+  appendBorrowedTemporaryCleanups(inout output, declaration, value, depth);
+  // The local owns the value from here on, also if the frame unwinds while
+  // the scope is still joining.
+  for (const local of declaration.statements) {
+    if (local.kind != LoweredStatementKind.localStatement || local.name != destination
+      || local.liveFlag.byteLength == 0) continue;
+    appendIndent(inout output, depth);
+    output.append(`${local.liveFlag} = true;\n`);
+  }
+  appendIndent(inout output, depth);
+  output.append("}\n");
+  if (leftScopes.length > 0) {
+    appendIndent(inout output, depth);
+    output.append(`frame->scope_leave = ${index + 1};\n`);
+    appendIndent(inout output, depth);
+    output.append(`goto _z_scope_exit_${leftScopes[0]};\n_z_scope_left_${index}:;\n`);
+  }
+  appendFrameScopeExitCleanups(inout output, declaration, statement.cleanups, depth);
+  const target = try yieldFrameSelectScope(declaration, index);
+  appendIndent(inout output, depth);
+  output.append(`goto _z_scope_value_${target};\n`);
 }
 
 function yieldFrameLeavesScopes(in declaration: LoweredFunction): boolean {
@@ -12504,7 +12587,9 @@ function appendYieldFrameStatement(
 ): void throws String {
   const statement = view declaration.statements[index];
   const leftScopes = yieldFrameLeftScopes(declaration, index);
-  if (leftScopes.length > 0) {
+  const scopeSelect = statement.kind == LoweredStatementKind.breakStatement
+    && labelsContain(statement.labels, "scope-select");
+  if (leftScopes.length > 0 && !scopeSelect) {
     // The scopes join what they started, then send control back here.
     appendIndent(inout output, depth);
     output.append(`frame->scope_leave = ${index + 1};\n`);
@@ -12547,6 +12632,10 @@ function appendYieldFrameStatement(
   const hoisted = yieldFrameHoistedAwaits(declaration, index);
   for (const site of hoisted) {
     try appendYieldFrameHoistedAwait(inout output, program, declaration, site, depth);
+  }
+  if (scopeSelect) {
+    try appendYieldFrameScopeSelect(inout output, program, declaration, index, leftScopes, depth);
+    return;
   }
   if (statement.kind == LoweredStatementKind.matchStatement) {
     try appendYieldFrameMatch(inout output, program, declaration, index, depth);
@@ -12809,6 +12898,10 @@ function appendYieldFrameStatement(
         output.append(`if (frame->scope_leave == ${leavers[dispatched] + 1}) { frame->scope_leave = 0; goto _z_scope_left_${leavers[dispatched]}; }\n`);
       }
       dispatched = dispatched + 1;
+    }
+    // A `select` of this scope continues here, with the scope behind it.
+    if (labelsContain(statement.labels, "value-scope")) {
+      output.append(`_z_scope_value_${index}: __attribute__((unused));\n`);
     }
     return;
   }

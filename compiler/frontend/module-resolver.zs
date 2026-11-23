@@ -61,6 +61,7 @@ import {
   foreignValueSymbolLocation,
   recordBindingResolution,
   recordExpressionResolution,
+  recordValueResolutionAt,
   recordForeignValueResolution,
   valueSymbolTargetName,
   recordForeignCallFacts,
@@ -1365,6 +1366,12 @@ function sliceRangeReceiverNode(in tree: ExpressionTree, index: usize): Option<u
 
 function contextualExpectedBindingName(offset: usize): String {
   return `__z_native_contextual_expected:${offset}`;
+}
+
+// Marks the scope expression that is the whole initializer of a plain
+// `const`/`let`, the one position its lowering handles.
+function valueScopeInitializerBindingName(offset: usize): String {
+  return `__z_native_value_scope_initializer:${offset}`;
 }
 
 function loopSelectTypeBindingName(): String {
@@ -9143,6 +9150,76 @@ function inferExpressionNodeType(
     );
     return result;
   }
+  if (kind == ExpressionKind.asyncScopeExpression) {
+    // A scope whose value is the `select` that leaves it. The body is checked
+    // as the statement form is: its own task loans, and its handle when named.
+    const asyncContext = valueBindingType(bindings, "__z_native_async_context");
+    if (asyncContext.byteLength == 0) {
+      throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0703", module.path,
+        "async scope requires an enclosing async function", node.line, node.column, 1);
+    }
+    const initializer = valueScopeInitializerBindingName(node.offset);
+    const wholeInitializer = valueBindingType(bindings, initializer);
+    if (index != tree.root || wholeInitializer.byteLength == 0) {
+      throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z1000", module.path,
+        "a value-producing async scope is not executable here in the native compiler yet; bind it with `const` or `let` first",
+        node.line, node.column, 1);
+    }
+    const scopeStatements = copyIndices(node.statements);
+    let scopeBindings = copyValueBindings(bindings);
+    openTaskLoanScope(inout scopeBindings);
+    if (node.value.byteLength > 0) {
+      const visible = valueBindingType(bindings, node.value);
+      if (visible.byteLength > 0) {
+        let handleLine = node.line;
+        let handleColumn = node.column;
+        if (node.labels.length == 3) {
+          handleLine = decimalLabel(node.labels[1]);
+          handleColumn = decimalLabel(node.labels[2]);
+        }
+        throw moduleResolutionError(ModuleResolveErrorKind.duplicateBinding, module.path,
+          `duplicate local "${node.value}"`, handleLine, handleColumn);
+      }
+      addValueBinding(inout scopeBindings, node.value, "TaskScope");
+    }
+    // A contextual type checks every `select`; without one the first decides.
+    const expectedValue = contextualExpectedType(bindings, tree, index);
+    const selectBinding = loopSelectTypeBindingName();
+    addValueBinding(inout scopeBindings, selectBinding, expectedValue);
+    const expectedReturn = valueBindingType(bindings, "__z_native_return_type");
+    const fallsThrough = try inferStatementSequence(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      scopeStatements,
+      inout scopeBindings,
+      inout evidence,
+      expectedReturn
+    );
+    if (fallsThrough) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a value-producing async scope must `select` a value on every path",
+        node.line,
+        node.column
+      );
+    }
+    let scopeValue = copy expectedValue;
+    try validateScopeSelects(module, modules, moduleIndex, arena, scopeStatements, true, 0, evidence, inout scopeValue);
+    if (scopeValue.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a value-producing async scope must `select` a value of a known type",
+        node.line,
+        node.column
+      );
+    }
+    copyBindingFlowStates(inout bindings, scopeBindings);
+    return scopeValue;
+  }
   if (kind == ExpressionKind.unsafeExpression) {
     const statements = copyIndices(node.statements);
     if (
@@ -13950,6 +14027,20 @@ function inferStatement(
       none => {}
     }
     match (in arena.nodes[index].expression) {
+      some(expression) => match (in expression.tree) {
+        some(tree) => {
+          if (tree.nodes[tree.root].kind == ExpressionKind.asyncScopeExpression
+            && arena.nodes[index].objectBindings.length == 0
+            && arena.nodes[index].arrayBindings.length == 0) {
+            const initializer = valueScopeInitializerBindingName(tree.nodes[tree.root].offset);
+            addValueBinding(inout bindings, initializer, "true");
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+    match (in arena.nodes[index].expression) {
       some(expression) => inferred = try inferExpressionTypeExpected(
         module,
         modules,
@@ -15068,6 +15159,10 @@ function inferStatement(
           const selectBinding = loopSelectTypeBindingName();
           setValueBindingType(inout bindings, selectBinding, actual);
         }
+        if (kind == StatementKind.selectStatement) {
+          recordValueResolutionAt(modules, moduleIndex, arena.nodes[index].offset,
+            arena.nodes[index].line, arena.nodes[index].column, actual, inout evidence);
+        }
         if (
           kind == StatementKind.returnStatement
           && typeIsRetainedParameterViewAggregate(
@@ -15537,6 +15632,92 @@ function statementUsesBinding(
     if (statementUsesBinding(arena, child, name)) return true;
   }
   return false;
+}
+
+// A position the parser kept in a node label.
+function decimalLabel(in text: String): usize {
+  let value: usize = 0;
+  let index: usize = 0;
+  while (index < text.byteLength) {
+    const digit = text.byteAt(index);
+    if (digit < 48 || digit > 57) return value;
+    value = value * 10 + usize(digit - 48);
+    index = index + 1;
+  }
+  return value;
+}
+
+// The `select` statements that give a value-producing `async scope` its
+// value are the ones in its own blocks and branches; statements a nested
+// expression owns (a closure's, another value block's) are not reached here.
+// Each leaves the scope, so nothing may follow one in its block, and they
+// agree on one type. `break` and `continue` may not leave the scope: it would
+// have no value.
+function validateScopeSelects(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in statements: Array<usize>,
+  sequence: boolean,
+  loopDepth: usize,
+  in evidence: ModuleSemanticEvidence,
+  inout value: String
+): void throws ModuleResolveError {
+  let position: usize = 0;
+  while (position < statements.length) {
+    const statement = view arena.nodes[statements[position]];
+    position = position + 1;
+    if (statement.kind == StatementKind.selectStatement) {
+      if (sequence && position < statements.length) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "nothing may follow `select` in its block: it leaves the scope",
+          arena.nodes[statements[position]].line,
+          arena.nodes[statements[position]].column
+        );
+      }
+      match (in statement.expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => {
+            const stored = expressionResolutionIndex(evidence, statement.offset);
+            if (stored < evidence.expressionResolutions.length) {
+              const actual = copy evidence.expressionResolutions[stored].typeName;
+              if (value.byteLength == 0) value = move actual;
+              else if (actual.byteLength > 0 && !equivalentTypes(modules, moduleIndex, value, actual)) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `expected ${value}, found ${actual}`,
+                  tree.nodes[tree.root].line,
+                  tree.nodes[tree.root].column
+                );
+              }
+            }
+          }
+          none => {}
+        }
+        none => {}
+      }
+      continue;
+    }
+    if ((statement.kind == StatementKind.breakStatement || statement.kind == StatementKind.continueStatement)
+      && loopDepth == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a value-producing async scope cannot be left with `break` or `continue`",
+        statement.line,
+        statement.column
+      );
+    }
+    const loops = statement.kind == StatementKind.whileStatement || statement.kind == StatementKind.forStatement
+      || statement.kind == StatementKind.forAwaitStatement || statement.kind == StatementKind.forTryAwaitStatement;
+    const children = copyIndices(statement.children);
+    try validateScopeSelects(module, modules, moduleIndex, arena, children,
+      statement.kind == StatementKind.blockStatement, loops ? loopDepth + 1 : loopDepth, evidence, inout value);
+  }
 }
 
 function inferStatementSequence(

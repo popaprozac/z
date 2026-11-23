@@ -589,8 +589,23 @@ export function recordExpressionResolution(
   in typeName: String,
   inout evidence: ModuleSemanticEvidence
 ): void {
+  recordValueResolutionAt(modules, moduleIndex, tree.nodes[index].offset,
+    tree.nodes[index].line, tree.nodes[index].column, typeName, inout evidence);
+}
+
+// The type of the value at a source offset. Besides expressions, a `select`
+// statement records the type it hands over at its own offset: the offset of
+// its expression is shared with that expression's first operand.
+export function recordValueResolutionAt(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  offset: usize,
+  line: usize,
+  column: usize,
+  in typeName: String,
+  inout evidence: ModuleSemanticEvidence
+): void {
   if (typeName.byteLength == 0 || typeName == "__z_never") return;
-  const offset = tree.nodes[index].offset;
   if (evidence.expressionResolutionIndices.has(offset)) return;
   let typeIdentities = Array<ModuleTypeIdentity>();
   collectTypeIdentities(
@@ -603,8 +618,8 @@ export function recordExpressionResolution(
   const resolutionIndex = evidence.expressionResolutions.length;
   evidence.expressionResolutions.push(ModuleExpressionResolution({
     offset,
-    line: tree.nodes[index].line,
-    column: tree.nodes[index].column,
+    line,
+    column,
     typeName: typeName.copyBytes(0, typeName.byteLength),
     targetName: "",
     typeIdentities,

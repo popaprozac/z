@@ -6126,6 +6126,11 @@ struct CallableReturnContext {
   returnType: String = "";
   resultType: String = "";
   parameters: Array<LoweredClosureCapture> = Array<LoweredClosureCapture>();
+  // Inside a value-producing `async scope`: the `select` statements that give
+  // it its value, the local that value initializes, and the value's type.
+  scopeSelects: Array<usize> = Array<usize>();
+  scopeSelectName: String = "";
+  scopeSelectType: String = "";
 }
 
 function contextualReturnTypeName(
@@ -7400,6 +7405,50 @@ function planCleanupStatement(
         statements[loweredTry].cleanups.push(copyCleanup(cleanup));
       }
     }
+    return;
+  }
+  // A value scope's `select` leaves the scope: it releases what the scope
+  // declared so far, once the scope has joined its children.
+  if (loweredStatementHasLabel(statements[loweredIndex], "scope-select")) {
+    appendStatementCleanupCopies(inout statements, loweredIndex, loopCleanups);
+    return;
+  }
+  // A local a value-producing `async scope` initializes: the scope's body is
+  // planned as a block of its own, which a `select` leaves as `break` leaves
+  // a loop.
+  if (
+    statements[loweredIndex].kind == LoweredStatementKind.localStatement
+    && statements[loweredIndex].children.length == 1
+    && loweredStatementHasLabel(statements[statements[loweredIndex].children[0]], "value-scope")
+  ) {
+    const scopeBody = statements[statements[loweredIndex].children[0]].children[0];
+    let scopeSource = Array<usize>();
+    match (in arena.nodes[sourceIndex].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          for (const owned of tree.nodes[tree.root].statements) {
+            scopeSource.push(owned);
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+    let scopeLowered = Array<usize>();
+    for (const child of statements[scopeBody].children) {
+      scopeLowered.push(child);
+    }
+    let scopeLive = Array<LoweredCleanup>();
+    for (const cleanup of live) {
+      if (cleanup.name != statements[loweredIndex].name) scopeLive.push(copyCleanup(cleanup));
+    }
+    // The body never falls off its end (every path selects or returns), so
+    // the `select` that leaves carries the cleanups, not the block.
+    const scopeLeaves = Array<LoweredCleanup>();
+    const unusedAtBlockEnd = try planCleanupSequence(
+      program, importedTypes, evidence, arena, ownerName, scopeSource, scopeLowered, scopeLive,
+      expressions, moveIndex, inout statements, inout liveFlags, forceMoveLiveGuards, true, scopeLeaves
+    );
     return;
   }
   if (
@@ -27685,6 +27734,138 @@ function inlineMatchAssignment(
   return Option.some(loweredMatch);
 }
 
+// The `select` statements of a value-producing scope: those in its own blocks
+// and branches. Statements a nested expression owns are not children here.
+function collectScopeSelects(in arena: StatementArena, in statements: Array<usize>, inout selects: Array<usize>): void {
+  for (const statement of statements) {
+    if (arena.nodes[statement].kind == StatementKind.selectStatement) {
+      selects.push(statement);
+      continue;
+    }
+    const children = copy arena.nodes[statement].children;
+    collectScopeSelects(arena, children, inout selects);
+  }
+}
+
+function emptyLoweredStatement(kind: LoweredStatementKind): LoweredStatement {
+  return LoweredStatement({
+    kind,
+    mutableBinding: false,
+    name: "",
+    type: Option<LoweredType>.none,
+    expression: Option<usize>.none,
+    secondExpression: Option<usize>.none,
+    children: Array<usize>(),
+    cleanups: Array<LoweredCleanup>(),
+    liveFlag: "",
+    labels: Array<String>(),
+    matchConsumesSubject: false,
+    matchBindingNeedsCleanup: false,
+  });
+}
+
+// `select value;` in a value-producing scope: the value initializes the
+// scope's local, then control leaves the scope through its exit, which joins
+// the scope's children first. One lowered statement carries both, so cleanup
+// planning still pairs it with its source statement.
+function lowerScopeSelect(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  index: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): usize throws String {
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const expressionStart = expressions.length;
+        const root = tree.root;
+        let value = try lowerExpressionExpected(program, importedTypes, evidence, tree, root,
+          context.scopeSelectType, inout expressions);
+        value = try wrapOwnedStorage(program, importedTypes, tree, root, context.scopeSelectType, value,
+          inout expressions);
+        try completeNativeClosureBlocks(program, importedTypes, evidence, arena, ownerName, context,
+          index, expressionStart, inout expressions, inout statements);
+        let lowered = emptyLoweredStatement(LoweredStatementKind.breakStatement);
+        lowered.type = Option.some(try lowerModuleTypeName(program, importedTypes, context.scopeSelectType));
+        lowered.expression = Option.some(value);
+        lowered.labels.push("scope-select");
+        lowered.labels.push(copy context.scopeSelectName);
+        const loweredIndex = statements.length;
+        statements.push(move lowered);
+        return loweredIndex;
+      }
+      none => throw "native value-producing async scope lost a selected value";
+    }
+    none => throw "native value-producing async scope requires `select value;`";
+  }
+}
+
+// `const x = async scope [name] { ... select value; };`: the local is
+// declared without a value and the scope runs inside it as a statement scope
+// does, in the same frame, so `return` still leaves the function and nothing
+// is captured.
+function lowerValueScopeLocal(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  index: usize,
+  in tree: ExpressionTree,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): usize throws String {
+  const root = tree.root;
+  const typeName = match (resolvedExpressionTypeName(evidence, tree, root)) {
+    some(name) => name;
+    none => throw "native value-producing async scope lost its checked type";
+  };
+  const type = try lowerModuleTypeName(program, importedTypes, typeName);
+  let childContext = copy context;
+  childContext.scopeSelectName = copy arena.nodes[index].name;
+  childContext.scopeSelectType = copy typeName;
+  childContext.scopeSelects = Array<usize>();
+  const sourceStatements = copy tree.nodes[root].statements;
+  collectScopeSelects(arena, sourceStatements, inout childContext.scopeSelects);
+  if (tree.nodes[root].value.byteLength > 0) {
+    childContext.parameters.push(LoweredClosureCapture({
+      name: copy tree.nodes[root].value,
+      type: LoweredType({ kind: LoweredTypeKind.taskScopeType, name: "TaskScope" }),
+      owned: true,
+      scopeStatementStart: statements.length,
+    }));
+  }
+  let body = emptyLoweredStatement(LoweredStatementKind.blockStatement);
+  for (const child of sourceStatements) {
+    const loweredChild = try lowerStatementWithResult(program, importedTypes, evidence, arena, ownerName,
+      childContext, child, inout expressions, inout statements);
+    body.children.push(loweredChild);
+  }
+  const bodyIndex = statements.length;
+  statements.push(move body);
+  let scopeBlock = emptyLoweredStatement(LoweredStatementKind.blockStatement);
+  scopeBlock.name = copy tree.nodes[root].value;
+  scopeBlock.labels.push("async-scope");
+  scopeBlock.labels.push("value-scope");
+  scopeBlock.children.push(bodyIndex);
+  const scopeIndex = statements.length;
+  statements.push(move scopeBlock);
+  let local = emptyLoweredStatement(LoweredStatementKind.localStatement);
+  local.mutableBinding = arena.nodes[index].mutableBinding;
+  local.name = copy arena.nodes[index].name;
+  local.type = Option.some(type);
+  local.children.push(scopeIndex);
+  const localIndex = statements.length;
+  statements.push(move local);
+  return localIndex;
+}
+
 function lowerStatementWithResult(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -27696,6 +27877,24 @@ function lowerStatementWithResult(
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  for (const selected of context.scopeSelects) {
+    if (selected == index) {
+      return try lowerScopeSelect(program, importedTypes, evidence, arena, ownerName, context, index,
+        inout expressions, inout statements);
+    }
+  }
+  if (arena.nodes[index].kind == StatementKind.variableStatement) {
+    match (in arena.nodes[index].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => if (tree.nodes[tree.root].kind == ExpressionKind.asyncScopeExpression) {
+          return try lowerValueScopeLocal(program, importedTypes, evidence, arena, ownerName, context, index,
+            tree, inout expressions, inout statements);
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
   let preludeRoots = Array<usize>();
   if (isFrameSchedulerYield(program, arena, index)) {
     const placeholder = appendMainDelayPlaceholder(inout statements);

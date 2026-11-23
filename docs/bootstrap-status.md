@@ -1602,7 +1602,12 @@ closes it and joins the operations it accepted, while a `throw`, a failed `try`,
 or cancellation cancels them first. `break` and `continue` likewise join an
 unnamed scope's children before leaving it. A general frame also joins each
 `new TaskScope()` it created before it completes. A `return` inside a scope
-evaluates its value before the scope joins, as in Stage 0. UBSan probes cover pre-entry
+evaluates its value before the scope joins, as in Stage 0. A value-producing
+`const value = async scope { ... select value; }` is native only (Stage 0 does
+not parse it): `select` stores its value in the binding's frame slot and leaves
+through the scope's exit, so children, and a named scope's operations, join
+before the statement after the declaration runs. It is accepted as the whole
+initializer of a plain `const` or `let`; any other position is `Z1000`. UBSan probes cover pre-entry
 cancellation, repeated completion/cancellation/closed-scope rejection, destination
 thread assertions, and exact final scope reference counts. Unsupported
 scope-capturing worker await shapes remain explicit lowering errors; general
