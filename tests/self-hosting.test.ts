@@ -11430,6 +11430,8 @@ test("compiles a multi-module Z application through the standalone native driver
     "tests/fixtures/native-async-named-scope.zs",
     // `break` and `continue` join an `async scope`'s children before leaving it.
     "tests/fixtures/native-async-scope-leave.zs",
+    // A function joins each `new TaskScope()` it created before it completes.
+    "tests/fixtures/native-async-owned-task-scope.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);

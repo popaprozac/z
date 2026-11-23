@@ -11716,6 +11716,17 @@ function yieldFrameScopeHandle(in declaration: LoweredFunction, index: usize): b
     && statement.name.byteLength > 0;
 }
 
+// A local a frame initializes with `new TaskScope()`: the frame keeps that
+// scope and joins it when it completes, whatever became of the local.
+function yieldFrameOwnedScope(in declaration: LoweredFunction, index: usize): boolean {
+  const statement = view declaration.statements[index];
+  if (statement.kind != LoweredStatementKind.localStatement) return false;
+  return match (in statement.expression) {
+    some(expression) => declaration.expressions[expression].kind == LoweredExpressionKind.taskScopeValue;
+    none => false;
+  };
+}
+
 function yieldFrameScopeHandleField(in name: String): String {
   let field = TextBuffer();
   field.append("frame->_z_binding_");
@@ -12652,6 +12663,15 @@ function appendYieldFrameStatement(
       output.append(statement.liveFlag);
       output.append(" = true;\n");
     }
+    if (yieldFrameOwnedScope(declaration, index)) {
+      // A loop's earlier scope is let go unjoined here, as in Stage 0.
+      appendIndent(inout output, depth);
+      output.append(`Z_TaskScope_release(frame->_z_owned_scope_${index});\n`);
+      appendIndent(inout output, depth);
+      output.append(`frame->_z_owned_scope_${index} = Z_TaskScope_retain(`);
+      appendAsyncFrameBindingName(inout output, declaration, statement.name);
+      output.append(");\n");
+    }
     appendIndent(inout output, depth);
     output.append("}\n");
     return;
@@ -13231,9 +13251,16 @@ function appendYieldFrameHelpers(
       }
       handleStatement = handleStatement + 1;
     }
-    if (scopeHandleNames.length > 0) hasChild = true;
-    // The frame joins what it owns before it completes: spawn slots and handles.
-    const ownsChildren = hasSpawns || scopeHandleNames.length > 0;
+    let ownedScopes = Array<usize>();
+    let ownedStatement: usize = 0;
+    while (ownedStatement < source.statements.length) {
+      if (yieldFrameOwnedScope(source, ownedStatement)) ownedScopes.push(ownedStatement);
+      ownedStatement = ownedStatement + 1;
+    }
+    if (scopeHandleNames.length > 0 || ownedScopes.length > 0) hasChild = true;
+    // The frame joins what it owns before it completes: spawn slots, named
+    // scopes' handles, and the scopes its locals created.
+    const ownsChildren = hasSpawns || scopeHandleNames.length > 0 || ownedScopes.length > 0;
     let declaration = copy source;
     for (const parameter of source.parameters) {
       declaration.asyncFrameBindings.push(copy parameter.name);
@@ -13447,6 +13474,9 @@ function appendYieldFrameHelpers(
       output.append("  Z_TaskScope *_z_binding_");
       appendCBindingName(inout output, handleName);
       output.append(";\n");
+    }
+    for (const owned of ownedScopes) {
+      output.append(`  Z_TaskScope *_z_owned_scope_${owned};\n`);
     }
     // Frame borrow temporaries of awaited `in` arguments.
     let borrowNames = Array<String>();
@@ -13761,7 +13791,7 @@ function appendYieldFrameHelpers(
       finishState = finishState + 1;
     }
     let finishHandle: usize = 0;
-    while (finishHandle < scopeHandleNames.length) {
+    while (finishHandle < scopeHandleNames.length + ownedScopes.length) {
       output.append(`    case ${declaration.statements.length + 1 + spawnSites.length + finishHandle}: goto _z_finish_scope_${finishHandle};\n`);
       finishHandle = finishHandle + 1;
     }
@@ -13815,6 +13845,15 @@ function appendYieldFrameHelpers(
         appendYieldFrameHandleJoin(inout output, source, handle,
           declaration.statements.length + 1 + spawnSites.length + finished, resume, 1);
       }
+      // So does every scope a local created: the function owns it to its end.
+      let finishedOwned = ownedScopes.length;
+      while (finishedOwned > 0) {
+        finishedOwned = finishedOwned - 1;
+        const handle = `frame->_z_owned_scope_${ownedScopes[finishedOwned]}`;
+        const resume = `_z_finish_scope_${scopeHandleNames.length + finishedOwned}`;
+        appendYieldFrameHandleJoin(inout output, source, handle,
+          declaration.statements.length + 1 + spawnSites.length + scopeHandleNames.length + finishedOwned, resume, 1);
+      }
       output.append("  if (frame->unwinding) task->cancelled = true;\n");
     }
     // Frame owners are released when the frame is destroyed (at its join),
@@ -13832,6 +13871,10 @@ function appendYieldFrameHelpers(
     // A frame dropped before it finished still owns its scopes' operations.
     for (const handleName of scopeHandleNames) {
       const handle = yieldFrameScopeHandleField(handleName);
+      output.append(`  if (${handle} != NULL) {\n    z_stage1_task_scope_join(${handle}, true);\n    Z_TaskScope_release(${handle});\n    ${handle} = NULL;\n  }\n`);
+    }
+    for (const owned of ownedScopes) {
+      const handle = `frame->_z_owned_scope_${owned}`;
       output.append(`  if (${handle} != NULL) {\n    z_stage1_task_scope_join(${handle}, true);\n    Z_TaskScope_release(${handle});\n    ${handle} = NULL;\n  }\n`);
     }
     output.append(`  ${name}_cleanup(frame);\n`);

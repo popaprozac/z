@@ -1585,7 +1585,8 @@ must be `move` and its captures shareable, as in Stage 0. A named
 handle, and every way out of the scope (its end, `return`, `break`, `continue`)
 closes it and joins the operations it accepted, while a `throw`, a failed `try`,
 or cancellation cancels them first. `break` and `continue` likewise join an
-unnamed scope's children before leaving it. A `return` inside a scope
+unnamed scope's children before leaving it. A general frame also joins each
+`new TaskScope()` it created before it completes. A `return` inside a scope
 evaluates its value before the scope joins; Stage 0 joins first. UBSan probes cover pre-entry
 cancellation, repeated completion/cancellation/closed-scope rejection, destination
 thread assertions, and exact final scope reference counts. Unsupported
