@@ -13022,7 +13022,7 @@ function lowerExpressionNode(
     tree.nodes[index].kind == ExpressionKind.executorPlacementExpression
     && tree.nodes[index].value == "inline"
   ) {
-    return try lowerInlinePlacedBlock(program, importedTypes, tree, index, inout output);
+    return try lowerInlinePlacedBlock(program, importedTypes, evidence, tree, index, inout output);
   }
   if (
     tree.nodes[index].kind
@@ -14802,6 +14802,8 @@ function lowerExpressionNode(
           inout output
         );
         const operationInput = tree.nodes[index].children[2];
+        const asyncOperation = tree.nodes[operationInput].labels.length > 3
+          && tree.nodes[operationInput].labels[3] == "async";
         const operationTypeName = match (
           evidenceResolvedExpressionTypeName(
             program,
@@ -14812,7 +14814,7 @@ function lowerExpressionNode(
           )
         ) {
           some(name) => name;
-          none => "async () => void";
+          none => asyncOperation ? "async () => void" : "() => void";
         };
         const operationExpression = try lowerExpressionExpected(
           program,
@@ -14828,14 +14830,14 @@ function lowerExpressionNode(
           && output[operationExpression].kind
             != LoweredExpressionKind.directFunctionValue
           && output[operationExpression].kind != LoweredExpressionKind.localValue
-        ) throw "native TaskScope.schedule requires an async callable value";
+        ) throw "native TaskScope.schedule requires a callable value";
         const operationType = try lowerModuleTypeName(
           program,
           importedTypes,
           operationTypeName
         );
         if (operationType.kind != LoweredTypeKind.functionType) {
-          throw "native TaskScope.schedule lost its async callable type";
+          throw "native TaskScope.schedule lost its callable type";
         }
         let children = Array<usize>();
         children.push(receiver);
@@ -35712,21 +35714,24 @@ function collectProgramFunctionTypes(
     }
   }
   if (importsTaskScope) {
-    const taskScopeOperation = encodedFunctionTypeIdentity(
-      "async =>void throws "
-    );
-    if (!containsLoweredFunctionType(
-      functionTypes,
-      taskScopeOperation
-    )) functionTypes.push(LoweredFunctionType({
-      name: move taskScopeOperation,
-      asynchronous: true,
-      parameters: Array<LoweredParameter>(),
-      returnType: LoweredType({
-        kind: LoweredTypeKind.voidType,
-        name: "",
-      }),
-    }));
+    // `TaskScope.schedule` takes an async operation or a synchronous one.
+    const operationKinds = Array<boolean>(true, false);
+    for (const asynchronous of operationKinds) {
+      const signature = asynchronous ? "async =>void throws " : "=>void throws ";
+      const taskScopeOperation = encodedFunctionTypeIdentity(signature);
+      if (!containsLoweredFunctionType(
+        functionTypes,
+        taskScopeOperation
+      )) functionTypes.push(LoweredFunctionType({
+        name: move taskScopeOperation,
+        asynchronous,
+        parameters: Array<LoweredParameter>(),
+        returnType: LoweredType({
+          kind: LoweredTypeKind.voidType,
+          name: "",
+        }),
+      }));
+    }
   }
   const callableAliasTargets = collectModuleCallableAliasTargets(
     program,
@@ -35877,13 +35882,22 @@ function lowerInstanceDeinitializer(
 function lowerInlinePlacedBlock(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize,
   inout output: Array<LoweredExpression>
 ): usize throws String {
   const node = view tree.nodes[index];
   if (node.labels[1].byteLength > 0) throw "native placed blocks cannot throw in this tier";
-  const returnName = node.labels[0].byteLength > 0 ? copy node.labels[0] : "void";
+  // An undeclared result is the block's checked type: its context's, or its
+  // final `select`'s.
+  let returnName = copy node.labels[0];
+  if (returnName.byteLength == 0) {
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(name) => returnName = move name;
+      none => returnName = "void";
+    }
+  }
   const returnType = try lowerModuleTypeName(program, importedTypes, returnName);
   if (returnType.kind == LoweredTypeKind.foreignObjCType) {
     throw "native placed blocks cannot select an Objective-C value in this tier";
