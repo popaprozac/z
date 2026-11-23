@@ -15445,6 +15445,13 @@ function inferStatement(
     let scopeBindings = copyValueBindings(bindings);
     openTaskLoanScope(inout scopeBindings);
     if (arena.nodes[index].name.byteLength > 0) {
+      // The handle is a binding of the function's: it may not repeat one in view.
+      const visible = valueBindingType(bindings, arena.nodes[index].name);
+      if (visible.byteLength > 0) {
+        throw moduleResolutionError(ModuleResolveErrorKind.duplicateBinding, module.path,
+          `duplicate local "${arena.nodes[index].name}"`,
+          arena.nodes[index].nameLine, arena.nodes[index].nameColumn);
+      }
       addValueBinding(inout scopeBindings, arena.nodes[index].name, "TaskScope");
     }
     const scopeContinues = try inferStatementSequence(

@@ -920,13 +920,12 @@ function frameStatementIsSupported(
   // loop therefore never restarts a slot whose child is still running.
   if (nested && statementRootIsSpawn(arena, index)) return false;
   if (kind == StatementKind.asyncScopeStatement) {
-    if (synchronousOnly || arena.nodes[index].name.byteLength != 0
-      || arena.nodes[index].children.length != 1) return false;
+    if (synchronousOnly || arena.nodes[index].children.length != 1) return false;
     const block = arena.nodes[index].children[0];
     if (arena.nodes[block].kind != StatementKind.blockStatement) return false;
     // A scope's own statements are frame-level: its locals (including task
     // locals) live in the frame and are released when the scope exits, after
-    // its children are joined.
+    // its children are joined. A named scope's handle lives there too.
     for (const child of arena.nodes[block].children) {
       const local = arena.nodes[child].kind == StatementKind.variableStatement;
       if (statementRootIsSpawn(arena, child) || local) {
@@ -1063,6 +1062,8 @@ export function functionUsesGeneralFrame(
     if (closureOwned[suspendIndex - 1]) continue;
     if (statement.kind == StatementKind.yieldStatement || statement.kind == StatementKind.forAwaitStatement
       || statement.kind == StatementKind.forTryAwaitStatement) suspends = true;
+    // A named scope joins its handle's operations when it exits.
+    if (statement.kind == StatementKind.asyncScopeStatement && statement.name.byteLength != 0) suspends = true;
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
@@ -1093,12 +1094,20 @@ function frameLocalNamesAreUnique(in declaration: FunctionDeclaration): boolean 
   let names = Array<String>();
   for (const parameter of declaration.parameters) { names.push(copy parameter.name); }
   // A `for await` binding lives in the frame too; loops may share one.
+  // So does a named scope's handle; the resolver rejects a nested repeat.
   let loopNames = Array<String>();
+  let scopeNames = Array<String>();
   const closureOwned = closureOwnedStatements(declaration.body);
   let statementIndex: usize = 0;
   for (const statement of declaration.body.nodes) {
     statementIndex = statementIndex + 1;
     if (closureOwned[statementIndex - 1]) continue;
+    if (statement.kind == StatementKind.asyncScopeStatement && statement.name.byteLength != 0) {
+      let seen = false;
+      for (const name of scopeNames) { if (name == statement.name) seen = true; }
+      if (!seen) scopeNames.push(copy statement.name);
+      continue;
+    }
     if (statement.kind == StatementKind.forAwaitStatement || statement.kind == StatementKind.forTryAwaitStatement) {
       let seen = false;
       for (const name of loopNames) { if (name == statement.name) seen = true; }
@@ -1111,6 +1120,10 @@ function frameLocalNamesAreUnique(in declaration: FunctionDeclaration): boolean 
   }
   for (const loopName of loopNames) {
     for (const name of names) { if (name == loopName) return false; }
+    for (const name of scopeNames) { if (name == loopName) return false; }
+  }
+  for (const scopeName of scopeNames) {
+    for (const name of names) { if (name == scopeName) return false; }
   }
   return true;
 }
@@ -1301,6 +1314,19 @@ export function functionContainsFrameSpawn(in declaration: FunctionDeclaration):
   let index: usize = 0;
   while (index < declaration.body.nodes.length) {
     if (statementRootIsSpawn(declaration.body, index)) return true;
+    index = index + 1;
+  }
+  return false;
+}
+
+// A named `async scope` anywhere in the body: only the general frame owns
+// and joins its handle, so this selects it for `main` too.
+export function functionContainsNamedScope(in declaration: FunctionDeclaration): boolean {
+  const closureOwned = closureOwnedStatements(declaration.body);
+  let index: usize = 0;
+  while (index < declaration.body.nodes.length) {
+    if (!closureOwned[index] && declaration.body.nodes[index].kind == StatementKind.asyncScopeStatement
+      && declaration.body.nodes[index].name.byteLength != 0) return true;
     index = index + 1;
   }
   return false;

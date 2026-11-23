@@ -105,7 +105,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, workerClosureLifts, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, workerClosureLifts, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -22881,8 +22881,10 @@ function threadCaptureBindingOffset(
 ): usize throws String {
   let resolvedOffset: usize = 0;
   for (const statement of arena.nodes) {
+    // A named `async scope` binds its handle like a local.
     if (
-      statement.kind == StatementKind.variableStatement
+      (statement.kind == StatementKind.variableStatement
+        || statement.kind == StatementKind.asyncScopeStatement)
       && statement.name == name
       && statement.nameOffset < useOffset
       && statement.nameOffset >= resolvedOffset
@@ -29175,6 +29177,17 @@ function lowerStatementCore(
     expression = Option.some(message);
     secondExpression = Option<usize>.none;
   }
+  // A named `async scope` binds its handle for the statements inside it. No
+  // local statement declares it, so closures there learn its type from here.
+  let childContext = copy context;
+  if (arena.nodes[index].kind == StatementKind.asyncScopeStatement && arena.nodes[index].name.byteLength > 0) {
+    childContext.parameters.push(LoweredClosureCapture({
+      name: copy arena.nodes[index].name,
+      type: LoweredType({ kind: LoweredTypeKind.taskScopeType, name: "TaskScope" }),
+      owned: true,
+      scopeStatementStart: statements.length,
+    }));
+  }
   let children = Array<usize>();
   for (const child of arena.nodes[index].children) {
     const loweredChild = try lowerStatementWithResult(
@@ -29183,7 +29196,7 @@ function lowerStatementCore(
       evidence,
       arena,
       ownerName,
-      context,
+      childContext,
       child,
       inout expressions,
       inout statements
@@ -30840,7 +30853,7 @@ function lowerFunction(
   // main with a direct timer await runs as a general frame on a root executor.
   if (declaration.name == "main" && receiverName.byteLength == 0 && !yieldFrame
     && (functionContainsFrameDelay(program, declaration) || functionContainsFrameSpawn(declaration)
-      || functionAwaitsStreamStep(declaration))
+      || functionAwaitsStreamStep(declaration) || functionContainsNamedScope(declaration))
     && functionUsesGeneralFrame(program, declaration)) generalFrame = true;
   if ((yieldFrame || generalFrame) && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
   // A synchronous generator's body is a frame too: its owners live there and
