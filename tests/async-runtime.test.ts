@@ -2653,6 +2653,168 @@ test("cancels live siblings and descendants when an async failure propagates", (
   );
 });
 
+test("cancels and joins a named async scope left by a failed try or by cancellation", () => {
+  const directory = mkdtempSync("/tmp/z-async-named-scope-failure-");
+  try {
+    const input = resolve(directory, "main.zs");
+    writeFileSync(input, `
+      import console from "std/console";
+      import { TaskControl, TaskScope } from "std/async";
+      import { thread } from "std/thread";
+      import { delay } from "std/time";
+
+      enum Failure { broken }
+
+      async function announce(value: i32, wait: u64): void {
+        console.log(\`operation \${value} started\`);
+        await delay(wait);
+        console.log(\`operation \${value} finished\`);
+      }
+
+      function submit(updates: TaskScope, value: i32, wait: u64): boolean {
+        const control: TaskControl = updates.schedule(thread.main, async move (): void => await announce(value, wait));
+        return control.accepted;
+      }
+
+      async function fails(): i32 throws Failure {
+        await delay(1);
+        throw Failure.broken;
+      }
+
+      async function propagates(): i32 throws Failure {
+        async scope outer {
+          const first = submit(outer, 1, 20);
+          async scope inner {
+            const second = submit(inner, 2, 20);
+            const value = try await fails();
+            console.log(\`propagates should not continue \${first} \${second} \${value}\`);
+          }
+        }
+        return 9;
+      }
+
+      async function holder(): void {
+        async scope updates {
+          const accepted = submit(updates, 3, 20);
+          await delay(5000);
+          console.log(\`holder should not continue \${accepted}\`);
+        }
+      }
+
+      async function cancels(): i32 throws Failure {
+        async scope {
+          task holder();
+          await delay(5);
+          throw Failure.broken;
+        }
+      }
+
+      async function main(): i32 {
+        const propagated = attempt await propagates();
+        match (propagated) {
+          success(value) => console.log(\`propagates returned \${value}\`);
+          failure(_) => console.log("propagates failed");
+        }
+        const cancelled = attempt await cancels();
+        match (cancelled) {
+          success(value) => console.log(\`cancels returned \${value}\`);
+          failure(_) => console.log("cancels failed");
+        }
+        // Long enough for an operation left running to report that it finished.
+        await delay(100);
+        return 0;
+      }
+    `);
+    const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      result.stdout,
+      [
+        "operation 1 started",
+        "operation 2 started",
+        "propagates failed",
+        "operation 3 started",
+        "cancels failed",
+        "",
+      ].join("\n"),
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("evaluates a return inside an async scope before the scope joins its children", () => {
+  const directory = mkdtempSync("/tmp/z-async-scope-return-order-");
+  try {
+    const input = resolve(directory, "main.zs");
+    writeFileSync(input, `
+      import console from "std/console";
+      import { TaskControl, TaskScope } from "std/async";
+      import { thread } from "std/thread";
+      import { delay } from "std/time";
+
+      async function child(value: i32, wait: u64): i32 {
+        console.log(\`child \${value} started\`);
+        await delay(wait);
+        console.log(\`child \${value} finished\`);
+        return value;
+      }
+
+      async function announce(value: i32, wait: u64): void {
+        console.log(\`operation \${value} started\`);
+        await delay(wait);
+        console.log(\`operation \${value} finished\`);
+      }
+
+      function submit(updates: TaskScope, value: i32, wait: u64): boolean {
+        const control: TaskControl = updates.schedule(thread.main, async move (): void => await announce(value, wait));
+        return control.accepted;
+      }
+
+      // The value awaits one of the scope's own tasks; the scope joins the other.
+      async function joinsOwn(): i32 {
+        async scope {
+          const pending = task child(3, 1);
+          task child(4, 20);
+          return await pending;
+        }
+      }
+
+      // A return closes a named scope and joins its operations without cancelling.
+      async function closesNamed(): i32 {
+        async scope updates {
+          const accepted = submit(updates, 5, 10);
+          return accepted ? 7 : 0;
+        }
+      }
+
+      async function main(): i32 {
+        console.log(\`joinsOwn \${await joinsOwn()}\`);
+        console.log(\`closesNamed \${await closesNamed()}\`);
+        return 0;
+      }
+    `);
+    const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      result.stdout,
+      [
+        "child 3 started",
+        "child 4 started",
+        "child 3 finished",
+        "child 4 finished",
+        "joinsOwn 3",
+        "operation 5 started",
+        "operation 5 finished",
+        "closesNamed 7",
+        "",
+      ].join("\n"),
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("requests and joins caller-driven task cancellation", () => {
   const example = resolve(projectRoot, "examples/async/async-caller-cancellation.zs");
   const source = readFileSync(example, "utf8");
