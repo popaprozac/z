@@ -120,7 +120,10 @@ explicit scope therefore requires an async parent: leaving it implicitly joins
 its children and may suspend. Returning from an async function likewise joins
 or cancels its root children. `return` inside an explicit scope still exits the
 enclosing function, but only after outstanding children are cancelled or
-joined and their frames are cleaned up. A future synchronous bridge for
+joined and their frames are cleaned up. The returned value is evaluated before
+that join, so `return await pending` may await one of the scope's own tasks. A
+`try` that fails inside a scope leaves it as a `throw` does: the scope's
+children and operations are cancelled and joined. A future synchronous bridge for
 starting an async root will be an explicit blocking runtime API, not ordinary
 `async scope` syntax.
 

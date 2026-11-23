@@ -1338,12 +1338,14 @@ function planFunction(
         });
         continue;
       }
-      if ((statement.kind === "return" || statement.kind === "throw") && activeScopes.length > 0) {
+      // A `return` evaluates its value first (it may await a child of the
+      // scope); the finalize states then join what the scopes still own.
+      if (statement.kind === "throw" && activeScopes.length > 0) {
         for (const activeScope of [...activeScopes].reverse()) {
-          // The final frame destroy cleans scope locals after the return/throw
+          // The final frame destroy cleans scope locals after the throw
           // expression has transferred its value. Eager cleanup here would make
-          // returning a scope-local owner observe destroyed storage.
-          appendScopeExit(activeScope, statement.kind === "throw", false);
+          // throwing a scope-local owner observe destroyed storage.
+          appendScopeExit(activeScope, true, false);
         }
       }
       if (statement.kind === "destructure") {
@@ -6210,6 +6212,26 @@ function generatePoll(
       `  if (!z_async_wait(&frame->task, ${child}.task)) return;`,
       ...destroyAsyncCallableInvocation(child).map((line) => `  ${line}`),
       ...(binding ? [`  frame->${frameField(binding)} = NULL;`] : []),
+      "}",
+      `frame->state = ${state + 1};`,
+      "continue;",
+    ]));
+    state += 1;
+  }
+  // A failed `try` or cancellation arrives here from inside a named scope
+  // without passing its `scopeExit`: cancel and join the handle's operations
+  // before the frame completes, as a `throw` statement in the scope does.
+  const namedScopes = new Set(plan.operations.flatMap((operation) => (
+    operation.kind === "scopeEnter" ? [operation.name] : []
+  )));
+  for (const name of [...namedScopes].reverse()) {
+    const scope = `frame->${frameField(name)}`;
+    cases.push(caseBlock(state, [
+      `if (frame->${frameLiveField(name)}) {`,
+      `  if (!z_task_scope_join(${scope}, &frame->task, frame->cancel_children)) return;`,
+      `  z_task_scope_release(${scope});`,
+      `  ${scope} = NULL;`,
+      `  frame->${frameLiveField(name)} = false;`,
       "}",
       `frame->state = ${state + 1};`,
       "continue;",
