@@ -11425,6 +11425,12 @@ test("compiles a multi-module Z application through the standalone native driver
     // `TaskScope.schedule` with a synchronous operation: one job on the
     // scope's executor, from main and from a worker thread.
     "tests/fixtures/native-task-scope-sync-jobs.zs",
+    // A scheduled operation written as a block runs as a frame of its own;
+    // `await scope.close()` and `await scope.cancel()` suspend the function.
+    "tests/fixtures/native-async-block-operations.zs",
+    // A foreign thread's callbacks submit synchronous and block-bodied async
+    // operations to a named scope, after an explicit scope is cancelled.
+    "examples/async/task-scope-native-callback.zs",
     // A named `async scope` owns a `TaskScope` handle: every way out of the
     // scope joins its operations, and a throw or cancellation cancels them.
     "tests/fixtures/native-async-named-scope.zs",

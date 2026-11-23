@@ -207,7 +207,10 @@ named-function task spawns, or a named `async scope` runs as a general native
 frame on a root executor. In a general frame `await scope.close()` and
 `await scope.cancel()` suspend on the scope's join: the await itself closes
 admission and forwards cancellation, and the executor runs the remaining
-operations.
+operations. A block-bodied `async move (): void => { ... }` passed to
+`TaskScope.schedule` runs as a frame function of its own that takes the
+closure's captures, so it may suspend repeatedly, keep locals, and join a
+worker; other block-bodied async closure values are not lowered natively yet.
 
 The related-family close checkpoint (2026-09-13) extends native linear main-task
 timer frames to `match`-initialized owned locals and direct `TaskScope.close()` /
