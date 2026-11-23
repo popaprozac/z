@@ -1593,7 +1593,7 @@ closes it and joins the operations it accepted, while a `throw`, a failed `try`,
 or cancellation cancels them first. `break` and `continue` likewise join an
 unnamed scope's children before leaving it. A general frame also joins each
 `new TaskScope()` it created before it completes. A `return` inside a scope
-evaluates its value before the scope joins; Stage 0 joins first. UBSan probes cover pre-entry
+evaluates its value before the scope joins, as in Stage 0. UBSan probes cover pre-entry
 cancellation, repeated completion/cancellation/closed-scope rejection, destination
 thread assertions, and exact final scope reference counts. Unsupported
 scope-capturing worker await shapes remain explicit lowering errors; general
