@@ -41,6 +41,37 @@ export function closureOwnedStatements(in arena: StatementArena): Array<boolean>
   return owned;
 }
 
+// `const x = async scope [name] { ... select value; }`: whether this
+// statement's whole initializer is a value-producing scope.
+export function statementInitializesFromScope(in arena: StatementArena, index: usize): boolean {
+  if (arena.nodes[index].kind != StatementKind.variableStatement) return false;
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => tree.nodes[tree.root].kind == ExpressionKind.asyncScopeExpression;
+      none => false;
+    }
+    none => false;
+  };
+}
+
+// The statements of that scope, which run in the enclosing function's frame.
+export function valueScopeStatements(in arena: StatementArena, index: usize): Array<usize> {
+  let owned = Array<usize>();
+  if (!statementInitializesFromScope(arena, index)) return owned;
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        for (const statement of tree.nodes[tree.root].statements) {
+          owned.push(statement);
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+  return owned;
+}
+
 // Local names of `thread` imported from std/thread.
 export function mainPlacementThreadNames(in program: Program): Array<String> {
   let names = Array<String>();
@@ -693,7 +724,8 @@ function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): bo
     || kind == ExpressionKind.unsafeExpression
     || kind == ExpressionKind.valueBlockExpression
     || kind == ExpressionKind.whileExpression
-    || kind == ExpressionKind.forExpression) return false;
+    || kind == ExpressionKind.forExpression
+    || kind == ExpressionKind.asyncScopeExpression) return false;
   // Nested callable bodies have their own lifetime and suspension analysis.
   if (kind == ExpressionKind.closureExpression) return true;
   for (const child of tree.nodes[index].children) {
@@ -919,6 +951,19 @@ function frameStatementIsSupported(
   // directly in an unnamed `async scope`, which joins its slots on exit. A
   // loop therefore never restarts a slot whose child is still running.
   if (nested && statementRootIsSpawn(arena, index)) return false;
+  // A local a value-producing scope initializes: the scope's statements are
+  // frame-level, as a statement scope's are.
+  if (statementInitializesFromScope(arena, index)) {
+    if (synchronousOnly) return false;
+    const scopeStatements = valueScopeStatements(arena, index);
+    for (const child of scopeStatements) {
+      const local = arena.nodes[child].kind == StatementKind.variableStatement;
+      if (statementRootIsSpawn(arena, child) || local) {
+        if (!frameStatementIsSupported(program, arena, child, false, false)) return false;
+      } else if (!frameStatementIsSupported(program, arena, child, true, false)) return false;
+    }
+    return true;
+  }
   if (kind == StatementKind.asyncScopeStatement) {
     if (synchronousOnly || arena.nodes[index].children.length != 1) return false;
     const block = arena.nodes[index].children[0];
@@ -1068,6 +1113,8 @@ export function functionUsesGeneralFrame(
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
           if (frameExpressionSuspends(tree, tree.root)) suspends = true;
+          // A value-producing scope joins before it hands its value over.
+          if (tree.nodes[tree.root].kind == ExpressionKind.asyncScopeExpression) suspends = true;
         }
         none => {}
       }
@@ -1216,6 +1263,12 @@ function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration, in thre
     if (statement.kind != StatementKind.asyncScopeStatement || statement.children.length != 1) continue;
     for (const child of declaration.body.nodes[statement.children[0]].children) { frameLevel.push(child); }
   }
+  let valueScope: usize = 0;
+  while (valueScope < declaration.body.nodes.length) {
+    const scopeStatements = valueScopeStatements(declaration.body, valueScope);
+    for (const child of scopeStatements) { frameLevel.push(child); }
+    valueScope = valueScope + 1;
+  }
   const closureOwned = closureOwnedStatements(declaration.body);
   let spawnIndex: usize = 0;
   while (spawnIndex < declaration.body.nodes.length) {
@@ -1351,6 +1404,8 @@ export function functionContainsNamedScope(in declaration: FunctionDeclaration):
   while (index < declaration.body.nodes.length) {
     if (!closureOwned[index] && declaration.body.nodes[index].kind == StatementKind.asyncScopeStatement
       && declaration.body.nodes[index].name.byteLength != 0) return true;
+    // A value-producing scope needs the frame's join in the same way.
+    if (!closureOwned[index] && statementInitializesFromScope(declaration.body, index)) return true;
     index = index + 1;
   }
   return false;

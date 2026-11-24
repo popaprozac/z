@@ -214,9 +214,12 @@ closure's captures. Any other block-bodied async closure is a reusable value:
 its captures stay in the closure's environment and each call lends them to its
 frame, so an assignment to a captured `let` is seen by the next call, while the
 closure's own parameters belong to the call. An expression-bodied async closure
-may lend a capture to the call it awaits the same way. A block-bodied async
-closure that throws, borrows its environment (captures without `move`), or
-places work on an executor is not lowered natively yet.
+may lend a capture to the call it awaits the same way. Such a closure may
+throw: its caller receives the typed error as the closure's result. A closure
+written in a method of a non-generic aggregate lifts the same way. A
+block-bodied async closure that borrows its environment (captures without
+`move`) or places work on an executor is not lowered natively yet, and no
+closure may capture `this` in either compiler.
 
 The related-family close checkpoint (2026-09-13) extends native linear main-task
 timer frames to `match`-initialized owned locals and direct `TaskScope.close()` /
@@ -1599,7 +1602,12 @@ closes it and joins the operations it accepted, while a `throw`, a failed `try`,
 or cancellation cancels them first. `break` and `continue` likewise join an
 unnamed scope's children before leaving it. A general frame also joins each
 `new TaskScope()` it created before it completes. A `return` inside a scope
-evaluates its value before the scope joins, as in Stage 0. UBSan probes cover pre-entry
+evaluates its value before the scope joins, as in Stage 0. A value-producing
+`const value = async scope { ... select value; }` is native only (Stage 0 does
+not parse it): `select` stores its value in the binding's frame slot and leaves
+through the scope's exit, so children, and a named scope's operations, join
+before the statement after the declaration runs. It is accepted as the whole
+initializer of a plain `const` or `let`; any other position is `Z1000`. UBSan probes cover pre-entry
 cancellation, repeated completion/cancellation/closed-scope rejection, destination
 thread assertions, and exact final scope reference counts. Unsupported
 scope-capturing worker await shapes remain explicit lowering errors; general

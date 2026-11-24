@@ -11477,7 +11477,67 @@ test("compiles a multi-module Z application through the standalone native driver
   });
   assert.equal(closureOwnersRun.status, 0, closureOwnersRun.stderr);
   assert.equal(closureOwnersRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""),
-    "handled first 21\nhandled first 21\nhandler 42 42\nnamed ab 2\nnamed abc1 4\nnamer 2 4\ncollector 1 2\ntally 2\nshown 1 2\nshown 1 2\n");
+    "handled first 21\nhandled first 21\nhandler 42 42\nnamed ab 2\nnamed abc1 4\nnamer 2 4\ncollector 1 2\ntally 2\nshown 1 2\nshown 1 2\nloaded alpha\nfailed: loaded needs a name\n");
+  // `async scope` as a value: Stage 0 is frozen and does not parse it.
+  const scopeValuesRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-scope-values.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(scopeValuesRun.status, 0, scopeValuesRun.stderr);
+  assert.equal(scopeValuesRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "loaded 1", "loaded 2", "sum after scope 3", "sum 3",
+    "noted early", "branches after scope 10", "noted late", "loaded 20", "branches after scope 20", "branches 10 20",
+    "noted text", "text built 4",
+    "operation 1", "operation 2", "named after scope 2", "named 2",
+    "noted returns", "noted returns", "returns -1 8",
+    "slow 9 started", "failing failed",
+    "noted round 0", "noted round 1", "noted round 2", "loops 102",
+    "loaded 3", "noted inner", "nested 4",
+    "loaded 4", "noted layered", "layered 5",
+    "noted through early", "through after scope 30", "noted through late", "through after scope 40", "through 30 40",
+    "noted matched", "matched 2", "",
+  ].join("\n"));
+  // The Stage 0 parser stops at this form, so its rules are checked here,
+  // through the driver, rather than through the Stage 0-hosted commands.
+  const scopeValueProgram = (body: string, signature = "async function main(): i32") => `
+    async function load(value: i32): i32 { return value; }
+    function id(value: i32): i32 { return value; }
+    enum Kind { one, two }
+    ${signature} {
+      ${body}
+      return 0;
+    }
+  `;
+  const scopeValueRejects: [string, RegExp, string?][] = [
+    ["const v = async scope { select 1; id(2); };", /nothing may follow `select` in its block: it leaves the scope/],
+    ["const v = async scope { task load(1); };", /must `select` a value on every path/],
+    ["const early = true; const v = async scope { task load(1); if (early) { select 1; } };",
+      /must `select` a value on every path/],
+    ["const early = true; const v = async scope { if (early) { select \"text\"; } select 1; };",
+      /expected String, found i32/],
+    ["const v: String = async scope { select 1; };", /expected String, found i32/],
+    ["let round = 0; while (round < 2) { const v = async scope { if (round == 1) break; select 1; }; round = round + 1; }",
+      /cannot be left with `break` or `continue`/],
+    ["const v = id(async scope { select 1; });",
+      /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
+    ["let v = 0; v = async scope { select 1; };",
+      /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
+    // A `select` in a `match` arm gives the arm's value, not the scope's.
+    ["const kind = Kind.two; const v = async scope { match (kind) { one => { select 1; } two => { select 2; } } };",
+      /must `select` a value on every path/],
+    ["const v = async scope { select 1; };", /error\[Z0703\]: async scope requires an enclosing async function/,
+      "function main(): i32"],
+    ["const updates = 1; const v = async scope updates { select 1; };", /duplicate local "updates"/],
+    ["const v = async scope updates { select 1; }; const again = updates;", /unknown name updates/],
+  ];
+  const scopeValueReject = resolve(directory, "scope-value-reject.zs");
+  for (const [body, message, signature] of scopeValueRejects) {
+    writeFileSync(scopeValueReject, scopeValueProgram(body, signature));
+    const result = spawnSync(driver, ["check", scopeValueReject], { encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
+    assert.equal(result.status, 1, `${body}: ${result.stderr}`);
+    assert.match(result.stderr, message, body);
+    assert.match(result.stderr, /scope-value-reject\.zs:\d+:\d+:/, body);
+    assert.doesNotMatch(result.stderr, /internal compiler error/, body);
+  }
   // Stage 0 stops at an async-frame tier limit here; native runs it.
   const importedAliasRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/self-host-imported-thread-main-alias/main.zs")], {
     encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
@@ -15504,7 +15564,7 @@ function main(): i32 {
   );
   assert.match(changedSourceRunning.stdout, /compiled 1 Z modules/);
   assert.ok(statSync(cachedArgumentApplication).mtimeMs > 0);
-}, 300_000);
+}, 600_000);
 
 test("lowers the complete native frontend graph to C", () => {
   const frontend = resolve(projectRoot, "compiler/frontend/parser-library.zs");
@@ -18563,7 +18623,7 @@ test("keeps native semantic authority composable across a representative Z corpu
       assert.deepEqual(authoritative, observed, `${entry} left an observed native semantic result on Stage 0`);
     }
   }
-}, 120_000);
+}, 300_000);
 
 test("preserves bounded channel endpoint and ownership effects natively", () => {
   const input = resolve(

@@ -127,6 +127,32 @@ children and operations are cancelled and joined. A future synchronous bridge fo
 starting an async root will be an explicit blocking runtime API, not ordinary
 `async scope` syntax.
 
+A scope can also produce a value. As the initializer of a `const` or `let`, it
+hands over the value of the `select` that leaves it, once every child it
+started has joined:
+
+```z
+const total = async scope {
+  const a = task load(1);
+  const b = task load(2);
+  const first = await a;
+  const second = await b;
+  select first + second;
+};
+```
+
+`select` leaves the scope with its value. It may sit in a branch, and nothing
+may follow it in its block. Every path through the scope ends in a `select`, a
+`return`, or a failure, and every `select` has the same type: the binding's
+annotation, or else the type of the first one. The selected value is evaluated
+before the join, as a returned value is, so `select await pending` may await
+one of the scope's own tasks. `return` still leaves the function, a failure
+still cancels the scope's children, and `break` and `continue` cannot leave a
+value-producing scope. A `select` inside a `match` arm or a value-producing
+loop belongs to that arm or loop. The form takes a name like the statement
+does; the handle is visible inside the block only. Only the native compiler
+implements the value form.
+
 When native callbacks can submit work dynamically, a scope can expose the
 compiler-owned handle:
 

@@ -294,6 +294,13 @@ function resolveExpressionNode(
     try resolveStatementSequence(module, symbols, arena, statements, closureBindings);
     return;
   }
+  if (kind == ExpressionKind.asyncScopeExpression) {
+    // The handle of a named scope is a name inside its block only.
+    let scopeBindings = copyBindings(bindings);
+    if (value.byteLength > 0) scopeBindings.push(value.copyBytes(0, value.byteLength));
+    try resolveStatementSequence(module, symbols, arena, statements, scopeBindings);
+    return;
+  }
   if (kind == ExpressionKind.matchExpression) {
     if (children.length > 0) {
       try resolveExpressionNode(module, symbols, arena, tree, children[0], bindings);
