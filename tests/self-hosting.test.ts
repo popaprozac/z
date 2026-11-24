@@ -11165,7 +11165,14 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   assert.equal(truncated.status, 3, truncated.stderr);
 }, 240_000);
 
-test("compiles a multi-module Z application through the standalone native driver", () => {
+// The standalone native driver, built once and shared by the tests below. Each
+// test asks for it, so any one of them can run alone.
+let standaloneDriverBuild: ReturnType<typeof buildStandaloneDriver> | undefined;
+function standaloneDriver() {
+  standaloneDriverBuild ??= buildStandaloneDriver();
+  return standaloneDriverBuild;
+}
+function buildStandaloneDriver() {
   const driverSource = resolve(projectRoot, "compiler/driver/main.zs");
   const driverEmission = spawnSync(
     process.execPath,
@@ -11173,15 +11180,6 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
   );
   assert.equal(driverEmission.status, 0, driverEmission.stderr);
-  assert.match(driverEmission.stdout, /Z___z_Result_void_String _z_function_\d+_loadModule\(/);
-  assert.match(driverEmission.stdout, /Z___z_Result_String_String _z_function_\d+_emitModulesC\(/);
-  assert.match(driverEmission.stdout, /z_stage1_fs_lock\(/);
-  assert.match(driverEmission.stdout, /z_stage1_fs_replace\(/);
-  assert.match(driverEmission.stdout, /Z_FsLock_deinit\(&\(cacheLock\)\)/);
-  assert.match(driverEmission.stdout, /z_stage1_fs_real_path\(/);
-  assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-O2"\)/);
-  assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-DNDEBUG"\)/);
-
   const directory = mkdtempSync("/tmp/z-self-host-native-compiler-");
   const driver = resolve(directory, "z-native");
   const driverCompilation = spawnSync(
@@ -11190,6 +11188,27 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8", input: driverEmission.stdout },
   );
   assert.equal(driverCompilation.status, 0, driverCompilation.stderr);
+  const foreignAdapterEnvironment = {
+    ...process.env,
+    PATH: `${resolve(projectRoot, "compiler/bin")}${delimiter}${process.env.PATH ?? ""}`,
+  };
+  return { driverSource, driverEmission, directory, driver, foreignAdapterEnvironment };
+}
+
+test("emits and compiles the standalone native driver", () => {
+  const { driverEmission } = standaloneDriver();
+  assert.match(driverEmission.stdout, /Z___z_Result_void_String _z_function_\d+_loadModule\(/);
+  assert.match(driverEmission.stdout, /Z___z_Result_String_String _z_function_\d+_emitModulesC\(/);
+  assert.match(driverEmission.stdout, /z_stage1_fs_lock\(/);
+  assert.match(driverEmission.stdout, /z_stage1_fs_replace\(/);
+  assert.match(driverEmission.stdout, /Z_FsLock_deinit\(&\(cacheLock\)\)/);
+  assert.match(driverEmission.stdout, /z_stage1_fs_real_path\(/);
+  assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-O2"\)/);
+  assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-DNDEBUG"\)/);
+}, 300_000);
+
+test("builds a library and plain fixtures through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   exerciseGeneratedAdapterLinking([driver]);
   const sharedRootProject = resolve(directory, "shared-root-project");
   mkdirSync(sharedRootProject);
@@ -11256,10 +11275,6 @@ test("compiles a multi-module Z application through the standalone native driver
         "callback 2/1/2\nviews 2/1/2\ncopy 2; original 2\ndetached kept\ncustom ordinary field\n");
     }
   }
-  const foreignAdapterEnvironment = {
-    ...process.env,
-    PATH: `${resolve(projectRoot, "compiler/bin")}${delimiter}${process.env.PATH ?? ""}`,
-  };
   const contentHashRun = spawnSync(
     driver,
     [
@@ -11325,6 +11340,10 @@ test("compiles a multi-module Z application through the standalone native driver
   // Programs the parity census found broken natively now match Stage 0:
   // destructor lifetimes, view results and captures, literal conversions,
   // exported enum aliases, imported frameworks, and objc.connect closures.
+}, 300_000);
+
+test("runs the parity fixtures identically through Stage 0 and the standalone native driver", () => {
+  const { driver, foreignAdapterEnvironment } = standaloneDriver();
   const parityRuns = [
     "tests/fixtures/native-ownership-lifetimes.zs",
     "tests/fixtures/native-view-results.zs",
@@ -11463,6 +11482,10 @@ test("compiles a multi-module Z application through the standalone native driver
     assert.equal(nativeRun.status, 0, `${entry} native: ${nativeRun.stderr}`);
     assert.equal(nativeRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), stage0Run.stdout, entry);
   }
+}, 600_000);
+
+test("runs native-only fixtures and reports tier limits through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   // A void expression closure runs its body as a statement.
   const voidClosureRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-void-expression-closure.zs")], {
     encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
@@ -11602,6 +11625,10 @@ test("compiles a multi-module Z application through the standalone native driver
   }
   // C++ value members follow Stage 0's overload choice, receiver access, and
   // messages; C++ values in union or heap storage are a later tier.
+}, 300_000);
+
+test("follows Stage 0 on C++ values through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const foreignValuesEntry = resolve(projectRoot, "examples/interop/cpp/foreign-values.zs");
   const foreignValuesSource = readFileSync(foreignValuesEntry, "utf8")
     .replace("../../../tests/fixtures/foreign-values.hpp", resolve(projectRoot, "tests/fixtures/foreign-values.hpp"));
@@ -11790,7 +11817,10 @@ test("compiles a multi-module Z application through the standalone native driver
     externalInternalCheck.stderr,
     /packageAnswer.*internal to its package/,
   );
+}, 300_000);
 
+test("validates generated dispatch and foreign declaration streams through the standalone native driver", () => {
+  const { directory, driver } = standaloneDriver();
   const generatedProject = resolve(directory, "generated-project");
   const generatedFramework = resolve(generatedProject, "framework");
   const generatedApplication = resolve(generatedProject, "application");
@@ -12074,7 +12104,10 @@ test("compiles a multi-module Z application through the standalone native driver
     incompleteNativeStatusInspection.stderr,
     /incomplete-native-status\.zd:2:\d+: error\[Z0801\]: a native status contract requires at least one success value/,
   );
+}, 300_000);
 
+test("lowers native callback contexts through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const nativeCallbackExample = resolve(
     projectRoot,
     "examples/applications/message-router/native-callback.zs",
@@ -12206,7 +12239,10 @@ function main(): i32 {
       name,
     );
   }
+}, 300_000);
 
+test("rebuilds the standalone native driver with itself to the same C", () => {
+  const { directory, driver, driverSource, driverEmission } = standaloneDriver();
   const recursiveDriver = resolve(directory, "z-native-generation-2");
   const recursiveCompilation = spawnSync(
     driver,
@@ -12230,7 +12266,17 @@ function main(): i32 {
     nativeStandardOutputEmission.stderr,
   );
   assert.equal(nativeStandardOutputEmission.stdout, driverEmission.stdout);
+  const recursiveChecking = spawnSync(
+    recursiveDriver,
+    ["check", resolve(projectRoot, "tests/fixtures/self-host-emit-modules/main.zs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(recursiveChecking.status, 0, recursiveChecking.stderr);
+  assert.match(recursiveChecking.stdout, /checked 2 Z modules/);
+}, 300_000);
 
+test("builds C export libraries through the standalone native driver", () => {
+  const { directory, driver } = standaloneDriver();
   const cExportProject = resolve(
     projectRoot,
     "examples/interop/c/z-export",
@@ -12464,7 +12510,10 @@ function main(): i32 {
     { encoding: "utf8" },
   );
   assert.equal(runtimeRootRun.status, 0, runtimeRootRun.stderr);
+}, 300_000);
 
+test("builds runtime exports and reports lowering boundaries through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const releaseOnlyRuntimeProject = resolve(
     directory,
     "release-only-runtime-project",
@@ -12963,7 +13012,10 @@ function main(): i32 {
     uncontractedPointerUseCheck.stderr,
     /native contract for "\.\/uncontracted\.h" has no checked function "z_uncontracted_pointer"/,
   );
+}, 300_000);
 
+test("builds and caches a foreign-header project through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const foreignProject = resolve(directory, "foreign-project");
   mkdirSync(foreignProject, { recursive: true });
   const foreignProjectSource = resolve(foreignProject, "main.zs");
@@ -13335,6 +13387,27 @@ function main(): i32 {
   assert.doesNotMatch(headerInvalidatedForeignBuild.stdout, /cache hit:/);
   assert.ok(statSync(builtForeignApplication).mtimeMs > 0);
 
+  const foreignApplication = resolve(directory, "foreign-application-native");
+  const foreignBuild = spawnSync(
+    driver,
+    ["build", foreignProjectSource, foreignApplication],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(foreignBuild.status, 0, foreignBuild.stderr);
+  assert.match(foreignBuild.stdout, /compiled 1 Z modules/);
+  const foreignExecution = spawnSync(
+    foreignApplication,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(foreignExecution.status, 42, foreignExecution.stderr);
+}, 300_000);
+
+test("checks header-only, scalar-pointer, and union headers through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const headerOnlyProject = resolve(directory, "header-only-project");
   const callableMethodContext = spawnSync(driver, [
     "run",
@@ -13745,7 +13818,10 @@ function main(): i32 {
     /invalidates native lifetime .*eventMemory.*view "text" is live/,
   );
   writeFileSync(unionSource, unionProgramSource);
+}, 300_000);
 
+test("passes foreign records and borrowed resources through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const recordProject = resolve(directory, "foreign-record-project");
   mkdirSync(recordProject);
   const recordSource = resolve(recordProject, "main.zs");
@@ -13968,6 +14044,52 @@ function main(): i32 {
   assert.equal(resourceUseAfterMove.status, 1);
   assert.match(resourceUseAfterMove.stderr, /use of moved value "image"/);
 
+  writeFileSync(
+    resolve(recordProject, "geometry.h"),
+    `${readFileSync(resolve(projectRoot, "tests/fixtures/geometry.h"), "utf8")}
+typedef union ZBits {
+  int integer;
+  float decimal;
+} ZBits;
+
+static inline int z_bits_integer(ZBits bits) {
+  return bits.integer;
+}
+`,
+  );
+  writeFileSync(
+    resolve(recordProject, "geometry.h.zd"),
+    `declare module "geometry.h" {
+  export function z_bits_integer(bits: _): _;
+}
+`,
+  );
+  writeFileSync(
+    recordSource,
+    `import geometry from "geometry.h";
+
+function main(): i32 {
+  return 0;
+}
+`,
+  );
+  const unsupportedUnionCheck = spawnSync(
+    driver,
+    ["check", recordSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(unsupportedUnionCheck.status, 1);
+  assert.match(
+    unsupportedUnionCheck.stderr,
+    /record value ZBits requires a scalar-field struct layout/,
+  );
+}, 300_000);
+
+test("enforces owned foreign handle contracts through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const handleProject = resolve(directory, "foreign-handle-project");
   mkdirSync(handleProject);
   const handleSource = resolve(handleProject, "main.zs");
@@ -14513,68 +14635,10 @@ function main(): i32 {
     invalidHandleRelease.stderr,
     /API notes for "z_owned_handle_open" require "z_owned_handle_read" to consume exactly one ZOwnedHandle \*/,
   );
+}, 300_000);
 
-  writeFileSync(
-    resolve(recordProject, "geometry.h"),
-    `${readFileSync(resolve(projectRoot, "tests/fixtures/geometry.h"), "utf8")}
-typedef union ZBits {
-  int integer;
-  float decimal;
-} ZBits;
-
-static inline int z_bits_integer(ZBits bits) {
-  return bits.integer;
-}
-`,
-  );
-  writeFileSync(
-    resolve(recordProject, "geometry.h.zd"),
-    `declare module "geometry.h" {
-  export function z_bits_integer(bits: _): _;
-}
-`,
-  );
-  writeFileSync(
-    recordSource,
-    `import geometry from "geometry.h";
-
-function main(): i32 {
-  return 0;
-}
-`,
-  );
-  const unsupportedUnionCheck = spawnSync(
-    driver,
-    ["check", recordSource],
-    {
-      encoding: "utf8",
-      env: foreignAdapterEnvironment,
-    },
-  );
-  assert.equal(unsupportedUnionCheck.status, 1);
-  assert.match(
-    unsupportedUnionCheck.stderr,
-    /record value ZBits requires a scalar-field struct layout/,
-  );
-
-  const foreignApplication = resolve(directory, "foreign-application-native");
-  const foreignBuild = spawnSync(
-    driver,
-    ["build", foreignProjectSource, foreignApplication],
-    {
-      encoding: "utf8",
-      env: foreignAdapterEnvironment,
-    },
-  );
-  assert.equal(foreignBuild.status, 0, foreignBuild.stderr);
-  assert.match(foreignBuild.stdout, /compiled 1 Z modules/);
-  const foreignExecution = spawnSync(
-    foreignApplication,
-    [],
-    { encoding: "utf8" },
-  );
-  assert.equal(foreignExecution.status, 42, foreignExecution.stderr);
-
+test("compiles a multi-module Z application through the standalone native driver", () => {
+  const { directory, driver } = standaloneDriver();
   const applicationSource = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-modules/main.zs",
@@ -14592,13 +14656,6 @@ function main(): i32 {
   );
   assert.equal(checking.status, 0, checking.stderr);
   assert.match(checking.stdout, /checked 2 Z modules/);
-  const recursiveChecking = spawnSync(
-    recursiveDriver,
-    ["check", applicationSource],
-    { encoding: "utf8" },
-  );
-  assert.equal(recursiveChecking.status, 0, recursiveChecking.stderr);
-  assert.match(recursiveChecking.stdout, /checked 2 Z modules/);
 
   const emittedSource = resolve(directory, "emitted.c");
   const emitting = spawnSync(
@@ -14757,7 +14814,12 @@ function main(): i32 {
     { encoding: "utf8" },
   );
   assert.equal(floatingConversionExecution.status, 42, floatingConversionExecution.stderr);
+}, 300_000);
 
+test("builds manifest and package projects through the standalone native driver", () => {
+  const { directory, driver } = standaloneDriver();
+  const applicationSource = resolve(projectRoot, "tests/fixtures/self-host-emit-modules/main.zs");
+  const cExportProject = resolve(projectRoot, "examples/interop/c/z-export");
   const manifestProject = resolve(directory, "manifest-project");
   const manifestInclude = resolve(manifestProject, "include");
   const manifestLibrary = resolve(manifestProject, "lib");
@@ -15407,7 +15469,10 @@ function main(): i32 {
   assert.equal(releaseCompilation.status, 0, releaseCompilation.stderr);
   const releaseExecution = spawnSync(releaseApplication, [], { encoding: "utf8" });
   assert.equal(releaseExecution.status, 42, releaseExecution.stderr);
+}, 300_000);
 
+test("passes arguments and reuses the run cache through the standalone native driver", () => {
+  const { directory, driver } = standaloneDriver();
   const argumentApplicationSource = resolve(
     projectRoot,
     "tests/fixtures/self-host-native-driver.zs",
@@ -15564,7 +15629,7 @@ function main(): i32 {
   );
   assert.match(changedSourceRunning.stdout, /compiled 1 Z modules/);
   assert.ok(statSync(cachedArgumentApplication).mtimeMs > 0);
-}, 600_000);
+}, 300_000);
 
 test("lowers the complete native frontend graph to C", () => {
   const frontend = resolve(projectRoot, "compiler/frontend/parser-library.zs");
