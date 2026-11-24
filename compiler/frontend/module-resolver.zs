@@ -62,6 +62,7 @@ import {
   recordBindingResolution,
   recordExpressionResolution,
   recordValueResolutionAt,
+  asyncScopeValueOffset,
   recordForeignValueResolution,
   valueSymbolTargetName,
   recordForeignCallFacts,
@@ -9181,7 +9182,16 @@ function inferExpressionNodeType(
       addValueBinding(inout scopeBindings, node.value, "TaskScope");
     }
     // A contextual type checks every `select`; without one the first decides.
-    const expectedValue = contextualExpectedType(bindings, tree, index);
+    // An expression that begins with this scope shares its offset, and the
+    // contextual type recorded there is that expression's, not the scope's.
+    let beginsLargerExpression = false;
+    let other: usize = 0;
+    while (other < tree.nodes.length) {
+      if (other != index && tree.nodes[other].offset == node.offset) beginsLargerExpression = true;
+      other = other + 1;
+    }
+    const contextualValue = contextualExpectedType(bindings, tree, index);
+    const expectedValue = beginsLargerExpression ? "" : copy contextualValue;
     const selectBinding = loopSelectTypeBindingName();
     addValueBinding(inout scopeBindings, selectBinding, expectedValue);
     const expectedReturn = valueBindingType(bindings, "__z_native_return_type");
@@ -9218,7 +9228,8 @@ function inferExpressionNodeType(
     copyBindingFlowStates(inout bindings, scopeBindings);
     // Lowering gives the scope's value a frame slot of this type wherever
     // the scope sits in its statement.
-    recordExpressionResolution(modules, moduleIndex, tree, index, scopeValue, inout evidence);
+    recordValueResolutionAt(modules, moduleIndex, asyncScopeValueOffset(node.offset),
+      node.line, node.column, scopeValue, inout evidence);
     return scopeValue;
   }
   if (kind == ExpressionKind.unsafeExpression) {

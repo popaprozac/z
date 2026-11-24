@@ -1612,8 +1612,11 @@ through the scope's exit, so children, and a named scope's operations, join
 before the statement after the declaration runs. A scope inside a larger
 statement (`return`, an assignment, an argument, an operand, an `if`
 condition) runs ahead of it into a frame temporary, through the prelude that
-nested `try` uses; a scope in a lazy branch, a loop condition, a destructuring,
-or a closure's expression body is `Z1000`. UBSan probes cover pre-entry
+nested `try` uses. A `?:`, `&&`, or `||` with a scope in a branch becomes the
+conditional prelude, which runs the condition and then only the taken branch;
+a scope in a loop condition, a destructuring, or a closure's expression body
+is `Z1000`. A function that repeats a local name cannot run as a frame, and a
+value-producing scope there is `Z0700` naming the repeated binding. UBSan probes cover pre-entry
 cancellation, repeated completion/cancellation/closed-scope rejection, destination
 thread assertions, and exact final scope reference counts. Unsupported
 scope-capturing worker await shapes remain explicit lowering errors; general

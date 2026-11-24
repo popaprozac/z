@@ -11543,6 +11543,24 @@ test("runs native-only fixtures and reports tier limits through the standalone n
     "loaded 5", "condition true",
     "noted outer", "loaded 6", "selected 6", "",
   ].join("\n"));
+  // In a branch that may not run (`?:`, `&&`, `||`), the scope runs exactly
+  // when its branch would.
+  const scopeBranchesRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-scope-value-branches.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(scopeBranchesRun.status, 0, scopeBranchesRun.stderr);
+  assert.equal(scopeBranchesRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "loaded 1", "one arm 1 0",
+    "noted then", "noted else", "both arms 10 20",
+    "noted owned", "owned arm built 1 plain",
+    "noted inner", "noted outer", "nested arms 1 2 3",
+    "loaded 7", "as condition 1",
+    "noted zero", "argument 100", "argument 1",
+    "checked and", "checked and", "and true false false",
+    "checked or", "checked or", "or true true false",
+    "checked one", "checked two", "chain false false",
+    "checked if", "entered", "",
+  ].join("\n"));
   // The Stage 0 parser stops at this form, so its rules are checked here,
   // through the driver, rather than through the Stage 0-hosted commands.
   const scopeValueProgram = (body: string, signature = "async function main(): i32") => `
@@ -11564,9 +11582,13 @@ test("runs native-only fixtures and reports tier limits through the standalone n
     ["const v: String = async scope { select 1; };", /expected String, found i32/],
     ["let round = 0; while (round < 2) { const v = async scope { if (round == 1) break; select 1; }; round = round + 1; }",
       /cannot be left with `break` or `continue`/],
-    // Where the scope would run conditionally, repeatedly, or in a closure.
-    ["const flag = true; const v = flag ? async scope { select 1; } : id(0);",
+    // Where the scope would run repeatedly, in a closure, or into a pattern.
+    ["const { length } = async scope { select \"text\"; };",
       /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
+    // A frame stores one binding per name; the message says which repeats.
+    ["const a = async scope { const pending = task load(1); select await pending; };"
+      + " const b = async scope { const pending = task load(2); select await pending; };",
+      /error\[Z0700\]: a value-producing async scope is not executable in this function in the native compiler yet; a frame stores one binding per name, and "pending" is declared twice/],
     ["while (async scope { select false; }) { }",
       /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
     ["const run = async (): i32 => async scope { select 1; };",

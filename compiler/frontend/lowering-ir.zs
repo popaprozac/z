@@ -87,7 +87,7 @@ import {
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
-import { callableIdentifierLocation, emptySemanticEvidence } from "./semantic-evidence.zs";
+import { asyncScopeValueOffset, callableIdentifierLocation, emptySemanticEvidence } from "./semantic-evidence.zs";
 import {
   collectionMethodSignature,
   numericBitsType,
@@ -105,7 +105,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { statementHoistedScopes, closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, workerClosureLifts, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { statementHoistedScopes, expressionHoistedScopes, closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, workerClosureLifts, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -10591,9 +10591,12 @@ function resolvedExpressionResolutionIndex(
   in tree: ExpressionTree,
   index: usize
 ): usize {
-  const found = evidence.expressionResolutionIndices.get(
-    tree.nodes[index].offset
-  );
+  // A value-producing scope keeps its type under its own key, apart from
+  // any expression that begins with it.
+  const offset = tree.nodes[index].kind == ExpressionKind.asyncScopeExpression
+    ? asyncScopeValueOffset(tree.nodes[index].offset)
+    : tree.nodes[index].offset;
+  const found = evidence.expressionResolutionIndices.get(offset);
   match (in found) {
     some(resolutionIndex) => return resolutionIndex;
     none => return evidence.expressionResolutions.length;
@@ -13045,6 +13048,22 @@ function lowerExpressionNode(
         && expressionHasLabel(output[candidate], "nested-match-binding")) return candidate;
     }
   }
+  // A lazy operator whose right operand holds a value-producing scope ran
+  // ahead as a prelude (appendScopeLogicalPrelude); its result is read here.
+  if (tree.nodes[index].kind == ExpressionKind.binaryExpression
+    && (tree.nodes[index].value == "&&" || tree.nodes[index].value == "||")
+    && tree.nodes[index].children.length == 2
+    && expressionTreeContainsValueScope(tree, tree.nodes[index].children[1])) {
+    const bindingName = scopeLogicalBindingName(tree, index);
+    let candidate = output.length;
+    while (candidate > 0) {
+      candidate = candidate - 1;
+      if (output[candidate].kind == LoweredExpressionKind.localValue
+        && output[candidate].value == bindingName
+        && expressionHasLabel(output[candidate], "nested-conditional-binding")) return candidate;
+    }
+    throw `native lowering lost the result of a lazy operator at ${tree.nodes[index].line}:${tree.nodes[index].column}`;
+  }
   // A value-producing scope ran ahead of this statement; its value is read
   // from the frame temporary that prelude filled (appendScopeValuePreludes).
   if (tree.nodes[index].kind == ExpressionKind.asyncScopeExpression) {
@@ -14190,9 +14209,13 @@ function lowerExpressionNode(
     }
     const thenInput = tree.nodes[index].children[1];
     const elseInput = tree.nodes[index].children[2];
+    // A conditional with a `try` or a value-producing scope in a branch ran
+    // ahead of its statement, and is read from the prelude's destination.
     if (
       expressionTreeContainsTry(tree, thenInput)
       || expressionTreeContainsTry(tree, elseInput)
+      || expressionTreeContainsValueScope(tree, thenInput)
+      || expressionTreeContainsValueScope(tree, elseInput)
     ) {
       const bindingName =
         `_z_stage1_nested_conditional_${tree.nodes[index].offset}`;
@@ -20321,6 +20344,8 @@ function lowerExpressionExpected(
     if (
       !expressionTreeContainsTry(tree, thenInput)
       && !expressionTreeContainsTry(tree, elseInput)
+      && !expressionTreeContainsValueScope(tree, thenInput)
+      && !expressionTreeContainsValueScope(tree, elseInput)
     ) {
       const condition = try lowerExpression(
         program,
@@ -25500,6 +25525,18 @@ function expressionTreeContainsTry(
   return false;
 }
 
+function expressionTreeContainsValueScope(
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (tree.nodes[index].kind == ExpressionKind.asyncScopeExpression) return true;
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
+  for (const child of tree.nodes[index].children) {
+    if (expressionTreeContainsValueScope(tree, child)) return true;
+  }
+  return false;
+}
+
 function expressionTreeContainsAwait(
   in tree: ExpressionTree,
   index: usize
@@ -26963,6 +27000,12 @@ function appendNestedConditionalBranch(
   inout statements: Array<LoweredStatement>
 ): usize throws String {
   let branchRoots = Array<usize>();
+  // The branch's own value-producing scopes run in it, ahead of its value.
+  let branchUnits = Array<usize>();
+  if (expressionHoistedScopes(tree, branchInput, inout branchUnits)) {
+    try appendScopeUnitPreludes(program, importedTypes, evidence, arena, ownerName, context,
+      tree, branchUnits, inout expressions, inout statements, inout branchRoots);
+  }
   try appendNestedTryPreludeTree(
     program,
     importedTypes,
@@ -27229,6 +27272,13 @@ function appendNestedTryPreludeTree(
       tree.nodes[nestedTry].kind
         == ExpressionKind.conditionalExpression
     ) {
+      // A conditional that also holds a scope already became a prelude.
+      const conditionalName = `_z_stage1_nested_conditional_${tree.nodes[nestedTry].offset}`;
+      let present = false;
+      for (const existing of roots) {
+        if (statements[existing].name == conditionalName) present = true;
+      }
+      if (present) continue;
       try appendNestedConditionalPrelude(
         program,
         importedTypes,
@@ -27877,22 +27927,119 @@ function appendScopeValuePreludes(
   inout statements: Array<LoweredStatement>,
   inout roots: Array<usize>
 ): void throws String {
-  let scopes = Array<usize>();
-  if (!statementHoistedScopes(arena, index, second, inout scopes)) return;
+  let units = Array<usize>();
+  if (!statementHoistedScopes(arena, index, second, inout units)) return;
   match (in syntax.tree) {
-    some(tree) => for (const site of scopes) {
-      const bindingName = scopeValueBindingName(tree.nodes[site].offset);
-      const typeName = match (resolvedExpressionTypeName(evidence, tree, site)) {
-        some(name) => name;
-        none => throw "native value-producing async scope lost its checked type";
-      };
-      pushExpression(inout expressions, LoweredExpressionKind.localValue,
-        bindingName, Array<usize>(), Array<String>("nested-match-binding", copy typeName));
-      const local = try lowerValueScopeLocal(program, importedTypes, evidence, arena, ownerName, context,
-        tree, site, bindingName, false, true, inout expressions, inout statements);
-      roots.push(local);
-    }
+    some(tree) => try appendScopeUnitPreludes(program, importedTypes, evidence, arena, ownerName, context,
+      tree, units, inout expressions, inout statements, inout roots);
     none => {}
+  }
+}
+
+// The node index tells apart operators that start at the same offset, as the
+// two of `a && b && c` do.
+function scopeLogicalBindingName(in tree: ExpressionTree, index: usize): String {
+  return `_z_stage1_nested_logical_${tree.nodes[index].offset}_${index}`;
+}
+
+// `left && right` or `left || right` whose right operand holds a
+// value-producing scope. The right operand runs only when the left one
+// leaves the result open, so the operator becomes the prelude a conditional
+// does, with the settled outcome as a constant in the other branch.
+function appendScopeLogicalPrelude(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  in tree: ExpressionTree,
+  index: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  const conjunction = tree.nodes[index].value == "&&";
+  const destinationName = scopeLogicalBindingName(tree, index);
+  const destinationType = try lowerModuleTypeName(program, importedTypes, "boolean");
+  pushExpression(inout expressions, LoweredExpressionKind.localValue, destinationName,
+    Array<usize>(), Array<String>("nested-conditional-binding"));
+  const condition = try lowerExpression(program, importedTypes, evidence, tree,
+    tree.nodes[index].children[0], inout expressions);
+  const evaluated = try appendNestedConditionalBranch(program, importedTypes, evidence, arena, ownerName,
+    context, tree, tree.nodes[index].children[1], destinationName, destinationType,
+    inout expressions, inout statements);
+  // The settled outcome: `false` for `&&`, `true` for `||`.
+  const settledTarget = pushExpression(inout expressions, LoweredExpressionKind.localValue, destinationName,
+    Array<usize>(), Array<String>());
+  const settledText = conjunction ? "false" : "true";
+  const settledValue = pushExpression(inout expressions, LoweredExpressionKind.booleanValue,
+    settledText, Array<usize>(), Array<String>());
+  let settledAssignment = emptyLoweredStatement(LoweredStatementKind.assignmentStatement);
+  settledAssignment.expression = Option.some(settledTarget);
+  settledAssignment.secondExpression = Option.some(settledValue);
+  const settledAssignmentIndex = statements.length;
+  statements.push(move settledAssignment);
+  let settled = emptyLoweredStatement(LoweredStatementKind.blockStatement);
+  settled.labels.push("nested-conditional-branch");
+  settled.children.push(settledAssignmentIndex);
+  const settledIndex = statements.length;
+  statements.push(move settled);
+  let loweredIf = emptyLoweredStatement(LoweredStatementKind.ifStatement);
+  loweredIf.expression = Option.some(condition);
+  loweredIf.labels.push("nested-conditional-if");
+  loweredIf.children.push(conjunction ? evaluated : settledIndex);
+  loweredIf.children.push(conjunction ? settledIndex : evaluated);
+  const ifIndex = statements.length;
+  statements.push(move loweredIf);
+  let local = emptyLoweredStatement(LoweredStatementKind.localStatement);
+  local.mutableBinding = true;
+  local.name = copy destinationName;
+  local.type = Option.some(destinationType);
+  local.labels.push("nested-conditional");
+  local.children.push(ifIndex);
+  const localIndex = statements.length;
+  statements.push(move local);
+  roots.push(localIndex);
+}
+
+// One prelude per unit, in order: a scope leaves its value in a frame
+// temporary; a conditional with scopes in its branches becomes the prelude
+// that runs its condition and then only the taken branch.
+function appendScopeUnitPreludes(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  in tree: ExpressionTree,
+  in units: Array<usize>,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  for (const site of units) {
+    if (tree.nodes[site].kind == ExpressionKind.conditionalExpression) {
+      try appendNestedConditionalPrelude(program, importedTypes, evidence, arena, ownerName, context,
+        tree, site, inout expressions, inout statements, inout roots);
+      continue;
+    }
+    if (tree.nodes[site].kind == ExpressionKind.binaryExpression) {
+      try appendScopeLogicalPrelude(program, importedTypes, evidence, arena, ownerName, context,
+        tree, site, inout expressions, inout statements, inout roots);
+      continue;
+    }
+    const bindingName = scopeValueBindingName(tree.nodes[site].offset);
+    const typeName = match (resolvedExpressionTypeName(evidence, tree, site)) {
+      some(name) => name;
+      none => throw "native value-producing async scope lost its checked type";
+    };
+    pushExpression(inout expressions, LoweredExpressionKind.localValue,
+      bindingName, Array<usize>(), Array<String>("nested-match-binding", copy typeName));
+    const local = try lowerValueScopeLocal(program, importedTypes, evidence, arena, ownerName, context,
+      tree, site, bindingName, false, true, inout expressions, inout statements);
+    roots.push(local);
   }
 }
 

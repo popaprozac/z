@@ -593,6 +593,14 @@ export function recordExpressionResolution(
     tree.nodes[index].line, tree.nodes[index].column, typeName, inout evidence);
 }
 
+// Where a value-producing `async scope` records its type: one byte into its
+// `async` keyword. Evidence is keyed by offset, and an expression that begins
+// with the scope (`async scope { ... } > 3`) starts at the scope's own
+// offset; no expression starts inside a keyword, so each keeps its record.
+export function asyncScopeValueOffset(offset: usize): usize {
+  return offset + 1;
+}
+
 // The type of the value at a source offset. Besides expressions, a `select`
 // statement records the type it hands over at its own offset: the offset of
 // its expression is shared with that expression's first operand.
