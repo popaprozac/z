@@ -893,6 +893,52 @@ function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): bo
   return true;
 }
 
+// The same, with each match value inside the expression taken as the
+// temporary its prelude fills (lowering's appendNestedMatchPreludes). The
+// statement's check admits the arms (frameMatchValueArmsAreSupported).
+function frameExpressionIsSynchronousAroundMatches(in tree: ExpressionTree, index: usize): boolean {
+  const kind = tree.nodes[index].kind;
+  if (kind == ExpressionKind.matchExpression && index != tree.root) {
+    return tree.nodes[index].children.length > 0
+      && frameExpressionIsSynchronousAroundMatches(tree, tree.nodes[index].children[0]);
+  }
+  if (kind == ExpressionKind.executorPlacementExpression && tree.nodes[index].value == "inline") return true;
+  if (!frameNodeIsSynchronous(tree, index)) return false;
+  if (kind == ExpressionKind.closureExpression) return true;
+  for (const child of tree.nodes[index].children) {
+    if (!frameExpressionIsSynchronousAroundMatches(tree, child)) return false;
+  }
+  return true;
+}
+
+// The arms of the match values inside a statement's expressions: they run in
+// the frame ahead of the statement, and may not suspend there yet. A closure
+// is its own function.
+function frameMatchValueArmsAreSupported(
+  in program: Program, in arena: StatementArena, in tree: ExpressionTree, index: usize
+): boolean {
+  const node = view tree.nodes[index];
+  if (node.kind == ExpressionKind.closureExpression) return true;
+  if (node.kind == ExpressionKind.matchExpression && index != tree.root) {
+    let armIndex: usize = 1;
+    while (armIndex < node.children.length) {
+      const arm = node.children[armIndex];
+      if (tree.nodes[arm].kind != ExpressionKind.matchArmExpression || tree.nodes[arm].labels.length != 1) return false;
+      if (tree.nodes[arm].labels[0] != "none" && tree.nodes[arm].labels[0] != "binding") return false;
+      for (const child of tree.nodes[arm].statements) {
+        if (!frameStatementIsSupported(program, arena, child, true, true)) return false;
+      }
+      armIndex = armIndex + 1;
+    }
+    return node.children.length == 0 || frameMatchValueArmsAreSupported(program, arena, tree, node.children[0]);
+  }
+  for (const child of node.children) {
+    if (tree.nodes[child].kind == ExpressionKind.matchArmExpression) continue;
+    if (!frameMatchValueArmsAreSupported(program, arena, tree, child)) return false;
+  }
+  return true;
+}
+
 // The same, with each value-producing scope taken as the value it leaves in
 // the frame: what remains of a conditional's branch once its scopes have run.
 function frameExpressionIsSynchronousAroundScopes(in tree: ExpressionTree, index: usize): boolean {
@@ -927,7 +973,7 @@ function frameAwaitOperandIsSupported(in tree: ExpressionTree, index: usize): bo
     || tree.nodes[operand].children.length == 0) return false;
   if (!frameCalleeIsSupported(tree, tree.nodes[operand].children[0])) return false;
   for (const child of tree.nodes[operand].children) {
-    if (!frameExpressionIsSynchronous(tree, child)) return false;
+    if (!frameExpressionIsSynchronousAroundMatches(tree, child)) return false;
   }
   return true;
 }
@@ -952,6 +998,11 @@ export function frameExpressionHoistsAwaits(in tree: ExpressionTree, index: usiz
   // statements are admitted with the statement (statementHoistedScopes).
   if (node.kind == ExpressionKind.asyncScopeExpression) return true;
   if (attemptedScope(tree, index) < tree.nodes.length) return true;
+  // A match value inside the expression runs ahead as a prelude, its subject
+  // just before it.
+  if (node.kind == ExpressionKind.matchExpression && index != tree.root && node.children.length > 0) {
+    return frameExpressionHoistsAwaits(tree, node.children[0]);
+  }
   if (node.kind == ExpressionKind.awaitExpression) return frameAwaitOperandIsSupported(tree, index);
   if (node.kind == ExpressionKind.attemptExpression && node.children.length == 1
     && tree.nodes[node.children[0]].kind == ExpressionKind.awaitExpression) {
@@ -987,6 +1038,12 @@ export function frameExpressionHoistsAwaits(in tree: ExpressionTree, index: usiz
     || node.kind == ExpressionKind.unsafeExpression || node.kind == ExpressionKind.valueBlockExpression
     || node.kind == ExpressionKind.whileExpression || node.kind == ExpressionKind.forExpression
     || (node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||"));
+  // A lazy operator with a match value in a branch runs ahead as one unit.
+  const lazyOperator = node.kind == ExpressionKind.conditionalExpression
+    || (node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||"));
+  if (lazyOperator) {
+    return !frameTreeContainsAwait(tree, index) && frameExpressionIsSynchronousAroundMatches(tree, index);
+  }
   if (lazy) return !frameTreeContainsAwait(tree, index) && frameExpressionIsSynchronous(tree, index);
   for (const child of node.children) {
     if (!frameExpressionHoistsAwaits(tree, child)) return false;
@@ -1004,7 +1061,7 @@ function frameSpawnIsSupported(in tree: ExpressionTree, index: usize): boolean {
   const callee = tree.nodes[call].children[0];
   if (!frameCalleeIsSupported(tree, callee)) return false;
   for (const child of tree.nodes[call].children) {
-    if (!frameExpressionIsSynchronous(tree, child)) return false;
+    if (!frameExpressionIsSynchronousAroundMatches(tree, child)) return false;
   }
   return true;
 }
@@ -1056,7 +1113,7 @@ function frameExpressionIsSupported(in tree: ExpressionTree, index: usize): bool
   // A named function or a method, with already checked arguments.
   if (!frameCalleeIsSupported(tree, callee)) return false;
   for (const child of tree.nodes[call].children) {
-    if (!frameExpressionIsSynchronous(tree, child)) return false;
+    if (!frameExpressionIsSynchronousAroundMatches(tree, child)) return false;
   }
   return true;
 }
@@ -1143,6 +1200,21 @@ function frameStatementIsSupported(
       none => false;
     };
   }
+  const firstArmsRun = match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => frameMatchValueArmsAreSupported(program, arena, tree, tree.root);
+      none => true;
+    }
+    none => true;
+  };
+  const secondArmsRun = match (in arena.nodes[index].secondExpression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => frameMatchValueArmsAreSupported(program, arena, tree, tree.root);
+      none => true;
+    }
+    none => true;
+  };
+  if (!firstArmsRun || !secondArmsRun) return false;
   // Spawn sites own one frame slot each: root statements, or `task f();`
   // directly in an unnamed `async scope`, which joins its slots on exit. A
   // loop therefore never restarts a slot whose child is still running.
@@ -1612,6 +1684,62 @@ export function functionContainsNamedScope(in declaration: FunctionDeclaration):
 // `await stream.next()` or `for await`: only the general frame resumes an
 // async generator's stream (any `.next()` await counts; a class method named
 // `next` also runs there).
+// Whether an expression holds a match value that runs ahead of its statement
+// as a prelude with operands spilled before it (lowering's
+// appendNestedMatchPreludes). `rootRuns` says the statement runs a root match
+// itself. The payload of enum constructors from the root is the one inner
+// position the shape tiers have always run.
+function expressionRunsMatchPrelude(in tree: ExpressionTree, rootRuns: boolean): boolean {
+  let payload = tree.root;
+  while (tree.nodes[payload].kind == ExpressionKind.callExpression
+    && tree.nodes[payload].children.length == 2
+    && tree.nodes[tree.nodes[payload].children[0]].kind == ExpressionKind.memberExpression
+    && tree.nodes[tree.nodes[payload].children[0]].children.length == 1) {
+    payload = tree.nodes[payload].children[1];
+  }
+  let node: usize = 0;
+  while (node < tree.nodes.length) {
+    if (tree.nodes[node].kind == ExpressionKind.matchExpression) {
+      if (node == tree.root) {
+        if (!rootRuns) return true;
+      } else if (node != payload) return true;
+    }
+    node = node + 1;
+  }
+  return false;
+}
+
+// Whether a function runs such a prelude. Only the general frame lays those
+// out, so the shape tiers are skipped for it.
+export function functionRunsMatchPrelude(in declaration: FunctionDeclaration): boolean {
+  const closureOwned = closureOwnedStatements(declaration.body);
+  let index: usize = 0;
+  while (index < declaration.body.nodes.length) {
+    const statement = view declaration.body.nodes[index];
+    index = index + 1;
+    if (closureOwned[index - 1]) continue;
+    const rootRuns = statement.kind == StatementKind.variableStatement
+      || statement.kind == StatementKind.returnStatement || statement.kind == StatementKind.matchStatement
+      || statement.kind == StatementKind.selectStatement;
+    const first = match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => expressionRunsMatchPrelude(tree, rootRuns);
+        none => false;
+      }
+      none => false;
+    };
+    const second = match (in statement.secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => expressionRunsMatchPrelude(tree, statement.kind == StatementKind.assignmentStatement);
+        none => false;
+      }
+      none => false;
+    };
+    if (first || second) return true;
+  }
+  return false;
+}
+
 export function functionAwaitsStreamStep(in declaration: FunctionDeclaration): boolean {
   if (!declaration.asynchronous) return false;
   for (const statement of declaration.body.nodes) {
