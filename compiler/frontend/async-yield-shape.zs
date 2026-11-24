@@ -41,13 +41,24 @@ export function closureOwnedStatements(in arena: StatementArena): Array<boolean>
   return owned;
 }
 
+// `attempt async scope { ... }`: the scope an `attempt` node wraps, which
+// runs as the scope does and leaves a Result. Otherwise the node count.
+export function attemptedScope(in tree: ExpressionTree, index: usize): usize {
+  if (tree.nodes[index].kind == ExpressionKind.attemptExpression && tree.nodes[index].children.length == 1
+    && tree.nodes[tree.nodes[index].children[0]].kind == ExpressionKind.asyncScopeExpression) {
+    return tree.nodes[index].children[0];
+  }
+  return tree.nodes.length;
+}
+
 // `const x = async scope [name] { ... select value; }`: whether this
 // statement's whole initializer is a value-producing scope.
 export function statementInitializesFromScope(in arena: StatementArena, index: usize): boolean {
   if (arena.nodes[index].kind != StatementKind.variableStatement) return false;
   return match (in arena.nodes[index].expression) {
     some(syntax) => match (in syntax.tree) {
-      some(tree) => tree.nodes[tree.root].kind == ExpressionKind.asyncScopeExpression;
+      some(tree) => tree.nodes[tree.root].kind == ExpressionKind.asyncScopeExpression
+        || attemptedScope(tree, tree.root) < tree.nodes.length;
       none => false;
     }
     none => false;
@@ -63,6 +74,12 @@ function collectHoistedScopes(in tree: ExpressionTree, index: usize, hoistable: 
   const node = view tree.nodes[index];
   if (node.kind == ExpressionKind.asyncScopeExpression) {
     found.push(index);
+    return hoistable;
+  }
+  // An attempted scope is its scope, whose temporary holds the Result.
+  const attempted = attemptedScope(tree, index);
+  if (attempted < tree.nodes.length) {
+    found.push(attempted);
     return hoistable;
   }
   // Only one branch of a conditional runs, so a scope in a branch cannot run
@@ -881,6 +898,7 @@ function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): bo
 function frameExpressionIsSynchronousAroundScopes(in tree: ExpressionTree, index: usize): boolean {
   const kind = tree.nodes[index].kind;
   if (kind == ExpressionKind.asyncScopeExpression || kind == ExpressionKind.closureExpression) return true;
+  if (attemptedScope(tree, index) < tree.nodes.length) return true;
   if (kind == ExpressionKind.executorPlacementExpression && tree.nodes[index].value == "inline") return true;
   if (!frameNodeIsSynchronous(tree, index)) return false;
   for (const child of tree.nodes[index].children) {
@@ -933,6 +951,7 @@ export function frameExpressionHoistsAwaits(in tree: ExpressionTree, index: usiz
   // A value-producing scope runs ahead of its statement as an await does; its
   // statements are admitted with the statement (statementHoistedScopes).
   if (node.kind == ExpressionKind.asyncScopeExpression) return true;
+  if (attemptedScope(tree, index) < tree.nodes.length) return true;
   if (node.kind == ExpressionKind.awaitExpression) return frameAwaitOperandIsSupported(tree, index);
   if (node.kind == ExpressionKind.attemptExpression && node.children.length == 1
     && tree.nodes[node.children[0]].kind == ExpressionKind.awaitExpression) {

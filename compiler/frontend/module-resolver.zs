@@ -62,6 +62,7 @@ import {
   recordBindingResolution,
   recordExpressionResolution,
   recordValueResolutionAt,
+  asyncScopeErrorOffset,
   asyncScopeValueOffset,
   recordForeignValueResolution,
   valueSymbolTargetName,
@@ -1375,6 +1376,42 @@ function loopSelectTypeBindingName(): String {
 
 function placedResultSelectBindingName(): String {
   return "__z_native_placed_result_select";
+}
+
+// Inside `attempt async scope` a `try` or `throw` fails the scope. Its error
+// type comes from the binding's annotation or, with this marker in the error
+// binding, from the first `try` or `throw` in the scope.
+function inferredScopeErrorMarker(offset: usize): String {
+  return `__z_native_scope_error:${offset}`;
+}
+
+// Where an inferred scope error is recorded, or 0 when the error is declared.
+function inferredScopeErrorOffset(in errorType: String): usize {
+  const prefix = "__z_native_scope_error:";
+  if (!stringStartsWith(errorType, prefix)) return 0;
+  const scopeOffset = errorType.copyBytes(prefix.byteLength, errorType.byteLength);
+  return asyncScopeErrorOffset(decimalLabel(scopeOffset));
+}
+
+// The error type a `try` propagates to: the enclosing declaration's, or the
+// attempted scope's, which this propagation decides when it is the first.
+function propagatedErrorType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in enclosingError: String,
+  in propagated: String,
+  line: usize,
+  column: usize,
+  inout evidence: ModuleSemanticEvidence
+): String {
+  const errorOffset = inferredScopeErrorOffset(enclosingError);
+  if (errorOffset == 0) return copy enclosingError;
+  const decided = expressionResolutionIndex(evidence, errorOffset);
+  if (decided < evidence.expressionResolutions.length) {
+    return copy evidence.expressionResolutions[decided].typeName;
+  }
+  recordValueResolutionAt(modules, moduleIndex, errorOffset, line, column, propagated, inout evidence);
+  return copy propagated;
 }
 
 // A function-like body starts with no `select` target of its own: the value
@@ -7673,11 +7710,15 @@ function inferExpressionNodeType(
         if (kind == ExpressionKind.attemptExpression) {
           return `Result<${call.successType}, ${call.errorType}>`;
         }
+        const failsScope = inferredScopeErrorOffset(enclosingError) != 0;
+        enclosingError = propagatedErrorType(modules, moduleIndex, enclosingError, call.errorType,
+          node.line, node.column, inout evidence);
         if (!equivalentTypes(modules, moduleIndex, enclosingError, call.errorType)) {
+          const boundary = failsScope ? "an attempted scope failing with" : "a function throwing";
           throw resolutionError(
             ModuleResolveErrorKind.typeMismatch,
             module.path,
-            `cannot propagate ${call.errorType} from a function throwing ${enclosingError}`,
+            `cannot propagate ${call.errorType} from ${boundary} ${enclosingError}`,
             node.line,
             node.column
           );
@@ -9207,7 +9248,40 @@ function inferExpressionNodeType(
       other = other + 1;
     }
     const contextualValue = contextualExpectedType(bindings, tree, index);
-    const expectedValue = beginsLargerExpression ? "" : copy contextualValue;
+    let expectedValue = beginsLargerExpression ? "" : copy contextualValue;
+    // `attempt async scope { ... }`: the scope is an error boundary. A `try`
+    // or `throw` inside fails the scope, which cancels and joins its
+    // children and gives `failure(error)`; a `select` gives `success(value)`.
+    let attempted = false;
+    let expectedError = "";
+    let attemptNode: usize = 0;
+    while (attemptNode < tree.nodes.length) {
+      if (tree.nodes[attemptNode].kind == ExpressionKind.attemptExpression
+        && tree.nodes[attemptNode].children.length == 1
+        && tree.nodes[attemptNode].children[0] == index) {
+        attempted = true;
+        const contextualOutcome = contextualExpectedType(bindings, tree, attemptNode);
+        match (genericTypeShape(contextualOutcome)) {
+          some(outcome) => {
+            if (outcome.base == "Result" && outcome.arguments.length == 2) {
+              expectedValue = copy outcome.arguments[0];
+              expectedError = copy outcome.arguments[1];
+            }
+          }
+          none => {}
+        }
+      }
+      attemptNode = attemptNode + 1;
+    }
+    if (attempted) {
+      // An annotated error type is decided before the scope's first `try`.
+      if (expectedError.byteLength > 0) {
+        recordValueResolutionAt(modules, moduleIndex, asyncScopeErrorOffset(node.offset),
+          node.line, node.column, expectedError, inout evidence);
+      }
+      const scopeError = inferredScopeErrorMarker(node.offset);
+      addValueBinding(inout scopeBindings, "__z_native_error_type", scopeError);
+    }
     const selectBinding = loopSelectTypeBindingName();
     addValueBinding(inout scopeBindings, selectBinding, expectedValue);
     const expectedReturn = valueBindingType(bindings, "__z_native_return_type");
@@ -9221,7 +9295,11 @@ function inferExpressionNodeType(
       inout evidence,
       expectedReturn
     );
-    if (fallsThrough) {
+    let scopeValue = copy expectedValue;
+    try validateScopeSelects(module, modules, moduleIndex, arena, scopeStatements, true, 0, evidence, inout scopeValue);
+    // An attempted scope with no `select` has no value: `Result<void, E>`.
+    if (attempted && scopeValue.byteLength == 0) scopeValue = "void";
+    if (fallsThrough && !(attempted && scopeValue == "void")) {
       throw resolutionError(
         ModuleResolveErrorKind.typeMismatch,
         module.path,
@@ -9230,8 +9308,6 @@ function inferExpressionNodeType(
         node.column
       );
     }
-    let scopeValue = copy expectedValue;
-    try validateScopeSelects(module, modules, moduleIndex, arena, scopeStatements, true, 0, evidence, inout scopeValue);
     if (scopeValue.byteLength == 0) {
       throw resolutionError(
         ModuleResolveErrorKind.typeMismatch,
@@ -9246,6 +9322,24 @@ function inferExpressionNodeType(
     // the scope sits in its statement.
     recordValueResolutionAt(modules, moduleIndex, asyncScopeValueOffset(node.offset),
       node.line, node.column, scopeValue, inout evidence);
+    if (attempted) {
+      if (expectedError.byteLength == 0) {
+        const decided = expressionResolutionIndex(evidence, asyncScopeErrorOffset(node.offset));
+        if (decided < evidence.expressionResolutions.length) {
+          expectedError = copy evidence.expressionResolutions[decided].typeName;
+        }
+      }
+      if (expectedError.byteLength == 0) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "attempt requires a scope that can fail; nothing in this scope uses `try` or `throw`",
+          node.line,
+          node.column
+        );
+      }
+      return pendingThrowingCallType(scopeValue, expectedError);
+    }
     return scopeValue;
   }
   if (kind == ExpressionKind.unsafeExpression) {
@@ -15031,8 +15125,15 @@ function inferStatement(
     return true;
   }
   if (kind == StatementKind.throwStatement) {
-    const expectedError = valueBindingType(bindings, "__z_native_error_type");
-    if (expectedError.byteLength == 0) {
+    let expectedError = valueBindingType(bindings, "__z_native_error_type");
+    // In an attempted scope the first `try` or `throw` decides the error type.
+    const scopeErrorOffset = inferredScopeErrorOffset(expectedError);
+    if (scopeErrorOffset != 0) {
+      const decided = expressionResolutionIndex(evidence, scopeErrorOffset);
+      expectedError = decided < evidence.expressionResolutions.length
+        ? copy evidence.expressionResolutions[decided].typeName
+        : "";
+    } else if (expectedError.byteLength == 0) {
       let functionName = valueBindingType(bindings, "__z_native_function_name");
       if (functionName.byteLength == 0) functionName = "function";
       throw resolutionError(
@@ -15055,6 +15156,11 @@ function inferStatement(
           inout bindings,
           inout evidence
         );
+        if (expectedError.byteLength == 0) {
+          recordValueResolutionAt(modules, moduleIndex, scopeErrorOffset,
+            arena.nodes[index].line, arena.nodes[index].column, actual, inout evidence);
+          expectedError = copy actual;
+        }
         try requireExpressionSyntaxType(
           module,
           modules,
@@ -15484,6 +15590,16 @@ function inferStatement(
     || kind == StatementKind.forAwaitStatement
     || kind == StatementKind.forTryAwaitStatement
   ) {
+    // The loop's own failure path completes the function. Until it can fail
+    // a scope instead, it has no place inside an attempted one.
+    const loopError = valueBindingType(bindings, "__z_native_error_type");
+    if (kind == StatementKind.forTryAwaitStatement && inferredScopeErrorOffset(loopError) != 0) {
+      throw codedModuleResolutionError(
+        ModuleResolveErrorKind.unsupportedLowering, "Z1000", module.path,
+        "`for try await` inside an attempted scope is not executable in the native compiler yet; step the stream with `try await stream.next()`",
+        arena.nodes[index].line, arena.nodes[index].column, 3
+      );
+    }
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
     preserveLoopViewBindings(inout loopBindings);

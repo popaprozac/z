@@ -11578,12 +11578,43 @@ test("runs native-only fixtures and reports tier limits through the standalone n
     "waits label 15", "waits label 16", "cancelled",
     "throwing label 17", "throwing failed", "",
   ].join("\n"));
+  // `attempt async scope`: a `try` or `throw` inside fails the scope, which
+  // cancels and joins its children and gives `failure(error)`.
+  const scopeAttemptRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-scope-attempt.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(scopeAttemptRun.status, 0, scopeAttemptRun.stderr);
+  assert.equal(scopeAttemptRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "lingering 1 started", "lingering 1 finished", "lingering 1 started", "values 3 -1",
+    "noted work passing", "noted work failing", "work done failed",
+    "noted thrown", "thrown 5 -5",
+    "noted owned", "noted owned", "owned described value | described failed 7",
+    "annotated 3 -3",
+    "lingering 2 started", "noted outer", "noted inner", "lingering 2 finished",
+    "lingering 2 started", "noted outer", "noted inner", "nested 4 -4",
+    "noted pass 0", "noted pass 1", "noted pass 2", "loops 122",
+    "noted argument", "noted argument", "argument success 1 | failure",
+    "noted returned", "noted returned", "returned success 2 | failure",
+    "noted leaves", "noted leaves", "noted leaves", "leaves 40 3 -3",
+    "noted mixed", "noted mixed", "noted mixed", "mixed 13 -9 -99",
+    "noted several", "noted several", "noted several", "several 11 -5 -5",
+    "noted layered outer", "noted layered inner", "noted layered outer", "noted layered inner",
+    "noted layered outer", "noted layered inner", "layered 8 71 -7",
+    "operation 1", "operation 1", "named 2 -2",
+    "label 0 after 0", "label 2 after 2", "releases 102",
+    "steady 1 started", "steady 2 started", "steady 1 finished", "outside 10",
+    "waiting", "cancelled", "",
+  ].join("\n"));
   // The Stage 0 parser stops at this form, so its rules are checked here,
   // through the driver, rather than through the Stage 0-hosted commands.
   const scopeValueProgram = (body: string, signature = "async function main(): i32") => `
     async function load(value: i32): i32 { return value; }
     function id(value: i32): i32 { return value; }
     enum Kind { one, two }
+    enum Failure { broken }
+    enum Other { odd }
+    async function checked(value: i32): i32 throws Failure { return value; }
+    async function odd(): i32 throws Other { return 9; }
     ${signature} {
       ${body}
       return 0;
@@ -11619,6 +11650,18 @@ test("runs native-only fixtures and reports tier limits through the standalone n
     // A closure's body is its own function: the scope is not its target.
     ["const v = async scope { const pick = (value: i32): i32 => { select value; }; select pick(1); };",
       /scope-value-reject\.zs:\d+:\d+: error: select requires an enclosing value-producing block/],
+    // An attempted scope: something in it must be able to fail, with one error type.
+    ["const outcome = attempt async scope { select 1; };",
+      /attempt requires a scope that can fail; nothing in this scope uses `try` or `throw`/],
+    ["const outcome = attempt async scope { const a = try await checked(1); const b = try await odd(); select a + b; };",
+      /cannot propagate Other from an attempted scope failing with Failure/],
+    ["const outcome: Result<i32, Other> = attempt async scope { const a = try await checked(1); select a; };",
+      /cannot propagate Failure from an attempted scope failing with Other/],
+    ["const outcome = attempt async scope { const a = try await checked(1); if (a == 1) throw Other.odd; select a; };",
+      /expected Failure, found Other/],
+    // Without `attempt`, a `try` still needs a throwing function.
+    ["const v = async scope { const a = try await checked(1); select a; };",
+      /try requires an enclosing throwing function/],
     ["const updates = 1; const v = async scope updates { select 1; };", /duplicate local "updates"/],
     ["const v = async scope updates { select 1; }; const again = updates;", /unknown name updates/],
   ];

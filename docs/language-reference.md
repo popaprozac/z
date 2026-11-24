@@ -3958,6 +3958,36 @@ does. Its value may also be the source of an object pattern
 positional pattern, or a closure's expression body is `Z1000` in the native
 compiler: bind it with `const` or `let` first.
 
+`attempt` makes the scope an error boundary:
+
+```z
+const outcome = attempt async scope {
+  const a = task load(1);
+  const b = try await check(2);
+  select (await a) + b;
+};
+match (outcome) {
+  success(value) => console.log(`loaded ${value}`);
+  failure(error) => console.log("failed");
+}
+```
+
+Inside an attempted scope a `try` or `throw` fails the scope, not the
+function. The scope cancels and joins its children, as a failure leaving a
+scope always does, and the expression gives `failure(error)`; a `select` gives
+`success(value)`. The result is `Result<T, E>`. `T` is the selected type; a
+scope with no `select` has none and succeeds by reaching its end, giving
+`Result<void, E>`. `E` is the error type of the binding's annotation, or the
+first `try` or `throw` in the scope decides it, and every other one must
+agree. Something in the scope must be able to fail. `return` still exits the
+function. A `try` in a closure or placed block inside the scope belongs to
+that body, and an attempted scope inside another catches its own failures.
+The enclosing function needs no error type of its own, and a `try` outside
+the scope still propagates to it. Only the native compiler implements the
+attempted form. In it, `for try await` inside an attempted scope is `Z1000`,
+and a `try await` nested in a larger expression (`select try await f()`) has
+the frame's existing limit: bind its value first.
+
 Code performing long synchronous chunks inside an async task can cooperate
 with its current executor explicitly:
 

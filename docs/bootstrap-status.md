@@ -1618,7 +1618,13 @@ conditional prelude, which runs the condition and then only the taken branch;
 a scope in a loop condition, a positional pattern, or a closure's expression
 body is `Z1000`. An object pattern takes a scope's value, or any source that
 suspends (an awaited call or task, `try await`), through its hidden owner, at
-the function root and inside branches and loops. A function that repeats a local name cannot run as a frame, and a
+the function root and inside branches and loops. `attempt async scope` gives
+the scope's local a `Result`: a `select` stores `success`, a `throw` stores
+`failure`, and a failing `try` inside stores `failure` on its failure branch;
+a failure then sets the frame's child-cancellation flag, leaves every scope up
+to the attempted one through its exit (which cancels, joins, and releases that
+scope's locals), and clears the flag where the attempted scope ends. The
+error type is checked evidence the scope's first `try` or `throw` records. A function that repeats a local name cannot run as a frame, and a
 value-producing scope there is `Z0700` naming the repeated binding. UBSan probes cover pre-entry
 cancellation, repeated completion/cancellation/closed-scope rejection, destination
 thread assertions, and exact final scope reference counts. Unsupported

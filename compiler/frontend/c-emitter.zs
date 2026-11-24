@@ -11803,12 +11803,43 @@ function yieldFrameStatementParent(in declaration: LoweredFunction, index: usize
   return declaration.statements.length;
 }
 
+// The attempted scope a failure in this statement gives `failure(error)` to:
+// the nearest `attempt async scope` around it, or the statement count.
+// `scopes` receives every scope left on the way, that one included, innermost
+// first. Each runs its exit, which releases its locals: a failure can come
+// before a scope has declared them all, so the exits and their live flags
+// decide what there is to release.
+function yieldFrameFailedScope(in declaration: LoweredFunction, index: usize, inout scopes: Array<usize>): usize {
+  let ancestor = yieldFrameStatementParent(declaration, index);
+  while (ancestor < declaration.statements.length) {
+    const outer = view declaration.statements[ancestor];
+    if (labelsContain(outer.labels, "async-scope") && outer.children.length == 1) scopes.push(ancestor);
+    if (labelsContain(outer.labels, "attempt-scope")) return ancestor;
+    ancestor = yieldFrameStatementParent(declaration, ancestor);
+  }
+  return declaration.statements.length;
+}
+
+function yieldFrameHasAttemptedScope(in declaration: LoweredFunction): boolean {
+  for (const statement of declaration.statements) {
+    if (labelsContain(statement.labels, "attempt-scope")) return true;
+  }
+  return false;
+}
+
 // The `async scope` statements a `break` or `continue` leaves on its way to
 // its loop, innermost first: each joins what it started before control moves
 // on, so the loop never re-enters a scope whose children still run.
 function yieldFrameLeftScopes(in declaration: LoweredFunction, index: usize): Array<usize> {
   let scopes = Array<usize>();
   const statement = view declaration.statements[index];
+  // A `try` in an attempted scope leaves these when it fails, and so does a
+  // `throw` there (a `select` of `failure(error)`).
+  if (statement.kind == LoweredStatementKind.tryStatement
+    || (statement.kind == LoweredStatementKind.breakStatement && labelsContain(statement.labels, "scope-failure"))) {
+    if (yieldFrameFailedScope(declaration, index, inout scopes) < declaration.statements.length) return scopes;
+    return Array<usize>();
+  }
   if (statement.kind != LoweredStatementKind.breakStatement
     && statement.kind != LoweredStatementKind.continueStatement) return scopes;
   // A value scope's `select` leaves every scope up to and including the one
@@ -11839,6 +11870,12 @@ function yieldFrameLeftScopes(in declaration: LoweredFunction, index: usize): Ar
 
 // The value-producing scope a `select` belongs to: the nearest one around it.
 function yieldFrameSelectScope(in declaration: LoweredFunction, index: usize): usize throws String {
+  if (labelsContain(declaration.statements[index].labels, "scope-failure")) {
+    let left = Array<usize>();
+    const failed = yieldFrameFailedScope(declaration, index, inout left);
+    if (failed < declaration.statements.length) return failed;
+    throw "native async frame `throw` lost its attempted scope";
+  }
   let ancestor = yieldFrameStatementParent(declaration, index);
   while (ancestor < declaration.statements.length) {
     if (labelsContain(declaration.statements[ancestor].labels, "value-scope")) return ancestor;
@@ -11884,6 +11921,11 @@ function appendYieldFrameScopeSelect(
   }
   appendIndent(inout output, depth);
   output.append("}\n");
+  if (labelsContain(statement.labels, "scope-failure")) {
+    // A failed scope cancels the children it leaves behind.
+    appendIndent(inout output, depth);
+    output.append("frame->cancel_children = true;\n");
+  }
   if (leftScopes.length > 0) {
     appendIndent(inout output, depth);
     output.append(`frame->scope_leave = ${index + 1};\n`);
@@ -12408,6 +12450,42 @@ function appendYieldFrameTry(
   const failure = sourceCxx ? `std::move(${temporary}.payload.failure)` : `${temporary}.payload.failure`;
   appendIndent(inout output, depth);
   output.append(`if (${temporary}.tag == Z_${statement.name}Tag_failure) {\n`);
+  // Inside `attempt async scope` the failure belongs to the scope: its local
+  // takes `failure(error)`, the scopes on the way out cancel and join their
+  // children, and control continues after the attempted scope.
+  let failedScopes = Array<usize>();
+  const failedScope = yieldFrameFailedScope(declaration, index, inout failedScopes);
+  if (failedScope < declaration.statements.length) {
+    const owner = view declaration.statements[yieldFrameStatementParent(declaration, failedScope)];
+    const outcome = match (in owner.type) {
+      some(type) => copy type;
+      none => throw "native async frame lost an attempted scope's Result type";
+    };
+    // shortcut: no C++ payloads here, add the factory calls when a C++ value can be a scope's value or error
+    if (sourceCxx || yieldFrameHoldsCxx(program, outcome)) {
+      throw "native async frame cannot fail an attempted scope with a C++ value yet";
+    }
+    const outcomeField = yieldFrameBindingField(owner.name);
+    appendIndent(inout output, depth + 1);
+    appendYieldFrameStoreStart(inout output, program, outcome, outcomeField);
+    output.append(`(Z_${outcome.name}){.tag = Z_${outcome.name}Tag_failure, .payload = { .failure = ${failure} }}`);
+    appendYieldFrameStoreEnd(inout output, program, outcome);
+    if (owner.liveFlag.byteLength > 0) {
+      appendIndent(inout output, depth + 1);
+      output.append(`${owner.liveFlag} = true;\n`);
+    }
+    appendYieldFrameLexicalCleanups(inout output, declaration, statement.cleanups, depth + 1);
+    appendIndent(inout output, depth + 1);
+    output.append(`frame->cancel_children = true;\n`);
+    appendIndent(inout output, depth + 1);
+    output.append(`frame->scope_leave = ${index + 1};\n`);
+    appendIndent(inout output, depth + 1);
+    output.append(`goto _z_scope_exit_${failedScopes[0]};\n_z_scope_left_${index}:;\n`);
+    appendIndent(inout output, depth + 1);
+    output.append(`goto _z_scope_value_${failedScope};\n`);
+    appendIndent(inout output, depth);
+    output.append("}\n");
+  } else {
   appendIndent(inout output, depth + 1);
   if (yieldFrameHoldsCxx(program, propagatedType)) {
     output.append(`frame->result.init(Z_${statement.labels[1]}::make_failure(${failure}));\n`);
@@ -12419,6 +12497,7 @@ function appendYieldFrameTry(
   output.append("goto _z_complete;\n");
   appendIndent(inout output, depth);
   output.append("}\n");
+  }
   if (statement.labels[0].byteLength == 0) {
     // Discarded success payloads still own storage. Failure has transferred above.
     const resultType = LoweredType({ kind: LoweredTypeKind.enumType, name: copy statement.name });
@@ -12591,7 +12670,8 @@ function appendYieldFrameStatement(
   const leftScopes = yieldFrameLeftScopes(declaration, index);
   const scopeSelect = statement.kind == LoweredStatementKind.breakStatement
     && labelsContain(statement.labels, "scope-select");
-  if (leftScopes.length > 0 && !scopeSelect) {
+  // A `try` leaves its scopes only when it fails (appendYieldFrameTry).
+  if (leftScopes.length > 0 && !scopeSelect && statement.kind != LoweredStatementKind.tryStatement) {
     // The scopes join what they started, then send control back here.
     appendIndent(inout output, depth);
     output.append(`frame->scope_leave = ${index + 1};\n`);
@@ -12846,13 +12926,37 @@ function appendYieldFrameStatement(
         try appendYieldFrameStatement(inout output, program, declaration, child, depth);
       }
     }
+    const attemptedScope = labelsContain(statement.labels, "attempt-scope");
+    if (labelsContain(statement.labels, "attempt-void")) {
+      // Reaching the end is this scope's success.
+      const owner = view declaration.statements[yieldFrameStatementParent(declaration, index)];
+      const outcome = match (in owner.type) {
+        some(type) => copy type;
+        none => throw "native async frame lost an attempted scope's Result type";
+      };
+      const outcomeField = yieldFrameBindingField(owner.name);
+      appendIndent(inout output, depth);
+      appendYieldFrameStoreStart(inout output, program, outcome, outcomeField);
+      output.append(`(Z_${outcome.name}){.tag = Z_${outcome.name}Tag_success}`);
+      appendYieldFrameStoreEnd(inout output, program, outcome);
+      if (owner.liveFlag.byteLength > 0) {
+        appendIndent(inout output, depth);
+        output.append(`${owner.liveFlag} = true;\n`);
+      }
+    }
     if (leavers.length > 0) output.append(`_z_scope_exit_${index}:;\n`);
     // Leaving an `async scope` joins the children started directly in it.
+    // A failed attempted scope cancels them first.
+    const cancelsOnFailure = yieldFrameHasAttemptedScope(declaration);
     const scopeSpawns = yieldFrameScopeSpawns(declaration, index);
     for (const site of scopeSpawns) {
       const slot = yieldFrameSpawnSlot(declaration, site);
       appendIndent(inout output, depth);
       output.append(`if (${slot}.task != NULL) {\n`);
+      if (cancelsOnFailure) {
+        appendIndent(inout output, depth + 1);
+        output.append(`if (frame->cancel_children) z_stage1_async_request_cancel(${slot}.task);\n`);
+      }
       appendIndent(inout output, depth + 1);
       output.append(`frame->state = ${yieldFrameScopeJoinState(declaration, site)};\n`);
       appendIndent(inout output, depth + 1);
@@ -12921,6 +13025,11 @@ function appendYieldFrameStatement(
     // A `select` of this scope continues here, with the scope behind it.
     if (labelsContain(statement.labels, "value-scope")) {
       output.append(`_z_scope_value_${index}: __attribute__((unused));\n`);
+    }
+    if (attemptedScope) {
+      // The failure, if there was one, is a value now.
+      appendIndent(inout output, depth);
+      output.append("frame->cancel_children = false;\n");
     }
     return;
   }
@@ -13388,7 +13497,8 @@ function appendYieldFrameHelpers(
     if (scopeHandleNames.length > 0 || ownedScopes.length > 0) hasChild = true;
     // The frame joins what it owns before it completes: spawn slots, named
     // scopes' handles, and the scopes its locals created.
-    const ownsChildren = hasSpawns || scopeHandleNames.length > 0 || ownedScopes.length > 0;
+    const ownsChildren = hasSpawns || scopeHandleNames.length > 0 || ownedScopes.length > 0
+      || yieldFrameHasAttemptedScope(source);
     let declaration = copy source;
     for (const parameter of source.parameters) {
       declaration.asyncFrameBindings.push(copy parameter.name);
