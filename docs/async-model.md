@@ -154,10 +154,14 @@ does; the handle is visible inside the block only.
 The scope may also sit inside a larger statement: `return async scope { ... }`,
 an assignment, an argument, an operand, or an `if` condition. It then runs
 ahead of that statement, as a nested `await` does, and scopes in one statement
-run in source order, each joined before the next starts. Where it would have
-to run conditionally, repeatedly, or in a closure's expression body (a `?:`
-or `&&` branch, a loop condition, a destructuring) it is rejected; bind it
-first. Only the native compiler implements the value form.
+run in source order, each joined before the next starts. In a branch that may
+not run (an arm of `?:`, the right operand of `&&` or `||`) the scope runs
+exactly when its branch would: the operator runs ahead as one unit, its
+condition first and then only the branch taken. A loop condition, a
+destructuring, and a closure's expression body have no place to run it
+first and are rejected; bind it first. A frame stores one binding per name,
+so two scopes in one function cannot each declare a local of the same name.
+Only the native compiler implements the value form.
 
 When native callbacks can submit work dynamically, a scope can expose the
 compiler-owned handle:

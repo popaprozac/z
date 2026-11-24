@@ -65,6 +65,34 @@ function collectHoistedScopes(in tree: ExpressionTree, index: usize, hoistable: 
     found.push(index);
     return hoistable;
   }
+  // Only one branch of a conditional runs, so a scope in a branch cannot run
+  // ahead by itself. The conditional does, as one unit: its condition, then
+  // the taken branch with that branch's scopes. It is collected as itself.
+  if (hoistable && node.kind == ExpressionKind.conditionalExpression && node.children.length == 3) {
+    if (!collectHoistedScopes(tree, node.children[0], true, inout found)) return false;
+    let branchUnits = Array<usize>();
+    const branchesRun = collectHoistedScopes(tree, node.children[1], true, inout branchUnits)
+      && collectHoistedScopes(tree, node.children[2], true, inout branchUnits);
+    if (!branchesRun) {
+      found.push(branchUnits[branchUnits.length - 1]);
+      return false;
+    }
+    if (branchUnits.length > 0) found.push(index);
+    return true;
+  }
+  // `&&` and `||` run their right operand only sometimes: the same unit,
+  // with the left operand as its condition.
+  if (hoistable && node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||")
+    && node.children.length == 2) {
+    if (!collectHoistedScopes(tree, node.children[0], true, inout found)) return false;
+    let rightUnits = Array<usize>();
+    if (!collectHoistedScopes(tree, node.children[1], true, inout rightUnits)) {
+      found.push(rightUnits[rightUnits.length - 1]);
+      return false;
+    }
+    if (rightUnits.length > 0) found.push(index);
+    return true;
+  }
   const blocks = node.kind == ExpressionKind.closureExpression
     || node.kind == ExpressionKind.ifExpression || node.kind == ExpressionKind.matchExpression
     || node.kind == ExpressionKind.conditionalExpression
@@ -81,10 +109,34 @@ function collectHoistedScopes(in tree: ExpressionTree, index: usize, hoistable: 
   return true;
 }
 
-// The value-producing scopes of one of a statement's expressions, as tree
-// nodes in evaluation order. False when one of them sits where this statement
-// cannot run it first (it is then the last one collected): a loop condition
-// re-runs, and a destructuring or `match` statement has no place for it yet.
+// The same, for one expression that its statement may run ahead of itself:
+// a conditional's branch.
+export function expressionHoistedScopes(in tree: ExpressionTree, index: usize, inout found: Array<usize>): boolean {
+  return collectHoistedScopes(tree, index, true, inout found);
+}
+
+// Every scope under a collected unit: the scope itself, or the scopes in a
+// conditional's branches.
+function appendUnitScopeStatements(in tree: ExpressionTree, index: usize, inout owned: Array<usize>): void {
+  const node = view tree.nodes[index];
+  if (node.kind == ExpressionKind.closureExpression) return;
+  if (node.kind == ExpressionKind.asyncScopeExpression) {
+    for (const statement of node.statements) {
+      owned.push(statement);
+    }
+    return;
+  }
+  for (const child of node.children) {
+    appendUnitScopeStatements(tree, child, inout owned);
+  }
+}
+
+// What a statement runs ahead of itself, from one of its expressions, as
+// tree nodes in evaluation order: value-producing scopes, and conditionals
+// with scopes in their branches. False when a scope sits where this
+// statement cannot run it first (it is then the last one collected): a loop
+// condition re-runs, and a destructuring or `match` statement has no place
+// for it yet.
 export function statementHoistedScopes(
   in arena: StatementArena, index: usize, second: boolean, inout found: Array<usize>
 ): boolean {
@@ -121,9 +173,7 @@ export function valueScopeStatements(in arena: StatementArena, index: usize): Ar
     match (in arena.nodes[index].expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => for (const site of first) {
-          for (const statement of tree.nodes[site].statements) {
-            owned.push(statement);
-          }
+          appendUnitScopeStatements(tree, site, inout owned);
         }
         none => {}
       }
@@ -135,9 +185,7 @@ export function valueScopeStatements(in arena: StatementArena, index: usize): Ar
     match (in arena.nodes[index].secondExpression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => for (const site of second) {
-          for (const statement of tree.nodes[site].statements) {
-            owned.push(statement);
-          }
+          appendUnitScopeStatements(tree, site, inout owned);
         }
         none => {}
       }
@@ -795,11 +843,10 @@ export function isFrameDelay(
   };
 }
 
-function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): boolean {
+// Whether the node itself, apart from its operands, runs to completion.
+function frameNodeIsSynchronous(in tree: ExpressionTree, index: usize): boolean {
   const kind = tree.nodes[index].kind;
-  // A placed block `main` runs where it is: a synchronous helper call.
-  if (kind == ExpressionKind.executorPlacementExpression && tree.nodes[index].value == "inline") return true;
-  if (kind == ExpressionKind.awaitExpression
+  return !(kind == ExpressionKind.awaitExpression
     || kind == ExpressionKind.tryExpression
     || kind == ExpressionKind.spawnExpression
     || kind == ExpressionKind.executorPlacementExpression
@@ -810,11 +857,31 @@ function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): bo
     || kind == ExpressionKind.valueBlockExpression
     || kind == ExpressionKind.whileExpression
     || kind == ExpressionKind.forExpression
-    || kind == ExpressionKind.asyncScopeExpression) return false;
+    || kind == ExpressionKind.asyncScopeExpression);
+}
+
+function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): boolean {
+  const kind = tree.nodes[index].kind;
+  // A placed block `main` runs where it is: a synchronous helper call.
+  if (kind == ExpressionKind.executorPlacementExpression && tree.nodes[index].value == "inline") return true;
+  if (!frameNodeIsSynchronous(tree, index)) return false;
   // Nested callable bodies have their own lifetime and suspension analysis.
   if (kind == ExpressionKind.closureExpression) return true;
   for (const child of tree.nodes[index].children) {
     if (!frameExpressionIsSynchronous(tree, child)) return false;
+  }
+  return true;
+}
+
+// The same, with each value-producing scope taken as the value it leaves in
+// the frame: what remains of a conditional's branch once its scopes have run.
+function frameExpressionIsSynchronousAroundScopes(in tree: ExpressionTree, index: usize): boolean {
+  const kind = tree.nodes[index].kind;
+  if (kind == ExpressionKind.asyncScopeExpression || kind == ExpressionKind.closureExpression) return true;
+  if (kind == ExpressionKind.executorPlacementExpression && tree.nodes[index].value == "inline") return true;
+  if (!frameNodeIsSynchronous(tree, index)) return false;
+  for (const child of tree.nodes[index].children) {
+    if (!frameExpressionIsSynchronousAroundScopes(tree, child)) return false;
   }
   return true;
 }
@@ -873,6 +940,25 @@ export function frameExpressionHoistsAwaits(in tree: ExpressionTree, index: usiz
     || node.kind == ExpressionKind.executorPlacementExpression
     || node.kind == ExpressionKind.executorOnExpression) {
     return !frameTreeContainsAwait(tree, index) && frameExpressionIsSynchronous(tree, index);
+  }
+  // A conditional with scopes runs them ahead: those of its condition by
+  // themselves, those of its branches with the conditional as one unit.
+  // Apart from its scopes, a branch must still run to completion.
+  if (node.kind == ExpressionKind.conditionalExpression && node.children.length == 3) {
+    let units = Array<usize>();
+    if (collectHoistedScopes(tree, index, true, inout units) && units.length > 0) {
+      return frameExpressionHoistsAwaits(tree, node.children[0])
+        && frameExpressionIsSynchronousAroundScopes(tree, node.children[1])
+        && frameExpressionIsSynchronousAroundScopes(tree, node.children[2]);
+    }
+  }
+  if (node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||")
+    && node.children.length == 2) {
+    let units = Array<usize>();
+    if (collectHoistedScopes(tree, index, true, inout units) && units.length > 0) {
+      return frameExpressionHoistsAwaits(tree, node.children[0])
+        && frameExpressionIsSynchronousAroundScopes(tree, node.children[1]);
+    }
   }
   const lazy = node.kind == ExpressionKind.ifExpression || node.kind == ExpressionKind.matchExpression
     || node.kind == ExpressionKind.conditionalExpression

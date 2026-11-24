@@ -19,7 +19,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { statementHoistedScopes, mainPlacementThreadNames, nestedClosureMainTask, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { statementHoistedScopes, statementRunsValueScope, closureOwnedStatements, mainPlacementThreadNames, nestedClosureMainTask, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -2918,6 +2918,28 @@ function rejectValueScopePosition(
   }
 }
 
+// The first local or parameter name a function declares twice, or "". Frame
+// storage is named by binding, so a repeat keeps a function out of the
+// general frame (frameLocalNamesAreUnique).
+function repeatedFrameLocalName(in body: StatementArena, in parameters: Array<Parameter>): String {
+  let names = Array<String>();
+  for (const parameter of parameters) {
+    names.push(copy parameter.name);
+  }
+  const closureOwned = closureOwnedStatements(body);
+  let index: usize = 0;
+  while (index < body.nodes.length) {
+    if (!closureOwned[index] && body.nodes[index].kind == StatementKind.variableStatement) {
+      for (const name of names) {
+        if (name == body.nodes[index].name) return copy name;
+      }
+      names.push(copy body.nodes[index].name);
+    }
+    index = index + 1;
+  }
+  return "";
+}
+
 function validateNativeBody(
   in path: String,
   moduleIndex: usize,
@@ -2973,6 +2995,22 @@ function validateNativeBody(
         path,
         "Z0700",
         "async-generator yield is not executable in the native compiler yet",
+        statement.line,
+        statement.column,
+        5
+      );
+    }
+    // A value-producing scope leaves its value in the general frame; a
+    // function that cannot run as one has nowhere to put it.
+    if (!frameScopes && statementRunsValueScope(body, statementIndex)) {
+      const repeated = repeatedFrameLocalName(body, parameters);
+      const reason = repeated.byteLength > 0
+        ? `; a frame stores one binding per name, and "${repeated}" is declared twice`
+        : "";
+      throw loweringBoundary(
+        path,
+        "Z0700",
+        `a value-producing async scope is not executable in this function in the native compiler yet${reason}`,
         statement.line,
         statement.column,
         5
@@ -3671,10 +3709,15 @@ function validateNativeFunction(
     && !yieldFrame
     && !generalFrame
   ) {
+    // The commonest avoidable cause gets named: two bindings with one name.
+    const repeated = repeatedFrameLocalName(declaration.body, declaration.parameters);
+    const reason = repeated.byteLength > 0
+      ? `; a frame stores one binding per name, and "${repeated}" is declared twice`
+      : "";
     throw loweringBoundary(
       path,
       "Z0700",
-      `suspending async function "${declaration.name}" is not executable in the native compiler yet`,
+      `suspending async function "${declaration.name}" is not executable in the native compiler yet${reason}`,
       declaration.line,
       declaration.column,
       5

@@ -3942,10 +3942,10 @@ and `continue` cannot leave a value-producing scope.
 
 Inside a larger statement (`return async scope { ... }`, an assignment, an
 argument, an operand, an `if` condition) the scope runs ahead of the
-statement, as a nested `await` does; several run in source order. A scope
-that would run conditionally, repeatedly, or as a closure's expression body
-(a `?:`, `&&`, or `||` branch, a loop condition, a destructuring) is `Z1000`
-in the native compiler: bind it with `const` or `let` first.
+statement, as a nested `await` does; several run in source order. In an arm
+of `?:` or the right operand of `&&` or `||` it runs only when that branch
+does. A scope in a loop condition, a destructuring, or a closure's expression
+body is `Z1000` in the native compiler: bind it with `const` or `let` first.
 
 Code performing long synchronous chunks inside an async task can cooperate
 with its current executor explicitly:
