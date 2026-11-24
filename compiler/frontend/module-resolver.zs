@@ -1368,12 +1368,6 @@ function contextualExpectedBindingName(offset: usize): String {
   return `__z_native_contextual_expected:${offset}`;
 }
 
-// Marks the scope expression that is the whole initializer of a plain
-// `const`/`let`, the one position its lowering handles.
-function valueScopeInitializerBindingName(offset: usize): String {
-  return `__z_native_value_scope_initializer:${offset}`;
-}
-
 function loopSelectTypeBindingName(): String {
   return "__z_native_loop_select_type";
 }
@@ -9158,13 +9152,6 @@ function inferExpressionNodeType(
       throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0703", module.path,
         "async scope requires an enclosing async function", node.line, node.column, 1);
     }
-    const initializer = valueScopeInitializerBindingName(node.offset);
-    const wholeInitializer = valueBindingType(bindings, initializer);
-    if (index != tree.root || wholeInitializer.byteLength == 0) {
-      throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z1000", module.path,
-        "a value-producing async scope is not executable here in the native compiler yet; bind it with `const` or `let` first",
-        node.line, node.column, 1);
-    }
     const scopeStatements = copyIndices(node.statements);
     let scopeBindings = copyValueBindings(bindings);
     openTaskLoanScope(inout scopeBindings);
@@ -9218,6 +9205,9 @@ function inferExpressionNodeType(
       );
     }
     copyBindingFlowStates(inout bindings, scopeBindings);
+    // Lowering gives the scope's value a frame slot of this type wherever
+    // the scope sits in its statement.
+    recordExpressionResolution(modules, moduleIndex, tree, index, scopeValue, inout evidence);
     return scopeValue;
   }
   if (kind == ExpressionKind.unsafeExpression) {
@@ -14024,20 +14014,6 @@ function inferStatement(
     let contextualExpected = "";
     match (in arena.nodes[index].typeAnnotation) {
       some(type) => contextualExpected = type.name.copyBytes(0, type.name.byteLength);
-      none => {}
-    }
-    match (in arena.nodes[index].expression) {
-      some(expression) => match (in expression.tree) {
-        some(tree) => {
-          if (tree.nodes[tree.root].kind == ExpressionKind.asyncScopeExpression
-            && arena.nodes[index].objectBindings.length == 0
-            && arena.nodes[index].arrayBindings.length == 0) {
-            const initializer = valueScopeInitializerBindingName(tree.nodes[tree.root].offset);
-            addValueBinding(inout bindings, initializer, "true");
-          }
-        }
-        none => {}
-      }
       none => {}
     }
     match (in arena.nodes[index].expression) {

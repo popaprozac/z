@@ -11519,6 +11519,23 @@ test("runs native-only fixtures and reports tier limits through the standalone n
     "noted through early", "through after scope 30", "noted through late", "through after scope 40", "through 30 40",
     "noted matched", "matched 2", "",
   ].join("\n"));
+  // Inside a larger statement the scope runs first and the statement reads
+  // its value: `return`, assignment, arguments, operands, conditions.
+  const scopePositionsRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-scope-value-positions.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(scopePositionsRun.status, 0, scopePositionsRun.stderr);
+  assert.equal(scopePositionsRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "loaded 1", "loaded 2", "returned 3",
+    "noted returned text", "returned text built 3",
+    "operation 1", "operation 2", "returned named true",
+    "slow 9 started", "returned failure failed",
+    "noted assigned", "assigned after 6",
+    "loaded 3", "loaded 4", "noted argument", "size 4", "arguments 7",
+    "noted round 0", "noted round 1", "noted template", "interpolated 9", "operands 6",
+    "loaded 5", "condition true",
+    "noted outer", "loaded 6", "selected 6", "",
+  ].join("\n"));
   // The Stage 0 parser stops at this form, so its rules are checked here,
   // through the driver, rather than through the Stage 0-hosted commands.
   const scopeValueProgram = (body: string, signature = "async function main(): i32") => `
@@ -11540,9 +11557,12 @@ test("runs native-only fixtures and reports tier limits through the standalone n
     ["const v: String = async scope { select 1; };", /expected String, found i32/],
     ["let round = 0; while (round < 2) { const v = async scope { if (round == 1) break; select 1; }; round = round + 1; }",
       /cannot be left with `break` or `continue`/],
-    ["const v = id(async scope { select 1; });",
+    // Where the scope would run conditionally, repeatedly, or in a closure.
+    ["const flag = true; const v = flag ? async scope { select 1; } : id(0);",
       /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
-    ["let v = 0; v = async scope { select 1; };",
+    ["while (async scope { select false; }) { }",
+      /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
+    ["const run = async (): i32 => async scope { select 1; };",
       /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
     // A `select` in a `match` arm gives the arm's value, not the scope's.
     ["const kind = Kind.two; const v = async scope { match (kind) { one => { select 1; } two => { select 2; } } };",

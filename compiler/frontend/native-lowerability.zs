@@ -19,7 +19,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { mainPlacementThreadNames, nestedClosureMainTask, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { statementHoistedScopes, mainPlacementThreadNames, nestedClosureMainTask, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -2880,6 +2880,44 @@ function nativeCallableTaskScopeCandidate(
   return startsTask && joinsTask;
 }
 
+// A value-producing `async scope` runs ahead of its statement, into the
+// frame. One that would have to run conditionally, repeatedly, or inside
+// another operation has no such place yet.
+function validateValueScopePosition(
+  in path: String,
+  in body: StatementArena,
+  index: usize,
+  second: boolean
+): void throws ModuleResolveError {
+  let scopes = Array<usize>();
+  if (statementHoistedScopes(body, index, second, inout scopes)) return;
+  const site = scopes[scopes.length - 1];
+  if (second) {
+    match (in body.nodes[index].secondExpression) {
+      some(syntax) => try rejectValueScopePosition(path, syntax, site);
+      none => {}
+    }
+  } else {
+    match (in body.nodes[index].expression) {
+      some(syntax) => try rejectValueScopePosition(path, syntax, site);
+      none => {}
+    }
+  }
+}
+
+function rejectValueScopePosition(
+  in path: String,
+  in syntax: ExpressionSyntax,
+  site: usize
+): void throws ModuleResolveError {
+  match (in syntax.tree) {
+    some(tree) => throw loweringBoundary(path, "Z1000",
+      "a value-producing async scope is not executable here in the native compiler yet; bind it with `const` or `let` first",
+      tree.nodes[site].line, tree.nodes[site].column, 1);
+    none => {}
+  }
+}
+
 function validateNativeBody(
   in path: String,
   moduleIndex: usize,
@@ -2927,6 +2965,8 @@ function validateNativeBody(
       );
       none => {}
     }
+    try validateValueScopePosition(path, body, statementIndex, false);
+    try validateValueScopePosition(path, body, statementIndex, true);
     // An async generator's `yield` runs in the general frame only.
     if (statement.kind == StatementKind.yieldStatement && asynchronous && !frameScopes) {
       throw loweringBoundary(

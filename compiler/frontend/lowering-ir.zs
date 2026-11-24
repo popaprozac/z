@@ -105,7 +105,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, workerClosureLifts, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { statementHoistedScopes, closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, workerClosureLifts, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -7094,6 +7094,12 @@ function planNestedPreludeSequence(
         ownerName, sourceIndex, loweredMatch, active, expressions, moveIndex,
         inout statements, inout liveFlags, forceMoveLiveGuards, insideLoop,
         loopCleanups);
+    } else if (loweredStatementHasLabel(statements[local], "nested-scope")) {
+      // The scope's body is planned with its local, as a whole initializer's is.
+      try planCleanupStatement(program, importedTypes, evidence, arena,
+        ownerName, sourceIndex, local, active, expressions, moveIndex,
+        inout statements, inout liveFlags, forceMoveLiveGuards, insideLoop,
+        loopCleanups);
     } else {
       throw "native cleanup planning received an unknown nested prelude";
     }
@@ -7422,18 +7428,7 @@ function planCleanupStatement(
     && loweredStatementHasLabel(statements[statements[loweredIndex].children[0]], "value-scope")
   ) {
     const scopeBody = statements[statements[loweredIndex].children[0]].children[0];
-    let scopeSource = Array<usize>();
-    match (in arena.nodes[sourceIndex].expression) {
-      some(syntax) => match (in syntax.tree) {
-        some(tree) => {
-          for (const owned of tree.nodes[tree.root].statements) {
-            scopeSource.push(owned);
-          }
-        }
-        none => {}
-      }
-      none => {}
-    }
+    const scopeSource = valueScopeSourceStatements(arena, sourceIndex, statements[loweredIndex]);
     let scopeLowered = Array<usize>();
     for (const child of statements[scopeBody].children) {
       scopeLowered.push(child);
@@ -13009,6 +13004,19 @@ function lowerExpressionNode(
         && output[candidate].value == bindingName
         && expressionHasLabel(output[candidate], "nested-match-binding")) return candidate;
     }
+  }
+  // A value-producing scope ran ahead of this statement; its value is read
+  // from the frame temporary that prelude filled (appendScopeValuePreludes).
+  if (tree.nodes[index].kind == ExpressionKind.asyncScopeExpression) {
+    const bindingName = scopeValueBindingName(tree.nodes[index].offset);
+    let candidate = output.length;
+    while (candidate > 0) {
+      candidate = candidate - 1;
+      if (output[candidate].kind == LoweredExpressionKind.localValue
+        && output[candidate].value == bindingName
+        && expressionHasLabel(output[candidate], "nested-match-binding")) return candidate;
+    }
+    throw `native lowering lost the value of an async scope at ${tree.nodes[index].line}:${tree.nodes[index].column}`;
   }
   match (resolvedExpressionTargetName(evidence, tree, index)) {
     some(targetName) => return pushExpression(
@@ -27809,7 +27817,13 @@ function lowerScopeSelect(
 // declared without a value and the scope runs inside it as a statement scope
 // does, in the same frame, so `return` still leaves the function and nothing
 // is captured.
-function lowerValueScopeLocal(
+function scopeValueBindingName(offset: usize): String {
+  return `_z_stage1_scope_value_${offset}`;
+}
+
+// A value-producing scope inside a larger statement runs first, as a nested
+// await does: each becomes a prelude local the statement then reads.
+function appendScopeValuePreludes(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
@@ -27817,18 +27831,98 @@ function lowerValueScopeLocal(
   in ownerName: String,
   in context: CallableReturnContext,
   index: usize,
+  second: boolean,
+  in syntax: ExpressionSyntax,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  let scopes = Array<usize>();
+  if (!statementHoistedScopes(arena, index, second, inout scopes)) return;
+  match (in syntax.tree) {
+    some(tree) => for (const site of scopes) {
+      const bindingName = scopeValueBindingName(tree.nodes[site].offset);
+      const typeName = match (resolvedExpressionTypeName(evidence, tree, site)) {
+        some(name) => name;
+        none => throw "native value-producing async scope lost its checked type";
+      };
+      pushExpression(inout expressions, LoweredExpressionKind.localValue,
+        bindingName, Array<usize>(), Array<String>("nested-match-binding", copy typeName));
+      const local = try lowerValueScopeLocal(program, importedTypes, evidence, arena, ownerName, context,
+        tree, site, bindingName, false, true, inout expressions, inout statements);
+      roots.push(local);
+    }
+    none => {}
+  }
+}
+
+// The source statements of the scope a lowered local runs: the statement's
+// whole initializer, or the scope a prelude local records by offset.
+function valueScopeSourceStatements(
+  in arena: StatementArena,
+  sourceIndex: usize,
+  in local: LoweredStatement
+): Array<usize> {
+  let owned = Array<usize>();
+  const prelude = loweredStatementHasLabel(local, "nested-scope") && local.labels.length == 2;
+  match (in arena.nodes[sourceIndex].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        let node: usize = 0;
+        while (node < tree.nodes.length) {
+          const selected = prelude
+            ? tree.nodes[node].kind == ExpressionKind.asyncScopeExpression && `${tree.nodes[node].offset}` == local.labels[1]
+            : node == tree.root;
+          if (selected) {
+            for (const statement of tree.nodes[node].statements) {
+              owned.push(statement);
+            }
+          }
+          node = node + 1;
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+  if (!prelude) return owned;
+  match (in arena.nodes[sourceIndex].secondExpression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => for (const node of tree.nodes) {
+        if (node.kind != ExpressionKind.asyncScopeExpression || `${node.offset}` != local.labels[1]) continue;
+        for (const statement of node.statements) {
+          owned.push(statement);
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+  return owned;
+}
+
+function lowerValueScopeLocal(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
   in tree: ExpressionTree,
+  root: usize,
+  in name: String,
+  mutableBinding: boolean,
+  prelude: boolean,
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
-  const root = tree.root;
   const typeName = match (resolvedExpressionTypeName(evidence, tree, root)) {
     some(name) => name;
     none => throw "native value-producing async scope lost its checked type";
   };
   const type = try lowerModuleTypeName(program, importedTypes, typeName);
   let childContext = copy context;
-  childContext.scopeSelectName = copy arena.nodes[index].name;
+  childContext.scopeSelectName = copy name;
   childContext.scopeSelectType = copy typeName;
   childContext.scopeSelects = Array<usize>();
   const sourceStatements = copy tree.nodes[root].statements;
@@ -27857,13 +27951,62 @@ function lowerValueScopeLocal(
   const scopeIndex = statements.length;
   statements.push(move scopeBlock);
   let local = emptyLoweredStatement(LoweredStatementKind.localStatement);
-  local.mutableBinding = arena.nodes[index].mutableBinding;
-  local.name = copy arena.nodes[index].name;
+  local.mutableBinding = mutableBinding;
+  local.name = copy name;
   local.type = Option.some(type);
   local.children.push(scopeIndex);
+  if (prelude) {
+    local.labels.push("nested-scope");
+    local.labels.push(`${tree.nodes[root].offset}`);
+  }
   const localIndex = statements.length;
   statements.push(move local);
   return localIndex;
+}
+
+// A statement and the preludes that run ahead of it, as one block that the
+// cleanup planner and the emitters see through.
+function wrapStatementPreludes(
+  in expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  in preludes: Array<usize>,
+  lowered: usize
+): usize {
+  let roots = Array<usize>();
+  for (const prelude of preludes) {
+    if (
+      nestedTryBindingWasTransferred(
+        expressions,
+        statements[prelude].name
+      )
+      || loweredStatementDirectlyTransfersBinding(
+        expressions,
+        statements,
+        lowered,
+        statements[prelude].name
+      )
+    ) statements[prelude].labels.push("transferred");
+    roots.push(prelude);
+  }
+  roots.push(lowered);
+  let labels = Array<String>();
+  labels.push("nested-try-normalized");
+  const block = statements.length;
+  statements.push(LoweredStatement({
+    kind: LoweredStatementKind.blockStatement,
+    mutableBinding: false,
+    name: "",
+    type: Option<LoweredType>.none,
+    expression: Option<usize>.none,
+    secondExpression: Option<usize>.none,
+    children: move roots,
+    cleanups: Array<LoweredCleanup>(),
+    liveFlag: "",
+    labels: move labels,
+    matchConsumesSubject: false,
+    matchBindingNeedsCleanup: false,
+  }));
+  return block;
 }
 
 function lowerStatementWithResult(
@@ -27879,16 +28022,26 @@ function lowerStatementWithResult(
 ): usize throws String {
   for (const selected of context.scopeSelects) {
     if (selected == index) {
-      return try lowerScopeSelect(program, importedTypes, evidence, arena, ownerName, context, index,
+      // The selected value may itself come from a scope, which runs first.
+      let selectPreludes = Array<usize>();
+      match (in arena.nodes[index].expression) {
+        some(syntax) => try appendScopeValuePreludes(program, importedTypes, evidence, arena, ownerName, context,
+          index, false, syntax, inout expressions, inout statements, inout selectPreludes);
+        none => {}
+      }
+      const loweredSelect = try lowerScopeSelect(program, importedTypes, evidence, arena, ownerName, context, index,
         inout expressions, inout statements);
+      if (selectPreludes.length == 0) return loweredSelect;
+      return wrapStatementPreludes(expressions, inout statements, selectPreludes, loweredSelect);
     }
   }
   if (arena.nodes[index].kind == StatementKind.variableStatement) {
     match (in arena.nodes[index].expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => if (tree.nodes[tree.root].kind == ExpressionKind.asyncScopeExpression) {
-          return try lowerValueScopeLocal(program, importedTypes, evidence, arena, ownerName, context, index,
-            tree, inout expressions, inout statements);
+          return try lowerValueScopeLocal(program, importedTypes, evidence, arena, ownerName, context,
+            tree, tree.root, arena.nodes[index].name, arena.nodes[index].mutableBinding, false,
+            inout expressions, inout statements);
         }
         none => {}
       }
@@ -27903,6 +28056,16 @@ function lowerStatementWithResult(
   }
   if (isFrameDelay(program, arena, index)) {
     return try lowerFrameDelay(program, importedTypes, evidence, arena, index, inout expressions, inout statements);
+  }
+  match (in arena.nodes[index].expression) {
+    some(syntax) => try appendScopeValuePreludes(program, importedTypes, evidence, arena, ownerName, context,
+      index, false, syntax, inout expressions, inout statements, inout preludeRoots);
+    none => {}
+  }
+  match (in arena.nodes[index].secondExpression) {
+    some(syntax) => try appendScopeValuePreludes(program, importedTypes, evidence, arena, ownerName, context,
+      index, true, syntax, inout expressions, inout statements, inout preludeRoots);
+    none => {}
   }
   match (in arena.nodes[index].expression) {
     some(syntax) => {
@@ -28012,39 +28175,7 @@ function lowerStatementWithResult(
       none => {}
     }
   }
-  for (const prelude of preludeRoots) {
-    if (
-      nestedTryBindingWasTransferred(
-        expressions,
-        statements[prelude].name
-      )
-      || loweredStatementDirectlyTransfersBinding(
-        expressions,
-        statements,
-        lowered,
-        statements[prelude].name
-      )
-    ) statements[prelude].labels.push("transferred");
-  }
-  preludeRoots.push(lowered);
-  let labels = Array<String>();
-  labels.push("nested-try-normalized");
-  const block = statements.length;
-  statements.push(LoweredStatement({
-    kind: LoweredStatementKind.blockStatement,
-    mutableBinding: false,
-    name: "",
-    type: Option<LoweredType>.none,
-    expression: Option<usize>.none,
-    secondExpression: Option<usize>.none,
-    children: move preludeRoots,
-    cleanups: Array<LoweredCleanup>(),
-    liveFlag: "",
-    labels: move labels,
-    matchConsumesSubject: false,
-    matchBindingNeedsCleanup: false,
-  }));
-  return block;
+  return wrapStatementPreludes(expressions, inout statements, preludeRoots, lowered);
 }
 
 function lowerStatementCore(

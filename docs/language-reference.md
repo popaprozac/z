@@ -3921,7 +3921,7 @@ failed `try` inside a scope, cancels live siblings and a named scope's
 operations before the failing task completes. Domain errors remain `T throws E`;
 cancellation is a structural task outcome, not an invented member of `E`.
 
-A scope that initializes a `const` or `let` produces a value:
+A scope used as an expression produces a value:
 
 ```z
 const total = async scope {
@@ -3938,9 +3938,14 @@ the scope's children have joined. It may sit in a branch; nothing may follow it
 in its block, and every path through the scope must end in a `select`, a
 `return`, or a failure. Every `select` has the same type, the binding's
 annotation when there is one. `return` still exits the function, and `break`
-and `continue` cannot leave a value-producing scope. The native compiler
-accepts the form only as the whole initializer of a plain `const` or `let`;
-any other position is `Z1000`.
+and `continue` cannot leave a value-producing scope.
+
+Inside a larger statement (`return async scope { ... }`, an assignment, an
+argument, an operand, an `if` condition) the scope runs ahead of the
+statement, as a nested `await` does; several run in source order. A scope
+that would run conditionally, repeatedly, or as a closure's expression body
+(a `?:`, `&&`, or `||` branch, a loop condition, a destructuring) is `Z1000`
+in the native compiler: bind it with `const` or `let` first.
 
 Code performing long synchronous chunks inside an async task can cooperate
 with its current executor explicitly:
