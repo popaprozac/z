@@ -36144,6 +36144,41 @@ function importedTypesForModule(
   return types;
 }
 
+// Generic aggregate specializations can be owned by a framework module while
+// their concrete arguments are declared by a downstream consumer. Every
+// lowering of the owner needs those argument types to lay its instances out:
+// the module itself, and each later pass over its generic functions and
+// methods, which builds its own type table. No source import is added, so no
+// import cycle is either.
+function appendOwnedStructArgumentTypes(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in structs: Array<LoweredStruct>,
+  in enums: Array<LoweredEnum>,
+  in privateTypeCollisionNames: Array<String>,
+  in genericStructUses: Array<LoweredGenericStructUse>,
+  moduleIndex: usize,
+  inout types: Array<LoweredImportedType>
+): void throws String {
+  for (const use of genericStructUses) {
+    if (
+      use.consumerModuleIndex != moduleIndex
+      || use.ownerModuleIndex != moduleIndex
+    ) continue;
+    try appendGenericDemandArgumentTypes(
+      parsed,
+      graph,
+      structs,
+      enums,
+      privateTypeCollisionNames,
+      use.typeArguments,
+      use.typeArgumentModules,
+      use.typeArgumentSymbols,
+      inout types
+    );
+  }
+}
+
 function appendGenericDemandArgumentTypes(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph,
@@ -39088,27 +39123,10 @@ function lowerModulesIncludingTests(
         `${parsed[moduleIndex].path}: native import lowering: ${message}`;
     };
     collectCxxTypeNames(importedTypes, inout cxxValueNames, inout cxxMoveOnlyNames);
-    // Generic aggregate specializations can be owned by a framework module
-    // while their concrete arguments are declared by a downstream consumer.
-    // Preserve those canonical argument types without introducing a source
-    // import cycle so constructors and ordinary methods specialize in place.
-    for (const use of genericStructUses) {
-      if (
-        use.consumerModuleIndex != moduleIndex
-        || use.ownerModuleIndex != moduleIndex
-      ) continue;
-      try appendGenericDemandArgumentTypes(
-        parsed,
-        graph,
-        structs,
-        enums,
-        privateTypeCollisionNames,
-        use.typeArguments,
-        use.typeArgumentModules,
-        use.typeArgumentSymbols,
-        inout importedTypes
-      );
-    }
+    // Constructors and ordinary methods of this module's generic aggregates
+    // specialize in place, with their consumers' argument types.
+    try appendOwnedStructArgumentTypes(parsed, graph, structs, enums, privateTypeCollisionNames,
+      genericStructUses, moduleIndex, inout importedTypes);
     // A validated adapter can return its own nominal implementation type to a
     // generic replacement in this module, even though its ordinary declaration
     // dependencies put the generated module after this caller. Reuse checked
@@ -39254,6 +39272,8 @@ function lowerModulesIncludingTests(
       failure(message) => throw
         `${parsed[genericOwnerModuleIndex].path}: generic method import lowering: ${message}`;
     };
+    try appendOwnedStructArgumentTypes(parsed, graph, structs, enums, privateTypeCollisionNames,
+      genericStructUses, genericOwnerModuleIndex, inout importedTypes);
     let methodUseIndex: usize = 0;
     while (methodUseIndex < genericMethodUses.length) {
       const use = view genericMethodUses[methodUseIndex];
@@ -39336,6 +39356,8 @@ function lowerModulesIncludingTests(
       failure(message) => throw
         `${parsed[genericOwnerModuleIndex].path}: generic function import lowering: ${message}`;
     };
+    try appendOwnedStructArgumentTypes(parsed, graph, structs, enums, privateTypeCollisionNames,
+      genericStructUses, genericOwnerModuleIndex, inout importedTypes);
     let functionUseIndex: usize = 0;
     while (functionUseIndex < genericFunctionUses.length) {
       const use = view genericFunctionUses[functionUseIndex];
