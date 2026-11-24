@@ -11454,6 +11454,7 @@ test("runs the parity fixtures identically through Stage 0 and the standalone na
     // block as a frame, and captured state carries over to the next call.
     "tests/fixtures/native-async-block-closures.zs",
     "tests/fixtures/native-async-inout-methods.zs",
+    "tests/fixtures/native-generic-inferred-types/main.zs",
     // A Mutex passed on by value moves to the callee, which drops it; a
     // channel sender is shared, and the channel is released with its last
     // holder.

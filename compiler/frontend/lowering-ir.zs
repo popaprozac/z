@@ -1067,6 +1067,18 @@ struct LoweredGenericInstanceEvidence {
   functions: Array<ModuleSemanticEvidence>;
   methods: Array<ModuleSemanticEvidence>;
   structs: Array<LoweredStructInstanceEvidence>;
+  // Aligned with `functions` and `methods`: the types each instance's own
+  // check inferred.
+  functionTypes: Array<LoweredInstanceTypes>;
+  methodTypes: Array<LoweredInstanceTypes>;
+}
+
+// The types an instance's body uses without spelling them out: the Option a
+// collection method returns, the Result of a call. Declarations name the
+// rest; these come only from the instance's own check, with its concrete
+// arguments, and each needs its definition emitted.
+struct LoweredInstanceTypes {
+  names: Array<String>;
 }
 
 // One generic aggregate instance: its constructor and deinit checked
@@ -1076,6 +1088,32 @@ struct LoweredStructInstanceEvidence {
   checked: boolean;
   lifecycle: ModuleSemanticEvidence;
   methods: Array<ModuleSemanticEvidence>;
+  // What the constructor, deinit, and methods inferred between them.
+  inferredTypes: Array<String>;
+}
+
+// Adds what one instance's own check inferred, before its module's records
+// are merged in: those belong to other code and are collected with it.
+function appendInferredTypeNames(in evidence: ModuleSemanticEvidence, inout names: Array<String>): void {
+  for (const binding of evidence.bindingResolutions) {
+    appendDistinctTypeName(inout names, binding.typeName);
+  }
+  for (const expression of evidence.expressionResolutions) {
+    appendDistinctTypeName(inout names, expression.typeName);
+  }
+  for (const call of evidence.callResolutions) {
+    if (call.errorType.byteLength == 0) continue;
+    const resultName = `Result<${call.returnType}, ${call.errorType}>`;
+    appendDistinctTypeName(inout names, resultName);
+  }
+}
+
+function appendDistinctTypeName(inout names: Array<String>, in name: String): void {
+  if (name.byteLength == 0) return;
+  for (const existing of names) {
+    if (existing == name) return;
+  }
+  names.push(copy name);
 }
 
 // An instance's evidence keeps its own records first and gains its module's
@@ -33712,6 +33750,27 @@ function programGenericTypeParameterNames(
   return parameters;
 }
 
+// Asks for the definitions of the types a generic instance inferred.
+function collectInferredInstanceTypes(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in names: Array<String>,
+  inout fixedArrays: Array<LoweredFixedArray>,
+  inout arrays: Array<LoweredArray>,
+  inout slices: Array<LoweredSlice>,
+  inout maps: Array<LoweredMap>,
+  inout sets: Array<LoweredSet>,
+  inout enums: Array<LoweredEnum>,
+  inout structs: Array<LoweredStruct>
+): void throws String {
+  const unsettledTypeParameters = programGenericTypeParameterNames(program);
+  for (const name of names) {
+    if (typeContainsGenericParameter(name, unsettledTypeParameters)) continue;
+    try collectIntrinsicTypeName(program, importedTypes, name, inout fixedArrays, inout arrays,
+      inout slices, inout maps, inout sets, inout enums, inout structs);
+  }
+}
+
 function collectIntrinsicEnums(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -37511,6 +37570,10 @@ function appendLoweredProgramBody(
       program,
       methodImportedTypes
     );
+    if (useIndex < structInstances.length) {
+      try collectInferredInstanceTypes(program, methodImportedTypes, structInstances[useIndex].inferredTypes,
+        inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
+    }
     match (in aggregate.constructorDeclaration) {
       some(source) => for (const parameter of source.parameters) {
         try collectProgramFunctionTypeName(
@@ -38191,6 +38254,7 @@ function appendDeferredGenericMethod(
   in genericStructUses: Array<LoweredGenericStructUse>,
   in use: LoweredGenericMethodUse,
   in evidence: ModuleSemanticEvidence,
+  in inferredTypes: Array<String>,
   in nativeCExportNames: Array<String>,
   in privateTypeCollisionNames: Array<String>,
   moduleIndex: usize,
@@ -38294,6 +38358,8 @@ function appendDeferredGenericMethod(
       inout enums,
       inout structs
     );
+    try collectInferredInstanceTypes(program, methodImportedTypes, inferredTypes,
+      inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
     const ownerName = semanticMethodOwnerName(
       aggregate.name,
       method.name
@@ -38346,6 +38412,7 @@ function appendDeferredGenericFunction(
   in importedTypes: Array<LoweredImportedType>,
   in use: LoweredGenericFunctionUse,
   in evidence: ModuleSemanticEvidence,
+  in inferredTypes: Array<String>,
   in nativeCExportNames: Array<String>,
   moduleIndex: usize,
   entryIndex: usize,
@@ -38392,6 +38459,8 @@ function appendDeferredGenericFunction(
     inout enums,
     inout structs
   );
+  try collectInferredInstanceTypes(program, specializedTypes, inferredTypes,
+    inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
   const suffix = try genericCallableSpecializationSuffix(
     program,
     specializedTypes,
@@ -38716,6 +38785,7 @@ function validateGenericDemandExpressions(
       checked: false,
       lifecycle: emptySemanticEvidence(),
       methods: Array<ModuleSemanticEvidence>(),
+      inferredTypes: Array<String>(),
     });
     for (const aggregate of parsed[use.ownerModuleIndex].program.aggregates) {
       if (aggregate.name != use.ownerName) continue;
@@ -38748,6 +38818,7 @@ function validateGenericDemandExpressions(
             }
             none => {}
           }
+          appendInferredTypeNames(lifecycleEvidence, inout structEvidence.inferredTypes);
           let merged = move lifecycleEvidence;
           appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
           structEvidence.lifecycle = move merged;
@@ -38770,6 +38841,7 @@ function validateGenericDemandExpressions(
               success => {}
               failure(error) => throw genericDemandError(error, aggregate.name, use.typeParameters, use.typeArguments);
             }
+            appendInferredTypeNames(instanceEvidence, inout structEvidence.inferredTypes);
             let merged = move instanceEvidence;
             appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
             structEvidence.methods.push(move merged);
@@ -38789,6 +38861,7 @@ function validateGenericDemandExpressions(
   }
   for (const use of demands.functions) {
     let checkedEvidence = emptySemanticEvidence();
+    let checkedTypes = LoweredInstanceTypes({ names: Array<String>() });
     for (const declaration of parsed[use.ownerModuleIndex].program.functions) {
       if (declaration.name != use.name) continue;
       const ownerArguments = ownerSpelledArguments(graph, use.consumerModuleIndex, use.ownerModuleIndex, use.typeArguments);
@@ -38802,6 +38875,7 @@ function validateGenericDemandExpressions(
             success => {}
             failure(error) => throw genericDemandError(error, declaration.name, use.typeParameters, use.typeArguments);
           }
+          appendInferredTypeNames(instanceEvidence, inout checkedTypes.names);
           let merged = move instanceEvidence;
           appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
           checkedEvidence = move merged;
@@ -38817,9 +38891,11 @@ function validateGenericDemandExpressions(
       }
     }
     instances.functions.push(move checkedEvidence);
+    instances.functionTypes.push(move checkedTypes);
   }
   for (const use of demands.methods) {
     let checkedEvidence = emptySemanticEvidence();
+    let checkedTypes = LoweredInstanceTypes({ names: Array<String>() });
     for (const aggregate of parsed[use.ownerModuleIndex].program.aggregates) {
       if (aggregate.name != use.ownerName) continue;
       for (const method of aggregate.methods) {
@@ -38846,6 +38922,7 @@ function validateGenericDemandExpressions(
               success => {}
               failure(error) => throw genericDemandError(error, method.name, parameters, use.allTypeArguments);
             }
+            appendInferredTypeNames(instanceEvidence, inout checkedTypes.names);
             let merged = move instanceEvidence;
             appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
             checkedEvidence = move merged;
@@ -38862,6 +38939,7 @@ function validateGenericDemandExpressions(
       }
     }
     instances.methods.push(move checkedEvidence);
+    instances.methodTypes.push(move checkedTypes);
   }
 }
 
@@ -38874,6 +38952,8 @@ export function checkGenericDemandInstances(
     functions: Array<ModuleSemanticEvidence>(),
     methods: Array<ModuleSemanticEvidence>(),
     structs: Array<LoweredStructInstanceEvidence>(),
+    functionTypes: Array<LoweredInstanceTypes>(),
+    methodTypes: Array<LoweredInstanceTypes>(),
   });
   const demandsOutcome = attempt collectGenericDemands(parsed, graph);
   const demands = match (demandsOutcome) {
@@ -38901,6 +38981,8 @@ function lowerCheckedModules(
     functions: Array<ModuleSemanticEvidence>(),
     methods: Array<ModuleSemanticEvidence>(),
     structs: Array<LoweredStructInstanceEvidence>(),
+    functionTypes: Array<LoweredInstanceTypes>(),
+    methodTypes: Array<LoweredInstanceTypes>(),
   });
   const validated = attempt validateGenericDemandExpressions(parsed, graph, demands, inout instances);
   match (validated) {
@@ -39205,6 +39287,7 @@ function lowerModulesIncludingTests(
         genericStructUses,
         use,
         methodEvidence,
+        instances.methodTypes[useIndex].names,
         nativeCExportNames,
         privateTypeCollisionNames,
         genericOwnerModuleIndex,
@@ -39285,6 +39368,7 @@ function lowerModulesIncludingTests(
         importedTypes,
         use,
         functionEvidence,
+        instances.functionTypes[useIndex].names,
         nativeCExportNames,
         genericOwnerModuleIndex,
         entryIndex,
