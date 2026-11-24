@@ -1377,6 +1377,22 @@ function placedResultSelectBindingName(): String {
   return "__z_native_placed_result_select";
 }
 
+// A function-like body starts with no `select` target of its own: the value
+// loop, placed block, or async scope around it is not one it can leave.
+function closedSelectTarget(): String {
+  return "__z_native_no_select_target";
+}
+
+function selectHasTarget(in bindings: Array<NativeValueBinding>): boolean {
+  const name = loopSelectTypeBindingName();
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) return bindings[index].typeName != closedSelectTarget();
+  }
+  return false;
+}
+
 function regionControlFlowBindingName(): String {
   return "__z_native_region_control_flow";
 }
@@ -10052,6 +10068,9 @@ function inferExpressionNodeType(
       parameterIndex = parameterIndex + 1;
     }
     addValueBinding(inout closureBindings, "__z_native_function_name", "closure");
+    const closureSelectBinding = loopSelectTypeBindingName();
+    const noSelectTarget = closedSelectTarget();
+    addValueBinding(inout closureBindings, closureSelectBinding, noSelectTarget);
     addValueBinding(inout closureBindings, "__z_native_return_type", returnType);
     if (closureSignature.errorType.byteLength > 0) {
       addValueBinding(
@@ -15126,6 +15145,17 @@ function inferStatement(
       none => {}
     }
     return true;
+  }
+  if (kind == StatementKind.selectStatement && !selectHasTarget(bindings)) {
+    // A block's final `select` is its value and never reaches here; this one
+    // has no value loop, placed block, or async scope value to leave.
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "select requires an enclosing value-producing block",
+      arena.nodes[index].line,
+      arena.nodes[index].column
+    );
   }
   if (kind == StatementKind.returnStatement || kind == StatementKind.selectStatement) {
     match (in arena.nodes[index].expression) {

@@ -782,6 +782,42 @@ test("names the parameter when an inout argument has no binding to name", () => 
     ["self-host-resolve"]);
 }, 240_000);
 
+test("rejects a select with no value to give in both compilers", () => {
+  const message = /\.zs:\d+:\d+: (error: )?select requires an enclosing value-producing block/;
+  rejects(`
+    function main(): i32 {
+      select 42;
+      return 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+  // Only an arm block's final `select` is the arm's value.
+  rejects(`
+    enum Kind { one, two }
+    function main(): i32 {
+      const kind = Kind.two;
+      const value = match (kind) {
+        one => 1;
+        two => {
+          if (kind == Kind.two) {
+            select 7;
+          }
+          select 2;
+        }
+      };
+      return value;
+    }
+  `, message, message, ["self-host-resolve"]);
+  // A statement-form scope has no value.
+  rejects(`
+    async function main(): i32 {
+      async scope {
+        select 3;
+      }
+      return 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+}, 240_000);
+
 test("reports an explicit Map copy native cannot lower as Z1000", () => {
   const directory = mkdtempSync("/tmp/z-native-map-copy-");
   try {

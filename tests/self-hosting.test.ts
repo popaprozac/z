@@ -11598,6 +11598,9 @@ test("runs native-only fixtures and reports tier limits through the standalone n
       /must `select` a value on every path/],
     ["const v = async scope { select 1; };", /error\[Z0703\]: async scope requires an enclosing async function/,
       "function main(): i32"],
+    // A closure's body is its own function: the scope is not its target.
+    ["const v = async scope { const pick = (value: i32): i32 => { select value; }; select pick(1); };",
+      /scope-value-reject\.zs:\d+:\d+: error: select requires an enclosing value-producing block/],
     ["const updates = 1; const v = async scope updates { select 1; };", /duplicate local "updates"/],
     ["const v = async scope updates { select 1; }; const again = updates;", /unknown name updates/],
   ];
