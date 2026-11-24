@@ -297,6 +297,10 @@ Z's native compiler can rebuild its own Z implementation; consecutive compiler
 generations must emit identical C. That proves self-compilation, not complete
 feature parity with the TypeScript Stage 0 compiler.
 
+Stage 0 has been frozen since 2026-11-23: new language behavior lands in the
+native compiler only, and Stage 0 changes only when it blocks the bootstrap or
+a test reference. Finishing the native compiler comes ahead of new features.
+
 Some language features still require Stage 0, and foreign metadata/Swift
 preparation still depend on TypeScript tooling. The packaged header adapter
 currently includes Bun's standalone runtime. Generated Z applications do not

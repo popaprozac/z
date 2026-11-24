@@ -168,9 +168,27 @@ function respond(selection: Option<String>): Response {
 Only the selected arm runs. Its `select` supplies the payload; an explicit
 `return` still exits `respond` instead. Cleanup applies on both paths.
 
-The native compiler currently supports this enum-constructor shape in bindings
-and returns, including nested enum constructors. General nested matches in
-arbitrary call arguments and short-circuit expressions remain a later tier.
+In the native compiler a match value may sit wherever an expression may: a
+call or method argument, an operand, a field or element initializer, a
+template part, an `if` condition, a thrown value, a loop's source, or a
+pattern's source:
+
+```z
+console.log(describe(count, match (kind) {
+  one => "single";
+  two => "pair";
+}));
+```
+
+It runs where it is written, left to right with the rest of the expression. In
+an arm of `?:` or the right operand of `&&` or `||` it runs only when that
+branch does. `return`, `throw`, `break`, and `continue` in an arm keep their
+meaning, and what the expression had already computed is released.
+
+Three positions are rejected with `Z1000`: a `while` condition, a closure's
+expression body, and inside the value of another value-producing match's arm
+(anywhere but that whole value). Bind the match with `const` or `let` first.
+In an async function the arms of such a match may not suspend.
 
 Payload-free enums support nominal `==` and `!=`. Payload-bearing enums use
 `match`; Z does not invent equality semantics for arbitrary payload graphs.

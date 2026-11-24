@@ -56,15 +56,16 @@ technical and transient than the language guide.
 | Native interop safety tiers | [Interop model](https://github.com/popaprozac/z/blob/main/docs/interop-model.md) |
 | `.zd` vocabulary and contracts | [Z declarations](https://github.com/popaprozac/z/blob/main/docs/z-declarations.md) |
 | Exporting a C ABI from Z | [C exports](https://github.com/popaprozac/z/blob/main/docs/c-exports.md) |
-| Performance methodology and evidence | [Performance](https://github.com/popaprozac/z/blob/main/docs/performance.md) |
-| Real-program ownership findings | [Ownership pressure](https://github.com/popaprozac/z/blob/main/docs/ownership-pressure.md) |
+| Performance methodology | [Performance](https://github.com/popaprozac/z/blob/main/docs/performance.md) |
 
 These repository documents will move into fully navigable website reference
 pages incrementally. Linking the maintained sources now avoids publishing a
 second stale copy during that migration.
 
-The [September 8 benchmark refresh](https://github.com/popaprozac/z/blob/main/docs/performance.md#compiler-and-runtime-benchmark-refresh--2026-09-08)
-includes separate compiler build-latency and release-runtime suites. The build
+The September 8 benchmark refresh includes separate compiler
+[build-latency](https://github.com/popaprozac/z/blob/main/benchmarks/results/build-latency-2026-09-08.md)
+and [release-runtime](https://github.com/popaprozac/z/blob/main/benchmarks/results/checkpoint-2026-09-08-macos-arm64.md)
+suites. The build
 matrix distinguishes fresh project caches, unchanged rebuilds, source/header
 changes, and profile switches; runtime results include raw samples and allocation
 counts. These are workload-specific measurements, not universal speed claims.

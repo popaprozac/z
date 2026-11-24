@@ -314,8 +314,7 @@ small educational consumer rather than the implementation home.
 
 [`desktop-ownership`](../examples/interop/objc/desktop-ownership) combines an ARC-managed Z
 application model, move-only documents and strings, borrowed enumeration, and
-an AppKit shell. Its findings are recorded in
-[`ownership-pressure.md`](ownership-pressure.md); it exists to pressure-test the
+an AppKit shell. It exists to pressure-test the
 ownership model rather than present a finished framework API.
 
 [`ownership-views.zs`](../examples/interop/objc/desktop-ownership/ownership-views.zs) compares four lookup
