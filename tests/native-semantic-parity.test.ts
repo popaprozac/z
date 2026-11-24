@@ -768,6 +768,20 @@ test("rejects calling a local value that shadows a function", () => {
   }
 }, 240_000);
 
+test("names the parameter when an inout argument has no binding to name", () => {
+  // An indexed element is not a mutable binding; there is no name to quote.
+  rejects(`
+    struct Entity { name: String; hp: i32; }
+    function heal(inout entity: Entity): void { entity.hp = entity.hp + 1; }
+    function main(): i32 {
+      let values = Array<Entity>(Entity({ name: "a", hp: 1 }));
+      heal(inout values[0]);
+      return 0;
+    }
+  `, /"heal" requires inout <mutable binding> for parameter 1/, /"heal" requires inout <mutable binding> for parameter 1/,
+    ["self-host-resolve"]);
+}, 240_000);
+
 test("reports an explicit Map copy native cannot lower as Z1000", () => {
   const directory = mkdtempSync("/tmp/z-native-map-copy-");
   try {

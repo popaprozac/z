@@ -582,9 +582,11 @@ additionally require sendability before these pointer-backed borrows can leave
 one thread.
 
 Classes and structs may declare async methods. A class receiver is retained by
-the task frame. A struct async instance method must initially declare `move
-this`, transferring its value into the frame; static async methods on either
-kind have no receiver restriction. `deinit` is never async.
+the task frame; with `inout this` the method writes through it across its
+suspensions, and a method may await other methods on `this`. A struct async
+instance method must initially declare `move this`, transferring its value into
+the frame; static async methods on either kind have no receiver restriction.
+`deinit` is never async.
 
 ## Bounded channels and planned actors
 

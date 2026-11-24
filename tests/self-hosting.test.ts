@@ -7986,26 +7986,30 @@ test("requests native worker cancellation and joins owned cleanup", () => {
         { encoding: "utf8", input: emission.stdout },
       );
       assert.equal(compilation.status, 0, compilation.stderr);
-      const execution = spawnSync(executable, [], { encoding: "utf8" });
-      assert.equal(execution.status, 0, execution.stderr);
-      if (fixture == "self-host-emit-thread-cancel-main.zs") {
-        assert.equal(
-          execution.stdout,
-          "entered main segment\nreleased pending main request\n",
-        );
+      // The worker's request to run on the main thread is still queued when
+      // the main thread cancels the worker. The placed call then either
+      // starts and is cancelled at its first suspension, or is withdrawn
+      // before it starts: which one is a race between the two threads, and
+      // both are correct. The first exercises the frame's cleanup and is the
+      // usual one (about 19 runs in 20), so it has to show up.
+      const outcomes: Record<string, [string, string]> = {
+        "self-host-emit-thread-cancel-main.zs": ["entered main segment\nreleased pending main request\n", ""],
+        "self-host-emit-thread-cancel-main-match.zs": [
+          "entered match main segment\nreleased match payload frame\n", "released match payload frame\n",
+        ],
+        "self-host-emit-thread-cancel-main-while.zs": ["entered loop main segment\nreleased loop frame 1\n", ""],
+      };
+      // The first fixture cancels a worker that places nothing: one run.
+      const expected = outcomes[fixture];
+      let sawStarted = expected === undefined;
+      for (let run = 0; run < 6 && (run == 0 || !sawStarted); run += 1) {
+        const execution = spawnSync(executable, [], { encoding: "utf8" });
+        assert.equal(execution.status, 0, execution.stderr);
+        if (expected === undefined) continue;
+        if (execution.stdout === expected[0]) sawStarted = true;
+        else assert.equal(execution.stdout, expected[1], fixture);
       }
-      if (fixture == "self-host-emit-thread-cancel-main-match.zs") {
-        assert.equal(
-          execution.stdout,
-          "entered match main segment\nreleased match payload frame\n",
-        );
-      }
-      if (fixture == "self-host-emit-thread-cancel-main-while.zs") {
-        assert.equal(
-          execution.stdout,
-          "entered loop main segment\nreleased loop frame 1\n",
-        );
-      }
+      assert.ok(sawStarted, `${fixture}: the placed call never started before its cancellation`);
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -11453,6 +11457,9 @@ test("runs the parity fixtures identically through Stage 0 and the standalone na
     // A block-bodied async closure is a reusable value: each call runs the
     // block as a frame, and captured state carries over to the next call.
     "tests/fixtures/native-async-block-closures.zs",
+    "tests/fixtures/native-async-inout-methods.zs",
+    "tests/fixtures/native-generic-inferred-types/main.zs",
+    "tests/fixtures/native-generic-private-argument/main.zs",
     // A Mutex passed on by value moves to the callee, which drops it; a
     // channel sender is shared, and the channel is released with its last
     // holder.

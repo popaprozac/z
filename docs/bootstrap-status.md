@@ -392,7 +392,10 @@ declaration-order sensitivity, and synchronous throwing methods lower through
 the same `Result<T, E>` ABI as ordinary throwing functions. The maintained
 message router proves this with an ARC `Router` owning
 `Map<String, Handler>`. The bounded direct-awaited ARC async-method tier now
-also carries typed `throws` results through the same `Result<T, E>` ABI;
+also carries typed `throws` results through the same `Result<T, E>` ABI. The
+native compiler awaits a class method declared with `inout this` (the receiver
+is the object's address in either borrow mode), and a method that awaits other
+methods on `this` keeps a blocking entry whose awaits have their own helper;
 broader suspending method bodies remain staged. Imported transparent callable
 aliases also retain the source
 signature required for contextual closure lowering while sharing the declaring

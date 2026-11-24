@@ -6444,6 +6444,17 @@ function inferSignatureCallType(
           capabilityOwnerType
         )
         && !valueBindingIsBorrowed(bindings, bindingName);
+      // An argument with no binding at its root, such as an indexed element,
+      // has no name to report: it is not a mutable binding at all.
+      if (bindingName.byteLength == 0) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `"${functionName}" requires ${mode} <mutable binding> for parameter ${argumentIndex + 1}`,
+          tree.nodes[bindingIndex].line,
+          tree.nodes[bindingIndex].column
+        );
+      }
       if (
         !valueBindingIsMutable(bindings, bindingName)
         && !ownedClassProjection
