@@ -597,6 +597,11 @@ export function recordExpressionResolution(
 // `async` keyword. Evidence is keyed by offset, and an expression that begins
 // with the scope (`async scope { ... } > 3`) starts at the scope's own
 // offset; no expression starts inside a keyword, so each keeps its record.
+// Where `attempt async scope` records the error type the scope fails with.
+export function asyncScopeErrorOffset(offset: usize): usize {
+  return offset + 2;
+}
+
 export function asyncScopeValueOffset(offset: usize): usize {
   return offset + 1;
 }

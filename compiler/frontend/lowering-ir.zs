@@ -87,7 +87,7 @@ import {
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
-import { asyncScopeValueOffset, callableIdentifierLocation, emptySemanticEvidence } from "./semantic-evidence.zs";
+import { asyncScopeErrorOffset, asyncScopeValueOffset, callableIdentifierLocation, emptySemanticEvidence } from "./semantic-evidence.zs";
 import {
   collectionMethodSignature,
   numericBitsType,
@@ -6169,6 +6169,28 @@ struct CallableReturnContext {
   scopeSelects: Array<usize> = Array<usize>();
   scopeSelectName: String = "";
   scopeSelectType: String = "";
+  // Whether that scope is attempted: its `select` then gives `success(value)`.
+  scopeSelectAttempted: boolean = false;
+  // Inside `attempt async scope`, however deep: the local a failing `try` or
+  // `throw` gives `failure(error)` to, that local's Result type, and the
+  // error type.
+  scopeFailureName: String = "";
+  scopeFailureResult: String = "";
+  scopeFailureError: String = "";
+}
+
+// The Result a failing `try` writes: the attempted scope's when inside one,
+// else the enclosing callable's.
+function contextualFailureResult(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in ownerName: String,
+  in context: CallableReturnContext
+): Option<LoweredEnum> throws String {
+  if (context.scopeFailureResult.byteLength > 0) {
+    return try intrinsicResultDeclaration(program, importedTypes, context.scopeFailureResult);
+  }
+  return try contextualThrowingFunctionResult(program, importedTypes, ownerName, context);
 }
 
 function contextualReturnTypeName(
@@ -7049,6 +7071,25 @@ function loweredStatementHasLabel(
   return false;
 }
 
+// The block that binds a pattern's fields, or the statement count. A source
+// that hoists a `try`, an await, or a scope wraps that block in a normalized
+// one; the bindings still belong to the enclosing sequence.
+function destructurePatternBlock(in statements: Array<LoweredStatement>, lowered: usize): usize {
+  let index = lowered;
+  while (
+    statements[index].kind == LoweredStatementKind.blockStatement
+    && loweredStatementHasLabel(statements[index], "nested-try-normalized")
+    && statements[index].children.length > 0
+  ) {
+    index = statements[index].children[statements[index].children.length - 1];
+  }
+  if (
+    statements[index].kind == LoweredStatementKind.blockStatement
+    && loweredStatementHasLabel(statements[index], "destructure-normalized")
+  ) return index;
+  return statements.length;
+}
+
 function planNestedPreludeSequence(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -7374,6 +7415,14 @@ function planCleanupStatement(
         arena.nodes[sourceIndex].kind == StatementKind.variableStatement
         && cleanup.name == arena.nodes[sourceIndex].name
       ) continue;
+      // Nor does a pattern's prelude own the fields the pattern will bind.
+      let bound = false;
+      if (arena.nodes[sourceIndex].kind == StatementKind.destructureStatement) {
+        for (const binding of arena.nodes[sourceIndex].objectBindings) {
+          if (binding.bindingName == cleanup.name) bound = true;
+        }
+      }
+      if (bound) continue;
       preludeLive.push(copyCleanup(cleanup));
     }
     let normalizedRoots = Array<usize>();
@@ -7738,14 +7787,11 @@ function planCleanupSequence(
       }
     } else if (
       arena.nodes[sourceIndex].kind == StatementKind.destructureStatement
-      && statements[loweredIndex].kind == LoweredStatementKind.blockStatement
-      && loweredStatementHasLabel(
-        statements[loweredIndex],
-        "destructure-normalized"
-      )
+      && destructurePatternBlock(statements, loweredIndex) < statements.length
     ) {
+      const patternBlock = destructurePatternBlock(statements, loweredIndex);
       let destructureChildren = Array<usize>();
-      for (const child of statements[loweredIndex].children) {
+      for (const child of statements[patternBlock].children) {
         destructureChildren.push(child);
       }
       for (const child of destructureChildren) {
@@ -10596,6 +10642,11 @@ function resolvedExpressionResolutionIndex(
   const offset = tree.nodes[index].kind == ExpressionKind.asyncScopeExpression
     ? asyncScopeValueOffset(tree.nodes[index].offset)
     : tree.nodes[index].offset;
+  return evidenceResolutionAt(evidence, offset);
+}
+
+// The checked type recorded at a source offset, or the resolution count.
+function evidenceResolutionAt(in evidence: ModuleSemanticEvidence, offset: usize): usize {
   const found = evidence.expressionResolutionIndices.get(offset);
   match (in found) {
     some(resolutionIndex) => return resolutionIndex;
@@ -13066,8 +13117,14 @@ function lowerExpressionNode(
   }
   // A value-producing scope ran ahead of this statement; its value is read
   // from the frame temporary that prelude filled (appendScopeValuePreludes).
-  if (tree.nodes[index].kind == ExpressionKind.asyncScopeExpression) {
-    const bindingName = scopeValueBindingName(tree.nodes[index].offset);
+  let ranScope = index;
+  if (tree.nodes[ranScope].kind == ExpressionKind.attemptExpression && tree.nodes[ranScope].children.length == 1
+    && tree.nodes[tree.nodes[ranScope].children[0]].kind == ExpressionKind.asyncScopeExpression) {
+    // `attempt async scope`: that temporary already holds the Result.
+    ranScope = tree.nodes[ranScope].children[0];
+  }
+  if (tree.nodes[ranScope].kind == ExpressionKind.asyncScopeExpression) {
+    const bindingName = scopeValueBindingName(tree.nodes[ranScope].offset);
     let candidate = output.length;
     while (candidate > 0) {
       candidate = candidate - 1;
@@ -22187,7 +22244,7 @@ function lowerValueDestination(
             ownerName
           );
         };
-        const outerResult = try contextualThrowingFunctionResult(
+        const outerResult = try contextualFailureResult(
           program,
           importedTypes,
           ownerName,
@@ -27257,7 +27314,7 @@ function appendNestedTryPreludeTree(
     inout nested
   );
   if (nested.length == 0) return;
-  const outerResult = try contextualThrowingFunctionResult(
+  const outerResult = try contextualFailureResult(
         program,
         importedTypes,
         ownerName,
@@ -27529,6 +27586,15 @@ function loweredStatementDirectlyTransfersBinding(
   index: usize,
   in name: String
 ): boolean {
+  // A pattern's hidden owner takes the whole value; the fields move out of
+  // that owner, so the value's first holder must not release it as well.
+  if (statements[index].kind == LoweredStatementKind.blockStatement
+    && loweredStatementHasLabel(statements[index], "destructure-normalized")
+    && statements[index].children.length > 0
+    && loweredStatementHasLabel(statements[statements[index].children[0]], "destructure-source")) {
+    return loweredStatementDirectlyTransfersBinding(expressions, statements,
+      statements[index].children[0], name);
+  }
   let value = Option<usize>.none;
   if (statements[index].kind == LoweredStatementKind.localStatement) {
     match (in statements[index].expression) {
@@ -27866,6 +27932,9 @@ function emptyLoweredStatement(kind: LoweredStatementKind): LoweredStatement {
 // scope's local, then control leaves the scope through its exit, which joins
 // the scope's children first. One lowered statement carries both, so cleanup
 // planning still pairs it with its source statement.
+//
+// In an attempted scope the value is `success(value)`, and a `throw` is the
+// same statement giving `failure(error)` to the attempted scope's local.
 function lowerScopeSelect(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -27874,6 +27943,7 @@ function lowerScopeSelect(
   in ownerName: String,
   in context: CallableReturnContext,
   index: usize,
+  failure: boolean,
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
@@ -27882,17 +27952,33 @@ function lowerScopeSelect(
       some(tree) => {
         const expressionStart = expressions.length;
         const root = tree.root;
+        const valueTypeName = failure ? copy context.scopeFailureError : copy context.scopeSelectType;
         let value = try lowerExpressionExpected(program, importedTypes, evidence, tree, root,
-          context.scopeSelectType, inout expressions);
-        value = try wrapOwnedStorage(program, importedTypes, tree, root, context.scopeSelectType, value,
+          valueTypeName, inout expressions);
+        value = try wrapOwnedStorage(program, importedTypes, tree, root, valueTypeName, value,
           inout expressions);
         try completeNativeClosureBlocks(program, importedTypes, evidence, arena, ownerName, context,
           index, expressionStart, inout expressions, inout statements);
         let lowered = emptyLoweredStatement(LoweredStatementKind.breakStatement);
-        lowered.type = Option.some(try lowerModuleTypeName(program, importedTypes, context.scopeSelectType));
+        let storedTypeName = copy valueTypeName;
+        if (failure || context.scopeSelectAttempted) {
+          const outcome = match (try intrinsicResultDeclaration(program, importedTypes, context.scopeFailureResult)) {
+            some(declaration) => declaration;
+            none => throw "native attempted async scope lost its Result type";
+          };
+          let payload = Array<usize>();
+          payload.push(value);
+          let variant = Array<String>();
+          variant.push(failure ? "failure" : "success");
+          value = pushExpression(inout expressions, LoweredExpressionKind.enumPayloadValue, outcome.name,
+            payload, variant);
+          storedTypeName = copy context.scopeFailureResult;
+        }
+        lowered.type = Option.some(try lowerModuleTypeName(program, importedTypes, storedTypeName));
         lowered.expression = Option.some(value);
         lowered.labels.push("scope-select");
-        lowered.labels.push(copy context.scopeSelectName);
+        lowered.labels.push(failure ? copy context.scopeFailureName : copy context.scopeSelectName);
+        if (failure) lowered.labels.push("scope-failure");
         const loweredIndex = statements.length;
         statements.push(move lowered);
         return loweredIndex;
@@ -28055,11 +28141,15 @@ function valueScopeSourceStatements(
   match (in arena.nodes[sourceIndex].expression) {
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
+        // A whole initializer is the scope, or `attempt` over it.
+        let scopeRoot = tree.root;
+        if (tree.nodes[scopeRoot].kind == ExpressionKind.attemptExpression
+          && tree.nodes[scopeRoot].children.length == 1) scopeRoot = tree.nodes[scopeRoot].children[0];
         let node: usize = 0;
         while (node < tree.nodes.length) {
           const selected = prelude
             ? tree.nodes[node].kind == ExpressionKind.asyncScopeExpression && `${tree.nodes[node].offset}` == local.labels[1]
-            : node == tree.root;
+            : node == scopeRoot;
           if (selected) {
             for (const statement of tree.nodes[node].statements) {
               owned.push(statement);
@@ -28107,8 +28197,27 @@ function lowerValueScopeLocal(
     some(name) => name;
     none => throw "native value-producing async scope lost its checked type";
   };
-  const type = try lowerModuleTypeName(program, importedTypes, typeName);
+  // `attempt async scope`: the local holds `Result<value, error>`.
+  let attempted = false;
+  for (const parent of tree.nodes) {
+    if (parent.kind == ExpressionKind.attemptExpression && parent.children.length == 1
+      && parent.children[0] == root) attempted = true;
+  }
+  let localTypeName = copy typeName;
   let childContext = copy context;
+  childContext.scopeSelectAttempted = attempted;
+  if (attempted) {
+    const decided = evidenceResolutionAt(evidence, asyncScopeErrorOffset(tree.nodes[root].offset));
+    if (decided >= evidence.expressionResolutions.length) {
+      throw "native attempted async scope lost its checked error type";
+    }
+    let errorTypeName = copy evidence.expressionResolutions[decided].typeName;
+    localTypeName = `Result<${typeName}, ${errorTypeName}>`;
+    childContext.scopeFailureName = copy name;
+    childContext.scopeFailureResult = copy localTypeName;
+    childContext.scopeFailureError = move errorTypeName;
+  }
+  const type = try lowerModuleTypeName(program, importedTypes, localTypeName);
   childContext.scopeSelectName = copy name;
   childContext.scopeSelectType = copy typeName;
   childContext.scopeSelects = Array<usize>();
@@ -28134,6 +28243,9 @@ function lowerValueScopeLocal(
   scopeBlock.name = copy tree.nodes[root].value;
   scopeBlock.labels.push("async-scope");
   scopeBlock.labels.push("value-scope");
+  if (attempted) scopeBlock.labels.push("attempt-scope");
+  // With no `select` the scope succeeds by reaching its end.
+  if (attempted && typeName == "void") scopeBlock.labels.push("attempt-void");
   scopeBlock.children.push(bodyIndex);
   const scopeIndex = statements.length;
   statements.push(move scopeBlock);
@@ -28217,18 +28329,28 @@ function lowerStatementWithResult(
         none => {}
       }
       const loweredSelect = try lowerScopeSelect(program, importedTypes, evidence, arena, ownerName, context, index,
-        inout expressions, inout statements);
+        false, inout expressions, inout statements);
       if (selectPreludes.length == 0) return loweredSelect;
       return wrapStatementPreludes(expressions, inout statements, selectPreludes, loweredSelect);
     }
   }
+  // A `throw` in an attempted scope fails the scope, not the function.
+  if (context.scopeFailureResult.byteLength > 0 && arena.nodes[index].kind == StatementKind.throwStatement) {
+    return try lowerScopeSelect(program, importedTypes, evidence, arena, ownerName, context, index,
+      true, inout expressions, inout statements);
+  }
   if (arena.nodes[index].kind == StatementKind.variableStatement) {
     match (in arena.nodes[index].expression) {
       some(syntax) => match (in syntax.tree) {
-        some(tree) => if (tree.nodes[tree.root].kind == ExpressionKind.asyncScopeExpression) {
-          return try lowerValueScopeLocal(program, importedTypes, evidence, arena, ownerName, context,
-            tree, tree.root, arena.nodes[index].name, arena.nodes[index].mutableBinding, false,
-            inout expressions, inout statements);
+        some(tree) => {
+          let scopeRoot = tree.root;
+          if (tree.nodes[scopeRoot].kind == ExpressionKind.attemptExpression
+            && tree.nodes[scopeRoot].children.length == 1) scopeRoot = tree.nodes[scopeRoot].children[0];
+          if (tree.nodes[scopeRoot].kind == ExpressionKind.asyncScopeExpression) {
+            return try lowerValueScopeLocal(program, importedTypes, evidence, arena, ownerName, context,
+              tree, scopeRoot, arena.nodes[index].name, arena.nodes[index].mutableBinding, false,
+              inout expressions, inout statements);
+          }
         }
         none => {}
       }
@@ -28264,7 +28386,10 @@ function lowerStatementWithResult(
             && (
               arena.nodes[index].kind == StatementKind.variableStatement
               || arena.nodes[index].kind == StatementKind.expressionStatement
-              || arena.nodes[index].kind == StatementKind.returnStatement
+              // In an attempted scope a returned `try` fails the scope, so
+              // it cannot hand the callee's Result to the function.
+              || (arena.nodes[index].kind == StatementKind.returnStatement
+                && context.scopeFailureResult.byteLength == 0)
             )
           ) includeRoot = false;
         }
@@ -28679,7 +28804,7 @@ function lowerStatementCore(
           importedTypes,
           sourceType
         );
-        const sourceValue = try lowerExpressionExpected(
+        const sourceRead = try lowerExpressionExpected(
           program,
           importedTypes,
           evidence,
@@ -28688,6 +28813,10 @@ function lowerStatementCore(
           sourceTypeName,
           inout expressions
         );
+        // The hidden owner takes the value: a value held in a statement
+        // temporary or a frame slot moves, so its first holder lets go.
+        const sourceValue = try wrapOwnedStorage(program, importedTypes, tree, root,
+          sourceTypeName, sourceRead, inout expressions);
         const temporaryName = `_z_destructure_${arena.nodes[index].offset}`;
         let flattened = Array<usize>();
         let temporaryLabels = Array<String>();
@@ -29217,7 +29346,7 @@ function lowerStatementCore(
               some(declaration) => declaration;
               none => throw "native assignment try lowering requires one direct throwing function call";
             };
-            const outerResult = try contextualThrowingFunctionResult(
+            const outerResult = try contextualFailureResult(
               program,
               importedTypes,
               ownerName,
@@ -29373,7 +29502,7 @@ function lowerStatementCore(
                   none => {}
                 }
               }
-              const outerResult = try contextualThrowingFunctionResult(
+              const outerResult = try contextualFailureResult(
                 program,
                 importedTypes,
                 ownerName,
@@ -29442,7 +29571,7 @@ function lowerStatementCore(
               && tree.nodes[root].children.length == 1
             ) {
               const attempted = tree.nodes[root].children[0];
-              const outerResult = try contextualThrowingFunctionResult(
+              const outerResult = try contextualFailureResult(
                 program,
                 importedTypes,
                 ownerName,
@@ -29790,6 +29919,7 @@ function lowerStatementCore(
             if (
               tree.nodes[root].kind == ExpressionKind.tryExpression
               && tree.nodes[root].children.length == 1
+              && context.scopeFailureResult.byteLength == 0
             ) {
               const attempted = tree.nodes[root].children[0];
               loweredValue = try lowerExpression(

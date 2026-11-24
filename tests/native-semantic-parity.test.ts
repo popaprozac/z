@@ -782,6 +782,96 @@ test("names the parameter when an inout argument has no binding to name", () => 
     ["self-host-resolve"]);
 }, 240_000);
 
+test("rejects a select with no value to give in both compilers", () => {
+  const message = /\.zs:\d+:\d+: (error: )?select requires an enclosing value-producing block/;
+  rejects(`
+    function main(): i32 {
+      select 42;
+      return 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+  // Only an arm block's final `select` is the arm's value.
+  rejects(`
+    enum Kind { one, two }
+    function main(): i32 {
+      const kind = Kind.two;
+      const value = match (kind) {
+        one => 1;
+        two => {
+          if (kind == Kind.two) {
+            select 7;
+          }
+          select 2;
+        }
+      };
+      return value;
+    }
+  `, message, message, ["self-host-resolve"]);
+  // A statement-form scope has no value.
+  rejects(`
+    async function main(): i32 {
+      async scope {
+        select 3;
+      }
+      return 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+}, 240_000);
+
+test("requires copy or move to destructure a named owner in both compilers", () => {
+  const message = /destructuring owned Named requires explicit copy or move/;
+  rejects(`
+    struct Named { name: String; count: i32; }
+    function main(): i32 {
+      const whole = Named({ name: "owned", count: 1 });
+      const { name, count } = whole;
+      return name.byteLength == 5 ? count : 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+  // A field of a named owner is named storage too.
+  rejects(`
+    struct Named { name: String; count: i32; }
+    struct Outer { inner: Named; }
+    function main(): i32 {
+      const outer = Outer({ inner: Named({ name: "owned", count: 1 }) });
+      const { name, count } = outer.inner;
+      return name.byteLength == 5 ? count : 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+}, 240_000);
+
+test("reports a match value native cannot place as Z1000", () => {
+  // Stage 0 rejects most of these outright ("match must be the direct value
+  // of a binding, return, or expression statement"); it runs the last two.
+  const value = "match (kind) { one => 1; two => 2; }";
+  const bodies = [
+    `return id(${value});`,
+    `const sum = 1 + ${value}; return sum;`,
+    `if (${value} == 2) { return 5; } return 6;`,
+    `const flag = true; const picked = flag ? ${value} : 0; return picked;`,
+    `const text = \`v \${${value}}\`; return text.byteLength == 3 ? 1 : 0;`,
+    `const pick = (kind: Kind): i32 => ${value}; return pick(kind);`,
+    `return unbox(Option.some(${value}));`,
+  ];
+  const directory = mkdtempSync("/tmp/z-native-match-position-");
+  try {
+    const input = resolve(directory, "main.zs");
+    for (const body of bodies) {
+      writeFileSync(input, `
+        enum Kind { one, two }
+        function id(value: i32): i32 { return value; }
+        function unbox(boxed: Option<i32>): i32 { return match (boxed) { some(value) => value; none => 0; }; }
+        function run(kind: Kind): i32 { ${body} }
+        function main(): i32 { return run(Kind.two); }
+      `);
+      const emitted = native("self-host-emit", input);
+      assert.equal(emitted.status, 1, `${body}: ${emitted.stdout}`);
+      assert.match(emitted.stderr, /main\.zs:\d+:\d+: error\[Z1000\]: a match value is not executable here in the native compiler yet; bind it with `const` or `let` first/, body);
+      assert.doesNotMatch(emitted.stderr, /internal compiler error/, body);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 test("reports an explicit Map copy native cannot lower as Z1000", () => {
   const directory = mkdtempSync("/tmp/z-native-map-copy-");
   try {

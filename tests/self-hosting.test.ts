@@ -11561,12 +11561,60 @@ test("runs native-only fixtures and reports tier limits through the standalone n
     "checked one", "checked two", "chain false false",
     "checked if", "entered", "",
   ].join("\n"));
+  // An object pattern whose source suspends: an awaited call or task, `try
+  // await`, a scope's value; at the function root and in branches and loops.
+  const destructureAwaitedRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-destructure-awaited.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(destructureAwaitedRun.status, 0, destructureAwaitedRun.stderr);
+  assert.equal(destructureAwaitedRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "plain 12", "owned name 3 x3", "partial label 4", "renamed 56", "joined name 6",
+    "fallible checked 7 x7", "fallible failed", "direct made 8 x8", "direct failed",
+    "explicit name 9 name 10 name 10", "scoped name 11 11 12",
+    "branch name 12 x12 none", "loop label 1", "loop label 2", "loop 3",
+    "receipt 0 title 0", "released receipt 0", "scope ended",
+    "receipt 1 title 1", "released receipt 1", "scope ended",
+    "returns label 13 late", "synchronous local 14 spare 14",
+    "waits label 15", "waits label 16", "cancelled",
+    "throwing label 17", "throwing failed", "",
+  ].join("\n"));
+  // `attempt async scope`: a `try` or `throw` inside fails the scope, which
+  // cancels and joins its children and gives `failure(error)`.
+  const scopeAttemptRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-scope-attempt.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(scopeAttemptRun.status, 0, scopeAttemptRun.stderr);
+  assert.equal(scopeAttemptRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "lingering 1 started", "lingering 1 finished", "lingering 1 started", "values 3 -1",
+    "noted work passing", "noted work failing", "work done failed",
+    "noted thrown", "thrown 5 -5",
+    "noted owned", "noted owned", "owned described value | described failed 7",
+    "annotated 3 -3",
+    "lingering 2 started", "noted outer", "noted inner", "lingering 2 finished",
+    "lingering 2 started", "noted outer", "noted inner", "nested 4 -4",
+    "noted pass 0", "noted pass 1", "noted pass 2", "loops 122",
+    "noted argument", "noted argument", "argument success 1 | failure",
+    "noted returned", "noted returned", "returned success 2 | failure",
+    "noted leaves", "noted leaves", "noted leaves", "leaves 40 3 -3",
+    "noted mixed", "noted mixed", "noted mixed", "mixed 13 -9 -99",
+    "noted several", "noted several", "noted several", "several 11 -5 -5",
+    "noted layered outer", "noted layered inner", "noted layered outer", "noted layered inner",
+    "noted layered outer", "noted layered inner", "layered 8 71 -7",
+    "operation 1", "operation 1", "named 2 -2",
+    "label 0 after 0", "label 2 after 2", "releases 102",
+    "steady 1 started", "steady 2 started", "steady 1 finished", "outside 10",
+    "waiting", "cancelled", "",
+  ].join("\n"));
   // The Stage 0 parser stops at this form, so its rules are checked here,
   // through the driver, rather than through the Stage 0-hosted commands.
   const scopeValueProgram = (body: string, signature = "async function main(): i32") => `
     async function load(value: i32): i32 { return value; }
     function id(value: i32): i32 { return value; }
     enum Kind { one, two }
+    enum Failure { broken }
+    enum Other { odd }
+    async function checked(value: i32): i32 throws Failure { return value; }
+    async function odd(): i32 throws Other { return 9; }
     ${signature} {
       ${body}
       return 0;
@@ -11582,8 +11630,9 @@ test("runs native-only fixtures and reports tier limits through the standalone n
     ["const v: String = async scope { select 1; };", /expected String, found i32/],
     ["let round = 0; while (round < 2) { const v = async scope { if (round == 1) break; select 1; }; round = round + 1; }",
       /cannot be left with `break` or `continue`/],
-    // Where the scope would run repeatedly, in a closure, or into a pattern.
-    ["const { length } = async scope { select \"text\"; };",
+    // Where the scope would run repeatedly, in a closure, or into a
+    // positional pattern.
+    ["const [first, second] = async scope { select Array<i32>(1, 2); };",
       /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
     // A frame stores one binding per name; the message says which repeats.
     ["const a = async scope { const pending = task load(1); select await pending; };"
@@ -11598,6 +11647,21 @@ test("runs native-only fixtures and reports tier limits through the standalone n
       /must `select` a value on every path/],
     ["const v = async scope { select 1; };", /error\[Z0703\]: async scope requires an enclosing async function/,
       "function main(): i32"],
+    // A closure's body is its own function: the scope is not its target.
+    ["const v = async scope { const pick = (value: i32): i32 => { select value; }; select pick(1); };",
+      /scope-value-reject\.zs:\d+:\d+: error: select requires an enclosing value-producing block/],
+    // An attempted scope: something in it must be able to fail, with one error type.
+    ["const outcome = attempt async scope { select 1; };",
+      /attempt requires a scope that can fail; nothing in this scope uses `try` or `throw`/],
+    ["const outcome = attempt async scope { const a = try await checked(1); const b = try await odd(); select a + b; };",
+      /cannot propagate Other from an attempted scope failing with Failure/],
+    ["const outcome: Result<i32, Other> = attempt async scope { const a = try await checked(1); select a; };",
+      /cannot propagate Failure from an attempted scope failing with Other/],
+    ["const outcome = attempt async scope { const a = try await checked(1); if (a == 1) throw Other.odd; select a; };",
+      /expected Failure, found Other/],
+    // Without `attempt`, a `try` still needs a throwing function.
+    ["const v = async scope { const a = try await checked(1); select a; };",
+      /try requires an enclosing throwing function/],
     ["const updates = 1; const v = async scope updates { select 1; };", /duplicate local "updates"/],
     ["const v = async scope updates { select 1; }; const again = updates;", /unknown name updates/],
   ];
