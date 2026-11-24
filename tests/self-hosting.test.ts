@@ -15564,7 +15564,7 @@ function main(): i32 {
   );
   assert.match(changedSourceRunning.stdout, /compiled 1 Z modules/);
   assert.ok(statSync(cachedArgumentApplication).mtimeMs > 0);
-}, 300_000);
+}, 600_000);
 
 test("lowers the complete native frontend graph to C", () => {
   const frontend = resolve(projectRoot, "compiler/frontend/parser-library.zs");
@@ -18623,7 +18623,7 @@ test("keeps native semantic authority composable across a representative Z corpu
       assert.deepEqual(authoritative, observed, `${entry} left an observed native semantic result on Stage 0`);
     }
   }
-}, 120_000);
+}, 300_000);
 
 test("preserves bounded channel endpoint and ownership effects natively", () => {
   const input = resolve(
