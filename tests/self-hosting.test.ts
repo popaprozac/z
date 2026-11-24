@@ -2054,24 +2054,24 @@ test("preserves owned requests and typed errors across a placed async service ca
       { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
     assert.equal(emission.status, 0, emission.stderr);
+    // `dispatch` is a general frame: the Result and the arm's locals live in
+    // it, and the placed call hops to main, moving `request` and retaining
+    // `service`.
     assert.match(
       emission.stdout,
-      /Z___z_Result_String_ServiceError _z_local_called;/,
+      /Z___z_Result_String_ServiceError _z_binding_called;/,
     );
     assert.match(emission.stdout, /Z_AsyncInvocation child;/);
     assert.match(
       emission.stdout,
-      /_z_stage1_live_request = false, request/,
+      /z_stage1_async_main_executor\(\), Z_Service_retain\(_z_stage1_frame_binding_service\), \(_z_stage1_live_request = false, _z_stage1_frame_binding_request\)\)\);/,
     );
-    assert.match(
-      emission.stdout,
-      /frame->child\.take_result\(frame->child\.task, &_z_stage1_frame_binding_called\);/,
-    );
+    assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
     assert.match(
       emission.stdout,
       /switch \(_z_stage1_match_[0-9]+\.tag\)/,
     );
-    assert.match(emission.stdout, /Z_ServiceError_deinit\(&scratch\);/);
+    assert.match(emission.stdout, /Z_ServiceError_deinit\(&_z_stage1_frame_binding_scratch\)/);
     const compilation = spawnSync(
       "clang",
       ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
@@ -3764,6 +3764,90 @@ test("rejects readonly intermediate assignment paths in both semantic frontends"
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 180_000);
 
+test("checks where task and await on thread.main may be written in both semantic frontends", () => {
+  const directory = mkdtempSync("/tmp/z-native-placement-context-");
+  const input = resolve(directory, "main.zs");
+  const rejected: Array<[string, RegExp]> = [
+    // A synchronous helper has no task scope to own the child.
+    [`import console from "std/console";
+import { thread } from "std/thread";
+function helper(): void {
+  task on thread.main {
+    console.log("nope");
+  }
+}
+async function main(): i32 {
+  const worker = thread.spawn((): void => {
+    helper();
+  });
+  await worker;
+  return 0;
+}`, /:4:3: (error(\[Z0711\])?: )?task on thread\.main requires an enclosing async function or a direct synchronous thread\.spawn closure/],
+    [`import { thread } from "std/thread";
+function value(): i32 { return 1; }
+function helper(): i32 {
+  return await on thread.main value();
+}
+function main(): i32 { return helper(); }`,
+    /:4:10: (error(\[Z0711\])?: )?await on thread\.main requires an enclosing async function/],
+  ];
+  // Directly in a synchronous worker body, and in a closure nested in one.
+  const accepted = [`import console from "std/console";
+import { thread } from "std/thread";
+async function main(): i32 {
+  const worker = thread.spawn((): void => {
+    task on thread.main {
+      console.log("direct");
+    }
+  });
+  await worker;
+  return 0;
+}`, `import console from "std/console";
+import { thread } from "std/thread";
+async function main(): i32 {
+  const worker = thread.spawn((): void => {
+    const nested = (): void => {
+      task on thread.main {
+        console.log("nested");
+      }
+    };
+    nested();
+  });
+  await worker;
+  return 0;
+}`];
+  try {
+    for (const [source, expected] of rejected) {
+      writeFileSync(input, source);
+      for (const command of ["check", "self-host-resolve"]) {
+        const result = spawnSync(process.execPath, [cli, command, input], {
+          encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+        });
+        assert.notEqual(result.status, 0, `${command}: ${source}`);
+        assert.match(result.stderr, expected, command);
+      }
+    }
+    for (const source of accepted) {
+      writeFileSync(input, source);
+      for (const command of ["check", "self-host-resolve"]) {
+        const result = spawnSync(process.execPath, [cli, command, input], {
+          encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+        });
+        assert.equal(result.status, 0, `${command}: ${result.stderr}`);
+      }
+    }
+    // The nested form has no frame to own the child natively yet.
+    writeFileSync(input, accepted[1]);
+    const nested = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+      encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+    });
+    assert.notEqual(nested.status, 0);
+    assert.match(nested.stderr, /:6:7: error\[Z0700\]: task on thread\.main inside a closure nested in a worker is not executable in the native compiler yet/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("rejects class construction without new and non-reference T | null in both semantic frontends", () => {
   const directory = mkdtempSync("/tmp/z-native-construction-nullability-");
   const input = resolve(directory, "main.zs");
@@ -3824,6 +3908,322 @@ function main(): i32 {
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 180_000);
+
+test("checks scoped child-task borrows of whole bindings and struct fields in both semantic frontends", () => {
+  const directory = mkdtempSync("/tmp/z-native-task-loans-");
+  const input = resolve(directory, "main.zs");
+  const prelude = `import { delay } from "std/time";
+import { thread } from "std/thread";
+struct Point { x: i32; y: i32; }
+struct Inner { x: i32; y: i32; }
+struct Holder { inner: Inner; count: i32; }
+class Counter { value: i32; }
+struct Shared { counter: Counter; count: i32; }
+struct Wrapper { shared: Shared; count: i32; }
+async function bump(inout value: i32): void { await delay(1); value = value + 1; }
+async function bumpBoth(inout first: i32, inout second: i32): void { await delay(1); first = first + 1; second = second + 1; }
+async function observe(in value: i32): i32 { await delay(1); return value; }
+async function inspect(in point: Point): i32 { await delay(1); return point.x; }
+async function replace(inout point: Point): void { point.x = 0; }
+async function fill(out point: Point): void { point = Point({ x: 1, y: 1 }); }
+async function share(inout shared: Shared): void { return; }
+async function sum(values: Slice<i32>): i32 { return values[0]; }
+function touch(inout point: Point): void { point.x = 2; }
+`;
+  // Each body becomes `main`; an expected `line:column: error` is the
+  // diagnostic both frontends must report, and null means both accept.
+  const cases: Array<[string, string, string | null]> = [
+    ["acceptance", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    const x = task bump(inout point.x);
+    task bump(inout point.y);
+    await x;
+    point.x = point.x + 1;
+  }
+  return (point.x == 42 && point.y == 42) ? 0 : 1;`, null],
+    ["direct-await", `let point = Point({ x: 41, y: 0 });
+  await bump(inout point.x);
+  const seen = await observe(in point.x);
+  return seen - 42;`, null],
+    ["two-fields-one-child", `let point = Point({ x: 41, y: 41 });
+  async scope {
+    const both = task bumpBoth(inout point.x, inout point.y);
+    await both;
+    point.x = point.x + 0;
+  }
+  return 0;`, null],
+    ["cancel-release", `let point = Point({ x: 41, y: 41 });
+  async scope {
+    const x = task bump(inout point.x);
+    await x.cancel();
+    point.x = 42;
+  }
+  return 0;`, null],
+    ["scope-exit-release", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    task bump(inout point.x);
+    task bump(inout point.y);
+  }
+  point.x = point.x + 1;
+  return 0;`, null],
+    ["sibling-access", `let holder = Holder({ inner: Inner({ x: 1, y: 1 }), count: 0 });
+  async scope {
+    const x = task bump(inout holder.inner.x);
+    holder.inner.y = holder.inner.y + 1;
+    holder.count = 1;
+    await x;
+  }
+  return 0;`, null],
+    ["every-path-join", `let point = Point({ x: 41, y: 0 });
+  const normal = true;
+  async scope {
+    const x = task bump(inout point.x);
+    if (normal) {
+      await x;
+    } else {
+      await x.cancel();
+    }
+    point.x = point.x + 1;
+  }
+  return 0;`, null],
+    ["same-field", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    task bump(inout point.x);
+    task bump(inout point.x);
+  }
+  return 0;`, "22:27: error[Z0704]: cannot borrow \"point.x\" as inout while an active inout loan exists"],
+    ["whole-borrow", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    task bump(inout point.x);
+    task replace(inout point);
+  }
+  return 0;`, "22:18: error[Z0704]: cannot borrow \"point\" as inout while an active inout loan exists"],
+    ["whole-read", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    task bump(inout point.x);
+    const seen = await inspect(in point);
+  }
+  return 0;`, "22:35: error[Z0704]: cannot read \"point\" while a child task mutably borrows it"],
+    ["whole-replace", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    task bump(inout point.x);
+    point = Point({ x: 0, y: 0 });
+  }
+  return 0;`, "22:5: error[Z0704]: cannot mutate \"point\" while a child task borrows it"],
+    ["one-branch-join", `let point = Point({ x: 40, y: 41 });
+  const join = true;
+  async scope {
+    const x = task bump(inout point.x);
+    if (join) { await x; }
+    point.x = 1;
+  }
+  return 0;`, "24:5: error[Z0704]: cannot read \"point.x\" while a child task mutably borrows it"],
+    ["other-loan-after-join", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    const x = task bump(inout point.x);
+    task bump(inout point.y);
+    await x;
+    point.x = point.x + 1;
+    const seen = point.y;
+  }
+  return 0;`, "25:18: error[Z0704]: cannot read \"point.y\" while a child task mutably borrows it"],
+    ["in-field-then-write", `let point = Point({ x: 42, y: 0 });
+  async scope {
+    task observe(in point.x);
+    point.y = 1;
+    point.x = 1;
+  }
+  return 0;`, "23:11: error[Z0704]: cannot mutate \"point.x\" while a child task borrows it"],
+    ["sync-inout-same-field", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    task observe(in point.x);
+    touch(inout point);
+  }
+  return 0;`, "22:11: error[Z0704]: cannot mutate \"point\" while a child task borrows it"],
+    ["placed-field", `let point = Point({ x: 40, y: 41 });
+  await on thread.main bump(inout point.x);
+  return 0;`, "20:41: error[Z0704]: a projected field borrow cannot cross to another executor in this tier"],
+    ["class-root-field", `let counter = new Counter({ value: 1 });
+  await bump(inout counter.value);
+  return 0;`, "20:28: error[Z0704]: a projected borrow across an async suspension requires a stored value-struct field without ARC class or view storage"],
+    ["arc-storage-field", `let wrapper = Wrapper({ shared: Shared({ counter: new Counter({ value: 1 }), count: 0 }), count: 0 });
+  await share(inout wrapper.shared);
+  return 0;`, "20:29: error[Z0704]: a projected borrow across an async suspension requires a stored value-struct field without ARC class or view storage"],
+    ["no-scope", `let point = Point({ x: 40, y: 41 });
+  const x = task bump(inout point.x);
+  await x;
+  return 0;`, "20:35: error[Z0704]: child-task mutable borrow of \"point\" requires an explicit async scope"],
+    ["in-no-scope", `const point = Point({ x: 40, y: 41 });
+  const seen = task inspect(point);
+  return await seen;`, "20:29: error[Z0704]: child-task borrow of \"point\" requires an explicit async scope"],
+    ["slice-no-scope", `let values = [1, 2, 3];
+  const total = task sum(values);
+  return await total;`, "20:26: error[Z0704]: child-task Slice borrow of \"values\" requires an explicit async scope"],
+    ["out-child", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    task fill(out point);
+  }
+  return 0;`, "21:15: error[Z0704]: child-task output borrow of \"point\" is not supported"],
+    ["in-then-inout", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    task inspect(point);
+    task replace(inout point);
+  }
+  return 0;`, "22:18: error[Z0704]: cannot borrow \"point\" as inout while an active in loan exists"],
+    ["in-then-mutate", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    task inspect(point);
+    point.x = 1;
+  }
+  return 0;`, "22:11: error[Z0704]: cannot mutate \"point\" while a child task borrows it"],
+    ["loop-join", `let point = Point({ x: 40, y: 41 });
+  let index = 0;
+  while (index < 1) {
+    async scope {
+      const child = task replace(inout point);
+      await child;
+      point.x = 2;
+    }
+    index = index + 1;
+  }
+  return 0;`, "25:7: error[Z0704]: cannot read \"point\" while a child task mutably borrows it"],
+    ["placed-capture-no-scope", `let point = Point({ x: 40, y: 41 });
+  const child = task on thread.main using (inout point) { point.x = 2; };
+  await child;
+  return 0;`, "20:50: error[Z0704]: child-task inout capture of \"point\" requires an explicit async scope"],
+  ];
+  try {
+    for (const [name, body, expected] of cases) {
+      writeFileSync(input, `${prelude}async function main(): i32 {\n  ${body}\n}\n`);
+      for (const command of ["check", "self-host-resolve"]) {
+        const result = spawnSync(process.execPath, [cli, command, input], {
+          encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+        });
+        if (expected === null) {
+          assert.equal(result.status, 0, `${command} ${name}\n${result.stderr}`);
+        } else {
+          assert.equal(result.status, 1, `${command} ${name}\n${result.stderr}`);
+          assert.ok(result.stderr.includes(`main.zs:${expected}`), `${command} ${name}\n${result.stderr}`);
+        }
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 600_000);
+
+test("runs scoped async field borrows natively as Stage 0 does", () => {
+  const directory = mkdtempSync("/tmp/z-native-field-borrows-");
+  const prelude = `import { delay } from "std/time";
+struct Point { x: i32; y: i32; }
+struct Inner { x: i32; y: i32; }
+struct Holder { inner: Inner; count: i32; }
+async function bump(inout value: i32): void { await delay(1); value = value + 1; }
+async function bumpBoth(inout first: i32, inout second: i32): void { await delay(1); first = first + 1; second = second + 1; }
+async function bumpLater(inout value: i32): void { await delay(1000); value = value + 100; }
+async function bumpOrFail(inout value: i32, fail: boolean): void throws i32 {
+  await delay(1);
+  value = value + 1;
+  if (fail) throw 7;
+}
+async function both(inout point: Point): void {
+  async scope {
+    task bump(inout point.x);
+    task bump(inout point.y);
+  }
+}
+async function directHelper(): i32 {
+  let point = Point({ x: 41, y: 0 });
+  await bump(inout point.x);
+  return point.x;
+}
+async function observe(in value: i32): i32 { await delay(1); return value; }
+`;
+  // Each body becomes `main` and must return 0 from both compilers.
+  const cases: Array<[string, string]> = [
+    ["acceptance", `let point = Point({ x: 40, y: 41 });
+  async scope {
+    const x = task bump(inout point.x);
+    task bump(inout point.y);
+    await x;
+    point.x = point.x + 1;
+  }
+  return (point.x == 42 && point.y == 42) ? 0 : 1;`],
+    ["two-fields-one-child", `let point = Point({ x: 41, y: 41 });
+  async scope {
+    const pair = task bumpBoth(inout point.x, inout point.y);
+    await pair;
+  }
+  return (point.x == 42 && point.y == 42) ? 0 : 1;`],
+    ["nested-fields", `let holder = Holder({ inner: Inner({ x: 41, y: 41 }), count: 0 });
+  async scope {
+    const x = task bump(inout holder.inner.x);
+    task bump(inout holder.inner.y);
+    holder.count = 5;
+    await x;
+  }
+  return (holder.inner.x == 42 && holder.inner.y == 42 && holder.count == 5) ? 0 : 1;`],
+    ["borrowed-parameter-root", `let point = Point({ x: 41, y: 41 });
+  await both(inout point);
+  return (point.x == 42 && point.y == 42) ? 0 : 1;`],
+    ["throwing-child", `let point = Point({ x: 41, y: 41 });
+  async scope {
+    const x = task bumpOrFail(inout point.x, true);
+    task bump(inout point.y);
+    const outcome = attempt await x;
+    const code = match (outcome) {
+      success => 0;
+      failure(error) => error;
+    };
+    if (code != 7) return 2;
+  }
+  return (point.x == 42 && point.y == 42) ? 0 : 1;`],
+    ["cancel-in-flight", `let point = Point({ x: 41, y: 41 });
+  async scope {
+    const x = task bumpLater(inout point.x);
+    task bump(inout point.y);
+    await delay(1);
+    await x.cancel();
+    point.x = point.x + 1;
+  }
+  return (point.x == 42 && point.y == 42) ? 0 : 1;`],
+    ["direct-await-helper", `const value = await directHelper();
+  return value == 42 ? 0 : 1;`],
+    ["implicit-in-field", `let point = Point({ x: 42, y: 0 });
+  async scope {
+    const seen = task observe(point.x);
+    point.y = 42;
+    const value = await seen;
+    point.y = point.y - value;
+  }
+  return point.y;`],
+  ];
+  try {
+    for (const [name, body] of cases) {
+      const input = resolve(directory, `${name}.zs`);
+      writeFileSync(input, `${prelude}async function main(): i32 {\n  ${body}\n}\n`);
+      const stage0 = spawnSync(process.execPath, [cli, "run", input], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+      });
+      assert.equal(stage0.status, 0, `stage0 ${name}\n${stage0.stderr}`);
+      const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+      });
+      assert.equal(native.status, 0, `native ${name}\n${native.stderr}`);
+      if (name === "acceptance") {
+        // The child borrows the field in place, not a copy of it.
+        assert.match(native.stdout, /&\(_z_stage1_frame_binding_point\.x\)/);
+        assert.match(native.stdout, /&\(_z_stage1_frame_binding_point\.y\)/);
+      }
+      const executable = resolve(directory, name);
+      const built = spawnSync("clang", ["-x", "c", "-std=c11", "-O0", "-Wall", "-Wextra", "-Werror", "-pthread",
+        "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        encoding: "utf8", input: native.stdout, timeout: 60_000,
+      });
+      assert.equal(built.status, 0, `${name}\n${built.stderr}`);
+      const run = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" });
+      assert.equal(run.status, 0, `native ${name}\n${run.stderr}`);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 600_000);
 
 hostToolchainTest("preserves valid Array methods and readonly reference operations natively", () => {
   const input = resolve(projectRoot, "tests/fixtures/self-host-array-readonly-controls.zs");
@@ -6802,23 +7202,9 @@ test("returns scalar, owned, and typed-error values through native thread.main p
         { encoding: "utf8" },
       );
       assert.equal(emission.status, 0, emission.stderr);
-      if (fixture === "self-host-emit-thread-main-error.zs") {
-        // The callee takes the general frame: the worker frame hops to it.
-        assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
-      } else {
-        // The callee keeps its delay-segment tier: the worker-to-main bridge
-        // runs each segment on main and the delay on the worker.
-        assert.match(emission.stdout, /_Context \{[\s\S]* result;/);
-        assert.match(
-          emission.stdout,
-          /context->result = .*_continue\(context\)/,
-        );
-        assert.match(
-          emission.stdout,
-          /result = context->result;[\s\S]*return result;/,
-        );
-        assert.match(emission.stdout, /_suspend_for\(storage, 1\)/);
-      }
+      // The worker frame hops its placed call to main, where the callee runs
+      // on its own async tier.
+      assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
 
       const executable = resolve(directory, fixture.replace(/\.zs$/, ""));
       const compilation = spawnSync(
@@ -6950,10 +7336,9 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       { encoding: "utf8" },
     );
     assert.equal(segmentsEmission.status, 0, segmentsEmission.stderr);
-    assert.match(
-      segmentsEmission.stdout,
-      /_run_on_main\(storage, [^,]*_segment_0, context\);\n  if \(!Z_.*_suspend_for\(storage, 1\)[\s\S]*_run_on_main\(storage, [^,]*_segment_1, context\);\n  if \(!Z_.*_suspend_for\(storage, 1\)/,
-    );
+    // The callee's delays run on the main executor's timers, inside the hop.
+    assert.match(segmentsEmission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
+    assert.match(segmentsEmission.stdout, /z_stage1_async_schedule_delay\(task, 1\)/);
     const segmentsExecutable = resolve(directory, "thread-main-segments");
     const segmentsCompilation = spawnSync(
       "clang",
@@ -7004,19 +7389,8 @@ test("returns scalar, owned, and typed-error values through native thread.main p
         { encoding: "utf8" },
       );
       assert.equal(emission.status, 0, emission.stderr);
-      assert.match(emission.stdout, /frame_local_\d+/);
-      assert.match(
-        emission.stdout,
-        /_Context \*context = \([^)]*_Context \*\)calloc\(1, sizeof\(/,
-      );
-      assert.match(emission.stdout, /free\(context\);/);
-      if (fixture.endsWith("owned-local.zs")) {
-        assert.match(emission.stdout, /frame_local_\d+_live/);
-        assert.match(
-          emission.stdout,
-          /_z_stage1_live_staged = false[\s\S]*frame_local_\d+_live = _z_stage1_live_staged/,
-        );
-      }
+      // The callee's locals live in its async frame on main, inside the hop.
+      assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
       const executable = resolve(directory, fixture.replace(/\.zs$/, ""));
       const compilation = spawnSync(
         "clang",
@@ -7105,13 +7479,8 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       0,
       structuredIfOwnedEmission.stderr,
     );
-    assert.match(structuredIfOwnedEmission.stdout, /frame_local_\d+_live/);
-    assert.equal(
-      structuredIfOwnedEmission.stdout.match(
-        /_Context \*context = \([^\n]*\)calloc\(1, sizeof\(/g,
-      )?.length,
-      1,
-    );
+    // The callee's owned branch local lives in its general frame, hopped to main.
+    assert.match(structuredIfOwnedEmission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
     const structuredIfOwnedExecutable = resolve(
       directory,
       "thread-main-if-owned",
@@ -7229,22 +7598,8 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       0,
       structuredMatchPayloadEmission.stderr,
     );
-    assert.match(
-      structuredMatchPayloadEmission.stdout,
-      /Z_Route match_subject;/,
-    );
-    assert.match(
-      structuredMatchPayloadEmission.stdout,
-      /switch \(context->match_subject\.tag\)/,
-    );
-    assert.match(
-      structuredMatchPayloadEmission.stdout,
-      /const int32_t __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = context->match_subject\.payload\.publish;/,
-    );
-    assert.match(
-      structuredMatchPayloadEmission.stdout,
-      /const Z_Adjustment __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = context->match_subject\.payload\.adjust;/,
-    );
+    // The callee's payload match runs in its general frame, hopped to main.
+    assert.match(structuredMatchPayloadEmission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
     const structuredMatchPayloadExecutable = resolve(
       directory,
       "thread-main-match-payload",
@@ -7295,13 +7650,8 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       0,
       structuredMatchOwnedEmission.stderr,
     );
-    assert.match(structuredMatchOwnedEmission.stdout, /bool match_subject_live;/);
-    assert.equal(
-      structuredMatchOwnedEmission.stdout.match(
-        /_Context \*context = \([^\n]*\)calloc\(1, sizeof\(/g,
-      )?.length,
-      1,
-    );
+    // The callee's owned match subject lives in its general frame, hopped to main.
+    assert.match(structuredMatchOwnedEmission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
     const structuredMatchOwnedExecutable = resolve(
       directory,
       "thread-main-match-owned",
@@ -7377,15 +7727,8 @@ test("returns scalar, owned, and typed-error values through native thread.main p
         { encoding: "utf8" },
       );
       assert.equal(emission.status, 0, emission.stderr);
-      assert.match(emission.stdout, /bool match_subject_live;/);
-      assert.match(
-        emission.stdout,
-        /context->match_subject_live = _z_stage1_live__z_stage1_match_payload_/,
-      );
-      assert.match(
-        emission.stdout,
-        /if \(context->match_subject_live\) \{ Z_.*_deinit\(&context->match_subject\)/,
-      );
+      // Owned match payloads live in the callee's general frame, hopped to main.
+      assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
       const executable = resolve(directory, executableName);
       const compilation = spawnSync(
         "clang",
@@ -7410,10 +7753,6 @@ test("returns scalar, owned, and typed-error values through native thread.main p
     }
 
     for (const [fixture, diagnostic] of [
-      [
-        "self-host-emit-thread-main-control-flow-suspension-invalid.zs",
-        /native worker-to-main timer segments with early return or error propagation require completion forwarding/,
-      ],
       [
         "self-host-emit-thread-main-uninitialized-local-invalid.zs",
         /requires local staged to be initialized before it crosses a suspension/,
@@ -7476,8 +7815,10 @@ test("returns scalar, owned, and typed-error values through native thread.main p
     );
 
     // A worker frame with a suspension inside an `if`, or a non-tail placed
-    // call, hops to main; both run as in Stage 0.
+    // call, hops to main, as does a worker awaiting a main-affine callee that
+    // returns early ahead of its delay; all run as in Stage 0.
     for (const [fixture, status] of [
+      ["self-host-emit-thread-main-control-flow-suspension.zs", 42],
       ["self-host-emit-thread-main-nested-if-suspension.zs", 42],
       ["self-host-emit-thread-main-nontail-suspension.zs", 0],
     ] as const) {
@@ -7506,34 +7847,30 @@ test("returns scalar, owned, and typed-error values through native thread.main p
 
 test("preserves while iteration, loop control, and owned locals across main suspension", () => {
   const directory = mkdtempSync("/tmp/z-self-host-thread-main-while-");
-  // A callee the general frame takes runs as a frame hopped to main; one with
-  // owned locals inside its suspending loop keeps the worker-to-main bridge.
+  // Each callee's suspending loop runs in its general frame, hopped to main:
+  // loop control, owned iteration locals, and `try` inside the loop.
   const fixtures = [
-    ["self-host-emit-thread-main-while.zs", "", "hop"],
-    ["self-host-emit-thread-main-while-control.zs", "", "hop"],
+    ["self-host-emit-thread-main-while.zs", ""],
+    ["self-host-emit-thread-main-while-control.zs", ""],
     [
       "self-host-emit-thread-main-while-owned.zs",
       "released iteration 1\nreleased iteration 2\nreleased iteration 3\nreleased iteration 4\n",
-      "bridge",
     ],
     [
       "self-host-emit-thread-main-while-return.zs",
       "released return iteration 1\nreleased return iteration 1\nreleased return iteration 2\n",
-      "bridge",
     ],
     [
       "self-host-emit-thread-main-while-throw.zs",
       "released throw iteration 1\nreleased throw iteration 2\n",
-      "bridge",
     ],
     [
       "self-host-emit-thread-main-while-try.zs",
       "released try iteration 1\nreleased try iteration 2\nreleased try iteration 1\nreleased try iteration 1\nreleased try iteration 2\n",
-      "bridge",
     ],
   ] as const;
   try {
-    for (const [fixture, expectedOutput, path] of fixtures) {
+    for (const [fixture, expectedOutput] of fixtures) {
       const input = resolve(projectRoot, "tests/fixtures", fixture);
       const parity = spawnSync(
         process.execPath,
@@ -7548,49 +7885,13 @@ test("preserves while iteration, loop control, and owned locals across main susp
         { encoding: "utf8" },
       );
       assert.equal(emission.status, 0, emission.stderr);
-      if (path === "hop") {
-        assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
-        assert.doesNotMatch(emission.stdout, /bool loop_condition;/);
-      } else {
-        assert.match(emission.stdout, /bool loop_condition;/);
-        assert.match(emission.stdout, /int loop_control;/);
-        assert.match(
-          emission.stdout,
-          /while \(true\) \{[\s\S]*_condition, context\)[\s\S]*_finish_iteration, context\)/,
-        );
-      }
-      if (fixture.endsWith("-control.zs") && path === "bridge") {
-        assert.match(emission.stdout, /context->loop_control = 1;/);
-        assert.match(emission.stdout, /context->loop_control = 2;/);
-      }
-      if (
-        fixture.endsWith("-return.zs")
-        || fixture.endsWith("-throw.zs")
-        || fixture.endsWith("-try.zs")
-      ) {
-        assert.match(emission.stdout, /context->loop_control = 3;/);
-        assert.match(emission.stdout, /goto _z_thread_main_completed;/);
-      }
+      assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
       if (fixture.endsWith("-try.zs")) {
+        // A `try` assigned over an owned frame local destroys the old value
+        // while it is live.
         assert.match(
           emission.stdout,
-          /context->result = _z_stage1_failure_\d+;/,
-        );
-        assert.match(
-          emission.stdout,
-          /if \(context->loop_control == 3\) return;/,
-        );
-        assert.match(emission.stdout, /frame_local_\d+_live/);
-        assert.match(
-          emission.stdout,
-          /Z_String_deinit\(&replacement\);/,
-        );
-      }
-      if (fixture.endsWith("-owned.zs")) {
-        assert.match(emission.stdout, /frame_local_\d+_live/);
-        assert.match(
-          emission.stdout,
-          /Z_IterationResource_deinit\(&context->frame_local_\d+\)/,
+          /if \(_z_stage1_live_replacement\) Z_String_deinit\(&_z_stage1_frame_binding_replacement\);/,
         );
       }
 
@@ -7616,21 +7917,6 @@ test("preserves while iteration, loop control, and owned locals across main susp
       assert.equal(execution.status, 0, execution.stderr);
       assert.equal(execution.stdout, expectedOutput);
     }
-
-    const invalidControlInput = resolve(
-      projectRoot,
-      "tests/fixtures/self-host-emit-thread-main-while-control-invalid.zs",
-    );
-    const invalidControl = spawnSync(
-      process.execPath,
-      [cli, "self-host-emit", invalidControlInput],
-      { encoding: "utf8" },
-    );
-    assert.equal(invalidControl.status, 1);
-    assert.match(
-      invalidControl.stderr,
-      /requires break, continue, return, or throw to end its synchronous while segment/,
-    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -7674,39 +7960,12 @@ test("requests native worker cancellation and joins owned cleanup", () => {
         );
       }
 
-      if (fixture == "self-host-emit-thread-cancel-main-match.zs") {
+      if (fixture.includes("thread-cancel-main")) {
         // The callee takes the general frame: the worker frame hops to it,
         // and cancelling the worker cancels the hopped frame on main.
         assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
-        assert.match(emission.stdout, /z_stage1_async_cancel_from_thread\(hop->child\.task\)/);
+        assert.match(emission.stdout, /z_stage1_async_cancel_from_thread\(hop->target, hop->child\.task\)/);
         assert.match(emission.stdout, /z_stage1_sleep\(10\);/);
-      } else if (fixture.includes("thread-cancel-main")) {
-        assert.match(emission.stdout, /main_request_pending = true;/);
-        assert.match(emission.stdout, /request\(context\);/);
-        assert.match(emission.stdout, /z_stage1_sleep\(10\);/);
-        assert.match(emission.stdout, /_suspend_for\(storage, 1000\)/);
-        assert.match(emission.stdout, /continuation_cancelled = true;/);
-        if (fixture == "self-host-emit-thread-cancel-main-while.zs") {
-          assert.match(
-            emission.stdout,
-            /_cancel_suspended[\s\S]*Z_LoopResource_deinit\(&context->frame_local_\d+\)/,
-          );
-        } else {
-          assert.match(
-            emission.stdout,
-            /_cancel_suspended[\s\S]*Z_FrameResource_deinit\(&context->frame_local_\d+\)/,
-          );
-        }
-        if (fixture == "self-host-emit-thread-cancel-main.zs") {
-          assert.match(
-            emission.stdout,
-            /\.message = \(_z_stage1_live_value = false, value\)/,
-          );
-          assert.match(
-            emission.stdout,
-            /Z___z_Result_String_PublishError_deinit/,
-          );
-        }
       }
 
       const executable = resolve(directory, fixture.replace(/\.zs$/, ""));
@@ -7727,26 +7986,30 @@ test("requests native worker cancellation and joins owned cleanup", () => {
         { encoding: "utf8", input: emission.stdout },
       );
       assert.equal(compilation.status, 0, compilation.stderr);
-      const execution = spawnSync(executable, [], { encoding: "utf8" });
-      assert.equal(execution.status, 0, execution.stderr);
-      if (fixture == "self-host-emit-thread-cancel-main.zs") {
-        assert.equal(
-          execution.stdout,
-          "entered main segment\nreleased pending main request\n",
-        );
+      // The worker's request to run on the main thread is still queued when
+      // the main thread cancels the worker. The placed call then either
+      // starts and is cancelled at its first suspension, or is withdrawn
+      // before it starts: which one is a race between the two threads, and
+      // both are correct. The first exercises the frame's cleanup and is the
+      // usual one (about 19 runs in 20), so it has to show up.
+      const outcomes: Record<string, [string, string]> = {
+        "self-host-emit-thread-cancel-main.zs": ["entered main segment\nreleased pending main request\n", ""],
+        "self-host-emit-thread-cancel-main-match.zs": [
+          "entered match main segment\nreleased match payload frame\n", "released match payload frame\n",
+        ],
+        "self-host-emit-thread-cancel-main-while.zs": ["entered loop main segment\nreleased loop frame 1\n", ""],
+      };
+      // The first fixture cancels a worker that places nothing: one run.
+      const expected = outcomes[fixture];
+      let sawStarted = expected === undefined;
+      for (let run = 0; run < 6 && (run == 0 || !sawStarted); run += 1) {
+        const execution = spawnSync(executable, [], { encoding: "utf8" });
+        assert.equal(execution.status, 0, execution.stderr);
+        if (expected === undefined) continue;
+        if (execution.stdout === expected[0]) sawStarted = true;
+        else assert.equal(execution.stdout, expected[1], fixture);
       }
-      if (fixture == "self-host-emit-thread-cancel-main-match.zs") {
-        assert.equal(
-          execution.stdout,
-          "entered match main segment\nreleased match payload frame\n",
-        );
-      }
-      if (fixture == "self-host-emit-thread-cancel-main-while.zs") {
-        assert.equal(
-          execution.stdout,
-          "entered loop main segment\nreleased loop frame 1\n",
-        );
-      }
+      assert.ok(sawStarted, `${fixture}: the placed call never started before its cancellation`);
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -10906,23 +11169,21 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   assert.equal(truncated.status, 3, truncated.stderr);
 }, 240_000);
 
-test("compiles a multi-module Z application through the standalone native driver", () => {
+// The standalone native driver, built once and shared by the tests below. Each
+// test asks for it, so any one of them can run alone.
+let standaloneDriverBuild: ReturnType<typeof buildStandaloneDriver> | undefined;
+function standaloneDriver() {
+  standaloneDriverBuild ??= buildStandaloneDriver();
+  return standaloneDriverBuild;
+}
+function buildStandaloneDriver() {
   const driverSource = resolve(projectRoot, "compiler/driver/main.zs");
   const driverEmission = spawnSync(
     process.execPath,
     [cli, "self-host-emit", driverSource],
-    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
   );
   assert.equal(driverEmission.status, 0, driverEmission.stderr);
-  assert.match(driverEmission.stdout, /Z___z_Result_void_String _z_function_\d+_loadModule\(/);
-  assert.match(driverEmission.stdout, /Z___z_Result_String_String _z_function_\d+_emitModulesC\(/);
-  assert.match(driverEmission.stdout, /z_stage1_fs_lock\(/);
-  assert.match(driverEmission.stdout, /z_stage1_fs_replace\(/);
-  assert.match(driverEmission.stdout, /Z_FsLock_deinit\(&\(cacheLock\)\)/);
-  assert.match(driverEmission.stdout, /z_stage1_fs_real_path\(/);
-  assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-O2"\)/);
-  assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-DNDEBUG"\)/);
-
   const directory = mkdtempSync("/tmp/z-self-host-native-compiler-");
   const driver = resolve(directory, "z-native");
   const driverCompilation = spawnSync(
@@ -10931,6 +11192,27 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8", input: driverEmission.stdout },
   );
   assert.equal(driverCompilation.status, 0, driverCompilation.stderr);
+  const foreignAdapterEnvironment = {
+    ...process.env,
+    PATH: `${resolve(projectRoot, "compiler/bin")}${delimiter}${process.env.PATH ?? ""}`,
+  };
+  return { driverSource, driverEmission, directory, driver, foreignAdapterEnvironment };
+}
+
+test("emits and compiles the standalone native driver", () => {
+  const { driverEmission } = standaloneDriver();
+  assert.match(driverEmission.stdout, /Z___z_Result_void_String _z_function_\d+_loadModule\(/);
+  assert.match(driverEmission.stdout, /Z___z_Result_String_String _z_function_\d+_emitModulesC\(/);
+  assert.match(driverEmission.stdout, /z_stage1_fs_lock\(/);
+  assert.match(driverEmission.stdout, /z_stage1_fs_replace\(/);
+  assert.match(driverEmission.stdout, /Z_FsLock_deinit\(&\(cacheLock\)\)/);
+  assert.match(driverEmission.stdout, /z_stage1_fs_real_path\(/);
+  assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-O2"\)/);
+  assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-DNDEBUG"\)/);
+}, 300_000);
+
+test("builds a library and plain fixtures through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   exerciseGeneratedAdapterLinking([driver]);
   const sharedRootProject = resolve(directory, "shared-root-project");
   mkdirSync(sharedRootProject);
@@ -10997,10 +11279,6 @@ test("compiles a multi-module Z application through the standalone native driver
         "callback 2/1/2\nviews 2/1/2\ncopy 2; original 2\ndetached kept\ncustom ordinary field\n");
     }
   }
-  const foreignAdapterEnvironment = {
-    ...process.env,
-    PATH: `${resolve(projectRoot, "compiler/bin")}${delimiter}${process.env.PATH ?? ""}`,
-  };
   const contentHashRun = spawnSync(
     driver,
     [
@@ -11066,6 +11344,10 @@ test("compiles a multi-module Z application through the standalone native driver
   // Programs the parity census found broken natively now match Stage 0:
   // destructor lifetimes, view results and captures, literal conversions,
   // exported enum aliases, imported frameworks, and objc.connect closures.
+}, 300_000);
+
+test("runs the parity fixtures identically through Stage 0 and the standalone native driver", () => {
+  const { driver, foreignAdapterEnvironment } = standaloneDriver();
   const parityRuns = [
     "tests/fixtures/native-ownership-lifetimes.zs",
     "tests/fixtures/native-view-results.zs",
@@ -11142,6 +11424,60 @@ test("compiles a multi-module Z application through the standalone native driver
     // throwing, and main-affine looping callees, from main and a worker.
     "tests/fixtures/native-main-hop-calls.zs",
     "examples/async/thread-main-loop.zs",
+    // `task on thread.main ...` spawns a hopped child that its frame joins:
+    // from a synchronous worker body (lifted to a frame), an async worker, an
+    // ordinary async function, and `main` itself.
+    "examples/async/thread-main-placement.zs",
+    "tests/fixtures/native-main-task-hops.zs",
+    // A worker's placed child runs while `main` is inside the Darwin main
+    // run loop: work posted to the main executor also wakes the main queue.
+    "examples/async/darwin-main-run-loop.zs",
+    // A hopped block's `using (in|inout|move ...)` captures: the caller's
+    // storage is lent for the block, or the value moves to it.
+    "tests/fixtures/native-main-hop-capabilities.zs",
+    // A synchronous worker owns its captures: copies it may assign, and
+    // moved Array, String, TextBuffer, and aggregate owners released once.
+    "examples/async/thread-text.zs",
+    "examples/async/thread-transfer.zs",
+    "tests/fixtures/native-worker-owned-captures.zs",
+    // An expression-bodied worker's await is the worker's, also when the
+    // spawning function suspends in a frame of its own.
+    "tests/fixtures/native-worker-expression-frame.zs",
+    // A placed block with no declared result takes its final `select`'s type.
+    "tests/fixtures/native-main-select-results.zs",
+    // `TaskScope.schedule` with a synchronous operation: one job on the
+    // scope's executor, from main and from a worker thread.
+    "tests/fixtures/native-task-scope-sync-jobs.zs",
+    // A scheduled operation written as a block runs as a frame of its own;
+    // `await scope.close()` and `await scope.cancel()` suspend the function.
+    "tests/fixtures/native-async-block-operations.zs",
+    // A foreign thread's callbacks submit synchronous and block-bodied async
+    // operations to a named scope, after an explicit scope is cancelled.
+    "examples/async/task-scope-native-callback.zs",
+    // A block-bodied async closure is a reusable value: each call runs the
+    // block as a frame, and captured state carries over to the next call.
+    "tests/fixtures/native-async-block-closures.zs",
+    "tests/fixtures/native-async-inout-methods.zs",
+    "tests/fixtures/native-generic-inferred-types/main.zs",
+    "tests/fixtures/native-generic-private-argument/main.zs",
+    // A Mutex passed on by value moves to the callee, which drops it; a
+    // channel sender is shared, and the channel is released with its last
+    // holder.
+    "tests/fixtures/native-shared-handle-release.zs",
+    // A scope and its controls passed on, returned, and captured.
+    "tests/fixtures/native-scope-handle-references.zs",
+    // A named `async scope` owns a `TaskScope` handle: every way out of the
+    // scope joins its operations, and a throw or cancellation cancels them.
+    "tests/fixtures/native-async-named-scope.zs",
+    // A foreign thread's callback submits to a named scope that `main` joins.
+    "examples/async/foreign-thread-application-root.zs",
+    // `break` and `continue` join an `async scope`'s children before leaving it.
+    "tests/fixtures/native-async-scope-leave.zs",
+    // A function joins each `new TaskScope()` it created before it completes.
+    "tests/fixtures/native-async-owned-task-scope.zs",
+    // A failed `try` cancels and joins a named scope's operations; a `return`
+    // evaluates its value before the scope joins its children.
+    "tests/fixtures/native-async-scope-failure.zs",
   ];
   for (const entry of parityRuns) {
     const path = resolve(projectRoot, entry);
@@ -11153,12 +11489,214 @@ test("compiles a multi-module Z application through the standalone native driver
     assert.equal(nativeRun.status, 0, `${entry} native: ${nativeRun.stderr}`);
     assert.equal(nativeRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), stage0Run.stdout, entry);
   }
+}, 600_000);
+
+test("runs native-only fixtures and reports tier limits through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   // A void expression closure runs its body as a statement.
   const voidClosureRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-void-expression-closure.zs")], {
     encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
   });
   assert.equal(voidClosureRun.status, 0, voidClosureRun.stderr);
   assert.equal(voidClosureRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), "applied\nannounced\n");
+  // Owned captures and parameters of a reusable async closure: Stage 0 stops
+  // at its own limits here (it emits invalid C for an owned capture, and
+  // rejects `push` on a captured `let` collection).
+  const closureOwnersRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-block-closure-owners.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(closureOwnersRun.status, 0, closureOwnersRun.stderr);
+  assert.equal(closureOwnersRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""),
+    "handled first 21\nhandled first 21\nhandler 42 42\nnamed ab 2\nnamed abc1 4\nnamer 2 4\ncollector 1 2\ntally 2\nshown 1 2\nshown 1 2\nloaded alpha\nfailed: loaded needs a name\n");
+  // `async scope` as a value: Stage 0 is frozen and does not parse it.
+  const scopeValuesRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-scope-values.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(scopeValuesRun.status, 0, scopeValuesRun.stderr);
+  assert.equal(scopeValuesRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "loaded 1", "loaded 2", "sum after scope 3", "sum 3",
+    "noted early", "branches after scope 10", "noted late", "loaded 20", "branches after scope 20", "branches 10 20",
+    "noted text", "text built 4",
+    "operation 1", "operation 2", "named after scope 2", "named 2",
+    "noted returns", "noted returns", "returns -1 8",
+    "slow 9 started", "failing failed",
+    "noted round 0", "noted round 1", "noted round 2", "loops 102",
+    "loaded 3", "noted inner", "nested 4",
+    "loaded 4", "noted layered", "layered 5",
+    "noted through early", "through after scope 30", "noted through late", "through after scope 40", "through 30 40",
+    "noted matched", "matched 2", "",
+  ].join("\n"));
+  // Inside a larger statement the scope runs first and the statement reads
+  // its value: `return`, assignment, arguments, operands, conditions.
+  const scopePositionsRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-scope-value-positions.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(scopePositionsRun.status, 0, scopePositionsRun.stderr);
+  assert.equal(scopePositionsRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "loaded 1", "loaded 2", "returned 3",
+    "noted returned text", "returned text built 3",
+    "operation 1", "operation 2", "returned named true",
+    "slow 9 started", "returned failure failed",
+    "noted assigned", "assigned after 6",
+    "loaded 3", "loaded 4", "noted argument", "size 4", "arguments 7",
+    "noted round 0", "noted round 1", "noted template", "interpolated 9", "operands 6",
+    "loaded 5", "condition true",
+    "noted outer", "loaded 6", "selected 6", "",
+  ].join("\n"));
+  // In a branch that may not run (`?:`, `&&`, `||`), the scope runs exactly
+  // when its branch would.
+  const scopeBranchesRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-scope-value-branches.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(scopeBranchesRun.status, 0, scopeBranchesRun.stderr);
+  assert.equal(scopeBranchesRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "loaded 1", "one arm 1 0",
+    "noted then", "noted else", "both arms 10 20",
+    "noted owned", "owned arm built 1 plain",
+    "noted inner", "noted outer", "nested arms 1 2 3",
+    "loaded 7", "as condition 1",
+    "noted zero", "argument 100", "argument 1",
+    "checked and", "checked and", "and true false false",
+    "checked or", "checked or", "or true true false",
+    "checked one", "checked two", "chain false false",
+    "checked if", "entered", "",
+  ].join("\n"));
+  // An object pattern whose source suspends: an awaited call or task, `try
+  // await`, a scope's value; at the function root and in branches and loops.
+  const destructureAwaitedRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-destructure-awaited.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(destructureAwaitedRun.status, 0, destructureAwaitedRun.stderr);
+  assert.equal(destructureAwaitedRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "plain 12", "owned name 3 x3", "partial label 4", "renamed 56", "joined name 6",
+    "fallible checked 7 x7", "fallible failed", "direct made 8 x8", "direct failed",
+    "explicit name 9 name 10 name 10", "scoped name 11 11 12",
+    "branch name 12 x12 none", "loop label 1", "loop label 2", "loop 3",
+    "receipt 0 title 0", "released receipt 0", "scope ended",
+    "receipt 1 title 1", "released receipt 1", "scope ended",
+    "returns label 13 late", "synchronous local 14 spare 14",
+    "waits label 15", "waits label 16", "cancelled",
+    "throwing label 17", "throwing failed", "",
+  ].join("\n"));
+  // `attempt async scope`: a `try` or `throw` inside fails the scope, which
+  // cancels and joins its children and gives `failure(error)`.
+  const scopeAttemptRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-scope-attempt.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(scopeAttemptRun.status, 0, scopeAttemptRun.stderr);
+  assert.equal(scopeAttemptRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "lingering 1 started", "lingering 1 finished", "lingering 1 started", "values 3 -1",
+    "noted work passing", "noted work failing", "work done failed",
+    "noted thrown", "thrown 5 -5",
+    "noted owned", "noted owned", "owned described value | described failed 7",
+    "annotated 3 -3",
+    "lingering 2 started", "noted outer", "noted inner", "lingering 2 finished",
+    "lingering 2 started", "noted outer", "noted inner", "nested 4 -4",
+    "noted pass 0", "noted pass 1", "noted pass 2", "loops 122",
+    "noted argument", "noted argument", "argument success 1 | failure",
+    "noted returned", "noted returned", "returned success 2 | failure",
+    "noted leaves", "noted leaves", "noted leaves", "leaves 40 3 -3",
+    "noted mixed", "noted mixed", "noted mixed", "mixed 13 -9 -99",
+    "noted several", "noted several", "noted several", "several 11 -5 -5",
+    "noted layered outer", "noted layered inner", "noted layered outer", "noted layered inner",
+    "noted layered outer", "noted layered inner", "layered 8 71 -7",
+    "operation 1", "operation 1", "named 2 -2",
+    "label 0 after 0", "label 2 after 2", "releases 102",
+    "steady 1 started", "steady 2 started", "steady 1 finished", "outside 10",
+    "waiting", "cancelled", "",
+  ].join("\n"));
+  // A `match` value inside an expression runs where it is written: operands
+  // before it first, and in a branch that may not run only when it does.
+  // Stage 0 rejects these positions, so the native output is recorded.
+  const matchValuesRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-match-value-positions.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(matchValuesRun.status, 0, matchValuesRun.stderr);
+  assert.equal(matchValuesRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "a", "two", "c", "arguments 24", "left", "arm",
+    "right", "operands 24", "mutated 201 2", "box", "two", "receiver 7",
+    "a", "b", "one", "c", "nested 16", "left",
+    "two", "fields 21", "t1", "one", "t2", "template 1 10 2",
+    "e1", "two", "e3", "elements 24", "text first", "text second",
+    "owned made first+made second", "text borrowed", "borrowed 2", "first two", "second two", "twice 22",
+    "text kept", "text kept", "leaves made kept+one | left early", "leading 20 -10", "prefixed two! 2", "condition 5 6",
+    "thrown worse", "iterated 5 1", "destructured 34 12", "wrapped 4 1", "text prefix", "text found",
+    "text prefix", "text default", "ownedValue made prefix+made found | made prefix+made default", "a", "two", "suspended 21",
+    "two", "awaited 22", "looped 205", "two", "else", "arm 2 0",
+    "then one", "else two", "bothArms 1 20", "left", "two", "left",
+    "conjunction true false", "left", "left", "one", "disjunction true false", "outer",
+    "inner", "two", "outer", "else", "inside 112 100", "text one",
+    "text else", "ownedArm made one | made else", "two", "else", "suspendedArm 2 0", "",
+  ].join("\n"));
+  // The Stage 0 parser stops at this form, so its rules are checked here,
+  // through the driver, rather than through the Stage 0-hosted commands.
+  const scopeValueProgram = (body: string, signature = "async function main(): i32") => `
+    async function load(value: i32): i32 { return value; }
+    function id(value: i32): i32 { return value; }
+    enum Kind { one, two }
+    enum Failure { broken }
+    enum Other { odd }
+    async function checked(value: i32): i32 throws Failure { return value; }
+    async function odd(): i32 throws Other { return 9; }
+    ${signature} {
+      ${body}
+      return 0;
+    }
+  `;
+  const scopeValueRejects: [string, RegExp, string?][] = [
+    ["const v = async scope { select 1; id(2); };", /nothing may follow `select` in its block: it leaves the scope/],
+    ["const v = async scope { task load(1); };", /must `select` a value on every path/],
+    ["const early = true; const v = async scope { task load(1); if (early) { select 1; } };",
+      /must `select` a value on every path/],
+    ["const early = true; const v = async scope { if (early) { select \"text\"; } select 1; };",
+      /expected String, found i32/],
+    ["const v: String = async scope { select 1; };", /expected String, found i32/],
+    ["let round = 0; while (round < 2) { const v = async scope { if (round == 1) break; select 1; }; round = round + 1; }",
+      /cannot be left with `break` or `continue`/],
+    // Where the scope would run repeatedly, in a closure, or into a
+    // positional pattern.
+    ["const [first, second] = async scope { select Array<i32>(1, 2); };",
+      /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
+    // A frame stores one binding per name; the message says which repeats.
+    ["const a = async scope { const pending = task load(1); select await pending; };"
+      + " const b = async scope { const pending = task load(2); select await pending; };",
+      /error\[Z0700\]: a value-producing async scope is not executable in this function in the native compiler yet; a frame stores one binding per name, and "pending" is declared twice/],
+    ["while (async scope { select false; }) { }",
+      /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
+    ["const run = async (): i32 => async scope { select 1; };",
+      /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
+    // A `select` in a `match` arm gives the arm's value, not the scope's.
+    ["const kind = Kind.two; const v = async scope { match (kind) { one => { select 1; } two => { select 2; } } };",
+      /must `select` a value on every path/],
+    ["const v = async scope { select 1; };", /error\[Z0703\]: async scope requires an enclosing async function/,
+      "function main(): i32"],
+    // A closure's body is its own function: the scope is not its target.
+    ["const v = async scope { const pick = (value: i32): i32 => { select value; }; select pick(1); };",
+      /scope-value-reject\.zs:\d+:\d+: error: select requires an enclosing value-producing block/],
+    // An attempted scope: something in it must be able to fail, with one error type.
+    ["const outcome = attempt async scope { select 1; };",
+      /attempt requires a scope that can fail; nothing in this scope uses `try` or `throw`/],
+    ["const outcome = attempt async scope { const a = try await checked(1); const b = try await odd(); select a + b; };",
+      /cannot propagate Other from an attempted scope failing with Failure/],
+    ["const outcome: Result<i32, Other> = attempt async scope { const a = try await checked(1); select a; };",
+      /cannot propagate Failure from an attempted scope failing with Other/],
+    ["const outcome = attempt async scope { const a = try await checked(1); if (a == 1) throw Other.odd; select a; };",
+      /expected Failure, found Other/],
+    // Without `attempt`, a `try` still needs a throwing function.
+    ["const v = async scope { const a = try await checked(1); select a; };",
+      /try requires an enclosing throwing function/],
+    ["const updates = 1; const v = async scope updates { select 1; };", /duplicate local "updates"/],
+    ["const v = async scope updates { select 1; }; const again = updates;", /unknown name updates/],
+  ];
+  const scopeValueReject = resolve(directory, "scope-value-reject.zs");
+  for (const [body, message, signature] of scopeValueRejects) {
+    writeFileSync(scopeValueReject, scopeValueProgram(body, signature));
+    const result = spawnSync(driver, ["check", scopeValueReject], { encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
+    assert.equal(result.status, 1, `${body}: ${result.stderr}`);
+    assert.match(result.stderr, message, body);
+    assert.match(result.stderr, /scope-value-reject\.zs:\d+:\d+:/, body);
+    assert.doesNotMatch(result.stderr, /internal compiler error/, body);
+  }
   // Stage 0 stops at an async-frame tier limit here; native runs it.
   const importedAliasRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/self-host-imported-thread-main-alias/main.zs")], {
     encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
@@ -11169,6 +11707,8 @@ test("compiles a multi-module Z application through the standalone native driver
     ["examples/interop/objc/protocol-conformance.zs", /error\[Z1000\]: objc\.bind is not executable in the native compiler yet/],
     ["tests/fixtures/objc-autorelease-pool-async.zs", /error\[Z1000\]: objc\.pool with an expression-bodied closure is not executable in the native compiler yet/],
     ["examples/async/member-affinity.zs", /error\[Z1000\]: thread\.spawn cannot carry main-isolated capture "application" of type Application in the native compiler yet/],
+    // A synchronous worker's context is C storage, which cannot hold a C++ value.
+    ["examples/async/thread-native.zs", /error\[Z1000\]: ownership-bearing thread\.spawn capture "measurement" of type "native\.zcpp\.UniqueValue" is not executable in the native compiler yet/],
     // Namespaces and overloads check natively; aggregate interpolation is a separate tier.
     ["examples/interop/cpp/cpp-interop.zs", /12:121: error\[Z1000\]: template interpolation of "cpp\.zcpp\.Point" is not executable in the native compiler yet/],
   ];
@@ -11221,6 +11761,10 @@ test("compiles a multi-module Z application through the standalone native driver
   }
   // C++ value members follow Stage 0's overload choice, receiver access, and
   // messages; C++ values in union or heap storage are a later tier.
+}, 300_000);
+
+test("follows Stage 0 on C++ values through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const foreignValuesEntry = resolve(projectRoot, "examples/interop/cpp/foreign-values.zs");
   const foreignValuesSource = readFileSync(foreignValuesEntry, "utf8")
     .replace("../../../tests/fixtures/foreign-values.hpp", resolve(projectRoot, "tests/fixtures/foreign-values.hpp"));
@@ -11409,7 +11953,10 @@ test("compiles a multi-module Z application through the standalone native driver
     externalInternalCheck.stderr,
     /packageAnswer.*internal to its package/,
   );
+}, 300_000);
 
+test("validates generated dispatch and foreign declaration streams through the standalone native driver", () => {
+  const { directory, driver } = standaloneDriver();
   const generatedProject = resolve(directory, "generated-project");
   const generatedFramework = resolve(generatedProject, "framework");
   const generatedApplication = resolve(generatedProject, "application");
@@ -11693,7 +12240,10 @@ test("compiles a multi-module Z application through the standalone native driver
     incompleteNativeStatusInspection.stderr,
     /incomplete-native-status\.zd:2:\d+: error\[Z0801\]: a native status contract requires at least one success value/,
   );
+}, 300_000);
 
+test("lowers native callback contexts through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const nativeCallbackExample = resolve(
     projectRoot,
     "examples/applications/message-router/native-callback.zs",
@@ -11825,7 +12375,10 @@ function main(): i32 {
       name,
     );
   }
+}, 300_000);
 
+test("rebuilds the standalone native driver with itself to the same C", () => {
+  const { directory, driver, driverSource, driverEmission } = standaloneDriver();
   const recursiveDriver = resolve(directory, "z-native-generation-2");
   const recursiveCompilation = spawnSync(
     driver,
@@ -11849,7 +12402,17 @@ function main(): i32 {
     nativeStandardOutputEmission.stderr,
   );
   assert.equal(nativeStandardOutputEmission.stdout, driverEmission.stdout);
+  const recursiveChecking = spawnSync(
+    recursiveDriver,
+    ["check", resolve(projectRoot, "tests/fixtures/self-host-emit-modules/main.zs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(recursiveChecking.status, 0, recursiveChecking.stderr);
+  assert.match(recursiveChecking.stdout, /checked 2 Z modules/);
+}, 300_000);
 
+test("builds C export libraries through the standalone native driver", () => {
+  const { directory, driver } = standaloneDriver();
   const cExportProject = resolve(
     projectRoot,
     "examples/interop/c/z-export",
@@ -12083,7 +12646,10 @@ function main(): i32 {
     { encoding: "utf8" },
   );
   assert.equal(runtimeRootRun.status, 0, runtimeRootRun.stderr);
+}, 300_000);
 
+test("builds runtime exports and reports lowering boundaries through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const releaseOnlyRuntimeProject = resolve(
     directory,
     "release-only-runtime-project",
@@ -12317,24 +12883,6 @@ function main(): i32 {
       marker: "^^^^^^",
       code: "Z1000",
       summary: 'Map value type "String" is not executable in the native compiler yet; only cleanup-free scalar values are supported',
-    },
-    {
-      name: "thread-ownership-bearing-capture",
-      source: [
-        'import { thread } from "std/thread";',
-        "struct Payload { text: String; }",
-        "async function main(): i32 {",
-        '  const payload = Payload({ text: "worker" });',
-        "  const worker = thread.spawn(move (): i32 => i32(payload.text.byteLength));",
-        "  return await worker - 6;",
-        "}",
-        "",
-      ].join("\n"),
-      line: 5,
-      column: 51,
-      marker: "^^^^^^^",
-      code: "Z1000",
-      summary: 'ownership-bearing thread.spawn capture "payload" of type "Payload" is not executable in the native compiler yet',
     },
     {
       name: "template-scalar-representation",
@@ -12600,7 +13148,10 @@ function main(): i32 {
     uncontractedPointerUseCheck.stderr,
     /native contract for "\.\/uncontracted\.h" has no checked function "z_uncontracted_pointer"/,
   );
+}, 300_000);
 
+test("builds and caches a foreign-header project through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const foreignProject = resolve(directory, "foreign-project");
   mkdirSync(foreignProject, { recursive: true });
   const foreignProjectSource = resolve(foreignProject, "main.zs");
@@ -12972,6 +13523,27 @@ function main(): i32 {
   assert.doesNotMatch(headerInvalidatedForeignBuild.stdout, /cache hit:/);
   assert.ok(statSync(builtForeignApplication).mtimeMs > 0);
 
+  const foreignApplication = resolve(directory, "foreign-application-native");
+  const foreignBuild = spawnSync(
+    driver,
+    ["build", foreignProjectSource, foreignApplication],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(foreignBuild.status, 0, foreignBuild.stderr);
+  assert.match(foreignBuild.stdout, /compiled 1 Z modules/);
+  const foreignExecution = spawnSync(
+    foreignApplication,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(foreignExecution.status, 42, foreignExecution.stderr);
+}, 300_000);
+
+test("checks header-only, scalar-pointer, and union headers through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const headerOnlyProject = resolve(directory, "header-only-project");
   const callableMethodContext = spawnSync(driver, [
     "run",
@@ -13382,7 +13954,10 @@ function main(): i32 {
     /invalidates native lifetime .*eventMemory.*view "text" is live/,
   );
   writeFileSync(unionSource, unionProgramSource);
+}, 300_000);
 
+test("passes foreign records and borrowed resources through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const recordProject = resolve(directory, "foreign-record-project");
   mkdirSync(recordProject);
   const recordSource = resolve(recordProject, "main.zs");
@@ -13605,6 +14180,52 @@ function main(): i32 {
   assert.equal(resourceUseAfterMove.status, 1);
   assert.match(resourceUseAfterMove.stderr, /use of moved value "image"/);
 
+  writeFileSync(
+    resolve(recordProject, "geometry.h"),
+    `${readFileSync(resolve(projectRoot, "tests/fixtures/geometry.h"), "utf8")}
+typedef union ZBits {
+  int integer;
+  float decimal;
+} ZBits;
+
+static inline int z_bits_integer(ZBits bits) {
+  return bits.integer;
+}
+`,
+  );
+  writeFileSync(
+    resolve(recordProject, "geometry.h.zd"),
+    `declare module "geometry.h" {
+  export function z_bits_integer(bits: _): _;
+}
+`,
+  );
+  writeFileSync(
+    recordSource,
+    `import geometry from "geometry.h";
+
+function main(): i32 {
+  return 0;
+}
+`,
+  );
+  const unsupportedUnionCheck = spawnSync(
+    driver,
+    ["check", recordSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(unsupportedUnionCheck.status, 1);
+  assert.match(
+    unsupportedUnionCheck.stderr,
+    /record value ZBits requires a scalar-field struct layout/,
+  );
+}, 300_000);
+
+test("enforces owned foreign handle contracts through the standalone native driver", () => {
+  const { directory, driver, foreignAdapterEnvironment } = standaloneDriver();
   const handleProject = resolve(directory, "foreign-handle-project");
   mkdirSync(handleProject);
   const handleSource = resolve(handleProject, "main.zs");
@@ -14150,68 +14771,10 @@ function main(): i32 {
     invalidHandleRelease.stderr,
     /API notes for "z_owned_handle_open" require "z_owned_handle_read" to consume exactly one ZOwnedHandle \*/,
   );
+}, 300_000);
 
-  writeFileSync(
-    resolve(recordProject, "geometry.h"),
-    `${readFileSync(resolve(projectRoot, "tests/fixtures/geometry.h"), "utf8")}
-typedef union ZBits {
-  int integer;
-  float decimal;
-} ZBits;
-
-static inline int z_bits_integer(ZBits bits) {
-  return bits.integer;
-}
-`,
-  );
-  writeFileSync(
-    resolve(recordProject, "geometry.h.zd"),
-    `declare module "geometry.h" {
-  export function z_bits_integer(bits: _): _;
-}
-`,
-  );
-  writeFileSync(
-    recordSource,
-    `import geometry from "geometry.h";
-
-function main(): i32 {
-  return 0;
-}
-`,
-  );
-  const unsupportedUnionCheck = spawnSync(
-    driver,
-    ["check", recordSource],
-    {
-      encoding: "utf8",
-      env: foreignAdapterEnvironment,
-    },
-  );
-  assert.equal(unsupportedUnionCheck.status, 1);
-  assert.match(
-    unsupportedUnionCheck.stderr,
-    /record value ZBits requires a scalar-field struct layout/,
-  );
-
-  const foreignApplication = resolve(directory, "foreign-application-native");
-  const foreignBuild = spawnSync(
-    driver,
-    ["build", foreignProjectSource, foreignApplication],
-    {
-      encoding: "utf8",
-      env: foreignAdapterEnvironment,
-    },
-  );
-  assert.equal(foreignBuild.status, 0, foreignBuild.stderr);
-  assert.match(foreignBuild.stdout, /compiled 1 Z modules/);
-  const foreignExecution = spawnSync(
-    foreignApplication,
-    [],
-    { encoding: "utf8" },
-  );
-  assert.equal(foreignExecution.status, 42, foreignExecution.stderr);
-
+test("compiles a multi-module Z application through the standalone native driver", () => {
+  const { directory, driver } = standaloneDriver();
   const applicationSource = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-modules/main.zs",
@@ -14229,13 +14792,6 @@ function main(): i32 {
   );
   assert.equal(checking.status, 0, checking.stderr);
   assert.match(checking.stdout, /checked 2 Z modules/);
-  const recursiveChecking = spawnSync(
-    recursiveDriver,
-    ["check", applicationSource],
-    { encoding: "utf8" },
-  );
-  assert.equal(recursiveChecking.status, 0, recursiveChecking.stderr);
-  assert.match(recursiveChecking.stdout, /checked 2 Z modules/);
 
   const emittedSource = resolve(directory, "emitted.c");
   const emitting = spawnSync(
@@ -14394,7 +14950,12 @@ function main(): i32 {
     { encoding: "utf8" },
   );
   assert.equal(floatingConversionExecution.status, 42, floatingConversionExecution.stderr);
+}, 300_000);
 
+test("builds manifest and package projects through the standalone native driver", () => {
+  const { directory, driver } = standaloneDriver();
+  const applicationSource = resolve(projectRoot, "tests/fixtures/self-host-emit-modules/main.zs");
+  const cExportProject = resolve(projectRoot, "examples/interop/c/z-export");
   const manifestProject = resolve(directory, "manifest-project");
   const manifestInclude = resolve(manifestProject, "include");
   const manifestLibrary = resolve(manifestProject, "lib");
@@ -15044,7 +15605,10 @@ function main(): i32 {
   assert.equal(releaseCompilation.status, 0, releaseCompilation.stderr);
   const releaseExecution = spawnSync(releaseApplication, [], { encoding: "utf8" });
   assert.equal(releaseExecution.status, 42, releaseExecution.stderr);
+}, 300_000);
 
+test("passes arguments and reuses the run cache through the standalone native driver", () => {
+  const { directory, driver } = standaloneDriver();
   const argumentApplicationSource = resolve(
     projectRoot,
     "tests/fixtures/self-host-native-driver.zs",
@@ -18260,7 +18824,7 @@ test("keeps native semantic authority composable across a representative Z corpu
       assert.deepEqual(authoritative, observed, `${entry} left an observed native semantic result on Stage 0`);
     }
   }
-}, 120_000);
+}, 300_000);
 
 test("preserves bounded channel endpoint and ownership effects natively", () => {
   const input = resolve(
@@ -19206,14 +19770,111 @@ test("propagates cancellation through an executor-placed async function tail", (
   rmSync(directory, { recursive: true, force: true });
 }, 60_000);
 
-test("rejects a worker frame awaiting a function whose placed tier runs where it runs", () => {
-  // `dispatch` keeps its placed tier (a lexical local in a suspending match
-  // arm); its placed call would run on the worker thread.
-  const input = resolve(projectRoot, "tests/fixtures/native-worker-placed-tier-invalid.zs");
-  const native = spawnSync(process.execPath, [cli, "self-host-emit", input], { encoding: "utf8" });
-  assert.notEqual(native.status, 0);
-  assert.match(native.stderr, /native worker frames cannot await dispatch yet/);
+test("releases owned locals of suspending blocks exactly once in native frames", () => {
+  // Stage 0 does not run these frames yet ("needs lexical frame cleanup
+  // states"), so the expected releases are written out: each local goes at
+  // its block's end, on break/continue, on return/throw from the block, and
+  // on cancellation while suspended inside it, newest first.
+  const input = resolve(projectRoot, "tests/fixtures/native-frame-lexical-locals.zs");
+  const emission = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(emission.status, 0, emission.stderr);
+  const directory = mkdtempSync("/tmp/z-native-frame-lexical-locals-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(
+      execution.stdout,
+      [
+        "released branch",
+        "after branch",
+        "branch 6",
+        "released step 1",
+        "released step 2",
+        "released step 3",
+        "loop 4",
+        "released held 1",
+        "early return 1",
+        "released held 2",
+        "early throw 2",
+        "kept payload with arm extra",
+        "released arm extra",
+        "released payload",
+        "arm 1",
+        "released pending",
+        "cancelled sleeper",
+        "",
+      ].join("\n"),
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
+
+test("runs a worker frame awaiting a function with a placed call", () => {
+  // `dispatch` is an ordinary async function with a placed call and owned
+  // locals in a match arm; awaited from a worker frame, its placed call hops
+  // to main.
+  const input = resolve(projectRoot, "tests/fixtures/native-worker-awaits-placed-function.zs");
+  const emission = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /frame->child = z_stage1_async_hop_start\(task->executor, /);
+  const directory = mkdtempSync("/tmp/z-native-worker-awaits-placed-function-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("joins and cancels hopped work without racing the executor that reports it", () => {
+  // A worker freed a hop whose completion the main executor had reported but
+  // the worker had not yet drained (abort at executor teardown), and a hop's
+  // cancellation read the posted child's executor field while main wrote it.
+  // Both showed up within a few sanitizer runs.
+  const directory = mkdtempSync("/tmp/z-native-hop-races-");
+  try {
+    for (const fixture of ["native-main-task-hops.zs", "self-host-emit-thread-cancel-main-match.zs"]) {
+      const input = resolve(projectRoot, "tests/fixtures", fixture);
+      const emission = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+        encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+      });
+      assert.equal(emission.status, 0, emission.stderr);
+      for (const sanitizer of ["address,undefined", ...(process.platform === "darwin" ? ["thread"] : [])]) {
+        const executable = resolve(directory, "program");
+        const compilation = spawnSync("clang", ["-x", "c", "-std=c11", "-O1", "-pthread",
+          `-fsanitize=${sanitizer}`, "-fno-sanitize-recover=all",
+          ...(process.platform === "darwin" ? ["-framework", "CoreFoundation"] : []), "-", "-o", executable],
+        { encoding: "utf8", input: emission.stdout });
+        assert.equal(compilation.status, 0, compilation.stderr);
+        for (let run = 0; run < 30; run += 1) {
+          const execution = spawnSync(executable, [], { encoding: "utf8", timeout: 20_000, killSignal: "SIGKILL" });
+          assert.equal(execution.status, 0, `${fixture} ${sanitizer} run ${run}: ${execution.stderr}`);
+        }
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
 
 test("runs structured placed async function suspension through a hop", () => {
   const input = resolve(

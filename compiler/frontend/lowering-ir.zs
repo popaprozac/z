@@ -87,7 +87,7 @@ import {
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
-import { callableIdentifierLocation, emptySemanticEvidence } from "./semantic-evidence.zs";
+import { asyncScopeErrorOffset, asyncScopeValueOffset, callableIdentifierLocation, emptySemanticEvidence, operandTypeKey } from "./semantic-evidence.zs";
 import {
   collectionMethodSignature,
   numericBitsType,
@@ -105,7 +105,7 @@ import { internalBackendFailure } from "./native-backend-errors.zs";
 import { validateSpecializedExpressions } from "./semantic-specialization-expressions.zs";
 import { checkGenericAggregateInstance, checkGenericInstance } from "./module-resolver.zs";
 import { requireNativeInstanceCopies } from "./native-lowerability.zs";
-import { closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, threadWorkerNeedsFrame, workerUsesMainBridge, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { statementHoistedScopes, expressionHoistedScopes, closureOwnedStatements, isMainHopNode, mainAffineUsesGeneralFrame, workerClosureLifts, mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, functionAwaitsStreamStep, functionRunsMatchPrelude, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameDelay, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   directoryName,
   normalizedModulePath,
@@ -1067,6 +1067,18 @@ struct LoweredGenericInstanceEvidence {
   functions: Array<ModuleSemanticEvidence>;
   methods: Array<ModuleSemanticEvidence>;
   structs: Array<LoweredStructInstanceEvidence>;
+  // Aligned with `functions` and `methods`: the types each instance's own
+  // check inferred.
+  functionTypes: Array<LoweredInstanceTypes>;
+  methodTypes: Array<LoweredInstanceTypes>;
+}
+
+// The types an instance's body uses without spelling them out: the Option a
+// collection method returns, the Result of a call. Declarations name the
+// rest; these come only from the instance's own check, with its concrete
+// arguments, and each needs its definition emitted.
+struct LoweredInstanceTypes {
+  names: Array<String>;
 }
 
 // One generic aggregate instance: its constructor and deinit checked
@@ -1076,6 +1088,32 @@ struct LoweredStructInstanceEvidence {
   checked: boolean;
   lifecycle: ModuleSemanticEvidence;
   methods: Array<ModuleSemanticEvidence>;
+  // What the constructor, deinit, and methods inferred between them.
+  inferredTypes: Array<String>;
+}
+
+// Adds what one instance's own check inferred, before its module's records
+// are merged in: those belong to other code and are collected with it.
+function appendInferredTypeNames(in evidence: ModuleSemanticEvidence, inout names: Array<String>): void {
+  for (const binding of evidence.bindingResolutions) {
+    appendDistinctTypeName(inout names, binding.typeName);
+  }
+  for (const expression of evidence.expressionResolutions) {
+    appendDistinctTypeName(inout names, expression.typeName);
+  }
+  for (const call of evidence.callResolutions) {
+    if (call.errorType.byteLength == 0) continue;
+    const resultName = `Result<${call.returnType}, ${call.errorType}>`;
+    appendDistinctTypeName(inout names, resultName);
+  }
+}
+
+function appendDistinctTypeName(inout names: Array<String>, in name: String): void {
+  if (name.byteLength == 0) return;
+  for (const existing of names) {
+    if (existing == name) return;
+  }
+  names.push(copy name);
 }
 
 // An instance's evidence keeps its own records first and gains its module's
@@ -5165,6 +5203,14 @@ function loweredTypeSupportsCopyHelper(in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.enumType;
 }
 
+// A shared identity stays usable in its binding when that binding is passed
+// on, assigned, or returned: the destination takes a reference of its own.
+// A Mutex is shared by a capture, but passing its binding on moves it, as the
+// resolver's rule for owned uses has it (only an owned local can be passed).
+function moduleTypeSharesOnTransfer(in type: LoweredType): boolean {
+  return type.kind != LoweredTypeKind.mutexType && moduleTypeRetainsCapturedIdentity(type);
+}
+
 function moduleTypeRetainsCapturedIdentity(in type: LoweredType): boolean {
   if (type.kind == LoweredTypeKind.channelEndpointType) {
     const kind = channelIdentityKind(type.name);
@@ -6118,6 +6164,33 @@ struct CallableReturnContext {
   returnType: String = "";
   resultType: String = "";
   parameters: Array<LoweredClosureCapture> = Array<LoweredClosureCapture>();
+  // Inside a value-producing `async scope`: the `select` statements that give
+  // it its value, the local that value initializes, and the value's type.
+  scopeSelects: Array<usize> = Array<usize>();
+  scopeSelectName: String = "";
+  scopeSelectType: String = "";
+  // Whether that scope is attempted: its `select` then gives `success(value)`.
+  scopeSelectAttempted: boolean = false;
+  // Inside `attempt async scope`, however deep: the local a failing `try` or
+  // `throw` gives `failure(error)` to, that local's Result type, and the
+  // error type.
+  scopeFailureName: String = "";
+  scopeFailureResult: String = "";
+  scopeFailureError: String = "";
+}
+
+// The Result a failing `try` writes: the attempted scope's when inside one,
+// else the enclosing callable's.
+function contextualFailureResult(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in ownerName: String,
+  in context: CallableReturnContext
+): Option<LoweredEnum> throws String {
+  if (context.scopeFailureResult.byteLength > 0) {
+    return try intrinsicResultDeclaration(program, importedTypes, context.scopeFailureResult);
+  }
+  return try contextualThrowingFunctionResult(program, importedTypes, ownerName, context);
 }
 
 function contextualReturnTypeName(
@@ -6219,6 +6292,14 @@ function treeIsRetainedReference(
   for (const aggregate of program.aggregates) {
     if (aggregate.name == typeName
       && aggregate.kind == DeclarationKind.classDeclaration) return true;
+  }
+  // Every other shared identity (a TaskScope, TaskControl, or sending channel
+  // endpoint) is retained when a stored reference to it is passed on, by the
+  // same rule storage lowering applies. Calling that a move dropped the
+  // source's release while the destination still took a reference of its own.
+  match (attempt lowerModuleTypeName(program, importedTypes, typeName)) {
+    success(type) => if (moduleTypeSharesOnTransfer(type)) return true;
+    failure(_) => {}
   }
   // Imported class handles and callable aliases keep the same retain/release
   // semantics as local declarations. Native calls (including objc.register)
@@ -6990,6 +7071,25 @@ function loweredStatementHasLabel(
   return false;
 }
 
+// The block that binds a pattern's fields, or the statement count. A source
+// that hoists a `try`, an await, or a scope wraps that block in a normalized
+// one; the bindings still belong to the enclosing sequence.
+function destructurePatternBlock(in statements: Array<LoweredStatement>, lowered: usize): usize {
+  let index = lowered;
+  while (
+    statements[index].kind == LoweredStatementKind.blockStatement
+    && loweredStatementHasLabel(statements[index], "nested-try-normalized")
+    && statements[index].children.length > 0
+  ) {
+    index = statements[index].children[statements[index].children.length - 1];
+  }
+  if (
+    statements[index].kind == LoweredStatementKind.blockStatement
+    && loweredStatementHasLabel(statements[index], "destructure-normalized")
+  ) return index;
+  return statements.length;
+}
+
 function planNestedPreludeSequence(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -7073,6 +7173,14 @@ function planNestedPreludeSequence(
         ownerName, sourceIndex, loweredMatch, active, expressions, moveIndex,
         inout statements, inout liveFlags, forceMoveLiveGuards, insideLoop,
         loopCleanups);
+    } else if (loweredStatementHasLabel(statements[local], "nested-scope")) {
+      // The scope's body is planned with its local, as a whole initializer's is.
+      try planCleanupStatement(program, importedTypes, evidence, arena,
+        ownerName, sourceIndex, local, active, expressions, moveIndex,
+        inout statements, inout liveFlags, forceMoveLiveGuards, insideLoop,
+        loopCleanups);
+    } else if (loweredStatementHasLabel(statements[local], "nested-spill")) {
+      // An operand run ahead of a match value: a local with its initializer.
     } else {
       throw "native cleanup planning received an unknown nested prelude";
     }
@@ -7309,6 +7417,14 @@ function planCleanupStatement(
         arena.nodes[sourceIndex].kind == StatementKind.variableStatement
         && cleanup.name == arena.nodes[sourceIndex].name
       ) continue;
+      // Nor does a pattern's prelude own the fields the pattern will bind.
+      let bound = false;
+      if (arena.nodes[sourceIndex].kind == StatementKind.destructureStatement) {
+        for (const binding of arena.nodes[sourceIndex].objectBindings) {
+          if (binding.bindingName == cleanup.name) bound = true;
+        }
+      }
+      if (bound) continue;
       preludeLive.push(copyCleanup(cleanup));
     }
     let normalizedRoots = Array<usize>();
@@ -7384,6 +7500,39 @@ function planCleanupStatement(
         statements[loweredTry].cleanups.push(copyCleanup(cleanup));
       }
     }
+    return;
+  }
+  // A value scope's `select` leaves the scope: it releases what the scope
+  // declared so far, once the scope has joined its children.
+  if (loweredStatementHasLabel(statements[loweredIndex], "scope-select")) {
+    appendStatementCleanupCopies(inout statements, loweredIndex, loopCleanups);
+    return;
+  }
+  // A local a value-producing `async scope` initializes: the scope's body is
+  // planned as a block of its own, which a `select` leaves as `break` leaves
+  // a loop.
+  if (
+    statements[loweredIndex].kind == LoweredStatementKind.localStatement
+    && statements[loweredIndex].children.length == 1
+    && loweredStatementHasLabel(statements[statements[loweredIndex].children[0]], "value-scope")
+  ) {
+    const scopeBody = statements[statements[loweredIndex].children[0]].children[0];
+    const scopeSource = valueScopeSourceStatements(arena, sourceIndex, statements[loweredIndex]);
+    let scopeLowered = Array<usize>();
+    for (const child of statements[scopeBody].children) {
+      scopeLowered.push(child);
+    }
+    let scopeLive = Array<LoweredCleanup>();
+    for (const cleanup of live) {
+      if (cleanup.name != statements[loweredIndex].name) scopeLive.push(copyCleanup(cleanup));
+    }
+    // The body never falls off its end (every path selects or returns), so
+    // the `select` that leaves carries the cleanups, not the block.
+    const scopeLeaves = Array<LoweredCleanup>();
+    const unusedAtBlockEnd = try planCleanupSequence(
+      program, importedTypes, evidence, arena, ownerName, scopeSource, scopeLowered, scopeLive,
+      expressions, moveIndex, inout statements, inout liveFlags, forceMoveLiveGuards, true, scopeLeaves
+    );
     return;
   }
   if (
@@ -7640,14 +7789,11 @@ function planCleanupSequence(
       }
     } else if (
       arena.nodes[sourceIndex].kind == StatementKind.destructureStatement
-      && statements[loweredIndex].kind == LoweredStatementKind.blockStatement
-      && loweredStatementHasLabel(
-        statements[loweredIndex],
-        "destructure-normalized"
-      )
+      && destructurePatternBlock(statements, loweredIndex) < statements.length
     ) {
+      const patternBlock = destructurePatternBlock(statements, loweredIndex);
       let destructureChildren = Array<usize>();
-      for (const child of statements[loweredIndex].children) {
+      for (const child of statements[patternBlock].children) {
         destructureChildren.push(child);
       }
       for (const child of destructureChildren) {
@@ -7774,6 +7920,9 @@ function attachMoveLiveFlagsRange(
         || expressions[index].kind == LoweredExpressionKind.classOutputSlot)
       && expressions[index].children.length == 1
       && !expressionHasLabel(expressions[index], "worker-owned-scope")
+      // An async closure's move of its own capture clears the environment's
+      // flag, whatever the enclosing function tracks under that name.
+      && !expressionHasLabel(expressions[index], "environment-capture")
     ) {
       const operand = expressions[index].children[0];
       expressions[index].value = "";
@@ -8591,7 +8740,7 @@ function wrapOwnedStorageZType(
     return value;
   }
   if (
-    moduleTypeRetainsCapturedIdentity(payloadType)
+    moduleTypeSharesOnTransfer(payloadType)
     && expressionBorrowsStoredReference(tree, input)
   ) {
     if (output[value].kind == LoweredExpressionKind.retainValue) {
@@ -10153,7 +10302,7 @@ function collectThreadClosureCaptures(
         );
       }
     };
-    captures.push(try threadClosureCapture(program, importedTypes, captureName, type, false));
+    captures.push(try threadClosureCapture(program, importedTypes, captureName, type));
     index = index + 1;
   }
   return captures;
@@ -10165,18 +10314,20 @@ function threadClosureCapture(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in captureName: String,
-  in type: LoweredType,
-  framed: boolean
+  in type: LoweredType
 ): LoweredClosureCapture throws String {
     const needsCleanup = moduleTypeNeedsCleanup(
       program,
       importedTypes,
       type
     );
+    // A worker is lifted before this module's own classes are registered, so
+    // their declarations answer for them.
+    const shareVisiting = Array<String>();
     const sharedArc = type.kind == LoweredTypeKind.classType
-      && importedTypeThreadShareable(importedTypes, type);
+      && (importedTypeThreadShareable(importedTypes, type)
+        || moduleTypeIsThreadShareable(program, importedTypes, type.name, shareVisiting));
     const sharedScope = type.kind == LoweredTypeKind.taskScopeType;
-    const channelEndpoint = type.kind == LoweredTypeKind.channelEndpointType;
     const onceLifetime = type.kind == LoweredTypeKind.onceLifetimeType;
     if (onceLifetime) {
       const payload = type.name.copyBytes(13, type.name.byteLength);
@@ -10191,18 +10342,6 @@ function threadClosureCapture(
       && !sharedArc
     ) {
       throw `native thread.spawn cannot retain non-shareable ARC capture ${captureName} of type ${type.name} yet`;
-    }
-    // A framed worker owns a moved value as a frame parameter.
-    if (
-      needsCleanup
-      && !framed
-      && type.kind != LoweredTypeKind.stringType
-      && !sharedArc
-      && !sharedScope
-      && !channelEndpoint
-      && !onceLifetime
-    ) {
-      throw `native thread.spawn does not support ownership-bearing capture ${captureName} yet`;
     }
     return LoweredClosureCapture({
       name: copy captureName,
@@ -10500,9 +10639,17 @@ function resolvedExpressionResolutionIndex(
   in tree: ExpressionTree,
   index: usize
 ): usize {
-  const found = evidence.expressionResolutionIndices.get(
-    tree.nodes[index].offset
-  );
+  // A value-producing scope keeps its type under its own key, apart from
+  // any expression that begins with it.
+  const offset = tree.nodes[index].kind == ExpressionKind.asyncScopeExpression
+    ? asyncScopeValueOffset(tree.nodes[index].offset)
+    : tree.nodes[index].offset;
+  return evidenceResolutionAt(evidence, offset);
+}
+
+// The checked type recorded at a source offset, or the resolution count.
+function evidenceResolutionAt(in evidence: ModuleSemanticEvidence, offset: usize): usize {
+  const found = evidence.expressionResolutionIndices.get(offset);
   match (in found) {
     some(resolutionIndex) => return resolutionIndex;
     none => return evidence.expressionResolutions.length;
@@ -12433,15 +12580,16 @@ function lowerAsyncMethodTailCall(
     throw `native async method tail lowering requires a concrete struct or class receiver, found ${receiverTypeName}`;
   }
   const receiverMode = resolvedCallReceiverMode(evidence, tree, index);
+  // A class receiver is the object's address in either borrow mode; `inout`
+  // only lifts the callee's `const`.
   const borrowedClassReceiver = receiverType.kind
       == LoweredTypeKind.classType
-    && receiverMode != "move"
-    && receiverMode != "inout";
+    && receiverMode != "move";
   const consumingStructReceiver = receiverType.kind
       == LoweredTypeKind.structType
     && receiverMode == "move";
   if (!borrowedClassReceiver && !consumingStructReceiver) {
-    throw "native first-tier suspending methods require a non-consuming class receiver or a consuming struct receiver";
+    throw "native first-tier suspending methods require a borrowed class receiver or a consuming struct receiver";
   }
   let receiver = try lowerExpression(
     program,
@@ -12451,6 +12599,7 @@ function lowerAsyncMethodTailCall(
     receiverInput,
     inout output
   );
+  if (receiverMode == "inout") markMutableStorage(inout output, receiver);
   if (
     consumingStructReceiver
     && moduleTypeNeedsCleanup(program, importedTypes, receiverType)
@@ -12942,6 +13091,8 @@ function lowerExpressionNode(
   in contextualTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  const spilled = spilledOperandValue(tree, index, output);
+  if (spilled < output.length) return spilled;
   if (tree.nodes[index].kind == ExpressionKind.matchExpression) {
     const bindingName = `_z_stage1_nested_match_${tree.nodes[index].offset}`;
     let candidate = output.length;
@@ -12951,6 +13102,42 @@ function lowerExpressionNode(
         && output[candidate].value == bindingName
         && expressionHasLabel(output[candidate], "nested-match-binding")) return candidate;
     }
+  }
+  // A lazy operator whose right operand holds a value-producing scope ran
+  // ahead as a prelude (appendScopeLogicalPrelude); its result is read here.
+  if (tree.nodes[index].kind == ExpressionKind.binaryExpression
+    && (tree.nodes[index].value == "&&" || tree.nodes[index].value == "||")
+    && tree.nodes[index].children.length == 2
+    && (expressionTreeContainsValueScope(tree, tree.nodes[index].children[1])
+      || expressionTreeContainsMatchValue(tree, tree.nodes[index].children[1]))) {
+    const bindingName = scopeLogicalBindingName(tree, index);
+    let candidate = output.length;
+    while (candidate > 0) {
+      candidate = candidate - 1;
+      if (output[candidate].kind == LoweredExpressionKind.localValue
+        && output[candidate].value == bindingName
+        && expressionHasLabel(output[candidate], "nested-conditional-binding")) return candidate;
+    }
+    throw `native lowering lost the result of a lazy operator at ${tree.nodes[index].line}:${tree.nodes[index].column}`;
+  }
+  // A value-producing scope ran ahead of this statement; its value is read
+  // from the frame temporary that prelude filled (appendScopeValuePreludes).
+  let ranScope = index;
+  if (tree.nodes[ranScope].kind == ExpressionKind.attemptExpression && tree.nodes[ranScope].children.length == 1
+    && tree.nodes[tree.nodes[ranScope].children[0]].kind == ExpressionKind.asyncScopeExpression) {
+    // `attempt async scope`: that temporary already holds the Result.
+    ranScope = tree.nodes[ranScope].children[0];
+  }
+  if (tree.nodes[ranScope].kind == ExpressionKind.asyncScopeExpression) {
+    const bindingName = scopeValueBindingName(tree.nodes[ranScope].offset);
+    let candidate = output.length;
+    while (candidate > 0) {
+      candidate = candidate - 1;
+      if (output[candidate].kind == LoweredExpressionKind.localValue
+        && output[candidate].value == bindingName
+        && expressionHasLabel(output[candidate], "nested-match-binding")) return candidate;
+    }
+    throw `native lowering lost the value of an async scope at ${tree.nodes[index].line}:${tree.nodes[index].column}`;
   }
   match (resolvedExpressionTargetName(evidence, tree, index)) {
     some(targetName) => return pushExpression(
@@ -13032,7 +13219,7 @@ function lowerExpressionNode(
     tree.nodes[index].kind == ExpressionKind.executorPlacementExpression
     && tree.nodes[index].value == "inline"
   ) {
-    return try lowerInlinePlacedBlock(program, importedTypes, tree, index, inout output);
+    return try lowerInlinePlacedBlock(program, importedTypes, evidence, tree, index, inout output);
   }
   if (
     tree.nodes[index].kind
@@ -14084,9 +14271,15 @@ function lowerExpressionNode(
     }
     const thenInput = tree.nodes[index].children[1];
     const elseInput = tree.nodes[index].children[2];
+    // A conditional with a `try` or a value-producing scope in a branch ran
+    // ahead of its statement, and is read from the prelude's destination.
     if (
       expressionTreeContainsTry(tree, thenInput)
       || expressionTreeContainsTry(tree, elseInput)
+      || expressionTreeContainsValueScope(tree, thenInput)
+      || expressionTreeContainsValueScope(tree, elseInput)
+      || expressionTreeContainsMatchValue(tree, thenInput)
+      || expressionTreeContainsMatchValue(tree, elseInput)
     ) {
       const bindingName =
         `_z_stage1_nested_conditional_${tree.nodes[index].offset}`;
@@ -14161,6 +14354,10 @@ function lowerExpressionNode(
       throw "native lowering received a malformed task expression";
     }
     const taskInput = tree.nodes[index].children[0];
+    if (isMainHopNode(tree.nodes[taskInput])) {
+      return try lowerMainHop(program, importedTypes, evidence, tree, taskInput,
+        LoweredExpressionKind.asyncFunctionTask, inout output);
+    }
     if (
       tree.nodes[taskInput].kind != ExpressionKind.callExpression
       || tree.nodes[taskInput].children.length == 0
@@ -14298,7 +14495,8 @@ function lowerExpressionNode(
     }
     const taskInput = tree.nodes[index].children[0];
     if (isMainHopNode(tree.nodes[taskInput])) {
-      return try lowerMainHopAwait(program, importedTypes, evidence, tree, taskInput, inout output);
+      return try lowerMainHop(program, importedTypes, evidence, tree, taskInput,
+        LoweredExpressionKind.asyncFunctionAwait, inout output);
     }
     if (
       tree.nodes[taskInput].kind == ExpressionKind.callExpression
@@ -14807,6 +15005,8 @@ function lowerExpressionNode(
           inout output
         );
         const operationInput = tree.nodes[index].children[2];
+        const asyncOperation = tree.nodes[operationInput].labels.length > 3
+          && tree.nodes[operationInput].labels[3] == "async";
         const operationTypeName = match (
           evidenceResolvedExpressionTypeName(
             program,
@@ -14817,7 +15017,7 @@ function lowerExpressionNode(
           )
         ) {
           some(name) => name;
-          none => "async () => void";
+          none => asyncOperation ? "async () => void" : "() => void";
         };
         const operationExpression = try lowerExpressionExpected(
           program,
@@ -14833,14 +15033,14 @@ function lowerExpressionNode(
           && output[operationExpression].kind
             != LoweredExpressionKind.directFunctionValue
           && output[operationExpression].kind != LoweredExpressionKind.localValue
-        ) throw "native TaskScope.schedule requires an async callable value";
+        ) throw "native TaskScope.schedule requires a callable value";
         const operationType = try lowerModuleTypeName(
           program,
           importedTypes,
           operationTypeName
         );
         if (operationType.kind != LoweredTypeKind.functionType) {
-          throw "native TaskScope.schedule lost its async callable type";
+          throw "native TaskScope.schedule lost its callable type";
         }
         let children = Array<usize>();
         children.push(receiver);
@@ -20050,6 +20250,8 @@ function lowerExpressionExpected(
   in expectedTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  const spilled = spilledOperandValue(tree, index, output);
+  if (spilled < output.length) return spilled;
   // Preserve destination context through transparent aliases, just as type
   // lowering does. Cycles have already been rejected by semantic analysis.
   match (localTypeAliasTarget(program, expectedTypeName)) {
@@ -20208,6 +20410,10 @@ function lowerExpressionExpected(
     if (
       !expressionTreeContainsTry(tree, thenInput)
       && !expressionTreeContainsTry(tree, elseInput)
+      && !expressionTreeContainsValueScope(tree, thenInput)
+      && !expressionTreeContainsValueScope(tree, elseInput)
+      && !expressionTreeContainsMatchValue(tree, thenInput)
+      && !expressionTreeContainsMatchValue(tree, elseInput)
     ) {
       const condition = try lowerExpression(
         program,
@@ -20396,10 +20602,16 @@ function lowerExpressionExpected(
         if (parameterNames.length != signature.parameterTypes.length) {
           throw "native callable closure lost its parameter shape";
         }
-        if (bodyKind == "block") {
-          if (closureAsynchronous) {
-            throw "native block callable closures currently require a synchronous signature";
-          }
+        // An async block is a lifted frame function the closure awaits
+        // (see collectLiftedOperations); a synchronous one runs in place.
+        const bodyStart = output.length;
+        let liftedAwait = false;
+        let liftedBody: usize = 0;
+        if (bodyKind == "block" && closureAsynchronous) {
+          liftedBody = try lowerLiftedOperationAwait(program, importedTypes, tree, index, inout output);
+          liftedAwait = true;
+        }
+        if (bodyKind == "block" && !liftedAwait) {
           let labels = Array<String>();
           labels.push(functionType.name.copyBytes(
             0,
@@ -20448,12 +20660,13 @@ function lowerExpressionExpected(
             == "thread.any";
           return closure;
         }
-        if (bodyInput >= tree.nodes.length) {
+        if (!liftedAwait && bodyInput >= tree.nodes.length) {
           throw "native callable closure lost its expression body";
         }
         let asyncSuspension = "";
         let materializesAttemptAwait = false;
-        if (closureAsynchronous) {
+        if (liftedAwait) asyncSuspension = "method-await";
+        else if (closureAsynchronous) {
           if (expressionTreeContainsAwait(tree, bodyInput)) {
             let suspensionBody = bodyInput;
             if (
@@ -20489,7 +20702,8 @@ function lowerExpressionExpected(
           }
         }
         let body: usize = 0;
-        if (asyncSuspension == "scheduler-yield") {
+        if (liftedAwait) body = liftedBody;
+        else if (asyncSuspension == "scheduler-yield") {
           body = pushExpression(
             inout output,
             LoweredExpressionKind.booleanValue,
@@ -20585,6 +20799,47 @@ function lowerExpressionExpected(
           };
           captureNames.push(candidate.copyBytes(0, candidate.byteLength));
           captureTypes.push(move captureType);
+        }
+        // A capture lent to the awaited call is lent from the environment
+        // itself: the copy a poll makes of it does not outlive that poll.
+        if (closureAsynchronous && output[body].kind == LoweredExpressionKind.asyncFunctionAwait
+          && !(output[body].labels.length > 0 && output[body].labels[0] == "method")) {
+          let lent: usize = 1;
+          while (lent < output[body].children.length && lent <= output[body].labels.length) {
+            const argument = output[body].children[lent];
+            const lends = output[body].labels[lent - 1] == "in" || output[body].labels[lent - 1] == "inout";
+            if (lends && output[argument].kind == LoweredExpressionKind.localValue) {
+              for (const captureName of captureNames) {
+                if (captureName != output[argument].value) continue;
+                output[argument].kind = LoweredExpressionKind.closureCaptureValue;
+                output[argument].labels = Array<String>("value");
+              }
+            }
+            lent = lent + 1;
+          }
+        }
+        // The body of an async `move` closure may move an owned capture on,
+        // into the call it awaits: the environment then no longer owns it.
+        if (closureAsynchronous && tree.nodes[index].value == "move") {
+          let moved = bodyStart;
+          const bodyEnd = output.length;
+          while (moved < bodyEnd) {
+            if (output[moved].kind == LoweredExpressionKind.moveValue && output[moved].children.length == 1) {
+              const operand = output[moved].children[0];
+              let movedCapture: usize = 0;
+              while (movedCapture < captureNames.length) {
+                if (output[operand].kind == LoweredExpressionKind.localValue
+                  && output[operand].value == captureNames[movedCapture]
+                  && moduleTypeNeedsCleanup(program, importedTypes, captureTypes[movedCapture])
+                  && !moduleTypeRetainsCapturedIdentity(captureTypes[movedCapture])) {
+                  output[moved].value = ownerLiveFlag(captureNames[movedCapture]);
+                  output[moved].labels.push("environment-capture");
+                }
+                movedCapture = movedCapture + 1;
+              }
+            }
+            moved = moved + 1;
+          }
         }
         let children = Array<usize>();
         children.push(body);
@@ -22000,7 +22255,7 @@ function lowerValueDestination(
             ownerName
           );
         };
-        const outerResult = try contextualThrowingFunctionResult(
+        const outerResult = try contextualFailureResult(
           program,
           importedTypes,
           ownerName,
@@ -22884,8 +23139,10 @@ function threadCaptureBindingOffset(
 ): usize throws String {
   let resolvedOffset: usize = 0;
   for (const statement of arena.nodes) {
+    // A named `async scope` binds its handle like a local.
     if (
-      statement.kind == StatementKind.variableStatement
+      (statement.kind == StatementKind.variableStatement
+        || statement.kind == StatementKind.asyncScopeStatement)
       && statement.name == name
       && statement.nameOffset < useOffset
       && statement.nameOffset >= resolvedOffset
@@ -23198,7 +23455,7 @@ function liftedWorkerCaptures(
         none => throw `native async worker frame cannot resolve capture ${name}`;
       };
       const type = try lowerModuleTypeName(program, importedTypes, typeName);
-      captures.push(try threadClosureCapture(program, importedTypes, name, type, true));
+      captures.push(try threadClosureCapture(program, importedTypes, name, type));
     }
   }
   if (!found) throw "native async worker frame lost its checked closure captures";
@@ -23232,24 +23489,59 @@ function liftedWorkerDeclaration(
   in tree: ExpressionTree,
   closure: usize
 ): FunctionDeclaration throws String {
+  const captures = try liftedWorkerCaptures(program, importedTypes, evidence, ownerName, tree.nodes[closure].offset);
+  const name = liftedWorkerName(arena, tree.nodes[closure].statements);
+  // A worker runs once, on its own thread: it owns every capture.
+  const modes = valueCaptureModes(captures.length);
+  const forwarded = Array<Parameter>();
+  return liftedClosureDeclaration(program, evidence, arena, tree, closure, captures, modes, forwarded, name);
+}
+
+function valueCaptureModes(count: usize): Array<ParameterMode> {
+  let modes = Array<ParameterMode>();
+  while (modes.length < count) {
+    modes.push(ParameterMode.value);
+  }
+  return modes;
+}
+
+// A block closure's body as a synthesized async function: its parameters are
+// the closure's captures, each owned (`value`) or lent from the closure's
+// environment, followed by the closure's own parameters. Its nodes keep their
+// source offsets.
+function liftedClosureDeclaration(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  closure: usize,
+  in captures: Array<LoweredClosureCapture>,
+  in modes: Array<ParameterMode>,
+  in forwarded: Array<Parameter>,
+  in name: String
+): FunctionDeclaration {
   const sourceStatements = copy tree.nodes[closure].statements;
   const first = view arena.nodes[sourceStatements[0]];
   const bodyOffset = first.offset;
   let body = extractStatementArena(arena, sourceStatements);
-  // The worker runs off the main executor: its placed blocks hop there.
+  // The body may run off the main executor: its placed blocks hop there.
   const threadNames = mainPlacementThreadNames(program);
   normalizeMainHops(inout body, threadNames);
   const closureOffset = tree.nodes[closure].offset;
-  const captures = try liftedWorkerCaptures(program, importedTypes, evidence, ownerName, closureOffset);
   let parameters = Array<Parameter>();
+  let captureIndex: usize = 0;
   for (const capture of captures) {
     parameters.push(Parameter({
       name: copy capture.name,
-      mode: ParameterMode.value,
+      mode: modes[captureIndex],
       type: TypeReference({ name: loweredTypeIdentity(capture.type), references: Array<TypeNameReference>(),
         offset: bodyOffset, line: first.line, column: first.column }),
       offset: bodyOffset, line: first.line, column: first.column,
     }));
+    captureIndex = captureIndex + 1;
+  }
+  for (const parameter of forwarded) {
+    parameters.push(copy parameter);
   }
   const declaredResult = tree.nodes[closure].labels[0].copyBytes(0, tree.nodes[closure].labels[0].byteLength);
   let resultName = declaredResult.byteLength > 0 ? copy declaredResult : "void";
@@ -23273,7 +23565,7 @@ function liftedWorkerDeclaration(
       offset: bodyOffset, line: first.line, column: first.column }));
   }
   return FunctionDeclaration({
-    name: liftedWorkerName(arena, sourceStatements),
+    name: copy name,
     testDeclaration: false,
     testName: "",
     nativeCExport: false,
@@ -23304,6 +23596,7 @@ function collectLiftedWorkers(
   in declaration: FunctionDeclaration,
   inout lifted: Array<FunctionDeclaration>
 ): void throws String {
+  const liftThreadNames = mainPlacementThreadNames(program);
   for (const statement of declaration.body.nodes) {
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
@@ -23323,11 +23616,8 @@ function collectLiftedWorkers(
                 }
               }
             }
-            if (closure < tree.nodes.length && tree.nodes[closure].kind == ExpressionKind.closureExpression
-              && tree.nodes[closure].labels.length >= 4 && tree.nodes[closure].labels[2] == "block"
-              && tree.nodes[closure].labels[3] == "async"
-              && threadWorkerNeedsFrame(declaration.body, tree.nodes[closure].statements)
-              && !workerUsesMainBridge(program, declaration.body, tree.nodes[closure].statements)) {
+            if (closure < tree.nodes.length
+              && workerClosureLifts(declaration.body, tree, closure, liftThreadNames)) {
               const worker = try liftedWorkerDeclaration(program, importedTypes, evidence, declaration.body,
                 declaration.name, tree, closure);
               // A TaskScope capture keeps the worker tier that propagates
@@ -23348,6 +23638,458 @@ function collectLiftedWorkers(
       none => {}
     }
   }
+}
+
+function liftedOperationName(closureOffset: usize): String {
+  return `__z_operation_${closureOffset}`;
+}
+
+function liftedClosureName(closureOffset: usize): String {
+  return `__z_closure_${closureOffset}`;
+}
+
+// A lifted operation or closure body: no source call names it.
+function isLiftedClosureBody(in declaration: FunctionDeclaration): boolean {
+  return declaration.liftedFromOffset != 0
+    && (stringStartsWith(declaration.name, "__z_operation_") || stringStartsWith(declaration.name, "__z_closure_"));
+}
+
+// In `tree`, the closure whose block begins at statement `root`: its
+// parameter named `name`, or that of a closure around it in the same tree.
+function blockClosureParameterCapture(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  root: usize,
+  in name: String,
+  inout owns: boolean
+): Option<LoweredClosureCapture> throws String {
+  let node: usize = 0;
+  while (node < tree.nodes.length) {
+    if (tree.nodes[node].kind == ExpressionKind.closureExpression) {
+      for (const owned of tree.nodes[node].statements) {
+        if (owned != root) continue;
+        owns = true;
+        if (tree.nodes[node].children.length == 0) continue;
+        const inside = tree.nodes[node].children[0];
+        match (try enclosingClosureParameterCapture(program, importedTypes, evidence, tree, inside, name)) {
+          some(parameter) => return Option.some(parameter);
+          none => {}
+        }
+      }
+    }
+    node = node + 1;
+  }
+  return Option<LoweredClosureCapture>.none;
+}
+
+// `name` as a parameter of a block closure around `statement`. Such a
+// closure is written in another statement's expression, so its parameters
+// are not in the tree the capturing closure is in.
+function enclosingBlockClosureParameter(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  statement: usize,
+  in name: String
+): Option<LoweredClosureCapture> throws String {
+  let current = statement;
+  let hops: usize = 0;
+  while (hops < arena.nodes.length) {
+    hops = hops + 1;
+    // The outermost statement of the block that holds `current`.
+    let root = current;
+    let climbing = true;
+    while (climbing) {
+      climbing = false;
+      let candidate: usize = 0;
+      while (candidate < arena.nodes.length) {
+        for (const child of arena.nodes[candidate].children) {
+          if (child == root) climbing = true;
+        }
+        if (climbing) break;
+        candidate = candidate + 1;
+      }
+      if (climbing) root = candidate;
+    }
+    // The closure that owns that block, and the statement it is written in.
+    let owner = arena.nodes.length;
+    let written: usize = 0;
+    while (written < arena.nodes.length && owner == arena.nodes.length) {
+      let owns = false;
+      match (in arena.nodes[written].expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => match (try blockClosureParameterCapture(
+            program, importedTypes, evidence, tree, root, name, inout owns
+          )) {
+            some(parameter) => return Option.some(parameter);
+            none => {}
+          }
+          none => {}
+        }
+        none => {}
+      }
+      match (in arena.nodes[written].secondExpression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => match (try blockClosureParameterCapture(
+            program, importedTypes, evidence, tree, root, name, inout owns
+          )) {
+            some(parameter) => return Option.some(parameter);
+            none => {}
+          }
+          none => {}
+        }
+        none => {}
+      }
+      if (owns) owner = written;
+      written = written + 1;
+    }
+    if (owner == arena.nodes.length) return Option<LoweredClosureCapture>.none;
+    current = owner;
+  }
+  return Option<LoweredClosureCapture>.none;
+}
+
+// A lifted operation's captures, in the resolver's order. An enclosing
+// closure's parameter is typed by that closure, any other binding by the
+// function the operation is written in.
+function liftedOperationCaptures(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  statement: usize,
+  in tree: ExpressionTree,
+  closure: usize
+): Array<LoweredClosureCapture> throws String {
+  const closureOffset = tree.nodes[closure].offset;
+  let found = false;
+  let captures = Array<LoweredClosureCapture>();
+  for (const entry of evidence.closureCaptures) {
+    if (entry.offset != closureOffset) continue;
+    found = true;
+    for (const name of entry.names) {
+      if (name == "this") throw "native scheduled operation frames cannot capture `this` yet";
+      const sameTree = try enclosingClosureParameterCapture(program, importedTypes, evidence, tree, closure, name);
+      let enclosing = Option<LoweredClosureCapture>.none;
+      match (sameTree) {
+        some(parameter) => enclosing = Option.some(parameter);
+        none => enclosing = try enclosingBlockClosureParameter(program, importedTypes, evidence, arena, statement, name);
+      }
+      let type = LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
+      match (in enclosing) {
+        some(parameter) => type = copy parameter.type;
+        none => {
+          const typeName = match (namedValueTypeName(program, evidence, ownerName, name, closureOffset)) {
+            some(value) => value;
+            none => throw `native scheduled operation frame cannot resolve capture ${name}`;
+          };
+          type = try lowerModuleTypeName(program, importedTypes, typeName);
+        }
+      }
+      // A `let` the closure captured, or an `inout` parameter: the body may
+      // assign it, and the next call sees the assignment.
+      let mutableBinding = false;
+      match (in enclosing) {
+        some(parameter) => mutableBinding = parameter.mutableBinding;
+        none => {
+          for (const binding of evidence.bindingResolutions) {
+            if (binding.name == name && binding.offset <= closureOffset) mutableBinding = binding.mutableBinding;
+          }
+          for (const candidate of program.functions) {
+            if (candidate.name != ownerName) continue;
+            for (const parameter of candidate.parameters) {
+              if (parameter.name == name) mutableBinding = parameter.mode == ParameterMode.inputOutput;
+            }
+          }
+          for (const aggregate of program.aggregates) {
+            for (const method of aggregate.methods) {
+              if (!semanticMethodOwnerMatches(ownerName, aggregate.name, method.name)) continue;
+              for (const parameter of method.parameters) {
+                if (parameter.name == name) mutableBinding = parameter.mode == ParameterMode.inputOutput;
+              }
+            }
+          }
+        }
+      }
+      const owned = moduleTypeNeedsCleanup(program, importedTypes, type);
+      captures.push(LoweredClosureCapture({ name: copy name, type, owned, mutableBinding }));
+    }
+  }
+  if (!found) throw "native scheduled operation frame lost its checked closure captures";
+  return captures;
+}
+
+// A block-bodied async closure becomes a general frame of its own, as an
+// async worker's body does, and the closure is the await of that frame.
+//
+// `scope.schedule(thread.main, async move (): void => { ... })` runs at most
+// once, so its frame owns the captures. Any other closure value may be called
+// again: its captures stay in the closure's environment, and each call lends
+// them to its frame, so an assignment to a captured `let` is seen by the next
+// call.
+function collectLiftedOperations(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in declaration: FunctionDeclaration,
+  in ownerName: String,
+  inout lifted: Array<FunctionDeclaration>
+): void throws String {
+  let statementIndex: usize = 0;
+  for (const statement of declaration.body.nodes) {
+    statementIndex = statementIndex + 1;
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => try collectLiftedTreeClosures(program, importedTypes, evidence, declaration, ownerName,
+          statementIndex - 1, tree, inout lifted);
+        none => {}
+      }
+      none => {}
+    }
+    match (in statement.secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => try collectLiftedTreeClosures(program, importedTypes, evidence, declaration, ownerName,
+          statementIndex - 1, tree, inout lifted);
+        none => {}
+      }
+      none => {}
+    }
+  }
+}
+
+// How a reusable closure's frame takes its captures, and the closure's own
+// parameters after them. False when the closure keeps the earlier limit: a
+// borrowed environment is stack storage a suspended frame cannot hold on
+// to, and a typed error does not cross the closure's await yet.
+function reusableClosureFrameParameters(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  closure: usize,
+  in captures: Array<LoweredClosureCapture>,
+  inout modes: Array<ParameterMode>,
+  inout forwarded: Array<Parameter>
+): boolean {
+  const node = view tree.nodes[closure];
+  if (node.value != "move" && captures.length > 0) return false;
+  const callableType = match (resolvedExpressionTypeName(evidence, tree, closure)) {
+    some(name) => name;
+    none => return false;
+  };
+  const signature = match (nativeFunctionSignature(callableType)) {
+    some(found) => found;
+    none => return false;
+  };
+  let captureIndex: usize = 0;
+  for (const capture of captures) {
+    // Owned storage and anything the body may assign is lent in place; a
+    // shared identity is retained for the call, a scalar copied.
+    if (capture.mutableBinding) modes[captureIndex] = ParameterMode.inputOutput;
+    else if (capture.owned && !moduleTypeRetainsCapturedIdentity(capture.type)) {
+      modes[captureIndex] = ParameterMode.input;
+    }
+    captureIndex = captureIndex + 1;
+  }
+  let position: usize = 0;
+  for (const child of node.children) {
+    if (tree.nodes[child].kind != ExpressionKind.closureParameterExpression) continue;
+    if (position >= signature.parameterTypes.length) return false;
+    let mode = ParameterMode.value;
+    if (signature.parameterModes[position] == "in") mode = ParameterMode.input;
+    if (signature.parameterModes[position] == "inout") mode = ParameterMode.inputOutput;
+    if (signature.parameterModes[position] == "out") mode = ParameterMode.output;
+    forwarded.push(Parameter({
+      name: copy tree.nodes[child].value,
+      mode,
+      type: TypeReference({ name: copy signature.parameterTypes[position], references: Array<TypeNameReference>(),
+        offset: tree.nodes[child].offset, line: tree.nodes[child].line, column: tree.nodes[child].column }),
+      offset: tree.nodes[child].offset, line: tree.nodes[child].line, column: tree.nodes[child].column,
+    }));
+    position = position + 1;
+  }
+  return position == signature.parameterTypes.length;
+}
+
+function collectLiftedTreeClosures(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in declaration: FunctionDeclaration,
+  in ownerName: String,
+  statement: usize,
+  in tree: ExpressionTree,
+  inout lifted: Array<FunctionDeclaration>
+): void throws String {
+  // The call a closure is an argument of decides how it runs.
+  let scheduled = Array<usize>();
+  let spawned = Array<usize>();
+  for (const node of tree.nodes) {
+    if (node.kind != ExpressionKind.callExpression || node.children.length < 2) continue;
+    const callee = node.children[0];
+    if (tree.nodes[callee].kind != ExpressionKind.memberExpression || tree.nodes[callee].children.length != 1) continue;
+    const receiver = tree.nodes[callee].children[0];
+    if (tree.nodes[callee].value == "schedule" && node.children.length == 3) {
+      const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+        program, importedTypes, evidence, tree, receiver
+      )) {
+        some(name) => name;
+        none => "";
+      };
+      if (importedAsyncHandleBinding(program, receiverTypeName, "TaskScope")) scheduled.push(node.children[2]);
+    }
+    // A worker closure has its own lift (collectLiftedWorkers) and tiers.
+    if (tree.nodes[callee].value == "spawn" && node.children.length == 2
+      && tree.nodes[receiver].kind == ExpressionKind.identifierExpression
+      && isImportedStandardBinding(program, "std/thread", "thread", tree.nodes[receiver].value)) {
+      spawned.push(node.children[1]);
+    }
+  }
+  let closure: usize = 0;
+  while (closure < tree.nodes.length) {
+    const node = view tree.nodes[closure];
+    closure = closure + 1;
+    if (node.kind != ExpressionKind.closureExpression || node.labels.length < 4 || node.labels[2] != "block"
+      || node.labels[3] != "async" || node.statements.length == 0) continue;
+    const index = closure - 1;
+    let once = false;
+    for (const candidate of scheduled) { if (candidate == index) once = true; }
+    let worker = false;
+    for (const candidate of spawned) { if (candidate == index) worker = true; }
+    if (worker) continue;
+    // The frame function is a free function: a block that needs `this`
+    // keeps the earlier limit.
+    let capturesReceiver = false;
+    for (const entry of evidence.closureCaptures) {
+      if (entry.offset != node.offset) continue;
+      for (const name of entry.names) { if (name == "this") capturesReceiver = true; }
+    }
+    if (capturesReceiver) continue;
+    const captures = try liftedOperationCaptures(program, importedTypes, evidence, declaration.body,
+      ownerName, statement, tree, index);
+    let modes = valueCaptureModes(captures.length);
+    let forwarded = Array<Parameter>();
+    let name = liftedOperationName(node.offset);
+    if (!once) {
+      if (!reusableClosureFrameParameters(evidence, tree, index, captures, inout modes, inout forwarded)) continue;
+      name = liftedClosureName(node.offset);
+    }
+    const operation = liftedClosureDeclaration(program, evidence, declaration.body, tree, index, captures,
+      modes, forwarded, name);
+    // The body already runs on its caller's executor: one that places work
+    // elsewhere keeps its own tier.
+    let places = false;
+    for (const owned of operation.body.nodes) {
+      match (in owned.expression) {
+        some(ownedSyntax) => match (in ownedSyntax.tree) {
+          some(ownedTree) => for (const expression of ownedTree.nodes) {
+            if (isMainHopNode(expression) || expression.kind == ExpressionKind.executorPlacementExpression) {
+              places = true;
+            }
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
+    if (!places && functionUsesGeneralFrame(program, operation)) lifted.push(operation);
+  }
+}
+
+// The callable type of a lifted closure body's frame function. No source call
+// names it, so call evidence does not register it.
+function liftedOperationFunctionType(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in declaration: FunctionDeclaration
+): LoweredFunctionType throws String {
+  let canonical = TextBuffer();
+  canonical.append("async ");
+  let parameters = Array<LoweredParameter>();
+  let position: usize = 0;
+  for (const parameter of declaration.parameters) {
+    const type = try lowerModuleType(program, importedTypes, parameter.type);
+    canonical.append(parameterModeName(parameter.mode));
+    canonical.append(":");
+    canonical.append(loweredTypeIdentity(type));
+    canonical.append(";");
+    parameters.push(LoweredParameter({ name: `argument${position}`, type, mode: lowerParameterMode(parameter.mode) }));
+    position = position + 1;
+  }
+  canonical.append("=>");
+  let returnType = try lowerModuleType(program, importedTypes, declaration.returnType);
+  canonical.append(loweredTypeIdentity(returnType));
+  canonical.append(" throws ");
+  match (in declaration.errorType) {
+    some(error) => {
+      const errorType = try lowerModuleType(program, importedTypes, error);
+      canonical.append(loweredTypeIdentity(errorType));
+      returnType = LoweredType({ kind: LoweredTypeKind.enumType, name: intrinsicResultName(returnType, errorType) });
+    }
+    none => {}
+  }
+  const signature = canonical.finish();
+  return LoweredFunctionType({
+    name: encodedFunctionTypeIdentity(signature),
+    asynchronous: true,
+    parameters,
+    returnType,
+  });
+}
+
+// The lifted frame function of a block-bodied async closure, awaited with the
+// closure's captures and then its own parameters. A capture the frame owns
+// moves on to it (a shared identity is retained for it); a capture the
+// environment keeps is lent. The closure's parameters are passed on as given.
+function lowerLiftedOperationAwait(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in tree: ExpressionTree,
+  closure: usize,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const operationName = liftedOperationName(tree.nodes[closure].offset);
+  const closureName = liftedClosureName(tree.nodes[closure].offset);
+  for (const declaration of program.functions) {
+    if (declaration.name != operationName && declaration.name != closureName) continue;
+    const name = copy declaration.name;
+    const functionType = try liftedOperationFunctionType(program, importedTypes, declaration);
+    let arguments = Array<usize>();
+    let labels = Array<String>();
+    let position: usize = 0;
+    for (const parameter of declaration.parameters) {
+      const type = view functionType.parameters[position].type;
+      position = position + 1;
+      const local = pushExpression(
+        inout output, LoweredExpressionKind.localValue, parameter.name,
+        Array<usize>(), Array<String>(copy parameter.type.name)
+      );
+      let value = local;
+      if (parameter.mode == ParameterMode.value && moduleTypeRetainsCapturedIdentity(type)) {
+        value = pushExpression(inout output, LoweredExpressionKind.retainValue, type.name,
+          Array<usize>(local), Array<String>());
+      } else if (parameter.mode == ParameterMode.value && moduleTypeNeedsCleanup(program, importedTypes, type)) {
+        value = pushExpression(inout output, LoweredExpressionKind.moveValue, "",
+          Array<usize>(local), Array<String>());
+      }
+      arguments.push(value);
+      labels.push(parameterModeName(parameter.mode));
+    }
+    const callableIdentity = copy functionType.name;
+    const callable = pushExpression(
+      inout output, LoweredExpressionKind.directFunctionValue, name,
+      Array<usize>(), Array<String>(copy callableIdentity)
+    );
+    let children = Array<usize>();
+    children.push(callable);
+    for (const argument of arguments) {
+      children.push(argument);
+    }
+    return pushExpression(inout output, LoweredExpressionKind.asyncFunctionAwait, callableIdentity, children, labels);
+  }
+  throw "native block-bodied async closures cannot yet capture `this`, capture without `move`, or place work on an executor";
 }
 
 // The worker's spawn passes its captures and names the lifted frame instead
@@ -23378,32 +24120,6 @@ function attachLiftedWorker(
   expressions[expressionIndex].statements = Array<usize>();
   expressions[expressionIndex].labels[0] = "lowered-block";
   expressions[expressionIndex].workerFrameName = name;
-}
-
-// A worker frame runs off the main thread: it cannot await a function whose
-// placed work runs where the function runs (its placed tier).
-function requireWorkerAvoidsMainBound(in worker: FunctionDeclaration, in mainBound: Array<String>): void throws String {
-  if (mainBound.length == 0) return;
-  for (const statement of worker.body.nodes) {
-    match (in statement.expression) {
-      some(syntax) => match (in syntax.tree) {
-        some(tree) => for (const node of tree.nodes) {
-          if (node.kind != ExpressionKind.awaitExpression || node.children.length != 1) continue;
-          const call = node.children[0];
-          if (tree.nodes[call].kind != ExpressionKind.callExpression || tree.nodes[call].children.length == 0) continue;
-          const callee = tree.nodes[call].children[0];
-          if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) continue;
-          for (const name of mainBound) {
-            if (name == tree.nodes[callee].value) {
-              throw `native worker frames cannot await ${name} yet: its placed work runs only from the main executor until the general frame takes its body (lexical locals in suspending branches)`;
-            }
-          }
-        }
-        none => {}
-      }
-      none => {}
-    }
-  }
 }
 
 function mainHopName(offset: usize): String {
@@ -23462,7 +24178,7 @@ function liftedMainHopDeclaration(
     }
   }
   normalizeMainHops(inout body, threadNames);
-  const parameters = try mainHopParameters(program, evidence, owner, offset, node.line, node.column);
+  const parameters = try mainHopParameters(program, evidence, owner, tree, hop);
   let errorType = Option<TypeReference>.none;
   if (errorName.byteLength > 0) {
     errorType = Option.some(TypeReference({ name: errorName, references: Array<TypeNameReference>(),
@@ -23493,7 +24209,8 @@ function liftedMainHopDeclaration(
 }
 
 // `await on thread.main f(...)` outside `main`: a synthesized async function
-// whose body is `return [try] [await] f(...)` over the original call, so its
+// whose body is `return [try] [await] f(...)` (or the bare call statement for
+// a void callee) over the original call, so its
 // checked call resolution still types it; it runs on the main executor, so a
 // main-affine `f` starts there.
 function liftedMainHopCallDeclaration(
@@ -23546,7 +24263,10 @@ function liftedMainHopCallDeclaration(
   }
   body.root = root;
   let statement = copy owner.body.nodes[statementIndex];
-  statement.kind = StatementKind.returnStatement;
+  // A void callee has no value to return: the call is the whole body.
+  statement.kind = resolution.returnType == "void"
+    ? StatementKind.expressionStatement
+    : StatementKind.returnStatement;
   statement.mutableBinding = false;
   statement.name = "";
   statement.typeAnnotation = Option<TypeReference>.none;
@@ -23573,7 +24293,7 @@ function liftedMainHopCallDeclaration(
     visibility: Visibility.privateVisibility,
     typeParameters: Array<TypeParameter>(),
     receiverMode: ReceiverMode.none,
-    parameters: try mainHopParameters(program, evidence, owner, offset, node.line, node.column),
+    parameters: try mainHopParameters(program, evidence, owner, tree, hop),
     returnType: TypeReference({ name: copy resolution.returnType, references: Array<TypeNameReference>(),
       offset, line: node.line, column: node.column }),
     errorType,
@@ -23589,14 +24309,28 @@ function liftedMainHopCallDeclaration(
 
 // A hop's parameters: the placement's checked captures, typed by the
 // bindings visible at the placement.
+// The capability a placed block declares for a capture in `using (...)`:
+// "in", "inout", or "move"; empty for an undeclared capture, a snapshot.
+function mainHopCapability(in tree: ExpressionTree, hop: usize, in name: String): String {
+  for (const child of tree.nodes[hop].children) {
+    if (tree.nodes[child].kind == ExpressionKind.executorCaptureExpression
+      && tree.nodes[child].labels.length > 0 && tree.nodes[child].labels[0] == name) {
+      return copy tree.nodes[child].value;
+    }
+  }
+  return "";
+}
+
 function mainHopParameters(
   in program: Program,
   in evidence: ModuleSemanticEvidence,
   in owner: FunctionDeclaration,
-  offset: usize,
-  line: usize,
-  column: usize
+  in tree: ExpressionTree,
+  hop: usize
 ): Array<Parameter> throws String {
+  const offset = tree.nodes[hop].offset;
+  const line = tree.nodes[hop].line;
+  const column = tree.nodes[hop].column;
   let found = false;
   let parameters = Array<Parameter>();
   for (const entry of evidence.closureCaptures) {
@@ -23608,9 +24342,15 @@ function mainHopParameters(
         some(value) => value;
         none => throw `native placed block cannot resolve capture ${name}`;
       };
+      // A borrowed capture is the caller's storage, which outlives the block:
+      // the caller awaits it, or holds the loan until the task is joined.
+      const capability = mainHopCapability(tree, hop, name);
+      let mode = ParameterMode.value;
+      if (capability == "in") mode = ParameterMode.input;
+      if (capability == "inout") mode = ParameterMode.inputOutput;
       parameters.push(Parameter({
         name: copy name,
-        mode: ParameterMode.value,
+        mode,
         type: TypeReference({ name: typeName, references: Array<TypeNameReference>(), offset, line, column }),
         offset, line, column,
       }));
@@ -23681,7 +24421,8 @@ function mainHopCallResolution(in hop: FunctionDeclaration): ModuleCallResolutio
   let modes = Array<String>();
   let types = Array<String>();
   for (const parameter of hop.parameters) {
-    modes.push("value");
+    modes.push(parameter.mode == ParameterMode.input ? "in"
+      : parameter.mode == ParameterMode.inputOutput ? "inout" : "value");
     types.push(copy parameter.type.name);
   }
   const errorName = match (in hop.errorType) {
@@ -23711,14 +24452,15 @@ function mainHopCallResolution(in hop: FunctionDeclaration): ModuleCallResolutio
   });
 }
 
-// `await <hop>`: awaits the block's lifted frame, started for the main
-// executor with copies of the captured values.
-function lowerMainHopAwait(
+// `await <hop>` or `task <hop>`: awaits or spawns the block's lifted frame,
+// started for the main executor with copies of the captured values.
+function lowerMainHop(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   hop: usize,
+  kind: LoweredExpressionKind,
   inout output: Array<LoweredExpression>
 ): usize throws String {
   const name = mainHopName(tree.nodes[hop].offset);
@@ -23743,23 +24485,28 @@ function lowerMainHopAwait(
     const type = try lowerModuleTypeName(program, importedTypes, parameter.type.name);
     let value = pushExpression(inout output, LoweredExpressionKind.localValue, parameter.name,
       Array<usize>(), Array<String>());
-    let consumed = false;
+    if (parameter.mode != ParameterMode.value) {
+      children.push(value);
+      labels.push(parameter.mode == ParameterMode.input ? "in" : "inout");
+      continue;
+    }
+    let consumed = mainHopCapability(tree, hop, parameter.name) == "move";
     for (const movedName of moved) {
       if (movedName == parameter.name) consumed = true;
     }
     const needsCleanup = moduleTypeNeedsCleanup(program, importedTypes, type);
-    if (type.kind == LoweredTypeKind.classType && needsCleanup) {
+    if (consumed && type.kind != LoweredTypeKind.classType) {
+      // `using (move x)`, or a value argument of the placed call, moves to
+      // the main executor under the same transfer rule as a worker capture.
+      const capture = try threadClosureCapture(program, importedTypes, parameter.name, type);
+      value = pushThreadCaptureValue(inout output, capture);
+    } else if (type.kind == LoweredTypeKind.classType && needsCleanup) {
       // A shareable class is shared with the main executor: the hop's frame
       // holds its own reference (the transfer rule rejects other classes).
-      const capture = try threadClosureCapture(program, importedTypes, parameter.name, type, true);
+      const capture = try threadClosureCapture(program, importedTypes, parameter.name, type);
       if (capture.owned) throw `native placed calls cannot transfer ${parameter.name} of type ${type.name}`;
       value = pushExpression(inout output, LoweredExpressionKind.retainValue, type.name,
         Array<usize>(value), Array<String>());
-    } else if (consumed) {
-      // A value argument of the placed call moves to the main executor, under
-      // the same transfer rule as a worker capture.
-      const capture = try threadClosureCapture(program, importedTypes, parameter.name, type, true);
-      value = pushThreadCaptureValue(inout output, capture);
     } else if (type.kind == LoweredTypeKind.stringType) {
       // The block runs on another thread: it gets its own copy.
       value = pushExpression(inout output, LoweredExpressionKind.copyValue, "String",
@@ -23770,8 +24517,7 @@ function lowerMainHopAwait(
     children.push(value);
     labels.push("value");
   }
-  const awaited = pushExpression(inout output, LoweredExpressionKind.asyncFunctionAwait, identity,
-    children, labels);
+  const awaited = pushExpression(inout output, kind, identity, children, labels);
   output[awaited].placedExecutor = "thread.main";
   return awaited;
 }
@@ -24194,8 +24940,6 @@ function completeNativeClosureBlocks(
       expressions[expressionIndex].kind == LoweredExpressionKind.threadSpawn
       && expressions[expressionIndex].labels.length >= 6
       && expressions[expressionIndex].labels[0] == "block"
-      && expressions[expressionIndex].labels[2] == "async"
-      && threadWorkerNeedsFrame(arena, expressions[expressionIndex].statements)
       && programLiftsWorker(program, arena, expressions[expressionIndex].statements)
     ) {
       try attachLiftedWorker(program, importedTypes, evidence, arena, ownerName, expressionIndex, inout expressions);
@@ -24845,6 +25589,18 @@ function expressionTreeContainsTry(
   if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
   for (const child of tree.nodes[index].children) {
     if (expressionTreeContainsTry(tree, child)) return true;
+  }
+  return false;
+}
+
+function expressionTreeContainsValueScope(
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (tree.nodes[index].kind == ExpressionKind.asyncScopeExpression) return true;
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
+  for (const child of tree.nodes[index].children) {
+    if (expressionTreeContainsValueScope(tree, child)) return true;
   }
   return false;
 }
@@ -26312,6 +27068,12 @@ function appendNestedConditionalBranch(
   inout statements: Array<LoweredStatement>
 ): usize throws String {
   let branchRoots = Array<usize>();
+  // The branch's own value-producing scopes run in it, ahead of its value.
+  let branchUnits = Array<usize>();
+  if (expressionHoistedScopes(tree, branchInput, inout branchUnits)) {
+    try appendScopeUnitPreludes(program, importedTypes, evidence, arena, ownerName, context,
+      tree, branchUnits, inout expressions, inout statements, inout branchRoots);
+  }
   try appendNestedTryPreludeTree(
     program,
     importedTypes,
@@ -26326,6 +27088,12 @@ function appendNestedConditionalBranch(
     inout statements,
     inout branchRoots
   );
+  // So do its match values, after the operands written before them here.
+  if (expressionTreeContainsMatchValue(tree, branchInput)) {
+    const branchSource = try statementHoldingTree(arena, tree);
+    try appendMatchPreludesUnder(program, importedTypes, evidence, arena, ownerName, context, branchSource,
+      tree, branchInput, tree.nodes.length, inout expressions, inout statements, inout branchRoots);
+  }
   const expectedTypeName = loweredTypeIdentity(destinationType);
   let branchValue = try lowerExpressionExpected(
     program,
@@ -26354,6 +27122,7 @@ function appendNestedConditionalBranch(
         expressions[branchValue],
         "nested-conditional-binding"
       )
+      || expressionHasLabel(expressions[branchValue], "nested-match-binding")
     )
   ) {
     let moveChildren = Array<usize>();
@@ -26563,7 +27332,7 @@ function appendNestedTryPreludeTree(
     inout nested
   );
   if (nested.length == 0) return;
-  const outerResult = try contextualThrowingFunctionResult(
+  const outerResult = try contextualFailureResult(
         program,
         importedTypes,
         ownerName,
@@ -26578,6 +27347,13 @@ function appendNestedTryPreludeTree(
       tree.nodes[nestedTry].kind
         == ExpressionKind.conditionalExpression
     ) {
+      // A conditional that also holds a scope already became a prelude.
+      const conditionalName = `_z_stage1_nested_conditional_${tree.nodes[nestedTry].offset}`;
+      let present = false;
+      for (const existing of roots) {
+        if (statements[existing].name == conditionalName) present = true;
+      }
+      if (present) continue;
       try appendNestedConditionalPrelude(
         program,
         importedTypes,
@@ -26828,6 +27604,15 @@ function loweredStatementDirectlyTransfersBinding(
   index: usize,
   in name: String
 ): boolean {
+  // A pattern's hidden owner takes the whole value; the fields move out of
+  // that owner, so the value's first holder must not release it as well.
+  if (statements[index].kind == LoweredStatementKind.blockStatement
+    && loweredStatementHasLabel(statements[index], "destructure-normalized")
+    && statements[index].children.length > 0
+    && loweredStatementHasLabel(statements[statements[index].children[0]], "destructure-source")) {
+    return loweredStatementDirectlyTransfersBinding(expressions, statements,
+      statements[index].children[0], name);
+  }
   let value = Option<usize>.none;
   if (statements[index].kind == LoweredStatementKind.localStatement) {
     match (in statements[index].expression) {
@@ -26907,6 +27692,353 @@ function lowerStatement(
     inout expressions,
     inout statements
   );
+}
+
+// A match value anywhere in an expression runs as a prelude of its statement
+// (appendNestedMatchPreludes). To keep evaluation left to right, an operand
+// written before it runs first, into a temporary of this name.
+function spilledOperandName(in tree: ExpressionTree, index: usize): String {
+  return `_z_stage1_spill_${tree.nodes[index].offset}_${index}`;
+}
+
+// The temporary a spilled operand left its value in, or the output length.
+// Only a tree that holds a match value inside it can have spilled operands.
+function spilledOperandValue(
+  in tree: ExpressionTree,
+  index: usize,
+  in output: Array<LoweredExpression>
+): usize {
+  // Nothing is written before a match that is the whole expression.
+  let holdsMatch = false;
+  let node: usize = 0;
+  while (node < tree.nodes.length) {
+    if (node != tree.root && tree.nodes[node].kind == ExpressionKind.matchExpression) holdsMatch = true;
+    node = node + 1;
+  }
+  if (!holdsMatch) return output.length;
+  const bindingName = spilledOperandName(tree, index);
+  let candidate = output.length;
+  while (candidate > 0) {
+    candidate = candidate - 1;
+    if (output[candidate].kind == LoweredExpressionKind.localValue
+      && output[candidate].value == bindingName
+      && expressionHasLabel(output[candidate], "nested-try-binding")) return candidate;
+  }
+  return output.length;
+}
+
+// The statement one of whose expressions is this tree: the one a prelude
+// built from the tree alone belongs to. Trees are told apart by where they
+// start and how many nodes they hold.
+function statementHoldingTree(in arena: StatementArena, in tree: ExpressionTree): usize throws String {
+  const start = tree.nodes[tree.root].offset;
+  let index: usize = 0;
+  while (index < arena.nodes.length) {
+    const first = match (in arena.nodes[index].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(candidate) => candidate.nodes.length == tree.nodes.length
+          && candidate.nodes[candidate.root].offset == start;
+        none => false;
+      }
+      none => false;
+    };
+    const second = match (in arena.nodes[index].secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(candidate) => candidate.nodes.length == tree.nodes.length
+          && candidate.nodes[candidate.root].offset == start;
+        none => false;
+      }
+      none => false;
+    };
+    if (first || second) return index;
+    index = index + 1;
+  }
+  throw "native lowering lost the statement of a match value in a branch";
+}
+
+// Whether a match value sits under this node, outside any closure.
+function expressionTreeContainsMatchValue(in tree: ExpressionTree, index: usize): boolean {
+  if (tree.nodes[index].kind == ExpressionKind.matchExpression) return true;
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
+  for (const child of tree.nodes[index].children) {
+    if (expressionTreeContainsMatchValue(tree, child)) return true;
+  }
+  return false;
+}
+
+// The match values an expression's statement runs as preludes, in evaluation
+// order. `direct` is the root match lowering runs itself, if any. A match in
+// a closure, or in a branch that may not run, is not one of them.
+function collectNestedMatchValues(
+  in tree: ExpressionTree,
+  index: usize,
+  direct: usize,
+  inout found: Array<usize>
+): void {
+  const node = view tree.nodes[index];
+  if (node.kind == ExpressionKind.closureExpression) return;
+  if (node.kind == ExpressionKind.matchExpression) {
+    // The subject is part of this expression; the arms are statements.
+    if (node.children.length > 0) collectNestedMatchValues(tree, node.children[0], direct, inout found);
+    if (index != direct) found.push(index);
+    return;
+  }
+  // A branch that may not run cannot run its match ahead by itself. The
+  // operator does, as one unit: its condition, then only the branch taken,
+  // with that branch's own match values inside it.
+  const lazy = node.kind == ExpressionKind.conditionalExpression
+    || (node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||"));
+  if (lazy) {
+    if (node.children.length > 0) collectNestedMatchValues(tree, node.children[0], direct, inout found);
+    let branch: usize = 1;
+    let branchHoldsMatch = false;
+    while (branch < node.children.length) {
+      if (expressionTreeContainsMatchValue(tree, node.children[branch])) branchHoldsMatch = true;
+      branch = branch + 1;
+    }
+    if (branchHoldsMatch) found.push(index);
+    return;
+  }
+  if (node.kind == ExpressionKind.ifExpression || node.kind == ExpressionKind.whileExpression
+    || node.kind == ExpressionKind.forExpression || node.kind == ExpressionKind.valueBlockExpression
+    || node.kind == ExpressionKind.unsafeExpression || node.kind == ExpressionKind.asyncScopeExpression) return;
+  for (const child of node.children) {
+    collectNestedMatchValues(tree, child, direct, inout found);
+  }
+}
+
+// Whether a node only names storage: a binding, or a field or element of one.
+function expressionNamesStorage(in tree: ExpressionTree, index: usize): boolean {
+  let place = index;
+  while ((tree.nodes[place].kind == ExpressionKind.memberExpression && tree.nodes[place].children.length == 1)
+    || (tree.nodes[place].kind == ExpressionKind.indexExpression && tree.nodes[place].children.length > 0)) {
+    place = tree.nodes[place].children[0];
+  }
+  return tree.nodes[place].kind == ExpressionKind.identifierExpression;
+}
+
+// Runs one operand ahead of a hoisted match, when leaving it in place could
+// let the match run first: anything that computes a value, and a number,
+// boolean, or plain enum read from storage that an arm could change. A
+// literal, a marked argument, and owned or aggregate storage (which the call
+// borrows or moves, and the checker keeps an arm from changing meanwhile)
+// stay where they are.
+function appendSpilledOperand(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in tree: ExpressionTree,
+  operand: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  const kind = tree.nodes[operand].kind;
+  if (kind == ExpressionKind.numberExpression || kind == ExpressionKind.stringExpression
+    || kind == ExpressionKind.booleanExpression || kind == ExpressionKind.nullExpression
+    || kind == ExpressionKind.templateTextExpression || kind == ExpressionKind.closureExpression
+    || kind == ExpressionKind.closureParameterExpression
+    || kind == ExpressionKind.argumentReferenceExpression || kind == ExpressionKind.argumentBindingExpression
+    || kind == ExpressionKind.variantMarkerExpression
+    // These already run ahead of the statement, as preludes of their own.
+    || kind == ExpressionKind.matchExpression || kind == ExpressionKind.tryExpression
+    || kind == ExpressionKind.asyncScopeExpression || kind == ExpressionKind.spawnExpression) return;
+  if (kind == ExpressionKind.attemptExpression && tree.nodes[operand].children.length == 1
+    && tree.nodes[tree.nodes[operand].children[0]].kind == ExpressionKind.asyncScopeExpression) return;
+  if (kind == ExpressionKind.unaryExpression && tree.nodes[operand].children.length == 1
+    && (tree.nodes[operand].value == "move" || tree.nodes[operand].value == "copy"
+      || tree.nodes[operand].value == "view")
+    && expressionNamesStorage(tree, tree.nodes[operand].children[0])) return;
+  const bindingName = spilledOperandName(tree, operand);
+  for (const existing of roots) {
+    if (statements[existing].name == bindingName) return;
+  }
+  // The checker records an operand's type under its own key when the
+  // expression holds a match value (operandTypeKey).
+  const checked = evidenceResolutionAt(evidence, operandTypeKey(tree.nodes[tree.root].offset, operand));
+  let typeName = "";
+  if (checked < evidence.expressionResolutions.length) {
+    typeName = copy evidence.expressionResolutions[checked].typeName;
+  } else {
+    match (staticallyResolvedExpressionTypeName(program, importedTypes, evidence, arena, ownerName, tree, operand)) {
+      some(name) => typeName = move name;
+      none => {}
+    }
+  }
+  const namesStorage = expressionNamesStorage(tree, operand);
+  // A type or function name, or a value with no settled type, is not a value
+  // to hold; a view is tied to the storage it reads.
+  if (typeName.byteLength == 0 || typeName == "void" || stringStartsWith(typeName, "view ")
+    || stringStartsWith(typeName, "__z_native_")) {
+    if (namesStorage) return;
+    throw `native lowering cannot run the operand at ${tree.nodes[operand].line}:${tree.nodes[operand].column} ahead of a later match value; bind it with const first`;
+  }
+  const type = try lowerModuleTypeName(program, importedTypes, typeName);
+  if (namesStorage) {
+    const scalar = type.kind == LoweredTypeKind.booleanType || type.kind == LoweredTypeKind.i8Type
+      || type.kind == LoweredTypeKind.i16Type || type.kind == LoweredTypeKind.i32Type
+      || type.kind == LoweredTypeKind.i64Type || type.kind == LoweredTypeKind.u8Type
+      || type.kind == LoweredTypeKind.u16Type || type.kind == LoweredTypeKind.u32Type
+      || type.kind == LoweredTypeKind.u64Type || type.kind == LoweredTypeKind.isizeType
+      || type.kind == LoweredTypeKind.usizeType || type.kind == LoweredTypeKind.f32Type
+      || type.kind == LoweredTypeKind.f64Type
+      || (type.kind == LoweredTypeKind.enumType && !moduleTypeNeedsCleanup(program, importedTypes, type));
+    if (!scalar) return;
+  }
+  let value = try lowerExpressionExpected(program, importedTypes, evidence, tree, operand, typeName,
+    inout expressions);
+  value = try wrapOwnedStorage(program, importedTypes, tree, operand, typeName, value, inout expressions);
+  pushExpression(inout expressions, LoweredExpressionKind.localValue, bindingName,
+    Array<usize>(), Array<String>("nested-try-binding"));
+  let local = emptyLoweredStatement(LoweredStatementKind.localStatement);
+  local.name = copy bindingName;
+  local.type = Option.some(type);
+  local.expression = Option.some(value);
+  local.labels.push("nested-spill");
+  roots.push(statements.length);
+  statements.push(move local);
+}
+
+// The operands evaluated before `site` in the expression under `top`,
+// outermost first.
+function appendOperandsBefore(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in tree: ExpressionTree,
+  top: usize,
+  site: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  // The path from the root down to the site.
+  let path = Array<usize>();
+  let current = site;
+  while (current != top) {
+    let parent = tree.nodes.length;
+    let candidate: usize = 0;
+    while (candidate < tree.nodes.length) {
+      for (const child of tree.nodes[candidate].children) {
+        if (child == current) parent = candidate;
+      }
+      candidate = candidate + 1;
+    }
+    if (parent >= tree.nodes.length) return;
+    path.push(current);
+    current = parent;
+  }
+  let ancestor = top;
+  let depth = path.length;
+  while (depth > 0) {
+    depth = depth - 1;
+    const next = path[depth];
+    const node = view tree.nodes[ancestor];
+    let position: usize = 0;
+    while (position < node.children.length && node.children[position] != next) {
+      let operand = node.children[position];
+      // A call's callee is a name, or a method on a receiver that may compute.
+      if (node.kind == ExpressionKind.callExpression && position == 0) {
+        if (tree.nodes[operand].kind == ExpressionKind.memberExpression
+          && tree.nodes[operand].children.length == 1
+          && !expressionNamesStorage(tree, tree.nodes[operand].children[0])) {
+          operand = tree.nodes[operand].children[0];
+        } else operand = tree.nodes.length;
+      }
+      if (operand < tree.nodes.length) {
+        try appendSpilledOperand(program, importedTypes, evidence, arena, ownerName, tree, operand,
+          inout expressions, inout statements, inout roots);
+      }
+      position = position + 1;
+    }
+    ancestor = next;
+  }
+}
+
+// `f(a(), match (kind) { ... })`: each match value that lowering does not
+// run as its statement's whole value becomes a prelude local, after the
+// operands written before it. Value-producing `try`, `await`, and scopes in
+// the statement keep their own rule: they run ahead of it.
+function appendNestedMatchPreludes(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  index: usize,
+  rootIsDirect: boolean,
+  in syntax: ExpressionSyntax,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  match (in syntax.tree) {
+    some(tree) => {
+      const direct = rootIsDirect ? tree.root : tree.nodes.length;
+      try appendMatchPreludesUnder(program, importedTypes, evidence, arena, ownerName, context, index,
+        tree, tree.root, direct, inout expressions, inout statements, inout roots);
+    }
+    none => {}
+  }
+}
+
+// The same for the expression under `top`: a whole statement expression, or
+// the branch of a conditional prelude, whose match values run inside it.
+function appendMatchPreludesUnder(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  sourceIndex: usize,
+  in tree: ExpressionTree,
+  top: usize,
+  direct: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  let sites = Array<usize>();
+  collectNestedMatchValues(tree, top, direct, inout sites);
+  for (const site of sites) {
+    const unit = tree.nodes[site].kind != ExpressionKind.matchExpression;
+    let bindingName = `_z_stage1_nested_match_${tree.nodes[site].offset}`;
+    if (unit) {
+      bindingName = tree.nodes[site].kind == ExpressionKind.conditionalExpression
+        ? `_z_stage1_nested_conditional_${tree.nodes[site].offset}`
+        : scopeLogicalBindingName(tree, site);
+    }
+    let present = false;
+    for (const existing of roots) {
+      if (statements[existing].name == bindingName) present = true;
+    }
+    if (present) continue;
+    try appendOperandsBefore(program, importedTypes, evidence, arena, ownerName, tree, top, site,
+      inout expressions, inout statements, inout roots);
+    if (unit) {
+      if (tree.nodes[site].kind == ExpressionKind.conditionalExpression) {
+        try appendNestedConditionalPrelude(program, importedTypes, evidence, arena, ownerName, context,
+          tree, site, inout expressions, inout statements, inout roots);
+      } else {
+        try appendScopeLogicalPrelude(program, importedTypes, evidence, arena, ownerName, context,
+          tree, site, inout expressions, inout statements, inout roots);
+      }
+      continue;
+    }
+    const typeName = match (staticallyResolvedExpressionTypeName(program, importedTypes, evidence, arena,
+      ownerName, tree, site)) {
+      some(name) => name;
+      none => throw `native lowering could not resolve the type of the match value at ${tree.nodes[site].line}:${tree.nodes[site].column}`;
+    };
+    try appendMatchValuePrelude(program, importedTypes, evidence, arena, ownerName, context, sourceIndex,
+      tree, site, typeName, inout expressions, inout statements, inout roots);
+  }
 }
 
 function appendMatchValuePrelude(
@@ -27131,6 +28263,416 @@ function inlineMatchAssignment(
   return Option.some(loweredMatch);
 }
 
+// The `select` statements of a value-producing scope: those in its own blocks
+// and branches. Statements a nested expression owns are not children here.
+function collectScopeSelects(in arena: StatementArena, in statements: Array<usize>, inout selects: Array<usize>): void {
+  for (const statement of statements) {
+    if (arena.nodes[statement].kind == StatementKind.selectStatement) {
+      selects.push(statement);
+      continue;
+    }
+    const children = copy arena.nodes[statement].children;
+    collectScopeSelects(arena, children, inout selects);
+  }
+}
+
+function emptyLoweredStatement(kind: LoweredStatementKind): LoweredStatement {
+  return LoweredStatement({
+    kind,
+    mutableBinding: false,
+    name: "",
+    type: Option<LoweredType>.none,
+    expression: Option<usize>.none,
+    secondExpression: Option<usize>.none,
+    children: Array<usize>(),
+    cleanups: Array<LoweredCleanup>(),
+    liveFlag: "",
+    labels: Array<String>(),
+    matchConsumesSubject: false,
+    matchBindingNeedsCleanup: false,
+  });
+}
+
+// `select value;` in a value-producing scope: the value initializes the
+// scope's local, then control leaves the scope through its exit, which joins
+// the scope's children first. One lowered statement carries both, so cleanup
+// planning still pairs it with its source statement.
+//
+// In an attempted scope the value is `success(value)`, and a `throw` is the
+// same statement giving `failure(error)` to the attempted scope's local.
+function lowerScopeSelect(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  index: usize,
+  failure: boolean,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): usize throws String {
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const expressionStart = expressions.length;
+        const root = tree.root;
+        const valueTypeName = failure ? copy context.scopeFailureError : copy context.scopeSelectType;
+        let value = try lowerExpressionExpected(program, importedTypes, evidence, tree, root,
+          valueTypeName, inout expressions);
+        value = try wrapOwnedStorage(program, importedTypes, tree, root, valueTypeName, value,
+          inout expressions);
+        try completeNativeClosureBlocks(program, importedTypes, evidence, arena, ownerName, context,
+          index, expressionStart, inout expressions, inout statements);
+        let lowered = emptyLoweredStatement(LoweredStatementKind.breakStatement);
+        let storedTypeName = copy valueTypeName;
+        if (failure || context.scopeSelectAttempted) {
+          const outcome = match (try intrinsicResultDeclaration(program, importedTypes, context.scopeFailureResult)) {
+            some(declaration) => declaration;
+            none => throw "native attempted async scope lost its Result type";
+          };
+          let payload = Array<usize>();
+          payload.push(value);
+          let variant = Array<String>();
+          variant.push(failure ? "failure" : "success");
+          value = pushExpression(inout expressions, LoweredExpressionKind.enumPayloadValue, outcome.name,
+            payload, variant);
+          storedTypeName = copy context.scopeFailureResult;
+        }
+        lowered.type = Option.some(try lowerModuleTypeName(program, importedTypes, storedTypeName));
+        lowered.expression = Option.some(value);
+        lowered.labels.push("scope-select");
+        lowered.labels.push(failure ? copy context.scopeFailureName : copy context.scopeSelectName);
+        if (failure) lowered.labels.push("scope-failure");
+        const loweredIndex = statements.length;
+        statements.push(move lowered);
+        return loweredIndex;
+      }
+      none => throw "native value-producing async scope lost a selected value";
+    }
+    none => throw "native value-producing async scope requires `select value;`";
+  }
+}
+
+// `const x = async scope [name] { ... select value; };`: the local is
+// declared without a value and the scope runs inside it as a statement scope
+// does, in the same frame, so `return` still leaves the function and nothing
+// is captured.
+function scopeValueBindingName(offset: usize): String {
+  return `_z_stage1_scope_value_${offset}`;
+}
+
+// A value-producing scope inside a larger statement runs first, as a nested
+// await does: each becomes a prelude local the statement then reads.
+function appendScopeValuePreludes(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  index: usize,
+  second: boolean,
+  in syntax: ExpressionSyntax,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  let units = Array<usize>();
+  if (!statementHoistedScopes(arena, index, second, inout units)) return;
+  match (in syntax.tree) {
+    some(tree) => try appendScopeUnitPreludes(program, importedTypes, evidence, arena, ownerName, context,
+      tree, units, inout expressions, inout statements, inout roots);
+    none => {}
+  }
+}
+
+// The node index tells apart operators that start at the same offset, as the
+// two of `a && b && c` do.
+function scopeLogicalBindingName(in tree: ExpressionTree, index: usize): String {
+  return `_z_stage1_nested_logical_${tree.nodes[index].offset}_${index}`;
+}
+
+// `left && right` or `left || right` whose right operand holds a
+// value-producing scope. The right operand runs only when the left one
+// leaves the result open, so the operator becomes the prelude a conditional
+// does, with the settled outcome as a constant in the other branch.
+function appendScopeLogicalPrelude(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  in tree: ExpressionTree,
+  index: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  const conjunction = tree.nodes[index].value == "&&";
+  const destinationName = scopeLogicalBindingName(tree, index);
+  const destinationType = try lowerModuleTypeName(program, importedTypes, "boolean");
+  pushExpression(inout expressions, LoweredExpressionKind.localValue, destinationName,
+    Array<usize>(), Array<String>("nested-conditional-binding"));
+  const condition = try lowerExpression(program, importedTypes, evidence, tree,
+    tree.nodes[index].children[0], inout expressions);
+  const evaluated = try appendNestedConditionalBranch(program, importedTypes, evidence, arena, ownerName,
+    context, tree, tree.nodes[index].children[1], destinationName, destinationType,
+    inout expressions, inout statements);
+  // The settled outcome: `false` for `&&`, `true` for `||`.
+  const settledTarget = pushExpression(inout expressions, LoweredExpressionKind.localValue, destinationName,
+    Array<usize>(), Array<String>());
+  const settledText = conjunction ? "false" : "true";
+  const settledValue = pushExpression(inout expressions, LoweredExpressionKind.booleanValue,
+    settledText, Array<usize>(), Array<String>());
+  let settledAssignment = emptyLoweredStatement(LoweredStatementKind.assignmentStatement);
+  settledAssignment.expression = Option.some(settledTarget);
+  settledAssignment.secondExpression = Option.some(settledValue);
+  const settledAssignmentIndex = statements.length;
+  statements.push(move settledAssignment);
+  let settled = emptyLoweredStatement(LoweredStatementKind.blockStatement);
+  settled.labels.push("nested-conditional-branch");
+  settled.children.push(settledAssignmentIndex);
+  const settledIndex = statements.length;
+  statements.push(move settled);
+  let loweredIf = emptyLoweredStatement(LoweredStatementKind.ifStatement);
+  loweredIf.expression = Option.some(condition);
+  loweredIf.labels.push("nested-conditional-if");
+  loweredIf.children.push(conjunction ? evaluated : settledIndex);
+  loweredIf.children.push(conjunction ? settledIndex : evaluated);
+  const ifIndex = statements.length;
+  statements.push(move loweredIf);
+  let local = emptyLoweredStatement(LoweredStatementKind.localStatement);
+  local.mutableBinding = true;
+  local.name = copy destinationName;
+  local.type = Option.some(destinationType);
+  local.labels.push("nested-conditional");
+  local.children.push(ifIndex);
+  const localIndex = statements.length;
+  statements.push(move local);
+  roots.push(localIndex);
+}
+
+// One prelude per unit, in order: a scope leaves its value in a frame
+// temporary; a conditional with scopes in its branches becomes the prelude
+// that runs its condition and then only the taken branch.
+function appendScopeUnitPreludes(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  in tree: ExpressionTree,
+  in units: Array<usize>,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  for (const site of units) {
+    if (tree.nodes[site].kind == ExpressionKind.conditionalExpression) {
+      try appendNestedConditionalPrelude(program, importedTypes, evidence, arena, ownerName, context,
+        tree, site, inout expressions, inout statements, inout roots);
+      continue;
+    }
+    if (tree.nodes[site].kind == ExpressionKind.binaryExpression) {
+      try appendScopeLogicalPrelude(program, importedTypes, evidence, arena, ownerName, context,
+        tree, site, inout expressions, inout statements, inout roots);
+      continue;
+    }
+    const bindingName = scopeValueBindingName(tree.nodes[site].offset);
+    const typeName = match (resolvedExpressionTypeName(evidence, tree, site)) {
+      some(name) => name;
+      none => throw "native value-producing async scope lost its checked type";
+    };
+    pushExpression(inout expressions, LoweredExpressionKind.localValue,
+      bindingName, Array<usize>(), Array<String>("nested-match-binding", copy typeName));
+    const local = try lowerValueScopeLocal(program, importedTypes, evidence, arena, ownerName, context,
+      tree, site, bindingName, false, true, inout expressions, inout statements);
+    roots.push(local);
+  }
+}
+
+// The source statements of the scope a lowered local runs: the statement's
+// whole initializer, or the scope a prelude local records by offset.
+function valueScopeSourceStatements(
+  in arena: StatementArena,
+  sourceIndex: usize,
+  in local: LoweredStatement
+): Array<usize> {
+  let owned = Array<usize>();
+  const prelude = loweredStatementHasLabel(local, "nested-scope") && local.labels.length == 2;
+  match (in arena.nodes[sourceIndex].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        // A whole initializer is the scope, or `attempt` over it.
+        let scopeRoot = tree.root;
+        if (tree.nodes[scopeRoot].kind == ExpressionKind.attemptExpression
+          && tree.nodes[scopeRoot].children.length == 1) scopeRoot = tree.nodes[scopeRoot].children[0];
+        let node: usize = 0;
+        while (node < tree.nodes.length) {
+          const selected = prelude
+            ? tree.nodes[node].kind == ExpressionKind.asyncScopeExpression && `${tree.nodes[node].offset}` == local.labels[1]
+            : node == scopeRoot;
+          if (selected) {
+            for (const statement of tree.nodes[node].statements) {
+              owned.push(statement);
+            }
+          }
+          node = node + 1;
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+  if (!prelude) return owned;
+  match (in arena.nodes[sourceIndex].secondExpression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => for (const node of tree.nodes) {
+        if (node.kind != ExpressionKind.asyncScopeExpression || `${node.offset}` != local.labels[1]) continue;
+        for (const statement of node.statements) {
+          owned.push(statement);
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+  return owned;
+}
+
+function lowerValueScopeLocal(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in context: CallableReturnContext,
+  in tree: ExpressionTree,
+  root: usize,
+  in name: String,
+  mutableBinding: boolean,
+  prelude: boolean,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): usize throws String {
+  const typeName = match (resolvedExpressionTypeName(evidence, tree, root)) {
+    some(name) => name;
+    none => throw "native value-producing async scope lost its checked type";
+  };
+  // `attempt async scope`: the local holds `Result<value, error>`.
+  let attempted = false;
+  for (const parent of tree.nodes) {
+    if (parent.kind == ExpressionKind.attemptExpression && parent.children.length == 1
+      && parent.children[0] == root) attempted = true;
+  }
+  let localTypeName = copy typeName;
+  let childContext = copy context;
+  childContext.scopeSelectAttempted = attempted;
+  if (attempted) {
+    const decided = evidenceResolutionAt(evidence, asyncScopeErrorOffset(tree.nodes[root].offset));
+    if (decided >= evidence.expressionResolutions.length) {
+      throw "native attempted async scope lost its checked error type";
+    }
+    let errorTypeName = copy evidence.expressionResolutions[decided].typeName;
+    localTypeName = `Result<${typeName}, ${errorTypeName}>`;
+    childContext.scopeFailureName = copy name;
+    childContext.scopeFailureResult = copy localTypeName;
+    childContext.scopeFailureError = move errorTypeName;
+  }
+  const type = try lowerModuleTypeName(program, importedTypes, localTypeName);
+  childContext.scopeSelectName = copy name;
+  childContext.scopeSelectType = copy typeName;
+  childContext.scopeSelects = Array<usize>();
+  const sourceStatements = copy tree.nodes[root].statements;
+  collectScopeSelects(arena, sourceStatements, inout childContext.scopeSelects);
+  if (tree.nodes[root].value.byteLength > 0) {
+    childContext.parameters.push(LoweredClosureCapture({
+      name: copy tree.nodes[root].value,
+      type: LoweredType({ kind: LoweredTypeKind.taskScopeType, name: "TaskScope" }),
+      owned: true,
+      scopeStatementStart: statements.length,
+    }));
+  }
+  let body = emptyLoweredStatement(LoweredStatementKind.blockStatement);
+  for (const child of sourceStatements) {
+    const loweredChild = try lowerStatementWithResult(program, importedTypes, evidence, arena, ownerName,
+      childContext, child, inout expressions, inout statements);
+    body.children.push(loweredChild);
+  }
+  const bodyIndex = statements.length;
+  statements.push(move body);
+  let scopeBlock = emptyLoweredStatement(LoweredStatementKind.blockStatement);
+  scopeBlock.name = copy tree.nodes[root].value;
+  scopeBlock.labels.push("async-scope");
+  scopeBlock.labels.push("value-scope");
+  if (attempted) scopeBlock.labels.push("attempt-scope");
+  // With no `select` the scope succeeds by reaching its end.
+  if (attempted && typeName == "void") scopeBlock.labels.push("attempt-void");
+  scopeBlock.children.push(bodyIndex);
+  const scopeIndex = statements.length;
+  statements.push(move scopeBlock);
+  let local = emptyLoweredStatement(LoweredStatementKind.localStatement);
+  local.mutableBinding = mutableBinding;
+  local.name = copy name;
+  local.type = Option.some(type);
+  local.children.push(scopeIndex);
+  if (prelude) {
+    local.labels.push("nested-scope");
+    local.labels.push(`${tree.nodes[root].offset}`);
+  }
+  const localIndex = statements.length;
+  statements.push(move local);
+  return localIndex;
+}
+
+// A statement and the preludes that run ahead of it, as one block that the
+// cleanup planner and the emitters see through.
+function wrapStatementPreludes(
+  in expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  in preludes: Array<usize>,
+  lowered: usize
+): usize {
+  let roots = Array<usize>();
+  for (const prelude of preludes) {
+    if (
+      nestedTryBindingWasTransferred(
+        expressions,
+        statements[prelude].name
+      )
+      || loweredStatementDirectlyTransfersBinding(
+        expressions,
+        statements,
+        lowered,
+        statements[prelude].name
+      )
+    ) statements[prelude].labels.push("transferred");
+    roots.push(prelude);
+  }
+  roots.push(lowered);
+  let labels = Array<String>();
+  labels.push("nested-try-normalized");
+  const block = statements.length;
+  statements.push(LoweredStatement({
+    kind: LoweredStatementKind.blockStatement,
+    mutableBinding: false,
+    name: "",
+    type: Option<LoweredType>.none,
+    expression: Option<usize>.none,
+    secondExpression: Option<usize>.none,
+    children: move roots,
+    cleanups: Array<LoweredCleanup>(),
+    liveFlag: "",
+    labels: move labels,
+    matchConsumesSubject: false,
+    matchBindingNeedsCleanup: false,
+  }));
+  return block;
+}
+
 function lowerStatementWithResult(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -27142,6 +28684,48 @@ function lowerStatementWithResult(
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  for (const selected of context.scopeSelects) {
+    if (selected == index) {
+      // The selected value may itself come from a scope, which runs first.
+      let selectPreludes = Array<usize>();
+      match (in arena.nodes[index].expression) {
+        some(syntax) => {
+          try appendScopeValuePreludes(program, importedTypes, evidence, arena, ownerName, context,
+            index, false, syntax, inout expressions, inout statements, inout selectPreludes);
+          try appendNestedMatchPreludes(program, importedTypes, evidence, arena, ownerName, context, index,
+            false, syntax, inout expressions, inout statements, inout selectPreludes);
+        }
+        none => {}
+      }
+      const loweredSelect = try lowerScopeSelect(program, importedTypes, evidence, arena, ownerName, context, index,
+        false, inout expressions, inout statements);
+      if (selectPreludes.length == 0) return loweredSelect;
+      return wrapStatementPreludes(expressions, inout statements, selectPreludes, loweredSelect);
+    }
+  }
+  // A `throw` in an attempted scope fails the scope, not the function.
+  if (context.scopeFailureResult.byteLength > 0 && arena.nodes[index].kind == StatementKind.throwStatement) {
+    return try lowerScopeSelect(program, importedTypes, evidence, arena, ownerName, context, index,
+      true, inout expressions, inout statements);
+  }
+  if (arena.nodes[index].kind == StatementKind.variableStatement) {
+    match (in arena.nodes[index].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          let scopeRoot = tree.root;
+          if (tree.nodes[scopeRoot].kind == ExpressionKind.attemptExpression
+            && tree.nodes[scopeRoot].children.length == 1) scopeRoot = tree.nodes[scopeRoot].children[0];
+          if (tree.nodes[scopeRoot].kind == ExpressionKind.asyncScopeExpression) {
+            return try lowerValueScopeLocal(program, importedTypes, evidence, arena, ownerName, context,
+              tree, scopeRoot, arena.nodes[index].name, arena.nodes[index].mutableBinding, false,
+              inout expressions, inout statements);
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
   let preludeRoots = Array<usize>();
   if (isFrameSchedulerYield(program, arena, index)) {
     const placeholder = appendMainDelayPlaceholder(inout statements);
@@ -27150,6 +28734,16 @@ function lowerStatementWithResult(
   }
   if (isFrameDelay(program, arena, index)) {
     return try lowerFrameDelay(program, importedTypes, evidence, arena, index, inout expressions, inout statements);
+  }
+  match (in arena.nodes[index].expression) {
+    some(syntax) => try appendScopeValuePreludes(program, importedTypes, evidence, arena, ownerName, context,
+      index, false, syntax, inout expressions, inout statements, inout preludeRoots);
+    none => {}
+  }
+  match (in arena.nodes[index].secondExpression) {
+    some(syntax) => try appendScopeValuePreludes(program, importedTypes, evidence, arena, ownerName, context,
+      index, true, syntax, inout expressions, inout statements, inout preludeRoots);
+    none => {}
   }
   match (in arena.nodes[index].expression) {
     some(syntax) => {
@@ -27161,7 +28755,10 @@ function lowerStatementWithResult(
             && (
               arena.nodes[index].kind == StatementKind.variableStatement
               || arena.nodes[index].kind == StatementKind.expressionStatement
-              || arena.nodes[index].kind == StatementKind.returnStatement
+              // In an attempted scope a returned `try` fails the scope, so
+              // it cannot hand the callee's Result to the function.
+              || (arena.nodes[index].kind == StatementKind.returnStatement
+                && context.scopeFailureResult.byteLength == 0)
             )
           ) includeRoot = false;
         }
@@ -27183,6 +28780,14 @@ function lowerStatementWithResult(
       try appendEnumMatchPrelude(program, importedTypes, evidence, arena,
         ownerName, context, index, syntax, inout expressions, inout statements,
         inout preludeRoots);
+      // A loop condition runs again each pass: nothing of it can run ahead.
+      if (arena.nodes[index].kind != StatementKind.whileStatement) {
+        const rootIsDirect = arena.nodes[index].kind == StatementKind.variableStatement
+          || arena.nodes[index].kind == StatementKind.returnStatement
+          || arena.nodes[index].kind == StatementKind.matchStatement;
+        try appendNestedMatchPreludes(program, importedTypes, evidence, arena, ownerName, context, index,
+          rootIsDirect, syntax, inout expressions, inout statements, inout preludeRoots);
+      }
     }
     none => {}
   }
@@ -27214,6 +28819,8 @@ function lowerStatementWithResult(
       try appendAssignmentMatchPrelude(program, importedTypes, evidence,
         arena, ownerName, context, index, syntax,
         inout expressions, inout statements, inout preludeRoots);
+      try appendNestedMatchPreludes(program, importedTypes, evidence, arena, ownerName, context, index,
+        false, syntax, inout expressions, inout statements, inout preludeRoots);
     }
     none => {}
   }
@@ -27259,39 +28866,7 @@ function lowerStatementWithResult(
       none => {}
     }
   }
-  for (const prelude of preludeRoots) {
-    if (
-      nestedTryBindingWasTransferred(
-        expressions,
-        statements[prelude].name
-      )
-      || loweredStatementDirectlyTransfersBinding(
-        expressions,
-        statements,
-        lowered,
-        statements[prelude].name
-      )
-    ) statements[prelude].labels.push("transferred");
-  }
-  preludeRoots.push(lowered);
-  let labels = Array<String>();
-  labels.push("nested-try-normalized");
-  const block = statements.length;
-  statements.push(LoweredStatement({
-    kind: LoweredStatementKind.blockStatement,
-    mutableBinding: false,
-    name: "",
-    type: Option<LoweredType>.none,
-    expression: Option<usize>.none,
-    secondExpression: Option<usize>.none,
-    children: move preludeRoots,
-    cleanups: Array<LoweredCleanup>(),
-    liveFlag: "",
-    labels: move labels,
-    matchConsumesSubject: false,
-    matchBindingNeedsCleanup: false,
-  }));
-  return block;
+  return wrapStatementPreludes(expressions, inout statements, preludeRoots, lowered);
 }
 
 function lowerStatementCore(
@@ -27608,7 +29183,7 @@ function lowerStatementCore(
           importedTypes,
           sourceType
         );
-        const sourceValue = try lowerExpressionExpected(
+        const sourceRead = try lowerExpressionExpected(
           program,
           importedTypes,
           evidence,
@@ -27617,6 +29192,10 @@ function lowerStatementCore(
           sourceTypeName,
           inout expressions
         );
+        // The hidden owner takes the value: a value held in a statement
+        // temporary or a frame slot moves, so its first holder lets go.
+        const sourceValue = try wrapOwnedStorage(program, importedTypes, tree, root,
+          sourceTypeName, sourceRead, inout expressions);
         const temporaryName = `_z_destructure_${arena.nodes[index].offset}`;
         let flattened = Array<usize>();
         let temporaryLabels = Array<String>();
@@ -28146,7 +29725,7 @@ function lowerStatementCore(
               some(declaration) => declaration;
               none => throw "native assignment try lowering requires one direct throwing function call";
             };
-            const outerResult = try contextualThrowingFunctionResult(
+            const outerResult = try contextualFailureResult(
               program,
               importedTypes,
               ownerName,
@@ -28302,7 +29881,7 @@ function lowerStatementCore(
                   none => {}
                 }
               }
-              const outerResult = try contextualThrowingFunctionResult(
+              const outerResult = try contextualFailureResult(
                 program,
                 importedTypes,
                 ownerName,
@@ -28371,7 +29950,7 @@ function lowerStatementCore(
               && tree.nodes[root].children.length == 1
             ) {
               const attempted = tree.nodes[root].children[0];
-              const outerResult = try contextualThrowingFunctionResult(
+              const outerResult = try contextualFailureResult(
                 program,
                 importedTypes,
                 ownerName,
@@ -28719,6 +30298,7 @@ function lowerStatementCore(
             if (
               tree.nodes[root].kind == ExpressionKind.tryExpression
               && tree.nodes[root].children.length == 1
+              && context.scopeFailureResult.byteLength == 0
             ) {
               const attempted = tree.nodes[root].children[0];
               loweredValue = try lowerExpression(
@@ -29178,6 +30758,17 @@ function lowerStatementCore(
     expression = Option.some(message);
     secondExpression = Option<usize>.none;
   }
+  // A named `async scope` binds its handle for the statements inside it. No
+  // local statement declares it, so closures there learn its type from here.
+  let childContext = copy context;
+  if (arena.nodes[index].kind == StatementKind.asyncScopeStatement && arena.nodes[index].name.byteLength > 0) {
+    childContext.parameters.push(LoweredClosureCapture({
+      name: copy arena.nodes[index].name,
+      type: LoweredType({ kind: LoweredTypeKind.taskScopeType, name: "TaskScope" }),
+      owned: true,
+      scopeStatementStart: statements.length,
+    }));
+  }
   let children = Array<usize>();
   for (const child of arena.nodes[index].children) {
     const loweredChild = try lowerStatementWithResult(
@@ -29186,7 +30777,7 @@ function lowerStatementCore(
       evidence,
       arena,
       ownerName,
-      context,
+      childContext,
       child,
       inout expressions,
       inout statements
@@ -30612,7 +32203,8 @@ function lowerFunction(
     // general frame: skip the shape tiers.
     const asyncGeneratorBody = generatorCompletionTypeName(declaration);
     const cxxFrame = asyncSignatureHoldsCxx(program, importedTypes, declaration) || isSomeString(asyncGeneratorBody)
-      || functionAwaitsStreamStep(declaration) || declaration.liftedFromOffset != 0;
+      || functionAwaitsStreamStep(declaration) || declaration.liftedFromOffset != 0
+      || functionRunsMatchPrelude(declaration);
     const firstTierSchedulerYield = !cxxFrame && executorAffinity != "thread.main"
       && functionUsesFirstTierSchedulerYield(program, declaration);
     const firstTierDoubleAwait = functionUsesFirstTierDoubleAwait(
@@ -30843,7 +32435,7 @@ function lowerFunction(
   // main with a direct timer await runs as a general frame on a root executor.
   if (declaration.name == "main" && receiverName.byteLength == 0 && !yieldFrame
     && (functionContainsFrameDelay(program, declaration) || functionContainsFrameSpawn(declaration)
-      || functionAwaitsStreamStep(declaration))
+      || functionAwaitsStreamStep(declaration) || functionContainsNamedScope(declaration))
     && functionUsesGeneralFrame(program, declaration)) generalFrame = true;
   if ((yieldFrame || generalFrame) && asyncSuspension.byteLength == 0) asyncSuspension = "yield-frame";
   // A synchronous generator's body is a frame too: its owners live there and
@@ -32813,6 +34405,27 @@ function programGenericTypeParameterNames(
     }
   }
   return parameters;
+}
+
+// Asks for the definitions of the types a generic instance inferred.
+function collectInferredInstanceTypes(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in names: Array<String>,
+  inout fixedArrays: Array<LoweredFixedArray>,
+  inout arrays: Array<LoweredArray>,
+  inout slices: Array<LoweredSlice>,
+  inout maps: Array<LoweredMap>,
+  inout sets: Array<LoweredSet>,
+  inout enums: Array<LoweredEnum>,
+  inout structs: Array<LoweredStruct>
+): void throws String {
+  const unsettledTypeParameters = programGenericTypeParameterNames(program);
+  for (const name of names) {
+    if (typeContainsGenericParameter(name, unsettledTypeParameters)) continue;
+    try collectIntrinsicTypeName(program, importedTypes, name, inout fixedArrays, inout arrays,
+      inout slices, inout maps, inout sets, inout enums, inout structs);
+  }
 }
 
 function collectIntrinsicEnums(
@@ -35188,6 +36801,41 @@ function importedTypesForModule(
   return types;
 }
 
+// Generic aggregate specializations can be owned by a framework module while
+// their concrete arguments are declared by a downstream consumer. Every
+// lowering of the owner needs those argument types to lay its instances out:
+// the module itself, and each later pass over its generic functions and
+// methods, which builds its own type table. No source import is added, so no
+// import cycle is either.
+function appendOwnedStructArgumentTypes(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in structs: Array<LoweredStruct>,
+  in enums: Array<LoweredEnum>,
+  in privateTypeCollisionNames: Array<String>,
+  in genericStructUses: Array<LoweredGenericStructUse>,
+  moduleIndex: usize,
+  inout types: Array<LoweredImportedType>
+): void throws String {
+  for (const use of genericStructUses) {
+    if (
+      use.consumerModuleIndex != moduleIndex
+      || use.ownerModuleIndex != moduleIndex
+    ) continue;
+    try appendGenericDemandArgumentTypes(
+      parsed,
+      graph,
+      structs,
+      enums,
+      privateTypeCollisionNames,
+      use.typeArguments,
+      use.typeArgumentModules,
+      use.typeArgumentSymbols,
+      inout types
+    );
+  }
+}
+
 function appendGenericDemandArgumentTypes(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph,
@@ -35717,21 +37365,24 @@ function collectProgramFunctionTypes(
     }
   }
   if (importsTaskScope) {
-    const taskScopeOperation = encodedFunctionTypeIdentity(
-      "async =>void throws "
-    );
-    if (!containsLoweredFunctionType(
-      functionTypes,
-      taskScopeOperation
-    )) functionTypes.push(LoweredFunctionType({
-      name: move taskScopeOperation,
-      asynchronous: true,
-      parameters: Array<LoweredParameter>(),
-      returnType: LoweredType({
-        kind: LoweredTypeKind.voidType,
-        name: "",
-      }),
-    }));
+    // `TaskScope.schedule` takes an async operation or a synchronous one.
+    const operationKinds = Array<boolean>(true, false);
+    for (const asynchronous of operationKinds) {
+      const signature = asynchronous ? "async =>void throws " : "=>void throws ";
+      const taskScopeOperation = encodedFunctionTypeIdentity(signature);
+      if (!containsLoweredFunctionType(
+        functionTypes,
+        taskScopeOperation
+      )) functionTypes.push(LoweredFunctionType({
+        name: move taskScopeOperation,
+        asynchronous,
+        parameters: Array<LoweredParameter>(),
+        returnType: LoweredType({
+          kind: LoweredTypeKind.voidType,
+          name: "",
+        }),
+      }));
+    }
   }
   const callableAliasTargets = collectModuleCallableAliasTargets(
     program,
@@ -35815,6 +37466,10 @@ function collectProgramFunctionTypes(
       declaration,
       inout functionTypes
     );
+    if (isLiftedClosureBody(declaration)) {
+      const operationType = try liftedOperationFunctionType(program, importedTypes, declaration);
+      if (!containsLoweredFunctionType(functionTypes, operationType.name)) functionTypes.push(operationType);
+    }
   }
   for (const aggregate of program.aggregates) {
     if (aggregate.typeParameters.length > 0) continue;
@@ -35882,13 +37537,22 @@ function lowerInstanceDeinitializer(
 function lowerInlinePlacedBlock(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize,
   inout output: Array<LoweredExpression>
 ): usize throws String {
   const node = view tree.nodes[index];
   if (node.labels[1].byteLength > 0) throw "native placed blocks cannot throw in this tier";
-  const returnName = node.labels[0].byteLength > 0 ? copy node.labels[0] : "void";
+  // An undeclared result is the block's checked type: its context's, or its
+  // final `select`'s.
+  let returnName = copy node.labels[0];
+  if (returnName.byteLength == 0) {
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(name) => returnName = move name;
+      none => returnName = "void";
+    }
+  }
   const returnType = try lowerModuleTypeName(program, importedTypes, returnName);
   if (returnType.kind == LoweredTypeKind.foreignObjCType) {
     throw "native placed blocks cannot select an Objective-C value in this tier";
@@ -35994,30 +37658,47 @@ function appendLoweredProgram(
   let lifted = Array<FunctionDeclaration>();
   for (const declaration of program.functions) {
     try collectLiftedWorkers(program, importedTypes, evidence, declaration, inout lifted);
+    try collectLiftedOperations(program, importedTypes, evidence, declaration, declaration.name, inout lifted);
   }
-  // Outside `main`, placed work hops to the main executor. A function whose
-  // hopped body the general frame does not take yet keeps its placed tier,
-  // which runs placed work where the function runs: only main may await it.
+  // A closure written in a method lifts the same way. A generic aggregate's
+  // methods are checked per instance, so theirs keep the earlier limit.
+  for (const aggregate of program.aggregates) {
+    if (aggregate.typeParameters.length > 0) continue;
+    for (const method of aggregate.methods) {
+      if (method.typeParameters.length > 0) continue;
+      const methodOwner = semanticMethodOwnerName(aggregate.name, method.name);
+      try collectLiftedOperations(program, importedTypes, evidence, method, methodOwner, inout lifted);
+    }
+  }
+  // Outside `main`, placed work hops to the main executor: the function may
+  // run on any executor, so its placed work is never run in place.
   const threadNames = mainPlacementThreadNames(program);
   let hoppedIndices = Array<usize>();
   let hopped = Array<FunctionDeclaration>();
-  let mainBound = Array<String>();
   let functionIndex: usize = 0;
   while (functionIndex < program.functions.length) {
     if (program.functions[functionIndex].asynchronous && program.functions[functionIndex].name != "main"
       && program.functions[functionIndex].executorAffinity.byteLength == 0) {
       let candidate = copy program.functions[functionIndex];
       if (normalizeMainHops(inout candidate.body, threadNames)) {
-        if (functionUsesGeneralFrame(program, candidate)) {
-          hoppedIndices.push(functionIndex);
-          hopped.push(move candidate);
-        } else mainBound.push(copy program.functions[functionIndex].name);
+        hoppedIndices.push(functionIndex);
+        hopped.push(move candidate);
+      }
+    } else if (program.functions[functionIndex].asynchronous && program.functions[functionIndex].name == "main") {
+      // `main` runs its awaited placements in place; a `task on thread.main
+      // { ... }` block it spawns is a child frame on its own executor.
+      let asyncCallOffsets = Array<usize>();
+      for (const resolution of evidence.callResolutions) {
+        if (resolution.asynchronous) asyncCallOffsets.push(resolution.offset);
+      }
+      let candidate = copy program.functions[functionIndex];
+      normalizeMainPlacements(inout candidate.body, threadNames, asyncCallOffsets);
+      if (normalizeMainHops(inout candidate.body, threadNames)) {
+        hoppedIndices.push(functionIndex);
+        hopped.push(move candidate);
       }
     }
     functionIndex = functionIndex + 1;
-  }
-  for (const worker of lifted) {
-    try requireWorkerAvoidsMainBound(worker, mainBound);
   }
   let liftedHops = false;
   for (const worker of lifted) {
@@ -36581,6 +38262,10 @@ function appendLoweredProgramBody(
       program,
       methodImportedTypes
     );
+    if (useIndex < structInstances.length) {
+      try collectInferredInstanceTypes(program, methodImportedTypes, structInstances[useIndex].inferredTypes,
+        inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
+    }
     match (in aggregate.constructorDeclaration) {
       some(source) => for (const parameter of source.parameters) {
         try collectProgramFunctionTypeName(
@@ -37261,6 +38946,7 @@ function appendDeferredGenericMethod(
   in genericStructUses: Array<LoweredGenericStructUse>,
   in use: LoweredGenericMethodUse,
   in evidence: ModuleSemanticEvidence,
+  in inferredTypes: Array<String>,
   in nativeCExportNames: Array<String>,
   in privateTypeCollisionNames: Array<String>,
   moduleIndex: usize,
@@ -37364,6 +39050,8 @@ function appendDeferredGenericMethod(
       inout enums,
       inout structs
     );
+    try collectInferredInstanceTypes(program, methodImportedTypes, inferredTypes,
+      inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
     const ownerName = semanticMethodOwnerName(
       aggregate.name,
       method.name
@@ -37416,6 +39104,7 @@ function appendDeferredGenericFunction(
   in importedTypes: Array<LoweredImportedType>,
   in use: LoweredGenericFunctionUse,
   in evidence: ModuleSemanticEvidence,
+  in inferredTypes: Array<String>,
   in nativeCExportNames: Array<String>,
   moduleIndex: usize,
   entryIndex: usize,
@@ -37462,6 +39151,8 @@ function appendDeferredGenericFunction(
     inout enums,
     inout structs
   );
+  try collectInferredInstanceTypes(program, specializedTypes, inferredTypes,
+    inout fixedArrays, inout arrays, inout slices, inout maps, inout sets, inout enums, inout structs);
   const suffix = try genericCallableSpecializationSuffix(
     program,
     specializedTypes,
@@ -37786,6 +39477,7 @@ function validateGenericDemandExpressions(
       checked: false,
       lifecycle: emptySemanticEvidence(),
       methods: Array<ModuleSemanticEvidence>(),
+      inferredTypes: Array<String>(),
     });
     for (const aggregate of parsed[use.ownerModuleIndex].program.aggregates) {
       if (aggregate.name != use.ownerName) continue;
@@ -37818,6 +39510,7 @@ function validateGenericDemandExpressions(
             }
             none => {}
           }
+          appendInferredTypeNames(lifecycleEvidence, inout structEvidence.inferredTypes);
           let merged = move lifecycleEvidence;
           appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
           structEvidence.lifecycle = move merged;
@@ -37840,6 +39533,7 @@ function validateGenericDemandExpressions(
               success => {}
               failure(error) => throw genericDemandError(error, aggregate.name, use.typeParameters, use.typeArguments);
             }
+            appendInferredTypeNames(instanceEvidence, inout structEvidence.inferredTypes);
             let merged = move instanceEvidence;
             appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
             structEvidence.methods.push(move merged);
@@ -37859,6 +39553,7 @@ function validateGenericDemandExpressions(
   }
   for (const use of demands.functions) {
     let checkedEvidence = emptySemanticEvidence();
+    let checkedTypes = LoweredInstanceTypes({ names: Array<String>() });
     for (const declaration of parsed[use.ownerModuleIndex].program.functions) {
       if (declaration.name != use.name) continue;
       const ownerArguments = ownerSpelledArguments(graph, use.consumerModuleIndex, use.ownerModuleIndex, use.typeArguments);
@@ -37872,6 +39567,7 @@ function validateGenericDemandExpressions(
             success => {}
             failure(error) => throw genericDemandError(error, declaration.name, use.typeParameters, use.typeArguments);
           }
+          appendInferredTypeNames(instanceEvidence, inout checkedTypes.names);
           let merged = move instanceEvidence;
           appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
           checkedEvidence = move merged;
@@ -37887,9 +39583,11 @@ function validateGenericDemandExpressions(
       }
     }
     instances.functions.push(move checkedEvidence);
+    instances.functionTypes.push(move checkedTypes);
   }
   for (const use of demands.methods) {
     let checkedEvidence = emptySemanticEvidence();
+    let checkedTypes = LoweredInstanceTypes({ names: Array<String>() });
     for (const aggregate of parsed[use.ownerModuleIndex].program.aggregates) {
       if (aggregate.name != use.ownerName) continue;
       for (const method of aggregate.methods) {
@@ -37916,6 +39614,7 @@ function validateGenericDemandExpressions(
               success => {}
               failure(error) => throw genericDemandError(error, method.name, parameters, use.allTypeArguments);
             }
+            appendInferredTypeNames(instanceEvidence, inout checkedTypes.names);
             let merged = move instanceEvidence;
             appendModuleEvidence(inout merged, graph.modules[use.ownerModuleIndex].semanticEvidence);
             checkedEvidence = move merged;
@@ -37932,6 +39631,7 @@ function validateGenericDemandExpressions(
       }
     }
     instances.methods.push(move checkedEvidence);
+    instances.methodTypes.push(move checkedTypes);
   }
 }
 
@@ -37944,6 +39644,8 @@ export function checkGenericDemandInstances(
     functions: Array<ModuleSemanticEvidence>(),
     methods: Array<ModuleSemanticEvidence>(),
     structs: Array<LoweredStructInstanceEvidence>(),
+    functionTypes: Array<LoweredInstanceTypes>(),
+    methodTypes: Array<LoweredInstanceTypes>(),
   });
   const demandsOutcome = attempt collectGenericDemands(parsed, graph);
   const demands = match (demandsOutcome) {
@@ -37971,6 +39673,8 @@ function lowerCheckedModules(
     functions: Array<ModuleSemanticEvidence>(),
     methods: Array<ModuleSemanticEvidence>(),
     structs: Array<LoweredStructInstanceEvidence>(),
+    functionTypes: Array<LoweredInstanceTypes>(),
+    methodTypes: Array<LoweredInstanceTypes>(),
   });
   const validated = attempt validateGenericDemandExpressions(parsed, graph, demands, inout instances);
   match (validated) {
@@ -38076,27 +39780,10 @@ function lowerModulesIncludingTests(
         `${parsed[moduleIndex].path}: native import lowering: ${message}`;
     };
     collectCxxTypeNames(importedTypes, inout cxxValueNames, inout cxxMoveOnlyNames);
-    // Generic aggregate specializations can be owned by a framework module
-    // while their concrete arguments are declared by a downstream consumer.
-    // Preserve those canonical argument types without introducing a source
-    // import cycle so constructors and ordinary methods specialize in place.
-    for (const use of genericStructUses) {
-      if (
-        use.consumerModuleIndex != moduleIndex
-        || use.ownerModuleIndex != moduleIndex
-      ) continue;
-      try appendGenericDemandArgumentTypes(
-        parsed,
-        graph,
-        structs,
-        enums,
-        privateTypeCollisionNames,
-        use.typeArguments,
-        use.typeArgumentModules,
-        use.typeArgumentSymbols,
-        inout importedTypes
-      );
-    }
+    // Constructors and ordinary methods of this module's generic aggregates
+    // specialize in place, with their consumers' argument types.
+    try appendOwnedStructArgumentTypes(parsed, graph, structs, enums, privateTypeCollisionNames,
+      genericStructUses, moduleIndex, inout importedTypes);
     // A validated adapter can return its own nominal implementation type to a
     // generic replacement in this module, even though its ordinary declaration
     // dependencies put the generated module after this caller. Reuse checked
@@ -38242,6 +39929,8 @@ function lowerModulesIncludingTests(
       failure(message) => throw
         `${parsed[genericOwnerModuleIndex].path}: generic method import lowering: ${message}`;
     };
+    try appendOwnedStructArgumentTypes(parsed, graph, structs, enums, privateTypeCollisionNames,
+      genericStructUses, genericOwnerModuleIndex, inout importedTypes);
     let methodUseIndex: usize = 0;
     while (methodUseIndex < genericMethodUses.length) {
       const use = view genericMethodUses[methodUseIndex];
@@ -38275,6 +39964,7 @@ function lowerModulesIncludingTests(
         genericStructUses,
         use,
         methodEvidence,
+        instances.methodTypes[useIndex].names,
         nativeCExportNames,
         privateTypeCollisionNames,
         genericOwnerModuleIndex,
@@ -38323,6 +40013,8 @@ function lowerModulesIncludingTests(
       failure(message) => throw
         `${parsed[genericOwnerModuleIndex].path}: generic function import lowering: ${message}`;
     };
+    try appendOwnedStructArgumentTypes(parsed, graph, structs, enums, privateTypeCollisionNames,
+      genericStructUses, genericOwnerModuleIndex, inout importedTypes);
     let functionUseIndex: usize = 0;
     while (functionUseIndex < genericFunctionUses.length) {
       const use = view genericFunctionUses[functionUseIndex];
@@ -38355,6 +40047,7 @@ function lowerModulesIncludingTests(
         importedTypes,
         use,
         functionEvidence,
+        instances.functionTypes[useIndex].names,
         nativeCExportNames,
         genericOwnerModuleIndex,
         entryIndex,

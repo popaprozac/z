@@ -30,9 +30,7 @@ Examples follow these conventions:
 - a directory with `z.json` is a complete project and should be invoked by its
   directory unless its README names a focused entry override;
 - platform, SDK, library, network, or GUI requirements are stated in the local
-  README; compile-only and intentionally negative probes live in the tests;
-- [`language/design/future.md`](language/design/future.md) is the sole
-  hypothetical syntax sketch and is deliberately not runnable.
+  README; compile-only and intentionally negative probes live in the tests.
 
 For a representative learning path, start with `first`, `construction`,
 `result`, `borrowed-parameters`, `copy-move`, and `parameter-views`; then move
@@ -84,10 +82,6 @@ application-shaped pressure test such as Z Notes.
 - [`optional-views.zs`](language/ownership/optional-views.zs): zero-copy fallible lookup with `Option<view T>` and proven nonescaping inline capture
 - [`arena.zs`](language/ownership/arena.zs): stable region allocation, synchronous `in` views, reset, and reverse cleanup
 - [`owned-closures.zs`](language/ownership/owned-closures.zs), [`owned-enums.zs`](language/ownership/owned-enums.zs), and [`weak-references.zs`](language/ownership/weak-references.zs)
-
-[`language/design/future.md`](language/design/future.md) contains a non-runnable
-syntax sketch. It records intended language shape without claiming bootstrap
-support or producing language-server diagnostics from hypothetical imports.
 
 ## Applications
 

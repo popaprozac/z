@@ -16,6 +16,7 @@ import {
 import {
   fixedArrayShape,
   genericTypeShape,
+  isNumericTypeName,
   nativeFunctionSignature,
   nativeObjCObjectTypeName,
   nullableTargetType,
@@ -454,6 +455,93 @@ export function typeIsThreadTransferable(
     typeName,
     inout visiting
   );
+}
+
+// Whether a value of this type certainly cannot move to another thread: its
+// storage holds a custom deinit of unknown thread affinity, or a class that
+// is not shareable for a reason this can name (such a deinit, a mutable
+// field, an `inout` method). Types this cannot classify (foreign types,
+// standard handles under any import name) answer false: other checks and
+// native lowering decide them.
+export function typeHoldsThreadBoundStorage(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  const actual = transparentTypeName(modules, moduleIndex, typeName);
+  const nullableTarget = nullableTargetType(actual);
+  if (nullableTarget.byteLength > 0) {
+    return typeHoldsThreadBoundStorage(modules, moduleIndex, nullableTarget, visiting);
+  }
+  if (stringStartsWith(actual, "readonly ")) {
+    const target = actual.copyBytes(9, actual.byteLength);
+    return typeHoldsThreadBoundStorage(modules, moduleIndex, target, visiting);
+  }
+  match (fixedArrayShape(actual)) {
+    some(array) => return typeHoldsThreadBoundStorage(modules, moduleIndex, array.elementType, visiting);
+    none => {}
+  }
+  let arguments = Array<String>();
+  match (genericTypeShape(actual)) {
+    some(generic) => {
+      // Array, Option, and Result hold their arguments by value.
+      if (generic.base == "Array" || generic.base == "Option" || generic.base == "Result") {
+        for (const argument of generic.arguments) {
+          if (typeHoldsThreadBoundStorage(modules, moduleIndex, argument, visiting)) return true;
+        }
+        return false;
+      }
+      for (const argument of generic.arguments) {
+        arguments.push(argument.copyBytes(0, argument.byteLength));
+      }
+    }
+    none => {}
+  }
+  const location = match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(found) => found;
+    none => return false;
+  };
+  const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+  if (symbol.foreignHeader.byteLength > 0) return false;
+  const identity = semanticTypeIdentity(modules, moduleIndex, actual);
+  if (containsString(visiting, identity)) return false;
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      if (signature.foreignNativeName.byteLength > 0) return false;
+      if (signature.customDeinit && !signature.deinitThreadAny) return true;
+      if (symbol.kind == ModuleSymbolKind.classSymbol) {
+        if (typeIsThreadShareable(modules, moduleIndex, actual)) return false;
+        for (const method of signature.methods) {
+          if (!method.staticMethod && method.receiverMode == "inout") return true;
+        }
+        for (const field of signature.fields) {
+          if (!field.readonlyField) return true;
+        }
+        return false;
+      }
+      let nextVisiting = copyStrings(visiting);
+      nextVisiting.push(identity);
+      let substitutions = Array<NativeValueBinding>();
+      let typeIndex: usize = 0;
+      while (typeIndex < signature.typeParameters.length && typeIndex < arguments.length) {
+        const argument = rebaseTypeName(modules, moduleIndex, location.moduleIndex, arguments[typeIndex]);
+        addValueBinding(inout substitutions, signature.typeParameters[typeIndex], argument);
+        typeIndex = typeIndex + 1;
+      }
+      for (const field of signature.fields) {
+        const fieldType = substituteGenericType(field.typeName, substitutions);
+        if (typeHoldsThreadBoundStorage(modules, location.moduleIndex, fieldType, nextVisiting)) return true;
+      }
+      for (const variant of signature.variants) {
+        if (variant.payloadType.byteLength == 0) continue;
+        const payloadType = substituteGenericType(variant.payloadType, substitutions);
+        if (typeHoldsThreadBoundStorage(modules, location.moduleIndex, payloadType, nextVisiting)) return true;
+      }
+      return false;
+    }
+    none => return false;
+  }
 }
 
 export function substituteGenericType(
@@ -1601,6 +1689,74 @@ export function typeContainsForeignValueStorage(
     none => {}
   }
   return false;
+}
+
+// Whether an undeclared executor capture of this type is a private snapshot,
+// as in Stage 0: a String, or a cleanup-free value made of scalars (fixed
+// arrays, structs without a deinit, enums). Anything else crosses only under
+// an explicit `using (...)` capability.
+export function typeIsImplicitPlacementCopy(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  const actual = transparentTypeName(modules, moduleIndex, typeName);
+  if (actual == "String" || actual == "void" || actual == "boolean" || isNumericTypeName(actual)) return true;
+  match (fixedArrayShape(actual)) {
+    some(array) => return typeIsImplicitPlacementCopy(modules, moduleIndex, array.elementType, visiting);
+    none => {}
+  }
+  let arguments = Array<String>();
+  match (genericTypeShape(actual)) {
+    some(generic) => {
+      // The built-in enums are snapshots when their payloads are.
+      if ((generic.base == "Option" && generic.arguments.length == 1)
+        || (generic.base == "Result" && generic.arguments.length == 2)) {
+        for (const argument of generic.arguments) {
+          if (!typeIsImplicitPlacementCopy(modules, moduleIndex, argument, visiting)) return false;
+        }
+        return true;
+      }
+      for (const argument of generic.arguments) {
+        arguments.push(argument.copyBytes(0, argument.byteLength));
+      }
+    }
+    none => {}
+  }
+  const location = match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(found) => found;
+    none => return false;
+  };
+  const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+  if (symbol.kind == ModuleSymbolKind.classSymbol) return false;
+  const identity = semanticTypeIdentity(modules, moduleIndex, actual);
+  if (containsString(visiting, identity)) return true;
+  let nextVisiting = copyStrings(visiting);
+  nextVisiting.push(identity);
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      if (signature.foreignNativeName.byteLength > 0 || signature.customDeinit) return false;
+      let substitutions = Array<NativeValueBinding>();
+      let typeIndex: usize = 0;
+      while (typeIndex < signature.typeParameters.length && typeIndex < arguments.length) {
+        const argument = rebaseTypeName(modules, moduleIndex, location.moduleIndex, arguments[typeIndex]);
+        addValueBinding(inout substitutions, signature.typeParameters[typeIndex], argument);
+        typeIndex = typeIndex + 1;
+      }
+      for (const field of signature.fields) {
+        const fieldType = substituteGenericType(field.typeName, substitutions);
+        if (!typeIsImplicitPlacementCopy(modules, location.moduleIndex, fieldType, nextVisiting)) return false;
+      }
+      for (const variant of signature.variants) {
+        if (variant.payloadType.byteLength == 0) continue;
+        const payloadType = substituteGenericType(variant.payloadType, substitutions);
+        if (!typeIsImplicitPlacementCopy(modules, location.moduleIndex, payloadType, nextVisiting)) return false;
+      }
+      return true;
+    }
+    none => return false;
+  }
 }
 
 export function typeHasCustomConstructor(

@@ -2,8 +2,8 @@ import {
   NativeInitializationState,
   NativeOwnershipState,
   NativeValueBinding,
-  addBorrowedValueBinding,
-  borrowValueBindingInPlace,
+  addSuspensionBoundBorrow,
+  borrowMatchValueBindingInPlace,
   setValueBindingOwnership,
   valueBindingInitialization,
   valueBindingIsMutable,
@@ -89,8 +89,10 @@ export function prepareExecutorCaptureBindings(
       0,
       tree.nodes[capture].value.byteLength
     );
+    // A borrowed capture is live for the whole block, which therefore
+    // cannot suspend, as in Stage 0.
     if (capability == "in") {
-      borrowValueBindingInPlace(inout blockBindings, name);
+      borrowMatchValueBindingInPlace(inout blockBindings, name);
     } else if (capability == "inout") {
       const expandedType = transparentTypeName(
         modules,
@@ -118,12 +120,7 @@ export function prepareExecutorCaptureBindings(
           tree.nodes[capture].column
         );
       }
-      addBorrowedValueBinding(
-        inout blockBindings,
-        name,
-        typeName,
-        true
-      );
+      addSuspensionBoundBorrow(inout blockBindings, name, typeName);
     } else if (capability == "move") {
       movedNames.push(name.copyBytes(0, name.byteLength));
     }

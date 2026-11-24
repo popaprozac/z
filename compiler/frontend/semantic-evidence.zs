@@ -589,8 +589,45 @@ export function recordExpressionResolution(
   in typeName: String,
   inout evidence: ModuleSemanticEvidence
 ): void {
+  recordValueResolutionAt(modules, moduleIndex, tree.nodes[index].offset,
+    tree.nodes[index].line, tree.nodes[index].column, typeName, inout evidence);
+}
+
+// Where a value-producing `async scope` records its type: one byte into its
+// `async` keyword. Evidence is keyed by offset, and an expression that begins
+// with the scope (`async scope { ... } > 3`) starts at the scope's own
+// offset; no expression starts inside a keyword, so each keeps its record.
+// The key an operand's checked type is recorded under when its expression
+// holds a match value: lowering may run the operand ahead of that match, into
+// a temporary of this type. Expression nodes that start at the same source
+// offset share an offset key, so this one is made of the expression's start
+// and the node's index, above any source offset.
+export function operandTypeKey(expressionOffset: usize, node: usize): usize {
+  return 4611686018427387904 + expressionOffset * 65536 + node;
+}
+
+// Where `attempt async scope` records the error type the scope fails with.
+export function asyncScopeErrorOffset(offset: usize): usize {
+  return offset + 2;
+}
+
+export function asyncScopeValueOffset(offset: usize): usize {
+  return offset + 1;
+}
+
+// The type of the value at a source offset. Besides expressions, a `select`
+// statement records the type it hands over at its own offset: the offset of
+// its expression is shared with that expression's first operand.
+export function recordValueResolutionAt(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  offset: usize,
+  line: usize,
+  column: usize,
+  in typeName: String,
+  inout evidence: ModuleSemanticEvidence
+): void {
   if (typeName.byteLength == 0 || typeName == "__z_never") return;
-  const offset = tree.nodes[index].offset;
   if (evidence.expressionResolutionIndices.has(offset)) return;
   let typeIdentities = Array<ModuleTypeIdentity>();
   collectTypeIdentities(
@@ -603,8 +640,8 @@ export function recordExpressionResolution(
   const resolutionIndex = evidence.expressionResolutions.length;
   evidence.expressionResolutions.push(ModuleExpressionResolution({
     offset,
-    line: tree.nodes[index].line,
-    column: tree.nodes[index].column,
+    line,
+    column,
     typeName: typeName.copyBytes(0, typeName.byteLength),
     targetName: "",
     typeIdentities,

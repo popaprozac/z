@@ -166,6 +166,8 @@ export enum ExpressionKind {
   executorPlacementExpression,
   executorOnExpression,
   executorCaptureExpression,
+  // `async scope [name] { ... select value; }` as a value.
+  asyncScopeExpression,
 }
 
 export struct ExpressionNode {
@@ -1198,6 +1200,45 @@ function parseUnsafeExpressionTree(
   );
 }
 
+// `async scope [name] { ... }` in expression position: the scope's value is
+// the `select` that leaves it, handed over once every child has joined. The
+// name, when given, is the scope's handle inside the block; its position is
+// kept for the checker.
+function parseAsyncScopeExpressionTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
+): usize throws ParserError {
+  const start = snapshot(tokens[current]);
+  try expectKind(tokens, inout current, TokenKind.asyncKeyword, "`async`");
+  try expectKind(tokens, inout current, TokenKind.scopeKeyword, "`scope` after `async`");
+  let name = "";
+  let labels = Array<String>();
+  if (tokens[current].kind == TokenKind.identifier) {
+    name = copy tokens[current].text;
+    labels.push(`${tokens[current].offset}`);
+    labels.push(`${tokens[current].line}`);
+    labels.push(`${tokens[current].column}`);
+    current = current + 1;
+  }
+  const statements = try parseProjectedBlock(
+    tokens,
+    inout current,
+    "an `async scope` body",
+    inout statementNodes
+  );
+  return pushExpressionNodeWithStatements(
+    inout nodes,
+    ExpressionKind.asyncScopeExpression,
+    name,
+    Array<usize>(),
+    statements,
+    labels,
+    start
+  );
+}
+
 function parseWhileExpressionTree(
   in tokens: Array<Token>,
   inout current: usize,
@@ -1547,6 +1588,10 @@ function parsePrimaryTree(
   }
   if (start.kind == TokenKind.unsafeKeyword) {
     return try parseUnsafeExpressionTree(tokens, inout current, inout nodes, inout statementNodes);
+  }
+  if (start.kind == TokenKind.asyncKeyword && current + 1 < end
+    && tokens[current + 1].kind == TokenKind.scopeKeyword) {
+    return try parseAsyncScopeExpressionTree(tokens, inout current, inout nodes, inout statementNodes);
   }
   if (start.kind == TokenKind.whileKeyword) {
     return try parseWhileExpressionTree(tokens, inout current, end, inout nodes, inout statementNodes);
@@ -4132,6 +4177,7 @@ export function expressionKindName(kind: ExpressionKind): String {
     executorPlacementExpression => "executorPlacement";
     executorOnExpression => "executorOn";
     executorCaptureExpression => "executorCapture";
+    asyncScopeExpression => "asyncScope";
   };
 }
 
@@ -4201,6 +4247,7 @@ function expressionTreeText(in tree: ExpressionTree, in arena: StatementArena): 
     if (
       node.kind == ExpressionKind.valueBlockExpression
       || node.kind == ExpressionKind.unsafeExpression
+      || node.kind == ExpressionKind.asyncScopeExpression
     ) hasStatementBody = true;
     if (hasStatementBody) {
       output.append("body{");

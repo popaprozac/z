@@ -897,5 +897,3 @@ direct `self-host-emit-*.zs` fixture must also be classified as a differential
 root, a negative semantic fixture, a specialized protocol/diagnostic fixture,
 or an intentional exclusion. The fixture catalog fails closed when a direct
 fixture has no declared role.
-The ordered continuation plan and current criteria live in
-[`docs/bootstrap-status.md`](../../docs/bootstrap-status.md#self-hosting-continuation-point).

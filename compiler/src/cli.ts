@@ -2029,12 +2029,76 @@ function bindStage1WrapperFunctions(wrapper: string, source: string): string {
   });
 }
 
+// The frontend recurses over nested syntax, so its depth follows the source,
+// not the host. A Bun FFI call runs on the host's main thread (8 MB on macOS,
+// whatever `ulimit -s` says), which the compiler's own sources outgrew. Each
+// compiling entry point runs on a joined thread with a reserved stack instead;
+// pages are committed only as the recursion touches them.
+function stage1LargeStackRunner(): string {
+  return `#if !defined(_WIN32)
+#include <pthread.h>
+#endif
+
+#define Z_STAGE1_STACK_BYTES ((size_t)512 * 1024 * 1024)
+
+typedef struct {
+  void (*run)(void *);
+  void *context;
+} Z_Stage1StackCall;
+
+#if !defined(_WIN32)
+static void *z_stage1_stack_entry(void *pointer) {
+  Z_Stage1StackCall *call = (Z_Stage1StackCall *)pointer;
+  call->run(call->context);
+  return NULL;
+}
+#endif
+
+static void z_stage1_on_large_stack(void (*run)(void *), void *context) {
+#if defined(_WIN32)
+  run(context);
+#else
+  Z_Stage1StackCall call = { run, context };
+  pthread_attr_t attributes;
+  pthread_t thread;
+  if (pthread_attr_init(&attributes) != 0) abort();
+  if (pthread_attr_setstacksize(&attributes, Z_STAGE1_STACK_BYTES) != 0) abort();
+  if (pthread_create(&thread, &attributes, z_stage1_stack_entry, &call) != 0) abort();
+  pthread_attr_destroy(&attributes);
+  if (pthread_join(thread, NULL) != 0) abort();
+#endif
+}
+
+typedef struct {
+  Z_String *first;
+  Z_String *second;
+  Z_String result;
+} Z_Stage1StringCall;
+`;
+}
+
 function stage1StringLibraryWrapper(): string {
   return `#if defined(_WIN32)
 #define Z_STAGE1_EXPORT __declspec(dllexport)
 #else
 #define Z_STAGE1_EXPORT __attribute__((visibility("default")))
 #endif
+
+${stage1LargeStackRunner()}
+static void z_stage1_run_parse(void *pointer) {
+  Z_Stage1StringCall *call = (Z_Stage1StringCall *)pointer;
+  call->result = stage1Parse(call->first, call->second);
+}
+
+static void z_stage1_run_emit(void *pointer) {
+  Z_Stage1StringCall *call = (Z_Stage1StringCall *)pointer;
+  call->result = stage1Emit(call->first, call->second);
+}
+
+static void z_stage1_run_resolve_stream(void *pointer) {
+  Z_Stage1StringCall *call = (Z_Stage1StringCall *)pointer;
+  call->result = stage1ResolveStream(call->first, call->second);
+}
 
 static void *z_stage1_copy_string(Z_String result) {
   char *copy = (char *)malloc(result.length + 1);
@@ -2053,7 +2117,11 @@ Z_STAGE1_EXPORT void *z_stage1_parse(
 ) {
   Z_String path = { (const char *)path_data, path_length, 0 };
   Z_String source = { (const char *)source_data, source_length, 0 };
-  return z_stage1_copy_string(stage1Parse(&path, &source));
+  Z_Stage1StringCall call;
+  call.first = &path;
+  call.second = &source;
+  z_stage1_on_large_stack(z_stage1_run_parse, &call);
+  return z_stage1_copy_string(call.result);
 }
 
 Z_STAGE1_EXPORT void *z_stage1_emit(
@@ -2064,7 +2132,11 @@ Z_STAGE1_EXPORT void *z_stage1_emit(
 ) {
   Z_String entry = { (const char *)entry_data, entry_length, 0 };
   Z_String batch = { (const char *)batch_data, batch_length, 0 };
-  return z_stage1_copy_string(stage1Emit(&entry, &batch));
+  Z_Stage1StringCall call;
+  call.first = &entry;
+  call.second = &batch;
+  z_stage1_on_large_stack(z_stage1_run_emit, &call);
+  return z_stage1_copy_string(call.result);
 }
 
 Z_STAGE1_EXPORT void *z_stage1_resolve_stream(
@@ -2075,7 +2147,11 @@ Z_STAGE1_EXPORT void *z_stage1_resolve_stream(
 ) {
   Z_String entry = { (const char *)entry_data, entry_length, 0 };
   Z_String batch = { (const char *)batch_data, batch_length, 0 };
-  return z_stage1_copy_string(stage1ResolveStream(&entry, &batch));
+  Z_Stage1StringCall call;
+  call.first = &entry;
+  call.second = &batch;
+  z_stage1_on_large_stack(z_stage1_run_resolve_stream, &call);
+  return z_stage1_copy_string(call.result);
 }
 
 Z_STAGE1_EXPORT void z_stage1_free(void *pointer) {
@@ -2102,6 +2178,28 @@ static void *z_stage1_copy_string(Z_String result) {
   void *copy = z_stage1_clone_string(result);
   if (result.capacity > 0) free((void *)result.data);
   return copy;
+}
+
+${stage1LargeStackRunner()}
+static void z_stage1_run_parse(void *pointer) {
+  Z_Stage1StringCall *call = (Z_Stage1StringCall *)pointer;
+  call->result = stage1Parse(call->first, call->second);
+}
+
+static void z_stage1_run_emit(void *pointer) {
+  Z_Stage1StringCall *call = (Z_Stage1StringCall *)pointer;
+  call->result = stage1Emit(call->first, call->second);
+}
+
+typedef struct {
+  Z_String *entry;
+  Z_String *batch;
+  Z_Stage1ResolveResponse result;
+} Z_Stage1ResolveCall;
+
+static void z_stage1_run_resolve(void *pointer) {
+  Z_Stage1ResolveCall *call = (Z_Stage1ResolveCall *)pointer;
+  call->result = stage1Resolve(call->entry, call->batch);
 }
 
 typedef struct {
@@ -2303,7 +2401,11 @@ Z_STAGE1_EXPORT void *z_stage1_parse(
 ) {
   Z_String path = { (const char *)path_data, path_length, 0 };
   Z_String source = { (const char *)source_data, source_length, 0 };
-  return z_stage1_copy_string(stage1Parse(&path, &source));
+  Z_Stage1StringCall call;
+  call.first = &path;
+  call.second = &source;
+  z_stage1_on_large_stack(z_stage1_run_parse, &call);
+  return z_stage1_copy_string(call.result);
 }
 
 Z_STAGE1_EXPORT void *z_stage1_emit(
@@ -2314,7 +2416,11 @@ Z_STAGE1_EXPORT void *z_stage1_emit(
 ) {
   Z_String entry = { (const char *)entry_data, entry_length, 0 };
   Z_String batch = { (const char *)batch_data, batch_length, 0 };
-  return z_stage1_copy_string(stage1Emit(&entry, &batch));
+  Z_Stage1StringCall call;
+  call.first = &entry;
+  call.second = &batch;
+  z_stage1_on_large_stack(z_stage1_run_emit, &call);
+  return z_stage1_copy_string(call.result);
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_api_version(void) {
@@ -2329,7 +2435,11 @@ Z_STAGE1_EXPORT void *z_stage1_resolve(
 ) {
   Z_String entry = { (const char *)entry_data, entry_length, 0 };
   Z_String batch = { (const char *)batch_data, batch_length, 0 };
-  Z_Stage1ResolveResponse result = stage1Resolve(&entry, &batch);
+  Z_Stage1ResolveCall call;
+  call.entry = &entry;
+  call.batch = &batch;
+  z_stage1_on_large_stack(z_stage1_run_resolve, &call);
+  Z_Stage1ResolveResponse result = call.result;
   Z_Stage1ResolveHandle *response = (Z_Stage1ResolveHandle *)malloc(sizeof(Z_Stage1ResolveHandle));
   if (response == NULL) abort();
   response->error_payload = result.success

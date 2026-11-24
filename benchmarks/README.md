@@ -192,8 +192,7 @@ Every observed subprocess group has a 180-second watchdog.
 Report first invocation, unchanged repetition, and source-change builds
 separately. Existing caches are not cleared by this probe. A failed build is
 not a completed build-time measurement, and dev results exclude server startup,
-worker bundling, application launch, and WebView load. See
-[the dated performance log](../docs/performance.md#z-notes-end-to-end-build-sweep--2026-09-08).
+worker bundling, application launch, and WebView load.
 
 ## Repeated SDK imports
 

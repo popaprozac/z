@@ -48,6 +48,7 @@ for (const [fixture, expected] of [
   ["channel-local-class-payload", "3\n"],
   ["view-field-borrows", "8\n"],
   ["thread-block-captures", "16\n"],
+  ["executor-capture-snapshots", "sum 3 7 5 14\ntotal 29\n"],
   ["lock-callback-function-value", "11\n"],
   ["array-capacity-field", "true 1 true true\n"],
   ["console-closure-argument", "3\nheld 4 after 6\n"],
@@ -116,6 +117,30 @@ test("checks thread.spawn captures and results in both compilers", () => {
     return resource.value;
   `), /thread\.spawn result type "Resource" cannot cross a native thread boundary yet/,
     undefined, ["self-host-resolve"]);
+  // A captured value is held to the same rule in a synchronous or an async
+  // worker: no custom deinit of unknown thread affinity and no unshareable
+  // class identity anywhere in its storage.
+  const managed = "struct Managed { label: String; deinit {} }";
+  for (const [declarations, setup, use, type] of [
+    [managed, 'const held = Managed({ label: "m" });', "held.label.byteLength", "Managed"],
+    [managed, 'let held = Array<Managed>(); held.push(Managed({ label: "m" }));', "held.length", "Array<Managed>"],
+    [`${managed}\n    struct Holder { inner: Managed; }`, 'const held = Holder({ inner: Managed({ label: "m" }) });',
+      "held.inner.label.byteLength", "Holder"],
+    ["class Mutable { value: i32; }\n    struct WithMutable { target: Mutable; }",
+      "const held = WithMutable({ target: new Mutable({ value: 1 }) });", "usize(held.target.value)", "WithMutable"],
+  ]) {
+    for (const [modifier, pause] of [["", ""], ["async ", "await delay(1);"]]) {
+      rejects(program(`
+        import { delay } from "std/time";
+        ${declarations}
+      `, `
+        ${setup}
+        const worker = thread.spawn(${modifier}move (): usize => { ${pause} return ${use}; });
+        const result = await worker;
+        return 0;
+      `), new RegExp(`capture "held" of type ${type} cannot cross a native thread boundary yet`));
+    }
+  }
 }, 240_000);
 
 test("requires `move this` on async struct methods, as Stage 0 does", () => {
@@ -743,6 +768,106 @@ test("rejects calling a local value that shadows a function", () => {
   }
 }, 240_000);
 
+test("names the parameter when an inout argument has no binding to name", () => {
+  // An indexed element is not a mutable binding; there is no name to quote.
+  rejects(`
+    struct Entity { name: String; hp: i32; }
+    function heal(inout entity: Entity): void { entity.hp = entity.hp + 1; }
+    function main(): i32 {
+      let values = Array<Entity>(Entity({ name: "a", hp: 1 }));
+      heal(inout values[0]);
+      return 0;
+    }
+  `, /"heal" requires inout <mutable binding> for parameter 1/, /"heal" requires inout <mutable binding> for parameter 1/,
+    ["self-host-resolve"]);
+}, 240_000);
+
+test("rejects a select with no value to give in both compilers", () => {
+  const message = /\.zs:\d+:\d+: (error: )?select requires an enclosing value-producing block/;
+  rejects(`
+    function main(): i32 {
+      select 42;
+      return 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+  // Only an arm block's final `select` is the arm's value.
+  rejects(`
+    enum Kind { one, two }
+    function main(): i32 {
+      const kind = Kind.two;
+      const value = match (kind) {
+        one => 1;
+        two => {
+          if (kind == Kind.two) {
+            select 7;
+          }
+          select 2;
+        }
+      };
+      return value;
+    }
+  `, message, message, ["self-host-resolve"]);
+  // A statement-form scope has no value.
+  rejects(`
+    async function main(): i32 {
+      async scope {
+        select 3;
+      }
+      return 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+}, 240_000);
+
+test("requires copy or move to destructure a named owner in both compilers", () => {
+  const message = /destructuring owned Named requires explicit copy or move/;
+  rejects(`
+    struct Named { name: String; count: i32; }
+    function main(): i32 {
+      const whole = Named({ name: "owned", count: 1 });
+      const { name, count } = whole;
+      return name.byteLength == 5 ? count : 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+  // A field of a named owner is named storage too.
+  rejects(`
+    struct Named { name: String; count: i32; }
+    struct Outer { inner: Named; }
+    function main(): i32 {
+      const outer = Outer({ inner: Named({ name: "owned", count: 1 }) });
+      const { name, count } = outer.inner;
+      return name.byteLength == 5 ? count : 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+}, 240_000);
+
+test("reports a match value native cannot place as Z1000", () => {
+  // Native runs a match value anywhere an expression may be, except where
+  // nothing can run ahead of it. Stage 0 rejects the first and third of
+  // these with its direct-value rule and runs the second.
+  const value = "match (kind) { one => 1; two => 2; }";
+  const bodies = [
+    `let n = 0; while (n < ${value}) { n = n + 1; } return n;`,
+    `const pick = (kind: Kind): i32 => ${value}; return pick(kind);`,
+    `const outer = match (kind) { one => id(${value}); two => 5; }; return outer;`,
+  ];
+  const directory = mkdtempSync("/tmp/z-native-match-position-");
+  try {
+    const input = resolve(directory, "main.zs");
+    for (const body of bodies) {
+      writeFileSync(input, `
+        enum Kind { one, two }
+        function id(value: i32): i32 { return value; }
+        function run(kind: Kind): i32 { ${body} }
+        function main(): i32 { return run(Kind.two); }
+      `);
+      const emitted = native("self-host-emit", input);
+      assert.equal(emitted.status, 1, `${body}: ${emitted.stdout}`);
+      assert.match(emitted.stderr, /main\.zs:\d+:\d+: error\[Z1000\]: a match value is not executable here in the native compiler yet; bind it with `const` or `let` first/, body);
+      assert.doesNotMatch(emitted.stderr, /internal compiler error/, body);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 240_000);
+
 test("reports an explicit Map copy native cannot lower as Z1000", () => {
   const directory = mkdtempSync("/tmp/z-native-map-copy-");
   try {
@@ -796,14 +921,114 @@ test("checks a channel's message type where an endpoint crosses threads", () => 
   `, /capture "holder" of type Holder cannot cross a native thread boundary/);
 }, 240_000);
 
-test("reports block-bodied thread captures native cannot transfer as Z1000", () => {
+test("holds executor captures to their capabilities in both compilers", () => {
+  // An undeclared capture of a placed block is a private snapshot, which only
+  // a String or a cleanup-free value can be, in `main` and outside it.
+  for (const [declarations, setup, use] of [
+    ["", "let held = Array<i32>(); held.push(1);", "held.length"],
+    ["struct Batch { names: Array<String>; }", "const held = Batch({ names: Array<String>() });", "held.names.length"],
+    ["readonly class Frozen { value: i32; }", "const held = new Frozen({ value: 1 });", "usize(held.value)"],
+  ]) {
+    for (const [owner, call] of [["main", ""], ["work", "const result = await work();"]]) {
+      const body = `${setup}
+        const size = await on thread.main: usize { select ${use}; };
+        return 0;`;
+      rejects(`
+        import { thread } from "std/thread";
+        ${declarations}
+        ${owner == "main" ? "" : `async function work(): i32 { ${body} }`}
+        async function main(): i32 {
+          ${owner == "main" ? body : `${call} return result;`}
+        }
+      `, /ownership-bearing executor capture "held" requires an explicit capability/);
+    }
+  }
+  // An undeclared result is the final `select`'s type, which its uses must
+  // accept.
+  for (const [owner, call] of [["main", ""], ["work", "const result = await work();"]]) {
+    const body = `const value = await on thread.main { select 2; };
+      const text: String = value;
+      return 0;`;
+    rejects(`
+      import { thread } from "std/thread";
+      ${owner == "main" ? "" : `async function work(): i32 { ${body} }`}
+      async function main(): i32 {
+        ${owner == "main" ? body : `${call} return result;`}
+      }
+    `, /expected String, found i32/);
+  }
+  // A borrowed capture lends the caller's storage for the block only, so the
+  // block cannot suspend while it holds one.
+  for (const capability of ["in", "inout"]) {
+    for (const [owner, call] of [["main", ""], ["work", "const result = await work();"]]) {
+      const body = `let count = 1;
+        const seen = await on thread.main using (${capability} count): i32 { await delay(1); select count; };
+        return seen - 1;`;
+      rejects(`
+        import { thread } from "std/thread";
+        import { delay } from "std/time";
+        ${owner == "main" ? "" : `async function work(): i32 { ${body} }`}
+        async function main(): i32 {
+          ${owner == "main" ? body : `${call} return result;`}
+        }
+      `, /cannot await while borrowed storage "count" is live/);
+    }
+  }
+}, 240_000);
+
+test("holds scheduled TaskScope operations to their capture rules in both compilers", () => {
+  // Accepted work may run after its submitter returns, on the scope's
+  // executor: it owns its captures, and they must be shareable.
+  const program = (setup: string, operation: string) => `
+    import { TaskScope } from "std/async";
+    import { thread } from "std/thread";
+    function submit(jobs: TaskScope, value: i32): boolean {
+      ${setup}
+      const control = jobs.schedule(thread.main, ${operation});
+      return control.accepted;
+    }
+    async function work(value: i32): void { }
+    async function main(): i32 {
+      const jobs = new TaskScope();
+      const accepted = submit(jobs, 1);
+      await jobs.close();
+      return accepted ? 0 : 1;
+    }
+  `;
+  rejects(program("", "(): void => { const seen = value; }"),
+    /a borrowed capturing closure cannot become a function value/);
+  rejects(program("", "async (): void => await work(value)"),
+    /TaskScope\.schedule requires `move` for a capturing closure/);
+  for (const operation of ["move (): void => { const seen = names.length; }", "async move (): void => await work(i32(names.length))"]) {
+    rejects(program("let names = Array<String>(); names.push(\"one\");", operation),
+      /capture "names" of type .* cannot cross to the scope executor/);
+  }
+}, 240_000);
+
+test("rejects a named async scope that repeats a binding in view in both compilers", () => {
+  // The handle is a binding of the function's: a frame stores one per name.
+  const program = (outer: string) => `
+    import { TaskScope } from "std/async";
+    function touch(jobs: TaskScope): void { }
+    async function main(): i32 {
+      ${outer}
+        async scope updates { touch(updates); }
+      ${outer.startsWith("async") ? "}" : ""}
+      return 0;
+    }
+  `;
+  rejects(program("async scope updates {"), /duplicate local "updates"/);
+  rejects(program("const updates = 1;"), /duplicate local "updates"/);
+}, 240_000);
+
+test("moves aggregates holding endpoints into block-bodied thread workers", () => {
   const directory = mkdtempSync("/tmp/z-native-thread-block-");
   try {
     const input = resolve(directory, "main.zs");
-    for (const [declaration, type] of [
-      ["const held = Holder({ sender: sender.sync() });", "Holder"],
-      ["let held = Array<SyncSender<u32>>(); held.push(sender.sync());", "Array<SyncSender<u32>>"],
-      ["const held: Option<SyncSender<u32>> = Option.some(sender.sync());", "Option<SyncSender<u32>>"],
+    for (const declaration of [
+      "const held = Holder({ sender: sender.sync() });",
+      "let held = Array<SyncSender<u32>>(); held.push(sender.sync());",
+      "const held: Option<SyncSender<u32>> = Option.some(sender.sync());",
     ]) {
       const source = `import { Channel, SyncSender } from "std/channel";
         import { thread } from "std/thread";
@@ -820,12 +1045,10 @@ test("reports block-bodied thread captures native cannot transfer as Z1000", () 
         }`;
       writeFileSync(input, source);
       check(source, input);
+      // The worker context owns the moved aggregate and releases it there.
       const emitted = native("self-host-emit", input);
-      assert.equal(emitted.status, 1, emitted.stdout);
-      assert.ok(emitted.stderr.includes(
-        `error[Z1000]: ownership-bearing thread.spawn capture "held" of type "${type}" is not executable in the native compiler yet`,
-      ), emitted.stderr);
-      assert.doesNotMatch(emitted.stderr, /internal compiler error/);
+      assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+      execute(emitted.stdout, "", ["-pthread"]);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }, 240_000);

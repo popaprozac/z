@@ -357,6 +357,35 @@ test("implicitly joins continuation-owned scopes on return and propagated error"
   execute(source, expected);
 }, 240_000);
 
+test("releases every reference to a scope and its controls that are passed on by value", () => {
+  // A TaskScope or TaskControl binding stays usable after it is passed on,
+  // returned, or captured: the destination takes a reference of its own and
+  // the source still releases its. Dropping the source's release leaked one
+  // reference for each such use.
+  const input = resolve(projectRoot, "tests/fixtures/native-scope-handle-references.zs");
+  const emitted = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8", timeout: 180_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+  const source = emitted.stdout
+    .replace("scope->refcount = 1;", "scope->refcount = 1; ++createdScopes;")
+    .replace("free(scope);", "++releasedScopes; free(scope);")
+    .replace("control->refcount = 1;", "control->refcount = 1; ++createdControls;")
+    .replace("free(control);", "++releasedControls; free(control);");
+  for (const counter of ["createdScopes", "releasedScopes", "createdControls", "releasedControls"]) {
+    assert.ok(source.includes(`++${counter};`), counter);
+  }
+  execute(`static int createdScopes, releasedScopes, createdControls, releasedControls;
+#define main z_fixture_main\n${source}\n#undef main
+int main(void) {
+  if (z_fixture_main() != 0) return 1;
+  if (createdScopes != 1 || releasedScopes != 1) return 2;
+  if (createdControls != 4 || releasedControls != 4) return 3;
+  return 0;
+}
+`, "job 1\njob 2\njob 3\njob 4\naccepted true true true true\n");
+}, 240_000);
+
 test("cancels and drains locally owned scopes before releasing the parent at every suspension", () => {
   let source = emitOwnedScope();
   const start = source.match(/static Z_AsyncInvocation (\w+_start)\(void \*context, Z_AsyncExecutor \*executor, bool argument0, bool argument1, Z_Message argument2\)/)?.[1];

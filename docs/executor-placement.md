@@ -1,4 +1,4 @@
-# Executor Placement Design Note
+# Executor placement
 
 Status: direct placed calls and ownership-aware placement blocks execute through
 structured task frames. Async direct calls use the callee frame without nesting
@@ -6,13 +6,11 @@ structured task frames. Async direct calls use the callee frame without nesting
 from an owning async task are supported. Placement blocks accept explicit
 `using (in value, inout state, move owner)` capture contracts. Native-worker
 handoff and Darwin CFRunLoop wakeups are implemented. `out` capture, executors
-beyond `thread.main`, and Windows/Linux UI-loop adapters remain planned.
+beyond `thread.main`, and Windows/Linux UI-loop adapters are not implemented.
 
-Date: 2026-07-20
-
-This note records the intended relationship between executor placement,
-structured concurrency, task results, and explicit operating-system threads.
-It is a design checkpoint rather than an implementation-status claim.
+This document describes how executor placement relates to structured
+concurrency, task results, and explicit operating-system threads. Native
+compiler coverage is tracked in [`bootstrap-status.md`](bootstrap-status.md).
 
 ## Design goal
 
@@ -774,114 +772,3 @@ Z keeps `return` for the enclosing function/task and `select` for local
 value-producing blocks. Last-expression inference can be reconsidered globally
 later without making executor blocks a special case.
 
-## Validation sequence
-
-1. **Done:** parse and type-check awaited and child-task placement; the
-   redundant synchronous proof form was removed before alpha.
-2. **Done:** introduce the typed `thread.main` capability.
-3. **Done:** execute awaited and child-task placement through task frames for
-   `void`, scalar, and recursively plain values.
-4. **Done:** publish placed children from `thread.spawn` through a thread-safe
-   queue without equating OS-thread exit with task completion.
-5. **Done on Darwin:** wake and drain the main executor through a
-   `CFRunLoopSource`, including while an AppKit-compatible run loop is active.
-6. **Partial:** integrate owned, ARC, native-affine, borrowed, cancellation, and
-   cleanup capture contracts. String, Z ARC, owning-task Objective-C captures,
-   opaque main-isolated Z class transport with main-executor release, and
-   native executor-affinity metadata are implemented; mutation,
-   cross-executor borrows, raw foreign-identity transport, and broader native
-   ownership remain.
-7. **Done for the main-executor tier:** carry main-affinity facts through FIIR,
-   automatically import explicit Clang actor attributes and `@MainActor` facts
-   from declared Swift-target symbol graphs, accept `on thread.main` fallbacks
-   in `.zd`, and ship reviewed AppKit type notes where its Objective-C headers
-   do not uniformly carry actor metadata.
-8. **Done for current syntax:** highlighting, completion, hover, definitions,
-   and placement diagnostics.
-9. Pressure-test the model in an application-shaped AppKit example, including
-   target/action, callbacks, background work, and UI-thread resumption.
-10. Add Windows message-loop and selected Linux GUI/event-loop adapters, driven
-    by compile-time target selection rather than source preprocessing.
-11. **Done:** support an async task bound to one dedicated `thread.spawn`
-    worker, including child tasks, scheduler-aware delay, typed errors,
-    cooperative cancellation, literal `await on thread.main`, and thread-affine
-    continuation resumption back onto the same live worker thread.
-12. **Done:** accept a direct call operand after an
-    executor, for example `task on thread.main load(value)` and
-    `try await on thread.main load(inout state)`. The function arguments are
-    the capability boundary and therefore need no `using` clause. Placement
-    blocks retain `using (...)` for lexical captures and multiple statements.
-13. **Partial in the fixed-point native backend:** a dedicated worker can send
-    owned value arguments to either a synchronous nonthrowing main-isolated
-    function or the current taskified suspending shape, then receive scalar,
-    ownership-bearing, or typed-error results without deadlocking the joining
-    main thread. A main-isolated callee may contain multiple top-level literal
-    `await delay(...)` statements, with synchronous expression statements
-    before and between them, and uses the placed call as the worker closure's
-    tail return. The callee may alternatively contain one top-level braced
-    `if`/`else` whose branches contain direct literal delays. Its condition runs
-    once on main, only the selected branch waits, and both paths rejoin before
-    the following statements. A third supported shape is one top-level
-    consuming `match` over an enum-valued expression, including cleanup-free or
-    cleanup-bearing payload bindings, with braced arms containing direct
-    literal delays. Its subject is evaluated once into the invocation frame on
-    main. A named owner transfers into that frame; a computed call or enum
-    construction is adopted there directly. A cleanup-bearing active payload
-    transfers between the subject slot and selected arm binding at each segment
-    boundary, so normal cleanup, move-out, typed failure, and cancellation each
-    destroy it exactly once. The
-    worker waits only along the selected arm, and every arm rejoins before the
-    suffix. The fourth supported shape is one top-level braced `while` whose
-    body contains direct literal delays. Its condition is reevaluated on main
-    before every iteration. Synchronous body segments also run on main, while
-    the worker owns repetition and cancellable waits. Ordinary `break` and
-    `continue` preserve their source meaning across those boundaries, and
-    cleanup-bearing iteration locals are destroyed exactly once on normal
-    iteration exit, loop control, function exit, or cancellation. `return` and
-    `throw` evaluate on main, run the ordinary cleanup plan, and transfer the
-    completed success or typed failure directly back to the waiting worker.
-    A direct synchronous `try` binding, assignment, or expression statement
-    uses the same path: success continues on main and an owned success value
-    may cross the next wait in the existing frame; failure runs the ordinary
-    cleanup plan and completes the callee's typed result. Main executes each
-    synchronous segment; the worker performs each cancellable
-    wait without occupying main, then submits the next segment. A cancellation
-    request wakes the active wait and sends ownership-bearing argument cleanup
-    to main instead of resuming the callee.
-    Initialized top-level locals and direct assignments survive those waits in
-    one heap-owned invocation frame. Cleanup-bearing locals carry one liveness
-    bit, move between segments without cloning, and are destroyed on main if
-    cancellation wins. Consuming
-    `await worker.cancel()` joins and destroys any other unclaimed result. If a
-    synchronous main request is already running, it completes before its
-    outcome is discarded. Parameter writes or unrelated ownership transfers,
-    borrowed cleanup-bearing match subjects, suspending `for` loops, nested
-    loops or matches inside a suspending `while`, `try await` and nested
-    try-value normalization across a loop suspension, loop control or function
-    exit followed by more work in the same synchronous segment, other
-    suspending control flow nested
-    inside another branch, dynamic delay expressions, combining a structured
-    suspension with outer delays, non-tail suspended placement, and
-    cross-executor loans remain the next native state-machine slices; Stage 0
-    already implements the broader direct-call surface.
-
-## Open questions
-
-- How are executor values created, retained, and compared for current-context
-  proof?
-- Which cross-executor borrows can the unified loan checker prove safely?
-- Which inferred Copy captures should diagnostics ask users to spell explicitly
-  for clarity or ABI stability?
-- What eventual child-task `out` contract remains sound across failure and
-  cancellation?
-- What is the final function-level isolation syntax?
-- How should `.zd` represent callback-delivery executors beyond the existing
-  caller/any invocation guarantee and main-isolated types/functions?
-- Should any runtime-owned detached operation exist, and how must it report
-  errors?
-- How does the main executor integrate with application startup and shutdown?
-- Which executor properties belong in FIIR: thread identity, seriality,
-  reentrancy, destruction affinity, or actor-style isolation?
-
-These questions are intentionally left open until implementation and the AppKit
-pressure test provide evidence.

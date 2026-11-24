@@ -41,6 +41,190 @@ export function closureOwnedStatements(in arena: StatementArena): Array<boolean>
   return owned;
 }
 
+// `attempt async scope { ... }`: the scope an `attempt` node wraps, which
+// runs as the scope does and leaves a Result. Otherwise the node count.
+export function attemptedScope(in tree: ExpressionTree, index: usize): usize {
+  if (tree.nodes[index].kind == ExpressionKind.attemptExpression && tree.nodes[index].children.length == 1
+    && tree.nodes[tree.nodes[index].children[0]].kind == ExpressionKind.asyncScopeExpression) {
+    return tree.nodes[index].children[0];
+  }
+  return tree.nodes.length;
+}
+
+// `const x = async scope [name] { ... select value; }`: whether this
+// statement's whole initializer is a value-producing scope.
+export function statementInitializesFromScope(in arena: StatementArena, index: usize): boolean {
+  if (arena.nodes[index].kind != StatementKind.variableStatement) return false;
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => tree.nodes[tree.root].kind == ExpressionKind.asyncScopeExpression
+        || attemptedScope(tree, tree.root) < tree.nodes.length;
+      none => false;
+    }
+    none => false;
+  };
+}
+
+// Collects the value-producing scopes under `index` that their statement
+// runs ahead of itself, in evaluation order. A scope in a lazy or selected
+// branch, under `try`, `attempt`, `await`, `task`, or a placement, or as a
+// closure's expression body cannot be run ahead: the result is then false
+// and that scope is the last one collected.
+function collectHoistedScopes(in tree: ExpressionTree, index: usize, hoistable: boolean, inout found: Array<usize>): boolean {
+  const node = view tree.nodes[index];
+  if (node.kind == ExpressionKind.asyncScopeExpression) {
+    found.push(index);
+    return hoistable;
+  }
+  // An attempted scope is its scope, whose temporary holds the Result.
+  const attempted = attemptedScope(tree, index);
+  if (attempted < tree.nodes.length) {
+    found.push(attempted);
+    return hoistable;
+  }
+  // Only one branch of a conditional runs, so a scope in a branch cannot run
+  // ahead by itself. The conditional does, as one unit: its condition, then
+  // the taken branch with that branch's scopes. It is collected as itself.
+  if (hoistable && node.kind == ExpressionKind.conditionalExpression && node.children.length == 3) {
+    if (!collectHoistedScopes(tree, node.children[0], true, inout found)) return false;
+    let branchUnits = Array<usize>();
+    const branchesRun = collectHoistedScopes(tree, node.children[1], true, inout branchUnits)
+      && collectHoistedScopes(tree, node.children[2], true, inout branchUnits);
+    if (!branchesRun) {
+      found.push(branchUnits[branchUnits.length - 1]);
+      return false;
+    }
+    if (branchUnits.length > 0) found.push(index);
+    return true;
+  }
+  // `&&` and `||` run their right operand only sometimes: the same unit,
+  // with the left operand as its condition.
+  if (hoistable && node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||")
+    && node.children.length == 2) {
+    if (!collectHoistedScopes(tree, node.children[0], true, inout found)) return false;
+    let rightUnits = Array<usize>();
+    if (!collectHoistedScopes(tree, node.children[1], true, inout rightUnits)) {
+      found.push(rightUnits[rightUnits.length - 1]);
+      return false;
+    }
+    if (rightUnits.length > 0) found.push(index);
+    return true;
+  }
+  const blocks = node.kind == ExpressionKind.closureExpression
+    || node.kind == ExpressionKind.ifExpression || node.kind == ExpressionKind.matchExpression
+    || node.kind == ExpressionKind.conditionalExpression
+    || node.kind == ExpressionKind.unsafeExpression || node.kind == ExpressionKind.valueBlockExpression
+    || node.kind == ExpressionKind.whileExpression || node.kind == ExpressionKind.forExpression
+    || (node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||"))
+    || node.kind == ExpressionKind.spawnExpression || node.kind == ExpressionKind.tryExpression
+    || node.kind == ExpressionKind.attemptExpression || node.kind == ExpressionKind.awaitExpression
+    || node.kind == ExpressionKind.executorPlacementExpression
+    || node.kind == ExpressionKind.executorOnExpression;
+  for (const child of node.children) {
+    if (!collectHoistedScopes(tree, child, hoistable && !blocks, inout found)) return false;
+  }
+  return true;
+}
+
+// The same, for one expression that its statement may run ahead of itself:
+// a conditional's branch.
+export function expressionHoistedScopes(in tree: ExpressionTree, index: usize, inout found: Array<usize>): boolean {
+  return collectHoistedScopes(tree, index, true, inout found);
+}
+
+// Every scope under a collected unit: the scope itself, or the scopes in a
+// conditional's branches.
+function appendUnitScopeStatements(in tree: ExpressionTree, index: usize, inout owned: Array<usize>): void {
+  const node = view tree.nodes[index];
+  if (node.kind == ExpressionKind.closureExpression) return;
+  if (node.kind == ExpressionKind.asyncScopeExpression) {
+    for (const statement of node.statements) {
+      owned.push(statement);
+    }
+    return;
+  }
+  for (const child of node.children) {
+    appendUnitScopeStatements(tree, child, inout owned);
+  }
+}
+
+// What a statement runs ahead of itself, from one of its expressions, as
+// tree nodes in evaluation order: value-producing scopes, and conditionals
+// with scopes in their branches. False when a scope sits where this
+// statement cannot run it first (it is then the last one collected): a loop
+// condition re-runs, and a positional pattern or `match` statement has no
+// place for it yet.
+export function statementHoistedScopes(
+  in arena: StatementArena, index: usize, second: boolean, inout found: Array<usize>
+): boolean {
+  const kind = arena.nodes[index].kind;
+  const plain = arena.nodes[index].objectBindings.length == 0 && arena.nodes[index].arrayBindings.length == 0;
+  // An object pattern takes the scope's value through its hidden owner.
+  const objectPattern = kind == StatementKind.destructureStatement && arena.nodes[index].arrayBindings.length == 0;
+  const hoistable = (kind == StatementKind.variableStatement && plain) || objectPattern
+    || kind == StatementKind.returnStatement
+    || kind == StatementKind.selectStatement || kind == StatementKind.throwStatement
+    || kind == StatementKind.expressionStatement || kind == StatementKind.assignmentStatement
+    || kind == StatementKind.ifStatement;
+  if (second) {
+    return match (in arena.nodes[index].secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => collectHoistedScopes(tree, tree.root, hoistable, inout found);
+        none => true;
+      }
+      none => true;
+    };
+  }
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => collectHoistedScopes(tree, tree.root, hoistable, inout found);
+      none => true;
+    }
+    none => true;
+  };
+}
+
+// The statements of a statement's value-producing scopes, which run in the
+// enclosing function's frame.
+export function valueScopeStatements(in arena: StatementArena, index: usize): Array<usize> {
+  let owned = Array<usize>();
+  let first = Array<usize>();
+  if (statementHoistedScopes(arena, index, false, inout first)) {
+    match (in arena.nodes[index].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => for (const site of first) {
+          appendUnitScopeStatements(tree, site, inout owned);
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  let second = Array<usize>();
+  if (statementHoistedScopes(arena, index, true, inout second)) {
+    match (in arena.nodes[index].secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => for (const site of second) {
+          appendUnitScopeStatements(tree, site, inout owned);
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  return owned;
+}
+
+// Whether the statement runs a value-producing scope, as its whole
+// initializer or ahead of itself.
+export function statementRunsValueScope(in arena: StatementArena, index: usize): boolean {
+  let first = Array<usize>();
+  let second = Array<usize>();
+  const firstOk = statementHoistedScopes(arena, index, false, inout first);
+  const secondOk = statementHoistedScopes(arena, index, true, inout second);
+  return firstOk && secondOk && first.length + second.length > 0;
+}
+
 // Local names of `thread` imported from std/thread.
 export function mainPlacementThreadNames(in program: Program): Array<String> {
   let names = Array<String>();
@@ -75,8 +259,15 @@ function mainPlacementCall(in tree: ExpressionTree, index: usize, in threadNames
 
 // `await on thread.main using (...) { ... }`: a synchronous placed block.
 function mainPlacementBlock(in tree: ExpressionTree, index: usize, in threadNames: Array<String>): boolean {
+  return mainPlacementBlockOf(tree, index, threadNames, "await");
+}
+
+// `await|task on thread.main { ... }` with the given mode.
+function mainPlacementBlockOf(
+  in tree: ExpressionTree, index: usize, in threadNames: Array<String>, in mode: String
+): boolean {
   const node = view tree.nodes[index];
-  if (node.kind != ExpressionKind.executorPlacementExpression || node.value != "await"
+  if (node.kind != ExpressionKind.executorPlacementExpression || node.value != mode
     || node.labels.length < 3 || node.labels[2] != "" || node.children.length < 2) return false;
   const executor = node.children[1];
   if (tree.nodes[executor].kind != ExpressionKind.memberExpression || tree.nodes[executor].value != "main"
@@ -164,9 +355,10 @@ export function isMainHopNode(in node: ExpressionNode): boolean {
 }
 
 // Rewrites each placed block `await on thread.main { ... }` and placed call
-// `await on thread.main f(...)` into `await <hop>`: the hop node keeps the
-// placement's offset, labels, children, and statements, so its checked type,
-// captures, and body (or call) stay attached. Code
+// `await on thread.main f(...)` into `await <hop>`, and the `task` forms into
+// `task <hop>`: the hop node keeps the placement's offset, labels, children,
+// and statements, so its checked type, captures, and body (or call) stay
+// attached. Code
 // outside `main` may run on any executor; the hop is correct on each (on the
 // main executor it awaits the block's frame directly). Closure bodies keep
 // their placements: they are lowered as their own functions.
@@ -222,14 +414,16 @@ function hoppedPlacementTree(in tree: ExpressionTree, in threadNames: Array<Stri
   let updated = copy tree;
   let changed = false;
   for (const index of reachable) {
-    const placedCall = tree.nodes[index].value == "await"
-      && mainPlacementCall(tree, index, threadNames) < tree.nodes.length;
-    if (!mainPlacementBlock(tree, index, threadNames) && !placedCall) continue;
+    const spawned = tree.nodes[index].value == "spawn";
+    if (!spawned && tree.nodes[index].value != "await") continue;
+    const placedCall = mainPlacementCall(tree, index, threadNames) < tree.nodes.length;
+    if (!mainPlacementBlockOf(tree, index, threadNames, tree.nodes[index].value) && !placedCall) continue;
     let hop = copy tree.nodes[index];
     hop.value = "hop";
     const hopIndex = updated.nodes.length;
     updated.nodes.push(move hop);
-    updated.nodes[index].kind = ExpressionKind.awaitExpression;
+    // `task on thread.main ...` spawns the hopped work as a child.
+    updated.nodes[index].kind = spawned ? ExpressionKind.spawnExpression : ExpressionKind.awaitExpression;
     updated.nodes[index].value = "";
     updated.nodes[index].children = Array<usize>(hopIndex);
     updated.nodes[index].labels = Array<String>();
@@ -284,65 +478,156 @@ function statementTreeSuspends(in arena: StatementArena, index: usize): boolean 
 }
 
 // A main-affine async function whose suspensions are all top-level delays
-// keeps its linear delay-segment tier, which both main callers and the
-// worker-to-main bridge run. Any other suspending shape takes the general
-// frame when it fits; the bridge's loop/if/match segments remain only for
-// bodies the general frame does not take yet (lexical locals in suspending
-// branches).
+// with only plain statements ahead of them keeps its linear delay-segment
+// tier, which both main callers and the worker-to-main bridge run. Any other
+// suspending shape takes the general frame when it fits; the bridge's
+// loop/if/match segments remain only for bodies the general frame does not
+// take yet.
 export function mainAffineUsesGeneralFrame(in program: Program, in declaration: FunctionDeclaration): boolean {
   if (!declaration.asynchronous || declaration.executorAffinity != "thread.main") return false;
   if (functionContainsFrameDelay(program, declaration)) {
     let linear = true;
+    let structured = false;
     for (const root of declaration.body.roots) {
       const kind = declaration.body.nodes[root].kind;
-      if ((kind == StatementKind.whileStatement || kind == StatementKind.ifStatement
-        || kind == StatementKind.matchStatement)
-        && statementTreeSuspends(declaration.body, root)) linear = false;
+      const control = kind == StatementKind.whileStatement || kind == StatementKind.ifStatement
+        || kind == StatementKind.matchStatement;
+      // The delay tier resumes neither into control flow nor past it.
+      if ((control || structured) && statementTreeSuspends(declaration.body, root)) linear = false;
+      if (kind != StatementKind.expressionStatement && kind != StatementKind.variableStatement
+        && kind != StatementKind.assignmentStatement) structured = true;
     }
     if (linear) return false;
   }
   return functionUsesGeneralFrame(program, declaration);
 }
 
-// A worker whose tail is `return [try] await on thread.main f(...)` of a
-// main-affine `f` that keeps its delay-segment tier runs through the
-// worker-to-main bridge, which drives those segments; any other worker frame
-// hops instead.
-export function workerUsesMainBridge(in program: Program, in arena: StatementArena, in statements: Array<usize>): boolean {
-  if (statements.length == 0) return false;
-  const tail = statements[statements.length - 1];
-  if (arena.nodes[tail].kind != StatementKind.returnStatement) return false;
-  return match (in arena.nodes[tail].expression) {
-    some(syntax) => match (in syntax.tree) {
-      some(tree) => {
-        let placement = tree.root;
-        if ((tree.nodes[placement].kind == ExpressionKind.tryExpression
-          || tree.nodes[placement].kind == ExpressionKind.attemptExpression)
-          && tree.nodes[placement].children.length == 1) placement = tree.nodes[placement].children[0];
-        const node = view tree.nodes[placement];
-        if (node.kind != ExpressionKind.executorPlacementExpression || node.value != "await"
-          || node.labels.length < 3 || node.labels[2] != "call" || node.children.length != 3) return false;
-        const call = node.children[2];
-        if (tree.nodes[call].kind != ExpressionKind.callExpression || tree.nodes[call].children.length == 0) return false;
-        const callee = tree.nodes[call].children[0];
-        if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) return false;
-        for (const declaration of program.functions) {
-          if (declaration.name == tree.nodes[callee].value && declaration.asynchronous
-            && declaration.executorAffinity == "thread.main") return !mainAffineUsesGeneralFrame(program, declaration);
-        }
-        select false;
+// A synchronous worker body that spawns work onto main (`task on thread.main
+// ...` directly in the closure, as Stage 0 allows) runs as a lifted frame
+// too: the frame joins that child before the worker completes.
+export function workerBodySpawnsOnMain(
+  in arena: StatementArena, in statements: Array<usize>, in threadNames: Array<String>
+): boolean {
+  for (const statement of statements) {
+    const spawns = match (in arena.nodes[statement].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => tree.nodes[tree.root].kind == ExpressionKind.executorPlacementExpression
+          && tree.nodes[tree.root].value == "spawn"
+          && (mainPlacementBlockOf(tree, tree.root, threadNames, "spawn")
+            || mainPlacementCall(tree, tree.root, threadNames) < tree.nodes.length);
+        none => false;
       }
       none => false;
+    };
+    if (spawns) return true;
+  }
+  return false;
+}
+
+// A `task on thread.main ...` statement owned by a closure that is not itself
+// a `thread.spawn` worker body (a closure nested in one): the statement's
+// index, or the arena's length. Such a closure runs as a plain function,
+// which has no frame to own the child.
+export function nestedClosureMainTask(in arena: StatementArena, in threadNames: Array<String>): usize {
+  for (const statement of arena.nodes) {
+    const found = match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          let workers = Array<usize>();
+          let index: usize = 0;
+          while (index < tree.nodes.length) {
+            if (isThreadSpawnCall(tree, index, threadNames) && tree.nodes[index].children.length == 2) {
+              workers.push(tree.nodes[index].children[1]);
+            }
+            index = index + 1;
+          }
+          let offender = arena.nodes.length;
+          index = 0;
+          while (index < tree.nodes.length) {
+            let worker = false;
+            for (const candidate of workers) {
+              if (candidate == index) worker = true;
+            }
+            if (tree.nodes[index].kind == ExpressionKind.closureExpression && !worker) {
+              let pending = copy tree.nodes[index].statements;
+              let cursor: usize = 0;
+              while (cursor < pending.length) {
+                const owned = pending[cursor];
+                cursor = cursor + 1;
+                const spawns = match (in arena.nodes[owned].expression) {
+                  some(ownedSyntax) => match (in ownedSyntax.tree) {
+                    some(ownedTree) => ownedTree.nodes[ownedTree.root].kind == ExpressionKind.executorPlacementExpression
+                      && ownedTree.nodes[ownedTree.root].value == "spawn";
+                    none => false;
+                  }
+                  none => false;
+                };
+                if (spawns) offender = owned;
+                for (const child of arena.nodes[owned].children) {
+                  pending.push(child);
+                }
+              }
+            }
+            index = index + 1;
+          }
+          select offender;
+        }
+        none => arena.nodes.length;
+      }
+      none => arena.nodes.length;
+    };
+    if (found < arena.nodes.length) return found;
+  }
+  return arena.nodes.length;
+}
+
+// A module that both spawns threads and places work on an executor: on
+// Darwin such a program may drive the main run loop, and Stage 0 links
+// CoreFoundation for it.
+export function programPlacesWorkFromThreads(in program: Program): boolean {
+  const threadNames = mainPlacementThreadNames(program);
+  if (threadNames.length == 0) return false;
+  let places = false;
+  let spawns = false;
+  for (const declaration of program.functions) {
+    for (const statement of declaration.body.nodes) {
+      match (in statement.expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => {
+            let index: usize = 0;
+            while (index < tree.nodes.length) {
+              if (tree.nodes[index].kind == ExpressionKind.executorPlacementExpression) places = true;
+              if (isThreadSpawnCall(tree, index, threadNames)) spawns = true;
+              index = index + 1;
+            }
+          }
+          none => {}
+        }
+        none => {}
+      }
     }
-    none => false;
-  };
+  }
+  return places && spawns;
+}
+
+// Whether a `thread.spawn` block closure's body runs as a lifted frame.
+export function workerClosureLifts(
+  in arena: StatementArena, in tree: ExpressionTree, closure: usize, in threadNames: Array<String>
+): boolean {
+  if (tree.nodes[closure].kind != ExpressionKind.closureExpression
+    || tree.nodes[closure].labels.length < 3 || tree.nodes[closure].labels[2] != "block") return false;
+  const asynchronous = tree.nodes[closure].labels.length >= 4 && tree.nodes[closure].labels[3] == "async";
+  if (asynchronous) return threadWorkerNeedsFrame(arena, tree.nodes[closure].statements);
+  return workerBodySpawnsOnMain(arena, tree.nodes[closure].statements, threadNames);
 }
 
 // The statements of async worker bodies that run as lifted frames, where
 // lowering hops their placements: rewrites those placements as
 // normalizeMainHops does for a whole function.
+// `keptClosures` are closure offsets lowering does not lift (a worker that
+// captures a `TaskScope` keeps its own tier).
 export function normalizeWorkerHops(
-  inout body: StatementArena, in program: Program, in threadNames: Array<String>
+  inout body: StatementArena, in threadNames: Array<String>, in keptClosures: Array<usize>
 ): boolean {
   if (threadNames.length == 0) return false;
   let pending = Array<usize>();
@@ -354,11 +639,11 @@ export function normalizeWorkerHops(
           while (index < tree.nodes.length) {
             if (isThreadSpawnCall(tree, index, threadNames) && tree.nodes[index].children.length == 2) {
               const closure = tree.nodes[index].children[1];
-              if (tree.nodes[closure].kind == ExpressionKind.closureExpression
-                && tree.nodes[closure].labels.length >= 4 && tree.nodes[closure].labels[2] == "block"
-                && tree.nodes[closure].labels[3] == "async"
-                && threadWorkerNeedsFrame(body, tree.nodes[closure].statements)
-                && !workerUsesMainBridge(program, body, tree.nodes[closure].statements)) {
+              let kept = false;
+              for (const offset of keptClosures) {
+                if (offset == tree.nodes[closure].offset) kept = true;
+              }
+              if (!kept && workerClosureLifts(body, tree, closure, threadNames)) {
                 for (const owned of tree.nodes[closure].statements) {
                   pending.push(owned);
                 }
@@ -578,11 +863,10 @@ export function isFrameDelay(
   };
 }
 
-function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): boolean {
+// Whether the node itself, apart from its operands, runs to completion.
+function frameNodeIsSynchronous(in tree: ExpressionTree, index: usize): boolean {
   const kind = tree.nodes[index].kind;
-  // A placed block `main` runs where it is: a synchronous helper call.
-  if (kind == ExpressionKind.executorPlacementExpression && tree.nodes[index].value == "inline") return true;
-  if (kind == ExpressionKind.awaitExpression
+  return !(kind == ExpressionKind.awaitExpression
     || kind == ExpressionKind.tryExpression
     || kind == ExpressionKind.spawnExpression
     || kind == ExpressionKind.executorPlacementExpression
@@ -592,11 +876,79 @@ function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): bo
     || kind == ExpressionKind.unsafeExpression
     || kind == ExpressionKind.valueBlockExpression
     || kind == ExpressionKind.whileExpression
-    || kind == ExpressionKind.forExpression) return false;
+    || kind == ExpressionKind.forExpression
+    || kind == ExpressionKind.asyncScopeExpression);
+}
+
+function frameExpressionIsSynchronous(in tree: ExpressionTree, index: usize): boolean {
+  const kind = tree.nodes[index].kind;
+  // A placed block `main` runs where it is: a synchronous helper call.
+  if (kind == ExpressionKind.executorPlacementExpression && tree.nodes[index].value == "inline") return true;
+  if (!frameNodeIsSynchronous(tree, index)) return false;
   // Nested callable bodies have their own lifetime and suspension analysis.
   if (kind == ExpressionKind.closureExpression) return true;
   for (const child of tree.nodes[index].children) {
     if (!frameExpressionIsSynchronous(tree, child)) return false;
+  }
+  return true;
+}
+
+// The same, with each match value inside the expression taken as the
+// temporary its prelude fills (lowering's appendNestedMatchPreludes). The
+// statement's check admits the arms (frameMatchValueArmsAreSupported).
+function frameExpressionIsSynchronousAroundMatches(in tree: ExpressionTree, index: usize): boolean {
+  const kind = tree.nodes[index].kind;
+  if (kind == ExpressionKind.matchExpression && index != tree.root) {
+    return tree.nodes[index].children.length > 0
+      && frameExpressionIsSynchronousAroundMatches(tree, tree.nodes[index].children[0]);
+  }
+  if (kind == ExpressionKind.executorPlacementExpression && tree.nodes[index].value == "inline") return true;
+  if (!frameNodeIsSynchronous(tree, index)) return false;
+  if (kind == ExpressionKind.closureExpression) return true;
+  for (const child of tree.nodes[index].children) {
+    if (!frameExpressionIsSynchronousAroundMatches(tree, child)) return false;
+  }
+  return true;
+}
+
+// The arms of the match values inside a statement's expressions: they run in
+// the frame ahead of the statement, and may not suspend there yet. A closure
+// is its own function.
+function frameMatchValueArmsAreSupported(
+  in program: Program, in arena: StatementArena, in tree: ExpressionTree, index: usize
+): boolean {
+  const node = view tree.nodes[index];
+  if (node.kind == ExpressionKind.closureExpression) return true;
+  if (node.kind == ExpressionKind.matchExpression && index != tree.root) {
+    let armIndex: usize = 1;
+    while (armIndex < node.children.length) {
+      const arm = node.children[armIndex];
+      if (tree.nodes[arm].kind != ExpressionKind.matchArmExpression || tree.nodes[arm].labels.length != 1) return false;
+      if (tree.nodes[arm].labels[0] != "none" && tree.nodes[arm].labels[0] != "binding") return false;
+      for (const child of tree.nodes[arm].statements) {
+        if (!frameStatementIsSupported(program, arena, child, true, true)) return false;
+      }
+      armIndex = armIndex + 1;
+    }
+    return node.children.length == 0 || frameMatchValueArmsAreSupported(program, arena, tree, node.children[0]);
+  }
+  for (const child of node.children) {
+    if (tree.nodes[child].kind == ExpressionKind.matchArmExpression) continue;
+    if (!frameMatchValueArmsAreSupported(program, arena, tree, child)) return false;
+  }
+  return true;
+}
+
+// The same, with each value-producing scope taken as the value it leaves in
+// the frame: what remains of a conditional's branch once its scopes have run.
+function frameExpressionIsSynchronousAroundScopes(in tree: ExpressionTree, index: usize): boolean {
+  const kind = tree.nodes[index].kind;
+  if (kind == ExpressionKind.asyncScopeExpression || kind == ExpressionKind.closureExpression) return true;
+  if (attemptedScope(tree, index) < tree.nodes.length) return true;
+  if (kind == ExpressionKind.executorPlacementExpression && tree.nodes[index].value == "inline") return true;
+  if (!frameNodeIsSynchronous(tree, index)) return false;
+  for (const child of tree.nodes[index].children) {
+    if (!frameExpressionIsSynchronousAroundScopes(tree, child)) return false;
   }
   return true;
 }
@@ -621,7 +973,7 @@ function frameAwaitOperandIsSupported(in tree: ExpressionTree, index: usize): bo
     || tree.nodes[operand].children.length == 0) return false;
   if (!frameCalleeIsSupported(tree, tree.nodes[operand].children[0])) return false;
   for (const child of tree.nodes[operand].children) {
-    if (!frameExpressionIsSynchronous(tree, child)) return false;
+    if (!frameExpressionIsSynchronousAroundMatches(tree, child)) return false;
   }
   return true;
 }
@@ -642,6 +994,15 @@ function frameTreeContainsAwait(in tree: ExpressionTree, index: usize): boolean 
 export function frameExpressionHoistsAwaits(in tree: ExpressionTree, index: usize): boolean {
   const node = view tree.nodes[index];
   if (node.kind == ExpressionKind.closureExpression) return true;
+  // A value-producing scope runs ahead of its statement as an await does; its
+  // statements are admitted with the statement (statementHoistedScopes).
+  if (node.kind == ExpressionKind.asyncScopeExpression) return true;
+  if (attemptedScope(tree, index) < tree.nodes.length) return true;
+  // A match value inside the expression runs ahead as a prelude, its subject
+  // just before it.
+  if (node.kind == ExpressionKind.matchExpression && index != tree.root && node.children.length > 0) {
+    return frameExpressionHoistsAwaits(tree, node.children[0]);
+  }
   if (node.kind == ExpressionKind.awaitExpression) return frameAwaitOperandIsSupported(tree, index);
   if (node.kind == ExpressionKind.attemptExpression && node.children.length == 1
     && tree.nodes[node.children[0]].kind == ExpressionKind.awaitExpression) {
@@ -653,11 +1014,36 @@ export function frameExpressionHoistsAwaits(in tree: ExpressionTree, index: usiz
     || node.kind == ExpressionKind.executorOnExpression) {
     return !frameTreeContainsAwait(tree, index) && frameExpressionIsSynchronous(tree, index);
   }
+  // A conditional with scopes runs them ahead: those of its condition by
+  // themselves, those of its branches with the conditional as one unit.
+  // Apart from its scopes, a branch must still run to completion.
+  if (node.kind == ExpressionKind.conditionalExpression && node.children.length == 3) {
+    let units = Array<usize>();
+    if (collectHoistedScopes(tree, index, true, inout units) && units.length > 0) {
+      return frameExpressionHoistsAwaits(tree, node.children[0])
+        && frameExpressionIsSynchronousAroundScopes(tree, node.children[1])
+        && frameExpressionIsSynchronousAroundScopes(tree, node.children[2]);
+    }
+  }
+  if (node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||")
+    && node.children.length == 2) {
+    let units = Array<usize>();
+    if (collectHoistedScopes(tree, index, true, inout units) && units.length > 0) {
+      return frameExpressionHoistsAwaits(tree, node.children[0])
+        && frameExpressionIsSynchronousAroundScopes(tree, node.children[1]);
+    }
+  }
   const lazy = node.kind == ExpressionKind.ifExpression || node.kind == ExpressionKind.matchExpression
     || node.kind == ExpressionKind.conditionalExpression
     || node.kind == ExpressionKind.unsafeExpression || node.kind == ExpressionKind.valueBlockExpression
     || node.kind == ExpressionKind.whileExpression || node.kind == ExpressionKind.forExpression
     || (node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||"));
+  // A lazy operator with a match value in a branch runs ahead as one unit.
+  const lazyOperator = node.kind == ExpressionKind.conditionalExpression
+    || (node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||"));
+  if (lazyOperator) {
+    return !frameTreeContainsAwait(tree, index) && frameExpressionIsSynchronousAroundMatches(tree, index);
+  }
   if (lazy) return !frameTreeContainsAwait(tree, index) && frameExpressionIsSynchronous(tree, index);
   for (const child of node.children) {
     if (!frameExpressionHoistsAwaits(tree, child)) return false;
@@ -669,12 +1055,13 @@ export function frameExpressionHoistsAwaits(in tree: ExpressionTree, index: usiz
 function frameSpawnIsSupported(in tree: ExpressionTree, index: usize): boolean {
   if (tree.nodes[index].children.length != 1) return false;
   const call = tree.nodes[index].children[0];
+  if (isMainHopNode(tree.nodes[call])) return true;
   if (tree.nodes[call].kind != ExpressionKind.callExpression
     || tree.nodes[call].children.length == 0) return false;
   const callee = tree.nodes[call].children[0];
   if (!frameCalleeIsSupported(tree, callee)) return false;
   for (const child of tree.nodes[call].children) {
-    if (!frameExpressionIsSynchronous(tree, child)) return false;
+    if (!frameExpressionIsSynchronousAroundMatches(tree, child)) return false;
   }
   return true;
 }
@@ -726,7 +1113,7 @@ function frameExpressionIsSupported(in tree: ExpressionTree, index: usize): bool
   // A named function or a method, with already checked arguments.
   if (!frameCalleeIsSupported(tree, callee)) return false;
   for (const child of tree.nodes[call].children) {
-    if (!frameExpressionIsSynchronous(tree, child)) return false;
+    if (!frameExpressionIsSynchronousAroundMatches(tree, child)) return false;
   }
   return true;
 }
@@ -813,18 +1200,47 @@ function frameStatementIsSupported(
       none => false;
     };
   }
+  const firstArmsRun = match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => frameMatchValueArmsAreSupported(program, arena, tree, tree.root);
+      none => true;
+    }
+    none => true;
+  };
+  const secondArmsRun = match (in arena.nodes[index].secondExpression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => frameMatchValueArmsAreSupported(program, arena, tree, tree.root);
+      none => true;
+    }
+    none => true;
+  };
+  if (!firstArmsRun || !secondArmsRun) return false;
   // Spawn sites own one frame slot each: root statements, or `task f();`
   // directly in an unnamed `async scope`, which joins its slots on exit. A
   // loop therefore never restarts a slot whose child is still running.
   if (nested && statementRootIsSpawn(arena, index)) return false;
+  // A local a value-producing scope initializes: the scope's statements are
+  // frame-level, as a statement scope's are.
+  if (statementRunsValueScope(arena, index)) {
+    if (synchronousOnly) return false;
+    const scopeStatements = valueScopeStatements(arena, index);
+    for (const child of scopeStatements) {
+      const local = arena.nodes[child].kind == StatementKind.variableStatement;
+      if (statementRootIsSpawn(arena, child) || local) {
+        if (!frameStatementIsSupported(program, arena, child, false, false)) return false;
+      } else if (!frameStatementIsSupported(program, arena, child, true, false)) return false;
+    }
+    // A whole initializer is the scope itself; any other statement goes on
+    // to be checked around the values its scopes leave in the frame.
+    if (statementInitializesFromScope(arena, index)) return true;
+  }
   if (kind == StatementKind.asyncScopeStatement) {
-    if (synchronousOnly || arena.nodes[index].name.byteLength != 0
-      || arena.nodes[index].children.length != 1) return false;
+    if (synchronousOnly || arena.nodes[index].children.length != 1) return false;
     const block = arena.nodes[index].children[0];
     if (arena.nodes[block].kind != StatementKind.blockStatement) return false;
     // A scope's own statements are frame-level: its locals (including task
     // locals) live in the frame and are released when the scope exits, after
-    // its children are joined.
+    // its children are joined. A named scope's handle lives there too.
     for (const child of arena.nodes[block].children) {
       const local = arena.nodes[child].kind == StatementKind.variableStatement;
       if (statementRootIsSpawn(arena, child) || local) {
@@ -835,8 +1251,9 @@ function frameStatementIsSupported(
   }
   if (kind == StatementKind.variableStatement
     || kind == StatementKind.destructureStatement) {
-    // Keep lexical local storage expansion separate from root frame storage.
-    if (nested || arena.nodes[index].arrayBindings.length != 0) return false;
+    // A nested local takes a frame slot like a root one; its live flag and
+    // lexical cleanup carry it across suspensions inside its block.
+    if (arena.nodes[index].arrayBindings.length != 0) return false;
     // `let x: T;` is zeroed frame storage whose live flag starts false.
     match (in arena.nodes[index].expression) {
       some(_) => {}
@@ -862,7 +1279,7 @@ function frameStatementIsSupported(
             || tree.nodes[root].kind == ExpressionKind.attemptExpression)
             && tree.nodes[root].children.length == 1) expression = tree.nodes[root].children[0];
           if (!frameExpressionIsSynchronous(tree, expression)) return false;
-        } else if (kind == StatementKind.whileStatement || kind == StatementKind.destructureStatement) {
+        } else if (kind == StatementKind.whileStatement) {
           // A loop condition re-runs each iteration: it cannot hoist an await.
           if (!frameExpressionIsSynchronous(tree, root)) return false;
         } else if (kind == StatementKind.ifStatement || kind == StatementKind.throwStatement) {
@@ -878,9 +1295,19 @@ function frameStatementIsSupported(
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
         const root = tree.root;
+        // A whole assigned value's synchronous `try`/`attempt` propagates as
+        // an initializer's does.
+        let value = root;
+        if (kind == StatementKind.assignmentStatement
+          && (tree.nodes[root].kind == ExpressionKind.tryExpression
+            || tree.nodes[root].kind == ExpressionKind.attemptExpression)
+          && tree.nodes[root].children.length == 1
+          && frameExpressionIsSynchronous(tree, tree.nodes[root].children[0])) {
+          value = tree.nodes[root].children[0];
+        }
         if (synchronousOnly) {
-          if (!frameExpressionIsSynchronous(tree, root)) return false;
-        } else if (!frameExpressionHoistsAwaits(tree, root)) return false;
+          if (!frameExpressionIsSynchronous(tree, value)) return false;
+        } else if (!frameExpressionHoistsAwaits(tree, value)) return false;
       }
       none => return false;
     }
@@ -948,6 +1375,10 @@ export function functionUsesGeneralFrame(
     if (closureOwned[suspendIndex - 1]) continue;
     if (statement.kind == StatementKind.yieldStatement || statement.kind == StatementKind.forAwaitStatement
       || statement.kind == StatementKind.forTryAwaitStatement) suspends = true;
+    // A named scope joins its handle's operations when it exits.
+    if (statement.kind == StatementKind.asyncScopeStatement && statement.name.byteLength != 0) suspends = true;
+    // A value-producing scope joins before it hands its value over.
+    if (statementRunsValueScope(declaration.body, suspendIndex - 1)) suspends = true;
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
@@ -978,12 +1409,20 @@ function frameLocalNamesAreUnique(in declaration: FunctionDeclaration): boolean 
   let names = Array<String>();
   for (const parameter of declaration.parameters) { names.push(copy parameter.name); }
   // A `for await` binding lives in the frame too; loops may share one.
+  // So does a named scope's handle; the resolver rejects a nested repeat.
   let loopNames = Array<String>();
+  let scopeNames = Array<String>();
   const closureOwned = closureOwnedStatements(declaration.body);
   let statementIndex: usize = 0;
   for (const statement of declaration.body.nodes) {
     statementIndex = statementIndex + 1;
     if (closureOwned[statementIndex - 1]) continue;
+    if (statement.kind == StatementKind.asyncScopeStatement && statement.name.byteLength != 0) {
+      let seen = false;
+      for (const name of scopeNames) { if (name == statement.name) seen = true; }
+      if (!seen) scopeNames.push(copy statement.name);
+      continue;
+    }
     if (statement.kind == StatementKind.forAwaitStatement || statement.kind == StatementKind.forTryAwaitStatement) {
       let seen = false;
       for (const name of loopNames) { if (name == statement.name) seen = true; }
@@ -996,6 +1435,10 @@ function frameLocalNamesAreUnique(in declaration: FunctionDeclaration): boolean 
   }
   for (const loopName of loopNames) {
     for (const name of names) { if (name == loopName) return false; }
+    for (const name of scopeNames) { if (name == loopName) return false; }
+  }
+  for (const scopeName of scopeNames) {
+    for (const name of names) { if (name == scopeName) return false; }
   }
   return true;
 }
@@ -1088,6 +1531,12 @@ function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration, in thre
     if (statement.kind != StatementKind.asyncScopeStatement || statement.children.length != 1) continue;
     for (const child of declaration.body.nodes[statement.children[0]].children) { frameLevel.push(child); }
   }
+  let valueScope: usize = 0;
+  while (valueScope < declaration.body.nodes.length) {
+    const scopeStatements = valueScopeStatements(declaration.body, valueScope);
+    for (const child of scopeStatements) { frameLevel.push(child); }
+    valueScope = valueScope + 1;
+  }
   const closureOwned = closureOwnedStatements(declaration.body);
   let spawnIndex: usize = 0;
   while (spawnIndex < declaration.body.nodes.length) {
@@ -1122,6 +1571,27 @@ function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration, in thre
       none => {}
     }
   }
+  // `scope.cancel()` joins a scope, not a task local: a named scope's handle,
+  // or a local holding a `new` object (a task is never constructed).
+  let scopes = Array<String>();
+  let scopeIndex: usize = 0;
+  for (const statement of declaration.body.nodes) {
+    scopeIndex = scopeIndex + 1;
+    if (closureOwned[scopeIndex - 1]) continue;
+    if (statement.kind == StatementKind.asyncScopeStatement && statement.name.byteLength != 0) {
+      scopes.push(copy statement.name);
+    }
+    if (statement.kind != StatementKind.variableStatement) continue;
+    match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          if (tree.nodes[tree.root].kind == ExpressionKind.newExpression) scopes.push(copy statement.name);
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
   let joinIndex: usize = 0;
   for (const statement of declaration.body.nodes) {
     joinIndex = joinIndex + 1;
@@ -1137,6 +1607,9 @@ function frameTaskLocalsAreJoinOnly(in declaration: FunctionDeclaration, in thre
             const receiver = frameTaskCancelReceiver(tree, operand);
             if (receiver < tree.nodes.length) joined = copy tree.nodes[receiver].value;
             if (joined.byteLength == 0) continue;
+            let joinsScope = false;
+            for (const name of scopes) { if (name == joined) joinsScope = true; }
+            if (joinsScope && receiver < tree.nodes.length) continue;
             let known = false;
             for (const task of tasks) { if (task == joined) known = true; }
             if (!known) return false;
@@ -1191,11 +1664,82 @@ export function functionContainsFrameSpawn(in declaration: FunctionDeclaration):
   return false;
 }
 
+// A named `async scope` anywhere in the body: only the general frame owns
+// and joins its handle, so this selects it for `main` too.
+export function functionContainsNamedScope(in declaration: FunctionDeclaration): boolean {
+  const closureOwned = closureOwnedStatements(declaration.body);
+  let index: usize = 0;
+  while (index < declaration.body.nodes.length) {
+    if (!closureOwned[index] && declaration.body.nodes[index].kind == StatementKind.asyncScopeStatement
+      && declaration.body.nodes[index].name.byteLength != 0) return true;
+    // A value-producing scope needs the frame's join in the same way.
+    if (!closureOwned[index] && statementRunsValueScope(declaration.body, index)) return true;
+    index = index + 1;
+  }
+  return false;
+}
+
 // A direct `await delay(ms)` statement anywhere in the body. Native `main`
 // has no resumable entry outside the general frame, so this selects it.
 // `await stream.next()` or `for await`: only the general frame resumes an
 // async generator's stream (any `.next()` await counts; a class method named
 // `next` also runs there).
+// Whether an expression holds a match value that runs ahead of its statement
+// as a prelude with operands spilled before it (lowering's
+// appendNestedMatchPreludes). `rootRuns` says the statement runs a root match
+// itself. The payload of enum constructors from the root is the one inner
+// position the shape tiers have always run.
+function expressionRunsMatchPrelude(in tree: ExpressionTree, rootRuns: boolean): boolean {
+  let payload = tree.root;
+  while (tree.nodes[payload].kind == ExpressionKind.callExpression
+    && tree.nodes[payload].children.length == 2
+    && tree.nodes[tree.nodes[payload].children[0]].kind == ExpressionKind.memberExpression
+    && tree.nodes[tree.nodes[payload].children[0]].children.length == 1) {
+    payload = tree.nodes[payload].children[1];
+  }
+  let node: usize = 0;
+  while (node < tree.nodes.length) {
+    if (tree.nodes[node].kind == ExpressionKind.matchExpression) {
+      if (node == tree.root) {
+        if (!rootRuns) return true;
+      } else if (node != payload) return true;
+    }
+    node = node + 1;
+  }
+  return false;
+}
+
+// Whether a function runs such a prelude. Only the general frame lays those
+// out, so the shape tiers are skipped for it.
+export function functionRunsMatchPrelude(in declaration: FunctionDeclaration): boolean {
+  const closureOwned = closureOwnedStatements(declaration.body);
+  let index: usize = 0;
+  while (index < declaration.body.nodes.length) {
+    const statement = view declaration.body.nodes[index];
+    index = index + 1;
+    if (closureOwned[index - 1]) continue;
+    const rootRuns = statement.kind == StatementKind.variableStatement
+      || statement.kind == StatementKind.returnStatement || statement.kind == StatementKind.matchStatement
+      || statement.kind == StatementKind.selectStatement;
+    const first = match (in statement.expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => expressionRunsMatchPrelude(tree, rootRuns);
+        none => false;
+      }
+      none => false;
+    };
+    const second = match (in statement.secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => expressionRunsMatchPrelude(tree, statement.kind == StatementKind.assignmentStatement);
+        none => false;
+      }
+      none => false;
+    };
+    if (first || second) return true;
+  }
+  return false;
+}
+
 export function functionAwaitsStreamStep(in declaration: FunctionDeclaration): boolean {
   if (!declaration.asynchronous) return false;
   for (const statement of declaration.body.nodes) {

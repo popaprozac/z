@@ -52,9 +52,32 @@ test("keeps imported explicit closure errors distinct from same-named local type
   });
 });
 
+// Stage 0 keeps its rule that a match value is a statement's direct value.
+// The native compiler runs one anywhere an expression may be: here, as a
+// field initializer.
+for (const fixture of ["class-field-match", "struct-field-match"]) {
+  test(`runs ${fixture} natively where Stage 0 requires a direct value`, () => {
+    const input = resolve(projectRoot, `tests/fixtures/expression-diagnostics/${fixture}.zs`);
+    const source = readFileSync(input, "utf8");
+    assert.throws(() => check(source, input), /match must be the direct value/);
+    const emitted = native("self-host-emit", input);
+    assert.equal(emitted.status, 0, emitted.stderr || String(emitted.error));
+    const directory = mkdtempSync("/tmp/z-field-match-");
+    try {
+      const executable = resolve(directory, "program");
+      const compiled = spawnSync("clang", ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror",
+        "-fsanitize=undefined", "-fno-sanitize-recover=all", "-", "-o", executable], {
+        input: emitted.stdout, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
+      });
+      assert.equal(compiled.status, 0, compiled.stderr || String(compiled.error));
+      // `main` returns the field the match initialized.
+      const ran = spawnSync(executable, [], { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" });
+      assert.equal(ran.status, 42, ran.stderr || String(ran.error));
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 240_000);
+}
+
 for (const [fixture, message, line] of [
-  ["class-field-match", /match must be the direct value/, 4],
-  ["struct-field-match", /match must be the direct value/, 4],
   // A named function's or instance method's `Option<T>` parameter supplies
   // this context (see below); a callable value's parameter does not yet.
   ["borrowed-contextual-none", /Option\.none requires a contextual Option<T> type/, 5],

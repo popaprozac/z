@@ -76,6 +76,54 @@ await refreshUser();
 await refreshPosts(); // starts after refreshUser completes
 ```
 
+## A scope can produce a value
+
+Used as an expression, a scope produces the value of the `select` that leaves
+it. The binding receives that value after every child the scope started has
+joined:
+
+```z
+const total = async scope {
+  const a = task load(1);
+  const b = task load(2);
+  const first = await a;
+  const second = await b;
+  select first + second;
+};
+```
+
+`select` may sit in a branch, and nothing may follow it in its block. Every
+path through the scope ends in a `select`, a `return`, or a failure, and every
+`select` has the same type. `return` still exits the enclosing function, and
+`break` and `continue` cannot leave a value-producing scope.
+
+The scope may also sit inside a larger statement: `return async scope { ... }`,
+an assignment, an argument, an operand, or an `if` condition. It runs ahead of
+that statement, as a nested `await` does, and several scopes in one statement
+run in source order. In an arm of `?:` or the right operand of `&&` or `||` it
+runs only when that branch does. A loop condition, a positional pattern, and a
+closure's expression body are rejected with `Z1000`: bind the scope with
+`const` or `let` first.
+
+Only the native compiler implements the value form.
+
+## Destructure a value that suspends
+
+An object pattern can take its fields straight from a value that suspends: an
+awaited call or task, `try await`, or a value-producing `async scope`:
+
+```z
+const { path, revision } = await loadRecord(id);
+const { a, b } = async scope { ... };
+```
+
+The selected fields move out of the value, and the rest is destroyed at once.
+The pattern may sit at the function root or inside a branch or loop, where
+each pass releases what it bound. As in synchronous code, destructuring a
+named cleanup-bearing struct needs `copy record` to keep the source or
+`move record` to consume it. Positional patterns in async functions are not
+supported yet.
+
 ## Errors stay typed
 
 Combine suspension with the ordinary error vocabulary:
@@ -91,6 +139,27 @@ const result = attempt await fetchValue(42);
 When a child failure propagates out of a scope, live siblings are cancelled and
 joined before the parent completes. Cancellation is a structural task outcome,
 not an invented variant of every domain error type.
+
+`attempt async scope` turns a failure of the whole scope into a value:
+
+```z
+const outcome = attempt async scope {
+  const a = task load(1);
+  const b = try await check(2);
+  select (await a) + b;
+};
+match (outcome) {
+  success(value) => console.log(`loaded ${value}`);
+  failure(error) => console.log("failed");
+}
+```
+
+A `try` or `throw` inside fails the scope, not the function. The scope cancels
+and joins its children and gives `failure(error)`; a `select` gives
+`success(value)`. A scope with no `select` succeeds by reaching its end and
+gives `Result<void, E>`. The enclosing function needs no error type of its
+own. This is the local form of "run these together; if one fails, stop the
+rest and tell me." Only the native compiler implements it.
 
 ## Caller cancellation
 
@@ -188,8 +257,9 @@ and `attempt` keeps its `Result`. Cancellation joins the active child before
 releasing parent storage. Synchronous `match` statements can handle an `attempt`
 inside the yielding loop, or inspect a root Result returned by an awaited child.
 Borrowing, wildcard cleanup, early returns, and loop exits preserve ownership;
-the arm's payload is released before the next suspension. Awaited match subjects,
-suspending arms, and object-pattern destructuring are not part of this frame tier.
+the arm's payload is released before the next suspension. A native function
+that awaits calls, tasks, timers, or scopes runs in the general frame, which
+also binds object patterns whose source suspends.
 Borrowed parameters, method/placed awaits, nested
 awaited expressions, other foreign storage, and nested source-local declarations
 remain separate composition work. These are implementation boundaries, not

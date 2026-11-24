@@ -19,7 +19,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { mainPlacementThreadNames, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { statementHoistedScopes, statementRunsValueScope, closureOwnedStatements, mainPlacementThreadNames, nestedClosureMainTask, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionRunsMatchPrelude, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -1801,6 +1801,25 @@ function resolvedLocalBindingType(
   return selectedType;
 }
 
+// Closures of this function that capture a `TaskScope`: lowering keeps such a
+// worker on the tier that propagates scope cancellation, not a lifted frame.
+function scopeCapturingClosures(
+  in graph: ModuleGraph, moduleIndex: usize, in declaration: FunctionDeclaration
+): Array<usize> {
+  let offsets = Array<usize>();
+  if (moduleIndex >= graph.modules.length) return offsets;
+  for (const entry of graph.modules[moduleIndex].semanticEvidence.closureCaptures) {
+    for (const name of entry.names) {
+      let typeName = resolvedLocalBindingType(graph, moduleIndex, name, entry.offset);
+      for (const parameter of declaration.parameters) {
+        if (parameter.name == name) typeName = copy parameter.type.name;
+      }
+      if (typeName == "TaskScope") offsets.push(entry.offset);
+    }
+  }
+  return offsets;
+}
+
 function closureParameterNamed(
   in tree: ExpressionTree,
   closureIndex: usize,
@@ -1816,8 +1835,8 @@ function closureParameterNamed(
 }
 
 // A value of `typeName` captured into a thread.spawn closure moves to the
-// worker thread; native lowering transfers Strings, task scopes, endpoints
-// and lifetimes it can share, and values without cleanup.
+// worker thread, which then owns it; shareable classes, task scopes,
+// endpoints, and lifetimes are shared instead.
 function requireNativeThreadCaptureType(
   in path: String,
   moduleIndex: usize,
@@ -1885,8 +1904,12 @@ function requireNativeThreadCaptureType(
           length
         );
       }
-      // A framed worker owns a moved value as a frame parameter.
-      if (!sharedClassCandidate && !framed) {
+      // A framed worker owns a moved value as a frame parameter. A plain
+      // worker's context holds one it knows to be transferable, as C
+      // storage, which a C++ value cannot be.
+      const cxxLimit = cxxValueTierLimit(graph, moduleIndex, typeName, true, 0);
+      if (!sharedClassCandidate && !framed
+        && (cxxLimit.byteLength > 0 || !typeIsThreadTransferable(graph.modules, moduleIndex, actualType))) {
         let length = captureName.byteLength;
         if (length == 0) length = 1;
         throw loweringBoundary(
@@ -2857,6 +2880,209 @@ function nativeCallableTaskScopeCandidate(
   return startsTask && joinsTask;
 }
 
+// A value-producing `async scope` runs ahead of its statement, into the
+// frame. One that would have to run conditionally, repeatedly, or inside
+// another operation has no such place yet.
+function validateValueScopePosition(
+  in path: String,
+  in body: StatementArena,
+  index: usize,
+  second: boolean
+): void throws ModuleResolveError {
+  let scopes = Array<usize>();
+  if (statementHoistedScopes(body, index, second, inout scopes)) return;
+  const site = scopes[scopes.length - 1];
+  if (second) {
+    match (in body.nodes[index].secondExpression) {
+      some(syntax) => try rejectValueScopePosition(path, syntax, site);
+      none => {}
+    }
+  } else {
+    match (in body.nodes[index].expression) {
+      some(syntax) => try rejectValueScopePosition(path, syntax, site);
+      none => {}
+    }
+  }
+}
+
+// The statements that give a value-producing match arm its value: the arm's
+// own statement, or the last one of its block. Lowering stores such a value
+// straight into the match's destination, with no place to run a prelude.
+function matchArmValueStatements(in body: StatementArena): Array<boolean> {
+  let values = Array<boolean>();
+  while (values.length < body.nodes.length) {
+    values.push(false);
+  }
+  let statement: usize = 0;
+  while (statement < body.nodes.length) {
+    markMatchArmValues(body, statement, false, inout values);
+    markMatchArmValues(body, statement, true, inout values);
+    statement = statement + 1;
+  }
+  return values;
+}
+
+function markMatchArmValues(in body: StatementArena, statement: usize, second: boolean, inout values: Array<boolean>): void {
+  const syntax = second ? copy body.nodes[statement].secondExpression : copy body.nodes[statement].expression;
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        let node: usize = 0;
+        while (node < tree.nodes.length) {
+          const armOfValue = tree.nodes[node].kind == ExpressionKind.matchExpression
+            && !(!second && body.nodes[statement].kind == StatementKind.matchStatement && node == tree.root);
+          if (armOfValue) {
+            for (const arm of tree.nodes[node].children) {
+              if (tree.nodes[arm].kind != ExpressionKind.matchArmExpression) continue;
+              for (const armBody of tree.nodes[arm].statements) {
+                let value = armBody;
+                if (body.nodes[value].kind == StatementKind.blockStatement && body.nodes[value].children.length > 0) {
+                  value = body.nodes[value].children[body.nodes[value].children.length - 1];
+                }
+                if (value < values.length) values[value] = true;
+              }
+            }
+          }
+          node = node + 1;
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+}
+
+// A `match` value runs wherever an expression may: as its statement's whole
+// value, or ahead of the statement as a prelude, after the operands written
+// before it (lowering's appendNestedMatchPreludes); in a branch that may not
+// run, inside that branch. What has no place to run a prelude is still out: a
+// loop condition, which runs again each pass; a closure's expression body;
+// and the value of an arm of another value-producing match, where only the
+// whole value may be a match.
+function validateMatchValuePosition(
+  in path: String,
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in body: StatementArena,
+  index: usize,
+  second: boolean,
+  armValue: boolean
+): void throws ModuleResolveError {
+  const kind = body.nodes[index].kind;
+  const syntax = second ? copy body.nodes[index].secondExpression : copy body.nodes[index].expression;
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        let node: usize = 0;
+        while (node < tree.nodes.length) {
+          if (tree.nodes[node].kind == ExpressionKind.matchExpression
+            && !matchValueHasPlace(graph, moduleIndex, tree, node, kind, second, armValue)) {
+            throw loweringBoundary(path, "Z1000",
+              "a match value is not executable here in the native compiler yet; bind it with `const` or `let` first",
+              tree.nodes[node].line, tree.nodes[node].column, 5);
+          }
+          node = node + 1;
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+}
+
+// Whether the checker resolved this call to a function or method. An enum
+// variant constructor is not one: it has no target.
+function callHasTarget(
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  call: usize
+): boolean {
+  if (moduleIndex >= graph.modules.length) return false;
+  for (const resolution of graph.modules[moduleIndex].semanticEvidence.callResolutions) {
+    if (resolution.offset == tree.nodes[call].offset
+      && resolution.line == tree.nodes[call].line
+      && resolution.column == tree.nodes[call].column) return true;
+  }
+  return false;
+}
+
+function matchValueHasPlace(
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  site: usize,
+  kind: StatementKind,
+  second: boolean,
+  armValue: boolean
+): boolean {
+  if (armValue) {
+    // The whole value, or the payload of enum constructors that are.
+    let payload = tree.root;
+    while (!second
+      && tree.nodes[payload].kind == ExpressionKind.callExpression
+      && tree.nodes[payload].children.length == 2
+      && tree.nodes[tree.nodes[payload].children[0]].kind == ExpressionKind.memberExpression
+      && tree.nodes[tree.nodes[payload].children[0]].children.length == 1
+      && !callHasTarget(graph, moduleIndex, tree, payload)) {
+      payload = tree.nodes[payload].children[1];
+    }
+    return site == tree.root || site == payload;
+  }
+  if (kind == StatementKind.whileStatement && !second) return false;
+  // Every node from the site up to the root must let a prelude stand for it.
+  let current = site;
+  while (current != tree.root) {
+    let parent = tree.nodes.length;
+    let candidate: usize = 0;
+    while (candidate < tree.nodes.length) {
+      for (const child of tree.nodes[candidate].children) {
+        if (child == current) parent = candidate;
+      }
+      candidate = candidate + 1;
+    }
+    if (parent >= tree.nodes.length) return false;
+    if (tree.nodes[parent].kind == ExpressionKind.closureExpression) return false;
+    current = parent;
+  }
+  return true;
+}
+
+function rejectValueScopePosition(
+  in path: String,
+  in syntax: ExpressionSyntax,
+  site: usize
+): void throws ModuleResolveError {
+  match (in syntax.tree) {
+    some(tree) => throw loweringBoundary(path, "Z1000",
+      "a value-producing async scope is not executable here in the native compiler yet; bind it with `const` or `let` first",
+      tree.nodes[site].line, tree.nodes[site].column, 1);
+    none => {}
+  }
+}
+
+// The first local or parameter name a function declares twice, or "". Frame
+// storage is named by binding, so a repeat keeps a function out of the
+// general frame (frameLocalNamesAreUnique).
+function repeatedFrameLocalName(in body: StatementArena, in parameters: Array<Parameter>): String {
+  let names = Array<String>();
+  for (const parameter of parameters) {
+    names.push(copy parameter.name);
+  }
+  const closureOwned = closureOwnedStatements(body);
+  let index: usize = 0;
+  while (index < body.nodes.length) {
+    if (!closureOwned[index] && body.nodes[index].kind == StatementKind.variableStatement) {
+      for (const name of names) {
+        if (name == body.nodes[index].name) return copy name;
+      }
+      names.push(copy body.nodes[index].name);
+    }
+    index = index + 1;
+  }
+  return "";
+}
+
 function validateNativeBody(
   in path: String,
   moduleIndex: usize,
@@ -2871,6 +3097,7 @@ function validateNativeBody(
   frameScopes: boolean
 ): void throws ModuleResolveError {
   try validateNativeThreadBlockCaptures(path, moduleIndex, graph, body, scopeStart, parameters);
+  const armValues = matchArmValueStatements(body);
   let statementIndex: usize = 0;
   while (statementIndex < body.nodes.length) {
     const statement = view body.nodes[statementIndex];
@@ -2904,12 +3131,32 @@ function validateNativeBody(
       );
       none => {}
     }
+    try validateValueScopePosition(path, body, statementIndex, false);
+    try validateValueScopePosition(path, body, statementIndex, true);
+    try validateMatchValuePosition(path, graph, moduleIndex, body, statementIndex, false, armValues[statementIndex]);
+    try validateMatchValuePosition(path, graph, moduleIndex, body, statementIndex, true, armValues[statementIndex]);
     // An async generator's `yield` runs in the general frame only.
     if (statement.kind == StatementKind.yieldStatement && asynchronous && !frameScopes) {
       throw loweringBoundary(
         path,
         "Z0700",
         "async-generator yield is not executable in the native compiler yet",
+        statement.line,
+        statement.column,
+        5
+      );
+    }
+    // A value-producing scope leaves its value in the general frame; a
+    // function that cannot run as one has nowhere to put it.
+    if (!frameScopes && statementRunsValueScope(body, statementIndex)) {
+      const repeated = repeatedFrameLocalName(body, parameters);
+      const reason = repeated.byteLength > 0
+        ? `; a frame stores one binding per name, and "${repeated}" is declared twice`
+        : "";
+      throw loweringBoundary(
+        path,
+        "Z0700",
+        `a value-producing async scope is not executable in this function in the native compiler yet${reason}`,
         statement.line,
         statement.column,
         5
@@ -3098,6 +3345,8 @@ function nativeYieldFrameStorageSupported(
   }
   match (genericTypeShape(name)) {
     some(generic) => {
+      // The lifetime of a `Once` initialization holds the cell, not its value.
+      if (generic.base == "OnceLifetime" && generic.arguments.length == 1) return true;
       // A frame's Task<T> local is its spawn's invocation slot (the shape rule
       // admits only spawn-initialized task locals).
       if (generic.base != "Array" && generic.base != "Option"
@@ -3284,7 +3533,9 @@ function validateHoistedAwaitResults(
   // A placed block's `select` returns from the block's own function.
   const returns = statement.kind == StatementKind.returnStatement
     || (placedSelect && statement.kind == StatementKind.selectStatement);
+  // A destructured value moves into the frame's hidden owner the same way.
   if (statementRoot && (statement.kind == StatementKind.variableStatement
+    || statement.kind == StatementKind.destructureStatement
     || statement.kind == StatementKind.expressionStatement
     || returns)) {
     handled = tree.root;
@@ -3413,7 +3664,8 @@ function validateNativeFunction(
   // C++ frame storage and async generator streams exist only in the general
   // frame (mirrors lowering's routing).
   const cxxFrame = nativeAsyncSignatureHoldsCxx(graph, moduleIndex, declaration)
-    || nativeAsyncGeneratorBody(declaration) || functionAwaitsStreamStep(declaration);
+    || nativeAsyncGeneratorBody(declaration) || functionAwaitsStreamStep(declaration)
+    || functionRunsMatchPrelude(declaration);
   const firstTierSchedulerYield = !cxxFrame && functionHasFirstTierSchedulerYieldStorage(
     moduleIndex,
     modules,
@@ -3447,7 +3699,8 @@ function validateNativeFunction(
   const generalMain = !yieldFrame && owner.byteLength == 0 && declaration.name == "main"
     && parsedModule < modules.length
     && (functionContainsFrameDelay(modules[parsedModule].program, declaration)
-      || functionContainsFrameSpawn(declaration) || functionAwaitsStreamStep(declaration))
+      || functionContainsFrameSpawn(declaration) || functionAwaitsStreamStep(declaration)
+      || functionContainsNamedScope(declaration))
     && functionUsesGeneralFrame(modules[parsedModule].program, declaration);
   if (generalMain) try validateGeneralFrameStorage(path, moduleIndex, modules, graph, declaration);
   if (owner.byteLength == 0 && declaration.name == "main" && parsedModule < modules.length
@@ -3605,10 +3858,15 @@ function validateNativeFunction(
     && !yieldFrame
     && !generalFrame
   ) {
+    // The commonest avoidable cause gets named: two bindings with one name.
+    const repeated = repeatedFrameLocalName(declaration.body, declaration.parameters);
+    const reason = repeated.byteLength > 0
+      ? `; a frame stores one binding per name, and "${repeated}" is declared twice`
+      : "";
     throw loweringBoundary(
       path,
       "Z0700",
-      `suspending async function "${declaration.name}" is not executable in the native compiler yet`,
+      `suspending async function "${declaration.name}" is not executable in the native compiler yet${reason}`,
       declaration.line,
       declaration.column,
       5
@@ -3851,6 +4109,13 @@ export function validateNativeLowerability(
       }
     }
     for (const declaration of module.program.functions) {
+      const placementThreadNames = mainPlacementThreadNames(module.program);
+      const nestedTask = nestedClosureMainTask(declaration.body, placementThreadNames);
+      if (nestedTask < declaration.body.nodes.length) {
+        throw loweringBoundary(module.path, "Z0700",
+          "task on thread.main inside a closure nested in a worker is not executable in the native compiler yet; write it directly in the thread.spawn closure",
+          declaration.body.nodes[nestedTask].line, declaration.body.nodes[nestedTask].column, 4);
+      }
       // `main` runs on the main executor: its `on thread.main` placements are
       // the placed operations themselves, as lowering normalizes them.
       if (declaration.name == "main" && graphModuleIndex < graph.modules.length) {
@@ -3861,7 +4126,9 @@ export function validateNativeLowerability(
         let normalized = copy declaration;
         const threadNames = mainPlacementThreadNames(module.program);
         normalizeMainPlacements(inout normalized.body, threadNames, asyncCallOffsets);
-        normalizeWorkerHops(inout normalized.body, module.program, threadNames);
+        const keptWorkers = scopeCapturingClosures(graph, graphModuleIndex, declaration);
+        normalizeWorkerHops(inout normalized.body, threadNames, keptWorkers);
+        normalizeMainHops(inout normalized.body, threadNames);
         try validateNativeFunction(module.path, graphModuleIndex, modules, graph, normalized, "", Array<String>());
         continue;
       }
@@ -3870,10 +4137,10 @@ export function validateNativeLowerability(
       if (declaration.asynchronous && declaration.executorAffinity.byteLength == 0) {
         let hopped = copy declaration;
         const threadNames = mainPlacementThreadNames(module.program);
-        const workerHops = normalizeWorkerHops(inout hopped.body, module.program, threadNames);
+        const keptWorkers = scopeCapturingClosures(graph, graphModuleIndex, declaration);
+        const workerHops = normalizeWorkerHops(inout hopped.body, threadNames, keptWorkers);
         const mainHops = normalizeMainHops(inout hopped.body, threadNames);
-        // As in lowering: hops only where the general frame takes the body.
-        if ((mainHops && functionUsesGeneralFrame(module.program, hopped)) || (!mainHops && workerHops)) {
+        if (mainHops || workerHops) {
           try validateNativeFunction(module.path, graphModuleIndex, modules, graph, hopped, "", Array<String>());
           continue;
         }

@@ -718,6 +718,15 @@ parameters, method/placed awaits, nested awaited expressions, other foreign
 storage, and nested source-local declarations remain outside this tier. These
 are lowering limits, not different destructuring semantics.
 
+A native function that awaits calls, tasks, timers, or scopes runs in the
+general frame, which also binds an object pattern whose source suspends: an
+awaited call or task, `try await`, or a value-producing `async scope`. The
+whole value moves into the pattern's hidden owner, the selected fields move
+out of it, and the remaining fields are destroyed at once. Such a pattern may
+sit at the function root or inside a branch or loop, where each iteration
+releases what it bound; the bound fields are released on completion, error,
+and cancellation. Positional patterns in async functions remain deferred.
+
 Fixed arrays, `Array<T>`, and `Slice<T>` support positional local patterns:
 
 ```z
@@ -2262,10 +2271,37 @@ return Response.text(match (selection) {
 
 `select` supplies the payload; `return` inside an arm still exits the enclosing
 function, and `throw` propagates its error. Arm-local owners and untransferred
-payloads are destroyed on those exits. The native lowering tier supports this
-pure enum-constructor shape in bindings and returns, including nested enum
-constructors; this is not yet general nested-match support in arbitrary call
-arguments or short-circuit expressions.
+payloads are destroyed on those exits.
+
+In the native compiler a match value may sit wherever an expression may: a
+call or method argument, an operand, a field or element initializer, a
+template part, an `if` condition, a thrown value, a loop's source, a pattern's
+source.
+
+```z
+console.log(describe(count, match (kind) {
+  one => "single";
+  two => "pair";
+}));
+```
+
+It runs where it is written. Whatever is written before it in the expression
+runs first, and a number, boolean, or plain enum read before it keeps the
+value it had then, even if an arm changes the storage it came from. In an arm
+of `?:` or the right operand of `&&` or `||` it runs only when that branch
+does. `return`, `throw`, `break`, and `continue` in an arm keep their meaning,
+and what the expression had already computed is released. A value-producing
+`try`, `await`, or `async scope` in the same statement keeps its own rule and
+runs ahead of the statement.
+
+Three positions remain `Z1000`, with the same way out (bind the match with
+`const` or `let` first): a `while` condition, which runs again on each pass; a
+closure's expression body; and, inside the value of an arm of another
+value-producing match, anywhere but that whole value. In an async function
+the arms of such a match may not suspend. Stage 0 keeps its original rule that
+a match value is the direct value of a binding, return, assignment, or
+expression statement, so the compiler's own source does not use the wider
+form.
 
 Payload-free Z enums support `==` and `!=` by nominal tag. Payload-bearing
 enums require `match`; Z does not implicitly synthesize equality for their
@@ -3914,9 +3950,70 @@ async function refresh(): void throws NetworkError {
 }
 ```
 
-Leaving a scope joins its children. Failure propagation cancels live siblings
-before the failing task completes. Domain errors remain `T throws E`;
+Leaving a scope joins its children. A `return` inside a scope evaluates its
+value first, so it may await one of the scope's own tasks; the scope then joins
+the children that value did not already join. Failure propagation, including a
+failed `try` inside a scope, cancels live siblings and a named scope's
+operations before the failing task completes. Domain errors remain `T throws E`;
 cancellation is a structural task outcome, not an invented member of `E`.
+
+A scope used as an expression produces a value:
+
+```z
+const total = async scope {
+  const a = task load(1);
+  const b = task load(2);
+  const first = await a;
+  const second = await b;
+  select first + second;
+};
+```
+
+`select` leaves the scope with that value, which the binding receives after
+the scope's children have joined. It may sit in a branch; nothing may follow it
+in its block, and every path through the scope must end in a `select`, a
+`return`, or a failure. Every `select` has the same type, the binding's
+annotation when there is one. `return` still exits the function, and `break`
+and `continue` cannot leave a value-producing scope.
+
+Inside a larger statement (`return async scope { ... }`, an assignment, an
+argument, an operand, an `if` condition) the scope runs ahead of the
+statement, as a nested `await` does; several run in source order. In an arm
+of `?:` or the right operand of `&&` or `||` it runs only when that branch
+does. Its value may also be the source of an object pattern
+(`const { a, b } = async scope { ... };`). A scope in a loop condition, a
+positional pattern, or a closure's expression body is `Z1000` in the native
+compiler: bind it with `const` or `let` first.
+
+`attempt` makes the scope an error boundary:
+
+```z
+const outcome = attempt async scope {
+  const a = task load(1);
+  const b = try await check(2);
+  select (await a) + b;
+};
+match (outcome) {
+  success(value) => console.log(`loaded ${value}`);
+  failure(error) => console.log("failed");
+}
+```
+
+Inside an attempted scope a `try` or `throw` fails the scope, not the
+function. The scope cancels and joins its children, as a failure leaving a
+scope always does, and the expression gives `failure(error)`; a `select` gives
+`success(value)`. The result is `Result<T, E>`. `T` is the selected type; a
+scope with no `select` has none and succeeds by reaching its end, giving
+`Result<void, E>`. `E` is the error type of the binding's annotation, or the
+first `try` or `throw` in the scope decides it, and every other one must
+agree. Something in the scope must be able to fail. `return` still exits the
+function. A `try` in a closure or placed block inside the scope belongs to
+that body, and an attempted scope inside another catches its own failures.
+The enclosing function needs no error type of its own, and a `try` outside
+the scope still propagates to it. Only the native compiler implements the
+attempted form. In it, `for try await` inside an attempted scope is `Z1000`,
+and a `try await` nested in a larger expression (`select try await f()`) has
+the frame's existing limit: bind its value first.
 
 Code performing long synchronous chunks inside an async task can cooperate
 with its current executor explicitly:

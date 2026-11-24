@@ -61,6 +61,10 @@ import {
   foreignValueSymbolLocation,
   recordBindingResolution,
   recordExpressionResolution,
+  recordValueResolutionAt,
+  asyncScopeErrorOffset,
+  asyncScopeValueOffset,
+  operandTypeKey,
   recordForeignValueResolution,
   valueSymbolTargetName,
   recordForeignCallFacts,
@@ -110,6 +114,14 @@ import {
   expressionViewOrigin,
   liveViewBindingForOwner,
   liveViewBindingForStoragePath,
+  activeTaskLoanConflict,
+  bindTaskLoanHandle,
+  openTaskLoanScope,
+  recordTaskLoan,
+  releaseTaskLoans,
+  taskLoanConflictIsField,
+  taskLoanScopeIsOpen,
+  taskLoansAreLive,
   mergeViewOwners,
   invalidateContainedClassAlias,
   markObjectiveCStringCopy,
@@ -242,6 +254,7 @@ import {
   substituteGenericType,
   typeContainsForeignValueStorage,
   typeContainsNativeObjCStorage,
+  typeHoldsThreadBoundStorage,
   typeHoldsUntransferableEndpoint,
   typeContainsStoredView,
   typeContainsSlice,
@@ -253,6 +266,7 @@ import {
   typeIsNativeObjCReference,
   typeIsForeignViewOnlyRecord,
   typeIsRetainedParameterViewAggregate,
+  typeIsImplicitPlacementCopy,
   typeIsThreadShareable,
   typeIsThreadTransferable,
   typeIsArenaOwnerBundle,
@@ -1301,6 +1315,10 @@ function closureCaptureNames(
   return captures;
 }
 
+function threadBodyClosureBindingName(offset: usize): String {
+  return `__z_native_thread_body_closure_${offset}`;
+}
+
 function closureCaptureModeBindingName(in capture: String): String {
   return `__z_native_closure_capture_mode_${capture}`;
 }
@@ -1355,6 +1373,62 @@ function contextualExpectedBindingName(offset: usize): String {
 
 function loopSelectTypeBindingName(): String {
   return "__z_native_loop_select_type";
+}
+
+function placedResultSelectBindingName(): String {
+  return "__z_native_placed_result_select";
+}
+
+// Inside `attempt async scope` a `try` or `throw` fails the scope. Its error
+// type comes from the binding's annotation or, with this marker in the error
+// binding, from the first `try` or `throw` in the scope.
+function inferredScopeErrorMarker(offset: usize): String {
+  return `__z_native_scope_error:${offset}`;
+}
+
+// Where an inferred scope error is recorded, or 0 when the error is declared.
+function inferredScopeErrorOffset(in errorType: String): usize {
+  const prefix = "__z_native_scope_error:";
+  if (!stringStartsWith(errorType, prefix)) return 0;
+  const scopeOffset = errorType.copyBytes(prefix.byteLength, errorType.byteLength);
+  return asyncScopeErrorOffset(decimalLabel(scopeOffset));
+}
+
+// The error type a `try` propagates to: the enclosing declaration's, or the
+// attempted scope's, which this propagation decides when it is the first.
+function propagatedErrorType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in enclosingError: String,
+  in propagated: String,
+  line: usize,
+  column: usize,
+  inout evidence: ModuleSemanticEvidence
+): String {
+  const errorOffset = inferredScopeErrorOffset(enclosingError);
+  if (errorOffset == 0) return copy enclosingError;
+  const decided = expressionResolutionIndex(evidence, errorOffset);
+  if (decided < evidence.expressionResolutions.length) {
+    return copy evidence.expressionResolutions[decided].typeName;
+  }
+  recordValueResolutionAt(modules, moduleIndex, errorOffset, line, column, propagated, inout evidence);
+  return copy propagated;
+}
+
+// A function-like body starts with no `select` target of its own: the value
+// loop, placed block, or async scope around it is not one it can leave.
+function closedSelectTarget(): String {
+  return "__z_native_no_select_target";
+}
+
+function selectHasTarget(in bindings: Array<NativeValueBinding>): boolean {
+  const name = loopSelectTypeBindingName();
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) return bindings[index].typeName != closedSelectTarget();
+  }
+  return false;
 }
 
 function regionControlFlowBindingName(): String {
@@ -2500,18 +2574,6 @@ function inferContextualObjectExpressionNode(
           genericParameters,
           substitutions
         );
-        // Field initializers are ordinary expressions, not direct-value
-        // contexts. Do not publish semantic evidence for a match that neither
-        // frontend can lower here with correct conditional cleanup.
-        if (tree.nodes[children[childIndex]].kind == ExpressionKind.matchExpression) {
-          throw resolutionError(
-            ModuleResolveErrorKind.typeMismatch,
-            module.path,
-            "match must be the direct value of a binding, return, or expression statement; bind its result to a local before initializing this field",
-            tree.nodes[children[childIndex]].line,
-            tree.nodes[children[childIndex]].column
-          );
-        }
         let bundleFieldVisiting = Array<String>();
         const fieldExpression = children[childIndex];
         if (
@@ -4973,6 +5035,63 @@ function requireThreadSpawnClassCapture(
   }
 }
 
+// Moves the position to this tree's use of `name` when it is the earliest
+// seen (offset zero means none yet), and queues the statements its
+// expressions own.
+function earliestNameUse(
+  in tree: ExpressionTree,
+  in name: String,
+  inout pending: Array<usize>,
+  inout offset: usize,
+  inout line: usize,
+  inout column: usize
+): void {
+  for (const node of tree.nodes) {
+    for (const owned of node.statements) {
+      pending.push(owned);
+    }
+    if (node.kind == ExpressionKind.identifierExpression && node.value == name
+      && (offset == 0 || node.offset < offset)) {
+      offset = node.offset;
+      line = node.line;
+      column = node.column;
+    }
+  }
+}
+
+// A value captured by thread.spawn moves to the worker, so it must be
+// transferable, as in Stage 0 (Z0704): no custom deinit of unknown thread
+// affinity and no unshareable class identity in its storage. A captured class
+// reports its own reasons above. Only what this can name rejects here: a type
+// it cannot classify (a foreign type, a standard handle under any import
+// name) is left to native lowering.
+function requireThreadSpawnValueCapture(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  closureIndex: usize,
+  in capture: String,
+  in captureType: String
+): void throws ModuleResolveError {
+  let actual = transparentTypeName(modules, moduleIndex, captureType);
+  const nullableTarget = nullableTargetType(actual);
+  if (nullableTarget.byteLength > 0) actual = transparentTypeName(modules, moduleIndex, nullableTarget);
+  match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => {
+      if (modules[location.moduleIndex].symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol) return;
+    }
+    none => {}
+  }
+  const visiting = Array<String>();
+  if (!typeHoldsThreadBoundStorage(modules, moduleIndex, actual, visiting)) return;
+  throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `capture "${capture}" of type ${captureType} cannot cross a native thread boundary yet`,
+    tree.nodes[closureIndex].line, tree.nodes[closureIndex].column, 1
+  );
+}
+
 // The worker's declared result returns to the owner thread, so it must be
 // transferable, as in Stage 0.
 function requireThreadSpawnResult(
@@ -5642,6 +5761,343 @@ function asyncBorrowNamesStorage(in tree: ExpressionTree, index: usize): boolean
 // name storage, which stays in place until the child completes. A fresh
 // struct value passed to a directly awaited call is held by the caller's
 // frame instead.
+function parentExpressionNode(in tree: ExpressionTree, child: usize): usize {
+  let index: usize = 0;
+  while (index < tree.nodes.length) {
+    for (const candidate of tree.nodes[index].children) {
+      if (candidate == child) return index;
+    }
+    index = index + 1;
+  }
+  return tree.nodes.length;
+}
+
+// A read of storage a child task holds `inout` is rejected, as in Stage 0. A
+// member read conflicts only with loans on an overlapping stored-field path:
+// the identifier's chain of member reads, stopping before a called method.
+function requireNoChildTaskMutableLoan(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>,
+  in name: String
+): void throws ModuleResolveError {
+  if (!taskLoansAreLive(bindings)) return;
+  let path = name.copyBytes(0, name.byteLength);
+  let parent = parentExpressionNode(tree, index);
+  while (
+    parent < tree.nodes.length
+    && tree.nodes[parent].kind == ExpressionKind.memberExpression
+    && tree.nodes[parent].children.length == 1
+    && !tree.nodes[parent].optionalAccess
+  ) {
+    const grandparent = parentExpressionNode(tree, parent);
+    if (
+      grandparent < tree.nodes.length
+      && tree.nodes[grandparent].kind == ExpressionKind.callExpression
+      && tree.nodes[grandparent].children.length > 0
+      && tree.nodes[grandparent].children[0] == parent
+    ) break;
+    path = `${path}.${tree.nodes[parent].value}`;
+    parent = grandparent;
+  }
+  // An inout or out target is checked as a mutation or as the child's loan.
+  if (
+    parent < tree.nodes.length
+    && tree.nodes[parent].kind == ExpressionKind.argumentReferenceExpression
+    && (tree.nodes[parent].value == "inout" || tree.nodes[parent].value == "out")
+  ) return;
+  const conflict = activeTaskLoanConflict(bindings, name, path, true);
+  if (conflict.byteLength == 0) return;
+  const readPath = taskLoanConflictIsField(conflict, name) ? path.copyBytes(0, path.byteLength)
+    : name.copyBytes(0, name.byteLength);
+  throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `cannot read "${readPath}" while a child task mutably borrows it`,
+    tree.nodes[index].line, tree.nodes[index].column, name.byteLength);
+}
+
+// Mutating, replacing, or moving storage a child task borrows is rejected.
+// The message names the mutated field path when the child holds a field.
+function requireNoChildTaskLoanForMutation(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>,
+  in root: String,
+  in path: String,
+  in action: String
+): void throws ModuleResolveError {
+  if (!taskLoansAreLive(bindings)) return;
+  const conflict = activeTaskLoanConflict(bindings, root, path, false);
+  if (conflict.byteLength == 0) return;
+  const borrowed = taskLoanConflictIsField(conflict, root) ? path.copyBytes(0, path.byteLength)
+    : root.copyBytes(0, root.byteLength);
+  throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `cannot ${action} "${borrowed}" while a child task borrows it`,
+    tree.nodes[index].line, tree.nodes[index].column, 1);
+}
+
+// The stored-field path a child task may borrow on its own, as Stage 0's
+// asyncFieldBorrowPath: named value-struct fields whose borrowed storage
+// holds no ARC class identity or view. Empty when the loan must cover the
+// whole root.
+function asyncFieldBorrowPath(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): String {
+  let current = index;
+  if (
+    tree.nodes[current].kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[current].children.length == 1
+  ) current = tree.nodes[current].children[0];
+  let reversed = Array<String>();
+  while (
+    tree.nodes[current].kind == ExpressionKind.memberExpression
+    && tree.nodes[current].children.length == 1
+    && !tree.nodes[current].optionalAccess
+  ) {
+    reversed.push(tree.nodes[current].value.copyBytes(0, tree.nodes[current].value.byteLength));
+    current = tree.nodes[current].children[0];
+  }
+  if (
+    reversed.length == 0
+    || (
+      tree.nodes[current].kind != ExpressionKind.identifierExpression
+      && tree.nodes[current].kind != ExpressionKind.argumentBindingExpression
+    )
+  ) return "";
+  const root = identifierLookupName(tree.nodes[current].value);
+  let ownerType = valueBindingType(bindings, root);
+  let path = root.copyBytes(0, root.byteLength);
+  let fieldIndex = reversed.length;
+  while (fieldIndex > 0) {
+    fieldIndex = fieldIndex - 1;
+    ownerType = transparentTypeName(modules, moduleIndex, ownerType);
+    if (typeIsClassReference(module, modules, moduleIndex, ownerType)) return "";
+    match (aggregateFieldShape(modules, moduleIndex, ownerType, reversed[fieldIndex])) {
+      some(field) => {
+        if (field.objectiveCGetter.byteLength > 0) return "";
+        ownerType = field.typeName.copyBytes(0, field.typeName.byteLength);
+      }
+      none => return "";
+    }
+    path = `${path}.${reversed[fieldIndex]}`;
+  }
+  let visiting = Array<String>();
+  if (typeContainsClassReferenceStorage(module, modules, moduleIndex, ownerType, inout visiting)) return "";
+  const noViews = Array<String>();
+  if (typeContainsStoredView(modules, moduleIndex, ownerType, noViews)) return "";
+  return path;
+}
+
+// Where Stage 0 reports an argument: the projected field of `inout p.x`, or
+// the capability keyword of a whole-binding argument.
+function argumentDiagnosticNode(in tree: ExpressionTree, index: usize): usize {
+  if (
+    tree.nodes[index].kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[index].children.length == 1
+    && tree.nodes[tree.nodes[index].children[0]].kind == ExpressionKind.memberExpression
+  ) return tree.nodes[index].children[0];
+  return index;
+}
+
+function requireAsyncFieldBorrowPath(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  callIndex: usize,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  const at = argumentDiagnosticNode(tree, index);
+  if (callIsExecutorPlaced(tree, callIndex)) {
+    throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+      "a projected field borrow cannot cross to another executor in this tier",
+      tree.nodes[at].line, tree.nodes[at].column, 1);
+  }
+  const path = asyncFieldBorrowPath(module, modules, moduleIndex, tree, index, bindings);
+  if (path.byteLength > 0) return;
+  throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    "a projected borrow across an async suspension requires a stored value-struct field without ARC class or view storage",
+    tree.nodes[at].line, tree.nodes[at].column, 1);
+}
+
+// A spawned `inout` or `out` argument, after its ordinary capability checks.
+function recordChildTaskCapabilityLoan(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  spawnNode: usize,
+  in mode: String,
+  in bindingName: String,
+  inout bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  const at = argumentDiagnosticNode(tree, index);
+  if (mode == "out") {
+    throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+      `child-task output borrow of "${bindingName}" is not supported`,
+      tree.nodes[at].line, tree.nodes[at].column, 1);
+  }
+  if (!taskLoanScopeIsOpen(bindings)) {
+    throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+      `child-task mutable borrow of "${bindingName}" requires an explicit async scope`,
+      tree.nodes[at].line, tree.nodes[at].column, 1);
+  }
+  const path = projectedFieldCount(tree, index) > 0 ? expressionDirectFieldPath(tree, index)
+    : bindingName.copyBytes(0, bindingName.byteLength);
+  const conflict = recordTaskLoan(inout bindings, `${tree.nodes[spawnNode].offset}`, "inout", bindingName, path);
+  if (conflict.byteLength == 0) return;
+  throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `cannot borrow "${path}" as inout while an active ${conflict} loan exists`,
+    tree.nodes[at].line, tree.nodes[at].column, 1);
+}
+
+// A spawned `in` or Slice argument. A field read the child may hold on its
+// own borrows that field; anything else borrows its whole root.
+function recordChildTaskBorrowLoan(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  callIndex: usize,
+  index: usize,
+  spawnNode: usize,
+  inMode: boolean,
+  inout bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  let borrowedNode = index;
+  match (sliceRangeReceiverNode(tree, index)) {
+    some(receiver) => borrowedNode = receiver;
+    none => {}
+  }
+  const root = expressionStorageRootName(tree, borrowedNode);
+  const at = argumentDiagnosticNode(tree, index);
+  const kind = inMode ? "borrow" : "Slice borrow";
+  if (!taskLoanScopeIsOpen(bindings)) {
+    const named = root.byteLength > 0 ? root.copyBytes(0, root.byteLength) : "value";
+    throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+      `child-task ${kind} of "${named}" requires an explicit async scope`,
+      tree.nodes[at].line, tree.nodes[at].column, 1);
+  }
+  if (root.byteLength == 0) {
+    throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+      `an async child-task ${kind} requires named storage`,
+      tree.nodes[at].line, tree.nodes[at].column, 1);
+  }
+  let path = root.copyBytes(0, root.byteLength);
+  if (inMode && !callIsExecutorPlaced(tree, callIndex)) {
+    const fieldPath = asyncFieldBorrowPath(module, modules, moduleIndex, tree, borrowedNode, bindings);
+    if (fieldPath.byteLength > 0) path = move fieldPath;
+  }
+  const conflict = recordTaskLoan(inout bindings, `${tree.nodes[spawnNode].offset}`, "in", root, path);
+  if (conflict.byteLength == 0) return;
+  throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+    `cannot borrow "${path}" as in while an active ${conflict} loan exists`,
+    tree.nodes[at].line, tree.nodes[at].column, 1);
+}
+
+// A `task on <executor> using (in a, inout b) { ... }` child holds its
+// borrowed captures until it joins, as an argument borrow would.
+function recordPlacedCaptureLoans(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  inout bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  for (const capture of tree.nodes[index].children) {
+    const node = view tree.nodes[capture];
+    if (node.kind != ExpressionKind.executorCaptureExpression || node.labels.length == 0) continue;
+    if (node.value != "in" && node.value != "inout") continue;
+    const name = node.labels[0].copyBytes(0, node.labels[0].byteLength);
+    // shortcut: Stage 0 reports the captured name; this assumes one space
+    // after the capability keyword until capture nodes record the name token.
+    const column = node.column + node.value.byteLength + 1;
+    if (!taskLoanScopeIsOpen(bindings)) {
+      throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+        `child-task ${node.value} capture of "${name}" requires an explicit async scope`,
+        node.line, column, name.byteLength);
+    }
+    const conflict = recordTaskLoan(inout bindings, `${tree.nodes[index].offset}`, node.value, name, name);
+    if (conflict.byteLength > 0) {
+      throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+        `cannot borrow "${name}" as ${node.value} while an active ${conflict} loan exists`,
+        node.line, column, name.byteLength);
+    }
+  }
+}
+
+// `const child = task f(...)` names the handle whose join releases the
+// child's loans, as in Stage 0's task-borrow spawn map.
+function bindSpawnedTaskHandle(
+  in arena: StatementArena,
+  index: usize,
+  inout bindings: Array<NativeValueBinding>
+): void {
+  if (!taskLoansAreLive(bindings)) return;
+  match (in arena.nodes[index].expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = view tree.nodes[tree.root];
+        const spawned = root.kind == ExpressionKind.spawnExpression
+          || (root.kind == ExpressionKind.executorPlacementExpression && root.value == "spawn");
+        if (spawned) bindTaskLoanHandle(inout bindings, `${root.offset}`, arena.nodes[index].name);
+      }
+      none => {}
+    }
+    none => {}
+  }
+}
+
+// `await child.cancel()` joins the child, so it releases the child's loans.
+function releaseCancelledTaskLoans(
+  in tree: ExpressionTree,
+  index: usize,
+  inout bindings: Array<NativeValueBinding>
+): void {
+  const node = view tree.nodes[index];
+  if (node.kind != ExpressionKind.callExpression || node.children.length != 1) return;
+  const callee = view tree.nodes[node.children[0]];
+  if (callee.kind != ExpressionKind.memberExpression || callee.value != "cancel"
+    || callee.children.length != 1) return;
+  const receiver = view tree.nodes[callee.children[0]];
+  if (receiver.kind != ExpressionKind.identifierExpression) return;
+  const name = identifierLookupName(receiver.value);
+  const handleType = valueBindingType(bindings, name);
+  if (!stringStartsWith(handleType, "Task<")) return;
+  releaseTaskLoans(inout bindings, name);
+}
+
+// The `task` or `task on` node whose direct call is `callIndex`, or the tree
+// length when the call is not spawned.
+function spawnNodeForCall(in tree: ExpressionTree, callIndex: usize): usize {
+  let index: usize = 0;
+  while (index < tree.nodes.length) {
+    const node = view tree.nodes[index];
+    if (node.kind == ExpressionKind.spawnExpression && node.children.length == 1
+      && node.children[0] == callIndex) return index;
+    if (node.kind == ExpressionKind.executorPlacementExpression && node.value == "spawn"
+      && node.labels.length > 2 && node.labels[2] == "call" && node.children.length > 0
+      && node.children[node.children.length - 1] == callIndex) return index;
+    index = index + 1;
+  }
+  return tree.nodes.length;
+}
+
+// Whether `callIndex` is the direct call of an `on <executor>` placement.
+function callIsExecutorPlaced(in tree: ExpressionTree, callIndex: usize): boolean {
+  for (const node of tree.nodes) {
+    if (node.kind == ExpressionKind.executorPlacementExpression
+      && node.labels.length > 2 && node.labels[2] == "call" && node.children.length > 0
+      && node.children[node.children.length - 1] == callIndex) return true;
+  }
+  return false;
+}
+
 function requireAsyncBorrowStorage(
   in module: ParsedModule,
   in tree: ExpressionTree,
@@ -5726,6 +6182,8 @@ function inferSignatureCallType(
     );
   }
   let accesses = Array<NativeCallAccess>();
+  const spawnNode = signature.asynchronous ? spawnNodeForCall(tree, callIndex) : tree.nodes.length;
+  const spawnedCall = spawnNode < tree.nodes.length;
   if (receiverRoot.byteLength > 0 && receiverMode.byteLength > 0) {
     let receiverIdentity = valueBindingClassAlias(bindings, receiverRoot);
     let receiverPath = receiverRoot.copyBytes(0, receiverRoot.byteLength);
@@ -5773,6 +6231,11 @@ function inferSignatureCallType(
         mutationPath = expressionOwnedMutationPath(module, modules, moduleIndex, tree,
           receiverNode, bindings, true);
       }
+      let receiverAt = calleeIndex;
+      if (tree.nodes[calleeIndex].kind == ExpressionKind.memberExpression
+        && tree.nodes[calleeIndex].children.length == 1) receiverAt = tree.nodes[calleeIndex].children[0];
+      try requireNoChildTaskLoanForMutation(module, tree, receiverAt, bindings, receiverRoot,
+        receiverRoot, "mutate");
       const liveView = liveViewBindingForStoragePath(bindings, receiverRoot, mutationPath);
       if (liveView.byteLength > 0) {
         const action = receiverMode == "move" ? "move" : "mutate";
@@ -5860,7 +6323,14 @@ function inferSignatureCallType(
       const mutationPath = capability == "inout"
         ? accessPath.copyBytes(0, accessPath.byteLength)
         : root.copyBytes(0, root.byteLength);
-      const liveView = liveViewBindingForStoragePath(
+      // A spawned inout borrow is checked as the child's loan instead.
+      const childLoan = spawnedCall && capability == "inout";
+      if (!childLoan) {
+        const action = capability == "move" ? "move" : "mutate";
+        try requireNoChildTaskLoanForMutation(module, tree, argumentDiagnosticNode(tree, nodeIndex),
+          bindings, root, mutationPath, action);
+      }
+      const liveView = childLoan ? "" : liveViewBindingForStoragePath(
         bindings,
         root,
         mutationPath
@@ -6017,6 +6487,17 @@ function inferSignatureCallType(
           capabilityOwnerType
         )
         && !valueBindingIsBorrowed(bindings, bindingName);
+      // An argument with no binding at its root, such as an indexed element,
+      // has no name to report: it is not a mutable binding at all.
+      if (bindingName.byteLength == 0) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `"${functionName}" requires ${mode} <mutable binding> for parameter ${argumentIndex + 1}`,
+          tree.nodes[bindingIndex].line,
+          tree.nodes[bindingIndex].column
+        );
+      }
       if (
         !valueBindingIsMutable(bindings, bindingName)
         && !ownedClassProjection
@@ -6031,13 +6512,6 @@ function inferSignatureCallType(
       }
       if (mode == "inout") {
         if (projectedFieldCount(tree, nodeIndex) > 0) {
-          if (signature.asynchronous) throw resolutionError(
-            ModuleResolveErrorKind.typeMismatch,
-            module.path,
-            "projected inout cannot cross an async suspension in this shape-stability tier",
-            tree.nodes[nodeIndex].line,
-            tree.nodes[nodeIndex].column
-          );
           try requireProjectedCapabilityValuePath(
             module,
             modules,
@@ -6047,6 +6521,9 @@ function inferSignatureCallType(
             bindings,
             true
           );
+          if (signature.asynchronous) {
+            try requireAsyncFieldBorrowPath(module, modules, moduleIndex, tree, callIndex, nodeIndex, bindings);
+          }
         }
         const initialization = valueBindingInitialization(bindings, bindingName);
         if (initialization != NativeInitializationState.initialized) {
@@ -6108,6 +6585,10 @@ function inferSignatureCallType(
           );
         }
       }
+      if (spawnedCall) {
+        try recordChildTaskCapabilityLoan(module, tree, nodeIndex, spawnNode, mode, bindingName,
+          inout bindings);
+      }
       argumentTypes.push(move bindingType);
     } else {
       if (access.byteLength > 0 && !(mode == "in" && access == "in")) {
@@ -6128,17 +6609,6 @@ function inferSignatureCallType(
       const inferredNode = access == "in" && projectedFieldCount(tree, nodeIndex) == 0
         ? bindingIndex
         : nodeIndex;
-      if (
-        access == "in"
-        && projectedFieldCount(tree, nodeIndex) > 0
-        && signature.asynchronous
-      ) throw resolutionError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        "a projected field borrow cannot cross an async suspension in this shape-stability tier",
-        tree.nodes[nodeIndex].line,
-        tree.nodes[nodeIndex].column
-      );
       if (access == "in" && projectedFieldCount(tree, nodeIndex) > 0) {
         try requireProjectedCapabilityValuePath(
           module,
@@ -6225,6 +6695,13 @@ function inferSignatureCallType(
         inout bindings,
         inout evidence
       );
+      if (signature.asynchronous && access == "in" && projectedFieldCount(tree, nodeIndex) > 0) {
+        try requireAsyncFieldBorrowPath(module, modules, moduleIndex, tree, callIndex, nodeIndex, bindings);
+      }
+      if (spawnedCall && (mode == "in" || stringStartsWith(signature.parameterTypes[argumentIndex], "Slice<"))) {
+        try recordChildTaskBorrowLoan(module, modules, moduleIndex, tree, callIndex, nodeIndex, spawnNode,
+          mode == "in", inout bindings);
+      }
       // Z declarations only: a foreign callee's `in` is its own contract.
       if (
         mode == "in"
@@ -7036,6 +7513,33 @@ function inferExpressionNodeType(
   inout bindings: Array<NativeValueBinding>,
   inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
+  const inferred = try inferExpressionNodeKind(module, modules, moduleIndex, arena, tree, index,
+    inout bindings, inout evidence);
+  // Lowering may run an operand written before a match value ahead of it,
+  // into a temporary of the operand's type.
+  let holdsInnerMatch = false;
+  let other: usize = 0;
+  while (other < tree.nodes.length) {
+    if (other != tree.root && tree.nodes[other].kind == ExpressionKind.matchExpression) holdsInnerMatch = true;
+    other = other + 1;
+  }
+  if (holdsInnerMatch && inferred.byteLength > 0 && !stringStartsWith(inferred, "__z_")) {
+    recordValueResolutionAt(modules, moduleIndex, operandTypeKey(tree.nodes[tree.root].offset, index),
+      tree.nodes[index].line, tree.nodes[index].column, inferred, inout evidence);
+  }
+  return inferred;
+}
+
+function inferExpressionNodeKind(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  index: usize,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): String throws ModuleResolveError {
   const node = view tree.nodes[index];
   const kind = node.kind;
   const value = view node.value;
@@ -7134,6 +7638,7 @@ function inferExpressionNodeType(
     const lookup = identifierLookupName(value);
     const bindingType = valueBindingType(bindings, lookup);
     if (bindingType.byteLength > 0) {
+      try requireNoChildTaskMutableLoan(module, tree, index, bindings, lookup);
       try requireInitializedBinding(module, tree, index, bindings, lookup);
       return bindingType;
     }
@@ -7221,11 +7726,15 @@ function inferExpressionNodeType(
         if (kind == ExpressionKind.attemptExpression) {
           return `Result<${call.successType}, ${call.errorType}>`;
         }
+        const failsScope = inferredScopeErrorOffset(enclosingError) != 0;
+        enclosingError = propagatedErrorType(modules, moduleIndex, enclosingError, call.errorType,
+          node.line, node.column, inout evidence);
         if (!equivalentTypes(modules, moduleIndex, enclosingError, call.errorType)) {
+          const boundary = failsScope ? "an attempted scope failing with" : "a function throwing";
           throw resolutionError(
             ModuleResolveErrorKind.typeMismatch,
             module.path,
-            `cannot propagate ${call.errorType} from a function throwing ${enclosingError}`,
+            `cannot propagate ${call.errorType} from ${boundary} ${enclosingError}`,
             node.line,
             node.column
           );
@@ -7251,18 +7760,28 @@ function inferExpressionNodeType(
       bindings,
       "__z_native_async_context"
     );
-    if (asyncContext.byteLength == 0) {
-      throw resolutionError(
+    // `task on thread.main` may also sit directly in a synchronous worker
+    // body: the worker joins it before it completes.
+    const workerTask = node.value == "spawn"
+      && valueBindingType(bindings, "__z_native_thread_body") == "true";
+    if (asyncContext.byteLength == 0 && !workerTask) {
+      const message = node.value == "spawn"
+        ? "task on thread.main requires an enclosing async function or a direct synchronous thread.spawn closure"
+        : "await on thread.main requires an enclosing async function";
+      throw codedModuleResolutionError(
         ModuleResolveErrorKind.typeMismatch,
+        "Z0711",
         module.path,
-        "executor placement requires an enclosing async function",
+        message,
         node.line,
-        node.column
+        node.column,
+        node.value == "spawn" ? 4 : 5
       );
     }
     let declaredReturn = "";
     let declaredError = "";
     let bodyKind = "";
+    let infersResult = false;
     if (node.labels.length > 0) {
       const label = node.labels[0].copyBytes(
         0,
@@ -7285,6 +7804,7 @@ function inferExpressionNodeType(
         );
       } else {
         declaredReturn = "void";
+        infersResult = true;
       }
     }
     if (node.labels.length > 1) {
@@ -7387,12 +7907,67 @@ function inferExpressionNodeType(
       );
     }
     const statements = copyIndices(node.statements);
+    // With no declared or contextual result, the block's final `select`
+    // decides it, as in Stage 0. The marker names that statement.
+    infersResult = infersResult && statements.length > 0
+      && arena.nodes[statements[statements.length - 1]].kind == StatementKind.selectStatement;
+    if (infersResult) {
+      const marker = placedResultSelectBindingName();
+      const finalSelect = `${statements[statements.length - 1]}`;
+      addValueBinding(inout blockBindings, marker, finalSelect);
+    }
     // A block hopped to the main executor carries these values there.
     let placedLocals = Array<String>();
     let placedCaptures = Array<String>();
     collectClosureStatementCaptures(arena, tree, statements, bindings,
       inout placedLocals, inout placedCaptures);
     recordClosureCaptures(node.offset, placedCaptures, inout evidence);
+    // An undeclared capture is the block's private snapshot, so it must be
+    // one a snapshot can be, as in Stage 0 (Z0704).
+    for (const captured of placedCaptures) {
+      let declared = false;
+      for (const child of children) {
+        if (tree.nodes[child].kind == ExpressionKind.executorCaptureExpression
+          && tree.nodes[child].labels.length > 0 && tree.nodes[child].labels[0] == captured) declared = true;
+      }
+      const capturedType = valueBindingType(bindings, captured);
+      if (declared || capturedType.byteLength == 0
+        || typeMentionsActiveTypeParameter(bindings, capturedType)) continue;
+      const copyVisiting = Array<String>();
+      if (typeIsImplicitPlacementCopy(modules, moduleIndex, capturedType, copyVisiting)) continue;
+      // Reported at the capture's first use in the block, as Stage 0 does.
+      let useOffset: usize = 0;
+      let useLine = node.line;
+      let useColumn = node.column;
+      let pending = copyIndices(statements);
+      let cursor: usize = 0;
+      while (cursor < pending.length) {
+        const statement = view arena.nodes[pending[cursor]];
+        cursor = cursor + 1;
+        for (const child of statement.children) {
+          pending.push(child);
+        }
+        match (in statement.expression) {
+          some(syntax) => match (in syntax.tree) {
+            some(owned) => earliestNameUse(owned, captured, inout pending, inout useOffset, inout useLine, inout useColumn);
+            none => {}
+          }
+          none => {}
+        }
+        match (in statement.secondExpression) {
+          some(syntax) => match (in syntax.tree) {
+            some(owned) => earliestNameUse(owned, captured, inout pending, inout useOffset, inout useLine, inout useColumn);
+            none => {}
+          }
+          none => {}
+        }
+      }
+      throw codedModuleResolutionError(
+        ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+        `ownership-bearing executor capture "${captured}" requires an explicit capability`,
+        useLine, useColumn, captured.byteLength
+      );
+    }
     const expectedReturn = valueBindingType(
       bindings,
       "__z_native_return_type"
@@ -7407,8 +7982,15 @@ function inferExpressionNodeType(
       inout evidence,
       expectedReturn
     );
+    if (infersResult) {
+      declaredReturn = valueBindingType(blockBindings, selectBinding);
+      if (declaredReturn.byteLength == 0) return "";
+    }
     if (node.value != "spawn") {
       copyBindingFlowStates(inout bindings, blockBindings);
+    }
+    if (node.value == "spawn") {
+      try recordPlacedCaptureLoans(module, tree, index, inout bindings);
     }
     applyExecutorCaptureMoves(movedCaptures, inout bindings);
     if (node.value == "spawn") {
@@ -7449,6 +8031,7 @@ function inferExpressionNodeType(
       inout bindings,
       inout evidence
     );
+    releaseCancelledTaskLoans(tree, children[0], inout bindings);
     if (outcome.byteLength == 0) return "";
     match (genericTypeShape(outcome)) {
       some(task) => {
@@ -7466,6 +8049,10 @@ function inferExpressionNodeType(
             false,
             inout bindings
           );
+          if (tree.nodes[children[0]].kind == ExpressionKind.identifierExpression) {
+            const joined = identifierLookupName(tree.nodes[children[0]].value);
+            releaseTaskLoans(inout bindings, joined);
+          }
           if (task.arguments.length == 2) {
             return pendingThrowingCallType(
               task.arguments[0],
@@ -7925,7 +8512,7 @@ function inferExpressionNodeType(
     return value.copyBytes(0, valueLength);
   }
   if (kind == ExpressionKind.matchExpression) {
-    return try inferMatchExpressionNodeType(
+    const matched = try inferMatchExpressionNodeType(
       module,
       modules,
       moduleIndex,
@@ -7935,6 +8522,10 @@ function inferExpressionNodeType(
       inout bindings,
       inout evidence
     );
+    // Lowering gives a match value a temporary of this type wherever the
+    // match sits in its expression.
+    recordExpressionResolution(modules, moduleIndex, tree, index, matched, inout evidence);
+    return matched;
   }
   if (kind == ExpressionKind.argumentReferenceExpression && children.length == 1) {
     if (value == "out") {
@@ -8642,6 +9233,135 @@ function inferExpressionNodeType(
     );
     return result;
   }
+  if (kind == ExpressionKind.asyncScopeExpression) {
+    // A scope whose value is the `select` that leaves it. The body is checked
+    // as the statement form is: its own task loans, and its handle when named.
+    const asyncContext = valueBindingType(bindings, "__z_native_async_context");
+    if (asyncContext.byteLength == 0) {
+      throw codedModuleResolutionError(ModuleResolveErrorKind.typeMismatch, "Z0703", module.path,
+        "async scope requires an enclosing async function", node.line, node.column, 1);
+    }
+    const scopeStatements = copyIndices(node.statements);
+    let scopeBindings = copyValueBindings(bindings);
+    openTaskLoanScope(inout scopeBindings);
+    if (node.value.byteLength > 0) {
+      const visible = valueBindingType(bindings, node.value);
+      if (visible.byteLength > 0) {
+        let handleLine = node.line;
+        let handleColumn = node.column;
+        if (node.labels.length == 3) {
+          handleLine = decimalLabel(node.labels[1]);
+          handleColumn = decimalLabel(node.labels[2]);
+        }
+        throw moduleResolutionError(ModuleResolveErrorKind.duplicateBinding, module.path,
+          `duplicate local "${node.value}"`, handleLine, handleColumn);
+      }
+      addValueBinding(inout scopeBindings, node.value, "TaskScope");
+    }
+    // A contextual type checks every `select`; without one the first decides.
+    // An expression that begins with this scope shares its offset, and the
+    // contextual type recorded there is that expression's, not the scope's.
+    let beginsLargerExpression = false;
+    let other: usize = 0;
+    while (other < tree.nodes.length) {
+      if (other != index && tree.nodes[other].offset == node.offset) beginsLargerExpression = true;
+      other = other + 1;
+    }
+    const contextualValue = contextualExpectedType(bindings, tree, index);
+    let expectedValue = beginsLargerExpression ? "" : copy contextualValue;
+    // `attempt async scope { ... }`: the scope is an error boundary. A `try`
+    // or `throw` inside fails the scope, which cancels and joins its
+    // children and gives `failure(error)`; a `select` gives `success(value)`.
+    let attempted = false;
+    let expectedError = "";
+    let attemptNode: usize = 0;
+    while (attemptNode < tree.nodes.length) {
+      if (tree.nodes[attemptNode].kind == ExpressionKind.attemptExpression
+        && tree.nodes[attemptNode].children.length == 1
+        && tree.nodes[attemptNode].children[0] == index) {
+        attempted = true;
+        const contextualOutcome = contextualExpectedType(bindings, tree, attemptNode);
+        match (genericTypeShape(contextualOutcome)) {
+          some(outcome) => {
+            if (outcome.base == "Result" && outcome.arguments.length == 2) {
+              expectedValue = copy outcome.arguments[0];
+              expectedError = copy outcome.arguments[1];
+            }
+          }
+          none => {}
+        }
+      }
+      attemptNode = attemptNode + 1;
+    }
+    if (attempted) {
+      // An annotated error type is decided before the scope's first `try`.
+      if (expectedError.byteLength > 0) {
+        recordValueResolutionAt(modules, moduleIndex, asyncScopeErrorOffset(node.offset),
+          node.line, node.column, expectedError, inout evidence);
+      }
+      const scopeError = inferredScopeErrorMarker(node.offset);
+      addValueBinding(inout scopeBindings, "__z_native_error_type", scopeError);
+    }
+    const selectBinding = loopSelectTypeBindingName();
+    addValueBinding(inout scopeBindings, selectBinding, expectedValue);
+    const expectedReturn = valueBindingType(bindings, "__z_native_return_type");
+    const fallsThrough = try inferStatementSequence(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      scopeStatements,
+      inout scopeBindings,
+      inout evidence,
+      expectedReturn
+    );
+    let scopeValue = copy expectedValue;
+    try validateScopeSelects(module, modules, moduleIndex, arena, scopeStatements, true, 0, evidence, inout scopeValue);
+    // An attempted scope with no `select` has no value: `Result<void, E>`.
+    if (attempted && scopeValue.byteLength == 0) scopeValue = "void";
+    if (fallsThrough && !(attempted && scopeValue == "void")) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a value-producing async scope must `select` a value on every path",
+        node.line,
+        node.column
+      );
+    }
+    if (scopeValue.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a value-producing async scope must `select` a value of a known type",
+        node.line,
+        node.column
+      );
+    }
+    copyBindingFlowStates(inout bindings, scopeBindings);
+    // Lowering gives the scope's value a frame slot of this type wherever
+    // the scope sits in its statement.
+    recordValueResolutionAt(modules, moduleIndex, asyncScopeValueOffset(node.offset),
+      node.line, node.column, scopeValue, inout evidence);
+    if (attempted) {
+      if (expectedError.byteLength == 0) {
+        const decided = expressionResolutionIndex(evidence, asyncScopeErrorOffset(node.offset));
+        if (decided < evidence.expressionResolutions.length) {
+          expectedError = copy evidence.expressionResolutions[decided].typeName;
+        }
+      }
+      if (expectedError.byteLength == 0) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "attempt requires a scope that can fail; nothing in this scope uses `try` or `throw`",
+          node.line,
+          node.column
+        );
+      }
+      return pendingThrowingCallType(scopeValue, expectedError);
+    }
+    return scopeValue;
+  }
   if (kind == ExpressionKind.unsafeExpression) {
     const statements = copyIndices(node.statements);
     if (
@@ -9248,6 +9968,12 @@ function inferExpressionNodeType(
       "__z_native_async_context",
       closureAsyncContext
     );
+    // A `thread.spawn` closure's body is a worker body, and so are closures
+    // nested in it (as in Stage 0); helper functions are not.
+    const threadBodyMarker = threadBodyClosureBindingName(node.offset);
+    const threadBody = valueBindingType(bindings, threadBodyMarker) == "true"
+      || valueBindingType(bindings, "__z_native_thread_body") == "true" ? "true" : "";
+    addValueBinding(inout closureBindings, "__z_native_thread_body", threadBody);
     const objectiveCCallbackExecutor = valueBindingType(
       bindings, `__z_native_objc_callback_executor_${node.offset}`
     );
@@ -9456,6 +10182,9 @@ function inferExpressionNodeType(
       parameterIndex = parameterIndex + 1;
     }
     addValueBinding(inout closureBindings, "__z_native_function_name", "closure");
+    const closureSelectBinding = loopSelectTypeBindingName();
+    const noSelectTarget = closedSelectTarget();
+    addValueBinding(inout closureBindings, closureSelectBinding, noSelectTarget);
     addValueBinding(inout closureBindings, "__z_native_return_type", returnType);
     if (closureSignature.errorType.byteLength > 0) {
       addValueBinding(
@@ -10993,6 +11722,7 @@ function inferExpressionNodeType(
               }
               if (!typeMentionsActiveTypeParameter(bindings, captureType)) {
                 try requireThreadSpawnClassCapture(module, modules, moduleIndex, tree, argument, capture, captureType);
+                try requireThreadSpawnValueCapture(module, modules, moduleIndex, tree, argument, capture, captureType);
               }
             }
             try requireThreadSpawnResult(module, modules, moduleIndex, tree, argument);
@@ -11002,6 +11732,12 @@ function inferExpressionNodeType(
             "__z_native_executor_context",
             ""
           );
+          // Each closure argument is the worker's own body.
+          for (const argument of children) {
+            if (tree.nodes[argument].kind != ExpressionKind.closureExpression) continue;
+            const bodyMarker = threadBodyClosureBindingName(tree.nodes[argument].offset);
+            addValueBinding(inout workerBindings, bodyMarker, "true");
+          }
           try inferUnclassifiedCallArguments(
             module,
             modules,
@@ -11627,11 +12363,15 @@ function inferExpressionNodeType(
             ) throw resolutionError(
               ModuleResolveErrorKind.typeMismatch,
               module.path,
-              "TaskScope.schedule expects thread.main and one async closure",
+              "TaskScope.schedule expects thread.main and one closure",
               node.line,
               node.column
             );
             const closureIndex = argumentNodes[1];
+            // The scope's executor runs a synchronous operation as one job
+            // and an async one as a child frame.
+            const asyncOperation = tree.nodes[closureIndex].labels.length > 3
+              && tree.nodes[closureIndex].labels[3] == "async";
             const parameterModes = Array<String>();
             const parameterTypes = Array<String>();
             const contextualType = nativeClosureFunctionType(
@@ -11642,7 +12382,7 @@ function inferExpressionNodeType(
               "void",
               "",
               "",
-              true,
+              asyncOperation,
               false
             );
             let taskScopeBindings = copyValueBindings(bindings);
@@ -11666,14 +12406,14 @@ function inferExpressionNodeType(
             match (nativeFunctionSignature(closureType)) {
               some(signature) => {
                 if (
-                  !signature.asynchronous
+                  signature.asynchronous != asyncOperation
                   || signature.parameterTypes.length != 0
                   || signature.returnType != "void"
                   || signature.errorType.byteLength > 0
                 ) throw resolutionError(
                   ModuleResolveErrorKind.typeMismatch,
                   module.path,
-                  "TaskScope.schedule requires async () => void",
+                  "TaskScope.schedule requires () => void or async () => void",
                   tree.nodes[closureIndex].line,
                   tree.nodes[closureIndex].column
                 );
@@ -11681,9 +12421,46 @@ function inferExpressionNodeType(
               none => throw resolutionError(
                 ModuleResolveErrorKind.typeMismatch,
                 module.path,
-                "TaskScope.schedule could not resolve its async closure",
+                "TaskScope.schedule could not resolve its closure",
                 tree.nodes[closureIndex].line,
                 tree.nodes[closureIndex].column
+              );
+            }
+            // Accepted work may run after the submitter returns, on the
+            // scope's executor: it owns its captures, which must be
+            // shareable, as in Stage 0.
+            const scheduledCaptures = closureCaptureNames(arena, tree, closureIndex, bindings);
+            if (scheduledCaptures.length > 0 && tree.nodes[closureIndex].value != "move") {
+              const code = asyncOperation ? "Z0704" : "Z0212";
+              const message = asyncOperation
+                ? "TaskScope.schedule requires `move` for a capturing closure"
+                : "a borrowed capturing closure cannot become a function value; use move to own its environment";
+              throw codedModuleResolutionError(
+                ModuleResolveErrorKind.typeMismatch, code, module.path, message,
+                tree.nodes[closureIndex].line, tree.nodes[closureIndex].column, 1
+              );
+            }
+            for (const captured of scheduledCaptures) {
+              const capturedType = valueBindingType(bindings, captured);
+              if (capturedType.byteLength == 0 || isActiveTypeParameter(bindings, capturedType)
+                || importedStandardType(module, capturedType, "std/async", "TaskScope")
+                || importedStandardType(module, capturedType, "std/async", "TaskControl")
+                || typeIsThreadShareable(modules, moduleIndex, capturedType)) continue;
+              // A main-isolated value scheduled from main stays on main.
+              let remainsOnMain = false;
+              if (currentExecutorContext(bindings) == "thread.main") {
+                const expanded = transparentTypeName(modules, moduleIndex, capturedType);
+                match (typeSymbolLocation(modules, moduleIndex, expanded)) {
+                  some(location) => remainsOnMain = aggregateExecutorAffinity(
+                    modules, location.moduleIndex, location.symbolIndex) == "thread.main";
+                  none => {}
+                }
+              }
+              if (remainsOnMain) continue;
+              throw codedModuleResolutionError(
+                ModuleResolveErrorKind.typeMismatch, "Z0704", module.path,
+                `capture "${captured}" of type ${capturedType} cannot cross to the scope executor`,
+                tree.nodes[closureIndex].line, tree.nodes[closureIndex].column, 1
               );
             }
             return "TaskControl";
@@ -13713,6 +14490,7 @@ function inferStatement(
       );
       none => {}
     }
+    bindSpawnedTaskHandle(arena, index, inout bindings);
     return true;
   }
   if (kind == StatementKind.destructureStatement) {
@@ -13787,6 +14565,35 @@ function inferStatement(
             module, modules, moduleIndex, sourceType,
             arena.nodes[index].line, arena.nodes[index].column
           );
+          // Plain destructuring of a named owner would hide an allocation or
+          // a partial transfer, as in Stage 0.
+          match (in expression.tree) {
+            some(tree) => {
+              let place = tree.root;
+              while ((tree.nodes[place].kind == ExpressionKind.memberExpression
+                  && tree.nodes[place].children.length == 1)
+                || (tree.nodes[place].kind == ExpressionKind.indexExpression
+                  && tree.nodes[place].children.length > 0)) {
+                place = tree.nodes[place].children[0];
+              }
+              let ownedType = copy sourceType;
+              if (stringStartsWith(ownedType, "view ") && ownedType.byteLength > 5) {
+                ownedType = ownedType.copyBytes(5, ownedType.byteLength);
+              }
+              const ownedVisiting = Array<String>();
+              // References ARC releases are shared by the pattern, not moved.
+              if (tree.nodes[place].kind == ExpressionKind.identifierExpression
+                && typeRequiresOwnedBinding(modules, moduleIndex, ownedType, ownedVisiting)) {
+                const source = tree.root;
+                throw codedModuleResolutionError(
+                  ModuleResolveErrorKind.typeMismatch, "Z0220", module.path,
+                  `destructuring owned ${ownedType} requires explicit copy or move`,
+                  tree.nodes[source].line, tree.nodes[source].column, 1
+                );
+              }
+            }
+            none => {}
+          }
           try consumeOwnedExpressionSyntax(
             module,
             modules,
@@ -14035,6 +14842,8 @@ function inferStatement(
                 }
               }
               markClosureCaptureMutation(inout bindings, mutationRoot);
+              try requireNoChildTaskLoanForMutation(module, tree, root, bindings, mutationRoot,
+                mutationPath, "mutate");
               const liveView = liveViewBindingForStoragePath(
                 bindings,
                 mutationRoot,
@@ -14336,8 +15145,15 @@ function inferStatement(
     return true;
   }
   if (kind == StatementKind.throwStatement) {
-    const expectedError = valueBindingType(bindings, "__z_native_error_type");
-    if (expectedError.byteLength == 0) {
+    let expectedError = valueBindingType(bindings, "__z_native_error_type");
+    // In an attempted scope the first `try` or `throw` decides the error type.
+    const scopeErrorOffset = inferredScopeErrorOffset(expectedError);
+    if (scopeErrorOffset != 0) {
+      const decided = expressionResolutionIndex(evidence, scopeErrorOffset);
+      expectedError = decided < evidence.expressionResolutions.length
+        ? copy evidence.expressionResolutions[decided].typeName
+        : "";
+    } else if (expectedError.byteLength == 0) {
       let functionName = valueBindingType(bindings, "__z_native_function_name");
       if (functionName.byteLength == 0) functionName = "function";
       throw resolutionError(
@@ -14360,6 +15176,11 @@ function inferStatement(
           inout bindings,
           inout evidence
         );
+        if (expectedError.byteLength == 0) {
+          recordValueResolutionAt(modules, moduleIndex, scopeErrorOffset,
+            arena.nodes[index].line, arena.nodes[index].column, actual, inout evidence);
+          expectedError = copy actual;
+        }
         try requireExpressionSyntaxType(
           module,
           modules,
@@ -14439,7 +15260,9 @@ function inferStatement(
           // scope. It does not discard the child's lifetime or skip its join.
           let scopeOwnsTask = false;
           match (in expression.tree) {
-            some(tree) => scopeOwnsTask = tree.nodes[tree.root].kind == ExpressionKind.spawnExpression;
+            some(tree) => scopeOwnsTask = tree.nodes[tree.root].kind == ExpressionKind.spawnExpression
+              || (tree.nodes[tree.root].kind == ExpressionKind.executorPlacementExpression
+                && tree.nodes[tree.root].value == "spawn");
             none => {}
           }
           let visiting = Array<String>();
@@ -14478,15 +15301,32 @@ function inferStatement(
     }
     return true;
   }
+  if (kind == StatementKind.selectStatement && !selectHasTarget(bindings)) {
+    // A block's final `select` is its value and never reaches here; this one
+    // has no value loop, placed block, or async scope value to leave.
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "select requires an enclosing value-producing block",
+      arena.nodes[index].line,
+      arena.nodes[index].column
+    );
+  }
   if (kind == StatementKind.returnStatement || kind == StatementKind.selectStatement) {
     match (in arena.nodes[index].expression) {
       some(expression) => {
         let contextualExpected = "";
+        let infersPlacedResult = false;
         if (kind == StatementKind.returnStatement) {
           contextualExpected = expectedReturn.copyBytes(0, expectedReturn.byteLength);
         } else {
-          const selectBinding = loopSelectTypeBindingName();
-          contextualExpected = valueBindingType(bindings, selectBinding);
+          const placedResult = `${index}`;
+          const marker = placedResultSelectBindingName();
+          infersPlacedResult = valueBindingType(bindings, marker) == placedResult;
+          if (!infersPlacedResult) {
+            const selectBinding = loopSelectTypeBindingName();
+            contextualExpected = valueBindingType(bindings, selectBinding);
+          }
         }
         const actual = try inferExpressionTypeExpected(
           module,
@@ -14498,6 +15338,14 @@ function inferStatement(
           inout bindings,
           inout evidence
         );
+        if (infersPlacedResult) {
+          const selectBinding = loopSelectTypeBindingName();
+          setValueBindingType(inout bindings, selectBinding, actual);
+        }
+        if (kind == StatementKind.selectStatement) {
+          recordValueResolutionAt(modules, moduleIndex, arena.nodes[index].offset,
+            arena.nodes[index].line, arena.nodes[index].column, actual, inout evidence);
+        }
         if (
           kind == StatementKind.returnStatement
           && typeIsRetainedParameterViewAggregate(
@@ -14762,6 +15610,16 @@ function inferStatement(
     || kind == StatementKind.forAwaitStatement
     || kind == StatementKind.forTryAwaitStatement
   ) {
+    // The loop's own failure path completes the function. Until it can fail
+    // a scope instead, it has no place inside an attempted one.
+    const loopError = valueBindingType(bindings, "__z_native_error_type");
+    if (kind == StatementKind.forTryAwaitStatement && inferredScopeErrorOffset(loopError) != 0) {
+      throw codedModuleResolutionError(
+        ModuleResolveErrorKind.unsupportedLowering, "Z1000", module.path,
+        "`for try await` inside an attempted scope is not executable in the native compiler yet; step the stream with `try await stream.next()`",
+        arena.nodes[index].line, arena.nodes[index].column, 3
+      );
+    }
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
     preserveLoopViewBindings(inout loopBindings);
@@ -14873,7 +15731,15 @@ function inferStatement(
         arena.nodes[index].line, arena.nodes[index].column, 1);
     }
     let scopeBindings = copyValueBindings(bindings);
+    openTaskLoanScope(inout scopeBindings);
     if (arena.nodes[index].name.byteLength > 0) {
+      // The handle is a binding of the function's: it may not repeat one in view.
+      const visible = valueBindingType(bindings, arena.nodes[index].name);
+      if (visible.byteLength > 0) {
+        throw moduleResolutionError(ModuleResolveErrorKind.duplicateBinding, module.path,
+          `duplicate local "${arena.nodes[index].name}"`,
+          arena.nodes[index].nameLine, arena.nodes[index].nameColumn);
+      }
       addValueBinding(inout scopeBindings, arena.nodes[index].name, "TaskScope");
     }
     const scopeContinues = try inferStatementSequence(
@@ -14959,6 +15825,92 @@ function statementUsesBinding(
     if (statementUsesBinding(arena, child, name)) return true;
   }
   return false;
+}
+
+// A position the parser kept in a node label.
+function decimalLabel(in text: String): usize {
+  let value: usize = 0;
+  let index: usize = 0;
+  while (index < text.byteLength) {
+    const digit = text.byteAt(index);
+    if (digit < 48 || digit > 57) return value;
+    value = value * 10 + usize(digit - 48);
+    index = index + 1;
+  }
+  return value;
+}
+
+// The `select` statements that give a value-producing `async scope` its
+// value are the ones in its own blocks and branches; statements a nested
+// expression owns (a closure's, another value block's) are not reached here.
+// Each leaves the scope, so nothing may follow one in its block, and they
+// agree on one type. `break` and `continue` may not leave the scope: it would
+// have no value.
+function validateScopeSelects(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in statements: Array<usize>,
+  sequence: boolean,
+  loopDepth: usize,
+  in evidence: ModuleSemanticEvidence,
+  inout value: String
+): void throws ModuleResolveError {
+  let position: usize = 0;
+  while (position < statements.length) {
+    const statement = view arena.nodes[statements[position]];
+    position = position + 1;
+    if (statement.kind == StatementKind.selectStatement) {
+      if (sequence && position < statements.length) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "nothing may follow `select` in its block: it leaves the scope",
+          arena.nodes[statements[position]].line,
+          arena.nodes[statements[position]].column
+        );
+      }
+      match (in statement.expression) {
+        some(syntax) => match (in syntax.tree) {
+          some(tree) => {
+            const stored = expressionResolutionIndex(evidence, statement.offset);
+            if (stored < evidence.expressionResolutions.length) {
+              const actual = copy evidence.expressionResolutions[stored].typeName;
+              if (value.byteLength == 0) value = move actual;
+              else if (actual.byteLength > 0 && !equivalentTypes(modules, moduleIndex, value, actual)) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `expected ${value}, found ${actual}`,
+                  tree.nodes[tree.root].line,
+                  tree.nodes[tree.root].column
+                );
+              }
+            }
+          }
+          none => {}
+        }
+        none => {}
+      }
+      continue;
+    }
+    if ((statement.kind == StatementKind.breakStatement || statement.kind == StatementKind.continueStatement)
+      && loopDepth == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a value-producing async scope cannot be left with `break` or `continue`",
+        statement.line,
+        statement.column
+      );
+    }
+    const loops = statement.kind == StatementKind.whileStatement || statement.kind == StatementKind.forStatement
+      || statement.kind == StatementKind.forAwaitStatement || statement.kind == StatementKind.forTryAwaitStatement;
+    const children = copyIndices(statement.children);
+    try validateScopeSelects(module, modules, moduleIndex, arena, children,
+      statement.kind == StatementKind.blockStatement, loops ? loopDepth + 1 : loopDepth, evidence, inout value);
+  }
 }
 
 function inferStatementSequence(

@@ -11,6 +11,7 @@ struct Z_AsyncHostWake {
   size_t refcount;
   Z_AsyncExecutor *executor;
   bool enabled;
+  bool scheduled;
   uint64_t timer_generation;
   uint64_t timer_deadline;
 };
@@ -30,6 +31,9 @@ static void z_stage1_async_host_perform(void *context) {
   if (!pthread_main_np()) abort();
   Z_AsyncExecutor *executor = wake->executor;
   if (executor != NULL) {
+    z_stage1_async_external_lock(executor);
+    wake->scheduled = false;
+    z_stage1_async_external_unlock(executor);
     while (z_stage1_async_run_one(executor)) {}
     z_stage1_async_host_arm_timer(executor);
   }
@@ -52,10 +56,14 @@ static void z_stage1_async_host_destroy(Z_AsyncExecutor *executor) {
   executor->host_wake = NULL;
   z_stage1_async_host_release(wake);
 }
+// Called with the executor's external lock held. One ticket is outstanding
+// at a time: a host that never runs its main queue keeps one, not one per
+// signal, and a running one drains everything queued before it.
 static void z_stage1_async_host_signal(Z_AsyncExecutor *executor) {
-  if (executor->host_wake != NULL && executor->host_wake->enabled)
-    dispatch_async_f(dispatch_get_main_queue(),
-      z_stage1_async_host_retain(executor->host_wake), z_stage1_async_host_perform);
+  Z_AsyncHostWake *wake = executor->host_wake;
+  if (wake == NULL || !wake->enabled || wake->scheduled) return;
+  wake->scheduled = true;
+  dispatch_async_f(dispatch_get_main_queue(), z_stage1_async_host_retain(wake), z_stage1_async_host_perform);
 }
 static __attribute__((unused)) void z_stage1_async_host_enable(Z_AsyncExecutor *executor) {
   // Ordinary command-line drivers wait on the condition variable. Do not leave

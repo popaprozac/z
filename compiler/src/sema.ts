@@ -799,9 +799,18 @@ type AnalysisState = {
   readonly activeLoans: AccessLoanSet;
   readonly asyncSpawnBorrowRoots: Map<number, readonly string[]>;
   readonly asyncTaskBorrowSpawns: Map<string, number>;
+  // The stored-field path a member read takes through its root binding, keyed
+  // by the root identifier's offset, so a child-task field loan conflicts
+  // only with reads of an overlapping path.
+  readonly memberReadFieldPaths: Map<number, readonly string[]>;
+  // Root identifiers of projected inout targets being typed: the mutation or
+  // child-task loan check, not the read check, governs that access.
+  readonly inoutTargetRoots: Set<number>;
   readonly asyncCallContexts: {
     readonly mode: "await" | "spawn";
     readonly spawnOffset: number | null;
+    // An `on <executor>` call: the callee runs on another executor.
+    readonly placed?: boolean;
     calls: number;
     cancellationCalls: number;
   }[];
@@ -1500,6 +1509,8 @@ export function analyze(
     activeLoans: new Map(),
     asyncSpawnBorrowRoots: new Map(),
     asyncTaskBorrowSpawns: new Map(),
+    memberReadFieldPaths: new Map(),
+    inoutTargetRoots: new Set(),
     asyncCallContexts: [],
     placementErrorTypes: [],
     observer,
@@ -5599,7 +5610,7 @@ function analyzeStatement(
           }
           return;
         }
-        const nativeOwnerType = inferExpression(statement.target.object, locals, globals, structs, enums, fileName, state);
+        const nativeOwnerType = inferMemberReceiver(statement.target, locals, globals, structs, enums, fileName, state);
         const nativeOwner = state.foreignNamedTypes.get(String(underlyingType(nativeOwnerType)));
         if (nativeOwner?.kind === "record" && nativeOwner.resource) {
           throw new DiagnosticError(fileName, statement.target.location, `native resource field ${JSON.stringify(statement.target.property)} is read-only in safe Z`, {
@@ -8506,6 +8517,7 @@ function inferExecutorPlacement(
     const context = {
       mode: expression.mode === "spawn" ? "spawn" as const : "await" as const,
       spawnOffset: expression.mode === "spawn" ? expression.location.offset : null,
+      placed: true,
       calls: 0,
       cancellationCalls: 0,
     };
@@ -8995,6 +9007,29 @@ function inferExpression(
   if (!synthetic) state.observer?.onExpressionResolution?.(resolution);
   state.expressionTypes.set(expression.location.offset, String(type));
   return type as ValueType;
+}
+
+// Types a member's receiver with the member's stored-field path recorded for
+// its root binding, so a root read conflicts only with child-task loans on an
+// overlapping path. The outermost member of a chain records the full path.
+function inferMemberReceiver(
+  expression: Extract<Expression, { kind: "member" }>,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): ValueType {
+  const path = directFieldStoragePath(expression);
+  const root = path?.fields.length ? storageRoot(expression) : null;
+  const owns = Boolean(root && !state.memberReadFieldPaths.has(root.location.offset));
+  if (owns) state.memberReadFieldPaths.set(root!.location.offset, path!.fields);
+  try {
+    return inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
+  } finally {
+    if (owns) state.memberReadFieldPaths.delete(root!.location.offset);
+  }
 }
 
 function ensureOptionalChainEnum(
@@ -9885,14 +9920,20 @@ function inferExpressionInner(
     case "identifier": {
       const local = locals.get(expression.name);
       if (local) {
-        const asyncBorrow = activeAccessLoanForRoot(
+        const readFields = state.memberReadFieldPaths.get(expression.location.offset) ?? [];
+        const asyncBorrow = !state.inoutTargetRoots.has(expression.location.offset) && activeAccessLoanForRoot(
           state.activeLoans,
           expression.name,
           state,
-          (loan) => loan.lifetime.kind === "task" && loan.capability === "inout",
+          (loan) => (
+            loan.lifetime.kind === "task"
+            && loan.capability === "inout"
+            && (loan.root !== expression.name || accessFieldPathsOverlap(loan.fields, readFields))
+          ),
         );
         if (asyncBorrow) {
-          throw new DiagnosticError(fileName, expression.location, `cannot read ${JSON.stringify(expression.name)} while a child task mutably borrows it`, {
+          const readPath = [expression.name, ...(asyncBorrow.fields?.length ? readFields : [])].join(".");
+          throw new DiagnosticError(fileName, expression.location, `cannot read ${JSON.stringify(readPath)} while a child task mutably borrows it`, {
             code: "Z0704",
             length: expression.name.length,
             labels: [{ location: asyncBorrow.location, message: "child task's mutable borrow begins here", length: expression.name.length }],
@@ -11057,7 +11098,7 @@ function inferExpressionInner(
           return enumDeclaration.name;
         }
       }
-      const receiverType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
+      const receiverType = inferMemberReceiver(expression, locals, globals, structs, enums, fileName, state);
       const receiverView = parseViewType(String(receiverType));
       const receiverRoot = storageRoot(expression.object);
       const stableAggregateView = receiverRoot
@@ -15239,18 +15280,6 @@ function checkArguments(
       const stored = locals.get(bindingName);
       const asyncContext = state.asyncCallContexts.at(-1);
       const spawnedAsyncBorrow = Boolean(target.async && asyncContext?.mode === "spawn");
-      if (projected && target.async) {
-        throw new DiagnosticError(
-          fileName,
-          argument.location,
-          "projected inout cannot cross an async suspension in this shape-stability tier",
-          {
-            code: "Z0704",
-            notes: ["the first projected-access tier proves disjoint storage only for one synchronous call"],
-            helps: ["mutate the field synchronously, or pass and await an owned result before assigning it"],
-          },
-        );
-      }
       if (!spawnedAsyncBorrow) {
         rejectOwnerMutationWhileViewed(
           bindingName,
@@ -15288,10 +15317,19 @@ function checkArguments(
           code: "Z0214",
         });
       }
-      const projectedType = projected
-        ? inferExpression(capabilityPath.target, locals, globals, structs, enums, fileName, state)
-        : underlyingType(stored);
+      if (projected) state.inoutTargetRoots.add(capabilityPath.rootLocation.offset);
+      let projectedType: ValueType;
+      try {
+        projectedType = projected
+          ? inferExpression(capabilityPath.target, locals, globals, structs, enums, fileName, state)
+          : underlyingType(stored);
+      } finally {
+        state.inoutTargetRoots.delete(capabilityPath.rootLocation.offset);
+      }
       validateProjectedCapabilityPath(capabilityPath, locals, structs, fileName, state);
+      const asyncFields = projected && target.async
+        ? requireAsyncFieldBorrowPath(capabilityPath.target, argument.location, locals, structs, enums, fileName, state)
+        : undefined;
       const ownedClassProjection = projected
         && structs.get(String(underlyingType(stored)))?.kind === "class"
         && !isBorrowedBinding(stored);
@@ -15336,7 +15374,7 @@ function checkArguments(
             helps: ["place the task inside `async scope { ... }`, use direct `await`, or transfer ownership into the child task"],
           });
         }
-        recordAsyncSpawnBorrow(bindingName, argument.location, "inout", asyncContext.spawnOffset!, fileName, state);
+        recordAsyncSpawnBorrow(bindingName, argument.location, "inout", asyncContext.spawnOffset!, fileName, state, asyncFields);
       }
       continue;
     }
@@ -15462,17 +15500,6 @@ function checkArguments(
       if (capabilityPath && capabilityPath.fields.length > 0) {
         validateProjectedCapabilityPath(capabilityPath, locals, structs, fileName, state);
       }
-      if (capabilityPath && capabilityPath.fields.length > 0 && target.async) {
-        throw new DiagnosticError(
-          fileName,
-          argument.location,
-          "a projected field borrow cannot cross an async suspension in this shape-stability tier",
-          {
-            code: "Z0704",
-            helps: ["copy an independent value when supported, or finish the projected borrow in synchronous code"],
-          },
-        );
-      }
       if (
         !isNamedStorageExpression(borrowedArgument)
         && argument.kind !== "structExpression"
@@ -15489,6 +15516,15 @@ function checkArguments(
         );
       }
       const actual = inferExpression(borrowedArgument, locals, globals, structs, enums, fileName, state);
+      // An explicit `in owner.field` must be a supported field borrow; an
+      // implicit field read keeps the whole-root loan when it is not one.
+      const asyncFields = !target.async
+        ? undefined
+        : capabilityPath && capabilityPath.fields.length > 0
+          ? requireAsyncFieldBorrowPath(borrowedArgument, argument.location, locals, structs, enums, fileName, state)
+          : callAsyncContext?.placed
+            ? undefined
+            : asyncFieldBorrowPath(borrowedArgument, locals, structs, enums, state) ?? undefined;
       const borrowedActual = parseViewType(String(actual))?.target ?? actual;
       if (
         hasOwnershipType(borrowedActual, structs, enums, state)
@@ -15535,7 +15571,7 @@ function checkArguments(
             helps: ["bind the value before borrowing it into the child task"],
           });
         }
-        recordAsyncSpawnBorrow(borrowedRoot, argument.location, "in", asyncContext.spawnOffset!, fileName, state);
+        recordAsyncSpawnBorrow(borrowedRoot, argument.location, "in", asyncContext.spawnOffset!, fileName, state, asyncFields);
       }
       continue;
     }
@@ -16839,6 +16875,9 @@ function mergeAccessLoanStates(state: AnalysisState, paths: readonly AccessLoanS
   restoreAccessLoanState(state, { activeLoans, taskBorrowSpawns });
 }
 
+// A task loan on `fields` covers only that stored-field path; without fields
+// it covers the whole root. One child may hold several disjoint field loans
+// on one root; all of them release together when that child joins.
 function recordAsyncSpawnBorrow(
   root: string,
   location: SourceLocation,
@@ -16846,21 +16885,29 @@ function recordAsyncSpawnBorrow(
   spawnOffset: number,
   fileName: string,
   state: AnalysisState,
+  fields?: readonly string[],
 ): void {
   const active = state.activeLoans.get(root) ?? [];
+  const path = (fields ?? []).join(".");
   const duplicate = active.some((loan) => (
-    loan.lifetime.kind === "task" && loan.lifetime.spawnOffset === spawnOffset
+    loan.lifetime.kind === "task"
+    && loan.lifetime.spawnOffset === spawnOffset
+    && (loan.fields ?? []).join(".") === path
   ));
   if (!duplicate) {
     const conflict = registerAccessLoan(state.activeLoans, {
       root,
-      aliasIdentities: classAliasIdentitiesForRoot(root, state),
+      fields,
+      // Field storage without ARC class identity cannot be reached through
+      // an alias of the root.
+      aliasIdentities: fields?.length ? undefined : classAliasIdentitiesForRoot(root, state),
       capability: mode,
       lifetime: { kind: "task", spawnOffset },
       location,
     });
     if (conflict) {
-      throw new DiagnosticError(fileName, location, `cannot borrow ${JSON.stringify(root)} as ${mode} while an active ${conflict.capability} loan exists`, {
+      const borrowed = [root, ...(fields ?? [])].join(".");
+      throw new DiagnosticError(fileName, location, `cannot borrow ${JSON.stringify(borrowed)} as ${mode} while an active ${conflict.capability} loan exists`, {
         code: "Z0704",
         labels: [{ location: conflict.location, message: `active ${conflict.capability} loan begins here`, length: root.length }],
         notes: ["call- and task-lifetime access use the same exclusivity rules"],
@@ -16920,10 +16967,14 @@ function rejectOwnerMutationWhileViewed(
     state.activeLoans,
     owner,
     state,
-    (loan) => loan.lifetime.kind === "task",
+    (loan) => (
+      loan.lifetime.kind === "task"
+      && (loan.root !== owner || accessFieldPathsOverlap(loan.fields, fields))
+    ),
   );
   if (asyncBorrow) {
-    throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(owner)} while a child task borrows it`, {
+    const borrowed = [owner, ...(asyncBorrow.fields?.length ? fields : [])].join(".");
+    throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(borrowed)} while a child task borrows it`, {
       code: "Z0704",
       labels: [{
         location: asyncBorrow.location,
@@ -17171,6 +17222,69 @@ function ownedMutationFieldPath(
     }
   }
   return fields;
+}
+
+// The stored-field path a child task or awaited call may borrow on its own: a
+// direct member path through named value structs whose borrowed storage holds
+// no ARC class identity or view. Null when the borrow must cover its root.
+function asyncFieldBorrowPath(
+  target: Expression,
+  locals: ReadonlyMap<string, ValueType>,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+): readonly string[] | null {
+  const members: Extract<Expression, { kind: "member" }>[] = [];
+  let current = target;
+  while (current.kind === "member" && !current.optional) {
+    members.unshift(current);
+    current = current.object;
+  }
+  if (current.kind !== "identifier" || members.length === 0) return null;
+  let ownerType = String(underlyingType(locals.get(current.name) ?? "unknown"));
+  for (const member of members) {
+    const owner = structs.get(ownerType);
+    const field = owner?.kind === "struct"
+      ? owner.fields.find((candidate) => candidate.name === member.property)
+      : undefined;
+    if (!field) return null;
+    ownerType = String(underlyingType(state.expressionTypes.get(member.location.offset) ?? field.type.name));
+  }
+  if (
+    containsClassReferenceStorage(ownerType, structs, enums)
+    || containsStoredViewType(ownerType, structs, enums)
+  ) return null;
+  return members.map((member) => member.property);
+}
+
+function requireAsyncFieldBorrowPath(
+  target: Expression,
+  location: SourceLocation,
+  locals: ReadonlyMap<string, ValueType>,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): readonly string[] {
+  if (state.asyncCallContexts.at(-1)?.placed) {
+    throw new DiagnosticError(fileName, location, "a projected field borrow cannot cross to another executor in this tier", {
+      code: "Z0704",
+      notes: ["a field borrow is proven disjoint only for child tasks that share the caller's executor"],
+      helps: ["borrow the complete binding, or pass an owned value and assign the result"],
+    });
+  }
+  const fields = asyncFieldBorrowPath(target, locals, structs, enums, state);
+  if (fields) return fields;
+  throw new DiagnosticError(
+    fileName,
+    location,
+    "a projected borrow across an async suspension requires a stored value-struct field without ARC class or view storage",
+    {
+      code: "Z0704",
+      notes: ["this tier proves disjoint child-task access only for fixed-layout value storage"],
+      helps: ["borrow the complete binding, or pass an owned value and assign the result"],
+    },
+  );
 }
 
 function validateProjectedCapabilityPath(

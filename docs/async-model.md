@@ -120,9 +120,58 @@ explicit scope therefore requires an async parent: leaving it implicitly joins
 its children and may suspend. Returning from an async function likewise joins
 or cancels its root children. `return` inside an explicit scope still exits the
 enclosing function, but only after outstanding children are cancelled or
-joined and their frames are cleaned up. A future synchronous bridge for
+joined and their frames are cleaned up. The returned value is evaluated before
+that join, so `return await pending` may await one of the scope's own tasks. A
+`try` that fails inside a scope leaves it as a `throw` does: the scope's
+children and operations are cancelled and joined. A future synchronous bridge for
 starting an async root will be an explicit blocking runtime API, not ordinary
 `async scope` syntax.
+
+A scope can also produce a value: the value of the `select` that leaves it,
+handed over once every child it started has joined:
+
+```z
+const total = async scope {
+  const a = task load(1);
+  const b = task load(2);
+  const first = await a;
+  const second = await b;
+  select first + second;
+};
+```
+
+`select` leaves the scope with its value. It may sit in a branch, and nothing
+may follow it in its block. Every path through the scope ends in a `select`, a
+`return`, or a failure, and every `select` has the same type: the binding's
+annotation, or else the type of the first one. The selected value is evaluated
+before the join, as a returned value is, so `select await pending` may await
+one of the scope's own tasks. `return` still leaves the function, a failure
+still cancels the scope's children, and `break` and `continue` cannot leave a
+value-producing scope. A `select` inside a `match` arm or a value-producing
+loop belongs to that arm or loop. The form takes a name like the statement
+does; the handle is visible inside the block only.
+
+The scope may also sit inside a larger statement: `return async scope { ... }`,
+an assignment, an argument, an operand, or an `if` condition. It then runs
+ahead of that statement, as a nested `await` does, and scopes in one statement
+run in source order, each joined before the next starts. In a branch that may
+not run (an arm of `?:`, the right operand of `&&` or `||`) the scope runs
+exactly when its branch would: the operator runs ahead as one unit, its
+condition first and then only the branch taken. Its value may also be the
+source of an object pattern. A loop condition, a positional pattern, and a
+closure's expression body have no place to run it first and are rejected;
+bind it first. A frame stores one binding per name,
+so two scopes in one function cannot each declare a local of the same name.
+Only the native compiler implements the value form.
+
+`attempt async scope { ... }` turns a failure of the scope into a value. A
+`try` or `throw` inside it fails the scope instead of the function: the
+scope cancels its children, joins them, and gives `failure(error)`, and
+control continues after the scope. A `select` gives `success(value)`, and a
+scope with no `select` gives `success` by reaching its end. The error type is
+the annotation's or the one the scope's first `try` or `throw` names. This is
+the local form of "run these together; if one fails, stop the rest and tell
+me": no helper function and no error type on the enclosing function.
 
 When native callbacks can submit work dynamically, a scope can expose the
 compiler-owned handle:
@@ -547,9 +596,11 @@ additionally require sendability before these pointer-backed borrows can leave
 one thread.
 
 Classes and structs may declare async methods. A class receiver is retained by
-the task frame. A struct async instance method must initially declare `move
-this`, transferring its value into the frame; static async methods on either
-kind have no receiver restriction. `deinit` is never async.
+the task frame; with `inout this` the method writes through it across its
+suspensions, and a method may await other methods on `this`. A struct async
+instance method must initially declare `move this`, transferring its value into
+the frame; static async methods on either kind have no receiver restriction.
+`deinit` is never async.
 
 ## Bounded channels and planned actors
 

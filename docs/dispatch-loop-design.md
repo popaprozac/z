@@ -1,12 +1,12 @@
-# Dispatch loops — design
+# Dispatch loops
 
-Status: agreed with Zach on 2026-10-15. Z lowers an interpreter's loop
-into handlers chained by tail calls, rather than adding a general tail
-call. The spelling is `dispatch while`. Carried owned locals are
-rejected. The emitted C carries both forms under a guard.
-**Implemented** on 2026-10-15 in both compilers: the same rules and
-messages, and the same lowering. The native C emitter picks the same
-arguments as Stage 0 (`compiler/frontend/c-emitter.zs`, `dispatchPlan`).
+Z lowers an interpreter's loop into handlers chained by tail calls, rather
+than offering a general tail call. The spelling is `dispatch while`. Carried
+owned locals are rejected. The emitted C carries both forms under a guard.
+Both compilers implement the same rules, messages, and lowering; the native C
+emitter picks the same arguments as Stage 0 (`compiler/frontend/c-emitter.zs`,
+`dispatchPlan`). The source rules are in the
+[language reference](language-reference.md#dispatch-loops).
 
 ## Why
 
@@ -17,9 +17,7 @@ ZJS, an arm the program never runs has moved the hot arms' speed by up to
 20%, and every change to the call and return arms moved register
 allocation more than the work it removed.
 
-ZJS measured the alternatives on a copy of its generated C, 2026-10-15
-(ZJS `z/bench/speed/thread-dispatch.py`, results under
-`z/bench/speed/results/2026-10-15-*-dispatch.json`):
+ZJS measured the alternatives on a copy of its generated C:
 
 - **Each arm a C function of its own**, ending in a tail call
   (`musttail`) to the next instruction's handler through a table, the
@@ -32,7 +30,7 @@ ZJS measured the alternatives on a copy of its generated C, 2026-10-15
 The gain is in giving each instruction a register allocation of its own.
 Z cannot write either form.
 
-## Proposed source form
+## Source form
 
 A contextual keyword before `while` marks the loop: `dispatch while`. The
 engine's loop is unchanged apart from the mark:
@@ -154,7 +152,7 @@ GCC, MSVC, and wasm without tail calls get today's switch loop and today's
 speed. The generated C stays one file for embedders, and the program means
 the same under either form.
 
-## Cost model (for the reference)
+## Cost model
 
 - Dispatching one instruction is a load from the code, a load from the
   table, and an indirect jump. No frame is pushed and no stack grows.
@@ -163,63 +161,22 @@ the same under either form.
   For ZJS that is 2% of text.
 - Leaving the loop writes the carried locals once.
 
-## Decisions (2026-10-15)
+## Restrictions
 
-1. Spelling: `dispatch while`. It marks the loop the lowering
-   transforms, which is also the loop `continue` and `break` refer to.
-   Considered and not taken: `dispatch match`.
-2. Carried locals that own something are rejected with a diagnostic.
-   Passing them by address through the exit record can come later if a
-   program needs it.
-3. Both forms go in the emitted C under one guard, so one generated file
-   builds with any C compiler. Considered and not taken: a build setting
-   that picks one form.
-4. Payload enums as the subject are out of scope at first. A payload-free
-   enum covers ZJS.
+- Carried locals that own something are rejected with a diagnostic.
+- The `match` subject is a payload-free enum.
+- Both forms go in the emitted C under one guard, so one generated file
+  builds with any C compiler. There is no build setting that picks one form.
 
-## Acceptance
-
-- Both compilers: the mark parses as a contextual keyword, and the shape
-  rules have the same diagnostics, with tests in
-  `tests/native-semantic-parity.test.ts`.
-- A fixture interpreter (an enum, a loop, ten arms, `break`, `return`, `_`)
-  gives the same output with and without the mark, under clang and under
-  the fallback guard.
-- ZJS marks `runFrames`'s loop: the kernels land within noise of the
-  prototype (calls -9%, closures -8%), test262 is unchanged, and the
-  native build passes every gate.
-
-## Where it goes
+## Where it lives
 
 - Stage 0: `compiler/src/parser.ts` (the contextual keyword, as for `inline`
-  and `cold`), `ast.ts`, the shape checks, and `codegen-c.ts` (the `while`
-  emission).
+  and `cold`), `ast.ts`, the shape checks in `sema.ts`, and `codegen-c.ts`
+  (the `while` emission).
 - Native: `compiler/frontend/parser.zs`, `module-resolver.zs` (shape
   checks), `lowering-ir.zs` (the loop's `dispatch` label), and
   `c-emitter.zs`. The emitter writes each handler from a copy of the
   function that names the loop, so the existing `break`, `continue`, and
   local-name paths become the jump, the exit, and the record access.
-- `docs/language-reference.md`: a section beside "Inline and cold
-  functions"; `docs/diagnostics.md`: the new codes.
-
-## Measured (2026-10-15)
-
-ZJS marked its loop. It also changed its arms so that the error flags are
-set only right before a `break`; the switch build of that change is level
-against the old engine. Over eight placements and three runs, against the
-unmarked engine:
-
-| Kernel | Change |
-|---|---|
-| calls | -8.6 to -9.4% |
-| helpers | -8.1 to -8.8% |
-| closures | -6.3 to -7.3% |
-| allocation | -3.8 to -4.8% |
-| properties | -3.7 to -3.9% |
-| strings | -3.2 to -4.6% |
-| arrays, maps | -2% |
-| json, regexp, polymorphic | level to -1.5% |
-
-The lowering matches the hand-written prototype within noise, at the same
-16 KiB of text.
-
+- Tests: `tests/native-semantic-parity.test.ts` with
+  `tests/fixtures/native-semantic-parity/dispatch-loop.zs`.

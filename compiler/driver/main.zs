@@ -13,6 +13,7 @@ import {
 import { lowerModules } from "../frontend/lowering-ir.zs";
 import { emitProgramMetadata } from "../frontend/program-metadata.zs";
 import { validateNativeLowerability } from "../frontend/native-lowerability.zs";
+import { programPlacesWorkFromThreads } from "../frontend/async-yield-shape.zs";
 import {
   decodeRawForeignDeclarations,
 } from "../frontend/foreign-declaration-protocol.zs";
@@ -452,6 +453,24 @@ function loadProject(
       if (existing == foreignModule.contracts.framework) listed = true;
     }
     if (!listed) config.linkFrameworks.push(copy foreignModule.contracts.framework);
+  }
+  // Threads that place work on main may run under the Darwin main run loop:
+  // Stage 0 links CoreFoundation for such a program, so its headers may use
+  // the run loop without a manifest entry.
+  const frameworkPlatform = match (in config.platform) {
+    some(value) => copy value;
+    none => compilerHostPlatform();
+  };
+  if (frameworkPlatform == "macos") {
+    let runLoopProgram = false;
+    for (const module of modules) {
+      if (programPlacesWorkFromThreads(module.program)) runLoopProgram = true;
+    }
+    let listed = false;
+    for (const existing of config.linkFrameworks) {
+      if (existing == "CoreFoundation") listed = true;
+    }
+    if (runLoopProgram && !listed) config.linkFrameworks.push("CoreFoundation");
   }
   // Foreign imports are resolved relative to their declaring source module.
   // The emitted translation unit lives elsewhere, so final compilation needs

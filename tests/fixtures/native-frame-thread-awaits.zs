@@ -15,8 +15,10 @@ function check(value: i32): i32 throws WorkError {
   return value;
 }
 
+// The ticks wait long enough that the workers below, joined first, never
+// race them: thread start-up can exceed a millisecond on a loaded machine.
 async function tick(label: String): void {
-  await delay(1);
+  await delay(50);
   console.log(`tick ${label}`);
 }
 
