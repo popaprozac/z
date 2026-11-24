@@ -11539,7 +11539,9 @@ function yieldFrameHoistMovesIntoValue(in declaration: LoweredFunction, statemen
   if (statement.kind == LoweredStatementKind.assignmentStatement) {
     match (in statement.secondExpression) { some(value) => current = value; none => {} }
   } else if (statement.kind == LoweredStatementKind.localStatement
-    || statement.kind == LoweredStatementKind.returnStatement) {
+    || statement.kind == LoweredStatementKind.returnStatement
+    // A scope's `select` stores its value before the scope starts to leave.
+    || (statement.kind == LoweredStatementKind.breakStatement && labelsContain(statement.labels, "scope-select"))) {
     match (in statement.expression) { some(value) => current = value; none => {} }
   }
   while (current < declaration.expressions.length) {
@@ -12872,7 +12874,24 @@ function appendYieldFrameStatement(
       // The scope's locals live in the frame; release them at the scope's
       // exit, newest first (their live flags keep frame cleanup from repeating).
       let scopeLocals = Array<LoweredCleanup>();
+      // A pattern's bindings sit one block below the scope's statements, or
+      // two when the pattern's source runs a prelude first.
+      let declared = Array<usize>();
       for (const child of declaration.statements[statement.children[0]].children) {
+        let pattern = child;
+        while (declaration.statements[pattern].kind == LoweredStatementKind.blockStatement
+          && labelsContain(declaration.statements[pattern].labels, "nested-try-normalized")
+          && declaration.statements[pattern].children.length > 0) {
+          pattern = declaration.statements[pattern].children[declaration.statements[pattern].children.length - 1];
+        }
+        if (declaration.statements[pattern].kind == LoweredStatementKind.blockStatement
+          && labelsContain(declaration.statements[pattern].labels, "destructure-normalized")) {
+          for (const bound of declaration.statements[pattern].children) {
+            if (labelsContain(declaration.statements[bound].labels, "destructure-binding")) declared.push(bound);
+          }
+        } else declared.push(child);
+      }
+      for (const child of declared) {
         const local = view declaration.statements[child];
         if (local.kind != LoweredStatementKind.localStatement
           || yieldFrameSpawnExpression(declaration, child) < declaration.expressions.length) continue;

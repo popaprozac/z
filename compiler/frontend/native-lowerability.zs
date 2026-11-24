@@ -3474,7 +3474,9 @@ function validateHoistedAwaitResults(
   // A placed block's `select` returns from the block's own function.
   const returns = statement.kind == StatementKind.returnStatement
     || (placedSelect && statement.kind == StatementKind.selectStatement);
+  // A destructured value moves into the frame's hidden owner the same way.
   if (statementRoot && (statement.kind == StatementKind.variableStatement
+    || statement.kind == StatementKind.destructureStatement
     || statement.kind == StatementKind.expressionStatement
     || returns)) {
     handled = tree.root;

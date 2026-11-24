@@ -135,14 +135,17 @@ function appendUnitScopeStatements(in tree: ExpressionTree, index: usize, inout 
 // tree nodes in evaluation order: value-producing scopes, and conditionals
 // with scopes in their branches. False when a scope sits where this
 // statement cannot run it first (it is then the last one collected): a loop
-// condition re-runs, and a destructuring or `match` statement has no place
-// for it yet.
+// condition re-runs, and a positional pattern or `match` statement has no
+// place for it yet.
 export function statementHoistedScopes(
   in arena: StatementArena, index: usize, second: boolean, inout found: Array<usize>
 ): boolean {
   const kind = arena.nodes[index].kind;
   const plain = arena.nodes[index].objectBindings.length == 0 && arena.nodes[index].arrayBindings.length == 0;
-  const hoistable = (kind == StatementKind.variableStatement && plain) || kind == StatementKind.returnStatement
+  // An object pattern takes the scope's value through its hidden owner.
+  const objectPattern = kind == StatementKind.destructureStatement && arena.nodes[index].arrayBindings.length == 0;
+  const hoistable = (kind == StatementKind.variableStatement && plain) || objectPattern
+    || kind == StatementKind.returnStatement
     || kind == StatementKind.selectStatement || kind == StatementKind.throwStatement
     || kind == StatementKind.expressionStatement || kind == StatementKind.assignmentStatement
     || kind == StatementKind.ifStatement;
@@ -1159,9 +1162,7 @@ function frameStatementIsSupported(
     || kind == StatementKind.destructureStatement) {
     // A nested local takes a frame slot like a root one; its live flag and
     // lexical cleanup carry it across suspensions inside its block.
-    // Destructuring stays root-only.
-    if ((nested && kind == StatementKind.destructureStatement)
-      || arena.nodes[index].arrayBindings.length != 0) return false;
+    if (arena.nodes[index].arrayBindings.length != 0) return false;
     // `let x: T;` is zeroed frame storage whose live flag starts false.
     match (in arena.nodes[index].expression) {
       some(_) => {}
@@ -1187,7 +1188,7 @@ function frameStatementIsSupported(
             || tree.nodes[root].kind == ExpressionKind.attemptExpression)
             && tree.nodes[root].children.length == 1) expression = tree.nodes[root].children[0];
           if (!frameExpressionIsSynchronous(tree, expression)) return false;
-        } else if (kind == StatementKind.whileStatement || kind == StatementKind.destructureStatement) {
+        } else if (kind == StatementKind.whileStatement) {
           // A loop condition re-runs each iteration: it cannot hoist an await.
           if (!frameExpressionIsSynchronous(tree, root)) return false;
         } else if (kind == StatementKind.ifStatement || kind == StatementKind.throwStatement) {

@@ -718,6 +718,15 @@ parameters, method/placed awaits, nested awaited expressions, other foreign
 storage, and nested source-local declarations remain outside this tier. These
 are lowering limits, not different destructuring semantics.
 
+A native function that awaits calls, tasks, timers, or scopes runs in the
+general frame, which also binds an object pattern whose source suspends: an
+awaited call or task, `try await`, or a value-producing `async scope`. The
+whole value moves into the pattern's hidden owner, the selected fields move
+out of it, and the remaining fields are destroyed at once. Such a pattern may
+sit at the function root or inside a branch or loop, where each iteration
+releases what it bound; the bound fields are released on completion, error,
+and cancellation. Positional patterns in async functions remain deferred.
+
 Fixed arrays, `Array<T>`, and `Slice<T>` support positional local patterns:
 
 ```z
@@ -3944,8 +3953,10 @@ Inside a larger statement (`return async scope { ... }`, an assignment, an
 argument, an operand, an `if` condition) the scope runs ahead of the
 statement, as a nested `await` does; several run in source order. In an arm
 of `?:` or the right operand of `&&` or `||` it runs only when that branch
-does. A scope in a loop condition, a destructuring, or a closure's expression
-body is `Z1000` in the native compiler: bind it with `const` or `let` first.
+does. Its value may also be the source of an object pattern
+(`const { a, b } = async scope { ... };`). A scope in a loop condition, a
+positional pattern, or a closure's expression body is `Z1000` in the native
+compiler: bind it with `const` or `let` first.
 
 Code performing long synchronous chunks inside an async task can cooperate
 with its current executor explicitly:

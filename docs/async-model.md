@@ -157,9 +157,10 @@ ahead of that statement, as a nested `await` does, and scopes in one statement
 run in source order, each joined before the next starts. In a branch that may
 not run (an arm of `?:`, the right operand of `&&` or `||`) the scope runs
 exactly when its branch would: the operator runs ahead as one unit, its
-condition first and then only the branch taken. A loop condition, a
-destructuring, and a closure's expression body have no place to run it
-first and are rejected; bind it first. A frame stores one binding per name,
+condition first and then only the branch taken. Its value may also be the
+source of an object pattern. A loop condition, a positional pattern, and a
+closure's expression body have no place to run it first and are rejected;
+bind it first. A frame stores one binding per name,
 so two scopes in one function cannot each declare a local of the same name.
 Only the native compiler implements the value form.
 

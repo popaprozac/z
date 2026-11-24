@@ -14451,6 +14451,35 @@ function inferStatement(
             module, modules, moduleIndex, sourceType,
             arena.nodes[index].line, arena.nodes[index].column
           );
+          // Plain destructuring of a named owner would hide an allocation or
+          // a partial transfer, as in Stage 0.
+          match (in expression.tree) {
+            some(tree) => {
+              let place = tree.root;
+              while ((tree.nodes[place].kind == ExpressionKind.memberExpression
+                  && tree.nodes[place].children.length == 1)
+                || (tree.nodes[place].kind == ExpressionKind.indexExpression
+                  && tree.nodes[place].children.length > 0)) {
+                place = tree.nodes[place].children[0];
+              }
+              let ownedType = copy sourceType;
+              if (stringStartsWith(ownedType, "view ") && ownedType.byteLength > 5) {
+                ownedType = ownedType.copyBytes(5, ownedType.byteLength);
+              }
+              const ownedVisiting = Array<String>();
+              // References ARC releases are shared by the pattern, not moved.
+              if (tree.nodes[place].kind == ExpressionKind.identifierExpression
+                && typeRequiresOwnedBinding(modules, moduleIndex, ownedType, ownedVisiting)) {
+                const source = tree.root;
+                throw codedModuleResolutionError(
+                  ModuleResolveErrorKind.typeMismatch, "Z0220", module.path,
+                  `destructuring owned ${ownedType} requires explicit copy or move`,
+                  tree.nodes[source].line, tree.nodes[source].column, 1
+                );
+              }
+            }
+            none => {}
+          }
           try consumeOwnedExpressionSyntax(
             module,
             modules,

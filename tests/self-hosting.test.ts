@@ -11561,6 +11561,23 @@ test("runs native-only fixtures and reports tier limits through the standalone n
     "checked one", "checked two", "chain false false",
     "checked if", "entered", "",
   ].join("\n"));
+  // An object pattern whose source suspends: an awaited call or task, `try
+  // await`, a scope's value; at the function root and in branches and loops.
+  const destructureAwaitedRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-async-destructure-awaited.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(destructureAwaitedRun.status, 0, destructureAwaitedRun.stderr);
+  assert.equal(destructureAwaitedRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "plain 12", "owned name 3 x3", "partial label 4", "renamed 56", "joined name 6",
+    "fallible checked 7 x7", "fallible failed", "direct made 8 x8", "direct failed",
+    "explicit name 9 name 10 name 10", "scoped name 11 11 12",
+    "branch name 12 x12 none", "loop label 1", "loop label 2", "loop 3",
+    "receipt 0 title 0", "released receipt 0", "scope ended",
+    "receipt 1 title 1", "released receipt 1", "scope ended",
+    "returns label 13 late", "synchronous local 14 spare 14",
+    "waits label 15", "waits label 16", "cancelled",
+    "throwing label 17", "throwing failed", "",
+  ].join("\n"));
   // The Stage 0 parser stops at this form, so its rules are checked here,
   // through the driver, rather than through the Stage 0-hosted commands.
   const scopeValueProgram = (body: string, signature = "async function main(): i32") => `
@@ -11582,8 +11599,9 @@ test("runs native-only fixtures and reports tier limits through the standalone n
     ["const v: String = async scope { select 1; };", /expected String, found i32/],
     ["let round = 0; while (round < 2) { const v = async scope { if (round == 1) break; select 1; }; round = round + 1; }",
       /cannot be left with `break` or `continue`/],
-    // Where the scope would run repeatedly, in a closure, or into a pattern.
-    ["const { length } = async scope { select \"text\"; };",
+    // Where the scope would run repeatedly, in a closure, or into a
+    // positional pattern.
+    ["const [first, second] = async scope { select Array<i32>(1, 2); };",
       /error\[Z1000\]: a value-producing async scope is not executable here in the native compiler yet/],
     // A frame stores one binding per name; the message says which repeats.
     ["const a = async scope { const pending = task load(1); select await pending; };"

@@ -7049,6 +7049,25 @@ function loweredStatementHasLabel(
   return false;
 }
 
+// The block that binds a pattern's fields, or the statement count. A source
+// that hoists a `try`, an await, or a scope wraps that block in a normalized
+// one; the bindings still belong to the enclosing sequence.
+function destructurePatternBlock(in statements: Array<LoweredStatement>, lowered: usize): usize {
+  let index = lowered;
+  while (
+    statements[index].kind == LoweredStatementKind.blockStatement
+    && loweredStatementHasLabel(statements[index], "nested-try-normalized")
+    && statements[index].children.length > 0
+  ) {
+    index = statements[index].children[statements[index].children.length - 1];
+  }
+  if (
+    statements[index].kind == LoweredStatementKind.blockStatement
+    && loweredStatementHasLabel(statements[index], "destructure-normalized")
+  ) return index;
+  return statements.length;
+}
+
 function planNestedPreludeSequence(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -7374,6 +7393,14 @@ function planCleanupStatement(
         arena.nodes[sourceIndex].kind == StatementKind.variableStatement
         && cleanup.name == arena.nodes[sourceIndex].name
       ) continue;
+      // Nor does a pattern's prelude own the fields the pattern will bind.
+      let bound = false;
+      if (arena.nodes[sourceIndex].kind == StatementKind.destructureStatement) {
+        for (const binding of arena.nodes[sourceIndex].objectBindings) {
+          if (binding.bindingName == cleanup.name) bound = true;
+        }
+      }
+      if (bound) continue;
       preludeLive.push(copyCleanup(cleanup));
     }
     let normalizedRoots = Array<usize>();
@@ -7738,14 +7765,11 @@ function planCleanupSequence(
       }
     } else if (
       arena.nodes[sourceIndex].kind == StatementKind.destructureStatement
-      && statements[loweredIndex].kind == LoweredStatementKind.blockStatement
-      && loweredStatementHasLabel(
-        statements[loweredIndex],
-        "destructure-normalized"
-      )
+      && destructurePatternBlock(statements, loweredIndex) < statements.length
     ) {
+      const patternBlock = destructurePatternBlock(statements, loweredIndex);
       let destructureChildren = Array<usize>();
-      for (const child of statements[loweredIndex].children) {
+      for (const child of statements[patternBlock].children) {
         destructureChildren.push(child);
       }
       for (const child of destructureChildren) {
@@ -27529,6 +27553,15 @@ function loweredStatementDirectlyTransfersBinding(
   index: usize,
   in name: String
 ): boolean {
+  // A pattern's hidden owner takes the whole value; the fields move out of
+  // that owner, so the value's first holder must not release it as well.
+  if (statements[index].kind == LoweredStatementKind.blockStatement
+    && loweredStatementHasLabel(statements[index], "destructure-normalized")
+    && statements[index].children.length > 0
+    && loweredStatementHasLabel(statements[statements[index].children[0]], "destructure-source")) {
+    return loweredStatementDirectlyTransfersBinding(expressions, statements,
+      statements[index].children[0], name);
+  }
   let value = Option<usize>.none;
   if (statements[index].kind == LoweredStatementKind.localStatement) {
     match (in statements[index].expression) {
@@ -28679,7 +28712,7 @@ function lowerStatementCore(
           importedTypes,
           sourceType
         );
-        const sourceValue = try lowerExpressionExpected(
+        const sourceRead = try lowerExpressionExpected(
           program,
           importedTypes,
           evidence,
@@ -28688,6 +28721,10 @@ function lowerStatementCore(
           sourceTypeName,
           inout expressions
         );
+        // The hidden owner takes the value: a value held in a statement
+        // temporary or a frame slot moves, so its first holder lets go.
+        const sourceValue = try wrapOwnedStorage(program, importedTypes, tree, root,
+          sourceTypeName, sourceRead, inout expressions);
         const temporaryName = `_z_destructure_${arena.nodes[index].offset}`;
         let flattened = Array<usize>();
         let temporaryLabels = Array<String>();

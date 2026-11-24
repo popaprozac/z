@@ -517,7 +517,8 @@ functions explicitly reject until suspension-stable environment storage is prove
 Ordinary object destructuring preserves Stage 0's conservative custom-cleanup
 boundary in native checking too: a root `deinit` or custom cleanup nested in
 inline fields is rejected before transfer, including through aliases and
-concrete generic payloads. Ordinary owned String/Array/Option fields and ARC
+concrete generic payloads. A named owner of Z-owned storage is destructured
+only through an explicit `copy` or `move` (`Z0220`), as in Stage 0. Ordinary owned String/Array/Option fields and ARC
 aliases retain their supported behavior; this does not add partial custom-
 destructor relocation. See the [ownership evidence](ownership-pressure.md#custom-cleanup-destructuring-rejection-parity-2026-09-08).
 
@@ -1614,8 +1615,10 @@ statement (`return`, an assignment, an argument, an operand, an `if`
 condition) runs ahead of it into a frame temporary, through the prelude that
 nested `try` uses. A `?:`, `&&`, or `||` with a scope in a branch becomes the
 conditional prelude, which runs the condition and then only the taken branch;
-a scope in a loop condition, a destructuring, or a closure's expression body
-is `Z1000`. A function that repeats a local name cannot run as a frame, and a
+a scope in a loop condition, a positional pattern, or a closure's expression
+body is `Z1000`. An object pattern takes a scope's value, or any source that
+suspends (an awaited call or task, `try await`), through its hidden owner, at
+the function root and inside branches and loops. A function that repeats a local name cannot run as a frame, and a
 value-producing scope there is `Z0700` naming the repeated binding. UBSan probes cover pre-entry
 cancellation, repeated completion/cancellation/closed-scope rejection, destination
 thread assertions, and exact final scope reference counts. Unsupported

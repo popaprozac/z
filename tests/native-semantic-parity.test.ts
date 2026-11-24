@@ -818,6 +818,28 @@ test("rejects a select with no value to give in both compilers", () => {
   `, message, message, ["self-host-resolve"]);
 }, 240_000);
 
+test("requires copy or move to destructure a named owner in both compilers", () => {
+  const message = /destructuring owned Named requires explicit copy or move/;
+  rejects(`
+    struct Named { name: String; count: i32; }
+    function main(): i32 {
+      const whole = Named({ name: "owned", count: 1 });
+      const { name, count } = whole;
+      return name.byteLength == 5 ? count : 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+  // A field of a named owner is named storage too.
+  rejects(`
+    struct Named { name: String; count: i32; }
+    struct Outer { inner: Named; }
+    function main(): i32 {
+      const outer = Outer({ inner: Named({ name: "owned", count: 1 }) });
+      const { name, count } = outer.inner;
+      return name.byteLength == 5 ? count : 0;
+    }
+  `, message, message, ["self-host-resolve"]);
+}, 240_000);
+
 test("reports a match value native cannot place as Z1000", () => {
   // Stage 0 rejects most of these outright ("match must be the direct value
   // of a binding, return, or expression statement"); it runs the last two.
