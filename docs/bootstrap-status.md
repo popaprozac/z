@@ -1606,8 +1606,11 @@ evaluates its value before the scope joins, as in Stage 0. A value-producing
 `const value = async scope { ... select value; }` is native only (Stage 0 does
 not parse it): `select` stores its value in the binding's frame slot and leaves
 through the scope's exit, so children, and a named scope's operations, join
-before the statement after the declaration runs. It is accepted as the whole
-initializer of a plain `const` or `let`; any other position is `Z1000`. UBSan probes cover pre-entry
+before the statement after the declaration runs. A scope inside a larger
+statement (`return`, an assignment, an argument, an operand, an `if`
+condition) runs ahead of it into a frame temporary, through the prelude that
+nested `try` uses; a scope in a lazy branch, a loop condition, a destructuring,
+or a closure's expression body is `Z1000`. UBSan probes cover pre-entry
 cancellation, repeated completion/cancellation/closed-scope rejection, destination
 thread assertions, and exact final scope reference counts. Unsupported
 scope-capturing worker await shapes remain explicit lowering errors; general

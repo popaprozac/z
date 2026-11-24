@@ -54,22 +54,107 @@ export function statementInitializesFromScope(in arena: StatementArena, index: u
   };
 }
 
-// The statements of that scope, which run in the enclosing function's frame.
+// Collects the value-producing scopes under `index` that their statement
+// runs ahead of itself, in evaluation order. A scope in a lazy or selected
+// branch, under `try`, `attempt`, `await`, `task`, or a placement, or as a
+// closure's expression body cannot be run ahead: the result is then false
+// and that scope is the last one collected.
+function collectHoistedScopes(in tree: ExpressionTree, index: usize, hoistable: boolean, inout found: Array<usize>): boolean {
+  const node = view tree.nodes[index];
+  if (node.kind == ExpressionKind.asyncScopeExpression) {
+    found.push(index);
+    return hoistable;
+  }
+  const blocks = node.kind == ExpressionKind.closureExpression
+    || node.kind == ExpressionKind.ifExpression || node.kind == ExpressionKind.matchExpression
+    || node.kind == ExpressionKind.conditionalExpression
+    || node.kind == ExpressionKind.unsafeExpression || node.kind == ExpressionKind.valueBlockExpression
+    || node.kind == ExpressionKind.whileExpression || node.kind == ExpressionKind.forExpression
+    || (node.kind == ExpressionKind.binaryExpression && (node.value == "&&" || node.value == "||"))
+    || node.kind == ExpressionKind.spawnExpression || node.kind == ExpressionKind.tryExpression
+    || node.kind == ExpressionKind.attemptExpression || node.kind == ExpressionKind.awaitExpression
+    || node.kind == ExpressionKind.executorPlacementExpression
+    || node.kind == ExpressionKind.executorOnExpression;
+  for (const child of node.children) {
+    if (!collectHoistedScopes(tree, child, hoistable && !blocks, inout found)) return false;
+  }
+  return true;
+}
+
+// The value-producing scopes of one of a statement's expressions, as tree
+// nodes in evaluation order. False when one of them sits where this statement
+// cannot run it first (it is then the last one collected): a loop condition
+// re-runs, and a destructuring or `match` statement has no place for it yet.
+export function statementHoistedScopes(
+  in arena: StatementArena, index: usize, second: boolean, inout found: Array<usize>
+): boolean {
+  const kind = arena.nodes[index].kind;
+  const plain = arena.nodes[index].objectBindings.length == 0 && arena.nodes[index].arrayBindings.length == 0;
+  const hoistable = (kind == StatementKind.variableStatement && plain) || kind == StatementKind.returnStatement
+    || kind == StatementKind.selectStatement || kind == StatementKind.throwStatement
+    || kind == StatementKind.expressionStatement || kind == StatementKind.assignmentStatement
+    || kind == StatementKind.ifStatement;
+  if (second) {
+    return match (in arena.nodes[index].secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => collectHoistedScopes(tree, tree.root, hoistable, inout found);
+        none => true;
+      }
+      none => true;
+    };
+  }
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => collectHoistedScopes(tree, tree.root, hoistable, inout found);
+      none => true;
+    }
+    none => true;
+  };
+}
+
+// The statements of a statement's value-producing scopes, which run in the
+// enclosing function's frame.
 export function valueScopeStatements(in arena: StatementArena, index: usize): Array<usize> {
   let owned = Array<usize>();
-  if (!statementInitializesFromScope(arena, index)) return owned;
-  match (in arena.nodes[index].expression) {
-    some(syntax) => match (in syntax.tree) {
-      some(tree) => {
-        for (const statement of tree.nodes[tree.root].statements) {
-          owned.push(statement);
+  let first = Array<usize>();
+  if (statementHoistedScopes(arena, index, false, inout first)) {
+    match (in arena.nodes[index].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => for (const site of first) {
+          for (const statement of tree.nodes[site].statements) {
+            owned.push(statement);
+          }
         }
+        none => {}
       }
       none => {}
     }
-    none => {}
+  }
+  let second = Array<usize>();
+  if (statementHoistedScopes(arena, index, true, inout second)) {
+    match (in arena.nodes[index].secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => for (const site of second) {
+          for (const statement of tree.nodes[site].statements) {
+            owned.push(statement);
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
   }
   return owned;
+}
+
+// Whether the statement runs a value-producing scope, as its whole
+// initializer or ahead of itself.
+export function statementRunsValueScope(in arena: StatementArena, index: usize): boolean {
+  let first = Array<usize>();
+  let second = Array<usize>();
+  const firstOk = statementHoistedScopes(arena, index, false, inout first);
+  const secondOk = statementHoistedScopes(arena, index, true, inout second);
+  return firstOk && secondOk && first.length + second.length > 0;
 }
 
 // Local names of `thread` imported from std/thread.
@@ -775,6 +860,9 @@ function frameTreeContainsAwait(in tree: ExpressionTree, index: usize): boolean 
 export function frameExpressionHoistsAwaits(in tree: ExpressionTree, index: usize): boolean {
   const node = view tree.nodes[index];
   if (node.kind == ExpressionKind.closureExpression) return true;
+  // A value-producing scope runs ahead of its statement as an await does; its
+  // statements are admitted with the statement (statementHoistedScopes).
+  if (node.kind == ExpressionKind.asyncScopeExpression) return true;
   if (node.kind == ExpressionKind.awaitExpression) return frameAwaitOperandIsSupported(tree, index);
   if (node.kind == ExpressionKind.attemptExpression && node.children.length == 1
     && tree.nodes[node.children[0]].kind == ExpressionKind.awaitExpression) {
@@ -953,7 +1041,7 @@ function frameStatementIsSupported(
   if (nested && statementRootIsSpawn(arena, index)) return false;
   // A local a value-producing scope initializes: the scope's statements are
   // frame-level, as a statement scope's are.
-  if (statementInitializesFromScope(arena, index)) {
+  if (statementRunsValueScope(arena, index)) {
     if (synchronousOnly) return false;
     const scopeStatements = valueScopeStatements(arena, index);
     for (const child of scopeStatements) {
@@ -962,7 +1050,9 @@ function frameStatementIsSupported(
         if (!frameStatementIsSupported(program, arena, child, false, false)) return false;
       } else if (!frameStatementIsSupported(program, arena, child, true, false)) return false;
     }
-    return true;
+    // A whole initializer is the scope itself; any other statement goes on
+    // to be checked around the values its scopes leave in the frame.
+    if (statementInitializesFromScope(arena, index)) return true;
   }
   if (kind == StatementKind.asyncScopeStatement) {
     if (synchronousOnly || arena.nodes[index].children.length != 1) return false;
@@ -1109,12 +1199,12 @@ export function functionUsesGeneralFrame(
       || statement.kind == StatementKind.forTryAwaitStatement) suspends = true;
     // A named scope joins its handle's operations when it exits.
     if (statement.kind == StatementKind.asyncScopeStatement && statement.name.byteLength != 0) suspends = true;
+    // A value-producing scope joins before it hands its value over.
+    if (statementRunsValueScope(declaration.body, suspendIndex - 1)) suspends = true;
     match (in statement.expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
           if (frameExpressionSuspends(tree, tree.root)) suspends = true;
-          // A value-producing scope joins before it hands its value over.
-          if (tree.nodes[tree.root].kind == ExpressionKind.asyncScopeExpression) suspends = true;
         }
         none => {}
       }
@@ -1405,7 +1495,7 @@ export function functionContainsNamedScope(in declaration: FunctionDeclaration):
     if (!closureOwned[index] && declaration.body.nodes[index].kind == StatementKind.asyncScopeStatement
       && declaration.body.nodes[index].name.byteLength != 0) return true;
     // A value-producing scope needs the frame's join in the same way.
-    if (!closureOwned[index] && statementInitializesFromScope(declaration.body, index)) return true;
+    if (!closureOwned[index] && statementRunsValueScope(declaration.body, index)) return true;
     index = index + 1;
   }
   return false;
