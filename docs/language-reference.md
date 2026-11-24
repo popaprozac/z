@@ -2271,10 +2271,37 @@ return Response.text(match (selection) {
 
 `select` supplies the payload; `return` inside an arm still exits the enclosing
 function, and `throw` propagates its error. Arm-local owners and untransferred
-payloads are destroyed on those exits. The native lowering tier supports this
-pure enum-constructor shape in bindings and returns, including nested enum
-constructors; this is not yet general nested-match support in arbitrary call
-arguments or short-circuit expressions.
+payloads are destroyed on those exits.
+
+In the native compiler a match value may sit wherever an expression may: a
+call or method argument, an operand, a field or element initializer, a
+template part, an `if` condition, a thrown value, a loop's source, a pattern's
+source.
+
+```z
+console.log(describe(count, match (kind) {
+  one => "single";
+  two => "pair";
+}));
+```
+
+It runs where it is written. Whatever is written before it in the expression
+runs first, and a number, boolean, or plain enum read before it keeps the
+value it had then, even if an arm changes the storage it came from. In an arm
+of `?:` or the right operand of `&&` or `||` it runs only when that branch
+does. `return`, `throw`, `break`, and `continue` in an arm keep their meaning,
+and what the expression had already computed is released. A value-producing
+`try`, `await`, or `async scope` in the same statement keeps its own rule and
+runs ahead of the statement.
+
+Three positions remain `Z1000`, with the same way out (bind the match with
+`const` or `let` first): a `while` condition, which runs again on each pass; a
+closure's expression body; and, inside the value of an arm of another
+value-producing match, anywhere but that whole value. In an async function
+the arms of such a match may not suspend. Stage 0 keeps its original rule that
+a match value is the direct value of a binding, return, assignment, or
+expression statement, so the compiler's own source does not use the wider
+form.
 
 Payload-free Z enums support `==` and `!=` by nominal tag. Payload-bearing
 enums require `match`; Z does not implicitly synthesize equality for their

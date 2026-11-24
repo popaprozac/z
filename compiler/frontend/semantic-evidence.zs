@@ -597,6 +597,15 @@ export function recordExpressionResolution(
 // `async` keyword. Evidence is keyed by offset, and an expression that begins
 // with the scope (`async scope { ... } > 3`) starts at the scope's own
 // offset; no expression starts inside a keyword, so each keeps its record.
+// The key an operand's checked type is recorded under when its expression
+// holds a match value: lowering may run the operand ahead of that match, into
+// a temporary of this type. Expression nodes that start at the same source
+// offset share an offset key, so this one is made of the expression's start
+// and the node's index, above any source offset.
+export function operandTypeKey(expressionOffset: usize, node: usize): usize {
+  return 4611686018427387904 + expressionOffset * 65536 + node;
+}
+
 // Where `attempt async scope` records the error type the scope fails with.
 export function asyncScopeErrorOffset(offset: usize): usize {
   return offset + 2;

@@ -11605,6 +11605,29 @@ test("runs native-only fixtures and reports tier limits through the standalone n
     "steady 1 started", "steady 2 started", "steady 1 finished", "outside 10",
     "waiting", "cancelled", "",
   ].join("\n"));
+  // A `match` value inside an expression runs where it is written: operands
+  // before it first, and in a branch that may not run only when it does.
+  // Stage 0 rejects these positions, so the native output is recorded.
+  const matchValuesRun = spawnSync(driver, ["run", resolve(projectRoot, "tests/fixtures/native-match-value-positions.zs")], {
+    encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+  });
+  assert.equal(matchValuesRun.status, 0, matchValuesRun.stderr);
+  assert.equal(matchValuesRun.stdout.replace(/^(compiled|cache hit)[^\n]*\n/gm, ""), [
+    "a", "two", "c", "arguments 24", "left", "arm",
+    "right", "operands 24", "mutated 201 2", "box", "two", "receiver 7",
+    "a", "b", "one", "c", "nested 16", "left",
+    "two", "fields 21", "t1", "one", "t2", "template 1 10 2",
+    "e1", "two", "e3", "elements 24", "text first", "text second",
+    "owned made first+made second", "text borrowed", "borrowed 2", "first two", "second two", "twice 22",
+    "text kept", "text kept", "leaves made kept+one | left early", "leading 20 -10", "prefixed two! 2", "condition 5 6",
+    "thrown worse", "iterated 5 1", "destructured 34 12", "wrapped 4 1", "text prefix", "text found",
+    "text prefix", "text default", "ownedValue made prefix+made found | made prefix+made default", "a", "two", "suspended 21",
+    "two", "awaited 22", "looped 205", "two", "else", "arm 2 0",
+    "then one", "else two", "bothArms 1 20", "left", "two", "left",
+    "conjunction true false", "left", "left", "one", "disjunction true false", "outer",
+    "inner", "two", "outer", "else", "inside 112 100", "text one",
+    "text else", "ownedArm made one | made else", "two", "else", "suspendedArm 2 0", "",
+  ].join("\n"));
   // The Stage 0 parser stops at this form, so its rules are checked here,
   // through the driver, rather than through the Stage 0-hosted commands.
   const scopeValueProgram = (body: string, signature = "async function main(): i32") => `

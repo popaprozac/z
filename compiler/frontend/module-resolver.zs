@@ -64,6 +64,7 @@ import {
   recordValueResolutionAt,
   asyncScopeErrorOffset,
   asyncScopeValueOffset,
+  operandTypeKey,
   recordForeignValueResolution,
   valueSymbolTargetName,
   recordForeignCallFacts,
@@ -2573,18 +2574,6 @@ function inferContextualObjectExpressionNode(
           genericParameters,
           substitutions
         );
-        // Field initializers are ordinary expressions, not direct-value
-        // contexts. Do not publish semantic evidence for a match that neither
-        // frontend can lower here with correct conditional cleanup.
-        if (tree.nodes[children[childIndex]].kind == ExpressionKind.matchExpression) {
-          throw resolutionError(
-            ModuleResolveErrorKind.typeMismatch,
-            module.path,
-            "match must be the direct value of a binding, return, or expression statement; bind its result to a local before initializing this field",
-            tree.nodes[children[childIndex]].line,
-            tree.nodes[children[childIndex]].column
-          );
-        }
         let bundleFieldVisiting = Array<String>();
         const fieldExpression = children[childIndex];
         if (
@@ -7524,6 +7513,33 @@ function inferExpressionNodeType(
   inout bindings: Array<NativeValueBinding>,
   inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
+  const inferred = try inferExpressionNodeKind(module, modules, moduleIndex, arena, tree, index,
+    inout bindings, inout evidence);
+  // Lowering may run an operand written before a match value ahead of it,
+  // into a temporary of the operand's type.
+  let holdsInnerMatch = false;
+  let other: usize = 0;
+  while (other < tree.nodes.length) {
+    if (other != tree.root && tree.nodes[other].kind == ExpressionKind.matchExpression) holdsInnerMatch = true;
+    other = other + 1;
+  }
+  if (holdsInnerMatch && inferred.byteLength > 0 && !stringStartsWith(inferred, "__z_")) {
+    recordValueResolutionAt(modules, moduleIndex, operandTypeKey(tree.nodes[tree.root].offset, index),
+      tree.nodes[index].line, tree.nodes[index].column, inferred, inout evidence);
+  }
+  return inferred;
+}
+
+function inferExpressionNodeKind(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  index: usize,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): String throws ModuleResolveError {
   const node = view tree.nodes[index];
   const kind = node.kind;
   const value = view node.value;
@@ -8496,7 +8512,7 @@ function inferExpressionNodeType(
     return value.copyBytes(0, valueLength);
   }
   if (kind == ExpressionKind.matchExpression) {
-    return try inferMatchExpressionNodeType(
+    const matched = try inferMatchExpressionNodeType(
       module,
       modules,
       moduleIndex,
@@ -8506,6 +8522,10 @@ function inferExpressionNodeType(
       inout bindings,
       inout evidence
     );
+    // Lowering gives a match value a temporary of this type wherever the
+    // match sits in its expression.
+    recordExpressionResolution(modules, moduleIndex, tree, index, matched, inout evidence);
+    return matched;
   }
   if (kind == ExpressionKind.argumentReferenceExpression && children.length == 1) {
     if (value == "out") {

@@ -19,7 +19,7 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { isNativeThreadBinding } from "./native-thread-shape.zs";
 import { functionUsesReturnedMatchTailAwait } from "./native-tail-match-shape.zs";
-import { statementHoistedScopes, statementRunsValueScope, closureOwnedStatements, mainPlacementThreadNames, nestedClosureMainTask, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
+import { statementHoistedScopes, statementRunsValueScope, closureOwnedStatements, mainPlacementThreadNames, nestedClosureMainTask, normalizeMainHops, normalizeMainPlacements, normalizeWorkerHops, functionAwaitsStreamStep, functionRunsMatchPrelude, functionContainsFrameDelay, functionContainsFrameSpawn, functionContainsNamedScope, functionUsesGeneralFrame, functionUsesYieldFrame, isFrameSchedulerYield } from "./async-yield-shape.zs";
 import {
   fixedArrayShape,
   genericTypeShape,
@@ -2905,34 +2905,87 @@ function validateValueScopePosition(
   }
 }
 
-// Native lowering runs a `match` value only as the whole value of a binding,
-// return, assignment, or `select`, or as the payload of an enum constructor
-// that starts the statement's expression. Anywhere else the match sits
-// inside an operation that is already half evaluated.
+// The statements that give a value-producing match arm its value: the arm's
+// own statement, or the last one of its block. Lowering stores such a value
+// straight into the match's destination, with no place to run a prelude.
+function matchArmValueStatements(in body: StatementArena): Array<boolean> {
+  let values = Array<boolean>();
+  while (values.length < body.nodes.length) {
+    values.push(false);
+  }
+  let statement: usize = 0;
+  while (statement < body.nodes.length) {
+    markMatchArmValues(body, statement, false, inout values);
+    markMatchArmValues(body, statement, true, inout values);
+    statement = statement + 1;
+  }
+  return values;
+}
+
+function markMatchArmValues(in body: StatementArena, statement: usize, second: boolean, inout values: Array<boolean>): void {
+  const syntax = second ? copy body.nodes[statement].secondExpression : copy body.nodes[statement].expression;
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        let node: usize = 0;
+        while (node < tree.nodes.length) {
+          const armOfValue = tree.nodes[node].kind == ExpressionKind.matchExpression
+            && !(!second && body.nodes[statement].kind == StatementKind.matchStatement && node == tree.root);
+          if (armOfValue) {
+            for (const arm of tree.nodes[node].children) {
+              if (tree.nodes[arm].kind != ExpressionKind.matchArmExpression) continue;
+              for (const armBody of tree.nodes[arm].statements) {
+                let value = armBody;
+                if (body.nodes[value].kind == StatementKind.blockStatement && body.nodes[value].children.length > 0) {
+                  value = body.nodes[value].children[body.nodes[value].children.length - 1];
+                }
+                if (value < values.length) values[value] = true;
+              }
+            }
+          }
+          node = node + 1;
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+}
+
+// A `match` value runs wherever an expression may: as its statement's whole
+// value, or ahead of the statement as a prelude, after the operands written
+// before it (lowering's appendNestedMatchPreludes); in a branch that may not
+// run, inside that branch. What has no place to run a prelude is still out: a
+// loop condition, which runs again each pass; a closure's expression body;
+// and the value of an arm of another value-producing match, where only the
+// whole value may be a match.
 function validateMatchValuePosition(
   in path: String,
   in graph: ModuleGraph,
   moduleIndex: usize,
   in body: StatementArena,
   index: usize,
-  second: boolean
+  second: boolean,
+  armValue: boolean
 ): void throws ModuleResolveError {
   const kind = body.nodes[index].kind;
-  if (second) {
-    match (in body.nodes[index].secondExpression) {
-      some(syntax) => try rejectMatchValuePosition(path, graph, moduleIndex, syntax,
-        kind == StatementKind.assignmentStatement, false);
+  const syntax = second ? copy body.nodes[index].secondExpression : copy body.nodes[index].expression;
+  match (in syntax) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        let node: usize = 0;
+        while (node < tree.nodes.length) {
+          if (tree.nodes[node].kind == ExpressionKind.matchExpression
+            && !matchValueHasPlace(graph, moduleIndex, tree, node, kind, second, armValue)) {
+            throw loweringBoundary(path, "Z1000",
+              "a match value is not executable here in the native compiler yet; bind it with `const` or `let` first",
+              tree.nodes[node].line, tree.nodes[node].column, 5);
+          }
+          node = node + 1;
+        }
+      }
       none => {}
     }
-    return;
-  }
-  const wholeValue = kind == StatementKind.variableStatement
-    || kind == StatementKind.returnStatement
-    || kind == StatementKind.matchStatement
-    || kind == StatementKind.selectStatement
-    || kind == StatementKind.yieldStatement;
-  match (in body.nodes[index].expression) {
-    some(syntax) => try rejectMatchValuePosition(path, graph, moduleIndex, syntax, wholeValue, true);
     none => {}
   }
 }
@@ -2954,40 +3007,45 @@ function callHasTarget(
   return false;
 }
 
-function rejectMatchValuePosition(
-  in path: String,
+function matchValueHasPlace(
   in graph: ModuleGraph,
   moduleIndex: usize,
-  in syntax: ExpressionSyntax,
-  wholeValue: boolean,
-  constructorPayload: boolean
-): void throws ModuleResolveError {
-  match (in syntax.tree) {
-    some(tree) => {
-      // `Option.some(Result.success(match ...))`: one-argument enum
-      // constructors from the root down.
-      let payload = tree.root;
-      while (constructorPayload
-        && tree.nodes[payload].kind == ExpressionKind.callExpression
-        && tree.nodes[payload].children.length == 2
-        && tree.nodes[tree.nodes[payload].children[0]].kind == ExpressionKind.memberExpression
-        && tree.nodes[tree.nodes[payload].children[0]].children.length == 1
-        && !callHasTarget(graph, moduleIndex, tree, payload)) {
-        payload = tree.nodes[payload].children[1];
-      }
-      let node: usize = 0;
-      while (node < tree.nodes.length) {
-        const placed = node == tree.root ? wholeValue : node == payload;
-        if (tree.nodes[node].kind == ExpressionKind.matchExpression && !placed) {
-          throw loweringBoundary(path, "Z1000",
-            "a match value is not executable here in the native compiler yet; bind it with `const` or `let` first",
-            tree.nodes[node].line, tree.nodes[node].column, 5);
-        }
-        node = node + 1;
-      }
+  in tree: ExpressionTree,
+  site: usize,
+  kind: StatementKind,
+  second: boolean,
+  armValue: boolean
+): boolean {
+  if (armValue) {
+    // The whole value, or the payload of enum constructors that are.
+    let payload = tree.root;
+    while (!second
+      && tree.nodes[payload].kind == ExpressionKind.callExpression
+      && tree.nodes[payload].children.length == 2
+      && tree.nodes[tree.nodes[payload].children[0]].kind == ExpressionKind.memberExpression
+      && tree.nodes[tree.nodes[payload].children[0]].children.length == 1
+      && !callHasTarget(graph, moduleIndex, tree, payload)) {
+      payload = tree.nodes[payload].children[1];
     }
-    none => {}
+    return site == tree.root || site == payload;
   }
+  if (kind == StatementKind.whileStatement && !second) return false;
+  // Every node from the site up to the root must let a prelude stand for it.
+  let current = site;
+  while (current != tree.root) {
+    let parent = tree.nodes.length;
+    let candidate: usize = 0;
+    while (candidate < tree.nodes.length) {
+      for (const child of tree.nodes[candidate].children) {
+        if (child == current) parent = candidate;
+      }
+      candidate = candidate + 1;
+    }
+    if (parent >= tree.nodes.length) return false;
+    if (tree.nodes[parent].kind == ExpressionKind.closureExpression) return false;
+    current = parent;
+  }
+  return true;
 }
 
 function rejectValueScopePosition(
@@ -3039,6 +3097,7 @@ function validateNativeBody(
   frameScopes: boolean
 ): void throws ModuleResolveError {
   try validateNativeThreadBlockCaptures(path, moduleIndex, graph, body, scopeStart, parameters);
+  const armValues = matchArmValueStatements(body);
   let statementIndex: usize = 0;
   while (statementIndex < body.nodes.length) {
     const statement = view body.nodes[statementIndex];
@@ -3074,8 +3133,8 @@ function validateNativeBody(
     }
     try validateValueScopePosition(path, body, statementIndex, false);
     try validateValueScopePosition(path, body, statementIndex, true);
-    try validateMatchValuePosition(path, graph, moduleIndex, body, statementIndex, false);
-    try validateMatchValuePosition(path, graph, moduleIndex, body, statementIndex, true);
+    try validateMatchValuePosition(path, graph, moduleIndex, body, statementIndex, false, armValues[statementIndex]);
+    try validateMatchValuePosition(path, graph, moduleIndex, body, statementIndex, true, armValues[statementIndex]);
     // An async generator's `yield` runs in the general frame only.
     if (statement.kind == StatementKind.yieldStatement && asynchronous && !frameScopes) {
       throw loweringBoundary(
@@ -3605,7 +3664,8 @@ function validateNativeFunction(
   // C++ frame storage and async generator streams exist only in the general
   // frame (mirrors lowering's routing).
   const cxxFrame = nativeAsyncSignatureHoldsCxx(graph, moduleIndex, declaration)
-    || nativeAsyncGeneratorBody(declaration) || functionAwaitsStreamStep(declaration);
+    || nativeAsyncGeneratorBody(declaration) || functionAwaitsStreamStep(declaration)
+    || functionRunsMatchPrelude(declaration);
   const firstTierSchedulerYield = !cxxFrame && functionHasFirstTierSchedulerYieldStorage(
     moduleIndex,
     modules,

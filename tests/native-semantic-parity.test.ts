@@ -841,17 +841,14 @@ test("requires copy or move to destructure a named owner in both compilers", () 
 }, 240_000);
 
 test("reports a match value native cannot place as Z1000", () => {
-  // Stage 0 rejects most of these outright ("match must be the direct value
-  // of a binding, return, or expression statement"); it runs the last two.
+  // Native runs a match value anywhere an expression may be, except where
+  // nothing can run ahead of it. Stage 0 rejects the first and third of
+  // these with its direct-value rule and runs the second.
   const value = "match (kind) { one => 1; two => 2; }";
   const bodies = [
-    `return id(${value});`,
-    `const sum = 1 + ${value}; return sum;`,
-    `if (${value} == 2) { return 5; } return 6;`,
-    `const flag = true; const picked = flag ? ${value} : 0; return picked;`,
-    `const text = \`v \${${value}}\`; return text.byteLength == 3 ? 1 : 0;`,
+    `let n = 0; while (n < ${value}) { n = n + 1; } return n;`,
     `const pick = (kind: Kind): i32 => ${value}; return pick(kind);`,
-    `return unbox(Option.some(${value}));`,
+    `const outer = match (kind) { one => id(${value}); two => 5; }; return outer;`,
   ];
   const directory = mkdtempSync("/tmp/z-native-match-position-");
   try {
@@ -860,7 +857,6 @@ test("reports a match value native cannot place as Z1000", () => {
       writeFileSync(input, `
         enum Kind { one, two }
         function id(value: i32): i32 { return value; }
-        function unbox(boxed: Option<i32>): i32 { return match (boxed) { some(value) => value; none => 0; }; }
         function run(kind: Kind): i32 { ${body} }
         function main(): i32 { return run(Kind.two); }
       `);
