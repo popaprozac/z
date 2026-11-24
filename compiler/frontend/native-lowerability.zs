@@ -2905,6 +2905,91 @@ function validateValueScopePosition(
   }
 }
 
+// Native lowering runs a `match` value only as the whole value of a binding,
+// return, assignment, or `select`, or as the payload of an enum constructor
+// that starts the statement's expression. Anywhere else the match sits
+// inside an operation that is already half evaluated.
+function validateMatchValuePosition(
+  in path: String,
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in body: StatementArena,
+  index: usize,
+  second: boolean
+): void throws ModuleResolveError {
+  const kind = body.nodes[index].kind;
+  if (second) {
+    match (in body.nodes[index].secondExpression) {
+      some(syntax) => try rejectMatchValuePosition(path, graph, moduleIndex, syntax,
+        kind == StatementKind.assignmentStatement, false);
+      none => {}
+    }
+    return;
+  }
+  const wholeValue = kind == StatementKind.variableStatement
+    || kind == StatementKind.returnStatement
+    || kind == StatementKind.matchStatement
+    || kind == StatementKind.selectStatement
+    || kind == StatementKind.yieldStatement;
+  match (in body.nodes[index].expression) {
+    some(syntax) => try rejectMatchValuePosition(path, graph, moduleIndex, syntax, wholeValue, true);
+    none => {}
+  }
+}
+
+// Whether the checker resolved this call to a function or method. An enum
+// variant constructor is not one: it has no target.
+function callHasTarget(
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  call: usize
+): boolean {
+  if (moduleIndex >= graph.modules.length) return false;
+  for (const resolution of graph.modules[moduleIndex].semanticEvidence.callResolutions) {
+    if (resolution.offset == tree.nodes[call].offset
+      && resolution.line == tree.nodes[call].line
+      && resolution.column == tree.nodes[call].column) return true;
+  }
+  return false;
+}
+
+function rejectMatchValuePosition(
+  in path: String,
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in syntax: ExpressionSyntax,
+  wholeValue: boolean,
+  constructorPayload: boolean
+): void throws ModuleResolveError {
+  match (in syntax.tree) {
+    some(tree) => {
+      // `Option.some(Result.success(match ...))`: one-argument enum
+      // constructors from the root down.
+      let payload = tree.root;
+      while (constructorPayload
+        && tree.nodes[payload].kind == ExpressionKind.callExpression
+        && tree.nodes[payload].children.length == 2
+        && tree.nodes[tree.nodes[payload].children[0]].kind == ExpressionKind.memberExpression
+        && tree.nodes[tree.nodes[payload].children[0]].children.length == 1
+        && !callHasTarget(graph, moduleIndex, tree, payload)) {
+        payload = tree.nodes[payload].children[1];
+      }
+      let node: usize = 0;
+      while (node < tree.nodes.length) {
+        const placed = node == tree.root ? wholeValue : node == payload;
+        if (tree.nodes[node].kind == ExpressionKind.matchExpression && !placed) {
+          throw loweringBoundary(path, "Z1000",
+            "a match value is not executable here in the native compiler yet; bind it with `const` or `let` first",
+            tree.nodes[node].line, tree.nodes[node].column, 5);
+        }
+        node = node + 1;
+      }
+    }
+    none => {}
+  }
+}
+
 function rejectValueScopePosition(
   in path: String,
   in syntax: ExpressionSyntax,
@@ -2989,6 +3074,8 @@ function validateNativeBody(
     }
     try validateValueScopePosition(path, body, statementIndex, false);
     try validateValueScopePosition(path, body, statementIndex, true);
+    try validateMatchValuePosition(path, graph, moduleIndex, body, statementIndex, false);
+    try validateMatchValuePosition(path, graph, moduleIndex, body, statementIndex, true);
     // An async generator's `yield` runs in the general frame only.
     if (statement.kind == StatementKind.yieldStatement && asynchronous && !frameScopes) {
       throw loweringBoundary(
