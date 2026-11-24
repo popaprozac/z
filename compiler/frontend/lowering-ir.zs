@@ -12486,15 +12486,16 @@ function lowerAsyncMethodTailCall(
     throw `native async method tail lowering requires a concrete struct or class receiver, found ${receiverTypeName}`;
   }
   const receiverMode = resolvedCallReceiverMode(evidence, tree, index);
+  // A class receiver is the object's address in either borrow mode; `inout`
+  // only lifts the callee's `const`.
   const borrowedClassReceiver = receiverType.kind
       == LoweredTypeKind.classType
-    && receiverMode != "move"
-    && receiverMode != "inout";
+    && receiverMode != "move";
   const consumingStructReceiver = receiverType.kind
       == LoweredTypeKind.structType
     && receiverMode == "move";
   if (!borrowedClassReceiver && !consumingStructReceiver) {
-    throw "native first-tier suspending methods require a non-consuming class receiver or a consuming struct receiver";
+    throw "native first-tier suspending methods require a borrowed class receiver or a consuming struct receiver";
   }
   let receiver = try lowerExpression(
     program,
@@ -12504,6 +12505,7 @@ function lowerAsyncMethodTailCall(
     receiverInput,
     inout output
   );
+  if (receiverMode == "inout") markMutableStorage(inout output, receiver);
   if (
     consumingStructReceiver
     && moduleTypeNeedsCleanup(program, importedTypes, receiverType)

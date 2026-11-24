@@ -18574,6 +18574,8 @@ function appendAsyncMethodAwaitHelpers(
       if (!classReceiver && !consumingStructReceiver) {
         throw "native async method await helper requires a retained class or moved struct receiver";
       }
+      // An `inout` method writes through its receiver.
+      const receiverQualifier = classReceiver && method.labels[1] != "inout" ? "const " : "";
       // A method that runs in a general async frame starts that frame.
       let calleeFrame = program.functions.length;
       let calleeCandidate: usize = 0;
@@ -18582,11 +18584,15 @@ function appendAsyncMethodAwaitHelpers(
           && program.functions[calleeCandidate].asyncSuspension == "yield-frame") calleeFrame = calleeCandidate;
         calleeCandidate = calleeCandidate + 1;
       }
-      if (calleeFrame < program.functions.length && !asyncMethodAwaitStartsChild(program, owner, expressionIndex)) {
+      // A frame starts the method as its child. A method that is itself a
+      // frame also keeps a blocking entry for callers outside any frame, and
+      // that entry awaits through the blocking helper, so both are emitted.
+      const startsChild = asyncMethodAwaitStartsChild(program, owner, expressionIndex);
+      if (calleeFrame < program.functions.length) {
         // A blocking caller runs the method's synchronous frame entry.
         output.append(`static __attribute__((unused)) ${try cType(functionType.returnType)} `);
         appendAsyncCallableAwaitHelperName(inout output, owner, expressionIndex);
-        output.append(`(${classReceiver ? "const " : ""}Z_${receiverType}${classReceiver ? " *receiver" : " receiver"}`);
+        output.append(`(${receiverQualifier}Z_${receiverType}${classReceiver ? " *receiver" : " receiver"}`);
         let blockingParameter: usize = 0;
         while (blockingParameter < functionType.parameters.length) {
           output.append(", ");
@@ -18606,13 +18612,15 @@ function appendAsyncMethodAwaitHelpers(
           blockingParameter = blockingParameter + 1;
         }
         output.append(");\n}\n\n");
-        expressionIndex = expressionIndex + 1;
-        continue;
+        if (!startsChild) {
+          expressionIndex = expressionIndex + 1;
+          continue;
+        }
       }
       if (calleeFrame < program.functions.length) {
         output.append("static __attribute__((unused)) Z_AsyncInvocation ");
         appendAsyncCallableAwaitHelperName(inout output, owner, expressionIndex);
-        output.append(`_start_invocation(Z_AsyncExecutor *executor, ${classReceiver ? "const " : ""}Z_${receiverType}${classReceiver ? " *receiver" : " receiver"}`);
+        output.append(`_start_invocation(Z_AsyncExecutor *executor, ${receiverQualifier}Z_${receiverType}${classReceiver ? " *receiver" : " receiver"}`);
         let adapterParameter: usize = 0;
         while (adapterParameter < functionType.parameters.length) {
           output.append(", ");
@@ -20098,7 +20106,7 @@ function appendAsyncMethodAwaitHelpers(
         expressionIndex
       );
       output.append("_start_invocation(Z_AsyncExecutor *executor, ");
-      if (classReceiver) output.append("const ");
+      output.append(receiverQualifier);
       output.append("Z_");
       output.append(receiverType);
       output.append(classReceiver ? " *receiver" : " receiver");
@@ -20215,7 +20223,7 @@ function appendAsyncMethodAwaitHelpers(
         expressionIndex
       );
       output.append("(");
-      if (classReceiver) output.append("const ");
+      output.append(receiverQualifier);
       output.append("Z_");
       output.append(receiverType);
       output.append(classReceiver ? " *receiver" : " receiver");
@@ -20472,7 +20480,7 @@ function appendAsyncMethodAwaitStartPrototypes(
         ));
         output.append(" receiver");
       } else {
-        if (method.labels[0] == "class") output.append("const ");
+        if (method.labels[0] == "class" && method.labels[1] != "inout") output.append("const ");
         output.append("Z_");
         output.append(method.labels[2]);
         output.append(method.labels[0] == "class" ? " *receiver" : " receiver");
